@@ -173,8 +173,8 @@ fn build_manifest(program: &Program, loaded: &mut Loaded) -> Result<ns_runtime::
         let names = mutator.new_array(names);
         let definitions = mutator.new_array(definitions);
         (
-            mutator.stash(ns_runtime::Value::Object(names)),
-            mutator.stash(ns_runtime::Value::Object(definitions)),
+            mutator.stash(ns_runtime::Value::object(names)),
+            mutator.stash(ns_runtime::Value::object(definitions)),
         )
     });
     let manifest = loaded

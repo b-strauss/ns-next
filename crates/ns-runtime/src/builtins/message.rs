@@ -38,18 +38,14 @@ fn message_parts<'gc>(
     mutator: &Mutator<'gc>,
     subject: Value<'gc>,
 ) -> Option<(Symbol, Vec<Value<'gc>>)> {
-    let Value::Object(object) = subject else {
-        return None;
-    };
+    let object = subject.as_object()?;
     let field = |name: &str| mutator.kernel_slot(object, BuiltinClass::Message, name);
-    let Value::Object(selector) = field("selector")? else {
-        return None;
-    };
+    let selector = field("selector")?.as_object()?;
     // The slot's default: a message built without `arguments:` is sent
     // with none, as a unary message a program builds naturally is.
-    let message_arguments = match field("arguments")? {
-        Value::Nil => Vec::new(),
-        Value::Object(message_arguments) => mutator.heap.array_elements(message_arguments)?,
+    let message_arguments = match field("arguments")?.kind() {
+        ValueKind::Nil => Vec::new(),
+        ValueKind::Object(message_arguments) => mutator.heap.array_elements(message_arguments)?,
         _ => return None,
     };
     Some((mutator.heap.symbol_value(selector)?, message_arguments))

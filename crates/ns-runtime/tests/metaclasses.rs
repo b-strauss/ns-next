@@ -46,7 +46,7 @@ fn a_metaclass_is_the_class_side_applied_to_class() {
     "};
     let (mut interpreter, class) = load(source);
     interpreter.enter(|mutator| {
-        let Value::Object(class_object) = mutator.fetch(&class) else {
+        let Some(class_object) = mutator.fetch(&class).as_object() else {
             panic!("a loaded module is a class object");
         };
         // Read off the class object itself, not through `metaclass_of`: the
@@ -102,18 +102,18 @@ fn the_class_of_a_class_is_its_metaclass() {
         "Metaclass class class",
     );
     interpreter.enter(|mutator| {
-        let Value::Object(class_object) = mutator.fetch(&class) else {
+        let Some(class_object) = mutator.fetch(&class).as_object() else {
             panic!("a loaded module is a class object");
         };
         let expected = mutator
             .metaclass_of(class_object)
             .expect("every class object has a metaclass");
-        let Value::Object(answered) = mutator.fetch(&metaclass) else {
+        let Some(answered) = mutator.fetch(&metaclass).as_object() else {
             panic!("`Subject class` answers an object");
         };
         assert!(answered.same(expected), "`Subject class` is its metaclass");
         let builtin_metaclass = mutator.builtin_class(BuiltinClass::Metaclass);
-        let Value::Object(answered) = mutator.fetch(&metaclass_class) else {
+        let Some(answered) = mutator.fetch(&metaclass_class).as_object() else {
             panic!("`Subject class class` answers an object");
         };
         assert!(
@@ -123,14 +123,14 @@ fn the_class_of_a_class_is_its_metaclass() {
         let expected = mutator
             .metaclass_of(builtin_metaclass)
             .expect("`Metaclass` has a metaclass");
-        let Value::Object(answered) = mutator.fetch(&metaclass_metaclass) else {
+        let Some(answered) = mutator.fetch(&metaclass_metaclass).as_object() else {
             panic!("`Metaclass class` answers an object");
         };
         assert!(
             answered.same(expected),
             "`Metaclass class` is its metaclass"
         );
-        let Value::Object(answered) = mutator.fetch(&metaclass_metaclass_class) else {
+        let Some(answered) = mutator.fetch(&metaclass_metaclass_class).as_object() else {
             panic!("`Metaclass class class` answers an object");
         };
         assert!(
@@ -164,9 +164,10 @@ fn class_objects_of_one_declaration_share_a_dispatch_id() {
     let first_widget = expect_ok(interpreter.send(&first_outer, widget, &[]), "Widget");
     let second_widget = expect_ok(interpreter.send(&second_outer, widget, &[]), "Widget");
     interpreter.enter(|mutator| {
-        let (Value::Object(first), Value::Object(second)) =
-            (mutator.fetch(&first_widget), mutator.fetch(&second_widget))
-        else {
+        let (Some(first), Some(second)) = (
+            mutator.fetch(&first_widget).as_object(),
+            mutator.fetch(&second_widget).as_object(),
+        ) else {
             panic!("Widget answers a class object");
         };
         assert!(
@@ -175,8 +176,8 @@ fn class_objects_of_one_declaration_share_a_dispatch_id() {
         );
         let heap = mutator.heap();
         assert_eq!(
-            heap.dispatch_id(&Value::Object(first)),
-            heap.dispatch_id(&Value::Object(second))
+            heap.dispatch_id(Value::object(first)),
+            heap.dispatch_id(Value::object(second))
         );
     });
 }

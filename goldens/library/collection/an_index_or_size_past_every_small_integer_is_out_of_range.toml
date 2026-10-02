@@ -1,0 +1,10 @@
+stdout = '''
+index 18446744073709551616 out of range: valid indices are 1..3 (size 3)
+index -18446744073709551616 out of range: valid indices are 1..3 (size 3)
+new: cannot allocate an Array of 18446744073709551616 elements
+new: requires a size of at least 0, got -18446744073709551616
+index 18446744073709551616 out of range: valid indices are 1..3 (size 3)
+copyFrom: 1 to: 18446744073709551616 out of range: valid ranges lie within 1..3, an empty range ends just before it starts (size 3)
+copyFrom: -18446744073709551616 to: 2 out of range: valid ranges lie within 1..3, an empty range ends just before it starts (size 3)
+asStringFixed: takes 0 to 20 fraction digits, got 18446744073709551616
+'''

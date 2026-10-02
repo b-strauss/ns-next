@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
+    HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value, ValueKind,
 };
 
 fn load(source: &str, lowering: Lowering) -> (Interpreter, Root) {
@@ -37,8 +37,8 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 }
 
 fn small_integer<'gc>(value: Value<'gc>) -> i64 {
-    match value {
-        Value::SmallInteger(integer) => integer,
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
@@ -65,15 +65,15 @@ fn a_deep_method_recursion_runs_on_the_activation_stack() {
             interpreter.send(
                 &instance,
                 Symbol::intern(selector),
-                &[interpreter.stash(Value::SmallInteger(50_000))],
+                &[interpreter.stash(Value::small_integer(50_000))],
             ),
             selector,
         );
         assert!(
-            interpreter.enter(|mutator| matches!(
-                mutator.fetch(&result),
-                Value::SmallInteger(0) | Value::Boolean(true)
-            )),
+            interpreter.enter(|mutator| {
+                let value = mutator.fetch(&result);
+                value.as_small_integer() == Some(0) || value.as_boolean() == Some(true)
+            }),
             "{selector}"
         );
         assert_eq!(
@@ -169,7 +169,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(
                 &instance,
                 Symbol::intern("build:"),
-                &[interpreter.stash(Value::SmallInteger(20_000))],
+                &[interpreter.stash(Value::small_integer(20_000))],
             ),
             "build:",
         );
@@ -208,7 +208,7 @@ ns_runtime::for_each_lowering! {
                 interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interpreter.stash(Value::SmallInteger(40_000))],
+                    &[interpreter.stash(Value::small_integer(40_000))],
                 ),
                 selector,
             );
@@ -254,7 +254,7 @@ ns_runtime::for_each_lowering! {
                 interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interpreter.stash(Value::SmallInteger(99_999))],
+                    &[interpreter.stash(Value::small_integer(99_999))],
                 ),
                 &what,
             );
@@ -262,7 +262,7 @@ ns_runtime::for_each_lowering! {
                 interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interpreter.stash(Value::SmallInteger(100_000))],
+                    &[interpreter.stash(Value::small_integer(100_000))],
                 ),
                 &what,
             );
@@ -283,7 +283,7 @@ ns_runtime::for_each_lowering! {
                 interpreter.send(
                     &instance,
                     Symbol::intern(selector),
-                    &[interpreter.stash(Value::SmallInteger(10))],
+                    &[interpreter.stash(Value::small_integer(10))],
                 ),
                 &what,
             );
@@ -315,7 +315,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(
                 &instance,
                 Symbol::intern("marked:"),
-                &[interpreter.stash(Value::SmallInteger(14_285))],
+                &[interpreter.stash(Value::small_integer(14_285))],
             ),
             &what,
         );
@@ -323,7 +323,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(
                 &instance,
                 Symbol::intern("marked:"),
-                &[interpreter.stash(Value::SmallInteger(14_286))],
+                &[interpreter.stash(Value::small_integer(14_286))],
             ),
             &what,
         );
@@ -344,7 +344,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(
                 &instance,
                 Symbol::intern("viaValue:"),
-                &[interpreter.stash(Value::SmallInteger(250_000))],
+                &[interpreter.stash(Value::small_integer(250_000))],
             ),
             &format!("viaValue: under {lowering:?}"),
         );
@@ -410,7 +410,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     // roots are current for the whole entry.
     let mut bytes = interpreter
         .enter(|mutator| {
-            let Value::Object(class) = mutator.fetch(&class) else {
+            let Some(class) = mutator.fetch(&class).as_object() else {
                 panic!("{block}: load_module answers a class object")
             };
             let origin = SourceOrigin::File(PathBuf::from("t.ns"));
@@ -502,11 +502,11 @@ ns_runtime::for_each_lowering! {
         // Each send takes the interpreter mutably, so the literal receivers
         // and arguments are rooted before the first of them.
         let [integer_3, integer_5, integer_42, true_value, false_value] = [
-            Value::SmallInteger(3),
-            Value::SmallInteger(5),
-            Value::SmallInteger(42),
-            Value::Boolean(true),
-            Value::Boolean(false),
+            Value::small_integer(3),
+            Value::small_integer(5),
+            Value::small_integer(42),
+            Value::boolean(true),
+            Value::boolean(false),
         ]
         .map(|value| interpreter.stash(value));
         // The arguments are borrowed, so one root can be passed several times.
@@ -546,7 +546,7 @@ ns_runtime::for_each_lowering! {
             &what("whileTrue:"),
         );
         assert!(
-            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)),
+            interpreter.enter(|mutator| mutator.fetch(&value).is_nil()),
             "{}",
             what("whileTrue:")
         );
@@ -562,7 +562,7 @@ ns_runtime::for_each_lowering! {
             &what("whileFalse:"),
         );
         assert!(
-            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)),
+            interpreter.enter(|mutator| mutator.fetch(&value).is_nil()),
             "{}",
             what("whileFalse:")
         );
@@ -580,7 +580,7 @@ ns_runtime::for_each_lowering! {
             &what("and:"),
         );
         assert!(
-            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::SmallInteger(3))),
+            interpreter.enter(|mutator| mutator.fetch(&value).as_small_integer() == Some(3)),
             "{}",
             what("and:")
         );
@@ -589,7 +589,7 @@ ns_runtime::for_each_lowering! {
             &what("and:"),
         );
         assert!(
-            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Boolean(true))),
+            interpreter.enter(|mutator| mutator.fetch(&value).as_boolean() == Some(true)),
             "{}",
             what("and:")
         );
@@ -598,7 +598,7 @@ ns_runtime::for_each_lowering! {
             &what("or:"),
         );
         assert!(
-            interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Boolean(true))),
+            interpreter.enter(|mutator| mutator.fetch(&value).as_boolean() == Some(true)),
             "{}",
             what("or:")
         );
@@ -650,7 +650,7 @@ ns_runtime::for_each_lowering! {
             interpreter.send(
                 &instance,
                 Symbol::intern("d:"),
-                &[interpreter.stash(Value::SmallInteger(20_000))],
+                &[interpreter.stash(Value::small_integer(20_000))],
             ),
             "d:",
         );
@@ -731,7 +731,7 @@ ns_runtime::for_each_lowering! {
             "the second probe",
         );
         interpreter.enter(|mutator| {
-            let Value::Object(inner_object) = mutator.fetch(&inner) else {
+            let Some(inner_object) = mutator.fetch(&inner).as_object() else {
                 panic!("{lowering:?}: the second access answers a class object");
             };
             assert!(mutator.heap().is_class(inner_object), "{lowering:?}");
@@ -742,11 +742,11 @@ ns_runtime::for_each_lowering! {
         );
         // Both class objects are read after the run that answered the second.
         interpreter.enter(|mutator| {
-            let Value::Object(inner) = mutator.fetch(&inner) else {
+            let Some(inner) = mutator.fetch(&inner).as_object() else {
                 panic!("{lowering:?}: the second access answers a class object");
             };
             assert!(
-                matches!(mutator.fetch(&again), Value::Object(again) if again.same(inner)),
+                mutator.fetch(&again).as_object().is_some_and(|again| again.same(inner)),
                 "{lowering:?}: the class the second access built is the one cached"
             );
         });

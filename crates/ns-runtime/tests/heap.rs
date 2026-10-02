@@ -7,6 +7,7 @@ use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction};
 use ns_runtime::interpreter::FeedbackBase;
 use ns_runtime::types::{Continuation, FrameKind, Value};
 use ns_runtime::Interpreter;
+use ns_runtime::ValueKind;
 use ns_runtime::{
     ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
 };
@@ -15,21 +16,27 @@ use ns_runtime::{
 fn array_accessors_read_and_write_through_the_seam() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
-        let object = mutator.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
+        let object = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
 
         assert_eq!(mutator.heap().array_length(object), Some(2));
-        assert!(matches!(
-            mutator.heap().array_at(object, 0),
-            Some(Value::SmallInteger(1))
-        ));
+        assert!(
+            mutator
+                .heap()
+                .array_at(object, 0)
+                .and_then(Value::as_small_integer)
+                == Some(1)
+        );
 
         assert!(mutator
             .heap_mut()
-            .array_set(object, 0, Value::SmallInteger(9)));
-        assert!(matches!(
-            mutator.heap().array_at(object, 0),
-            Some(Value::SmallInteger(9))
-        ));
+            .array_set(object, 0, Value::small_integer(9)));
+        assert!(
+            mutator
+                .heap()
+                .array_at(object, 0)
+                .and_then(Value::as_small_integer)
+                == Some(9)
+        );
     });
 }
 
@@ -47,12 +54,12 @@ fn an_array_accessor_on_a_non_array_answers_none_rather_than_panicking() {
 fn an_out_of_range_index_answers_none_or_false_rather_than_panicking() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
-        let object = mutator.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
+        let object = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
 
         assert!(mutator.heap().array_at(object, 99).is_none());
         assert!(!mutator
             .heap_mut()
-            .array_set(object, 99, Value::SmallInteger(9)));
+            .array_set(object, 99, Value::small_integer(9)));
     });
 }
 
@@ -71,7 +78,7 @@ fn is_class_distinguishes_a_class_object_from_an_instance() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let string = mutator.new_string("x".to_string());
-        let class = mutator.class_of(&Value::Object(string));
+        let class = mutator.class_of(Value::object(string));
         assert!(!mutator.heap().is_class(string));
         assert!(mutator.heap().is_class(class));
     });
@@ -86,13 +93,13 @@ fn is_class_distinguishes_a_class_object_from_an_instance() {
 fn describe_renders_a_distinct_non_empty_text_per_value_shape() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
-        let string_value = Value::Object(mutator.new_string("hi".to_string()));
-        let array_value = Value::Object(mutator.new_array(vec![Value::SmallInteger(1)]));
+        let string_value = Value::object(mutator.new_string("hi".to_string()));
+        let array_value = Value::object(mutator.new_array(vec![Value::small_integer(1)]));
 
-        let nil = mutator.heap().describe(&Value::Nil);
-        let small_integer = mutator.heap().describe(&Value::SmallInteger(42));
-        let string = mutator.heap().describe(&string_value);
-        let array = mutator.heap().describe(&array_value);
+        let nil = mutator.heap().describe(Value::nil());
+        let small_integer = mutator.heap().describe(Value::small_integer(42));
+        let string = mutator.heap().describe(string_value);
+        let array = mutator.heap().describe(array_value);
 
         let all = [&nil, &small_integer, &string, &array];
         for text in all {
@@ -115,7 +122,7 @@ fn describe_argument_none_names_the_absence_of_an_argument() {
         let text = mutator.heap().describe_argument(None);
         assert!(!text.is_empty());
         // Must not be confusable with a real value's description.
-        assert_ne!(text, mutator.heap().describe(&Value::Nil));
+        assert_ne!(text, mutator.heap().describe(Value::nil()));
     });
 }
 
@@ -123,10 +130,10 @@ fn describe_argument_none_names_the_absence_of_an_argument() {
 fn describe_argument_some_matches_describe_of_the_same_value() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
-        let value = Value::SmallInteger(7);
+        let value = Value::small_integer(7);
         assert_eq!(
-            mutator.heap().describe_argument(Some(&value)),
-            mutator.heap().describe(&value)
+            mutator.heap().describe_argument(Some(value)),
+            mutator.heap().describe(value)
         );
     });
 }
@@ -147,7 +154,7 @@ fn a_builtin_class_reports_its_kind_through_the_seam() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let string = mutator.new_string("x".to_string());
-        let class = mutator.class_of(&Value::Object(string));
+        let class = mutator.class_of(Value::object(string));
         assert!(mutator.heap().class_builtin(class).is_some());
     });
 }
@@ -198,11 +205,14 @@ fn register_addressing_puts_arguments_before_temporaries() {
         interpreter.send(
             &instance,
             Symbol::intern("run:"),
-            &[interpreter.stash(Value::SmallInteger(41))],
+            &[interpreter.stash(Value::small_integer(41))],
         ),
         "run:",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::SmallInteger(41))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&result).as_small_integer()),
+        Some(41)
+    );
 }
 
 /// Two `Inner` class objects of two `Outer` instances share one application,
@@ -253,7 +263,7 @@ fn instances_of_a_nested_class_share_a_dispatch_id_across_enclosing_objects() {
     );
     interpreter.enter(|mutator| {
         let heap = mutator.heap();
-        let id = |root: &Root| heap.dispatch_id(&mutator.fetch(root));
+        let id = |root: &Root| heap.dispatch_id(mutator.fetch(root));
         assert_eq!(id(&first), id(&second), "one application, one instance id");
         assert_eq!(
             id(&first_class),
@@ -282,25 +292,26 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
                 .class_dispatch_ids(mutator.builtin_class(kind))
                 .instances
         };
+        let float = mutator.new_float(2.5);
         let heap = mutator.heap();
         assert_eq!(
-            heap.dispatch_id(&Value::Nil),
+            heap.dispatch_id(Value::nil()),
             expected(mutator, BuiltinClass::UndefinedObject)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::Boolean(true)),
+            heap.dispatch_id(Value::boolean(true)),
             expected(mutator, BuiltinClass::True)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::Boolean(false)),
+            heap.dispatch_id(Value::boolean(false)),
             expected(mutator, BuiltinClass::False)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::SmallInteger(3)),
+            heap.dispatch_id(Value::small_integer(3)),
             expected(mutator, BuiltinClass::Integer)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::Float(2.5)),
+            heap.dispatch_id(float),
             expected(mutator, BuiltinClass::Float)
         );
         assert_ne!(
@@ -309,7 +320,7 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
         );
         let array = mutator.new_array(vec![]);
         assert_eq!(
-            mutator.heap().dispatch_id(&Value::Object(array)),
+            mutator.heap().dispatch_id(Value::object(array)),
             expected(mutator, BuiltinClass::Array)
         );
     });
@@ -330,11 +341,11 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     interpreter.enter(|mutator| {
-        let Value::Object(class_object) = mutator.fetch(&class) else {
+        let Some(class_object) = mutator.fetch(&class).as_object() else {
             panic!("expected a class object")
         };
         let before = mutator.heap().class_dispatch_ids(class_object);
-        let class_object_id = mutator.heap().dispatch_id(&Value::Object(class_object));
+        let class_object_id = mutator.heap().dispatch_id(Value::object(class_object));
         let application = mutator
             .heap()
             .class_application(class_object)
@@ -350,11 +361,11 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
         let after = mutator.heap().class_dispatch_ids(class_object);
         assert_ne!(before, after, "a new application mints new ids");
         let instance = mutator.fetch(&instance);
-        assert_eq!(mutator.heap().dispatch_id(&instance), after.instances);
+        assert_eq!(mutator.heap().dispatch_id(instance), after.instances);
         // The class object is an instance of its metaclass, not of itself,
         // so its own id is its metaclass's and does not move.
         assert_eq!(
-            mutator.heap().dispatch_id(&Value::Object(class_object)),
+            mutator.heap().dispatch_id(Value::object(class_object)),
             class_object_id
         );
         let metaclass = mutator
@@ -385,7 +396,7 @@ fn trivial_code() -> std::rc::Rc<CompiledCode> {
 
 fn activation_header<'gc>() -> ActivationHeader<'gc> {
     ActivationHeader {
-        receiver: Value::Nil,
+        receiver: Value::nil(),
         current_class: None,
         kind: FrameKind::TopLevel,
         feedback_base: FeedbackBase::NOT_ASSIGNED,
@@ -405,10 +416,10 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
     interpreter.enter(|mutator| {
         let heap = mutator.heap_mut();
 
-        let unmarked = heap.push_activation(activation_header(), &[Value::SmallInteger(1)], 1);
+        let unmarked = heap.push_activation(activation_header(), &[Value::small_integer(1)], 1);
         heap.set_activation_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
-        heap.activation_set_local(unmarked, 1, Value::SmallInteger(2));
+        heap.activation_set_local(unmarked, 1, Value::small_integer(2));
         heap.pop_activation(unmarked);
         assert_eq!(
             heap.frame_register_shape(forgetful),
@@ -418,24 +429,82 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         // A crafted image can pair a by-reference closure with a frame that
         // has no registers, so a read past the file answers nil rather than
         // aborting the process.
-        assert!(matches!(heap.frame_local(forgetful, 1), Value::Nil));
-        heap.frame_set_local(forgetful, 1, Value::SmallInteger(9));
-        assert!(matches!(heap.frame_local(forgetful, 1), Value::Nil));
+        assert!(heap.frame_local(forgetful, 1).is_nil());
+        heap.frame_set_local(forgetful, 1, Value::small_integer(9));
+        assert!(heap.frame_local(forgetful, 1).is_nil());
 
-        let marked = heap.push_activation(activation_header(), &[Value::SmallInteger(1)], 1);
+        let marked = heap.push_activation(activation_header(), &[Value::small_integer(1)], 1);
         heap.set_activation_program_counter(marked, 0);
         let kept = heap.reify(marked);
         // What `MakeClosure` does for a block whose `outer_reach` is
         // non-zero.
         heap.retain_registers(marked);
-        heap.activation_set_local(marked, 1, Value::SmallInteger(2));
+        heap.activation_set_local(marked, 1, Value::small_integer(2));
         heap.pop_activation(marked);
         assert_eq!(
             heap.frame_register_shape(kept),
             (0, 1, 1),
             "a marked activation hands its registers to its frame"
         );
-        assert!(matches!(heap.frame_local(kept, 0), Value::SmallInteger(1)));
-        assert!(matches!(heap.frame_local(kept, 1), Value::SmallInteger(2)));
+        assert_eq!(heap.frame_local(kept, 0).as_small_integer(), Some(1));
+        assert_eq!(heap.frame_local(kept, 1).as_small_integer(), Some(2));
+    });
+}
+
+#[test]
+fn a_float_is_made_by_the_mutator_and_read_by_the_heap() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let value = mutator.new_float(2.5);
+        assert_eq!(mutator.heap().float_value(value), Some(2.5));
+        assert_eq!(mutator.heap().float_value(Value::small_integer(2)), None);
+        assert!(matches!(value.kind(), ValueKind::SmallFloat(number) if number == 2.5));
+    });
+}
+
+#[test]
+fn every_float_reads_back_with_its_own_bits_whether_immediate_or_boxed() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        // (number, whether it is boxed)
+        for (number, boxed) in [
+            (0.0, false),
+            (-0.0, false),
+            (1.5, false),
+            (1.0e38, false),
+            (f64::from_bits((896 << 52) | 1), false),
+            (f64::from_bits(896 << 52), true),
+            (1.0e300, true),
+            (-1.0e300, true),
+            (1.0e-300, true),
+            (5.0e-324, true),
+            (f64::NAN, true),
+            (f64::INFINITY, true),
+            (f64::NEG_INFINITY, true),
+            (f64::MAX, true),
+            (f64::MIN_POSITIVE, true),
+        ] {
+            let value = mutator.new_float(number);
+            let back = mutator.heap().float_value(value).map(f64::to_bits);
+            assert_eq!(back, Some(number.to_bits()), "{number}");
+            assert_eq!(value.as_object().is_some(), boxed, "{number}");
+        }
+    });
+}
+
+#[test]
+fn an_object_handle_survives_the_value_word() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object = mutator.new_array(vec![Value::small_integer(1), Value::nil()]);
+        let value = Value::object(object);
+        let back = value
+            .as_object()
+            .expect("an object value answers its handle");
+        assert!(back.same(object));
+        assert_eq!(
+            mutator.heap().describe(value),
+            mutator.heap().describe(Value::object(back))
+        );
     });
 }

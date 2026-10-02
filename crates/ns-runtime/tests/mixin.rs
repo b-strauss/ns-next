@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use ns_runtime::dispatch::{self, Lookup};
 use ns_runtime::mixin::{mixin_key, AccessorKind, Mixin};
-use ns_runtime::{HostResult, HostSignal, Interpreter, Mutator, Root, Symbol, Value};
+use ns_runtime::{HostResult, HostSignal, Interpreter, Mutator, Root, Symbol, ValueKind};
 use ns_syntax::{ast, span::Span};
 
 fn slot_declaration(name: &str) -> ns_runtime::mixin::MixinSlot {
@@ -123,8 +123,8 @@ fn load(source: &str) -> (Interpreter, Root, ns_runtime::ResolvedModule) {
 /// The object `root` holds, for the heap accessors that take one. Every
 /// caller is already inside an entry.
 fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReference<'gc> {
-    match mutator.fetch(root) {
-        Value::Object(object) => object,
+    match mutator.fetch(root).kind() {
+        ValueKind::Object(object) => object,
         _ => panic!("expected an object"),
     }
 }
@@ -518,11 +518,11 @@ ns_runtime::for_each_lowering! {
         );
         interpreter.enter(|mutator| {
             assert!(
-                matches!(mutator.fetch(&level), Value::SmallInteger(11)),
+                mutator.fetch(&level).as_small_integer() == Some(11),
                 "super level reaches Marker's level"
             );
             assert!(
-                matches!(mutator.fetch(&same_class), Value::Boolean(true)),
+                mutator.fetch(&same_class).as_boolean() == Some(true),
                 "Applied new class is Applied"
             );
         });

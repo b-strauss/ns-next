@@ -36,8 +36,8 @@
 > traces, marking and forwarding alike, in every build), `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::collect_now` and the three stress modes),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
-> `types.rs` (`Value`,
-> `Object`, `Frame`), `mixin.rs` (layout, and the one remaining iterative
+> `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
+> `types.rs` (`Object`, `Frame`), `mixin.rs` (layout, and the one remaining iterative
 > `Drop`), and the memory layer's `crates/ns-memory/src/lib.rs`,
 > `page_map.rs` and `platform/{mod,windows,posix}.rs`.
 
@@ -73,14 +73,17 @@ it again would not break images.
 
 ### The representation: an arena of typed handles
 
-The model is the Nova JavaScript engine's: a `Value` is a Rust enum carrying
-either its data inline or a 32-bit index into a typed arena, with no `Rc` and no
-`RefCell` anywhere in it. Nova is the useful comparison rather than V8 because it
+The model is the Nova JavaScript engine's: a value carries either its data
+inline or a 32-bit index into a typed arena, with no `Rc` and no `RefCell`
+anywhere in it. Nova's `Value` is a Rust enum; ours is one tagged word,
+Spur's, which holds either ([object-model.md](object-model.md), "Values and
+objects"). Nova is the useful comparison rather than V8 because it
 solves this problem in Rust, where the borrow checker is available as an
 enforcement mechanism and a C++ engine's conventions are not.
 
 ```rust
-Value  = Nil | Boolean(bool) | SmallInteger(i64) | Float(f64) | Object(ObjectReference)   // Copy
+Value  = one tagged word: a handle, a SmallInteger, a SmallFloat64 or a constant   // Copy
+Word   = the bare word a heap object stores, 8 bytes in every build
 ObjectReference        { index: u32 }   // private to heap.rs; 4 bytes in a release build
 FrameReference      { index: u32 }   // likewise; ClassReference is an alias for ObjectReference
 ActivationReference { index: u32 }   // likewise, into the activation stack
@@ -212,10 +215,12 @@ depth.
 
 ### The seam
 
-`crates/ns-runtime/src/heap.rs` is the only place that knows what a handle is.
-Every read and write of an `Object`, a `Frame` or a running activation goes
-through a `Heap` accessor, so replacing the store behind them touches that file
-rather than the 193 call sites (109 under `src`, 84 in the integration tests) the
+The `heap` module -- `crates/ns-runtime/src/heap.rs` and its submodules,
+`heap/value.rs` among them, which puts a handle's index into a value's word and
+takes it out again -- is the only place that knows what a handle is. Every read
+and write of an `Object`, a `Frame` or a running activation goes through a
+`Heap` accessor, so replacing the store behind them touches that file rather
+than the 193 call sites (109 under `src`, 84 in the integration tests) the
 workspace held before the seam existed. Replacing `Rc<RefCell<_>>` with the
 arena is the evidence that this works: **no call site outside `heap.rs` and
 `types.rs` changed** for either the frame conversion or the object one.
@@ -468,19 +473,23 @@ makes one entry per read.
 `World::enter` is `#[inline(always)]`, and a lifetime is gone before code is
 generated.
 
-**Only `heap.rs` changes a brand.** A host root's slot is shared with a host
-outside every entry, so it holds a `Value<'static>`, and `Heap::stash` passes
-a value through `at_rest` on the way in, `fetch` through `branded` on the way
-out — two private functions, each monomorphic in its direction. The split
-does not make rebranding impossible inside `heap.rs`: composing the two,
+**Only the `heap` module changes a brand.** A host root's slot is shared with
+a host outside every entry, so it holds a `Value<'static>`, and `Heap::stash`
+passes a value through `at_rest` on the way in, `fetch` through `branded` on
+the way out — two functions of `heap/value.rs`, `pub(super)` so that only
+`heap` reaches them, each monomorphic in its direction. The split
+does not make rebranding impossible inside `heap`: composing the two,
 `branded(at_rest(value))`, carries a value from one brand to another. What it
 guarantees is that no single call does, so a misuse there has to spell out
 both calls and pass visibly through `'static` at the call site. They are the
 only conversions of a brand, and there is **no public
 `unbind`** — which is where Nova's discipline leaves a hole that its own
 documentation closes by convention ("NEVER unbind a `Value` into a local
-variable"). `Heap::new` and `Heap::move_everything` are private to the heap
-module, so only `World` builds the heap an interpreter has and only `World`
+variable"). A stored `Word` carries no brand either, so `Heap::load` and
+`Heap::store` are `pub(crate)`: public, the pair would carry a value from
+one heap's brand into another's, `heap_b.load(heap_a.store(value))`, past
+every debug check. `Heap::new` and `Heap::move_everything` are private to
+the heap module, so only `World` builds the heap an interpreter has and only `World`
 moves it — never while a `Mutator` is lent out, since `enter` holds `&mut
 self`.
 
@@ -549,17 +558,17 @@ the slot. The table is swept at every move, and by `stash` whenever it has
 doubled since its last sweep (never below 64 slots), so it stays proportional
 to the roots a host still holds in a release build too, where nothing moves.
 
-Inside an entry, `Mutator::stash` roots any value and `Mutator::fetch` reads
-one back (`Heap::stash`/`fetch`). Outside every entry, `Interpreter::stash`
-roots an immediate a host built itself — `nil`, a Boolean, a `SmallInteger`,
-a `Float` — and takes a `Value<'static>`: a host can build an immediate but
-never hold an object handle outside an entry, so a `Value<'static>` holds
-none. All of them take `&self`, the table sitting behind a `RefCell`, so that
-a host can stash an argument inside the call that sends it —
-`interpreter.send(&receiver, selector, &[interpreter.stash(value)])` — as
-`DynamicRootSet::stash` allows. A value `fetch` answers carries the brand of
-the entry it was read in, so it is good until that entry ends, and a host
-reads the root again in the next one.
+Inside an entry, `Mutator::stash` roots any value and `Mutator::fetch` reads one
+back (`Heap::stash`/`fetch`). Outside every entry, `Interpreter::stash` roots an
+immediate a host built itself — `nil`, a Boolean or a `SmallInteger`; a float is
+made only by `Mutator::new_float`, inside an entry, since it may be boxed — and
+takes a `Value<'static>`: a host can build an immediate but never hold an object
+handle outside an entry, so a `Value<'static>` holds none. All of them take
+`&self`, the table sitting behind a `RefCell`, so that a host can stash an
+argument inside the call that sends it — `interpreter.send(&receiver, selector,
+&[interpreter.stash(value)])` — as `DynamicRootSet::stash` allows. A value
+`fetch` answers carries the brand of the entry it was read in, so it is good
+until that entry ends, and a host reads the root again in the next one.
 
 Every host entry takes and answers roots: `Interpreter::send`, `instantiate`,
 `load_module` and `platform`, and `image::load`, whose `LoadedImage` carries
@@ -586,8 +595,13 @@ mode checks.
 ### What the collector traces
 
 `trace.rs` enumerates it, type by type: a `Trace` impl hands every field that
-holds an `ObjectReference`, a `ClassReference` or a `FrameReference` to a `Tracer`, one `&mut` at a
-time.
+holds an `ObjectReference`, a `ClassReference`, a `FrameReference` or a stored
+`Word` to a `Tracer`, one `&mut` at a time. A `Word` -- an instance's or an
+array's field, a register, a copied closure value -- goes to `Tracer::word`,
+which marks or rewrites it by the index it holds: it carries no origin or
+epoch to check, since `Heap::store` checked the value it was made from
+([object-model.md](object-model.md), "The debug build keeps its exact
+check").
 
 - The bootstrap: `builtin_classes`, `platform_singleton`, `vm_mirror` — the
   VM mirror, the one object whose method table holds the leaves — and
@@ -728,7 +742,10 @@ compares the two, so a handle the tracer missed panics at its first read
 checks the forwarding; the epoch checks the completeness. The `Forwarder`
 checks each handle it rewrites as well — its origin, and that its epoch is the
 one being moved from — because a foreign or stale handle stored in the heap is
-a mistake the move would otherwise make permanent. `ActivationReference` carries no
+a mistake the move would otherwise make permanent. A value stored in a heap
+object or a register is a bare `Word` with no epoch to check, so `Heap::store`
+refuses a foreign or stale value when it is stored, and the move rewrites the
+word by its index. `ActivationReference` carries no
 epoch: no stack entry moves, and its generation already covers an index reused
 after a pop. V8's `--stress-compaction`, SpiderMonkey's compacting GC zeal mode
 and HotSpot's `ScavengeALot` exist for the same reason. Here the stress mode
@@ -972,8 +989,8 @@ creator's frame record without registers.
   | | `Object` | Frame-arena entry | Placeholders |
   |---|---|---|---|
   | Record minimum | 6 B | 18 B | — |
-  | Release size | 56 B → 9.3x | 128 B → 7.1x | **~16.4x** |
-  | Debug size | 72 B → 12.0x | 152 B → 8.4x | ~20.4x |
+  | Release size | 56 B → 9.3x | 120 B → 6.7x | **~16.0x** |
+  | Debug size | 72 B → 12.0x | 144 B → 8.0x | ~20.0x |
 
   An object record's 6 B is `MIN_OBJECT_RECORD_BYTES` (`image/decode.rs`), the
   divisor `bounded_count` applies to the object count: a one-byte class tag,
@@ -982,41 +999,56 @@ creator's frame record without registers.
   retired -- but the divisor stays, since it is what a crafted count is
   bounded by, so the figures remain what one can make the decoder reserve.
 
-  **A decoded `LargeInteger` adds to that peak rather than fitting inside
-  it.** The placeholders are allocated against every byte left at the graph
-  section, and those same bytes can then be one array record full of
-  `VALUE_LARGE_INTEGER` values, each allocating its `Object` and its digits
-  before a later record fails to read. A value that allocates is at least 14
-  bytes on the wire -- the tag, the sign, a `u32` count and one digit; one
-  that fits `i64` is refused before its object is made -- and costs an
-  `Object` and 8 bytes a digit: 64 B → 4.6x in a release build, 80 B → 5.7x
-  in a debug one, for a combined peak of **~21.0x** and ~26.2x. A
-  further digit costs 8 wire bytes and 8 heap bytes, so one-digit values are
-  the worst case, and the digit count is bounded against the bytes left
-  before its `Vec` is allocated (`read_large_integer_parts`), which keeps the
-  term proportional to the input.
+  **A decoded value that allocates adds to that peak rather than fitting
+  inside it.** The placeholders are allocated against every byte left at the
+  graph section, and those same bytes can then be one array record full of
+  values that each allocate an object before a later record fails to read.
+  Three kinds of value allocate, and the worst is an integer:
+
+  | Value on the wire | Wire bytes | Allocates | Release | Debug | Peak, release / debug |
+  |---|---|---|---|---|---|
+  | `VALUE_SMALL_INTEGER` beyond 61 bits | 9 (tag, `i64`) | a `LargeInteger`: an `Object` and one digit | 64 B → 7.1x | 80 B → 8.9x | **~23.1x** / ~28.9x |
+  | `VALUE_FLOAT` outside the immediate range | 9 (tag, `f64`) | a boxed `Float`: an `Object`, its `f64` inline | 56 B → 6.2x | 72 B → 8.0x | ~22.2x / ~28.0x |
+  | `VALUE_LARGE_INTEGER` | at least 14 (tag, sign, `u32` count, one digit) | an `Object` and 8 bytes a digit | 64 B → 4.6x | 80 B → 5.7x | ~20.6x / ~25.7x |
+
+  Each peak is the placeholders' ~16.0x or ~20.0x plus the value's ratio
+  (16.0 + 7.1 = 23.1, 20.0 + 8.9 = 28.9; 16.0 + 6.2 = 22.2, 20.0 + 8.0 =
+  28.0; 16.0 + 4.6 = 20.6, 20.0 + 5.7 = 25.7). An `i64` within 61 bits
+  decodes to an immediate and allocates nothing, and a `VALUE_LARGE_INTEGER`
+  that fits `i64` is refused before its object is made, so an integer beyond
+  61 bits but within `i64` is the worst case: it costs a `LargeInteger`'s
+  allocation for the 9 bytes of an `i64` ([image-format.md](image-format.md),
+  "Integers and floats on the wire"). A further digit of a
+  `VALUE_LARGE_INTEGER` costs 8 wire bytes and 8 heap bytes, so one-digit
+  values are the worst case of that tag, and the digit count is bounded
+  against the bytes left before its `Vec` is allocated
+  (`read_large_integer_parts`), which keeps the term proportional to the
+  input.
 
   **A decoded `String` costs at most 4 heap bytes per wire byte** beyond its
   placeholder: its text is UTF-8 on the wire, and one code point outside
   Latin-1 makes every element four bytes. It is allocated exactly, from
   the buffer in place, with no intermediate `Vec` or `String`
-  (`Reader::read_code_points`). A byte cannot be both a `String`'s and a
-  `LargeInteger`'s, so the term stays below `LargeInteger`'s 4.6x, and the
-  ~16.4x and ~21.0x peaks stand.
+  (`Reader::read_code_points`). A byte cannot be both a `String`'s and an
+  allocating value's, so the term stays below every value's ratio above, and
+  the ~16.0x and ~23.1x peaks stand.
 
   **Two things none of these figures count.** They count live bytes. First,
   `reserve_for` (`image/decode.rs`) caps a list's capacity at the bytes
-  remaining, not at the bytes its elements need, so `decode_values` reserves
-  `min(count, remaining)` 16-byte `Value`s before its first element is read:
-  one array or instance record that claims a huge count reserves up to 16x
-  the bytes remaining, in either build, on top of the placeholders -- about
-  32x in a release build with no large integer involved, and, since that
-  record's elements can then be the large integers above, about 37x at
-  most (debug about 42x) -- a sum of the terms above (16.4 + 16 + 4.6, and
-  20.4 + 16 + 5.7), derived rather than measured. Second, an arena `Vec` that doubles while the
-  decoder allocates holds both buffers for a moment. Both stay proportional
-  to the input; bounding `reserve_for`'s reservation in bytes rather than in
-  elements is open work ([OPEN-WORK.md](../OPEN-WORK.md)).
+  remaining, not at the bytes its elements need, so `decode_words` reserves
+  `min(count, remaining)` 8-byte `Word`s before its first element is read: one
+  array or instance record that claims a huge count reserves up to 8x the bytes
+  remaining, in either build, on top of the placeholders -- about 24x in a
+  release build with no allocating value involved (16.0 + 8), and, since that
+  record's elements can then be the integers beyond 61 bits above, about 31x at
+  most (debug about 37x) -- a sum of the terms above (16.0 + 8 + 7.1, and 20.0 +
+  8 + 8.9), derived rather than measured. The image's root list, read by
+  `decode_values` into `Value`s (8 bytes in a release build, 16 in a debug one),
+  comes after every record, when the placeholders' bytes have been read. Second,
+  an arena `Vec` that doubles while the decoder allocates holds both buffers for
+  a moment. Both stay proportional to the input; bounding `reserve_for`'s
+  reservation in bytes rather than in elements is open work
+  ([OPEN-WORK.md](../OPEN-WORK.md)).
 
   The release `Object` size is pinned by a release-build test
   (`an_object_is_the_size_the_amplification_figure_assumes`, `heap.rs`),
@@ -1029,11 +1061,18 @@ creator's frame record without registers.
   that at 32: `copied` replaced the two fields it made redundant, the
   parameter names and the home.
 
-  A frame-arena entry is a `FrameSlot`: the `Frame` (120 B in a release build,
-  144 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
-  The debug sizes are larger because every handle there carries, besides its
-  index, the id of the heap that minted it and the move epoch the stress mode
-  checks it against.
+  A frame-arena entry is a `FrameSlot`: the `Frame` (112 B in a release build,
+  136 B in a debug one) and the `live` marriage field beside it, 8 bytes more.
+  The `Frame`'s receiver is a `Word`, 8 bytes in both builds, and its
+  arguments and temporaries are `Vec<Word>`s, 24 bytes each; the rest is
+  its program counter (8), its sender, home and current class (three
+  optional handles, 8 bytes each in a release build, 16 in a debug one),
+  its kind (16) and one flag, 105 bytes in a release build and 129 in a
+  debug one, each padded to a multiple of 8. A release-build test pins both
+  release sizes (`a_frame_slot_is_the_size_the_amplification_figure_assumes`,
+  `heap.rs`); the debug sizes are measured, not pinned. They are larger
+  because every handle there carries, besides its index, the id of the heap
+  that minted it and the move epoch the stress mode checks it against.
 
   `bounded_count` is what keeps this proportional to the input at all rather
   than to a 32-bit count — without it a crafted `u32::MAX` would allocate
@@ -1081,7 +1120,7 @@ Three things the representation settles before any taste enters:
 What is left is the choice between a non-moving free list over the slot table,
 a semispace copier, and mark-compact — and the two arguments that usually
 decide it do not apply here. Every slot is the same size, so a free list has no
-fragmentation to solve; and an object's payload (`Vec<Value>`, `String`,
+fragmentation to solve; and an object's payload (`Vec<Word>`, `String`,
 `Box<ClassData>`) is a separate allocation that no collector here moves, so a
 copier buys far less locality than it would where payloads sit inline.
 
@@ -1195,8 +1234,8 @@ a copy and fresh pages, at every collection; that was about 5% of
 `bench_value.ns` ([execution.md](execution.md), "What exceptions cost").
 The price is retention: under the floor each arena keeps up to twice the
 floor after a collection, 8,192 slots in both -- about 458 KB of the object
-arena (56 bytes a slot) and about 1.0 MB of the frame arena (128 bytes an
-entry), some 1.5 MB in all in a release build.
+arena (56 bytes a slot) and about 983 KB of the frame arena (120 bytes an
+entry), some 1.4 MB in all in a release build.
 
 The image decoder never collects, because it never polls — it does not run in
 the run loop. The transient peak described under the decode amplification above
@@ -1379,7 +1418,7 @@ statistics for every source and the inline check are in
 
 An object's slot is 56 bytes in the arena, but its variable-length part is a
 separate Rust allocation: `ObjectData::Instance`'s and `Array`'s
-`Vec<Value>`, `String`, `Box<ClassData>`, `ClosureData.copied`, and a reified
+`Vec<Word>`, `String`, `Box<ClassData>`, `ClosureData.copied`, and a reified
 frame's `arguments` and `temporaries`. Reading an instance's field is
 therefore two dependent loads, the slot and then the `Vec`'s buffer, usually
 in different cache lines. A collection does not merely reclaim slots; it
@@ -1578,28 +1617,28 @@ instruction encoding.
   (`prior-art/primordialsoup/vm/heap.h:373-387`). Objects are 8-byte aligned
   and at least 16 bytes, a header and a class word.
 - **A handle is a 64-bit byte offset from the space's base**, so base plus
-  handle is the object's address, the form generated code will use. The
-  first object starts at offset 16, not 0, so an all-zero word -- a missed
-  initialization -- is never a live reference. There is
-  no 32 GB ceiling: HotSpot's compressed oops save memory because a Java
-  reference field is 32 bits, while every field here is a full `Value` word
-  able to hold any value, so the offset can be as wide as the word allows
-  after its tag. The words in the space are 8 bytes in every build, so the
-  layout a debug build tests is the layout a release build runs. The Rust-side
-  types -- `ObjectReference`, and `Value` in Rust variables, structures,
-  continuations and host roots -- carry the heap id and the move epoch in
-  full in a debug build, as they do today, so the origin guard and the epoch
-  check stay exact wherever a stale handle can arise. From road step 2 on,
-  every store accessor checks in a debug build that the stored Rust-side
-  value's heap id and epoch are current before it becomes a word, so a stale
-  value cannot be laundered into a field; a word read out of the
-  space is given the current ones, since a full collection rewrites every
-  field it walks by format and cannot miss one the way it can miss an unknown
-  Rust field; under generations a scavenge walks only the young and the
-  remembered objects, and a missed barrier is what
-  `NS_NEXT_STRESS_SCAVENGE` catches ("Planned: generations"). The one exception is deliberate: a married frame's inline registers
-  are skipped, because while it is married its registers live on the
-  activation stack, which is traced as a root.
+  handle is the object's address, the form generated code will use. The first
+  object starts at offset 16, not 0, so an all-zero word -- a missed
+  initialization -- is never a live reference. There is no 32 GB ceiling:
+  HotSpot's compressed oops save memory because a Java reference field is 32
+  bits, while every field here is a full `Value` word able to hold any value, so
+  the offset can be as wide as the word allows after its tag. The words in the
+  space are 8 bytes in every build, so the layout a debug build tests is the
+  layout a release build runs. The Rust-side types -- `ObjectReference`, and
+  `Value` in Rust variables, structures, continuations and host roots -- carry
+  the heap id and the move epoch in full in a debug build, as they do today, so
+  the origin guard and the epoch check stay exact wherever a stale handle can
+  arise. Every store already checks in a debug build that the stored Rust-side
+  value's heap id and epoch are current before it becomes a word
+  (`Heap::store`), so a stale value cannot be laundered into a field; a word
+  read out of the space is given the current ones (`Heap::load`), since a full
+  collection rewrites every field it walks by format and cannot miss one the way
+  it can miss an unknown Rust field; under generations a scavenge walks only the
+  young and the remembered objects, and a missed barrier is what
+  `NS_NEXT_STRESS_SCAVENGE` catches ("Planned: generations"). The one exception
+  is deliberate: a married frame's inline registers are skipped, because while
+  it is married its registers live on the activation stack, which is traced as a
+  root.
 - **Access stays behind `Heap`'s accessors**, which read the space's words
   through bounds-checked slices, so a stale offset reads a wrong object at
   worst, never undefined behaviour; every field, element and register
@@ -1642,8 +1681,7 @@ instruction encoding.
 built, so each changes when its road step lands, not before: the crate list
 gains `crates/ns-memory`, the one crate with `unsafe`, and "the crate forbids
 unsafe code" names `ns-runtime` (road step 1, done); "An image is untrusted input"
-takes new amplification figures for the eight-byte value (road step 2's
-second plan) and
+takes new amplification figures
 for variably sized objects (road step 3), with the decoder's first pass
 checking each record's declared size against the bytes remaining; the bound
 is the largest of the per-record-kind ratios (a class object about 8.9x
@@ -1669,9 +1707,7 @@ step 4); and "The VM mirror is a capability" gains, as a consequence, that a
 program's `become:` refuses value objects and class objects, which covers
 every object a platform path names (road step 5;
 [object-model.md](object-model.md), "Planned: `become:` through
-forwarders"). The
-eight-byte value also changes "Never `{:?}` a `Value`", which names
-`Value::Object`, which constructors and accessors replace. Road step 3 leaves "decided per activation from
+forwarders"). Road step 3 leaves "decided per activation from
 the block's `outer_reach`" as it stands, since the divorce keeps that rule,
 but the frame arena's wording goes.
 

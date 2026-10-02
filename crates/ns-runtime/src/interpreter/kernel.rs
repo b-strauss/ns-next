@@ -109,7 +109,7 @@ impl Interpreter {
             let kernel_class = mutator.fill_builtin_classes(&resolved);
             let mirror = mutator.vm_mirror();
             (
-                mutator.stash(Value::Object(kernel_class)),
+                mutator.stash(Value::object(kernel_class)),
                 mutator.stash(mirror),
             )
         });
@@ -260,7 +260,7 @@ impl<'gc> Mutator<'gc> {
             self,
             &root_mixin,
             Some(object),
-            &[(0, Value::Object(value))],
+            &[(0, Value::object(value))],
         ) {
             Ok(Some(level)) => level,
             Ok(None) | Err(_) => panic!("internal: the kernel's Value level is a class object"),
@@ -282,10 +282,10 @@ impl<'gc> Mutator<'gc> {
     /// builtin class itself rather than building a second class object of
     /// the same mixin.
     fn wire_kernel_in(&mut self, kernel_class: &Root, kernel: &Root) {
-        let Value::Object(kernel_class) = self.fetch(kernel_class) else {
+        let Some(kernel_class) = self.fetch(kernel_class).as_object() else {
             unreachable!("internal: the kernel class is a class object");
         };
-        let Value::Object(kernel) = self.fetch(kernel) else {
+        let Some(kernel) = self.fetch(kernel).as_object() else {
             unreachable!("internal: the kernel instance is an object");
         };
         let mirror_field = mirror_slot_of(self, kernel);
@@ -304,12 +304,12 @@ impl<'gc> Mutator<'gc> {
             let class = self.builtin_class(kind);
             let field = hidden_slot_of(self, kernel, kind);
             debug_assert!(
-                matches!(self.heap.instance_field(kernel, field), Some(Value::Nil)),
+                self.heap.instance_field(kernel, field).is_some_and(|value| value.is_nil()),
                 "internal: Kernel's initializer touched the nested class {kind:?} before the bootstrap could fill it"
             );
             if !self
                 .heap
-                .set_instance_field(kernel, field, Value::Object(class))
+                .set_instance_field(kernel, field, Value::object(class))
             {
                 unreachable!("internal: the kernel instance has a field per nested class");
             }
@@ -341,7 +341,7 @@ impl<'gc> Mutator<'gc> {
             self.set_metaclass_lexical_context(class, kernel, kernel_class);
             level = self.heap.class_superclass(class);
         }
-        self.kernel = Some(Value::Object(kernel));
+        self.kernel = Some(Value::object(kernel));
     }
 
     /// Gives `class`'s metaclass the lexical context `wire_kernel_in` just
@@ -723,7 +723,7 @@ mod tests {
     use crate::builtins::primitive::mirror_entry;
     use crate::bytecode::UnwindMarker;
     use crate::mixin::{MethodFastPath, QuickConstant};
-    use crate::{BuiltinClass, Interpreter, Value};
+    use crate::{BuiltinClass, Interpreter};
 
     /// Every builtin class but the mirror's is the kernel class of its name.
     #[test]
@@ -1164,7 +1164,7 @@ mod tests {
     fn the_platform_declares_no_accessor_for_a_predefined_class() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let Value::Object(platform) = mutator.platform_value() else {
+            let Some(platform) = mutator.platform_value().as_object() else {
                 panic!("the platform is an object");
             };
             let platform_class = mutator.heap().class_of_object(platform);
@@ -1220,7 +1220,7 @@ mod tests {
         };
         interpreter.enter(|mutator| {
             let fast_path = |class: &crate::Root, selector: &str| {
-                let Value::Object(class) = mutator.fetch(class) else {
+                let Some(class) = mutator.fetch(class).as_object() else {
                     panic!("a nested class accessor answers a class object");
                 };
                 let application = mutator
@@ -1320,7 +1320,7 @@ mod tests {
                 Err(_) => panic!("platform collections class failed"),
             };
         interpreter.enter(|mutator| {
-            let Value::Object(collections_class) = mutator.fetch(&collections_class) else {
+            let Some(collections_class) = mutator.fetch(&collections_class).as_object() else {
                 panic!("the facet's class is an object");
             };
             let facet_application = mutator
@@ -1342,7 +1342,7 @@ mod tests {
                 );
                 assert_eq!(method.fast_path, None, "Collections>>{name}");
             }
-            let Value::Object(platform) = mutator.platform_value() else {
+            let Some(platform) = mutator.platform_value().as_object() else {
                 panic!("the platform is an object");
             };
             let platform_class = mutator.heap().class_of_object(platform);
@@ -1501,7 +1501,7 @@ mod tests {
             let mut interpreter = Interpreter::bootstrap_with(lowering);
             let class = interpreter.load_module(&resolved);
             interpreter.enter(|mutator| {
-                let Value::Object(class) = mutator.fetch(&class) else {
+                let Some(class) = mutator.fetch(&class).as_object() else {
                     panic!("load_module answers a class object");
                 };
                 let application = mutator
@@ -1623,7 +1623,7 @@ mod tests {
     fn only_top_activation_and_future_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let Some(Value::Object(kernel)) = mutator.kernel else {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let application = super::kernel_application(mutator, kernel);
@@ -1741,7 +1741,7 @@ mod tests {
     fn the_kernels_hidden_class_slots_hold_the_builtin_classes() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let Some(Value::Object(kernel)) = mutator.kernel else {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             for kind in BuiltinClass::ALL {
@@ -1758,10 +1758,11 @@ mod tests {
                 );
                 let field = super::hidden_slot_of(mutator, kernel, kind);
                 assert!(
-                    matches!(
-                        mutator.heap().instance_field(kernel, field),
-                        Some(Value::Object(held)) if held.same(class)
-                    ),
+                    mutator
+                        .heap()
+                        .instance_field(kernel, field)
+                        .and_then(|value| value.as_object())
+                        .is_some_and(|held| held.same(class)),
                     "{kind:?}'s hidden slot holds the builtin class"
                 );
             }
@@ -1772,7 +1773,7 @@ mod tests {
     fn the_kernel_holds_the_mirror() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let Some(Value::Object(kernel)) = mutator.kernel else {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let held = mutator
@@ -1790,12 +1791,12 @@ mod tests {
     fn the_kernel_and_the_mirror_are_values() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let Some(Value::Object(kernel)) = mutator.kernel else {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let kernel_class = mutator.heap().class_of_object(kernel);
             assert!(mutator.heap().class_inherits_value(kernel_class));
-            let Value::Object(mirror) = mutator.vm_mirror() else {
+            let Some(mirror) = mutator.vm_mirror().as_object() else {
                 panic!("the mirror is an object");
             };
             let mirror_class = mutator.heap().class_of_object(mirror);
@@ -1810,7 +1811,7 @@ mod tests {
     fn the_kernels_value_level_is_enclosed_by_the_kernel() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let Some(Value::Object(kernel)) = mutator.kernel else {
+            let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let kernel_class = mutator.heap().class_of_object(kernel);

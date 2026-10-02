@@ -4,7 +4,7 @@
 
 use indoc::indoc;
 
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
 fn load(source: &str) -> (Interpreter, Root, ns_runtime::ResolvedModule) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -63,8 +63,8 @@ fn an_explicit_self_send_of_a_class_name_answers_the_builtin_class() {
         "array",
     );
     interpreter.enter(|mutator| {
-        assert!(matches!(mutator.fetch(&same), Value::Boolean(true)));
-        assert!(matches!(mutator.fetch(&size), Value::SmallInteger(0)));
+        assert_eq!(mutator.fetch(&same).as_boolean(), Some(true));
+        assert_eq!(mutator.fetch(&size).as_small_integer(), Some(0));
     });
 }
 
@@ -86,7 +86,7 @@ fn a_class_that_redefines_the_name_reaches_its_own_method() {
         "answer",
     );
     interpreter.enter(|mutator| {
-        assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(42)));
+        assert_eq!(mutator.fetch(&answer).as_small_integer(), Some(42));
     });
 }
 
@@ -105,12 +105,12 @@ fn object_declares_no_accessor_for_top() {
     assert!(message.contains("Top"), "{message}");
 }
 
-fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    match value {
-        Value::Object(object) => heap
-            .str_value(*object)
+fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
+    match value.kind() {
+        ValueKind::Object(object) => heap
+            .str_value(object)
             .unwrap_or_else(|| panic!("expected a String, got {}", heap.describe(value))),
-        other => panic!("expected a String, got {}", heap.describe(other)),
+        _ => panic!("expected a String, got {}", heap.describe(value)),
     }
 }
 
@@ -147,12 +147,12 @@ ns_runtime::for_each_lowering! {
         );
         interpreter.enter(|mutator| {
             assert_eq!(
-                as_string(mutator.heap(), &mutator.fetch(&printed)),
+                as_string(mutator.heap(), mutator.fetch(&printed)),
                 "3",
                 "{lowering:?}"
             );
             assert!(
-                matches!(mutator.fetch(&same), Value::Boolean(true)),
+                mutator.fetch(&same).as_boolean() == Some(true),
                 "{lowering:?}"
             );
         });

@@ -176,9 +176,9 @@ impl QuickConstant {
     /// The value a quick method answering this constant answers.
     pub(crate) fn value<'gc>(self) -> crate::types::Value<'gc> {
         match self {
-            QuickConstant::True => crate::types::Value::Boolean(true),
-            QuickConstant::False => crate::types::Value::Boolean(false),
-            QuickConstant::Nil => crate::types::Value::Nil,
+            QuickConstant::True => crate::types::Value::boolean(true),
+            QuickConstant::False => crate::types::Value::boolean(false),
+            QuickConstant::Nil => crate::types::Value::nil(),
         }
     }
 }

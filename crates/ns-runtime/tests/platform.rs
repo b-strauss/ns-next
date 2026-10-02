@@ -6,7 +6,9 @@
 //! process-level test can't easily observe.
 
 use indoc::indoc;
-use ns_runtime::{BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{
+    BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind,
+};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
@@ -23,14 +25,17 @@ fn platform_is_memoized_across_calls() {
     let mut interpreter = Interpreter::bootstrap();
     let first = interpreter.platform();
     let second = interpreter.platform();
-    interpreter.enter(
-        |mutator| match (mutator.fetch(&first), mutator.fetch(&second)) {
-            (Value::Object(first_object), Value::Object(second_object)) => {
+    interpreter.enter(|mutator| {
+        match (
+            mutator.fetch(&first).as_object(),
+            mutator.fetch(&second).as_object(),
+        ) {
+            (Some(first_object), Some(second_object)) => {
                 assert!(first_object.same(second_object))
             }
-            _ => panic!("expected Value::Object"),
-        },
-    );
+            _ => panic!("expected an object"),
+        }
+    });
 }
 
 #[test]
@@ -45,7 +50,7 @@ fn platform_transcript_show_and_new_line_round_trip() {
 
     let string = interpreter.enter(|mutator| {
         let object = mutator.new_string("hi".to_string());
-        mutator.stash(Value::Object(object))
+        mutator.stash(Value::object(object))
     });
     let after_show = expect_ok(
         interpreter.send(&transcript, Symbol::intern("show:"), &[string]),
@@ -53,14 +58,17 @@ fn platform_transcript_show_and_new_line_round_trip() {
     );
     // `show:` returns the receiver (the `Transcript`-style convention
     // `platform.rs`'s doc comment describes).
-    interpreter.enter(
-        |mutator| match (mutator.fetch(&after_show), mutator.fetch(&transcript)) {
-            (Value::Object(after_show_object), Value::Object(transcript_object)) => {
+    interpreter.enter(|mutator| {
+        match (
+            mutator.fetch(&after_show).as_object(),
+            mutator.fetch(&transcript).as_object(),
+        ) {
+            (Some(after_show_object), Some(transcript_object)) => {
                 assert!(after_show_object.same(transcript_object))
             }
-            _ => panic!("expected Value::Object"),
-        },
-    );
+            _ => panic!("expected an object"),
+        }
+    });
 
     expect_ok(
         interpreter.send(&transcript, Symbol::intern("newLine"), &[]),
@@ -88,11 +96,11 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
         );
         interpreter.enter(|mutator| {
             let expected = mutator.builtin_class(kind);
-            match mutator.fetch(&got) {
-                Value::Object(object) => assert!(object.same(expected), "platform {name}"),
-                other => panic!(
-                    "expected Value::Object, got {}",
-                    mutator.heap().describe(&other)
+            match mutator.fetch(&got).kind() {
+                ValueKind::Object(object) => assert!(object.same(expected), "platform {name}"),
+                _ => panic!(
+                    "expected an object, got {}",
+                    mutator.heap().describe(mutator.fetch(&got))
                 ),
             }
         });
@@ -144,11 +152,11 @@ fn platform_collections_answers_the_collections_modules_list() {
         "second collections List",
     );
     interpreter.enter(|mutator| {
-        let object_of = |root: &Root| match mutator.fetch(root) {
-            Value::Object(object) => object,
-            other => panic!(
+        let object_of = |root: &Root| match mutator.fetch(root).kind() {
+            ValueKind::Object(object) => object,
+            _ => panic!(
                 "expected a class object, got {}",
-                mutator.heap().describe(&other)
+                mutator.heap().describe(mutator.fetch(root))
             ),
         };
         let list = object_of(&list);
@@ -250,8 +258,8 @@ fn the_platform_is_an_instance_of_the_shipped_platform_module() {
             (&transcript_class_name, "Transcript"),
         ] {
             let value = mutator.fetch(root);
-            let Value::Object(object) = value else {
-                panic!("expected a string, got {}", mutator.heap().describe(&value));
+            let Some(object) = value.as_object() else {
+                panic!("expected a string, got {}", mutator.heap().describe(value));
             };
             assert_eq!(mutator.heap().str_value(object).as_deref(), Some(expected));
         }
@@ -273,7 +281,7 @@ fn a_platform_member_is_built_on_first_use(member: &str) {
     let platform = interpreter.platform();
     let member_field = |interpreter: &mut Interpreter| {
         interpreter.enter(|mutator| {
-            let Value::Object(platform) = mutator.fetch(&platform) else {
+            let Some(platform) = mutator.fetch(&platform).as_object() else {
                 panic!("the platform is an object");
             };
             let class = mutator.heap().class_of_object(platform);
@@ -291,7 +299,7 @@ fn a_platform_member_is_built_on_first_use(member: &str) {
                 .heap()
                 .instance_field(platform, application.own_slot_base + position)
                 .expect("the platform has a field per slot");
-            matches!(field, Value::Nil)
+            field.is_nil()
         })
     };
     assert!(
@@ -366,8 +374,8 @@ fn the_platform_class_takes_no_mirror() {
         interpreter.send(&platform, Symbol::intern("class"), &[]),
         "platform class",
     );
-    let not_the_mirror = interpreter.stash(Value::SmallInteger(42));
-    let not_the_kernel = interpreter.stash(Value::SmallInteger(7));
+    let not_the_mirror = interpreter.stash(Value::small_integer(42));
+    let not_the_kernel = interpreter.stash(Value::small_integer(7));
     let message = refusal(
         interpreter.send(
             &platform_class,
@@ -390,7 +398,7 @@ fn the_platform_class_is_nested_in_the_platform_factory() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
     interpreter.enter(|mutator| {
-        let Value::Object(platform) = mutator.fetch(&platform) else {
+        let Some(platform) = mutator.fetch(&platform).as_object() else {
             panic!("the platform is an object");
         };
         let heap = mutator.heap();
@@ -452,14 +460,14 @@ fn a_subclass_of_the_platform_class_writes_too() {
 fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
     let platform = interpreter.platform();
     interpreter.enter(|mutator| {
-        let Value::Object(platform) = mutator.fetch(&platform) else {
+        let Some(platform) = mutator.fetch(&platform).as_object() else {
             panic!("the platform is an object");
         };
         let heap = mutator.heap();
         let factory = heap
             .class_enclosing(heap.class_of_object(platform))
             .expect("the platform's class is a nested class");
-        mutator.stash(Value::Object(factory))
+        mutator.stash(Value::object(factory))
     })
 }
 
@@ -497,7 +505,7 @@ fn the_platform_factory_answers_only_new_platform() {
         "newPlatform transcript",
     );
     let text = interpreter.enter(|mutator| {
-        let text = Value::Object(mutator.new_string(String::new()));
+        let text = Value::object(mutator.new_string(String::new()));
         mutator.stash(text)
     });
     expect_ok(
@@ -522,7 +530,7 @@ fn the_collections_factory_answers_only_new_collections() {
         "platform collections",
     );
     let factory = interpreter.enter(|mutator| {
-        let Value::Object(collections) = mutator.fetch(&collections) else {
+        let Some(collections) = mutator.fetch(&collections).as_object() else {
             panic!("the collections facet is an object");
         };
         let heap = mutator.heap();
@@ -533,7 +541,7 @@ fn the_collections_factory_answers_only_new_collections() {
             heap.class_display_name(heap.class_of_object(factory)),
             "CollectionsFactory"
         );
-        mutator.stash(Value::Object(factory))
+        mutator.stash(Value::object(factory))
     });
     for name in ["Collections", "List"] {
         let message = refusal(
@@ -555,8 +563,8 @@ fn the_collections_factory_answers_only_new_collections() {
     );
     interpreter.enter(|mutator| {
         let value = mutator.fetch(&list);
-        let Value::Object(list) = value else {
-            panic!("expected a class, got {}", mutator.heap().describe(&value));
+        let Some(list) = value.as_object() else {
+            panic!("expected a class, got {}", mutator.heap().describe(value));
         };
         assert!(
             mutator.heap().is_class(list),
@@ -582,7 +590,7 @@ fn the_platforms_class_accessors_reach_the_private_classes() {
             &format!("platform {name} new"),
         );
         interpreter.enter(|mutator| {
-            let Value::Object(platform) = mutator.fetch(&platform) else {
+            let Some(platform) = mutator.fetch(&platform).as_object() else {
                 panic!("the platform is an object");
             };
             assert!(

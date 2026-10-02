@@ -57,11 +57,11 @@ pub(crate) enum Signal<'gc> {
     /// error, which the host receives as it received every error before
     /// there were exceptions. Boxed, as the rarest of the four, so that
     /// `Error` is the one variant holding a `NewspeakError` in place and the
-    /// others fit in its niche: two in place made `Signal` 56 bytes rather
-    /// than 48, and every `Result<Step, Signal>` a send decides 64 rather
-    /// than 56, which cost about 6% on a benchmark of deep sends and returns
-    /// that never signals (`docs/design/execution.md`, "What exceptions
-    /// cost").
+    /// others fit in its niche: `Signal` is 40 bytes in a release build and
+    /// every `Result<Step, Signal>` a send decides 56. A second variant in
+    /// place added eight bytes to each, which cost about 6% on a benchmark
+    /// of deep sends and returns that never signals
+    /// (`docs/design/execution.md`, "What exceptions cost").
     Terminate(Box<NewspeakError<'gc>>),
 }
 
@@ -471,13 +471,13 @@ impl Interpreter {
     /// use ns_runtime::{Interpreter, Symbol, Value};
     /// let mut interpreter = Interpreter::bootstrap();
     /// let root = interpreter.enter(|mutator| {
-    ///     let array = mutator.new_array(vec![Value::SmallInteger(1)]);
-    ///     mutator.stash(Value::Object(array))
+    ///     let array = mutator.new_array(vec![Value::small_integer(1)]);
+    ///     mutator.stash(Value::object(array))
     /// });
     /// let _ = interpreter.send(&root, Symbol::intern("size"), &[]);
-    /// let length = interpreter.enter(|mutator| match mutator.fetch(&root) {
-    ///     Value::Object(array) => mutator.heap().array_length(array),
-    ///     _ => None,
+    /// let length = interpreter.enter(|mutator| {
+    ///     let array = mutator.fetch(&root).as_object()?;
+    ///     mutator.heap().array_length(array)
     /// });
     /// assert_eq!(length, Some(1));
     /// ```
@@ -487,7 +487,7 @@ impl Interpreter {
     /// ```compile_fail
     /// use ns_runtime::{Interpreter, Value};
     /// let mut interpreter = Interpreter::bootstrap();
-    /// let array = interpreter.enter(|mutator| mutator.new_array(vec![Value::SmallInteger(1)]));
+    /// let array = interpreter.enter(|mutator| mutator.new_array(vec![Value::small_integer(1)]));
     /// ```
     ///
     /// Nor does storing one where a host keeps its own state; a host's
@@ -500,7 +500,7 @@ impl Interpreter {
     /// let mut host = Host { kept: None };
     /// interpreter.enter(|mutator| {
     ///     let array = mutator.new_array(vec![]);
-    ///     host.kept = Some(mutator.stash(Value::Object(array)));
+    ///     host.kept = Some(mutator.stash(Value::object(array)));
     /// });
     /// assert!(host.kept.is_some());
     /// ```
@@ -512,7 +512,7 @@ impl Interpreter {
     /// let mut host = Host { kept: None };
     /// interpreter.enter(|mutator| {
     ///     let array = mutator.new_array(vec![]);
-    ///     host.kept = Some(Value::Object(array));
+    ///     host.kept = Some(Value::object(array));
     /// });
     /// ```
     ///
@@ -524,7 +524,7 @@ impl Interpreter {
     /// ```
     /// use ns_runtime::{Interpreter, Symbol, Value};
     /// let mut interpreter = Interpreter::bootstrap();
-    /// let three = interpreter.stash(Value::SmallInteger(3));
+    /// let three = interpreter.stash(Value::small_integer(3));
     /// let printed = interpreter.send(&three, Symbol::intern("printString"), &[]);
     /// assert!(printed.is_ok());
     /// ```
@@ -532,7 +532,7 @@ impl Interpreter {
     /// ```compile_fail
     /// use ns_runtime::{Interpreter, Symbol, Value};
     /// let mut interpreter = Interpreter::bootstrap();
-    /// let three = interpreter.stash(Value::SmallInteger(3));
+    /// let three = interpreter.stash(Value::small_integer(3));
     /// interpreter.enter(|_mutator| {
     ///     let _ = interpreter.send(&three, Symbol::intern("printString"), &[]);
     /// });
@@ -542,8 +542,9 @@ impl Interpreter {
         self.world.enter(body)
     }
 
-    /// Roots an immediate -- `nil`, a Boolean, a `SmallInteger`, a `Float`
-    /// -- a host built itself, outside any entry. An object is rooted with
+    /// Roots an immediate -- `nil`, a Boolean or a `SmallInteger` -- a host
+    /// built itself, outside any entry; a float is made only inside one, by
+    /// `Mutator::new_float`, since one outside the immediate range is boxed. An object is rooted with
     /// `Mutator::stash`, inside the entry that reached it. A host can build
     /// an immediate but never hold an object handle outside an entry, so a
     /// `Value<'static>` holds none.
@@ -624,7 +625,7 @@ impl Interpreter {
         sent: Symbol,
     ) -> Vec<CallSiteState> {
         self.enter(|mutator| {
-            let Value::Object(object) = mutator.fetch(class) else {
+            let Some(object) = mutator.fetch(class).as_object() else {
                 return Vec::new();
             };
             let Some(application) = mutator.heap.class_application(object) else {
@@ -660,7 +661,7 @@ impl Interpreter {
     pub fn responds_publicly(&mut self, receiver: &Root, selector: Symbol) -> bool {
         self.enter(|mutator| {
             let receiver = mutator.fetch(receiver);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             !matches!(
                 crate::dispatch::lookup_public(mutator.heap(), class, selector),
                 crate::dispatch::Lookup::NotFound
@@ -764,7 +765,7 @@ impl<'gc> Mutator<'gc> {
         self.refresh_immediate_dispatch_ids();
         let class = self.builtin_class(BuiltinClass::VmMirror);
         let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
-        self.vm_mirror = Some(Value::Object(mirror));
+        self.vm_mirror = Some(Value::object(mirror));
     }
 
     /// An immediate has no class field to read a dispatch id from, so the
@@ -1237,7 +1238,7 @@ impl<'gc> Mutator<'gc> {
                 let (enclosing, index) = (creation.enclosing, creation.index);
                 let activation = self.push(
                     ActivationHeader {
-                        receiver: Value::Object(enclosing),
+                        receiver: Value::object(enclosing),
                         current_class: Some(creation.declaring_class),
                         kind: FrameKind::SuperclassClause(creation.declaring_class),
                         code,
@@ -1417,9 +1418,9 @@ impl<'gc> Mutator<'gc> {
         Signal::Return(target, value)
     }
 
-    pub fn class_of(&self, value: &Value<'gc>) -> ClassReference<'gc> {
-        match value {
-            Value::Object(object) => self.heap.class_of_object(*object),
+    pub fn class_of(&self, value: Value<'gc>) -> ClassReference<'gc> {
+        match value.as_object() {
+            Some(object) => self.heap.class_of_object(object),
             // Nil/Boolean/SmallInteger/Float classes are wired up by the
             // bootstrap into interpreter-held globals, read from there via
             // `Mutator::builtin_class(kind)`.
@@ -1427,14 +1428,14 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
-        let kind = match value {
-            Value::Nil => BuiltinClass::UndefinedObject,
-            Value::Boolean(true) => BuiltinClass::True,
-            Value::Boolean(false) => BuiltinClass::False,
-            Value::SmallInteger(_) => BuiltinClass::Integer,
-            Value::Float(_) => BuiltinClass::Float,
-            Value::Object(_) => unreachable!("Value::Object carries its own .class"),
+    fn builtin_class_for_primitive(&self, value: Value<'gc>) -> ClassReference<'gc> {
+        let kind = match value.kind() {
+            ValueKind::Nil => BuiltinClass::UndefinedObject,
+            ValueKind::Boolean(true) => BuiltinClass::True,
+            ValueKind::Boolean(false) => BuiltinClass::False,
+            ValueKind::SmallInteger(_) => BuiltinClass::Integer,
+            ValueKind::SmallFloat(_) => BuiltinClass::Float,
+            ValueKind::Object(_) => unreachable!("an object carries its own class"),
         };
         self.builtin_class(kind)
     }
@@ -1449,7 +1450,11 @@ impl<'gc> Mutator<'gc> {
 
     pub fn new_array(&mut self, elements: Vec<Value<'gc>>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Array);
-        self.new_instance_object(class, ObjectData::Array(elements))
+        let words = elements
+            .into_iter()
+            .map(|element| self.heap.store(element))
+            .collect();
+        self.new_instance_object(class, ObjectData::Array(words))
     }
 
     pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
@@ -1464,16 +1469,31 @@ impl<'gc> Mutator<'gc> {
         self.new_instance_object(class, ObjectData::String(code_points))
     }
 
+    /// The one way an `f64` becomes a `Value`, so that every float has one
+    /// representation: one inside the `SmallFloat64` range is immediate,
+    /// every other a boxed `Float`, which `Float>>=` and `hash` rely on
+    /// (`docs/design/object-model.md`, "Values and objects").
+    pub fn new_float(&mut self, value: f64) -> Value<'gc> {
+        if crate::heap::is_small_float_bits(value.to_bits()) {
+            Value::small_float(value)
+        } else {
+            let class = self.builtin_class(BuiltinClass::Float);
+            Value::object(self.new_instance_object(class, ObjectData::Float(value)))
+        }
+    }
+
     /// The one way an `ArbitraryInteger` becomes a `Value`, so that every
-    /// integer has one representation: one that fits `i64` is a
-    /// `SmallInteger`, never a `LargeInteger` object, which `Integer>>=`,
-    /// `hash` and the image's canonical-encoding check all rely on.
+    /// integer has one representation: one in 61 bits is a `SmallInteger`,
+    /// never a `LargeInteger` object, which `Integer>>=` and `hash` rely on.
     pub fn new_integer(&mut self, integer: crate::ArbitraryInteger) -> Value<'gc> {
-        match integer.to_i64() {
-            Some(small) => Value::SmallInteger(small),
+        match integer
+            .to_i64()
+            .filter(|number| fits_small_integer(*number))
+        {
+            Some(small) => Value::small_integer(small),
             None => {
                 let class = self.builtin_class(BuiltinClass::LargeInteger);
-                Value::Object(self.new_instance_object(class, ObjectData::LargeInteger(integer)))
+                Value::object(self.new_instance_object(class, ObjectData::LargeInteger(integer)))
             }
         }
     }
@@ -1482,12 +1502,12 @@ impl<'gc> Mutator<'gc> {
     /// anything asks for it.
     pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {
         if let Some(object) = self.heap.canonical_symbol(symbol) {
-            return Value::Object(object);
+            return Value::object(object);
         }
         let class = self.builtin_class(BuiltinClass::Symbol);
         let object = self.new_instance_object(class, ObjectData::Symbol(symbol));
         self.heap.record_canonical_symbol(symbol, object);
-        Value::Object(object)
+        Value::object(object)
     }
 
     pub fn new_closure(&mut self, closure: ClosureData<'gc>) -> ObjectReference<'gc> {
@@ -1532,11 +1552,12 @@ impl<'gc> Mutator<'gc> {
             .heap
             .class_application(class)
             .expect("internal: a kernel class has an application");
-        let mut fields = vec![Value::Nil; application.slot_count];
+        let mut fields = vec![Word::NIL; application.slot_count];
         let mut level = Some(application);
         while let Some(current) = level {
             for (position, slot) in current.mixin.slots.iter().enumerate() {
-                fields[current.own_slot_base + position] = slot_value(slot.name.as_str());
+                fields[current.own_slot_base + position] =
+                    self.heap.store(slot_value(slot.name.as_str()));
             }
             level = current.superclass.clone();
         }
@@ -1559,7 +1580,7 @@ impl<'gc> Mutator<'gc> {
             .class_application(self.builtin_class(kind))?
             .mixin
             .clone();
-        let mut level = Some(self.class_of(&Value::Object(object)));
+        let mut level = Some(self.class_of(Value::object(object)));
         while let Some(current) = level {
             if let Some(application) = self.heap.class_application(current) {
                 if Rc::ptr_eq(&application.mixin, &kernel_mixin) {
@@ -1588,8 +1609,11 @@ impl<'gc> Mutator<'gc> {
     /// Whether `value` is the VM mirror: the kernel phase checks that
     /// `Kernel.ns`'s `vmMirror` slot holds it.
     pub(crate) fn is_vm_mirror(&self, value: Value<'gc>) -> bool {
-        match (value, self.vm_mirror) {
-            (Value::Object(object), Some(Value::Object(mirror))) => object.same(mirror),
+        match (
+            value.as_object(),
+            self.vm_mirror.and_then(|mirror| mirror.as_object()),
+        ) {
+            (Some(object), Some(mirror)) => object.same(mirror),
             _ => false,
         }
     }
@@ -2019,7 +2043,7 @@ mod tests {
     fn enter_answers_its_closures_value_and_runs_nothing() {
         let mut interpreter = Interpreter::bootstrap();
         let length = interpreter.enter(|mutator| {
-            let array = mutator.new_array(vec![Value::SmallInteger(1), Value::SmallInteger(2)]);
+            let array = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
             mutator.heap().array_length(array)
         });
         assert_eq!(length, Some(2));
@@ -2050,11 +2074,11 @@ mod tests {
             }
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
             match mutator.decide_send(
-                Value::SmallInteger(3),
+                Value::small_integer(3),
                 Symbol::intern("+"),
-                &[Value::SmallInteger(4)],
+                &[Value::small_integer(4)],
             ) {
-                Ok(Step::Value(Value::SmallInteger(7))) => {}
+                Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("a native leaf is decided as its value"),
             }
         });
@@ -2092,7 +2116,7 @@ mod tests {
                     ..
                 }) => {
                     assert!(
-                        matches!(arguments.as_slice(), [Value::SmallInteger(10)]),
+                        matches!(arguments.as_slice(), [element] if element.as_small_integer() == Some(10)),
                         "the first element"
                     );
                     assert_eq!(state.next, 1, "the second element is next");
@@ -2127,7 +2151,9 @@ mod tests {
             let slot = match mutator.decide_send(instance, Symbol::intern("N"), &[]) {
                 Ok(Step::SuperclassClause(creation)) => {
                     assert!(
-                        matches!(instance, Value::Object(object) if object.same(creation.enclosing)),
+                        instance
+                            .as_object()
+                            .is_some_and(|object| object.same(creation.enclosing)),
                         "the clause runs on the enclosing object"
                     );
                     creation.index
@@ -2135,14 +2161,14 @@ mod tests {
                 _ => panic!("a nested class is decided as its clause's activation"),
             };
             assert_eq!(mutator.heap().activation_depth(), 0, "nothing was pushed");
-            let Value::Object(object) = instance else {
+            let Some(object) = instance.as_object() else {
                 panic!("an instance is an object");
             };
             assert!(
-                matches!(
-                    mutator.heap().instance_field(object, slot),
-                    Some(Value::Nil)
-                ),
+                mutator
+                    .heap()
+                    .instance_field(object, slot)
+                    .is_some_and(|value| value.is_nil()),
                 "nothing is marked as in progress"
             );
             #[cfg(debug_assertions)]
@@ -2195,10 +2221,10 @@ mod tests {
                 mutator.fetch(&r_class_root),
                 mutator.fetch(&s_class_root),
             );
-            let Value::Object(p_class_object) = p_class else {
+            let Some(p_class_object) = p_class.as_object() else {
                 panic!("`P` answers a class object")
             };
-            let Value::Object(s_class_object) = s_class else {
+            let Some(s_class_object) = s_class.as_object() else {
                 panic!("`S` answers a class object")
             };
             assert!(
@@ -2235,7 +2261,7 @@ mod tests {
             assert!(
                 matches!(
                     mutator.decide_send(q_class, Symbol::NEW, &[]),
-                    Ok(Step::Value(Value::Object(_)))
+                    Ok(Step::Value(answer)) if answer.as_object().is_some()
                 ),
                 "`Q new` is decided as its instance"
             );
@@ -2266,7 +2292,7 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         let r_class_root = expect_ok(interpreter.send(&instance, Symbol::intern("R"), &[]), "R");
         interpreter.enter(|mutator| {
-            let Value::Object(_) = mutator.fetch(&r_class_root) else {
+            let Some(_) = mutator.fetch(&r_class_root).as_object() else {
                 panic!("`R` answers a class object")
             };
         });
@@ -2281,12 +2307,10 @@ mod tests {
         let spare: *const () =
             interpreter.enter(|mutator| std::ptr::from_ref(&*mutator.spare_walks[0]).cast::<()>());
         assert!(
-            interpreter.enter(|mutator| mutator.spare_walks.iter().all(|state| matches!(
-                state.instance,
-                Value::Nil
-            ) && state
-                .levels
-                .is_empty())),
+            interpreter.enter(|mutator| mutator
+                .spare_walks
+                .iter()
+                .all(|state| state.instance.is_nil() && state.levels.is_empty())),
             "a spare holds no handle"
         );
         expect_ok(interpreter.instantiate(&r_class_root, &[]), "R new again");
@@ -2326,7 +2350,7 @@ mod tests {
             "Cell",
         );
         interpreter.enter(|mutator| {
-            let Value::Object(_) = mutator.fetch(&cell) else {
+            let Some(_) = mutator.fetch(&cell).as_object() else {
                 panic!("`Cell` answers a class object")
             };
         });
@@ -2334,7 +2358,7 @@ mod tests {
         interpreter.enter(|mutator| {
             assert_eq!(mutator.spare_walks.len(), 1, "one walk ran");
             let state = &mutator.spare_walks[0];
-            assert!(matches!(state.instance, Value::Nil), "no instance handle");
+            assert!(state.instance.is_nil(), "no instance handle");
             assert!(state.levels.is_empty(), "no levels");
             assert!(
                 matches!(state.phase, InstantiationPhase::Descending { .. }),
@@ -2349,7 +2373,7 @@ mod tests {
     /// This is the size the hot path was measured at, in a release build: a
     /// debug build's handles carry an origin and a move epoch besides their
     /// index, so it measures something else. The measurement protocol runs
-    /// this with `--release`.
+    /// this with `--release`. The eight-byte value left it at 56.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
@@ -2361,7 +2385,7 @@ mod tests {
     /// run the measurement protocol makes. It only notices growth: the
     /// release figure is the one the hot path was measured at, and a debug
     /// handle carries its origin and move epoch besides its index, which is
-    /// what puts this above it.
+    /// what puts this above it. The eight-byte value left it at 64.
     #[cfg(all(target_pointer_width = "64", debug_assertions))]
     #[test]
     fn a_decision_stays_the_size_it_has_in_a_debug_build() {
@@ -2437,11 +2461,13 @@ mod tests {
     /// release build, where a handle carries no origin or epoch -- so it runs
     /// only there, under `cargo nextest run --release`, which the measurement
     /// protocol's builds are, and under no gate that runs a debug build.
+    /// The eight-byte value shrank `Signal` and `EvaluationResult` from 48
+    /// to 40 bytes; `Result<Step, Signal>` stayed at 56.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_signal_fits_in_the_niche_of_its_one_unboxed_error() {
-        assert_eq!(std::mem::size_of::<Signal>(), 48);
+        assert_eq!(std::mem::size_of::<Signal>(), 40);
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
-        assert_eq!(std::mem::size_of::<EvaluationResult>(), 48);
+        assert_eq!(std::mem::size_of::<EvaluationResult>(), 40);
     }
 }

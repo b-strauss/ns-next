@@ -5,7 +5,7 @@
 //! marker one arena record at a time, so the bits and the work lists are
 //! borrowed beside the arena rather than through it.
 
-use crate::heap::{FrameReference, ObjectReference};
+use crate::heap::{FrameReference, ObjectReference, Word};
 use crate::trace::Tracer;
 
 /// One bit per slot of one arena -- 1/448 of the object arena, which is why
@@ -93,6 +93,14 @@ impl Tracer for Marker {
     fn frame(&mut self, handle: &mut FrameReference<'_>) {
         if self.frames.set(handle.index) {
             self.frame_work.push(handle.index);
+        }
+    }
+
+    fn word(&mut self, word: &mut Word) {
+        if let Some(index) = word.object_index() {
+            if self.objects.set(index) {
+                self.object_work.push(index);
+            }
         }
     }
 }

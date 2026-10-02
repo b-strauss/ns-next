@@ -557,7 +557,7 @@ fn chain_start<'gc>(
 ) -> Option<ClassReference<'gc>> {
     match chain {
         Chain::Public | Chain::Protected | Chain::DoesNotUnderstand => {
-            Some(mutator.class_of(key.receiver))
+            Some(mutator.class_of(*key.receiver))
         }
         Chain::Private => key.lexical_class,
         Chain::Super | Chain::SuperDoesNotUnderstand => key.superclass,
@@ -727,8 +727,8 @@ fn materialize<'gc>(
         // (`resolve::resolved_for` records nothing found anywhere else). A
         // receiver with that id is a class object of that metaclass's
         // declaration, so a hit reaches what a miss would.
-        Target::Factory { chain } => match *key.receiver {
-            Value::Object(class_object) => (
+        Target::Factory { chain } => match key.receiver.as_object() {
+            Some(class_object) => (
                 Resolved::Factory {
                     level: class_object,
                     chain,
@@ -759,7 +759,7 @@ pub(crate) fn send_public<'gc>(
         return mutator.decide_send(receiver, selector, arguments);
     };
     let key = SendKey {
-        guard: mutator.heap.dispatch_id(&receiver),
+        guard: mutator.heap.dispatch_id(receiver),
         rule: CacheRule::Public,
         receiver: &receiver,
         lexical_class: None,
@@ -814,7 +814,7 @@ pub(crate) fn send_lexical<'gc>(
         .heap
         .activation_receiver_and_current_class(activation);
     let enclosing =
-        dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth);
+        dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth);
     let Some(private) = privacy else {
         return send_lexical_first(
             mutator,
@@ -839,7 +839,7 @@ pub(crate) fn send_lexical<'gc>(
         }
     } else {
         SendKey {
-            guard: mutator.heap.dispatch_id(&enclosing),
+            guard: mutator.heap.dispatch_id(enclosing),
             // A placeholder payload: `miss` fills it in only on a genuine
             // miss, so a monomorphic hit still never computes N.
             rule: CacheRule::Lexical(DispatchId::NONE),
@@ -917,7 +917,7 @@ fn send_lexical_first<'gc>(
             return step;
         }
     }
-    let guard = mutator.heap.dispatch_id(&enclosing);
+    let guard = mutator.heap.dispatch_id(enclosing);
     if guard != DispatchId::NONE {
         let public_key = SendKey {
             guard,

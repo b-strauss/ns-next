@@ -9,14 +9,15 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 and 2026-10-01 when they were written.
+Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30, 2026-10-01 and 2026-10-02 when they were written.
 
 ## Next
 
-**Road step 2's second plan, the eight-byte value** ("Step 2, second
-plan" below), measured against the baseline over all sixteen programs
-recorded in [execution.md](design/execution.md), "The Are We Fast Yet
-benchmarks".
+**The compact instruction encoding** ("After road step 2, the compact
+instruction encoding" below), designed against the one-word value and
+measured against the Are We Fast Yet benchmarks as
+[execution.md](design/execution.md), "The Are We Fast Yet benchmarks",
+describes.
 
 ## The road to a high-performance VM
 
@@ -61,14 +62,13 @@ and `prior-art/newspeak-benchmarks`.
   [execution.md](design/execution.md), "The Are We Fast Yet benchmarks":
   three pinned release builds of `1792df5`, pooled, as that document's
   measurement protocol asks (decided with the user on 2026-09-30).
-- **Step 2, second plan, the eight-byte value**, on today's arena: one tagged
-  64-bit word -- SmallInteger of 61 bits, SmallFloat64, the constants `nil`,
-  `true` and `false`, and handles -- which moves the `SmallInteger`/
-  `LargeInteger` boundary from 64 bits to 61. It removes the
-  store-forwarding stall every `Value` in memory costs today.
-  [object-model.md](design/object-model.md), "Planned: an eight-byte value".
+- **Step 2, second plan, the eight-byte value -- built**, on today's arena:
+  one tagged 64-bit word -- a `SmallInteger` of 61 bits, a `SmallFloat64`,
+  the constants `nil`, `true` and `false`, and handles -- with every other
+  number a `LargeInteger` or a boxed `Float`.
+  [object-model.md](design/object-model.md), "Values and objects".
 - **After road step 2, the compact instruction encoding**, designed against the
-  new value, from the dispatch findings of "Where the 3% goes".
+  one-word value, from the dispatch findings of "Where the 3% goes".
   [execution.md](design/execution.md), "Planned: the compact instruction
   encoding".
 - **Step 3, the object space.** One header word (the application id as the
@@ -172,6 +172,14 @@ to be decided against the code:
   both. It relates to "Between steps 7 and 8, real Newspeak bodies for
   `whileTrue:`, `whileFalse:` and `do:`" above.
   [core-library.md](design/core-library.md), "What exists".
+- **A float literal outside the immediate range allocates each time it
+  runs.** `LoadLiteral` makes a fresh boxed `Float` through
+  `Mutator::new_float` on every execution of a literal such as `1.0e300`
+  (`vm.rs`, `Literal::Float`), as it makes a fresh `LargeInteger` of a
+  literal beyond 61 bits. Correct, since a value has no identity; hoisting
+  the object, or keeping one per literal, would save the allocation.
+  Unmeasured; noted 2026-10-02. [object-model.md](design/object-model.md),
+  "Values and objects" ("Literals").
 - **Cascades through the integer fast path.** `lower_cascade` emits every
   message with `emit_ordinary_send_with_receiver`, so a cascade's binary
   integer sends never get `IntegerBinary` (`compiler/lower.rs:1514`).
@@ -211,6 +219,15 @@ to be decided against the code:
   by keeping the digits inline in the object, where a leaf can read them
   in place.
   [core-library.md](design/core-library.md), "Large integers".
+- **`Object>>==` reads the arena for every two distinct objects.** The
+  identity leaf (`builtins/object_class.rs`, `identical`) gives a boxed
+  `Float` bit identity, so `==` of two distinct handles asks the heap
+  whether both are boxed floats before it answers `false`. Spur and
+  Primordial Soup compare a boxed float by its object identity and read
+  nothing; giving bit identity up for that is a design question, an input
+  to the compact instruction encoding's measurements. Unmeasured; noted
+  2026-10-02. [object-model.md](design/object-model.md), "Values and
+  objects".
 
 ## Planned: language and library
 
@@ -239,6 +256,12 @@ to be decided against the code:
   (a class of its own was set aside). Noted with the user on 2026-10-01;
   added when a program sends it. [core-library.md](design/core-library.md),
   "A NaN equals a NaN".
+- **`Float>>printString` of a large or small magnitude.** A `Float` prints
+  as Rust's `Display` writes it, the shortest digits that read back as the
+  same double and never an exponent, so `1.0e303 printString` is 304
+  digits. Whether it should print an exponent past some magnitude is to be
+  checked against Primordial Soup's float printing. Noted 2026-10-02.
+  [core-library.md](design/core-library.md), "Large integers" (`asFloat`).
 - **Failure blocks and Primordial Soup's error classes.** Every kernel
   forwarder's failure block is `ifFail: [^super <selector> …]`, reached only
   for a receiver of the wrong shape, while Primordial Soup's methods signal
@@ -391,6 +414,17 @@ value objects are never copied across an actor boundary (§3.1.1).
   decided when the first such module arrives.
   [image-format.md](design/image-format.md), "Open questions";
   [core-library.md](design/core-library.md), "Open for later".
+- **Whether `Object>>==` compares two `LargeInteger`s by state.** The
+  identity leaf (`builtins/object_class.rs`, `identical`) decides by
+  `ValueKind` first and compares two boxed `Float`s by their bits, so two
+  allocations of one float are identical, but two `LargeInteger`s by object
+  identity, so two allocations of one integer beyond 61 bits are not. A
+  program meets the leaf only by sending `Object`'s `==` directly: a number
+  reaches `==` through `Value>>==`, which is `^self = other` and compares
+  by state. Whether a `LargeInteger` pair should compare by state in the
+  leaf too, as a value (§3.1.1) and as the boxed float does, is open.
+  Noted 2026-10-02. [core-library.md](design/core-library.md), "Large
+  integers".
 - **How much history a tail call keeps**, and **data parallelism over
   immutable data** as a later exception to the actor model.
 - **Whether an image carries a lazy slot's value.** §6.3.3 intends that lazy
@@ -560,26 +594,46 @@ where every reified frame will carry its full register file on the wire.
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
 - **A list's reservation in the decoder is not counted in the load's
-  peak.** `reserve_for` (`image/decode.rs:1062`) caps a capacity at the
-  bytes remaining, not at the bytes its elements need, so `decode_values`
-  (`image/decode.rs:2401`) reserves up to 16 bytes of `Value` per remaining
-  byte for one record that claims a huge count -- about 16x more on top of
-  the documented placeholder figure, about 32x in a release build in all
-  and up to about 37x (derived, not measured) with decoded `LargeInteger`
-  values. The same holds for every other caller whose element is larger
-  in memory than on the wire: a closure's copied values
-  (`image/decode.rs:2467`) and a frame's arguments and temporaries (through
-  `decode_values`, `image/decode.rs:2515`), a body's instructions
-  (`image/decode.rs:1742`) and an instruction's register operands
-  (`decode_registers`, `image/decode.rs:1771`). The fix belongs in
+  peak.** `reserve_for` (`image/decode.rs:1114`) caps a capacity at the
+  bytes remaining, not at the bytes its elements need, so `decode_words`
+  (`image/decode.rs:2478`) reserves up to 8 bytes of `Word` per remaining
+  byte for one instance or array record that claims a huge count -- about
+  8x more on top of the documented placeholder figure, about 24x in a
+  release build in all and up to about 31x (debug about 37x; derived, not
+  measured) with decoded integers beyond 61 bits. The same holds for every
+  other caller whose element is larger in memory than on the wire: a
+  frame's arguments and temporaries (through `decode_words`,
+  `image/decode.rs:2605`), a closure's copied values
+  (`image/decode.rs:2551`), the image's roots (`decode_values`,
+  `image/decode.rs:2463`, 8 bytes of `Value` a byte in a release build and
+  16 in a debug one), a body's instructions (`image/decode.rs:1794`) and an
+  instruction's register operands (`decode_registers`,
+  `image/decode.rs:1823`). The fix belongs in
   `reserve_for` itself, for every caller at once: a cap in bytes rather
   than elements, `count.min(reader.remaining() / size_of::<T>())`, so no
   reservation exceeds the bytes still unread. Capping by an element's
-  minimum wire size instead changes nothing for a `Value` list, since the
+  minimum wire size instead changes nothing for a `Word` list, since the
   smallest value is one byte (`VALUE_NIL`). The arenas' `Vec` doubling
   slack is not counted either.
   [memory.md](design/memory.md), "The interim cost, and the one question
   still open".
+- **A `Word` can cross heaps outside the crate without `Heap::store`'s
+  check.** A value's brand can no longer be changed through a `Word`:
+  `Heap::load` and `Heap::store` are `pub(crate)`. But `Word` is public
+  (opaque, but `Copy`), and so are the snapshots that hand one out
+  (`Heap::object_snapshot`, `Heap::frame_snapshot`, `Heap::closure_data`,
+  and the payload fields of `ObjectData`, `Frame` and `ClosureData`) and the
+  allocators that take one (`Heap::allocate_object`,
+  `Heap::allocate_frame`). A host can therefore copy a `Word` out of one
+  heap's snapshot into a record it allocates in another heap; the word then
+  names whatever the other heap holds at that index, and no debug check sees
+  it, since only `store` checks and a stored word carries no origin. Making
+  those snapshot and allocation APIs `pub(crate)`, or having them take and
+  answer `Value`s, which the allocators would store themselves, would close
+  it; nothing outside the crate builds a record from another heap's today.
+  Noted 2026-10-02. [object-model.md](design/object-model.md),
+  "The debug build keeps its exact check"; [memory.md](design/memory.md), "A
+  handle is arena-relative".
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**
   (`heap.rs`), which never shrink; worth revisiting once many heaps live in one
   process.
@@ -674,6 +728,13 @@ Small, deliberately left, none affecting an outcome.
 - `builtins/block.rs`: a native `whileTrue:`/`whileFalse:` loop checks its
   body closure on every iteration.
 - `vm.rs`: `send` and `deliver` carry `#[allow(clippy::too_many_arguments)]`.
+- `heap.rs`: `Heap::allocate_returned_top_level_frame` is public only so
+  that `tests/image.rs`'s sender round trip can build a frame from values;
+  its doc says "a handle from another heap is refused here", which holds for
+  the values it stores, while `sender` and `current_class` rely on the brand.
+- Wrapping: `Interpreter::stash`'s doc has a 102-column line; memory.md's
+  "The brand" and object-model.md's paragraph on stored words are wrapped
+  unevenly (left by the eight-byte value's final review).
 - `image/inspect.rs:460` bounds the tag-named hash count with a minimum record
   of 1 byte where the decoder uses `MIN_TAG_NAMED_HASH_BYTES` (5).
 - `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by

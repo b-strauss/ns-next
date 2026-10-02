@@ -10,7 +10,9 @@ use indoc::formatdoc;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value};
+use ns_runtime::{
+    Heap, HostResult, HostSignal, Interpreter, Root, SourceOrigin, Symbol, Value, ValueKind,
+};
 
 /// Returns the `Interpreter` alongside the send's result -- every caller
 /// reads the result through the interpreter that holds its root, and
@@ -43,18 +45,18 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
-    match value {
-        Value::SmallInteger(integer) => *integer,
+fn integer_of<'gc>(value: Value<'gc>) -> i64 {
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
 
-fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    let Value::Object(object) = value else {
+fn string_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
+    let Some(object) = value.as_object() else {
         panic!("expected a string object")
     };
-    heap.str_value(*object)
+    heap.str_value(object)
         .unwrap_or_else(|| panic!("expected ObjectData::String"))
 }
 
@@ -75,13 +77,13 @@ fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&value))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         3
     );
     let (mut interpreter, result) =
         run_method(&module("| c | c:: [false]. ^c whileTrue: [nil]"), "run");
     let value = expect_ok(result, "run");
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&value), Value::Nil)));
+    assert!(interpreter.enter(|mutator| mutator.fetch(&value).is_nil()));
 }
 
 #[test]
@@ -92,7 +94,7 @@ fn while_false_loops_until_the_condition_is_true() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&value))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         3
     );
 }
@@ -120,7 +122,7 @@ fn a_non_local_return_escapes_a_while_loop() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&value))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         5
     );
 }
@@ -133,7 +135,7 @@ fn if_false_if_true_picks_the_right_block() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| string_of(mutator.heap(), &mutator.fetch(&value))),
+        interpreter.enter(|mutator| string_of(mutator.heap(), mutator.fetch(&value))),
         "t"
     );
     let (mut interpreter, result) = run_method(
@@ -142,7 +144,7 @@ fn if_false_if_true_picks_the_right_block() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| string_of(mutator.heap(), &mutator.fetch(&value))),
+        interpreter.enter(|mutator| string_of(mutator.heap(), mutator.fetch(&value))),
         "f"
     );
 }

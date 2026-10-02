@@ -8,12 +8,12 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::Heap;
+use crate::heap::{Heap, Word};
 use crate::interpreter::instantiate;
 use crate::mixin::DispatchId;
 use crate::types::{
-    BuiltinClass, ClassReference, ClosureData, Frame, FrameKind, FrameReference, Object,
-    ObjectData, ObjectReference, SourceOrigin, Value,
+    fits_small_integer, BuiltinClass, ClassReference, ClosureData, Frame, FrameKind,
+    FrameReference, Object, ObjectData, ObjectReference, SourceOrigin, Value,
 };
 use crate::Symbol;
 use crate::{ArbitraryInteger, Mutator};
@@ -423,10 +423,12 @@ pub enum DecodeError {
         found: usize,
     },
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
-    /// never writes: one that fits `i64`, a zero top digit, or a negative
-    /// zero. Accepting one would give an integer a second representation
-    /// after a load -- a `LargeInteger` object equal to a `SmallInteger`,
-    /// which every arithmetic fast path would treat as a different value.
+    /// never writes: one that fits `i64` (which travels as an `i64`), a zero
+    /// top digit, or a negative zero. Accepting one would give an integer a
+    /// second encoding, and a decoder that trusted the tag rather than the
+    /// range would load a second representation -- a `LargeInteger` object
+    /// equal to a `SmallInteger`, which every arithmetic fast path would
+    /// treat as a different value.
     NonCanonicalInteger,
 }
 
@@ -867,14 +869,28 @@ pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeE
     }
 }
 
-pub fn decode_scalar_value<'gc>(reader: &mut Reader) -> Result<Value<'gc>, DecodeError> {
+pub fn decode_scalar_value<'gc>(
+    reader: &mut Reader,
+    mutator: &mut Mutator<'gc>,
+) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
-        0 => Ok(Value::Nil),
-        1 => Ok(Value::Boolean(false)),
-        2 => Ok(Value::Boolean(true)),
-        3 => Ok(Value::SmallInteger(reader.read_i64()?)),
-        4 => Ok(Value::Float(reader.read_f64()?)),
+        0 => Ok(Value::nil()),
+        1 => Ok(Value::boolean(false)),
+        2 => Ok(Value::boolean(true)),
+        3 => Ok(integer_value(reader.read_i64()?, mutator)),
+        4 => Ok(mutator.new_float(reader.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
+    }
+}
+
+/// An integer the wire carries as an `i64`, as the one representation it
+/// has: a `SmallInteger` in 61 bits, without allocating, which is nearly
+/// every one; a `LargeInteger` beyond them.
+fn integer_value<'gc>(number: i64, mutator: &mut Mutator<'gc>) -> Value<'gc> {
+    if fits_small_integer(number) {
+        Value::small_integer(number)
+    } else {
+        mutator.new_integer(ArbitraryInteger::from_i64(number))
     }
 }
 
@@ -2079,10 +2095,11 @@ fn decode_instruction(
 }
 
 /// The inverse of `encode::write_large_integer`. Refuses every encoding but
-/// the canonical one, so an integer has one representation after a load as
-/// before it: one that fits `i64` must travel as `VALUE_SMALL_INTEGER`
-/// (or `LITERAL_SMALL_INTEGER`), and neither a zero top digit nor a negative
-/// zero is written by the encoder.
+/// the canonical one, so an integer has one encoding on the wire: one that
+/// fits `i64` must travel as `VALUE_SMALL_INTEGER` (or
+/// `LITERAL_SMALL_INTEGER`) -- fits `i64`, not 61 bits, because the wire's
+/// canonical form is independent of where a `SmallInteger` ends -- and
+/// neither a zero top digit nor a negative zero is written by the encoder.
 fn read_large_integer(reader: &mut Reader) -> Result<ArbitraryInteger, DecodeError> {
     let (negative, magnitude) = read_large_integer_parts(reader)?;
     if magnitude.last() == Some(&0) || (magnitude.is_empty() && negative) {
@@ -2125,7 +2142,14 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
     Ok(match reader.read_u8()? {
         LITERAL_NIL => Literal::Nil,
         LITERAL_BOOLEAN => Literal::Boolean(reader.read_boolean()?),
-        LITERAL_SMALL_INTEGER => Literal::SmallInteger(reader.read_i64()?),
+        LITERAL_SMALL_INTEGER => {
+            let number = reader.read_i64()?;
+            if fits_small_integer(number) {
+                Literal::SmallInteger(number)
+            } else {
+                Literal::LargeInteger(ArbitraryInteger::from_i64(number))
+            }
+        }
         LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
         LITERAL_STRING => Literal::String(reader.read_str()?),
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
@@ -2340,8 +2364,8 @@ fn read_platform_path_class<'gc>(
     heap: &Heap<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
-    match read_platform_path(reader, platform_paths)? {
-        Value::Object(class) if heap.is_class(class) => Ok(class),
+    match read_platform_path(reader, platform_paths)?.as_object() {
+        Some(class) if heap.is_class(class) => Ok(class),
         _ => Err(DecodeError::PlatformPathNotAClass),
     }
 }
@@ -2390,13 +2414,24 @@ fn decode_value<'gc>(
     tables: &Tables<'_, 'gc>,
 ) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
-        VALUE_NIL => Ok(Value::Nil),
-        VALUE_FALSE => Ok(Value::Boolean(false)),
-        VALUE_TRUE => Ok(Value::Boolean(true)),
-        VALUE_SMALL_INTEGER => Ok(Value::SmallInteger(reader.read_i64()?)),
-        VALUE_FLOAT => Ok(Value::Float(reader.read_f64()?)),
-        VALUE_OBJECT_ID => Ok(Value::Object(decode_object_id(reader, tables)?)),
-        VALUE_CLASS_TAG => Ok(Value::Object(decode_class_tag(reader, context, tables)?)),
+        VALUE_NIL => Ok(Value::nil()),
+        VALUE_FALSE => Ok(Value::boolean(false)),
+        VALUE_TRUE => Ok(Value::boolean(true)),
+        // An `i64` beyond 61 bits allocates its `LargeInteger`, which adds
+        // to the load's peak as `VALUE_LARGE_INTEGER` does (below), and more
+        // per wire byte: 9 bytes (tag, `i64`) for an `Object` and one digit,
+        // 64/9 = 7.1x in a release build and 80/9 = 8.9x in a debug one, on
+        // top of the placeholders' 16.0x and 20.0x: about 23.1x and 28.9x
+        // in all, the worst case of a rejected load.
+        VALUE_SMALL_INTEGER => Ok(integer_value(reader.read_i64()?, context.mutator)),
+        // A float outside the immediate range allocates its boxed `Float`:
+        // 9 bytes (tag, `f64`) for an `Object` alone, its payload inline,
+        // 56/9 = 6.2x in a release build and 72/9 = 8.0x in a debug one, on
+        // top of the placeholders: about 22.2x and 28.0x, below
+        // `VALUE_SMALL_INTEGER`'s, which stays the worst case.
+        VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
+        VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
+        VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),
         VALUE_PLATFORM => Ok(context.platform),
         VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
         // Allocating here is sound: the decoder never polls a safepoint, so
@@ -2411,8 +2446,9 @@ fn decode_value<'gc>(
         // digit) and costs `size_of::<Object>()` plus 8 bytes a digit. With
         // an `Object` of 56 bytes in a release build and 72 in a debug one,
         // that is 64/14 = 4.6x and 80/14 = 5.7x of those bytes, on top of
-        // the placeholders' 9.3x + 7.1x (release) and 12.0x + 8.4x (debug):
-        // about 21.0x and 26.2x in all. It stays proportional to the input
+        // the placeholders' 9.3x + 6.7x (release) and 12.0x + 8.0x (debug):
+        // about 20.6x and 25.7x in all, below `VALUE_SMALL_INTEGER`'s
+        // worst case (above). It stays proportional to the input
         // because the digit count is bounded against the bytes left before
         // anything is allocated for it (`read_large_integer_parts`), and each
         // further digit costs its own 8 wire bytes.
@@ -2435,6 +2471,22 @@ fn decode_values<'gc>(
         values.push(decode_value(reader, context, tables)?);
     }
     Ok(values)
+}
+
+/// `decode_values` for what a heap object stores: each value goes straight
+/// into its word, so a load holds no second list beside the first.
+fn decode_words<'gc>(
+    reader: &mut Reader,
+    context: &mut DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+) -> Result<Vec<Word>, DecodeError> {
+    let count = reader.read_u32()? as usize;
+    let mut words = reserve_for(count, reader);
+    for _ in 0..count {
+        let value = decode_value(reader, context, tables)?;
+        words.push(context.mutator.heap.store(value));
+    }
+    Ok(words)
 }
 
 /// An object id off the wire, resolved against the placeholders the first
@@ -2498,7 +2550,8 @@ fn decode_closure_record<'gc>(
     }
     let mut copied = reserve_for(count, reader);
     for _ in 0..count {
-        copied.push(decode_value(reader, context, tables)?);
+        let value = decode_value(reader, context, tables)?;
+        copied.push(context.mutator.heap.store(value));
     }
     Ok(ClosureData {
         code,
@@ -2548,8 +2601,9 @@ fn decode_frame<'gc>(
     symbols: &symbols::Table,
 ) -> Result<Frame<'gc>, DecodeError> {
     let receiver = decode_value(reader, context, tables)?;
-    let arguments = decode_values(reader, context, tables)?;
-    let temporaries = decode_values(reader, context, tables)?;
+    let receiver = context.mutator.heap.store(receiver);
+    let arguments = decode_words(reader, context, tables)?;
+    let temporaries = decode_words(reader, context, tables)?;
     let program_counter = reader.read_u32()? as usize;
     let sender = decode_frame_reference(reader, tables)?;
     let home = decode_frame_reference(reader, tables)?;
@@ -2600,7 +2654,7 @@ fn decode_frame<'gc>(
 /// `decode_graph_section`'s second pass before anything can observe it.
 fn placeholder_frame<'gc>() -> Frame<'gc> {
     Frame {
-        receiver: Value::Nil,
+        receiver: Word::NIL,
         arguments: Vec::new(),
         temporaries: Vec::new(),
         program_counter: 0,
@@ -2689,7 +2743,7 @@ pub fn build_root_class<'gc>(
     let applied: Vec<(usize, Value<'gc>)> = section
         .levels
         .iter()
-        .map(|&(index, kind)| (index as usize, Value::Object(mutator.builtin_class(kind))))
+        .map(|&(index, kind)| (index as usize, Value::object(mutator.builtin_class(kind))))
         .collect();
     // `decode_root_section` held every index to the root row's clauses, and a
     // builtin class is always a class object, so this cannot fail; the
@@ -3096,7 +3150,7 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
 /// knowable once every record has been read, so it is checked here rather
 /// than where each tag is decoded. These five positions are the complete
 /// set: a class tag appears nowhere else in the graph section, and a plain
-/// `Value::Object` pointing at a class object is legitimate (that is what a
+/// object value pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
 ///
 /// The extra rule for a class object's *own* `class` is the runtime's
@@ -3265,7 +3319,7 @@ pub fn decode_graph_section<'gc>(
         }
         let data = match body {
             OBJECT_INSTANCE => {
-                let fields = decode_values(reader, context, &tables)?;
+                let fields = decode_words(reader, context, &tables)?;
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
                 if class_named_by_path {
@@ -3285,16 +3339,18 @@ pub fn decode_graph_section<'gc>(
                 // a closure is checked below, once the record it names has
                 // been read.
                 if future_header {
-                    let computation =
-                        crate::interpreter::future::decoded_future_computation(&fields)
-                            .ok_or(DecodeError::FutureRecord)?;
+                    let computation = crate::interpreter::future::decoded_future_computation(
+                        &context.mutator.heap,
+                        &fields,
+                    )
+                    .ok_or(DecodeError::FutureRecord)?;
                     pending_futures.push(computation);
                 }
                 ObjectData::Instance(fields)
             }
             OBJECT_STRING => ObjectData::String(reader.read_code_points()?),
             OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
-            OBJECT_ARRAY => ObjectData::Array(decode_values(reader, context, &tables)?),
+            OBJECT_ARRAY => ObjectData::Array(decode_words(reader, context, &tables)?),
             OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),
             // One frame id, resolved like a closure's captured frame: every
             // frame was placeholder-allocated before this pass, so a forward
@@ -3387,8 +3443,8 @@ pub fn decode_graph_section<'gc>(
     // never: `future_state` reads an unresolved future with anything else
     // there as malformed.
     for computation in &pending_futures {
-        match computation {
-            Value::Object(closure) if context.mutator.heap.is_closure(*closure) => {}
+        match computation.as_object() {
+            Some(closure) if context.mutator.heap.is_closure(closure) => {}
             _ => return Err(DecodeError::FutureRecord),
         }
     }
@@ -3437,14 +3493,17 @@ pub fn decode_tag_named_hashes<'gc>(
             HASHED_BUILTIN_CLASS => mutator.builtin_class(read_builtin_class(reader)?),
             HASHED_MODULE_CLASS => read_module_class(reader, modules)?,
             HASHED_MODULE_LEVEL => read_module_level(reader, modules)?,
-            HASHED_PLATFORM => match mutator.platform_value() {
-                Value::Object(platform) => platform,
+            HASHED_PLATFORM => match mutator.platform_value().as_object() {
+                Some(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
             HASHED_PLATFORM_PATH => {
                 let index = reader.read_u32()?;
-                match platform_paths.get(index as usize) {
-                    Some(Value::Object(object)) => *object,
+                match platform_paths
+                    .get(index as usize)
+                    .and_then(|value| value.as_object())
+                {
+                    Some(object) => object,
                     _ => return Err(DecodeError::BadPlatformPath(index)),
                 }
             }
@@ -3525,8 +3584,8 @@ fn decode_class_record<'gc>(
     };
     let superclass = decode_optional_class(reader, context, tables)?;
     let enclosing = if reader.read_boolean()? {
-        match decode_value(reader, context, tables)? {
-            Value::Object(object) => Some(object),
+        match decode_value(reader, context, tables)?.as_object() {
+            Some(object) => Some(object),
             _ => return Err(DecodeError::EnclosingNotAnObject),
         }
     } else {

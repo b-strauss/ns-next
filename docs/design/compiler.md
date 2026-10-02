@@ -24,7 +24,7 @@ that pays off once a JIT or a very hot interpreter loop demands it. The profile
 of the loop over locals found that point: every dispatch decodes the enum's
 discriminant through a niche, and `program_counter` and the code pointer are
 spilled to `vm::run`'s stack frame ([execution.md](execution.md), "Where the 3%
-goes"). A compact encoding is planned after the eight-byte value
+goes"). A compact encoding is planned, designed against the one-word value
 ([execution.md](execution.md), "Planned: the compact instruction encoding").
 
 Every register operand is a `u16`; every jump target is an instruction index. The
@@ -35,10 +35,10 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier`, with integer and float text parsed at compile time rather
-  than at each execution. `LargeInteger` carries an integer literal beyond `i64`
-  as its digits (an `ArbitraryInteger`); `UnresolvedIdentifier` is the deferred
-  case, see "Compilation cannot fail".
+  UnresolvedIdentifier`, with integer and float text parsed at compile time
+  rather than at each execution. `LargeInteger` carries an integer literal
+  beyond a `SmallInteger`'s 61 bits as its digits (an `ArbitraryInteger`);
+  `UnresolvedIdentifier` is the deferred case, see "Compilation cannot fail".
 - `LoadSelf { destination }`.
 - `LoadEnclosingObject { destination, depth }` — `outer N` with no message
   after it, `Binding::EnclosingObject`: the kth enclosing object, found as a
@@ -127,13 +127,12 @@ inlined failure block emits a branch.** Every other construct in the language
 is a send, so a jump in the instruction stream is always the trace of one of
 the three inlining decisions; `SendMirror` is a branch too, to its failure
 block ("Mirror sends").
-`JumpIfNotBoolean` is the control-flow guard: for the unboxed `Value::Boolean`
-representation, "is the receiver's class exactly `True`/`False`?" is precisely
+`JumpIfNotBoolean` is the control-flow guard: since `true` and `false` are
+immediates, "is the receiver's class exactly `True`/`False`?" is precisely
 "is this register a `Boolean` at all". `IntegerBinary` is both the arithmetic
 guard and the operation itself: it computes in place and falls through on
 success, or jumps to `target` -- the ordinary send -- when either operand is
-not a `Value::SmallInteger` or the `checked_*` operation declines ("Arithmetic
-inlining" below).
+not a `SmallInteger` or the operation declines ("Arithmetic inlining" below).
 
 ## Compiled code
 
@@ -467,18 +466,21 @@ SendPublic dest <- left #<selector> (right)
 after:
 ```
 
-The instruction computes only when both operands are `Value::SmallInteger`
-and, for the four arithmetic operations, when the `checked_*` operation
-yields a result; on either failure it branches to the fallback. The five
+The instruction computes only when both operands are `SmallInteger`s and,
+for the four arithmetic operations, when the result is one; on either
+failure it branches to the fallback. It computes on the tagged words, with
+one test of both operands' tag and one overflow test, through the methods
+on `Value` the integer leaves share (`small_integer_sum` and its siblings,
+[object-model.md](object-model.md), "Values and objects"). The five
 comparisons cannot fail once the operands are integers. So a non-integer
-operand, a result that does not fit `i64` and a zero divisor all leave by the
-same door, and what they reach is the send the compiler would have emitted
+operand, a result that does not fit 61 bits and a zero divisor all leave by
+the same door, and what they reach is the send the compiler would have emitted
 anyway.
 
 **That is the point of the fallback, and the reason it is a real send rather
 than an error raised in the VM.** What the fast path declines is decided in
 `builtins/numbers.rs` and stays there: the promotion of a result that does
-not fit `i64` to a `LargeInteger` (§5.1.1, [core-library.md](core-library.md),
+not fit 61 bits to a `LargeInteger` (§5.1.1, [core-library.md](core-library.md),
 "Large integers"), and every error message an integer operation can produce
 — `doesNotUnderstand:`, division by zero, a type mismatch. The VM arm never
 allocates and never raises anything. A second copy of those
@@ -687,14 +689,16 @@ unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
 
-Every integer literal is representable (§5.1.1), so none is deferred. One
-that fits `i64` lowers to `Literal::SmallInteger`, any other to
-`Literal::LargeInteger`, which carries its value as an `ArbitraryInteger`,
-never its text; `LoadLiteral` makes a fresh `LargeInteger` of it through
-`Mutator::new_integer` each time it runs. A radix or digit that denotes
-nothing is a parse error, and a fraction or exponent makes a float, so
-`parse_integer_literal` (`interpreter/literals.rs`) refusing a literal the
-parser accepted is a compiler invariant, and `lower_literal` panics on it.
+Every integer literal is representable (§5.1.1), so none is deferred. One that
+fits a `SmallInteger`'s 61 bits lowers to `Literal::SmallInteger`, any other to
+`Literal::LargeInteger`, which carries its value as an `ArbitraryInteger`, never
+its text; `LoadLiteral` makes a fresh `LargeInteger` of it through
+`Mutator::new_integer` each time it runs, and a float literal outside the
+`SmallFloat64` range a fresh boxed `Float` through `Mutator::new_float`. A radix
+or digit that denotes nothing is a parse error, and a fraction or exponent makes
+a float, so `parse_integer_literal` (`interpreter/literals.rs`) refusing a
+literal the parser accepted is a compiler invariant, and `lower_literal` panics
+on it.
 
 ## Reading the output
 
@@ -1130,9 +1134,9 @@ signatures is a design change to the image module's interface, not a migration.
 ## Decisions
 
 - **`Instruction` is a Rust enum, not packed bytes**; the loop-over-locals
-  profile shows its dispatch cost, and a compact encoding is planned after
-  the eight-byte value ([execution.md](execution.md), "Planned: the compact
-  instruction encoding").
+  profile shows its dispatch cost, and a compact encoding is planned,
+  designed against the one-word value ([execution.md](execution.md),
+  "Planned: the compact instruction encoding").
 - **A local's read costs no instruction**, which makes its register live storage
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run

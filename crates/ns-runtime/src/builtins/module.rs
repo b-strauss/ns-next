@@ -23,13 +23,11 @@ pub(crate) fn execute<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         ModulePrimitive::Named => {
-            let Value::Object(name) = receiver else {
-                return None;
-            };
+            let name = receiver.as_object()?;
             let name = mutator.heap().symbol_value(name)?;
             let resolved = core_library::shipped_module_named(name.as_str())?;
             let class = mutator.load_root_class(&resolved);
-            Some(Ok(Value::Object(class)))
+            Some(Ok(Value::object(class)))
         }
     }
 }

@@ -4,7 +4,7 @@
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
 use indoc::indoc;
-use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{HostError, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -36,7 +36,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
     match result {
         Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
@@ -55,11 +55,11 @@ fn array_at_returns_the_one_based_element() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "{1. 2. 3} at: 2");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(2) => {}
-        other => panic!(
-            "expected Value::SmallInteger(2), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(2) => {}
+        _ => panic!(
+            "expected the small integer 2, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -95,11 +95,11 @@ fn array_at_put_writes_and_returns_the_receiver() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "at:put: then at:");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(99) => {}
-        other => panic!(
-            "expected Value::SmallInteger(99), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(99) => {}
+        _ => panic!(
+            "expected the small integer 99, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -119,11 +119,11 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "{1. 2. 3} do: [:x | sum:: sum + x]");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(6) => {}
-        other => panic!(
-            "expected Value::SmallInteger(6), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(6) => {}
+        _ => panic!(
+            "expected the small integer 6, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -158,31 +158,34 @@ fn do_walks_a_snapshot_of_its_receiver() {
         result,
         "do: over an array the block mutates through at:put:",
     );
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
         // 6099 = (1 + 2 + 3) * 1000 + 99: the walk summed the three original
         // elements, unaffected by the `at:put:` inside it, and the live
         // array's third slot holds 99 afterward -- the write took effect,
         // the walk just never saw it.
-        Value::SmallInteger(6099) => {}
-        other => panic!("expected 6099, got {}", mutator.heap().describe(&other)),
+        ValueKind::SmallInteger(6099) => {}
+        _ => panic!(
+            "expected 6099, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
+        ),
     });
 }
 
 #[test]
 fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     // `not_an_integer`'s message must not `{:?}`-format the argument: a
-    // `Value::Object` there would recurse through `Object`'s self-referential
+    // an object there would recurse through `Object`'s self-referential
     // bootstrap class until the stack gives out, aborting the process
     // instead of reporting. Every other `at:` test here passes a `SmallInteger`
     // index, which formats harmlessly and so could not catch it.
     let mut interpreter = Interpreter::bootstrap();
     let receiver = interpreter.enter(|mutator| {
-        let object = mutator.new_array(vec![Value::SmallInteger(1)]);
-        mutator.stash(Value::Object(object))
+        let object = mutator.new_array(vec![Value::small_integer(1)]);
+        mutator.stash(Value::object(object))
     });
     let index = interpreter.enter(|mutator| {
         let object = mutator.new_string("not an integer".to_string());
-        mutator.stash(Value::Object(object))
+        mutator.stash(Value::object(object))
     });
 
     let result = interpreter.send(&receiver, Symbol::intern("at:"), &[index]);
@@ -209,7 +212,10 @@ fn do_with_a_non_block_answers_its_receiver() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "{1. 2} do: 3");
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&result), Value::Boolean(true))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&result).as_boolean()),
+        Some(true)
+    );
 }
 
 /// A block of the wrong arity fails at the first element; an empty
@@ -254,11 +260,11 @@ fn block_value_invokes_a_zero_argument_closure() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "[42] value");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(42) => {}
-        other => panic!(
-            "expected Value::SmallInteger(42), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(42) => {}
+        _ => panic!(
+            "expected the small integer 42, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -275,11 +281,11 @@ fn block_value_colon_passes_the_argument_positionally() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "[:x | x + 1] value: 41");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(42) => {}
-        other => panic!(
-            "expected Value::SmallInteger(42), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(42) => {}
+        _ => panic!(
+            "expected the small integer 42, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -296,11 +302,11 @@ fn block_argument_count_reports_the_declared_parameter_count() {
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
     let result = expect_ok(result, "[:x :y | x + y] numArgs");
-    interpreter.enter(|mutator| match mutator.fetch(&result) {
-        Value::SmallInteger(2) => {}
-        other => panic!(
-            "expected Value::SmallInteger(2), got {}",
-            mutator.heap().describe(&other)
+    interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
+        ValueKind::SmallInteger(2) => {}
+        _ => panic!(
+            "expected the small integer 2, got {}",
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }

@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use ns_runtime::{
     BuiltinClass, ClassData, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
-    MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value,
+    MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value, ValueKind,
 };
 use ns_syntax::Span;
 
@@ -34,9 +34,9 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
-    match value {
-        Value::SmallInteger(integer) => *integer,
+fn integer_of<'gc>(value: Value<'gc>) -> i64 {
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
@@ -57,7 +57,7 @@ fn instantiate_and_get(source: &str, factory_arguments: Vec<Value<'static>>, get
         interpreter.send(&instance, Symbol::intern(getter), &[]),
         getter,
     );
-    interpreter.enter(|mutator| integer_of(&mutator.fetch(&result)))
+    interpreter.enter(|mutator| integer_of(mutator.fetch(&result)))
 }
 
 const FACTORY_PARAMETER: &str = indoc! {"
@@ -78,7 +78,7 @@ const INITIALIZER_EXPRESSIONS: &str = indoc! {"
 
 #[test]
 fn a_slot_initializer_reads_a_factory_parameter() {
-    let value = instantiate_and_get(FACTORY_PARAMETER, vec![Value::SmallInteger(7)], "p2");
+    let value = instantiate_and_get(FACTORY_PARAMETER, vec![Value::small_integer(7)], "p2");
     assert_eq!(value, 7);
 }
 
@@ -104,7 +104,7 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
         "blk2",
     );
     interpreter.enter(|mutator| {
-        let Value::Object(object) = mutator.fetch(&value) else {
+        let Some(object) = mutator.fetch(&value).as_object() else {
             panic!("expected a closure object")
         };
         let closure = mutator
@@ -207,20 +207,21 @@ fn make_class(
                 None,
             ))),
         );
-        mutator.stash(Value::Object(class))
+        mutator.stash(Value::object(class))
     })
 }
 
 /// The `SmallInteger` held at `instance`'s field `index` -- `Value` has no
 /// `PartialEq`, so this reads through the one variant the test needs
 /// instead of comparing `Value`s directly.
-fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: &Value<'gc>, index: usize) -> i64 {
-    let Value::Object(object) = instance else {
+fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: Value<'gc>, index: usize) -> i64 {
+    let Some(object) = instance.as_object() else {
         panic!("expected an instance")
     };
-    match heap.instance_field(*object, index) {
-        Some(Value::SmallInteger(integer)) => integer,
-        Some(_) => panic!("expected field {index} to hold a SmallInteger"),
+    match heap.instance_field(object, index) {
+        Some(field) => field
+            .as_small_integer()
+            .unwrap_or_else(|| panic!("expected field {index} to hold a SmallInteger")),
         None => panic!("expected an Instance payload"),
     }
 }
@@ -252,7 +253,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     "};
     let (mut interpreter, loaded) = load(source);
     let shared_mixin = interpreter.enter(|mutator| {
-        let Value::Object(loaded) = mutator.fetch(&loaded) else {
+        let Some(loaded) = mutator.fetch(&loaded).as_object() else {
             panic!("load_module answers a class object")
         };
         mutator
@@ -293,18 +294,18 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
     );
 
     let a_instance = expect_ok(
-        interpreter.instantiate(&a_class, &[interpreter.stash(Value::SmallInteger(11))]),
+        interpreter.instantiate(&a_class, &[interpreter.stash(Value::small_integer(11))]),
         "instantiate a",
     );
     let b_instance = expect_ok(
-        interpreter.instantiate(&b_class, &[interpreter.stash(Value::SmallInteger(22))]),
+        interpreter.instantiate(&b_class, &[interpreter.stash(Value::small_integer(22))]),
         "instantiate b",
     );
     interpreter.enter(|mutator| {
         assert_eq!(
             field_at(
                 mutator.heap(),
-                &mutator.fetch(&a_instance),
+                mutator.fetch(&a_instance),
                 a_application.own_slot_base
             ),
             11,
@@ -313,7 +314,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         assert_eq!(
             field_at(
                 mutator.heap(),
-                &mutator.fetch(&b_instance),
+                mutator.fetch(&b_instance),
                 b_application.own_slot_base
             ),
             22,
@@ -360,7 +361,7 @@ fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
         let leaf = mutator.fetch(&leaf);
         for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
             assert_eq!(
-                field_at(mutator.heap(), &leaf, index),
+                field_at(mutator.heap(), leaf, index),
                 expected,
                 "field {index} holds the wrong level's value"
             );

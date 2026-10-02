@@ -293,9 +293,10 @@ mod tests {
         let first_widget = expect_ok(interpreter.send(&first_outer, widget, &[]), "Widget");
         let second_widget = expect_ok(interpreter.send(&second_outer, widget, &[]), "Widget");
         interpreter.enter(|mutator| {
-            let (Value::Object(first_widget), Value::Object(second_widget)) =
-                (mutator.fetch(&first_widget), mutator.fetch(&second_widget))
-            else {
+            let (Some(first_widget), Some(second_widget)) = (
+                mutator.fetch(&first_widget).as_object(),
+                mutator.fetch(&second_widget).as_object(),
+            ) else {
                 panic!("Widget answers a class object");
             };
             assert!(

@@ -32,7 +32,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
     match result {
         Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
@@ -53,31 +53,43 @@ fn a_host_sends_to_roots_and_gets_roots_back() {
     let counter = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let bump = Symbol::intern("bump:");
     expect_ok(
-        interpreter.send(&counter, bump, &[interpreter.stash(Value::SmallInteger(2))]),
+        interpreter.send(
+            &counter,
+            bump,
+            &[interpreter.stash(Value::small_integer(2))],
+        ),
         "bump: 2",
     );
     let total = expect_ok(
-        interpreter.send(&counter, bump, &[interpreter.stash(Value::SmallInteger(3))]),
+        interpreter.send(
+            &counter,
+            bump,
+            &[interpreter.stash(Value::small_integer(3))],
+        ),
         "bump: 3",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&total), Value::SmallInteger(5))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&total).as_small_integer()),
+        Some(5)
+    );
 }
 
 #[test]
 fn a_newspeak_error_reaches_the_host_with_its_receiver_as_a_root() {
     let (mut interpreter, _class) = load(COUNTER);
-    let three = interpreter.stash(Value::SmallInteger(3));
+    let three = interpreter.stash(Value::small_integer(3));
     let result = interpreter.send(&three, Symbol::intern("frobnicate"), &[]);
     let error = expect_error(&mut interpreter, result, "3 frobnicate");
     assert_eq!(error.selector.as_str(), "frobnicate");
-    assert!(interpreter
-        .enter(|mutator| matches!(mutator.fetch(&error.receiver), Value::SmallInteger(3))));
+    assert!(
+        interpreter.enter(|mutator| mutator.fetch(&error.receiver).as_small_integer() == Some(3))
+    );
 }
 
 #[test]
 fn instantiating_a_root_that_holds_no_class_is_a_newspeak_error() {
     let (mut interpreter, _class) = load(COUNTER);
-    let three = interpreter.stash(Value::SmallInteger(3));
+    let three = interpreter.stash(Value::small_integer(3));
     let result = interpreter.instantiate(&three, &[]);
     let error = expect_error(&mut interpreter, result, "instantiate 3");
     assert_eq!(error.message, "cannot instantiate 3: it is not a class");
@@ -95,10 +107,10 @@ fn roots_a_host_has_dropped_are_swept() {
     const HELD: usize = 100;
     let (mut interpreter, _class) = load(COUNTER);
     let held: Vec<Root> = (0..HELD as i64)
-        .map(|number| interpreter.stash(Value::SmallInteger(-number)))
+        .map(|number| interpreter.stash(Value::small_integer(-number)))
         .collect();
     for iteration in 0..10_000 {
-        let _ = interpreter.stash(Value::SmallInteger(iteration));
+        let _ = interpreter.stash(Value::small_integer(iteration));
     }
     let count = interpreter.enter(|mutator| mutator.heap().host_root_count());
     assert!(
@@ -111,7 +123,10 @@ fn roots_a_host_has_dropped_are_swept() {
     );
     interpreter.enter(|mutator| {
         for (index, root) in held.iter().enumerate() {
-            assert!(matches!(mutator.fetch(root), Value::SmallInteger(integer) if integer == -(index as i64)));
+            assert_eq!(
+                mutator.fetch(root).as_small_integer(),
+                Some(-(index as i64))
+            );
         }
     });
 }
@@ -187,35 +202,50 @@ fn a_world_reached_from_roots_survives_moves() {
         interpreter.send(&instance, Symbol::intern("read"), &[]),
         "read",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&read), Value::SmallInteger(48))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&read).as_small_integer()),
+        Some(48)
+    );
     let secret = expect_ok(
         interpreter.send(&instance, Symbol::intern("throughCell"), &[]),
         "throughCell",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&secret), Value::SmallInteger(11))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&secret).as_small_integer()),
+        Some(11)
+    );
     move_once(&mut interpreter);
     let read = expect_ok(
         interpreter.send(&instance, Symbol::intern("read"), &[]),
         "read",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&read), Value::SmallInteger(49))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&read).as_small_integer()),
+        Some(49)
+    );
     let marker = expect_ok(
         interpreter.send(&class, Symbol::intern("marker"), &[]),
         "marker",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&marker), Value::SmallInteger(3))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&marker).as_small_integer()),
+        Some(3)
+    );
     move_once(&mut interpreter);
     let marker = expect_ok(
         interpreter.send(&class, Symbol::intern("marker"), &[]),
         "marker",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&marker), Value::SmallInteger(3))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&marker).as_small_integer()),
+        Some(3)
+    );
     interpreter.enter(|mutator| {
-        let Value::Object(built) = mutator.fetch(&built) else {
+        let Some(built) = mutator.fetch(&built).as_object() else {
             panic!("`build` answers an array")
         };
         assert_eq!(mutator.heap().array_length(built), Some(2));
         let cell = mutator.heap().array_at(built, 0).expect("the cell");
-        assert_eq!(mutator.heap().describe(&cell), "an instance of Cell");
+        assert_eq!(mutator.heap().describe(cell), "an instance of Cell");
     });
 }

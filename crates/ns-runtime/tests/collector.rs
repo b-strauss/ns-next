@@ -2,8 +2,10 @@
 //! what does not, and what that does to the arenas
 //! (`docs/design/memory.md`, "The gates the collector needs").
 
+#![cfg(debug_assertions)]
+
 use indoc::indoc;
-use ns_runtime::{Interpreter, Root, Symbol, Value};
+use ns_runtime::{Interpreter, Root, Symbol, Value, ValueKind};
 
 /// Loads `source` and answers the interpreter and its module's root class,
 /// the way `crates/ns-runtime/tests/heap.rs`, `roots.rs` and `stress.rs`
@@ -36,9 +38,9 @@ fn expect_ok(result: ns_runtime::HostResult) -> ns_runtime::Root {
 /// The `SmallInteger` a `Value` holds, or a panic. Used by a test that calls
 /// a kept closure back after a collection and checks what it answers, not
 /// merely that it still exists.
-fn integer_of(value: &Value<'_>) -> i64 {
-    match value {
-        Value::SmallInteger(integer) => *integer,
+fn integer_of(value: Value<'_>) -> i64 {
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
@@ -46,7 +48,6 @@ fn integer_of(value: &Value<'_>) -> i64 {
 /// A module whose entry allocates a great many short-lived closures and
 /// keeps none of them. Collecting between runs must give the arena back.
 #[test]
-#[cfg(debug_assertions)]
 fn a_collection_gives_back_what_a_run_discarded() {
     // `timesRepeat:` is a kernel-library convenience the bare bootstrap does
     // not load, so the loop is written with `whileTrue:`, which is a native
@@ -68,7 +69,7 @@ fn a_collection_gives_back_what_a_run_discarded() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(2000));
+    let count = interpreter.stash(Value::small_integer(2000));
     let selector = Symbol::intern("run:");
 
     interpreter.collect_now();
@@ -98,7 +99,6 @@ fn a_collection_gives_back_what_a_run_discarded() {
 /// has already pruned `#transient`, and the two occurrences must still be
 /// the same object (`docs/design/memory.md`, "Weak references").
 #[test]
-#[cfg(debug_assertions)]
 fn a_symbol_nothing_holds_is_collected_and_minted_again() {
     let source = indoc! {"
         class Symbols = Object new () (
@@ -120,7 +120,10 @@ fn a_symbol_nothing_holds_is_collected_and_minted_again() {
     // pruning; identity between the two occurrences is what the canonical
     // table still owes them.
     let answer = expect_ok(interpreter.send(&instance, same, &[]));
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&answer), Value::Boolean(true))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&answer).as_boolean()),
+        Some(true)
+    );
 }
 
 /// The table is not a root: a symbol nothing holds does not outlive the
@@ -129,7 +132,6 @@ fn a_symbol_nothing_holds_is_collected_and_minted_again() {
 /// row finding a heap that has not changed -- which a *strong* table would
 /// pass just as well, since nothing would have changed between them either.
 #[test]
-#[cfg(debug_assertions)]
 fn the_symbol_table_does_not_keep_its_objects_alive() {
     let baseline_source = indoc! {"
         class Baseline = Object new () (
@@ -138,7 +140,7 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
     "};
     let (mut baseline_interpreter, baseline_class) = load(baseline_source);
     let baseline_instance = expect_ok(baseline_interpreter.instantiate(&baseline_class, &[]));
-    let baseline_count = baseline_interpreter.stash(Value::SmallInteger(10));
+    let baseline_count = baseline_interpreter.stash(Value::small_integer(10));
     let baseline_selector = Symbol::intern("make:");
     let _ = expect_ok(baseline_interpreter.send(
         &baseline_instance,
@@ -165,7 +167,7 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
     "};
     let (mut transient_interpreter, transient_class) = load(transient_source);
     let transient_instance = expect_ok(transient_interpreter.instantiate(&transient_class, &[]));
-    let transient_count = transient_interpreter.stash(Value::SmallInteger(10));
+    let transient_count = transient_interpreter.stash(Value::small_integer(10));
     let transient_selector = Symbol::intern("make:");
     let _ = expect_ok(transient_interpreter.send(
         &transient_instance,
@@ -190,7 +192,6 @@ fn the_symbol_table_does_not_keep_its_objects_alive() {
 /// also calls one of the kept closures back after the collection and checks
 /// the number it answers, not merely that it answers at all.
 #[test]
-#[cfg(debug_assertions)]
 fn kept_closures_keep_their_frames() {
     let source = indoc! {"
         class Keeper = Object new (| public blocks ::= nil. |) (
@@ -213,7 +214,7 @@ fn kept_closures_keep_their_frames() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(50));
+    let count = interpreter.stash(Value::small_integer(50));
     let fill = Symbol::intern("fill:");
 
     let _ = expect_ok(interpreter.send(&instance, fill, &[count]));
@@ -250,11 +251,11 @@ fn kept_closures_keep_their_frames() {
     // answer 51: a frame forwarded to the wrong slot would answer some
     // other, perfectly valid closure's captured value instead of crashing.
     let block_at = Symbol::intern("blockAt:");
-    let first_index = interpreter.stash(Value::SmallInteger(1));
+    let first_index = interpreter.stash(Value::small_integer(1));
     let first_block = expect_ok(interpreter.send(&instance, block_at, &[first_index]));
     let value_selector = Symbol::intern("value");
     let answer = expect_ok(interpreter.send(&first_block, value_selector, &[]));
-    let answer_value = interpreter.enter(|mutator| integer_of(&mutator.fetch(&answer)));
+    let answer_value = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
     assert_eq!(
         answer_value, 51,
         "the kept closure must still answer with its own captured value after a collection"
@@ -266,7 +267,6 @@ fn kept_closures_keep_their_frames() {
 /// kept, must leave the same live objects and the same live frames behind
 /// as a hundredth as much work would.
 #[test]
-#[cfg(debug_assertions)]
 fn discarding_everything_returns_to_the_starting_size() {
     let source = indoc! {"
         class Discard = Object new () (
@@ -286,12 +286,12 @@ fn discarding_everything_returns_to_the_starting_size() {
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let fill = Symbol::intern("fill:");
 
-    let small = interpreter.stash(Value::SmallInteger(5));
+    let small = interpreter.stash(Value::small_integer(5));
     let _ = expect_ok(interpreter.send(&instance, fill, &[small]));
     interpreter.collect_now();
     let after_small = interpreter.heap_statistics();
 
-    let large = interpreter.stash(Value::SmallInteger(500));
+    let large = interpreter.stash(Value::small_integer(500));
     let _ = expect_ok(interpreter.send(&instance, fill, &[large]));
     interpreter.collect_now();
     let after_large = interpreter.heap_statistics();
@@ -310,7 +310,6 @@ fn discarding_everything_returns_to_the_starting_size() {
 /// safepoint, so a missed root kills its object at the earliest possible
 /// moment. The program's answer must not change.
 #[test]
-#[cfg(debug_assertions)]
 fn the_collect_stress_mode_does_not_change_an_answer() {
     let source = indoc! {"
         class Sum = Object new () (
@@ -333,15 +332,15 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
     // quiet-versus-stressed comparison.
     interpreter.set_stress_collect(false);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(100));
+    let count = interpreter.stash(Value::small_integer(100));
     let selector = Symbol::intern("upTo:");
 
     let quiet = expect_ok(interpreter.send(&instance, selector, &[count]));
-    let quiet_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&quiet)));
+    let quiet_answer = interpreter.enter(|mutator| integer_of(mutator.fetch(&quiet)));
     interpreter.set_stress_collect(true);
-    let count_again = interpreter.stash(Value::SmallInteger(100));
+    let count_again = interpreter.stash(Value::small_integer(100));
     let stressed = expect_ok(interpreter.send(&instance, selector, &[count_again]));
-    let stressed_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&stressed)));
+    let stressed_answer = interpreter.enter(|mutator| integer_of(mutator.fetch(&stressed)));
 
     assert_eq!(quiet_answer, stressed_answer);
     assert_eq!(quiet_answer, 5050);
@@ -359,7 +358,6 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
 /// collects (`docs/design/memory.md`, "The trigger and the growth
 /// policy").
 #[test]
-#[cfg(debug_assertions)]
 fn allocating_past_the_limit_collects_during_the_run() {
     let source = indoc! {"
         class Churn = Object new () (
@@ -379,11 +377,11 @@ fn allocating_past_the_limit_collects_during_the_run() {
     let (mut interpreter, class) = load(source);
     interpreter.set_collection_floor(256);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
-    let count = interpreter.stash(Value::SmallInteger(5000));
+    let count = interpreter.stash(Value::small_integer(5000));
     let selector = Symbol::intern("run:");
 
     let answer = expect_ok(interpreter.send(&instance, selector, &[count]));
-    let answer_value = interpreter.enter(|mutator| integer_of(&mutator.fetch(&answer)));
+    let answer_value = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
     let after = interpreter.heap_statistics();
     let collector = interpreter.collector_statistics();
 
@@ -404,5 +402,76 @@ fn allocating_past_the_limit_collects_during_the_run() {
     assert!(
         collector.collections > 0,
         "the run reached 5000 closures without the trigger firing a single collection"
+    );
+}
+
+/// Every kind of value a heap object stores -- a `SmallInteger`, a boxed
+/// float, a `LargeInteger`, `nil` and another object -- survives being
+/// stored as a bare word through a move and a collection at every
+/// safepoint: the collector rewrites each word by its index, and every word
+/// reads back as the value that was stored.
+#[test]
+fn every_kind_of_stored_word_survives_moves_and_collections() {
+    let source = indoc! {"
+        class Boxes = Object new () (
+          class Box integer: anInteger float: aFloat large: aLarge empty: anEmpty next: aNext = Object new (|
+            public integer = anInteger.
+            public float = aFloat.
+            public large = aLarge.
+            public empty = anEmpty.
+            public next = aNext.
+          |) ()
+          public build: count = (
+            | boxes = Array new: count. previous |
+            previous:: Box integer: 0 float: 0.0 large: 0 empty: nil next: nil.
+            1 to: count do: [:index |
+              previous:: Box
+                integer: index
+                float: 1.0e300 * index
+                large: 18446744073709551616 + index
+                empty: nil
+                next: previous.
+              boxes at: index put: previous].
+            ^boxes
+          )
+          public check: boxes = (
+            | sum last |
+            sum:: 0.
+            boxes do: [:box |
+              sum:: sum + box integer + box next integer
+                + (box large - 18446744073709551616).
+              box float = (1.0e300 * box integer) ifFalse: [^'a float changed'].
+              box empty isNil ifFalse: [^'a nil field changed']].
+            last:: boxes at: boxes size.
+            ^sum printString, ' ', last float class name, ' ', (last float = 1.0e303) printString,
+              ' ', last large printString,
+              ' ', last empty printString, ' ', last next integer printString
+          )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    interpreter.set_stress_moves(true);
+    interpreter.set_stress_collect(true);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]));
+    let count = interpreter.stash(Value::small_integer(1000));
+    let boxes = expect_ok(interpreter.send(&instance, Symbol::intern("build:"), &[count]));
+    let answer = expect_ok(interpreter.send(&instance, Symbol::intern("check:"), &[boxes]));
+    let text = interpreter.enter(|mutator| {
+        let Some(string) = mutator.fetch(&answer).as_object() else {
+            panic!("check: answers a String")
+        };
+        mutator.heap().str_value(string).expect("a String")
+    });
+
+    // Each box adds its index twice and its predecessor's once:
+    // 2 * 500500 + 499500.
+    assert_eq!(
+        text, "1500500 Float true 18446744073709552616 nil 999",
+        "every stored word reads back as the value stored"
+    );
+    assert!(interpreter.moves() > 0, "the stress modes never moved");
+    assert!(
+        interpreter.stress_collections() > 0,
+        "the collect stress mode never collected"
     );
 }

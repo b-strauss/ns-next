@@ -17,9 +17,10 @@ use crate::Symbol;
 /// object each time they execute (a literal string is a fresh `Object` on every
 /// evaluation).
 ///
-/// `LargeInteger` is an integer literal beyond `i64` (§5.1.1 bounds none), and
-/// never holds one that fits: that is a `SmallInteger`. Its digits live in the
-/// code, which holds no handle and so survives every move and every heap;
+/// `LargeInteger` is an integer literal beyond a `SmallInteger`'s 61 bits
+/// (§5.1.1 bounds none), and never holds one that fits: that is a
+/// `SmallInteger`. Its digits live in the code, which holds no handle and so
+/// survives every move and every heap;
 /// `LoadLiteral` allocates the `LargeInteger` object each time it runs, which
 /// is sound because a value has no identity.
 ///
@@ -57,10 +58,11 @@ impl CallSite {
 
 /// The integer leaves the compiler emits inline, guarded, with the ordinary
 /// send as the fallback: every binary member of `IntegerPrimitive`. Each one
-/// is computed with a `checked_*` operation, so the cases that have no
-/// `i64` result -- one that does not fit, a zero divisor -- answer `None` and
-/// take the fallback, leaving the `LargeInteger` promotion and every error
-/// and its text to `builtins/numbers.rs`.
+/// is computed with a `checked_*` operation and a range test, so the cases
+/// that have no `SmallInteger` result -- one that does not fit 61 bits, a
+/// zero divisor -- answer `None` and take the fallback, leaving the
+/// `LargeInteger` promotion and every error and its text to
+/// `builtins/numbers.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerOperation {
     Add,
@@ -307,12 +309,12 @@ pub enum Instruction {
         target: u32,
     },
     /// Control-flow inlining's runtime guard: jumps if `register` does not hold
-    /// a `Value::Boolean` at all.
+    /// a boolean at all.
     JumpIfNotBoolean {
         register: u16,
         target: u32,
     },
-    /// Jumps if `register` is exactly `Value::Boolean(false)`; falls through
+    /// Jumps if `register` holds exactly `false`; falls through
     /// for anything else (a `JumpIfNotBoolean` on the same register always
     /// precedes it in inlined code).
     BranchIfFalse {
@@ -325,12 +327,12 @@ pub enum Instruction {
         target: u32,
     },
     /// An integer leaf's inlined fast path. Performs `operation` on `left` and
-    /// `right` into `destination` when both hold `Value::SmallInteger` and the
-    /// result fits `i64`; otherwise jumps to `target`, where the ordinary
-    /// send stands. That send's primitive promotes a result that does not fit
-    /// to a `LargeInteger` and raises every error -- a non-integer operand, a
-    /// zero divisor, a user subclass -- never this instruction, so there is
-    /// one source for each of them.
+    /// `right` into `destination` when both hold a `SmallInteger` and the
+    /// result fits a `SmallInteger`; otherwise jumps to `target`, where the
+    /// ordinary send stands. That send's primitive promotes a result that
+    /// does not fit to a `LargeInteger` and raises every error -- a
+    /// non-integer operand, a zero divisor, a user subclass -- never this
+    /// instruction, so there is one source for each of them.
     ///
     /// Reads and writes only registers of the activation executing it -- never
     /// another frame's by reference -- so `outer_reach_of` does not name it.

@@ -197,7 +197,7 @@ fn owning_its_arguments<'gc>(step: Step<'gc>, leaf_arguments: &[Value<'gc>]) -> 
 /// lowering its activation is exempt exactly when that rule's condition holds
 /// (`docs/design/compiler.md`, "How the limit counts").
 fn failure_step<'gc>(mutator: &Mutator<'gc>, block: Value<'gc>) -> Step<'gc> {
-    if let Value::Object(object) = block {
+    if let Some(object) = block.as_object() {
         if mutator.heap().is_closure(object) {
             return Step::Block {
                 closure: object,
@@ -212,7 +212,7 @@ fn failure_step<'gc>(mutator: &Mutator<'gc>, block: Value<'gc>) -> Step<'gc> {
 fn arity_error<'gc>(entry: &MirrorEntry, given: usize) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: Symbol::intern(entry.selector),
-        receiver: Value::Nil,
+        receiver: Value::nil(),
         message: format!(
             "the VM mirror's {} takes {} arguments, got {given}",
             entry.selector,
@@ -247,9 +247,9 @@ mod tests {
     fn a_mirror_send_runs_its_leaf_on_the_subject() {
         let mut interpreter = Interpreter::bootstrap();
         let mirror = the_mirror(&mut interpreter);
-        let three = interpreter.stash(Value::SmallInteger(3));
-        let four = interpreter.stash(Value::SmallInteger(4));
-        let fallback = interpreter.stash(Value::SmallInteger(-1));
+        let three = interpreter.stash(Value::small_integer(3));
+        let four = interpreter.stash(Value::small_integer(4));
+        let fallback = interpreter.stash(Value::small_integer(-1));
         let sum = expect_ok(
             interpreter.send(
                 &mirror,
@@ -259,7 +259,7 @@ mod tests {
             "integer:add:ifFail:",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&sum), Value::SmallInteger(7)));
+            assert_eq!(mutator.fetch(&sum).as_small_integer(), Some(7));
         });
     }
 
@@ -270,9 +270,9 @@ mod tests {
     fn a_leaf_that_fails_on_its_subject_answers_the_failure_argument() {
         let mut interpreter = Interpreter::bootstrap();
         let mirror = the_mirror(&mut interpreter);
-        let nothing = interpreter.stash(Value::Nil);
-        let four = interpreter.stash(Value::SmallInteger(4));
-        let fallback = interpreter.stash(Value::SmallInteger(-1));
+        let nothing = interpreter.stash(Value::nil());
+        let four = interpreter.stash(Value::small_integer(4));
+        let fallback = interpreter.stash(Value::small_integer(-1));
         let answer = expect_ok(
             interpreter.send(
                 &mirror,
@@ -282,7 +282,7 @@ mod tests {
             "integer:add:ifFail: on nil",
         );
         interpreter.enter(|mutator| {
-            assert!(matches!(mutator.fetch(&answer), Value::SmallInteger(-1)));
+            assert_eq!(mutator.fetch(&answer).as_small_integer(), Some(-1));
         });
     }
 
@@ -293,12 +293,12 @@ mod tests {
     fn an_error_a_leaf_raises_names_the_reported_selector() {
         let mut interpreter = Interpreter::bootstrap();
         let mirror = the_mirror(&mut interpreter);
-        let three = interpreter.stash(Value::SmallInteger(3));
+        let three = interpreter.stash(Value::small_integer(3));
         let text = interpreter.enter(|mutator| {
             let string = mutator.new_string("x".to_string());
-            mutator.stash(Value::Object(string))
+            mutator.stash(Value::object(string))
         });
-        let fallback = interpreter.stash(Value::Nil);
+        let fallback = interpreter.stash(Value::nil());
         match interpreter.send(
             &mirror,
             Symbol::intern("integer:add:ifFail:"),
@@ -357,8 +357,8 @@ mod tests {
         interpreter.enter(|mutator| {
             let mirror = mutator.vm_mirror();
             assert!(mutator.is_vm_mirror(mirror));
-            assert!(!mutator.is_vm_mirror(Value::SmallInteger(3)));
-            assert!(!mutator.is_vm_mirror(Value::Nil));
+            assert!(!mutator.is_vm_mirror(Value::small_integer(3)));
+            assert!(!mutator.is_vm_mirror(Value::nil()));
             let platform = mutator.platform_value();
             assert!(!mutator.is_vm_mirror(platform));
         });
@@ -369,7 +369,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         let class = interpreter.enter(|mutator| {
             let class = mutator.builtin_class(crate::BuiltinClass::VmMirror);
-            mutator.stash(Value::Object(class))
+            mutator.stash(Value::object(class))
         });
         assert!(matches!(
             interpreter.send(&class, Symbol::NEW, &[]),
@@ -461,7 +461,7 @@ mod tests {
     ) -> std::rc::Rc<crate::mixin::MixinMethod> {
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(probe);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             let Some(application) = mutator.heap().class_application(class) else {
                 panic!("a Probe's class is a class");
             };
@@ -482,24 +482,26 @@ mod tests {
             let (mut interpreter, probe) = a_probe(lowering, true);
             let text = interpreter.enter(|mutator| {
                 let string = mutator.new_string("abc".to_string());
-                mutator.stash(Value::Object(string))
+                mutator.stash(Value::object(string))
             });
             let size = expect_ok(
                 interpreter.send(&probe, Symbol::intern("sizeOf:"), &[text]),
                 "sizeOf: 'abc'",
             );
-            let nothing = interpreter.stash(Value::Nil);
+            let nothing = interpreter.stash(Value::nil());
             let declined = expect_ok(
                 interpreter.send(&probe, Symbol::intern("sizeOf:"), &[nothing]),
                 "sizeOf: nil",
             );
             interpreter.enter(|mutator| {
-                assert!(
-                    matches!(mutator.fetch(&size), Value::SmallInteger(3)),
+                assert_eq!(
+                    mutator.fetch(&size).as_small_integer(),
+                    Some(3),
                     "{lowering:?}: the leaf answers the string's size"
                 );
-                assert!(
-                    matches!(mutator.fetch(&declined), Value::SmallInteger(-1)),
+                assert_eq!(
+                    mutator.fetch(&declined).as_small_integer(),
+                    Some(-1),
                     "{lowering:?}: the failure block answers for nil"
                 );
             });
@@ -540,12 +542,14 @@ mod tests {
                 "aProbe size",
             );
             interpreter.enter(|mutator| {
-                assert!(
-                    matches!(mutator.fetch(&same), Value::Boolean(true)),
+                assert_eq!(
+                    mutator.fetch(&same).as_boolean(),
+                    Some(true),
                     "{lowering:?}: the leaf answers identity"
                 );
-                assert!(
-                    matches!(mutator.fetch(&size), Value::SmallInteger(-1)),
+                assert_eq!(
+                    mutator.fetch(&size).as_small_integer(),
+                    Some(-1),
                     "{lowering:?}: the activated body's failure block answers"
                 );
             });
@@ -561,7 +565,7 @@ mod tests {
         let size = probe_method(&mut interpreter, &probe, "size");
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(&probe);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             let accepted = mutator.act_with_base(
                 crate::interpreter::resolve::Resolved::Method {
                     method: same,
@@ -575,7 +579,7 @@ mod tests {
             );
             assert!(matches!(
                 accepted,
-                Ok(crate::interpreter::Step::Value(Value::Boolean(true)))
+                Ok(crate::interpreter::Step::Value(answer)) if answer.as_boolean() == Some(true)
             ));
             let declined = mutator.act_with_base(
                 crate::interpreter::resolve::Resolved::Method {
@@ -635,7 +639,7 @@ mod tests {
             "held:",
         );
         let refused = interpreter.enter(|mutator| {
-            let Value::Object(class) = mutator.fetch(&class) else {
+            let Some(class) = mutator.fetch(&class).as_object() else {
                 panic!("the root is a class object");
             };
             let platform = mutator.platform_value();
@@ -646,7 +650,7 @@ mod tests {
                 origin: &origin,
                 source: None,
             }];
-            crate::image::snapshot(mutator, &modules, &platform, &[holder])
+            crate::image::snapshot(mutator, &modules, platform, &[holder])
         });
         match refused {
             Err(message) => assert!(message.contains("VM mirror"), "{message}"),

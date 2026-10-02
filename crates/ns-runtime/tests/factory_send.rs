@@ -8,6 +8,7 @@ use indoc::indoc;
 use ns_runtime::mixin::MethodEntry;
 use ns_runtime::{
     BuiltinClass, HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value,
+    ValueKind,
 };
 
 /// The module's root class object, loaded and rooted, compiled with
@@ -43,7 +44,7 @@ fn expect_unhandled(
     match interpreter.send(receiver, sent, &[]) {
         Err(HostSignal::Error(error)) => assert_eq!(error.selector, unhandled, "{what}"),
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("{what}: expected doesNotUnderstand: {unhandled}, got Ok({got})")
         }
         Err(HostSignal::Return) => {
@@ -62,9 +63,7 @@ fn metaclass_entry_kind(
     selector: &str,
 ) -> Option<&'static str> {
     interpreter.enter(|mutator| {
-        let Value::Object(object) = mutator.fetch(class) else {
-            return None;
-        };
+        let object = mutator.fetch(class).as_object()?;
         let metaclass = mutator.metaclass_of(object)?;
         let application = mutator.heap().class_application(metaclass)?;
         application
@@ -97,7 +96,7 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
     let mut interpreter = Interpreter::bootstrap();
     let class_value = interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::Array);
-        mutator.stash(Value::Object(class))
+        mutator.stash(Value::object(class))
     });
 
     let receiver = expect_ok(
@@ -108,13 +107,13 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
     match interpreter.send(
         &receiver,
         Symbol::intern("add:"),
-        &[interpreter.stash(Value::SmallInteger(1))],
+        &[interpreter.stash(Value::small_integer(1))],
     ) {
         Err(HostSignal::Error(error)) => {
             assert_eq!(error.selector, Symbol::intern("add:"));
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected doesNotUnderstand: add:, got Ok({got})")
         }
         Err(HostSignal::Return) => {
@@ -162,14 +161,14 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
 
     // Each side leaves its interpreter's entry as the integer it answered,
     // or as the description of whatever else it answered.
-    let from_send = a_interpreter.enter(|mutator| match mutator.fetch(&via_send_bar) {
-        Value::SmallInteger(integer) => Ok(integer),
-        other => Err(mutator.heap().describe(&other)),
+    let from_send = a_interpreter.enter(|mutator| match mutator.fetch(&via_send_bar).kind() {
+        ValueKind::SmallInteger(integer) => Ok(integer),
+        _ => Err(mutator.heap().describe(mutator.fetch(&via_send_bar))),
     });
     let from_instantiate =
-        b_interpreter.enter(|mutator| match mutator.fetch(&via_instantiate_bar) {
-            Value::SmallInteger(integer) => Ok(integer),
-            other => Err(mutator.heap().describe(&other)),
+        b_interpreter.enter(|mutator| match mutator.fetch(&via_instantiate_bar).kind() {
+            ValueKind::SmallInteger(integer) => Ok(integer),
+            _ => Err(mutator.heap().describe(mutator.fetch(&via_instantiate_bar))),
         });
     match (from_send, from_instantiate) {
         (Ok(sent), Ok(instantiated)) => assert_eq!(sent, instantiated),
@@ -178,7 +177,7 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
                 sent.map_or_else(|description| description, |integer| integer.to_string());
             let instantiated_description =
                 instantiated.map_or_else(|description| description, |integer| integer.to_string());
-            panic!("expected two equal Value::SmallInteger, got {sent_description} and {instantiated_description}")
+            panic!("expected two equal small integers, got {sent_description} and {instantiated_description}")
         }
     }
 }
@@ -193,7 +192,7 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
     let mut interpreter = Interpreter::bootstrap();
     let class_value = interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::Array);
-        mutator.stash(Value::Object(class))
+        mutator.stash(Value::object(class))
     });
 
     match interpreter.send(
@@ -205,7 +204,7 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
             assert_eq!(error.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected doesNotUnderstand:, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("expected doesNotUnderstand:, got HostSignal::Return"),
@@ -263,7 +262,7 @@ fn a_builtin_class_has_a_factory_entry_under_new() {
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.enter(|mutator| {
         let class = mutator.builtin_class(BuiltinClass::Array);
-        mutator.stash(Value::Object(class))
+        mutator.stash(Value::object(class))
     });
     assert_eq!(
         metaclass_entry_kind(&mut interpreter, &class, "new"),
@@ -296,9 +295,10 @@ fn every_class_object_of_one_declaration_shares_its_metaclass_behaviour() {
         "second item",
     );
     let shared = interpreter.enter(|mutator| {
-        let (Value::Object(first), Value::Object(second)) =
-            (mutator.fetch(&first_item), mutator.fetch(&second_item))
-        else {
+        let (Some(first), Some(second)) = (
+            mutator.fetch(&first_item).as_object(),
+            mutator.fetch(&second_item).as_object(),
+        ) else {
             return false;
         };
         assert!(
@@ -342,7 +342,7 @@ fn a_superclasss_factory_selector_is_not_understood() {
     match interpreter.send(&keyed, Symbol::NEW, &[]) {
         Err(HostSignal::Error(error)) => assert_eq!(error.selector, Symbol::NEW),
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected doesNotUnderstand: new, got Ok({got})")
         }
         Err(HostSignal::Return) => {
@@ -350,7 +350,7 @@ fn a_superclasss_factory_selector_is_not_understood() {
         }
     }
     // `Keyed`'s own factory still instantiates, and so does `Simple`'s.
-    let seed = interpreter.stash(Value::SmallInteger(7));
+    let seed = interpreter.stash(Value::small_integer(7));
     let built = expect_ok(
         interpreter.send(&keyed, Symbol::intern("with:"), std::slice::from_ref(&seed)),
         "Keyed with: 7",
@@ -359,9 +359,12 @@ fn a_superclasss_factory_selector_is_not_understood() {
         interpreter.send(&built, Symbol::intern("held"), &[]),
         "Keyed with: 7 held",
     );
-    interpreter.enter(|mutator| match mutator.fetch(&answered) {
-        Value::SmallInteger(7) => {}
-        other => panic!("expected 7, got {}", mutator.heap().describe(&other)),
+    interpreter.enter(|mutator| match mutator.fetch(&answered).kind() {
+        ValueKind::SmallInteger(7) => {}
+        _ => panic!(
+            "expected 7, got {}",
+            mutator.heap().describe(mutator.fetch(&answered))
+        ),
     });
     let simple = expect_ok(
         interpreter.send(&instance, Symbol::intern("simple"), &[]),
@@ -418,7 +421,7 @@ ns_runtime::for_each_lowering! {
         );
         interpreter.enter(|mutator| {
             let value = mutator.fetch(&label);
-            assert_eq!(mutator.heap().describe(&value), "the String \"a simple\"");
+            assert_eq!(mutator.heap().describe(value), "the String \"a simple\"");
         });
     }
 }

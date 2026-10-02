@@ -31,7 +31,7 @@ pub(crate) fn check_value_class<'gc>(
     if !super::instantiate::is_a_value(mutator, enclosing) {
         return Some(ValueClassRefusal::NonValueEnclosingObject {
             level: None,
-            described: mutator.heap().describe(&Value::Object(enclosing)),
+            described: mutator.heap().describe(Value::object(enclosing)),
         });
     }
     // Every level's enclosing object, not only the class's own: an
@@ -76,7 +76,7 @@ pub(crate) fn check_value_class<'gc>(
                     .map(|application| application.mixin.name);
                 return Some(ValueClassRefusal::NonValueEnclosingObject {
                     level: level_name,
-                    described: heap.describe(&Value::Object(level_enclosing)),
+                    described: heap.describe(Value::object(level_enclosing)),
                 });
             }
         }

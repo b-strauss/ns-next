@@ -18,16 +18,10 @@ use crate::Symbol;
 /// can interpret one. They are re-exported here because this module is
 /// where the object model reads as a whole, and because `lib.rs`'s
 /// `pub use types::*` is how the rest of the workspace names them.
-pub use crate::heap::{ClassReference, FrameReference, ObjectReference};
-
-#[derive(Debug, Clone, Copy)]
-pub enum Value<'gc> {
-    Nil,
-    Boolean(bool),
-    SmallInteger(i64),
-    Float(f64),
-    Object(ObjectReference<'gc>),
-}
+pub use crate::heap::{
+    fits_small_integer, ClassReference, FrameReference, ObjectReference, Value, ValueKind, Word,
+    SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
+};
 
 #[derive(Debug, Clone)]
 pub struct Object<'gc> {
@@ -51,10 +45,10 @@ pub struct Object<'gc> {
 
 #[derive(Debug, Clone)]
 pub enum ObjectData<'gc> {
-    Instance(Vec<Value<'gc>>),
+    Instance(Vec<Word>),
     String(crate::CodePoints),
     Symbol(Symbol),
-    Array(Vec<Value<'gc>>),
+    Array(Vec<Word>),
     Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
@@ -65,11 +59,16 @@ pub enum ObjectData<'gc> {
     /// machinery walks and unwinds to. It stores the `FrameReference`, never
     /// an `ActivationReference`, since only a reified frame outlives its pop.
     Activation(FrameReference<'gc>),
-    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit
-    /// `i64`. It never holds a value that does -- `Mutator::new_integer` is
-    /// the one way to make one and decides that -- so each integer has one
-    /// representation. Holds no handle.
+    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit a
+    /// `SmallInteger`'s 61 bits. It never holds a value that does --
+    /// `Mutator::new_integer` is the one way to make one and decides that --
+    /// so each integer has one representation. Holds no handle.
     LargeInteger(crate::ArbitraryInteger),
+    /// An instance of `Float` whose value lies outside the immediate range:
+    /// NaN, the infinities, denormals and magnitudes outside about 2^-127 to
+    /// 2^129. `Mutator::new_float` is the one way to make one and decides
+    /// that, so each float has one representation. Holds no handle.
+    Float(f64),
 }
 
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing
@@ -287,7 +286,7 @@ pub enum BuiltinClass {
     /// §6.3.2's pull future, kernel-private as `Activation` is; its
     /// instances are made by the runtime (`interpreter/future.rs`).
     Future,
-    /// §5.1.1's unbounded integers: an `Integer` that does not fit `i64`. A
+    /// §5.1.1's unbounded integers: an `Integer` beyond 61 bits. A
     /// subclass of `Integer`, whose instances are the immediates, so
     /// `3 class` stays `Integer`.
     LargeInteger,
@@ -359,7 +358,7 @@ pub struct ClosureData<'gc> {
     /// `code.argument_count + position`. `Box<[_]>`, not a `Vec`, because
     /// `ClosureData` is `ObjectData`'s largest payload and an `Object` is
     /// pinned at 56 bytes in a release build (`heap.rs`).
-    pub copied: Box<[Value<'gc>]>,
+    pub copied: Box<[Word]>,
     /// The start of its family's range in the heap's cache table, copied from
     /// the activation that created it, since a block belongs to its method's
     /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
@@ -681,11 +680,11 @@ pub enum InstantiationPhase<'gc> {
 /// See `docs/design/execution.md`, "Activations".
 #[derive(Debug, Clone)]
 pub struct Frame<'gc> {
-    pub receiver: Value<'gc>,
-    pub arguments: Vec<Value<'gc>>,
+    pub receiver: Word,
+    pub arguments: Vec<Word>,
     /// Indexable by resolver slot index, growable (liveness spec's
     /// reified-activation constraint).
-    pub temporaries: Vec<Value<'gc>>,
+    pub temporaries: Vec<Word>,
     /// How far this activation has progressed: an instruction index into
     /// the `CompiledCode` it runs.
     pub program_counter: usize,
@@ -786,11 +785,11 @@ mod tests {
             let instance = mutator
                 .heap
                 .allocate_object(class, ObjectData::Instance(vec![]));
-            let original = Value::Object(instance);
+            let original = Value::object(instance);
             let copy = original;
-            match (original, copy) {
-                (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
-                _ => panic!("expected Value::Object"),
+            match (original.as_object(), copy.as_object()) {
+                (Some(left), Some(right)) => assert!(left.same(right)),
+                _ => panic!("expected both copies to be objects"),
             }
         });
     }
@@ -798,7 +797,7 @@ mod tests {
     #[test]
     fn frame_kind_top_level_has_no_current_class() {
         let frame = Frame {
-            receiver: Value::Nil,
+            receiver: Word::NIL,
             arguments: vec![],
             temporaries: vec![],
             program_counter: 0,
@@ -817,5 +816,30 @@ mod tests {
         let copy = original;
         assert_eq!(original, copy);
         assert_ne!(original, Binding::SuperSend);
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::{Value, ValueKind};
+
+    #[test]
+    fn each_constructor_answers_through_its_accessor_and_no_other() {
+        let nil: Value<'static> = Value::nil();
+        assert!(nil.is_nil());
+        assert_eq!(nil.as_boolean(), None);
+        let truth: Value<'static> = Value::boolean(true);
+        assert_eq!(truth.as_boolean(), Some(true));
+        assert!(!truth.is_nil());
+        let three: Value<'static> = Value::small_integer(3);
+        assert_eq!(three.as_small_integer(), Some(3));
+        assert_eq!(three.as_boolean(), None);
+        assert!(three.as_object().is_none());
+        assert!(matches!(three.kind(), ValueKind::SmallInteger(3)));
+        assert!(matches!(
+            Value::<'static>::boolean(false).kind(),
+            ValueKind::Boolean(false)
+        ));
+        assert!(matches!(Value::<'static>::nil().kind(), ValueKind::Nil));
     }
 }

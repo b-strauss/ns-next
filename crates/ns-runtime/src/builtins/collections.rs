@@ -8,15 +8,38 @@ use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
+/// An index, size or count argument as a leaf reads it. A `LargeInteger`
+/// is an Integer that no index, size or count can reach, so a leaf refuses
+/// it in the words it refuses an out-of-range `SmallInteger`, never as
+/// something that is no Integer.
+pub(crate) enum IntegerArgument {
+    Small(i64),
+    Large { negative: bool },
+}
+
+pub(crate) fn integer_argument<'gc>(
+    heap: &Heap<'gc>,
+    argument: Option<Value<'gc>>,
+) -> Option<IntegerArgument> {
+    let argument = argument?;
+    if let Some(number) = argument.as_small_integer() {
+        return Some(IntegerArgument::Small(number));
+    }
+    let integer = heap.large_integer(argument.as_object()?)?;
+    Some(IntegerArgument::Large {
+        negative: integer.is_negative(),
+    })
+}
+
 pub(crate) fn out_of_range<'gc>(
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    index: i64,
+    index: impl std::fmt::Display,
     length: usize,
 ) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "index {index} out of range: valid indices are 1..{length} (size {length})"
         ),
@@ -25,13 +48,13 @@ pub(crate) fn out_of_range<'gc>(
 
 pub(crate) fn not_an_integer<'gc>(
     heap: &Heap<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    got: Option<&Value<'gc>>,
+    got: Option<Value<'gc>>,
 ) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "{selector} requires an Integer index, got {}",
             heap.describe_argument(got)
@@ -44,13 +67,11 @@ fn size<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
+    let object = receiver.as_object()?;
     mutator
         .heap
-        .array_length(*object)
-        .map(|length| Ok(Value::SmallInteger(length as i64)))
+        .array_length(object)
+        .map(|length| Ok(Value::small_integer(length as i64)))
 }
 
 /// `at:` -- same payload as `size`.
@@ -60,23 +81,34 @@ fn element_at<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
-    let length = mutator.heap.array_length(*object)?;
-    Some(match arguments.first() {
-        Some(Value::SmallInteger(index)) => {
-            if *index >= 1 && (*index as usize) <= length {
-                Ok(mutator
-                    .heap
-                    .array_at(*object, (*index as usize) - 1)
-                    .unwrap_or(Value::Nil))
-            } else {
-                Err(out_of_range(&receiver, selector, *index, length))
+    let object = receiver.as_object()?;
+    let length = mutator.heap.array_length(object)?;
+    Some(
+        match integer_argument(&mutator.heap, arguments.first().copied()) {
+            Some(IntegerArgument::Small(index)) => {
+                if index >= 1 && (index as usize) <= length {
+                    Ok(mutator
+                        .heap
+                        .array_at(object, (index as usize) - 1)
+                        .unwrap_or(Value::nil()))
+                } else {
+                    Err(out_of_range(receiver, selector, index, length))
+                }
             }
-        }
-        other => Err(not_an_integer(&mutator.heap, &receiver, selector, other)),
-    })
+            Some(IntegerArgument::Large { .. }) => Err(out_of_range(
+                receiver,
+                selector,
+                mutator.heap.describe_argument(arguments.first().copied()),
+                length,
+            )),
+            None => Err(not_an_integer(
+                &mutator.heap,
+                receiver,
+                selector,
+                arguments.first().copied(),
+            )),
+        },
+    )
 }
 
 /// `at:put:`.
@@ -86,26 +118,32 @@ fn element_at_put<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
-    let length = mutator.heap.array_length(*object)?;
-    let index = match arguments.first() {
-        Some(Value::SmallInteger(index)) => *index,
-        other => {
+    let object = receiver.as_object()?;
+    let length = mutator.heap.array_length(object)?;
+    let index = match integer_argument(&mutator.heap, arguments.first().copied()) {
+        Some(IntegerArgument::Small(index)) => index,
+        Some(IntegerArgument::Large { .. }) => {
+            return Some(Err(out_of_range(
+                receiver,
+                selector,
+                mutator.heap.describe_argument(arguments.first().copied()),
+                length,
+            )));
+        }
+        None => {
             return Some(Err(not_an_integer(
                 &mutator.heap,
-                &receiver,
+                receiver,
                 selector,
-                other,
-            )))
+                arguments.first().copied(),
+            )));
         }
     };
     if index < 1 || (index as usize) > length {
-        return Some(Err(out_of_range(&receiver, selector, index, length)));
+        return Some(Err(out_of_range(receiver, selector, index, length)));
     }
-    let value = arguments.get(1).copied().unwrap_or(Value::Nil);
-    mutator.heap.array_set(*object, (index as usize) - 1, value);
+    let value = arguments.get(1).copied().unwrap_or(Value::nil());
+    mutator.heap.array_set(object, (index as usize) - 1, value);
     Some(Ok(receiver))
 }
 
@@ -121,9 +159,7 @@ fn allocate<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(class) = receiver else {
-        return None;
-    };
+    let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::Array) {
         return None;
     }
@@ -132,13 +168,21 @@ fn allocate<'gc>(
         receiver,
         message,
     };
-    let size = match arguments.first() {
-        Some(Value::SmallInteger(size)) => *size,
-        other => {
+    let size = match integer_argument(&mutator.heap, arguments.first().copied()) {
+        Some(IntegerArgument::Small(size)) => size,
+        Some(IntegerArgument::Large { negative }) => {
+            let described = mutator.heap.describe_argument(arguments.first().copied());
+            return Some(Err(refusal(if negative {
+                format!("{selector} requires a size of at least 0, got {described}")
+            } else {
+                format!("{selector} cannot allocate an Array of {described} elements")
+            })));
+        }
+        None => {
             return Some(Err(refusal(format!(
                 "{selector} requires an Integer size, got {}",
-                mutator.heap.describe_argument(other)
-            ))))
+                mutator.heap.describe_argument(arguments.first().copied())
+            ))));
         }
     };
     if size < 0 {
@@ -161,8 +205,8 @@ fn allocate<'gc>(
     if elements.try_reserve_exact(length).is_err() {
         return Some(Err(cannot_allocate()));
     }
-    elements.resize(length, Value::Nil);
-    Some(Ok(Value::Object(mutator.new_array(elements))))
+    elements.resize(length, Value::nil());
+    Some(Ok(Value::object(mutator.new_array(elements))))
 }
 
 /// Lifts a leaf's result into the step it is, so `execute`'s leaf arms don't
@@ -208,10 +252,8 @@ fn do_step<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
-    let items = mutator.heap.array_elements(*object)?;
+    let object = receiver.as_object()?;
+    let items = mutator.heap.array_elements(object)?;
     let Some(block) = arguments.first().copied() else {
         return Some(Err(Signal::Error(NewspeakError {
             selector,
@@ -226,14 +268,14 @@ fn do_step<'gc>(
     }
     // A non-block stands for its own value, so handing it the elements
     // observes nothing: the loop is over before it starts.
-    let Value::Object(block) = block else {
+    let Some(block) = block.as_object() else {
         return Some(Ok(Step::Value(receiver)));
     };
     if !mutator.heap.is_closure(block) {
         // A future stands for its value, which may well be a block: taking
         // it for a non-block would skip every element. Declining hands it
         // to its caller's failure path, which sees through it.
-        if mutator.as_future(Value::Object(block)).is_some() {
+        if mutator.as_future(Value::object(block)).is_some() {
             return None;
         }
         return Some(Ok(Step::Value(receiver)));

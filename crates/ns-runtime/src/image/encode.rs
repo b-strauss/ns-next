@@ -5,11 +5,11 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::Heap;
+use crate::heap::{Heap, Word};
 use crate::interpreter::future;
 use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
-    ObjectReference, SourceOrigin, Value,
+    ObjectReference, SourceOrigin, Value, ValueKind,
 };
 use crate::{ArbitraryInteger, Mutator, Symbol};
 
@@ -140,23 +140,23 @@ pub fn encode_source_origin(writer: &mut Writer, origin: &SourceOrigin) {
     }
 }
 
-/// Encodes the four non-`Object` `Value` variants (tags 0-4); returns `false`
-/// for `Value::Object`, which `encode_value` (the object-graph encoder)
+/// Encodes the four kinds of `Value` that are no object (tags 0-4); returns
+/// `false` for an object, which `encode_value` (the object-graph encoder)
 /// handles.
-pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: &Value<'gc>) -> bool {
-    match value {
-        Value::Nil => writer.write_u8(VALUE_NIL),
-        Value::Boolean(false) => writer.write_u8(VALUE_FALSE),
-        Value::Boolean(true) => writer.write_u8(VALUE_TRUE),
-        Value::SmallInteger(integer) => {
+pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: Value<'gc>) -> bool {
+    match value.kind() {
+        ValueKind::Nil => writer.write_u8(VALUE_NIL),
+        ValueKind::Boolean(false) => writer.write_u8(VALUE_FALSE),
+        ValueKind::Boolean(true) => writer.write_u8(VALUE_TRUE),
+        ValueKind::SmallInteger(integer) => {
             writer.write_u8(VALUE_SMALL_INTEGER);
-            writer.write_i64(*integer);
+            writer.write_i64(integer);
         }
-        Value::Float(float) => {
+        ValueKind::SmallFloat(float) => {
             writer.write_u8(VALUE_FLOAT);
-            writer.write_f64(*float);
+            writer.write_f64(float);
         }
-        Value::Object(_) => return false,
+        ValueKind::Object(_) => return false,
     }
     true
 }
@@ -810,10 +810,17 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
             writer.write_u8(LITERAL_SYMBOL);
             writer.write_u32(symbols.intern(symbol.as_str()));
         }
-        Literal::LargeInteger(integer) => {
-            writer.write_u8(LITERAL_LARGE_INTEGER);
-            write_large_integer(writer, integer);
-        }
+        // One that fits `i64` travels as an `i64` (`encode_value`).
+        Literal::LargeInteger(integer) => match integer.to_i64() {
+            Some(number) => {
+                writer.write_u8(LITERAL_SMALL_INTEGER);
+                writer.write_i64(number);
+            }
+            None => {
+                writer.write_u8(LITERAL_LARGE_INTEGER);
+                write_large_integer(writer, integer);
+            }
+        },
         Literal::UnresolvedIdentifier(name) => {
             writer.write_u8(LITERAL_UNRESOLVED_IDENTIFIER);
             writer.write_str(name);
@@ -826,8 +833,8 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
 // "Sections").
 // ---------------------------------------------------------------------------
 
-fn is_same_object<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
-    matches!((first, second), (Value::Object(left), Value::Object(right)) if left.same(*right))
+fn is_same_object<'gc>(first: Value<'gc>, second: Value<'gc>) -> bool {
+    matches!((first.as_object(), second.as_object()), (Some(left), Some(right)) if left.same(right))
 }
 
 /// One entry of `GraphTable::build`'s explicit work stack: the traversal
@@ -1011,7 +1018,7 @@ impl<'gc> GraphTable<'gc> {
     pub fn build(
         heap: &Heap<'gc>,
         roots: &[Value<'gc>],
-        platform: &Value<'gc>,
+        platform: Value<'gc>,
         modules: &ModuleClasses<'gc>,
         platform_paths: PlatformPaths<'gc>,
     ) -> GraphTable<'gc> {
@@ -1034,7 +1041,7 @@ impl<'gc> GraphTable<'gc> {
         while let Some(pending) = stack.pop() {
             match pending {
                 Pending::Value(value) => {
-                    table.visit_value(heap, &value, platform, modules, &mut stack)
+                    table.visit_value(heap, value, platform, modules, &mut stack)
                 }
                 Pending::Frame(frame) => table.visit_frame(heap, frame, &mut stack),
             }
@@ -1045,19 +1052,22 @@ impl<'gc> GraphTable<'gc> {
     fn visit_value(
         &mut self,
         heap: &Heap<'gc>,
-        value: &Value<'gc>,
-        platform: &Value<'gc>,
+        value: Value<'gc>,
+        platform: Value<'gc>,
         modules: &ModuleClasses<'gc>,
         stack: &mut Vec<Pending<'gc>>,
     ) {
         // A resolved future is never entered: every reference to one is
         // written as its value (`encode_value`), so its value is what the
         // graph holds.
-        let value = &future::seen_through(heap, *value);
-        let Value::Object(object) = value else { return };
-        // A value, not a record: `encode_value` writes its digits wherever it
-        // is referenced, so it takes no object id (§3.1.1).
-        if heap.is_large_integer(*object) {
+        let value = future::seen_through(heap, value);
+        let Some(object) = value.as_object() else {
+            return;
+        };
+        // A value, not a record: `encode_value` writes its digits, or a
+        // boxed float's bits, wherever it is referenced, so it takes no
+        // object id (§3.1.1).
+        if heap.is_large_integer(object) || heap.is_boxed_float(object) {
             return;
         }
         if is_same_object(value, platform) {
@@ -1065,36 +1075,36 @@ impl<'gc> GraphTable<'gc> {
         }
         // Named by its path, like the platform by its tag: the loading
         // platform answers it, so the image carries nothing of it.
-        if self.use_platform_path(heap, *object) {
+        if self.use_platform_path(heap, object) {
             return;
         }
-        if is_class_tag(heap, *object, modules, &self.platform_paths) {
+        if is_class_tag(heap, object, modules, &self.platform_paths) {
             if self.unnameable.is_none() {
-                self.unnameable = unnameable_class(heap, *object);
+                self.unnameable = unnameable_class(heap, object);
             }
             // The metaclass of a class a path names is written as a
             // reference through that path (`CLASS_METACLASS`).
-            if let Some(this_class) = heap.class_this_class(*object) {
+            if let Some(this_class) = heap.class_this_class(object) {
                 self.use_platform_path(heap, this_class);
             }
             return;
         }
-        if let Some(refusal) = shipped_without_path(heap, *object) {
+        if let Some(refusal) = shipped_without_path(heap, object) {
             if self.shipped_without_path.is_none() {
                 self.shipped_without_path = Some(refusal);
             }
             return;
         }
-        let key = heap.object_identity_key(*object);
+        let key = heap.object_identity_key(object);
         if self.object_ids.contains_key(&key) {
             return;
         }
         self.object_ids
             .insert(key, u32_field("object table id", self.objects.len()));
-        self.objects.push(*object);
+        self.objects.push(object);
         let before = stack.len();
         {
-            let record = heap.object_snapshot(*object);
+            let record = heap.object_snapshot(object);
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
@@ -1113,11 +1123,11 @@ impl<'gc> GraphTable<'gc> {
             );
             let future = heap.class_builtin(record.class) == Some(BuiltinClass::Future);
             if !activation && !future {
-                stack.push(Pending::Value(Value::Object(record.class)));
+                stack.push(Pending::Value(Value::object(record.class)));
             }
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
-                    stack.extend(fields.iter().copied().map(Pending::Value));
+                    stack.extend(fields.iter().map(|word| Pending::Value(heap.load(*word))));
                 }
                 ObjectData::Closure(closure) => {
                     stack.push(Pending::Frame(closure.captured_frame));
@@ -1125,7 +1135,12 @@ impl<'gc> GraphTable<'gc> {
                     // the captured frame on both sides of the wire
                     // (`Heap::closure_home`), so it is never a reference of
                     // its own.
-                    stack.extend(closure.copied.iter().copied().map(Pending::Value));
+                    stack.extend(
+                        closure
+                            .copied
+                            .iter()
+                            .map(|word| Pending::Value(heap.load(*word))),
+                    );
                 }
                 // A metaclass record writes one reference, its class:
                 // everything else about it is derived from that class.
@@ -1133,18 +1148,21 @@ impl<'gc> GraphTable<'gc> {
                     stack.extend(
                         data.this_class
                             .iter()
-                            .map(|class| Pending::Value(Value::Object(*class))),
+                            .map(|class| Pending::Value(Value::object(*class))),
                     );
                 }
                 // A class object's three references; its metaclass is its
                 // header, pushed above like every object's class.
                 ObjectData::Class(data) => {
                     stack.extend(
-                        class_references(data).map(|class| Pending::Value(Value::Object(class))),
+                        class_references(data).map(|class| Pending::Value(Value::object(class))),
                     );
                 }
                 ObjectData::Activation(frame) => stack.push(Pending::Frame(*frame)),
-                ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
+                ObjectData::String(_)
+                | ObjectData::Symbol(_)
+                | ObjectData::LargeInteger(_)
+                | ObjectData::Float(_) => {}
             }
         }
         stack[before..].reverse();
@@ -1166,9 +1184,14 @@ impl<'gc> GraphTable<'gc> {
         let before = stack.len();
         {
             let snapshot = heap.frame_snapshot(frame);
-            stack.push(Pending::Value(snapshot.receiver));
-            stack.extend(snapshot.arguments.iter().copied().map(Pending::Value));
-            stack.extend(snapshot.temporaries.iter().copied().map(Pending::Value));
+            stack.push(Pending::Value(heap.load(snapshot.receiver)));
+            stack.extend(
+                snapshot
+                    .arguments
+                    .iter()
+                    .chain(snapshot.temporaries.iter())
+                    .map(|word| Pending::Value(heap.load(*word))),
+            );
             stack.extend(
                 snapshot
                     .sender
@@ -1182,13 +1205,13 @@ impl<'gc> GraphTable<'gc> {
                     .current_class
                     .iter()
                     .copied()
-                    .map(|class| Pending::Value(Value::Object(class))),
+                    .map(|class| Pending::Value(Value::object(class))),
             );
             match &snapshot.kind {
                 // The closure object a closure activation runs is a record
                 // of its own, so it needs an id like any other object.
                 FrameKind::Closure(closure) => {
-                    stack.push(Pending::Value(Value::Object(*closure)));
+                    stack.push(Pending::Value(Value::object(*closure)));
                 }
                 // The class-carrying kinds name a class the same way
                 // `current_class` does, so the class needs an id the same way.
@@ -1196,7 +1219,7 @@ impl<'gc> GraphTable<'gc> {
                 | FrameKind::SuperclassClause(class)
                 | FrameKind::SuperclassMessage(class)
                 | FrameKind::MixinApplicationMessage(class) => {
-                    stack.push(Pending::Value(Value::Object(*class)));
+                    stack.push(Pending::Value(Value::object(*class)));
                 }
                 FrameKind::Method(_) | FrameKind::TopLevel => {}
             }
@@ -1285,7 +1308,7 @@ impl<'gc> GraphTable<'gc> {
 pub struct EncodeContext<'a, 'gc> {
     pub table: &'a GraphTable<'gc>,
     pub code_ids: &'a CodeIds,
-    pub platform: &'a Value<'gc>,
+    pub platform: Value<'gc>,
     /// Each carried module's root class and levels: what a class tag names
     /// by module index (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`).
     pub modules: &'a ModuleClasses<'gc>,
@@ -1383,45 +1406,65 @@ fn encode_optional_class<'gc>(
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
 /// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton, 8 = an
 /// object a platform path names, a class object's included, 9 = a
-/// `LargeInteger`'s digits.
+/// `LargeInteger`'s digits. A boxed float travels as tag 4, as every float
+/// does.
 ///
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
 /// keeps the encoding canonical.
-fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeContext<'_, 'gc>) {
+fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeContext<'_, 'gc>) {
     // A resolved future is written as its value, which is what the graph
     // walk recorded in its place (`GraphTable::visit_value`).
-    let value = &future::seen_through(context.heap, *value);
+    let value = future::seen_through(context.heap, value);
     if encode_scalar_value(writer, value) {
         return;
     }
-    let Value::Object(object) = value else {
+    let Some(object) = value.as_object() else {
         unreachable!("encode_scalar_value handles every non-Obj case")
     };
     // Written by value wherever it is referenced: two references to one
     // `LargeInteger` object load as two equal integers, which is all a value
-    // without identity can promise.
-    if let Some(integer) = context.heap.large_integer(*object) {
-        writer.write_u8(VALUE_LARGE_INTEGER);
-        write_large_integer(writer, &integer);
+    // without identity can promise. One that fits `i64` is written as an
+    // `i64`: the wire keeps one canonical encoding per integer, independent
+    // of where a `SmallInteger` ends, and the decoder decides by that range
+    // which representation it loads as.
+    if let Some(integer) = context.heap.large_integer(object) {
+        match integer.to_i64() {
+            Some(number) => {
+                writer.write_u8(VALUE_SMALL_INTEGER);
+                writer.write_i64(number);
+            }
+            None => {
+                writer.write_u8(VALUE_LARGE_INTEGER);
+                write_large_integer(writer, &integer);
+            }
+        }
+        return;
+    }
+    // A boxed float likewise, under the one tag every float travels as: the
+    // decoder's `Mutator::new_float` decides by the range again which
+    // representation it loads as.
+    if let Some(float) = context.heap.float_value(value) {
+        writer.write_u8(VALUE_FLOAT);
+        writer.write_f64(float);
         return;
     }
     if is_same_object(value, context.platform) {
         writer.write_u8(VALUE_PLATFORM);
         return;
     }
-    if let Some(index) = context.table.platform_path_index(context.heap, *object) {
+    if let Some(index) = context.table.platform_path_index(context.heap, object) {
         writer.write_u8(VALUE_PLATFORM_PATH);
         writer.write_u32(index);
         return;
     }
-    if context.heap.is_class(*object) {
+    if context.heap.is_class(object) {
         writer.write_u8(VALUE_CLASS_TAG);
-        encode_class_tag(writer, *object, context);
+        encode_class_tag(writer, object, context);
         return;
     }
     writer.write_u8(VALUE_OBJECT_ID);
-    writer.write_u32(context.table.object_id(context.heap, *object));
+    writer.write_u32(context.table.object_id(context.heap, object));
 }
 
 fn encode_values<'gc>(
@@ -1431,7 +1474,16 @@ fn encode_values<'gc>(
 ) {
     writer.write_u32(u32_field("value list length", values.len()));
     for value in values {
-        encode_value(writer, value, context);
+        encode_value(writer, *value, context);
+    }
+}
+
+/// `encode_values` for what a heap object stores, read through
+/// `Heap::load`.
+fn encode_words<'gc>(writer: &mut Writer, words: &[Word], context: &EncodeContext<'_, 'gc>) {
+    writer.write_u32(u32_field("value list length", words.len()));
+    for word in words {
+        encode_value(writer, context.heap.load(*word), context);
     }
 }
 
@@ -1473,8 +1525,8 @@ fn encode_closure_record<'gc>(
     writer.write_u32(context.code_ids.id_of(code)?);
     writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
     writer.write_u16(u16_field("closure copied value count", copied.len()));
-    for value in copied.iter() {
-        encode_value(writer, value, context);
+    for word in copied.iter() {
+        encode_value(writer, context.heap.load(*word), context);
     }
     Ok(())
 }
@@ -1566,7 +1618,7 @@ fn encode_class_record<'gc>(
     match &data.enclosing {
         Some(enclosing) => {
             writer.write_boolean(true);
-            encode_value(writer, &Value::Object(*enclosing), context);
+            encode_value(writer, Value::object(*enclosing), context);
         }
         None => writer.write_boolean(false),
     }
@@ -1624,7 +1676,7 @@ fn encode_object<'gc>(
         }
         ObjectData::Instance(fields) => {
             writer.write_u8(OBJECT_INSTANCE);
-            encode_values(writer, fields, context);
+            encode_words(writer, fields, context);
         }
         ObjectData::String(string) => {
             writer.write_u8(OBJECT_STRING);
@@ -1638,7 +1690,7 @@ fn encode_object<'gc>(
         }
         ObjectData::Array(elements) => {
             writer.write_u8(OBJECT_ARRAY);
-            encode_values(writer, elements, context);
+            encode_words(writer, elements, context);
         }
         ObjectData::Closure(closure) => {
             writer.write_u8(OBJECT_CLOSURE);
@@ -1666,6 +1718,10 @@ fn encode_object<'gc>(
         ObjectData::LargeInteger(_) => {
             unreachable!("a LargeInteger is written as a value, never as an object record")
         }
+        // Likewise a boxed `Float`, whose bits `encode_value` writes.
+        ObjectData::Float(_) => {
+            unreachable!("a boxed Float is written as a value, never as an object record")
+        }
     }
     Ok(())
 }
@@ -1677,9 +1733,9 @@ fn encode_frame<'gc>(
     symbols: &mut symbols::Builder,
 ) {
     let snapshot = context.heap.frame_snapshot(frame);
-    encode_value(writer, &snapshot.receiver, context);
-    encode_values(writer, &snapshot.arguments, context);
-    encode_values(writer, &snapshot.temporaries, context);
+    encode_value(writer, context.heap.load(snapshot.receiver), context);
+    encode_words(writer, &snapshot.arguments, context);
+    encode_words(writer, &snapshot.temporaries, context);
     writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not
@@ -1743,14 +1799,14 @@ pub fn encode_graph_section<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,
     roots: &[Value<'gc>],
-    platform: &Value<'gc>,
+    platform: Value<'gc>,
     code_ids: &CodeIds,
     modules: &ModuleClasses<'gc>,
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<UsedPlatformPaths<'gc>, String> {
-    let paths = match platform {
-        Value::Object(platform) => platform_paths::discover(heap, *platform),
+    let paths = match platform.as_object() {
+        Some(platform) => platform_paths::discover(heap, platform),
         _ => PlatformPaths::empty(),
     };
     let table = GraphTable::build(heap, roots, platform, modules, paths);
@@ -1837,7 +1893,7 @@ pub fn encode_tag_named_hashes<'gc>(
     writer: &mut Writer,
     mutator: &Mutator<'gc>,
     modules: &ModuleClasses<'gc>,
-    platform: &Value<'gc>,
+    platform: Value<'gc>,
     used_platform_objects: &[ObjectReference<'gc>],
 ) {
     let heap = &mutator.heap;
@@ -1882,9 +1938,9 @@ pub fn encode_tag_named_hashes<'gc>(
             }
         }
     }
-    if let Value::Object(platform) = platform {
-        entered.insert(heap.object_identity_key(*platform));
-        let hash = heap.identity_hash(*platform);
+    if let Some(platform) = platform.as_object() {
+        entered.insert(heap.object_identity_key(platform));
+        let hash = heap.identity_hash(platform);
         if hash != 0 {
             entries.push((HASHED_PLATFORM, Vec::new(), hash));
         }

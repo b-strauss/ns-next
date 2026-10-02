@@ -3,7 +3,7 @@
 //! `Interpreter::send`.
 
 use indoc::indoc;
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
     match result {
@@ -19,16 +19,16 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 fn string(interpreter: &mut Interpreter, text: &str) -> Root {
     interpreter.enter(|mutator| {
         let object = mutator.new_string(text.to_string());
-        mutator.stash(Value::Object(object))
+        mutator.stash(Value::object(object))
     })
 }
 
-fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
-    match value {
-        Value::Object(object) => heap
-            .str_value(*object)
+fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
+    match value.kind() {
+        ValueKind::Object(object) => heap
+            .str_value(object)
             .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
-        other => panic!("expected Value::Object, got {}", heap.describe(other)),
+        _ => panic!("expected an object, got {}", heap.describe(value)),
     }
 }
 
@@ -61,10 +61,10 @@ fn instantiate_and_send(interpreter: &mut Interpreter, class: &Root, selector: &
     )
 }
 
-fn as_boolean<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> bool {
-    match value {
-        Value::Boolean(boolean) => *boolean,
-        other => panic!("expected Value::Boolean, got {}", heap.describe(other)),
+fn as_boolean<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> bool {
+    match value.kind() {
+        ValueKind::Boolean(boolean) => boolean,
+        _ => panic!("expected a boolean, got {}", heap.describe(value)),
     }
 }
 
@@ -84,7 +84,7 @@ fn equal_symbols_are_identical() {
     let literal_and_derived = instantiate_and_send(&mut interpreter, &class, "literalAndDerived");
     interpreter.enter(|mutator| {
         assert!(
-            as_boolean(mutator.heap(), &mutator.fetch(&literal_and_derived)),
+            as_boolean(mutator.heap(), mutator.fetch(&literal_and_derived)),
             "#foo == 'foo' asSymbol must be true: a symbol literal and its \
              derived equivalent are one object"
         );
@@ -93,7 +93,7 @@ fn equal_symbols_are_identical() {
     let two_derived = instantiate_and_send(&mut interpreter, &class, "twoDerived");
     interpreter.enter(|mutator| {
         assert!(
-            as_boolean(mutator.heap(), &mutator.fetch(&two_derived)),
+            as_boolean(mutator.heap(), mutator.fetch(&two_derived)),
             "'bar' asSymbol == 'bar' asSymbol must be true: two derivations \
              of the same text are one object"
         );
@@ -117,7 +117,7 @@ fn does_not_understand_hands_the_literals_selector_object() {
     let probe = instantiate_and_send(&mut interpreter, &class, "probe");
     interpreter.enter(|mutator| {
         assert!(
-            as_boolean(mutator.heap(), &mutator.fetch(&probe)),
+            as_boolean(mutator.heap(), mutator.fetch(&probe)),
             "the doesNotUnderstand: message's selector must be the same \
              object as the #frobnicate literal"
         );
@@ -135,7 +135,7 @@ fn string_concatenation_joins_two_strings() {
 
     let joined = expect_ok(result, "'foo' , 'bar'");
     interpreter.enter(|mutator| {
-        assert_eq!(as_string(mutator.heap(), &mutator.fetch(&joined)), "foobar");
+        assert_eq!(as_string(mutator.heap(), mutator.fetch(&joined)), "foobar");
     });
 }
 
@@ -148,13 +148,13 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
     let result = interpreter.send(
         &foo,
         Symbol::intern(","),
-        &[interpreter.stash(Value::SmallInteger(42))],
+        &[interpreter.stash(Value::small_integer(42))],
     );
 
     match result {
         Err(HostSignal::Error(_)) => {}
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a Newspeak error for 'foo' , 42, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -163,7 +163,7 @@ fn string_concatenation_with_a_non_string_argument_is_a_newspeak_error_not_a_pan
 
 #[test]
 fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
-    // This message must not `{:?}`-format the argument: a `Value::Object`
+    // This message must not `{:?}`-format the argument: an object
     // there would recurse through `Object`'s self-referential bootstrap
     // class until the stack gives out, aborting the process instead of
     // reporting. Every other test here passes a `SmallInteger`, which formats
@@ -173,7 +173,7 @@ fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
     let foo = string(&mut interpreter, "foo");
     let argument = interpreter.enter(|mutator| {
         let object = mutator.new_array(vec![]);
-        mutator.stash(Value::Object(object))
+        mutator.stash(Value::object(object))
     });
 
     let result = interpreter.send(&foo, Symbol::intern(","), &[argument]);
@@ -185,7 +185,7 @@ fn concatenating_a_string_with_an_object_is_an_error_not_a_stack_overflow() {
             error.message
         ),
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a Newspeak error for 'foo' , anArray, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -204,13 +204,19 @@ fn string_equality_compares_payloads() {
         interpreter.send(&same, Symbol::intern("="), &[same_again]),
         "'same' = 'same'",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&equal), Value::Boolean(true))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&equal).as_boolean()),
+        Some(true)
+    );
 
     let not_equal = expect_ok(
         interpreter.send(&same, Symbol::intern("="), &[different]),
         "'same' = 'different'",
     );
-    assert!(interpreter.enter(|mutator| matches!(mutator.fetch(&not_equal), Value::Boolean(false))));
+    assert_eq!(
+        interpreter.enter(|mutator| mutator.fetch(&not_equal).as_boolean()),
+        Some(false)
+    );
 }
 
 #[test]
@@ -227,10 +233,7 @@ fn string_print_string_quotes_and_doubles_embedded_quotes() {
     // Mirrors `ns_syntax::lexer::Lexer::lex_string`'s own escaping rule: an
     // embedded `'` is written as two consecutive `'` characters.
     interpreter.enter(|mutator| {
-        assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&result)),
-            "'it''s'"
-        );
+        assert_eq!(as_string(mutator.heap(), mutator.fetch(&result)), "'it''s'");
     });
 }
 
@@ -249,7 +252,7 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&as_str)),
+            as_string(mutator.heap(), mutator.fetch(&as_str)),
             "foo:bar:"
         );
     });
@@ -258,17 +261,17 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
         interpreter.send(&as_str, Symbol::intern("asSymbol"), &[]),
         "'foo:bar:' asSymbol",
     );
-    interpreter.enter(|mutator| match mutator.fetch(&back_to_symbol) {
-        Value::Object(object) => match mutator.heap().symbol_value(object) {
+    interpreter.enter(|mutator| match mutator.fetch(&back_to_symbol).kind() {
+        ValueKind::Object(object) => match mutator.heap().symbol_value(object) {
             Some(symbol) => assert_eq!(symbol, Symbol::intern("foo:bar:")),
             None => panic!(
                 "expected ObjectData::Symbol, got {}",
-                mutator.heap().describe(&Value::Object(object))
+                mutator.heap().describe(Value::object(object))
             ),
         },
-        other => panic!(
-            "expected Value::Object, got {}",
-            mutator.heap().describe(&other)
+        _ => panic!(
+            "expected an object, got {}",
+            mutator.heap().describe(mutator.fetch(&back_to_symbol))
         ),
     });
 }

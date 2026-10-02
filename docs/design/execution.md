@@ -99,7 +99,7 @@ activation from the block's own `outer_reach` ("Pop" below).
 ```rust
 // heap.rs -- every field private to the module
 struct ActivationStack {
-    values:  Vec<Value>,       // every live activation's registers, contiguously
+    values:  Vec<Word>,        // every live activation's registers, contiguously
     entries: Vec<StackEntry>,  // one per live activation, innermost last
     counted: usize,            // how many entries count against the depth limit
 }
@@ -771,6 +771,90 @@ operating system; data layout, which `-C metadata` does not vary (above);
 and, for the `bench` figures, what each timed `main:args:` does once per
 application -- instantiating the harness and the benchmark module --
 which they include and whose share was not measured.
+
+### What the eight-byte value moved
+
+Measured on 2026-10-02 on the machine of the baseline above (Windows 11,
+Intel Core Ultra 9 285K): the tree the branch `eight-byte-value` started
+from, `2204e8f` (the same code as `1792df5`), against the branch at
+`16c6022`, in one sitting. Three pinned release builds of each tree, told
+apart by `-C metadata=alpha`, `beta` and `gamma`, each checked to import no
+`VCRUNTIME140.dll` and to print the expected output for every source.
+Three rounds, the six binaries' order rotated by one from round to round; in
+each round every binary ran `bench --iterations 10 -- <Name>` for each of
+the sixteen programs, `bench --iterations 30` for the eight microbenchmark
+sources (the four fixtures under `goldens/tool/bench/` and the four of
+"What spec-conformant lookup moved"), and the harness's `--timed` over all
+sixteen. Each figure below is the median of a tree's nine values (three
+builds times three rounds), with their range.
+
+| Source | Before, ms | Range | After, ms | Range | Change |
+|---|---|---|---|---|---|
+| Bounce | 1.49 | 1.46–2.03 | 1.09 | 1.07–1.11 | **−26.9%** |
+| CD | 4,910 | 4,879–5,024 | 4,234 | 4,192–4,356 | **−13.8%** |
+| DeltaBlue | 899 | 889–974 | 741 | 729–776 | **−17.5%** |
+| DeltaBlueTon80 | 8.30 | 8.13–8.49 | 6.92 | 6.86–7.09 | **−16.7%** |
+| Havlak | 5,293 | 5,162–5,693 | 4,251 | 4,182–4,417 | **−19.7%** |
+| Json | 14.3 | 14.1–14.7 | 10.7 | 10.4–10.9 | **−24.9%** |
+| List | 1.27 | 1.26–1.28 | 0.99 | 0.98–1.00 | **−22.1%** |
+| Mandelbrot | 4,033 | 4,005–4,085 | 3,275 | 3,210–3,360 | **−18.8%** |
+| NBody | 2,659 | 2,644–2,690 | 2,339 | 2,319–2,346 | **−12.0%** |
+| Permute | 2.98 | 2.92–3.10 | 2.42 | 2.38–2.44 | **−18.8%** |
+| Queens | 2.52 | 2.46–2.58 | 2.05 | 2.02–2.07 | **−18.9%** |
+| Richards | 91.6 | 90.4–95.1 | 77.8 | 76.5–80.2 | **−15.1%** |
+| RichardsTon80 | 6.21 | 6.06–6.68 | 4.57 | 4.46–4.71 | **−26.4%** |
+| Sieve | 1.65 | 1.64–1.69 | 1.33 | 1.30–1.39 | **−19.5%** |
+| Storage | 2.00 | 1.97–2.08 | 1.62 | 1.60–1.65 | **−18.9%** |
+| Towers | 4.44 | 4.29–4.54 | 3.76 | 3.63–3.90 | **−15.3%** |
+| `bench_block.ns` | 12.1 | 11.9–12.3 | 10.5 | 10.4–10.6 | **−13.6%** |
+| `bench_loop.ns` | 3.60 | 3.52–3.78 | 2.26 | 2.25–2.37 | **−37.1%** |
+| `bench_megamorphic.ns` | 7.66 | 7.52–9.63 | 5.32 | 5.29–5.53 | **−30.5%** |
+| `bench_send.ns` | 4.94 | 4.81–6.93 | 3.47 | 3.41–3.50 | **−29.8%** |
+| `bench_do.ns` | 4.59 | 4.48–4.79 | 3.93 | 3.84–4.02 | **−14.4%** |
+| `bench_new.ns` | 3.94 | 3.91–4.10 | 3.31 | 3.27–3.33 | **−16.0%** |
+| `bench_new2.ns` | 4.92 | 4.78–5.02 | 4.13 | 4.04–4.25 | **−16.0%** |
+| `bench_newarg.ns` | 6.71 | 6.61–6.88 | 5.92 | 5.80–6.00 | **−11.9%** |
+
+Every source got faster, and on every one the two trees' ranges are
+disjoint: the sixteen programs by 12% (NBody) to 27% (Bounce), the
+microbenchmarks by 12% (`bench_newarg.ns`) to 37% (`bench_loop.ns`). The
+largest gains are on the paths the store-forwarding stall sat on ("Where
+the 3% goes"): `bench_loop.ns`, whose loop is `IntegerBinary` and
+register traffic, and the send-heavy `bench_send.ns` and
+`bench_megamorphic.ns`. The three builds of a tree lie within 4.5% of each
+other on every source (`bench_send.ns` and `bench_loop.ns` before the
+branch the widest), far less than any change. The `--timed` scores agree, for the eleven programs
+whose score is a throughput over many runs (the other five, one run's rate
+to one fraction digit, are read from `bench` above):
+
+| Benchmark | Before, runs/s | After, runs/s | Change |
+|---|---|---|---|
+| Bounce | 696.3 | 955.4 | **+37.2%** |
+| DeltaBlueTon80 | 109.1 | 130.8 | **+19.9%** |
+| Json | 70.0 | 93.7 | **+33.9%** |
+| List | 806.7 | 1014.3 | **+25.7%** |
+| Permute | 329.3 | 407.0 | **+23.6%** |
+| Queens | 403.1 | 488.1 | **+21.1%** |
+| Richards | 11.0 | 13.0 | **+18.2%** |
+| RichardsTon80 | 161.0 | 217.7 | **+35.2%** |
+| Sieve | 615.8 | 760.2 | **+23.4%** |
+| Storage | 506.9 | 621.4 | **+22.6%** |
+| Towers | 226.1 | 270.3 | **+19.5%** |
+
+`vm::run` is one function of 6,978 instructions at `16c6022`, against the
+7,143 last recorded ("What the loop over locals moved"), with no
+`vm::run::closure` and no `run_stretch` of its own (`dumpbin /disasm` of a
+pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`). The
+tagged operations (`Value::small_integer_sum` and its siblings) also exist
+as functions of their own, because `builtins/numbers.rs` passes them to its
+shared arithmetic as function values; `vm::run` calls none of them.
+
+What the measurement does not cover: one machine and one operating system;
+data layout, which `-C metadata` does not vary; for the `bench` figures,
+what each timed `main:args:` does once per application, as for the
+baseline; and which of the branch's changes -- the word itself, the bare
+words in the heap, the tagged arithmetic, passing a value by value -- gave
+how much, since only the two ends were measured.
 
 ### What a send costs, and where it goes
 
@@ -2877,7 +2961,7 @@ The compiler now recognizes the nine binary integer primitives
 (`+ - * // < > <= >= =`) at an ordinary explicit-receiver send and emits
 `Instruction::IntegerBinary` instead of a send, with the send kept as the
 fallback the instruction jumps to when either operand is not a
-`Value::SmallInteger` or the `checked_*` operation declines
+`SmallInteger` or the operation declines
 ([compiler.md](compiler.md), "Arithmetic inlining"). This is the step
 [core-library.md](core-library.md) sequences ahead of the move to a VM
 mirror: once every builtin method is Newspeak over a mirror, a leaf send
@@ -3932,9 +4016,10 @@ sites, and the literal `vm::make_value` answers. `decide_slot_accessor`
 stalls the same way inside (another quarter of the samples, most of them on
 two instructions), and so does `push_activation` on the activation
 description `push_step` writes as a doubleword and a quadword and reads as
-one 16-byte field. None of them moved with this branch. Handing a `Value`
-back in a form that is written the way it is read is an open performance
-item, not part of this measurement. This profile predates `1d7587f` (below,
+one 16-byte field. None of them moved with this branch. A value handed
+back in a form that is written the way it is read is what the one-word value
+gives ([object-model.md](object-model.md), "Values and objects"; "What the
+eight-byte value moved"). This profile predates `1d7587f` (below,
 "What exceptions cost"), which moved `decide_slot_accessor`'s error out of
 line and with it the spill inside the accessor; the shares above have not
 been profiled again since.
@@ -4730,12 +4815,13 @@ cost is not where the dispatch is:
 A decision that is a `Step::Value` must not pass through a joined stack
 slot, and must not reach `Step`'s drop glue. Delivering it where it is
 decided was tried and halted ("A send's value delivered where it is decided:
-tried and halted" below): the stall belongs to the 16-byte `Value` itself,
-which "Planned: an eight-byte value" ([object-model.md](object-model.md))
-removes. The dispatch findings -- the spilled `program_counter` and code
-pointer, the discriminant decoded through a niche -- are the input of
-"Planned: the compact instruction encoding" below. Until both land, an
-instruction arm is not free.
+tried and halted" below): the stall belonged to the 16-byte enum `Value`
+itself, and a value is now one tagged word, read and written whole
+([object-model.md](object-model.md), "Values and objects"); what that moved
+is "What the eight-byte value moved". The dispatch findings -- the spilled
+`program_counter` and code pointer, the discriminant decoded through a
+niche -- are the input of "Planned: the compact instruction encoding"
+below. Until it lands, an instruction arm is not free.
 
 ## The trampoline
 
@@ -5441,7 +5527,7 @@ file writes nothing above it.
 
 **`ClosureData` is 32 bytes**, so that an `Object` stays at 56 in a
 release build (`heap.rs`'s pinned size, the figure `CLAUDE.md`'s amplification
-paragraph is computed from). It carries `copied: Box<[Value]>` (16 bytes; an
+paragraph is computed from). It carries `copied: Box<[Word]>` (16 bytes; an
 empty one allocates nothing) in place of two fields that duplicated something
 already held: `parameters`, whose only use was its length, which the block
 code's `argument_count` already is, and which `Heap::closure_parameter_count`
@@ -5797,11 +5883,11 @@ the sending instruction's destination register and answer one byte, handing
 over only an activation or a signal whole, instead of coming back to the
 loop as a `Result<Step, Signal>`. It came from the profile in "What the loop
 over locals moved", "Where the 3% goes": the joined `Result<Step, Signal>`
-slot costs a store-forwarding stall on every send (28% of `vm::run`'s
+slot cost a store-forwarding stall on every send (28% of `vm::run`'s
 samples on `bench_loop.ns`) and a call of `Step`'s drop glue (4.7%), and it
-is where one more instruction arm moves the timing. What addresses that
-stall is the eight-byte value ([object-model.md](object-model.md),
-"Planned: an eight-byte value"); this section records the design and the
+was where one more instruction arm moved the timing. What addressed that
+stall is the one-word value ([object-model.md](object-model.md),
+"Values and objects"); this section records the design and the
 experiment that decided against it.
 
 **Prior art.** Primordial Soup's primitives push their result onto the
@@ -5849,35 +5935,36 @@ instructions and its frame from 0x3E8 to 0x7D8 bytes, with
 `Heap::instance_field` and `set_instance_field` left out of line (13.8% of
 samples) and `LoadLiteral`'s own stall (through `make_value`, 12.3% of
 `vm::run` on `master`, 18.6% after) untouched. What the experiment showed
-beyond the send path: LLVM copies a `Value` as its tag byte and two
-overlapping quadwords, so **any** `Value` that passes through a memory
-temporary stalls, and a sink helps only where delivery is inlined all the
+beyond the send path: LLVM copied the 16-byte enum `Value` as its tag byte and two
+overlapping quadwords, so **any** such `Value` that passed through a memory
+temporary stalled, and a sink helped only where delivery is inlined all the
 way to the register write. The user halted the plan there (2026-09-28): the
-stall is a property of the 16-byte `Value`, which "Planned: an eight-byte
-value" ([object-model.md](object-model.md)) removes everywhere. A revisit,
-should one be wanted after that, starts from the forced-inline variant's
-numbers above.
+stall is a property of a 16-byte enum `Value`, and the one-word value
+([object-model.md](object-model.md), "Values and objects") removes it
+everywhere. A revisit, should one be wanted, starts from the forced-inline
+variant's numbers above.
 
 ## Planned: the compact instruction encoding
 
-Would change: `Instruction`, today a Rust enum the run loop matches on, gets
-an encoding designed for dispatch. Not designed yet. It comes after the
-eight-byte value ([object-model.md](object-model.md), "Planned: an eight-byte
-value") and before the object space ([memory.md](memory.md), "Planned: the
-object space"), so that it is designed against the value representation the
-loop will actually move, and the interpreter stays the first tier in front of
-the JIT, as Cog's does. Its inputs are the dispatch findings of "Where the 3%
-goes" above: every dispatch decodes `Instruction`'s discriminant through a
-niche before its jump, and `vm::run` is large enough that `program_counter`
-and the code pointer are spilled to its stack frame. The design starts from
-how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
-an AST interpreter on Truffle, has no instruction encoding to compare. One
-more input: an integer literal beyond the immediate range keeps its digits
-in Rust-side literal data (`Literal::LargeInteger`) and `LoadLiteral`
-allocates its `LargeInteger` when it runs, which under the eight-byte value
-is every literal beyond 61 bits ([object-model.md](object-model.md),
-"Planned: an eight-byte value", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
-and a removed one retires its number.
+Would change: `Instruction`, today a Rust enum the run loop matches on, gets an
+encoding designed for dispatch. Not designed yet. It comes after the eight-byte
+value, which is built ([object-model.md](object-model.md), "Values and
+objects"), and before the object space ([memory.md](memory.md), "Planned: the
+object space"), so that it is designed against the value representation the loop
+actually moves -- one tagged word -- and the interpreter stays the first tier in
+front of the JIT, as Cog's does. Its inputs are the dispatch findings of "Where
+the 3% goes" above: every dispatch decodes `Instruction`'s discriminant through
+a niche before its jump, and `vm::run` is large enough that `program_counter`
+and the code pointer are spilled to its stack frame. The design starts from how
+Primordial Soup, Strongtalk and Cog encode their instructions; SOMns, an AST
+interpreter on Truffle, has no instruction encoding to compare. One more input:
+an integer literal beyond the immediate range keeps its digits in Rust-side
+literal data (`Literal::LargeInteger`) and `LoadLiteral` allocates its
+`LargeInteger` when it runs, which is every literal beyond 61 bits, and a float
+literal outside the `SmallFloat64` range allocates its boxed `Float` the same
+way ([object-model.md](object-model.md), "Values and objects", "Literals"). Wire
+tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag, and a
+removed one retires its number.
 
 ## Planned: tail calls, skipped but kept
 

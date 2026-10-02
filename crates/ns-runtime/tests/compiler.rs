@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use ns_runtime::bytecode::{CallSite, CodeKind, Instruction, Literal};
 use ns_runtime::dispatch::Lookup;
-use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, Value};
+use ns_runtime::{Interpreter, Mixin, Mutator, Root, SourceOrigin, Symbol, ValueKind};
 
 fn load(source: &str) -> (Interpreter, Root) {
     let module = ns_syntax::parse(source).expect("parse");
@@ -24,8 +24,8 @@ fn load(source: &str) -> (Interpreter, Root) {
 /// The object `root` holds, for the heap accessors that take one. Every
 /// caller is already inside an entry.
 fn object<'gc>(mutator: &Mutator<'gc>, root: &Root) -> ns_runtime::ObjectReference<'gc> {
-    match mutator.fetch(root) {
-        Value::Object(object) => object,
+    match mutator.fetch(root).kind() {
+        ValueKind::Object(object) => object,
         _ => panic!("expected an object"),
     }
 }

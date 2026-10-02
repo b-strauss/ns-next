@@ -43,7 +43,7 @@ pub(crate) fn execute<'gc>(
                 subject,
                 arguments,
             )
-            .map(|answer| Ok(Step::Value(Value::Boolean(answer))))
+            .map(|answer| Ok(Step::Value(Value::boolean(answer))))
         }
         // It reads its selector and renders its description, so a future in
         // either would be reported as a future rather than as the value it
@@ -72,13 +72,11 @@ pub(crate) fn execute<'gc>(
         // reached it.
         ActivationPrimitive::Terminate if mutator.unhandled_exceptions_to_resume > 0 => {
             mutator.unhandled_exceptions_to_resume -= 1;
-            Some(Ok(Step::Value(Value::Nil)))
+            Some(Ok(Step::Value(Value::nil())))
         }
         ActivationPrimitive::Terminate => Some(Err(terminate(mutator, arguments))),
         _ => {
-            let Value::Object(object) = subject else {
-                return None;
-            };
+            let object = subject.as_object()?;
             let frame = mutator.heap.activation_object_frame(object)?;
             let live = mutator.heap.frame_activation(frame);
             activation_leaf(mutator, primitive, subject, frame, live, arguments)
@@ -100,7 +98,7 @@ fn activation_leaf<'gc>(
         ActivationPrimitive::Sender => {
             match live.and_then(|activation| mutator.heap.activation_sender(activation)) {
                 Some(sender) => activation_object(mutator, sender),
-                None => Value::Nil,
+                None => Value::nil(),
             }
         }
         ActivationPrimitive::IsActiveHandler => {
@@ -109,8 +107,8 @@ fn activation_leaf<'gc>(
                     let (_, _, active_register) = handler_registers(mutator, activation)?;
                     Some(mutator.heap.activation_local(activation, active_register))
                 })
-                .is_some_and(|value| matches!(value, Value::Boolean(true)));
-            Value::Boolean(active)
+                .is_some_and(|value| value.as_boolean() == Some(true));
+            Value::boolean(active)
         }
         ActivationPrimitive::HandlerClass => {
             let activation = live?;
@@ -125,12 +123,10 @@ fn activation_leaf<'gc>(
         ActivationPrimitive::SetHandlerActive => {
             let activation = live?;
             let (_, _, active_register) = handler_registers(mutator, activation)?;
-            let Some(Value::Boolean(active)) = arguments.first() else {
-                return None;
-            };
+            let active = arguments.first().and_then(|value| value.as_boolean())?;
             mutator
                 .heap
-                .activation_set_local(activation, active_register, Value::Boolean(*active));
+                .activation_set_local(activation, active_register, Value::boolean(active));
             subject
         }
         // Both name the frame rather than the activation, as every unwind
@@ -167,7 +163,7 @@ fn activation_object<'gc>(
     activation: ActivationReference,
 ) -> Value<'gc> {
     let frame = mutator.heap.reify(activation);
-    Value::Object(mutator.new_activation_object(frame))
+    Value::object(mutator.new_activation_object(frame))
 }
 
 /// The registers of `activation`'s `on:do:` marker, if its code carries one.
@@ -195,14 +191,12 @@ fn inherits_mixin_of<'gc>(
     subject: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<bool> {
-    let Some(Value::Object(class)) = arguments.first() else {
-        return None;
-    };
-    if !mutator.heap.is_class(*class) {
+    let class = arguments.first().and_then(|value| value.as_object())?;
+    if !mutator.heap.is_class(class) {
         return None;
     }
-    let mixin = mutator.heap.class_application(*class)?.mixin.clone();
-    let mut current = Some(mutator.class_of(&subject));
+    let mixin = mutator.heap.class_application(class)?.mixin.clone();
+    let mut current = Some(mutator.class_of(subject));
     while let Some(level) = current {
         if let Some(application) = mutator.heap.class_application(level) {
             if Rc::ptr_eq(&application.mixin, &mixin) {
@@ -222,23 +216,23 @@ fn inherits_mixin_of<'gc>(
 /// Symbol's text as it is, anything else as `Heap::describe` names it --
 /// and a selector that is no Symbol is reported as `signal`'s.
 fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'gc> {
-    let argument = |position: usize| arguments.get(position).copied().unwrap_or(Value::Nil);
-    let selector = match argument(0) {
-        Value::Object(object) => mutator.heap.symbol_value(object),
-        _ => None,
-    }
-    .unwrap_or(Symbol::SIGNAL);
+    let argument = |position: usize| arguments.get(position).copied().unwrap_or(Value::nil());
+    let selector = argument(0)
+        .as_object()
+        .and_then(|object| mutator.heap.symbol_value(object))
+        .unwrap_or(Symbol::SIGNAL);
     let description = argument(2);
-    let message = match description {
-        Value::Object(object) => mutator.heap.str_value(object).or_else(|| {
-            mutator
-                .heap
-                .symbol_value(object)
-                .map(|symbol| symbol.to_string())
-        }),
-        _ => None,
-    }
-    .unwrap_or_else(|| mutator.heap.describe(&description));
+    let message = description
+        .as_object()
+        .and_then(|object| {
+            mutator.heap.str_value(object).or_else(|| {
+                mutator
+                    .heap
+                    .symbol_value(object)
+                    .map(|symbol| symbol.to_string())
+            })
+        })
+        .unwrap_or_else(|| mutator.heap.describe(description));
     Signal::Terminate(Box::new(NewspeakError {
         selector,
         receiver: argument(1),

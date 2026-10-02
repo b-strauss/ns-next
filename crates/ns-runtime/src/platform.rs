@@ -26,7 +26,7 @@ use std::io::Write;
 
 use crate::builtins::primitive::PlatformPrimitive;
 use crate::types::*;
-use crate::{Mutator, Symbol};
+use crate::{ArbitraryInteger, Mutator, Symbol};
 
 /// Runs `primitive` for whatever receiver the forwarder passed, which it
 /// answers. It never declines: an argument `show:` cannot write is an
@@ -54,17 +54,17 @@ fn stream<'gc>(
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     match primitive {
         PlatformPrimitive::Show => {
-            let text = match arguments.first() {
-                Some(Value::Object(string)) => mutator.heap().str_value(*string),
-                _ => None,
-            };
+            let text = arguments
+                .first()
+                .and_then(|value| value.as_object())
+                .and_then(|string| mutator.heap().str_value(string));
             let Some(text) = text else {
                 return Err(NewspeakError {
                     selector,
                     receiver,
                     message: format!(
                         "{selector} requires a String, got {}",
-                        mutator.heap().describe_argument(arguments.first())
+                        mutator.heap().describe_argument(arguments.first().copied())
                     ),
                 });
             };
@@ -76,14 +76,17 @@ fn stream<'gc>(
             println!();
             Ok(receiver)
         }
-        // Nanoseconds since the process's origin: an `i64` holds 292 years
-        // of them, so the conversion cannot fail in practice and saturates
-        // rather than wraps if it ever did.
+        // Nanoseconds since the process's origin, exactly: a `SmallInteger`
+        // holds 36 years of them, and an integer is unbounded beyond, so
+        // the `u128` is converted whole, as its two `u64` digits, rather than
+        // saturated.
         PlatformPrimitive::MonotonicNanoseconds => {
             let elapsed = CLOCK_ORIGIN.get_or_init(std::time::Instant::now).elapsed();
-            Ok(Value::SmallInteger(
-                i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX),
-            ))
+            let nanoseconds = elapsed.as_nanos();
+            Ok(mutator.new_integer(ArbitraryInteger::from_parts(
+                false,
+                vec![nanoseconds as u64, (nanoseconds >> u64::BITS) as u64],
+            )))
         }
     }
 }

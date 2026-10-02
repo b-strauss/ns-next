@@ -249,7 +249,7 @@ impl World {
         );
         assert!(
             mutator.spare_walks.iter().all(|walk| {
-                matches!(walk.instance, Value::Nil)
+                walk.instance.is_nil()
                     && walk.levels.is_empty()
                     && matches!(walk.phase, InstantiationPhase::Descending { .. })
             }),

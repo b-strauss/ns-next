@@ -134,7 +134,7 @@ pub(crate) fn superclass_clause_message_arguments_expression(
 /// declaration is one or more levels too deep.
 pub(crate) fn nested_class<'gc>(
     mutator: &mut Mutator<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     nested: &Rc<Mixin>,
     declaring_class: ClassReference<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -147,7 +147,7 @@ pub(crate) fn nested_class<'gc>(
     // further down the stack", so the slot answers both questions and no
     // side table is needed.
     match cached {
-        Value::Nil => {}
+        cached if cached.is_nil() => {}
         cached if is_creation_in_progress(cached) => {
             return Err(cyclic_definition_error(receiver, nested.name));
         }
@@ -166,7 +166,7 @@ pub(crate) fn nested_class<'gc>(
     if nested.superclass.is_none() {
         // No clause at all (`class N = (...)`): `Object`, the same default
         // `Mutator::load_root_class` gives a root class.
-        let object = Value::Object(mutator.builtin_class(BuiltinClass::Object));
+        let object = Value::object(mutator.builtin_class(BuiltinClass::Object));
         return after_clause(mutator, creation, object);
     }
     Ok(Step::SuperclassClause(Box::new(creation)))
@@ -207,11 +207,11 @@ pub(crate) fn after_clause<'gc>(
     // A declaration that applies mixins builds its levels out of line, so a
     // declaration without `<:` takes only the two tests it always took.
     let (superclass, super_application) = if nested.mixin_applications.is_empty() {
-        let Value::Object(superclass) = superclass else {
+        let Some(superclass) = superclass.as_object() else {
             return Err(not_a_class_error(nested.name, superclass));
         };
         let Some(super_application) = mutator.heap.class_application(superclass) else {
-            return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+            return Err(not_a_class_error(nested.name, Value::object(superclass)));
         };
         (superclass, super_application)
     } else {
@@ -253,11 +253,11 @@ pub(crate) fn after_clause<'gc>(
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
         &mut mutator.heap,
-        &Value::Object(enclosing),
+        Value::object(enclosing),
         index,
-        Value::Object(class),
+        Value::object(class),
     );
-    Ok(Step::Value(Value::Object(class)))
+    Ok(Step::Value(Value::object(class)))
 }
 
 /// The class a declaration that applies mixins builds its own class on, and
@@ -272,11 +272,11 @@ fn superclass_with_applied_levels<'gc>(
     value: Value<'gc>,
 ) -> Result<(ClassReference<'gc>, Rc<MixinApplication>), Signal<'gc>> {
     let (superclass, applied) = unpack_clause_value(mutator, nested, value)?;
-    let Value::Object(superclass) = superclass else {
+    let Some(superclass) = superclass.as_object() else {
         return Err(not_a_class_error(nested.name, superclass));
     };
     if mutator.heap.class_application(superclass).is_none() {
-        return Err(not_a_class_error(nested.name, Value::Object(superclass)));
+        return Err(not_a_class_error(nested.name, Value::object(superclass)));
     }
     let applied: Vec<(usize, Value<'gc>)> = applied.into_iter().enumerate().collect();
     let top =
@@ -304,8 +304,8 @@ fn unpack_clause_value<'gc>(
     if nested.mixin_applications.is_empty() {
         return Ok((value, Vec::new()));
     }
-    let elements = match value {
-        Value::Object(object) => mutator.heap.array_elements(object),
+    let elements = match value.as_object() {
+        Some(object) => mutator.heap.array_elements(object),
         _ => None,
     };
     match elements {
@@ -350,8 +350,8 @@ pub(crate) fn build_applied_levels<'gc>(
             index < declaration.mixin_applications.len(),
             "internal: a caller indexes the clauses it read off this mixin"
         );
-        let named = match applied_class {
-            Value::Object(object) => mutator
+        let named = match applied_class.as_object() {
+            Some(object) => mutator
                 .heap
                 .class_application(object)
                 .map(|application| (object, application)),
@@ -396,7 +396,7 @@ pub(crate) fn build_applied_levels<'gc>(
 /// inherited `class N` it shadows cache into different slots.
 fn cache_slot<'gc>(
     mutator: &Mutator<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     nested: &Rc<Mixin>,
 ) -> Option<(ObjectReference<'gc>, usize, Value<'gc>)> {
     let class = mutator.class_of(receiver);
@@ -406,11 +406,11 @@ fn cache_slot<'gc>(
         .nested_slot
         .get(&mixin_key(nested))
         .copied()?;
-    match receiver {
-        Value::Object(object) => mutator
+    match receiver.as_object() {
+        Some(object) => mutator
             .heap
-            .instance_field(*object, index)
-            .map(|cached| (*object, index, cached)),
+            .instance_field(object, index)
+            .map(|cached| (object, index, cached)),
         _ => None,
     }
 }
@@ -440,11 +440,11 @@ fn cache_slot<'gc>(
 /// same kind of wrong-but-safe answer as any other non-class value it puts
 /// there, which the accessor answers as the class.
 fn creation_in_progress<'gc>() -> Value<'gc> {
-    Value::Boolean(false)
+    Value::boolean(false)
 }
 
 fn is_creation_in_progress<'gc>(value: Value<'gc>) -> bool {
-    matches!(value, Value::Boolean(false))
+    value.as_boolean() == Some(false)
 }
 
 /// The clause activation of a creation has just been pushed: mark its class
@@ -481,7 +481,7 @@ pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedCla
     {
         mutator
             .heap
-            .set_instance_field(creation.enclosing, creation.index, Value::Nil);
+            .set_instance_field(creation.enclosing, creation.index, Value::nil());
     }
     #[cfg(debug_assertions)]
     {
@@ -529,10 +529,10 @@ fn not_a_mixin_error<'gc>(name: Symbol, index: usize, value: Value<'gc>) -> Sign
 /// second entry for the same (receiver, declaration) is unconditionally a
 /// cycle. The cache slot detects it, holding `creation_in_progress()` while the
 /// first entry's clause runs.
-fn cyclic_definition_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'gc> {
+fn cyclic_definition_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "cyclic class definition: evaluating the superclass clause of class {name} \
              requires class {name} itself"
@@ -547,10 +547,10 @@ fn cyclic_definition_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'
 /// ordinary slot declared on such a class unwritable. Refusing here is what
 /// keeps §6's "subsequent calls on r always return the same class object"
 /// from silently becoming "a fresh class object every call".
-fn no_cache_slot_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'gc> {
+fn no_cache_slot_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "cannot access nested class {name}: this object has no slot storage to cache it in"
         ),

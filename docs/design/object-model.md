@@ -1,10 +1,12 @@
 # Object model — values, objects, mixins, classes
 
-> **Status:** built; the road to a high-performance VM -- an eight-byte
-> value, the object layout and `become:` among its steps -- is planned
-> ("Planned: the road to a high-performance VM").
+> **Status:** built, a value as one tagged word included; the rest of the
+> road to a high-performance VM -- the object layout and `become:` among
+> its steps -- is planned ("Planned: the road to a high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
-> and write of one), `types.rs` (`Object`, `ObjectData`, `Value`),
+> and write of one), `heap/value.rs` (`Value`, `ValueKind`, `Word`, the
+> `SmallInteger` bounds and the arithmetic on tagged words), `types.rs`
+> (`Object`, `ObjectData`),
 > `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
 > nested-class accessor and `build_applied_levels`, §6.2's levels),
 > `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`),
@@ -15,62 +17,172 @@
 ## Values and objects
 
 ```rust
-Value = Nil | Boolean(bool) | SmallInteger(i64) | Float(f64) | Object(ObjectReference)   // Copy
+Value      = one tagged 64-bit word (heap/value.rs)                  // Copy, opaque
+ValueKind  = Nil | Boolean(bool) | SmallInteger(i64) | SmallFloat(f64) | Object(ObjectReference)
+Word       = the bare word a heap object stores, 8 bytes in every build
 ObjectReference = a 32-bit index into the `Heap`'s object arena; ClassReference is an alias
 
 Object { class: ClassReference, identity_hash: u32, dispatch_id: DispatchId, data: ObjectData }
 
-ObjectData = Instance(Vec<Value>) | String(CodePoints) | Symbol(Symbol)
-           | Array(Vec<Value>) | Closure(ClosureData) | Class(Box<ClassData>)
-           | Activation(FrameReference) | LargeInteger(ArbitraryInteger)
+ObjectData = Instance(Vec<Word>) | String(CodePoints) | Symbol(Symbol)
+           | Array(Vec<Word>) | Closure(ClosureData) | Class(Box<ClassData>)
+           | Activation(FrameReference) | LargeInteger(ArbitraryInteger) | Float(f64)
 ```
 
-A `SmallInteger` is every integer that fits `i64`; any other is an object of
-the kernel class `LargeInteger`, whose `ArbitraryInteger` payload holds a sign
-and 64-bit digits and no handle. `Mutator::new_integer` decides which, so each
-integer has one representation ([core-library.md](core-library.md), "Large
-integers"). A `String`'s `CodePoints` payload holds its code points in one of
-two widths and no handle ([core-library.md](core-library.md), "Strings are
-code points in two widths").
+**A value is one tagged word, Spur's.** Its low three bits say what the
+rest is:
+
+| Low bits | Meaning |
+|---|---|
+| `000` | an object handle: the arena index shifted left by three; from road step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
+| `001` | a `SmallInteger` of 61 bits, `(value << 3) \| 1` |
+| `010` | a constant: `nil`, `false` and `true` are the payloads 0, 1 and 2, with room for more |
+| `100` | a `SmallFloat64` |
+| `110` | free: never produced, kept for a future immediate |
+| `011`, `101`, `111` | never produced, so that bit 0 alone tells a `SmallInteger` |
+
+The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4, three tag bits,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779` for the three tag
+bits, `:2836` for `smallIntegerTag`, `:2784` for `smallFloatTag`): Spur writes a
+`SmallInteger` as `(value << 3) + 1` (`integerObjectOf`, `:41159`) and tests it
+by bit 0 alone. Spur's `Character` tag, `010`, is taken for the constants:
+ns-next has no characters, and `nil`, `true` and `false` are immediates rather
+than heap singletons as in Spur and Soup, which is why nothing resembling an
+object store is needed to name them in a serialized image. A `SmallFloat64` is
+Spur's encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
+the exponent -- IEEE exponents 896 with a non-zero mantissa through 1151, about
+2^-127 to just under 2^129, plus ±0.0 (`isSmallFloatValueBits`, `:41232`;
+`is_small_float_bits`) -- with the sign rotated down beside the tag. A release
+`Value` is the word and the zero-sized brand, eight bytes
+(`a_release_value_is_one_word`).
+
+**Why one word.** LLVM copied the 16-byte enum `Value` this replaced as a
+tag byte and two overlapping quadwords, so every `Value` that passed through
+a memory temporary -- a result answered by an out-of-line function, a joined
+`Result`, `LoadLiteral`'s `make_value` -- was a store-forwarding stall, 28%
+of `vm::run`'s samples on the send path ([execution.md](execution.md),
+"Where the 3% goes"); fixing it site by site had to inline the whole path to
+the register write and nearly doubled `vm::run` ("A send's value delivered
+where it is decided: tried and halted", there). A value read and written as
+one word cannot stall that way, on Windows x64 it comes back in `RAX`, and
+registers, fields, arrays and copied closure values take half the memory;
+`Signal` and `EvaluationResult` shrank from 48 to 40 bytes with it. What it
+moved is [execution.md](execution.md), "What the eight-byte value moved".
+
+**`Value` is opaque.** Outside `heap/value.rs` no code sees the word. A
+value is made with `Value::nil()`, `Value::boolean`, `Value::small_integer`
+(a `debug_assert!` that the integer fits) and `Value::object`, a float only
+by `Mutator::new_float` and an integer from an `ArbitraryInteger` only by
+`Mutator::new_integer`; it is read with `is_nil`, `as_boolean`,
+`as_small_integer` and `as_object`, each answering an `Option`, and an
+exhaustive match goes through `value.kind()`, the `ValueKind` view, which
+needs no heap. `SmallFloat` is the immediate float only: code that reads a
+float asks `Heap::float_value`, which answers a boxed one too. Tests compare
+through the accessors (`value.as_small_integer() == Some(3)`).
+
+**Each number has one representation.** A `SmallInteger` is every integer
+from `SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`, -2^60 to 2^60 - 1; any
+other is an object of the kernel class `LargeInteger`, whose
+`ArbitraryInteger` payload holds a sign and 64-bit digits and no handle.
+`Mutator::new_integer` decides which ([core-library.md](core-library.md),
+"Large integers"). A finite float in the `SmallFloat64` range is immediate;
+every other float -- NaN, the infinities, denormals and magnitudes outside
+that range -- is a boxed `Float`, an instance of the builtin `Float` whose
+`ObjectData::Float` payload holds the `f64` and no handle, and
+`Mutator::new_float` decides which by Spur's range test. Soup boxes every
+float, which costs an allocation per floating-point result; Spur's split
+keeps the common range immediate. Both are §5.1.1's binary float; the
+`FixedPointNumber` that section names for non-integral literals (the
+recorded deviation, [core-library.md](core-library.md)) would be a class of
+the numeric tower, not a tag. A boxed `Float`, like a `LargeInteger`, is a
+value object (§3.1.1), so its `=` and its hash come from its state, never
+from the identity hash, and a NaN equals a NaN either way.
+
+**Small-integer arithmetic works on the tagged words**, as Cog's and Soup's
+does, and is what a JIT's tiers build on. The operations are methods on
+`Value` (`small_integer_sum` and its siblings), called by `vm.rs`'s
+`IntegerBinary` arm and by `builtins/numbers.rs` alike, so the rule has one
+copy and `vm.rs` holds no logic of its own. One test, `left & right & 1`,
+checks both operands; addition and subtraction work on the words with one
+overflow test, since an `i64` overflow of the tagged word is exactly a
+61-bit overflow; comparisons compare the words; multiplication untags one
+operand, as Cog's and Soup's does; and `//` untags both, since a floor
+quotient of a tagged word is not the tagged floor quotient. An inline cache
+reads an immediate's dispatch id from a table indexed by its tag
+(`immediate_index`), and for the constant tag by the constant.
+
+**Literals.** An integer literal beyond 61 bits keeps its digits in the
+Rust-side literal data of its code (`Literal::LargeInteger`, which holds no
+handle), and `LoadLiteral` allocates the `LargeInteger` each time it runs --
+a value needs no identity, so a fresh one per execution is correct
+([compiler.md](compiler.md), "Compilation cannot fail"). A float literal
+outside the `SmallFloat64` range does the same with a boxed `Float`, through
+`Mutator::new_float`.
+
+**The debug build keeps its exact check.** A debug handle carries its
+heap's id and its move epoch in full, and every accessor compares both
+([memory.md](memory.md), "The brand, checked by the compiler rather than by
+convention"). The Rust-side `Value` does too: in a debug build it is the
+word plus both numbers, 16 bytes, zero for an immediate, and in a release
+build it is the bare word. What is exactly eight bytes in both builds is a
+`Word`, what a heap object stores -- a field (`Instance`), an element
+(`Array`), a register (the activation stack's and a reified frame's) and a
+copied closure value -- so that the layout is the same in both. Only
+`Heap::load` and `Heap::store` convert: a load gives the word the heap's
+current id and epoch, and a store checks, in a debug build, that the value
+carries both before it becomes a word, so a stale handle is caught where it
+is stored (`a_stale_handle_is_caught_where_it_is_stored`) and cannot be
+laundered into a field. Both are crate-private, since a word carries no
+brand ([memory.md](memory.md), "The brand"). A stored word cannot go stale the way a Rust-side
+handle can, because every collection and every stress move rewrites it in
+place, through the `Trace` impls' `Tracer::word` ([memory.md](memory.md),
+"What the collector traces"). What still holds a Rust-side value or handle
+-- a stack entry's receiver, a continuation's state, `ClassData.enclosing`,
+a host's `Root` -- keeps its brand and its `Trace`. Under generations (road
+step 4) a scavenge walks only the young objects and the remembered ones, so an old
+object whose store missed the barrier would keep a stale young word; that is
+what `NS_NEXT_STRESS_SCAVENGE`, with the vacated survivor space and the
+vacated eden region made no-access, will catch ([memory.md](memory.md),
+"Planned: generations").
+
+A `String`'s `CodePoints` payload holds its code points in one of two widths
+and no handle ([core-library.md](core-library.md), "Strings are code points
+in two widths").
 
 `dispatch_id` is the id an inline cache guards the object's sends on, a copy
 stamped from its application's ids, and a class object's data is boxed to keep `Object` at 56
 bytes in a release build with it ([dispatch.md](dispatch.md), "The dispatch
 id").
 
-`nil`, `true`, `false` and small integers are `Value` variants rather than heap
-objects, which is why nothing resembling an object store is needed to name them
-in a serialized image.
-
 **A symbol is a heap object, and a canonical one**: each `Heap` keeps a
-canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside
-a `Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
-answers the table's object, allocating it only the first time. It is the one
-way to make a symbol, so a symbol literal, `asSymbol` and every selector
-handed to `doesNotUnderstand:` all reach the same object for the same text,
-which is what §5.1.6 and §3.1.1 make two equal symbols. The table is per heap
-because a handle means nothing against another heap. It is weak: the
-collector clears an entry whose symbol nothing else holds ([memory.md](memory.md),
-"Weak references"). This is what every reference does -- Primordial Soup's
-weak `symbolTable` (`KernelForPrimordialSoup.ns`), SOMns's
-`Symbols.symbolFor`, Squeak's symbol table -- and it keeps a symbol an
-indexable object for a kernel where `Symbol` is a subclass of `String`, as
-the references declare it; `Kernel.ns` still puts `Symbol` directly under
-`Value`, beside `String` rather than below it, which the object layout
-changes ("Planned: the object layout" below). Rejected: a symbol as an immediate `Value` variant, which no
-reference does and which every string primitive, and later the Newspeak
-kernel, would have to accept as a non-object. An image carries a symbol as a
-record; the decoder enters each one into the loading heap's table and refuses
-a second record of the same text
+canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside a
+`Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
+answers the table's object, allocating it only the first time. It is the one way
+to make a symbol, so a symbol literal, `asSymbol` and every selector handed to
+`doesNotUnderstand:` all reach the same object for the same text, which is what
+§5.1.6 and §3.1.1 make two equal symbols. The table is per heap because a handle
+means nothing against another heap. It is weak: the collector clears an entry
+whose symbol nothing else holds ([memory.md](memory.md), "Weak references").
+This is what every reference does -- Primordial Soup's weak `symbolTable`
+(`KernelForPrimordialSoup.ns`), SOMns's `Symbols.symbolFor`, Squeak's symbol
+table -- and it keeps a symbol an indexable object for a kernel where `Symbol`
+is a subclass of `String`, as the references declare it; `Kernel.ns` still puts
+`Symbol` directly under `Value`, beside `String` rather than below it, which the
+object layout changes ("Planned: the object layout" below). Rejected: a symbol
+as an immediate, a tag of its own, which no reference does and which every
+string primitive, and later the Newspeak kernel, would have to accept as a
+non-object. An image carries a symbol as a record; the decoder enters each one
+into the loading heap's table and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
 **An `ObjectReference` is an index, not a pointer.** Every `Object` lives in one
 `Heap`'s arena and is reached only through a `Heap` accessor; the index is
-private to `crates/ns-runtime/src/heap.rs`, so the compiler refuses to read it
-anywhere else. `Value` is therefore `Copy` and a handle has no destructor. What
-that representation buys, how the collector reclaims a slot once nothing
-reaches it, and why a handle means nothing against a different `Heap` are in
-[memory.md](memory.md).
+private to the `heap` module -- `crates/ns-runtime/src/heap.rs` and its
+submodules, `heap/value.rs` among them, which puts it into a word and takes it
+out again -- so the compiler refuses to read it anywhere else. `Value` is
+therefore `Copy` and a handle has no destructor. What that representation buys,
+how the collector reclaims a slot once nothing reaches it, and why a handle
+means nothing against a different `Heap` are in [memory.md](memory.md).
 
 **The identity hash is drawn from a monotonic counter the first time `hash`
 asks for one**, never derived from an address and never from the arena index,
@@ -1366,19 +1478,19 @@ Would change: the object representation becomes the one the reference
 engines with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with
 Primordial Soup beside them -- adapted where Newspeak's nesting requires it,
 and the JIT tiers follow on it. Decided with the user on 2026-09-29; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
-to a high-performance VM". Three `Planned:` sections below and three in
-[memory.md](memory.md) describe its representation steps. The road, each
-step landing green on its own:
+to a high-performance VM". Two `Planned:` sections below and three in
+[memory.md](memory.md) describe its representation steps still to come. The
+road, each step landing green on its own:
 
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
    "The memory layer").
-2. **An eight-byte value**, on today's arena ("Planned: an eight-byte value"
-   below). Its first plan, `LargeInteger`, is built
-   ([core-library.md](core-library.md), "Large integers").
+2. **An eight-byte value**, on today's arena -- built: its first plan,
+   `LargeInteger` ([core-library.md](core-library.md), "Large integers"),
+   and its second, the tagged word ("Values and objects" above).
    - **After road step 2, the compact instruction encoding**, designed
-     against the new value ([execution.md](execution.md), "Planned: the
-     compact instruction encoding").
+     against the one-word value ([execution.md](execution.md), "Planned:
+     the compact instruction encoding").
 3. **The object space** -- one header word, the class word, the fields
    inline ("Planned: the object layout" below; [memory.md](memory.md),
    "Planned: the object space").
@@ -1394,114 +1506,6 @@ step landing green on its own:
      real bodies for control flow and `do:`, before the baseline JIT").
 8. **A baseline JIT**, and
 9. **an optimizing JIT** ([execution.md](execution.md), "Planned: JIT tiers").
-
-## Planned: an eight-byte value
-
-Would change: `Value` becomes one 64-bit word whose low three bits are its
-tag, instead of today's 16-byte enum of a tag and an 8-byte payload (`Nil`,
-`Boolean`, `SmallInteger(i64)`, `Float(f64)`, `Object`). Road step 2,
-built on today's arena before the object space, since
-a 32-bit arena index already fits the word.
-
-| Low bits | Meaning |
-|---|---|
-| `000` | an object handle: today the arena index shifted left by three, so its low bits are `000`, from road step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
-| `001` | a `SmallInteger` of 61 bits |
-| `010` | a constant -- `nil`, `true`, `false`, with room for more |
-| `100` | a `SmallFloat64` |
-| `110` | free |
-| `011`, `101`, `111` | never produced; kept so that bit 0 alone tells a `SmallInteger` |
-
-The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4, three tag bits,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779` for the three tag bits, `:2836` for `smallIntegerTag`, `:2784` for `smallFloatTag`): Spur
-writes a `SmallInteger` as `(value << 3) + 1` (`integerObjectOf`,
-`:41159`) and tests it by bit 0 alone. Spur's `Character` tag, `010`, is
-taken for the constants: ns-next has no characters, and
-`nil`, `true` and `false` stay immediates as they are today rather than
-becoming heap singletons as in Spur and Soup. A `SmallFloat64` is Spur's
-encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
-the exponent -- IEEE exponents 896 with a non-zero mantissa through 1151,
-about 2^-127 to just under 2^129, plus ±0.0 (`isSmallFloatValueBits`, `:41232`) --
-with the sign rotated down beside the tag. Every other float -- NaN,
-the infinities, denormals and magnitudes outside that range -- is a boxed
-`Float` object. Soup boxes every float, which costs an allocation per
-floating-point result; Spur's split keeps the common range immediate. A
-finite float in the `SmallFloat64` range is always immediate, so every float
-has one representation, as every integer does. Both are §5.1.1's binary
-float; the `FixedPointNumber` that section names for non-integral literals
-(the recorded deviation, [core-library.md](core-library.md)) would be a class
-of the numeric tower, not a tag.
-
-**Why.** LLVM copies today's `Value` as a tag byte and two overlapping
-quadwords, so every `Value` that passes through a memory temporary -- a
-result answered by an out-of-line function, a joined `Result`,
-`LoadLiteral`'s `make_value` -- is a store-forwarding stall, 28% of
-`vm::run`'s samples on the send path ([execution.md](execution.md), "Where
-the 3% goes"); fixing it site by site had to inline the whole path to the
-register write and nearly doubled `vm::run` ("A send's value delivered where it
-is decided: tried and halted", there). A value read and written as one word cannot
-stall that way, on Windows x64 it comes back in `RAX`, and registers, fields,
-arrays, argument buffers and copied closure values take half the memory, with
-`Step`, `Result<Step, Signal>` and the continuations shrinking alongside.
-Small-integer arithmetic works on the tagged words with one overflow test, as
-Cog's and Soup's does, which is what a JIT's tiers build on.
-
-**Integers are already unbounded; the word moves the boundary.** Every
-integer that fits `i64` is a `SmallInteger` today, and every other one a
-`LargeInteger` ([core-library.md](core-library.md), "Large integers"). Under
-the word a `SmallInteger` has 61 bits, so `Mutator::new_integer`'s test
-becomes "fits 61 bits": an integer between 2^60 and 2^63 that is an
-immediate today becomes a `LargeInteger`, and every leaf's immediate path
-checks for the 61-bit range where it checks for `i64` now. The rule that
-each integer has exactly one representation stays. A boxed `Float`, like a
-`LargeInteger`, is a value object (§3.1.1), so its `==` and its hash come
-from its state, as every value's do, never from the header's identity
-hash.
-
-**Literals.** An integer literal beyond `i64` keeps its digits in the
-Rust-side literal data of its code (`Literal::LargeInteger`, which holds no
-handle), and `LoadLiteral` allocates the `LargeInteger` each time it runs --
-a value needs no identity, so a fresh one per execution is correct
-([compiler.md](compiler.md), "Compilation cannot fail"). Under the word the
-boundary moves: a literal that fits `i64` but not 61 bits has to become a
-`LargeInteger` too, since each integer has one representation. The compact
-instruction encoding takes this as an input ([execution.md](execution.md),
-"Planned: the compact instruction encoding"). A float literal outside the
-`SmallFloat64` range does the same with a boxed `Float`.
-
-**The debug build keeps its exact check.** Today a debug handle carries its
-heap's id and its move epoch in full, and every accessor compares both
-([memory.md](memory.md), "The brand, checked by the compiler rather than by convention"). The Rust-side `Value` keeps doing so:
-in a debug build it is wider than a word, the word plus both numbers, exactly
-as now, and in a release build it is the bare word. What has to be exactly
-eight bytes in both builds is a word stored in a heap object -- a field, an
-element, a frame's register -- so that the layout is the same in both. Such
-a word cannot go stale the way a Rust-side handle can while every
-collection walks every object: the collector reads each object by its format
-and rewrites every field, so it has no field to overlook the way it could
-overlook one a Rust type forgot to trace, and a word read out of the heap is
-given the current heap id and epoch. So that no stale value can be laundered
-that way, every store accessor checks, from this step on, that the Rust-side
-value it stores carries the current heap id and epoch before it becomes a
-word. Under generations (road step 4) a
-scavenge walks only the young objects and the remembered ones, so an old
-object whose store missed the barrier would keep a stale young word; that is
-what `NS_NEXT_STRESS_SCAVENGE`, with the vacated survivor space and the vacated eden region made no-access, catches
-([memory.md](memory.md), "Planned: generations"). The check
-therefore stays exact where the mistake it catches can be made, with the
-brand checking the rest at compile time.
-
-**What changes.** Every pattern on `Value::…` -- about 1,050 sites, some 550
-in the crates' sources and the rest in their tests -- goes through
-constructors and accessors; `heap.rs`'s handle code, `trace.rs`, the image
-codec and the leaves change with it. The image already carries a
-`LargeInteger` inline, under value tag 9 and literal tag 10, and a
-`SmallInteger` as an `i64`, so no integer tag changes: what the word adds
-is the decoder deciding by the 61-bit range whether an integer is
-immediate. A float, boxed or not, stays an `f64` on the wire and carries no
-record, since it has no identity, and the decoder decides whether it is
-immediate too ([image-format.md](image-format.md), "Planned: the image
-under the new representation").
 
 ## Planned: the object layout
 
@@ -1928,14 +1932,12 @@ remove slots of a class with live instances.
 - **Identity hashes come from a counter, not from addresses, and are assigned on
   first request**, so identity survives a moving collector and a snapshot, and
   allocation order is unobservable.
-- **The value will be one tagged 64-bit word, with a 61-bit
-  `SmallInteger` over the `LargeInteger` that already makes integers
-  unbounded** (planned; decided with the user on 2026-09-29; "Planned: an
-  eight-byte value" above; [core-library.md](core-library.md), "Large
-  integers", built). Spur's tags and the immediate floats in Spur's range
-  are derived.
-  It lands on today's arena, before the object layout, so each step is
-  checked against the goldens on its own.
+- **The value is one tagged 64-bit word, with a 61-bit `SmallInteger` over
+  the `LargeInteger` that makes integers unbounded** (decided with the user
+  on 2026-09-29; "Values and objects" above; [core-library.md](core-library.md),
+  "Large integers"). Spur's tags and the immediate floats in Spur's range
+  are derived. It is built on today's arena, ahead of the object layout,
+  since a 32-bit arena index already fits the word.
 - **An object will be a header word, a class word and its fields** (planned;
   decided with the user on 2026-09-29; "Planned: the object layout" above).
   The header's guard is to be the application id, because a class-index

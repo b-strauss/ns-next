@@ -1,6 +1,6 @@
 //! `String` and `Symbol` native methods.
 
-use crate::builtins::collections;
+use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -16,14 +16,12 @@ use crate::{Heap, Mutator, Symbol};
 fn of_the_same_class<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> Option<ObjectReference<'gc>> {
-    let Some(Value::Object(other)) = argument else {
-        return None;
-    };
-    heap.class_of_object(*other)
+    let other = argument.and_then(|value| value.as_object())?;
+    heap.class_of_object(other)
         .same(heap.class_of_object(receiver))
-        .then_some(*other)
+        .then_some(other)
 }
 
 /// `String>>=`'s rule: an argument of the receiver's own class carrying
@@ -33,7 +31,7 @@ fn of_the_same_class<'gc>(
 pub(crate) fn text_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> bool {
     match of_the_same_class(heap, receiver, argument) {
         Some(other) => heap.strings_equal(receiver, other) == Some(true),
@@ -50,7 +48,7 @@ pub(crate) fn symbol_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
     symbol: Symbol,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> bool {
     match of_the_same_class(heap, receiver, argument) {
         Some(other) => heap.symbol_value(other) == Some(symbol),
@@ -100,20 +98,17 @@ fn from_code_point<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(class) = receiver else {
-        return None;
-    };
+    let class = receiver.as_object()?;
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
         return None;
     }
-    let code_points = match arguments.first() {
-        Some(Value::SmallInteger(code)) => u32::try_from(*code)
-            .ok()
-            .and_then(crate::CodePoints::from_code_point),
-        _ => None,
-    };
+    let code_points = arguments
+        .first()
+        .and_then(|value| value.as_small_integer())
+        .and_then(|code| u32::try_from(code).ok())
+        .and_then(crate::CodePoints::from_code_point);
     Some(match code_points {
-        Some(code_points) => Ok(Value::Object(
+        Some(code_points) => Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
         )),
         None => Err(NewspeakError {
@@ -122,7 +117,7 @@ fn from_code_point<'gc>(
             message: format!(
                 "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
                  outside 55296 to 57343, got {}",
-                mutator.heap.describe_argument(arguments.first())
+                mutator.heap.describe_argument(arguments.first().copied())
             ),
         }),
     })
@@ -139,38 +134,50 @@ fn copy_range<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
-    let bound = |argument: Option<&Value<'gc>>| match argument {
-        Some(Value::SmallInteger(bound)) => Ok(*bound),
-        other => Err(collections::not_an_integer(
-            &mutator.heap,
-            &receiver,
-            selector,
-            other,
-        )),
+    // A `LargeInteger` bound is past every position, so it takes the error
+    // below, described as it is written.
+    let bound =
+        |argument: Option<Value<'gc>>| match collections::integer_argument(&mutator.heap, argument)
+        {
+            Some(IntegerArgument::Small(bound)) => Ok(Some(bound)),
+            Some(IntegerArgument::Large { .. }) => Ok(None),
+            None => Err(collections::not_an_integer(
+                &mutator.heap,
+                receiver,
+                selector,
+                argument,
+            )),
+        };
+    let start = bound(arguments.first().copied())?;
+    let stop = bound(arguments.get(1).copied())?;
+    let describe = |bound: Option<i64>, argument: Option<Value<'gc>>| match bound {
+        Some(number) => number.to_string(),
+        None => mutator.heap.describe_argument(argument),
     };
-    let start = bound(arguments.first())?;
-    let stop = bound(arguments.get(1))?;
-    // `start` is tested first, so that `start - 1` cannot overflow; the
-    // slice refuses a `stop` past the end.
-    let slice = if start >= 1 && stop >= start - 1 {
-        usize::try_from(stop).ok().and_then(|stop| {
-            mutator
-                .heap
-                .string_slice(object, (start - 1) as usize, stop)
-        })
-    } else {
-        None
+    let slice = match (start, stop) {
+        // `start` is tested first, so that `start - 1` cannot overflow; the
+        // slice refuses a `stop` past the end.
+        (Some(start), Some(stop)) if start >= 1 && stop >= start - 1 => {
+            usize::try_from(stop).ok().and_then(|stop| {
+                mutator
+                    .heap
+                    .string_slice(object, (start - 1) as usize, stop)
+            })
+        }
+        _ => None,
     };
     match slice {
-        Some(code_points) => Ok(Value::Object(
+        Some(code_points) => Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
         )),
         None => Err(NewspeakError {
             selector,
             receiver,
             message: format!(
-                "copyFrom: {start} to: {stop} out of range: valid ranges lie within \
-                 1..{size}, an empty range ends just before it starts (size {size})"
+                "copyFrom: {} to: {} out of range: valid ranges lie within \
+                 1..{size}, an empty range ends just before it starts (size {size})",
+                describe(start, arguments.first().copied()),
+                describe(stop, arguments.get(1).copied()),
             ),
         }),
     }
@@ -186,44 +193,50 @@ pub(crate) fn execute_string<'gc>(
     if primitive == StringPrimitive::FromCodePoint {
         return from_code_point(mutator, receiver, selector, arguments);
     }
-    let Value::Object(object) = receiver else {
-        return None;
-    };
+    let object = receiver.as_object()?;
     // Declines for anything that is no String, before any leaf reads it.
     let size = mutator.heap.string_size(object)?;
     match primitive {
         // Unreachable: the early return above handles it; the arm keeps the match exhaustive.
         StringPrimitive::FromCodePoint => None,
         // Array's errors, so that a program sees one text from either.
-        StringPrimitive::ElementAt => Some(match arguments.first() {
-            Some(Value::SmallInteger(index)) => {
-                match usize::try_from(*index)
-                    .ok()
-                    .and_then(|index| index.checked_sub(1))
-                    .and_then(|position| mutator.heap.string_code_point_at(object, position))
-                {
-                    Some(code_point) => Ok(Value::SmallInteger(i64::from(code_point))),
-                    None => Err(collections::out_of_range(&receiver, selector, *index, size)),
+        StringPrimitive::ElementAt => Some(
+            match collections::integer_argument(&mutator.heap, arguments.first().copied()) {
+                Some(IntegerArgument::Small(index)) => {
+                    match usize::try_from(index)
+                        .ok()
+                        .and_then(|index| index.checked_sub(1))
+                        .and_then(|position| mutator.heap.string_code_point_at(object, position))
+                    {
+                        Some(code_point) => Ok(Value::small_integer(i64::from(code_point))),
+                        None => Err(collections::out_of_range(receiver, selector, index, size)),
+                    }
                 }
-            }
-            other => Err(collections::not_an_integer(
-                &mutator.heap,
-                &receiver,
-                selector,
-                other,
-            )),
-        }),
+                Some(IntegerArgument::Large { .. }) => Err(collections::out_of_range(
+                    receiver,
+                    selector,
+                    mutator.heap.describe_argument(arguments.first().copied()),
+                    size,
+                )),
+                None => Err(collections::not_an_integer(
+                    &mutator.heap,
+                    receiver,
+                    selector,
+                    arguments.first().copied(),
+                )),
+            },
+        ),
         StringPrimitive::CopyRange => Some(copy_range(
             mutator, object, size, receiver, selector, arguments,
         )),
-        StringPrimitive::Size => Some(Ok(Value::SmallInteger(size as i64))),
+        StringPrimitive::Size => Some(Ok(Value::small_integer(size as i64))),
         StringPrimitive::Concatenate => {
-            let joined = match arguments.first() {
-                Some(Value::Object(other)) => mutator.heap.string_concatenation(object, *other),
-                _ => None,
-            };
+            let joined = arguments
+                .first()
+                .and_then(|value| value.as_object())
+                .and_then(|other| mutator.heap.string_concatenation(object, other));
             Some(match joined {
-                Some(code_points) => Ok(Value::Object(
+                Some(code_points) => Ok(Value::object(
                     mutator.new_string_from_code_points(code_points),
                 )),
                 None => Err(NewspeakError {
@@ -231,13 +244,13 @@ pub(crate) fn execute_string<'gc>(
                     receiver,
                     message: format!(
                         "String concatenation (,) requires a String argument, got {}",
-                        mutator.heap.describe_argument(arguments.first())
+                        mutator.heap.describe_argument(arguments.first().copied())
                     ),
                 }),
             })
         }
         StringPrimitive::Equal => {
-            let equal = text_equals(&mutator.heap, object, arguments.first());
+            let equal = text_equals(&mutator.heap, object, arguments.first().copied());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::String(primitive),
@@ -245,19 +258,19 @@ pub(crate) fn execute_string<'gc>(
                 receiver,
                 arguments,
             )
-            .map(|answer| Ok(Value::Boolean(answer)))
+            .map(|answer| Ok(Value::boolean(answer)))
         }
         StringPrimitive::Hash => mutator
             .heap
             .string_hash(object)
-            .map(|hash| Ok(Value::SmallInteger(hash))),
+            .map(|hash| Ok(Value::small_integer(hash))),
         StringPrimitive::AsSymbol => {
             let text = mutator.heap.str_value(object)?;
             Some(Ok(mutator.new_symbol(Symbol::intern(&text))))
         }
         StringPrimitive::PrintString => {
             let text = mutator.heap.str_value(object)?;
-            Some(Ok(Value::Object(mutator.new_string(quote_string(&text)))))
+            Some(Ok(Value::object(mutator.new_string(quote_string(&text)))))
         }
     }
 }
@@ -268,16 +281,14 @@ pub(crate) fn execute_symbol<'gc>(
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = &receiver else {
-        return None;
-    };
-    let symbol = mutator.heap.symbol_value(*object)?;
+    let object = receiver.as_object()?;
+    let symbol = mutator.heap.symbol_value(object)?;
     match primitive {
-        SymbolPrimitive::AsString => Some(Ok(Value::Object(
+        SymbolPrimitive::AsString => Some(Ok(Value::object(
             mutator.new_string(symbol.as_str().to_string()),
         ))),
         SymbolPrimitive::Equal => {
-            let equal = symbol_equals(&mutator.heap, *object, symbol, arguments.first());
+            let equal = symbol_equals(&mutator.heap, object, symbol, arguments.first().copied());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Symbol(primitive),
@@ -285,10 +296,10 @@ pub(crate) fn execute_symbol<'gc>(
                 receiver,
                 arguments,
             )
-            .map(|answer| Ok(Value::Boolean(answer)))
+            .map(|answer| Ok(Value::boolean(answer)))
         }
-        SymbolPrimitive::Hash => Some(Ok(Value::SmallInteger(symbol_hash(symbol)))),
-        SymbolPrimitive::PrintString => Some(Ok(Value::Object(
+        SymbolPrimitive::Hash => Some(Ok(Value::small_integer(symbol_hash(symbol)))),
+        SymbolPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string(format!("#{}", symbol.as_str())),
         ))),
     }

@@ -162,7 +162,7 @@ impl Interpreter {
     pub fn load_module(&mut self, resolved: &ResolvedModule) -> Root {
         self.enter(|mutator| {
             let class = mutator.load_root_class(resolved);
-            mutator.stash(Value::Object(class))
+            mutator.stash(Value::object(class))
         })
     }
 
@@ -176,15 +176,15 @@ impl Interpreter {
         let depth = self.world.activation_depth();
         let start = self.enter(|mutator| {
             let value = mutator.fetch(class);
-            let class = match value {
-                Value::Object(object) if mutator.heap.is_class(object) => object,
+            let class = match value.as_object() {
+                Some(object) if mutator.heap.is_class(object) => object,
                 _ => {
                     return HostStart::Finished(Err(HostSignal::Error(HostError {
                         selector: Symbol::NEW,
                         receiver: mutator.stash(value),
                         message: format!(
                             "cannot instantiate {}: it is not a class",
-                            mutator.heap.describe(&value)
+                            mutator.heap.describe(value)
                         ),
                     })))
                 }
@@ -251,7 +251,7 @@ impl<'gc> Mutator<'gc> {
         };
         let superclass = Some(self.builtin_class(superclass_kind));
         let applied: Vec<(usize, Value<'gc>)> = if applies_value {
-            vec![(0, Value::Object(self.builtin_class(BuiltinClass::Value)))]
+            vec![(0, Value::object(self.builtin_class(BuiltinClass::Value)))]
         } else {
             Vec::new()
         };
@@ -481,7 +481,7 @@ impl<'gc> Mutator<'gc> {
             // VM mirror is the whole Rust boundary").
             Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError {
                 selector: Symbol::NEW,
-                receiver: Value::Object(class),
+                receiver: Value::object(class),
                 message: "the VM mirror's class cannot be instantiated".to_string(),
             })),
             // `Array`'s representation is `ObjectData::Array`, not
@@ -495,7 +495,7 @@ impl<'gc> Mutator<'gc> {
             // receiver's own class -- *not* `Mutator::new_array`, which
             // unconditionally tags its result `BuiltinClass::Array`, which
             // would be wrong for a user subclass of `Array`).
-            Some(BuiltinClass::Array) => Ok(Step::Value(Value::Object(
+            Some(BuiltinClass::Array) => Ok(Step::Value(Value::object(
                 self.new_instance_object(class, ObjectData::Array(vec![])),
             ))),
             _ => self.decide_instantiation(class, arguments.to_vec()),
@@ -560,8 +560,8 @@ impl<'gc> Mutator<'gc> {
         // chain here again would be a second answer to the same question.
         let slot_count = application.map_or(0, |application| application.slot_count);
         let instance =
-            self.new_instance_object(class, ObjectData::Instance(vec![Value::Nil; slot_count]));
-        let state = self.walk_state(Value::Object(instance));
+            self.new_instance_object(class, ObjectData::Instance(vec![Word::NIL; slot_count]));
+        let state = self.walk_state(Value::object(instance));
         self.climb_levels(state, class, factory_arguments)
     }
 
@@ -597,7 +597,7 @@ impl<'gc> Mutator<'gc> {
             state.levels.clear();
             state.deferred.clear();
             state.levels.shrink_to(SPARE_LEVELS);
-            state.instance = Value::Nil;
+            state.instance = Value::nil();
             // A walk that climbed through a clause message with arguments and
             // then found nothing to initialize below it retires straight out
             // of `descend_levels`'s "nothing below" branches, which never
@@ -1010,7 +1010,7 @@ impl<'gc> Mutator<'gc> {
             if factory_arguments.len() != declared_arity {
                 return Err(Signal::Error(NewspeakError {
                     selector: Symbol::NEW,
-                    receiver: Value::Object(class),
+                    receiver: Value::object(class),
                     message: format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
                         declared_arity,
@@ -1138,7 +1138,7 @@ impl<'gc> Mutator<'gc> {
         Err(Signal::Error(NewspeakError {
             // The factory message the program sent to the applying class.
             selector: primary_factory_selector(&self.heap, applying).unwrap_or(Symbol::NEW),
-            receiver: Value::Object(applying),
+            receiver: Value::object(applying),
             message: format!(
                 "a clause message of class {} takes {} factory arguments, got {}",
                 class_name(&self.heap, applying),
@@ -1208,7 +1208,7 @@ fn not_the_primary_factory_error<'gc>(
     };
     Signal::Error(NewspeakError {
         selector,
-        receiver: Value::Object(superclass),
+        receiver: Value::object(superclass),
         message: format!(
             "{clause} of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"
@@ -1232,8 +1232,8 @@ fn argument_list<'gc>(
     class: ClassReference<'gc>,
     value: Value<'gc>,
 ) -> Result<Vec<Value<'gc>>, Signal<'gc>> {
-    if let Value::Object(object) = &value {
-        if let Some(items) = heap.array_elements(*object) {
+    if let Some(object) = value.as_object() {
+        if let Some(items) = heap.array_elements(object) {
             return Ok(items);
         }
     }
@@ -1280,7 +1280,7 @@ fn instantiation_refusal_error<'gc>(
         // is untrusted input (`image-format.md`, "Verification").
         crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError {
             selector: factory_selector(application),
-            receiver: Value::Object(class),
+            receiver: Value::object(class),
             message: format!(
                 "cannot instantiate {}: {}",
                 application.mixin.name,
@@ -1292,7 +1292,7 @@ fn instantiation_refusal_error<'gc>(
         }
         crate::mixin::InstantiationRefusal::ClassObject => NewspeakError {
             selector: factory_selector(application),
-            receiver: Value::Object(class),
+            receiver: Value::object(class),
             message: format!(
                 "cannot instantiate {display_name}: a class object is made only by evaluating its declaration"
             ),
@@ -1324,7 +1324,7 @@ fn mutable_value_slot_error<'gc>(
     };
     NewspeakError {
         selector: factory_selector(application),
-        receiver: Value::Object(class),
+        receiver: Value::object(class),
         message: format!(
             "cannot instantiate {instantiated}: a value object is deeply immutable, and \
              {declares} the mutable slot {}",
@@ -1350,7 +1350,7 @@ fn identity_method_error<'gc>(
 ) -> NewspeakError<'gc> {
     NewspeakError {
         selector: factory_selector(application),
-        receiver: Value::Object(class),
+        receiver: Value::object(class),
         message: format!(
             "cannot instantiate {}: a value class may not define ==, and {declaring} defines it",
             application.mixin.name
@@ -1395,7 +1395,7 @@ fn value_class_refusal_error<'gc>(
     };
     NewspeakError {
         selector: factory_selector(application),
-        receiver: Value::Object(class),
+        receiver: Value::object(class),
         message,
     }
 }
@@ -1420,10 +1420,10 @@ pub(crate) fn check_value_slot<'gc>(
     // Every immediate is a value, whatever holds it, and this answers
     // without reading the heap at all: an initializer that stores a number
     // or `nil` -- most of them -- never reaches a class.
-    let Value::Object(stored) = value else {
+    let Some(stored) = value.as_object() else {
         return Ok(());
     };
-    let Value::Object(instance) = receiver else {
+    let Some(instance) = receiver.as_object() else {
         return Ok(());
     };
     let class = mutator.heap().class_of_object(instance);
@@ -1546,7 +1546,7 @@ fn non_value_slot_error<'gc>(
         message: format!(
             "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \
              so every slot it declares holds a value",
-            mutator.heap().describe(&value)
+            mutator.heap().describe(value)
         ),
     }
 }

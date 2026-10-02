@@ -1,7 +1,9 @@
 (* `LargeInteger`'s arithmetic and ordering, with a `LargeInteger` on either
-   side and an `Integer` on the other, and a result that fits again answered
-   as an `Integer`. The operands are built by arithmetic, not literals, so
-   this does not depend on large literals (their own golden). *)
+   side and an `Integer` on the other. `big` is built by arithmetic; `small`,
+   `9223372036854775807`, lies beyond 61 bits and so is itself a
+   `LargeInteger` literal (large literals have their own golden). A result
+   that fits again is answered as an `Integer`, which `(big // big) class`
+   shows. *)
 class LargeArithmetic = Object new (
 ) (
     public main: p args: a = (

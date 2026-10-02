@@ -152,9 +152,7 @@ impl<'gc> Mutator<'gc> {
     /// The future `value` is, if it is one. The class check is one compare:
     /// no program can subclass the private `Future`.
     pub fn as_future(&self, value: Value<'gc>) -> Option<ObjectReference<'gc>> {
-        let Value::Object(object) = value else {
-            return None;
-        };
+        let object = value.as_object()?;
         self.heap
             .class_of_object(object)
             .same(self.builtin_class(BuiltinClass::Future))
@@ -176,9 +174,9 @@ impl<'gc> Mutator<'gc> {
         );
         self.futures_made = true;
         let class = self.builtin_class(BuiltinClass::Future);
-        let mut fields = vec![Value::Nil; FIELD_COUNT];
-        fields[COMPUTATION_FIELD] = Value::Object(closure);
-        fields[STATE_FIELD] = Value::SmallInteger(UNRESOLVED);
+        let mut fields = vec![Word::NIL; FIELD_COUNT];
+        fields[COMPUTATION_FIELD] = self.heap.store(Value::object(closure));
+        fields[STATE_FIELD] = self.heap.store(Value::small_integer(UNRESOLVED));
         self.heap
             .allocate_object(class, ObjectData::Instance(fields))
     }
@@ -192,14 +190,14 @@ impl<'gc> Mutator<'gc> {
         self.heap
             .set_instance_field(future, COMPUTATION_FIELD, computation);
         self.heap
-            .set_instance_field(future, STATE_FIELD, Value::SmallInteger(state));
+            .set_instance_field(future, STATE_FIELD, Value::small_integer(state));
     }
 
     /// Marks `future` resolving, its closure kept for an abandonment to
     /// restore.
     fn set_future_resolving(&mut self, future: ObjectReference<'gc>) {
         self.heap
-            .set_instance_field(future, STATE_FIELD, Value::SmallInteger(RESOLVING));
+            .set_instance_field(future, STATE_FIELD, Value::small_integer(RESOLVING));
     }
 
     /// `forcing`'s activation returned `value`: record it, unless it is
@@ -223,11 +221,11 @@ impl<'gc> Mutator<'gc> {
                 FutureState::Resolved(resolved) => resolved,
                 FutureState::Resolving => {
                     self.future_abandoned(forcing);
-                    return Err(divergent(Value::Object(inner)));
+                    return Err(divergent(Value::object(inner)));
                 }
                 FutureState::Malformed => {
                     self.future_abandoned(forcing);
-                    return Err(malformed(Value::Object(inner)));
+                    return Err(malformed(Value::object(inner)));
                 }
                 FutureState::Unresolved(closure) => {
                     // Force the inner one, then come back to this one, which
@@ -276,7 +274,7 @@ impl<'gc> Mutator<'gc> {
                 let computation = self
                     .heap
                     .instance_field(forcing.future, COMPUTATION_FIELD)
-                    .unwrap_or(Value::Nil);
+                    .unwrap_or(Value::nil());
                 self.set_future_fields(forcing.future, computation, UNRESOLVED);
             }
             next = forcing.then.take();
@@ -289,25 +287,24 @@ impl<'gc> Mutator<'gc> {
 /// `future` is an instance of `Future`; its fields are read as untrusted
 /// (`FutureState::Malformed`).
 fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<'gc> {
-    let (Some(computation), Some(Value::SmallInteger(state))) = (
+    let (Some(computation), Some(state)) = (
         heap.instance_field(future, COMPUTATION_FIELD),
-        heap.instance_field(future, STATE_FIELD),
+        heap.instance_field(future, STATE_FIELD)
+            .and_then(|state| state.as_small_integer()),
     ) else {
         return FutureState::Malformed;
     };
-    match (state, computation) {
-        (RESOLVED, Value::Object(value))
+    match (state, computation.as_object()) {
+        (RESOLVED, Some(value))
             if heap
                 .class_of_object(value)
                 .same(heap.class_of_object(future)) =>
         {
             FutureState::Malformed
         }
-        (RESOLVED, value) => FutureState::Resolved(value),
+        (RESOLVED, _) => FutureState::Resolved(computation),
         (RESOLVING, _) => FutureState::Resolving,
-        (UNRESOLVED, Value::Object(closure)) if heap.is_closure(closure) => {
-            FutureState::Unresolved(closure)
-        }
+        (UNRESOLVED, Some(closure)) if heap.is_closure(closure) => FutureState::Unresolved(closure),
         _ => FutureState::Malformed,
     }
 }
@@ -330,7 +327,7 @@ pub(crate) fn replace_resolved_futures(mutator: &mut Mutator<'_>) -> usize {
 /// encoder holds nothing more; the class check is `class_builtin`, as the
 /// encoder's other builtin checks are.
 pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'gc> {
-    let Value::Object(object) = value else {
+    let Some(object) = value.as_object() else {
         return value;
     };
     if heap.class_builtin(heap.class_of_object(object)) != Some(BuiltinClass::Future) {
@@ -361,15 +358,18 @@ pub(crate) fn fields_for_an_image<'gc>(
 ) -> Option<Vec<Value<'gc>>> {
     let closure = match state_in(heap, future) {
         FutureState::Unresolved(closure) => closure,
-        FutureState::Resolving => match heap.instance_field(future, COMPUTATION_FIELD) {
-            Some(Value::Object(closure)) if heap.is_closure(closure) => closure,
+        FutureState::Resolving => match heap
+            .instance_field(future, COMPUTATION_FIELD)
+            .and_then(|value| value.as_object())
+        {
+            Some(closure) if heap.is_closure(closure) => closure,
             _ => return None,
         },
         FutureState::Resolved(_) | FutureState::Malformed => return None,
     };
-    let mut written = vec![Value::Nil; FIELD_COUNT];
-    written[COMPUTATION_FIELD] = Value::Object(closure);
-    written[STATE_FIELD] = Value::SmallInteger(UNRESOLVED);
+    let mut written = vec![Value::nil(); FIELD_COUNT];
+    written[COMPUTATION_FIELD] = Value::object(closure);
+    written[STATE_FIELD] = Value::small_integer(UNRESOLVED);
     Some(written)
 }
 
@@ -378,12 +378,20 @@ pub(crate) fn fields_for_an_image<'gc>(
 /// name a record decoded later, so the closure half is checked once every
 /// record is in (`decode::decode_graph_section`); this answers the closure
 /// it names, if the rest holds.
-pub(crate) fn decoded_future_computation<'gc>(fields: &[Value<'gc>]) -> Option<Value<'gc>> {
+pub(crate) fn decoded_future_computation<'gc>(
+    heap: &Heap<'gc>,
+    fields: &[Word],
+) -> Option<Value<'gc>> {
     if fields.len() != FIELD_COUNT {
         return None;
     }
-    match (fields.get(COMPUTATION_FIELD), fields.get(STATE_FIELD)) {
-        (Some(computation), Some(Value::SmallInteger(UNRESOLVED))) => Some(*computation),
+    match (
+        fields.get(COMPUTATION_FIELD),
+        fields
+            .get(STATE_FIELD)
+            .and_then(|state| heap.load(*state).as_small_integer()),
+    ) {
+        (Some(computation), Some(UNRESOLVED)) => Some(heap.load(*computation)),
         _ => None,
     }
 }
@@ -398,8 +406,8 @@ pub(crate) fn force<'gc>(
 ) -> Result<Step<'gc>, Signal<'gc>> {
     match mutator.future_state(future) {
         FutureState::Resolved(value) => Ok(Step::Value(value)),
-        FutureState::Resolving => Err(divergent(Value::Object(future))),
-        FutureState::Malformed => Err(malformed(Value::Object(future))),
+        FutureState::Resolving => Err(divergent(Value::object(future))),
+        FutureState::Malformed => Err(malformed(Value::object(future))),
         FutureState::Unresolved(closure) => {
             mutator.set_future_resolving(future);
             Ok(Step::Block {
@@ -443,7 +451,7 @@ fn malformed<'gc>(future: Value<'gc>) -> Signal<'gc> {
 pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: Symbol::intern("value"),
-        receiver: Value::Nil,
+        receiver: Value::nil(),
         message: "a future reached a native through a host's send, which has no instruction to \
                   run again"
             .to_string(),
