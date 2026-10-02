@@ -2843,6 +2843,21 @@ impl<'gc> Heap<'gc> {
         self.stack.entries[activation.index as usize].kind.clone()
     }
 
+    /// Whether `activation` runs a method, a superclass clause, a superclass
+    /// clause's message or a `<:` clause's message -- not a block, an
+    /// initializer or a top-level activation. Answered without cloning the
+    /// kind, which holds an `Rc` for a method.
+    pub(crate) fn activation_runs_method_or_clause(&self, activation: ActivationReference) -> bool {
+        self.check_activation(activation);
+        matches!(
+            self.stack.entries[activation.index as usize].kind,
+            FrameKind::Method(_)
+                | FrameKind::SuperclassClause(_)
+                | FrameKind::SuperclassMessage(_)
+                | FrameKind::MixinApplicationMessage(_)
+        )
+    }
+
     /// A register of a reified frame: the live stack slot while its
     /// activation runs, the frame's own copy after it has returned. This is
     /// the path a block takes to its method's variables, and the only

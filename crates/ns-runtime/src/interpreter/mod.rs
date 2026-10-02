@@ -1378,13 +1378,7 @@ impl<'gc> Mutator<'gc> {
     /// `docs/design/execution.md`, "Unwinding" -- and a block's `^`
     /// always targets its home, never the block.
     pub(crate) fn catches_return(&self, activation: ActivationReference) -> bool {
-        matches!(
-            self.heap.activation_kind(activation),
-            FrameKind::Method(_)
-                | FrameKind::SuperclassClause(_)
-                | FrameKind::SuperclassMessage(_)
-                | FrameKind::MixinApplicationMessage(_)
-        )
+        self.heap.activation_runs_method_or_clause(activation)
     }
 
     /// Where a `^` in `activation` returns to. A block returns from its home --

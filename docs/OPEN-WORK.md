@@ -749,8 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `interpreter/mod.rs`: `catches_return` clones a `FrameKind`
-  (`heap.activation_kind`).
 - `builtins/block.rs`: a native `whileTrue:`/`whileFalse:` loop checks its
   body closure on every iteration.
 - `vm.rs`: `send` and `deliver` carry `#[allow(clippy::too_many_arguments)]`.
