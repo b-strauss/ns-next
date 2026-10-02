@@ -134,12 +134,13 @@ doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
 ever stored.** An activation's index is reused after its pop; `ClosureData`,
 `Frame` and image records take a `FrameReference` (`Heap::reify`). The run loop
 pops every activation it runs on every exit. **Every instruction that reads or
-writes another frame's registers by reference must be named in
-`bytecode::outer_reach_of`, and its eight-byte form in
-`bytecode::compact::narrow_outer_reach`, answering its depth, never 0**, or
-the frame drops its registers on return and every read answers `nil` at exit
-status 0. The round-trip tests' `assert_derived_as_decoded` holds the two to
-each other (`execution.md`, "Activations", "Closure conversion").
+writes another frame's registers by reference must answer its depth, never 0,
+in `bytecode::outer_reach_of`, and its eight-byte form in
+`bytecode::compact::narrow_outer_reach`**, or the frame drops its registers on
+return and every read answers `nil` at exit status 0. Both matches are
+exhaustive, so the compiler makes a new instruction decide; the round-trip
+tests' `assert_derived_as_decoded` holds the two to each other
+(`execution.md`, "Activations", "Closure conversion").
 
 **An unwind target is a `FrameReference`.** Non-local return, `return:`,
 `resume:`, `retry` and the depth reserve name the target's frame; the unwinder

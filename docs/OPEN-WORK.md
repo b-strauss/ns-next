@@ -749,9 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `bytecode.rs:537`: `outer_reach_of` ends in `_ => 0`, so "every instruction
-  that reaches another frame's registers is named" rests on prose; an
-  exhaustive match would make the compiler enforce it.
 - `interpreter/inline_cache.rs`: `send_super` reads the current class and its
   superclass before it knows whether the send is cached; `send_lexical`
   computes N twice on a miss.

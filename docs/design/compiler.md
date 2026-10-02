@@ -628,7 +628,7 @@ no program reaches either module's root, and the bootstrap checks that each one'
 `vmMirror` holds the mirror, so the check's error is unreachable while that
 holds. The
 instruction reads and writes only its own activation's registers, so
-`bytecode::outer_reach_of` does not name it.
+`bytecode::outer_reach_of` answers 0 for it.
 
 **It has no wire tag**, and the encoder treats one as unreachable. It is
 emitted only for a `MirrorSend`, so only into shipped core-library source,

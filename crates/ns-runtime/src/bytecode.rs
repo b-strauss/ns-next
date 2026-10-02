@@ -183,7 +183,7 @@ pub enum Instruction {
     /// here, not a value.
     ///
     /// Reads and writes only registers of the activation executing it, so
-    /// `outer_reach_of` does not name it.
+    /// its `outer_reach_of` reach is 0.
     SendMirror {
         primitive: crate::builtins::primitive::MirrorPrimitive,
         mirror_register: u16,
@@ -349,7 +349,7 @@ pub enum Instruction {
     /// instruction, so there is one source for each of them.
     ///
     /// Reads and writes only registers of the activation executing it -- never
-    /// another frame's by reference -- so `outer_reach_of` does not name it.
+    /// another frame's by reference -- so its `outer_reach_of` reach is 0.
     IntegerBinary {
         operation: IntegerOperation,
         destination: u16,
@@ -766,13 +766,13 @@ pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
 /// table. The round-trip tests' `assert_derived_as_decoded` hold that
 /// derivation to this function over the decoded view.
 ///
-/// **The match below has to name every instruction that reaches another
-/// frame's registers by reference, and `narrow_outer_reach` its eight-byte
-/// form.** An omitted one contributes `0`, so `MakeClosure` never marks the
-/// creating activation, the frame loses its registers when it returns, and
-/// every read through it answers `nil` without a word
-/// (`docs/design/execution.md`, "The divorce"). Adding such an instruction
-/// is therefore a change to both.
+/// **The match below answers every instruction's reach, with no `_` arm, and
+/// so does `narrow_outer_reach` for the eight-byte forms**, so that a new
+/// instruction must decide. One that reached another frame's registers by
+/// reference but answered `0` would leave `MakeClosure` unable to mark the
+/// creating activation: the frame would lose its registers when it returns,
+/// and every read through it would answer `nil` without a word
+/// (`docs/design/execution.md`, "The divorce").
 pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
     instructions
         .iter()
@@ -780,7 +780,34 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
             Instruction::LoadOuterLocal { depth, .. }
             | Instruction::StoreOuterLocal { depth, .. } => *depth,
             Instruction::MakeClosure { code, .. } => code.outer_reach.saturating_sub(1),
-            _ => 0,
+            Instruction::LoadLiteral { .. }
+            | Instruction::LoadSelf { .. }
+            | Instruction::LoadEnclosingObject { .. }
+            | Instruction::Move { .. }
+            | Instruction::StoreLocal { .. }
+            | Instruction::SendLexical { .. }
+            | Instruction::SendPublic { .. }
+            | Instruction::SendInlinable { .. }
+            | Instruction::SendSuper { .. }
+            | Instruction::SendMirror { .. }
+            | Instruction::MakeArray { .. }
+            | Instruction::MakeVector { .. }
+            | Instruction::LoadVector { .. }
+            | Instruction::StoreVector { .. }
+            | Instruction::InitializeSlot { .. }
+            | Instruction::ReturnSlotIfFilled { .. }
+            | Instruction::MakeFuture { .. }
+            | Instruction::ResolveFuture { .. }
+            | Instruction::LoadOwnSlot { .. }
+            | Instruction::InitializeSlotProvisionally { .. }
+            | Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::Jump { .. }
+            | Instruction::JumpIfNotBoolean { .. }
+            | Instruction::BranchIfFalse { .. }
+            | Instruction::BranchIfTrue { .. }
+            | Instruction::IntegerBinary { .. } => 0,
         })
         .max()
         .unwrap_or(0)
