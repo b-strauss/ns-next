@@ -380,30 +380,28 @@ string's, a symbol's, a value list's and a `LargeInteger`'s digit count
 `encode::u32_field`, because no program can pass it: object and frame ids
 and counts are bounded by the heap's 32-bit handles, declaration, statement
 and instruction counts by source, whose `Span` offsets are 32-bit --
-`ns_syntax::parse` refuses a source of more than `u32::MAX` bytes with a
-parse diagnostic before lexing it -- and the symbol table's count by the two
-together.
+`ns_syntax::lex`, which `parse` goes through, refuses a source of more than
+`u32::MAX` bytes with a parse diagnostic before lexing it -- and the symbol
+table's count by the two together.
 
-**A call-site number is a property of the code, never a byte on the wire.**
-It is feedback-table bookkeeping, not program meaning: the decoder assigns
-every family's numbers itself, in the compiler's own emission order, once
-the whole code table is read (`decode::number_call_site_families`), rather
-than trusting a number the file claims, writing each into the decoded body
-in place through `EncodedBody::for_each_emitted_mut`. A code record carries
-one flag, whether its sends were compiled uncached (the reference lowering
-never numbers a send at all, so it marks the whole body rather than leaving
-each send to say so), and one count, `copied_count`, so that a block's
-register layout is known from its code alone. `outer_reach` is not on the
-wire either: the decoder derives it as the compiler does, in
-`CompiledCode::from_builder`, which works because a block's code precedes
-its parent's in the table. A body's `family_size` is not on the wire either
-way; both sides derive it from the sends' numbers and the blocks' sizes the
-same way, read off the encoding as `bytecode::family_size_of` reads the
-decoded view. A block precedes its parent in the
-table, but its numbers depend on where its `MakeClosure` sits in its root's
-emission order, so the decoder numbers a family only once its root -- the
-body nothing else's `MakeClosure` creates -- has been read in full. The
-golden image is 1281 bytes.
+**A call-site number is a property of the code, never a byte on the wire.** It
+is feedback-table bookkeeping, not program meaning: the decoder assigns every
+family's numbers itself, in the compiler's own emission order, once the whole
+code table is read (`decode::number_call_site_families`), rather than trusting a
+number the file claims, writing each into the decoded body in place through
+`EncodedBody::for_each_emitted_mut`. A code record carries one flag, whether its
+sends were compiled uncached (the reference lowering never numbers a send at
+all, so it marks the whole body rather than leaving each send to say so), and
+one count, `copied_count`, so that a block's register layout is known from its
+code alone. `outer_reach` is not on the wire either: the decoder derives it as
+the compiler does, in `CompiledCode::from_builder`, which works because a
+block's code precedes its parent's in the table. A body's `family_size` is not
+on the wire either way; both sides derive it from the sends' numbers and the
+blocks' sizes the same way, read off the encoding as `bytecode::family_size_of`
+reads the decoded view. A block precedes its parent in the table, but its
+numbers depend on where its `MakeClosure` sits in its root's emission order, so
+the decoder numbers a family only once its root -- the body nothing else's
+`MakeClosure` creates -- has been read in full. The golden image is 1281 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.

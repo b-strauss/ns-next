@@ -1275,8 +1275,10 @@ No instruction changed shape except in the width of its site:
   carries a flag for a family the reference lowering compiled uncached, in
   place of the call-site list that used to guard a stale body. The family
   size is derived from the sends' numbers the same way on both sides
-  (`bytecode::family_size_of`, which the compiler and the decoder both
-  call), never read from the artifact. That bounds the range a crafted
+  (`CompiledCode::from_builder`, through which the compiler and the decoder
+  both build a body, reads it off the encoding as
+  `bytecode::family_size_of` reads the decoded view), never read from the
+  artifact. That bounds the range a crafted
   family's first activation can allocate by the family's own bytes, and
   keeps two sends from sharing an entry.
 - The reference lowering emits every send with `CallSite::UNCACHED`, so

@@ -1347,7 +1347,7 @@ impl EncodedBody {
     /// Every block the body creates, in the order its `MakeClosure`s were
     /// emitted, whatever form each took -- what the image decoder's checks
     /// on blocks read, without decoding a slot.
-    pub fn created_blocks(&self) -> impl Iterator<Item = CreatedBlock<'_>> + '_ {
+    pub(crate) fn created_blocks(&self) -> impl Iterator<Item = CreatedBlock<'_>> + '_ {
         self.slots
             .iter()
             .filter_map(move |slot| match emitted_entry(*slot) {
@@ -1397,10 +1397,10 @@ impl EncodedBody {
 
 /// A block a body creates, as `EncodedBody::created_blocks` answers it:
 /// borrowed from the body, read-only.
-pub struct CreatedBlock<'a> {
-    pub code: &'a Rc<CompiledCode>,
-    pub parameters: &'a Rc<Vec<Symbol>>,
-    pub copied: &'a [u16],
+pub(crate) struct CreatedBlock<'a> {
+    pub(crate) code: &'a Rc<CompiledCode>,
+    pub(crate) parameters: &'a Rc<Vec<Symbol>>,
+    pub(crate) copied: &'a [u16],
 }
 
 /// Where a slot keeps what `for_each_emitted_mut` visits.

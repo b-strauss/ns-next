@@ -669,9 +669,9 @@ fn every_instruction_once() -> CompiledCode {
     );
     // One past the highest number among its own sends (0..=3, in emission
     // order -- what `number_call_site_families` assigns on the decoded side
-    // too) and the block's `family_size` (0): the same
-    // `bytecode::family_size_of` the decoder recomputes with, so the round
-    // trip must agree.
+    // too) and the block's `family_size` (0): derived as the decoder
+    // derives it, through `CompiledCode::from_builder`, so the round trip
+    // must agree.
     assert_eq!(code.family_size, 4);
     // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
     assert_eq!(code.outer_reach, 2);

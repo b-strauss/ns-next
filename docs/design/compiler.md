@@ -173,7 +173,9 @@ then handed its closure's `copied_count` values into the registers just above
 its parameters.
 
 `outer_reach` is derived from the instructions, by the compiler and by the
-image decoder alike (`bytecode::outer_reach_of`), and decides whether the
+image decoder alike (`CompiledCode::from_builder`, off the encoding:
+`bytecode::compact::narrow_outer_reach` for an eight-byte slot,
+`bytecode::outer_reach_of` for the wide table), and decides whether the
 activation that creates a closure keeps its registers when it returns
 ([execution.md](execution.md), "Converted representation").
 `copied_count` is on the wire; `outer_reach` and `family_size` are not.

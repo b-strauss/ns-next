@@ -475,8 +475,8 @@ fn encode_code(
     writer.write_u16(code.argument_count);
     writer.write_u16(code.register_count);
     // `outer_reach` is deliberately absent: it follows from the
-    // instructions, and `decode_code` recomputes it with the same
-    // `bytecode::outer_reach_of` the compiler used.
+    // instructions, and `decode_code` recomputes it as the compiler did,
+    // through `CompiledCode::from_builder`.
     writer.write_u16(code.copied_count);
     writer.write_u32(code.source.start);
     writer.write_u32(code.source.end);

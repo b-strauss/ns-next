@@ -6192,23 +6192,21 @@ and allocates. The encoder chooses by the literal, for a lowering and for
 the image decoder alike, so the wire format is unchanged.
 
 **Sends** (2026-10-02): `SendPublic`, `SendLexical`, `SendSuper` and
-`SendInlinable` each come in four forms, for no argument, one, two, and a
-`Wide` form that reads everything from its `SendSite` -- three arguments or
-more, or a register above 255. The two-argument `SendPublic` is
-`{ destination, receiver, arguments: [u8; 2], site: u16 }`, eight bytes, and
-an eight-byte form's argument registers reach `send` by value, from the
-slot, with no allocation to chase. `SendMirror` has one eight-byte form, its arguments
-and failure target in its `MirrorSite`; like every other instruction it takes
-`Wide` when its operands do not fit (a register above 255, or the mirror-site
-table full). Every send arm only gathers its
-receiver, its arguments and its site into a `PendingSend` and leaves the
-match through its kind's labelled block; **one send path per kind** follows
-that block, so each kind's cache hit path is inlined into `vm::run` once,
-not once per form. The pending send carries no kind: a single join for all
-four kinds needs one, and was measured to cost `bench_loop.ns` 3.5% --
-LLVM built a stack aggregate with narrow stores and dispatched a second
-jump table on the kind ("What the compact instruction encoding moved"
-above).
+`SendInlinable` each come in four forms, for no argument, one, two, and a `Wide`
+form that reads everything from its `SendSite` -- three arguments or more, or a
+register above 255. The two-argument `SendPublic` is `{ destination, receiver,
+arguments: [u8; 2], site: u16 }`, eight bytes, and an eight-byte form's argument
+registers reach `send` by value, from the slot, with no allocation to chase.
+`SendMirror` has one eight-byte form, its arguments and failure target in its
+`MirrorSite`; like every other instruction it takes `Wide` when its operands do
+not fit (a register above 255, or the mirror-site table full). Every send arm
+only gathers its receiver, its arguments and its site into a `PendingSend` and
+leaves the match through its kind's labelled block; **one send path per kind**
+follows that block, so each kind's cache hit path is inlined into `vm::run`
+once, not once per form. The pending send carries no kind: a single join for all
+four kinds needs one, and was measured to cost `bench_loop.ns` 3.5% -- LLVM
+built a stack aggregate with narrow stores and dispatched a second jump table on
+the kind ("What the compact instruction encoding moved" above).
 
 **`IntegerBinary` is one opcode per operation** (2026-10-02) --
 `IntegerAdd`, `IntegerSubtract`, `IntegerMultiply`, `IntegerFloorDivide`,
@@ -6234,19 +6232,20 @@ runs.
 `Instruction` values into a `CodeBuilder`, which encodes each at once and
 patches jump targets in place (`Instruction::set_target` for a target in
 `wide`); `CompiledCode` stores only the `EncodedBody`, the slots and their
-tables. `CompiledCode::instruction(index)` and `instructions()` decode the
-view back -- for `disasm`, the image encoder, the decoder's verification
-(once a body) and the tests -- and the round trip is exact; `family_size`
-and `outer_reach` are read off the tables without a decode, answering what
-`family_size_of` and `outer_reach_of` answer over the view; `instruction_count()` answers the body's length, and only `vm.rs`
-reads `slot(index)`. Two `CompiledCode`s are equal when they mean the
-same -- every field but the encoding, and the decoded instructions, a
-`Float` literal by its bits -- so a body built narrow equals the same body
-built wide. The decoder numbers a family's call sites in place
-through `EncodedBody::for_each_emitted_mut`, which visits every send's
-`CallSite`, in `send_sites` or in `wide`, and every block, in emission
-order whatever form each took -- the compiler's own order
-([compiler.md](compiler.md), "Safepoints and call-site identity").
+tables. `CompiledCode::instruction(index)` and `instructions()` decode the view
+back -- for `disasm`, the image encoder, the decoder's verification (once a
+body) and the tests -- and the round trip is exact; `family_size` and
+`outer_reach` are read off the tables without a decode, answering what
+`family_size_of` and `outer_reach_of` answer over the view;
+`instruction_count()` answers the body's length, and only `vm.rs` reads
+`slot(index)`. Two `CompiledCode`s are equal when they mean the same -- every
+field but the encoding, and the decoded instructions, a `Float` literal by its
+bits -- so a body built narrow equals the same body built wide. The decoder
+numbers a family's call sites in place through
+`EncodedBody::for_each_emitted_mut`, which visits every send's `CallSite`, in
+`send_sites` or in `wide`, and every block, in emission order whatever form each
+took -- the compiler's own order ([compiler.md](compiler.md), "Safepoints and
+call-site identity").
 
 **The wide forms run under a stress mode** (2026-10-02):
 `NS_NEXT_STRESS_WIDE=1`, debug builds only like the move, cache and

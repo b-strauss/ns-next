@@ -13,9 +13,10 @@ use crate::Symbol;
 
 mod compact;
 
+pub(crate) use compact::CreatedBlock;
 pub use compact::{
-    BlockSite, CodeBuilder, CompactInstruction, CreatedBlock, Emitted, EncodedBody, MirrorSite,
-    SendSite, WideSend,
+    BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
+    WideSend,
 };
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
@@ -422,13 +423,15 @@ pub struct CompiledCode {
     /// level above that. `MakeClosure` marks the creating activation when
     /// this is non-zero, which is what makes a returning frame keep its
     /// registers (`docs/design/execution.md`, "Converted representation").
-    /// Derived from the instructions, never on the wire.
+    /// Derived from the encoding by `from_builder`, never on the wire.
     ///
     /// **Every instruction that reads or writes another frame's registers by
-    /// reference has to be named in `outer_reach_of`.** One that is not
-    /// leaves the creating activation unmarked, its frame drops its
-    /// registers when it returns, and the reads answer `nil` -- silent wrong
-    /// output at exit status 0, not a crash.
+    /// reference has to be named in `outer_reach_of`, and its eight-byte
+    /// form in `compact::narrow_outer_reach`, answering its depth, never
+    /// 0.** One that is not leaves the creating activation unmarked, its
+    /// frame drops its registers when it returns, and the reads answer `nil`
+    /// -- silent wrong output at exit status 0, not a crash. The round-trip
+    /// tests' `assert_derived_as_decoded` holds the two lists to each other.
     pub outer_reach: u16,
     /// Whether this is the body of `Block>>on:do:`, `ensure:` or
     /// `ifCurtailed:`, and where its parameters and locals live: recognized
@@ -736,7 +739,11 @@ impl Instruction {
 /// One past the highest call-site number among `instructions`' sends and
 /// the `family_size` of every block they create; 0 when there is none.
 /// `UNCACHED` sends are not numbered. The compiler and the decoder both
-/// compute it here, so the two cannot disagree about a body.
+/// derive a body's through `CompiledCode::from_builder`, off the encoding
+/// (`compact`'s `Tables::family_size`, which calls this for the wide
+/// table), so the two cannot disagree about a body; the round-trip tests'
+/// `assert_derived_as_decoded` hold that derivation to this function over
+/// the decoded view.
 pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
     instructions
         .iter()
@@ -753,15 +760,19 @@ pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
 
 /// A body's `outer_reach`. A nested block's reach counts one level less from
 /// here: the frame it reaches through is the one this body creates. The
-/// compiler and the decoder both compute it here, so the two cannot disagree
-/// about a body.
+/// compiler and the decoder both derive a body's through
+/// `CompiledCode::from_builder`, off the encoding: `compact`'s
+/// `narrow_outer_reach` for an eight-byte slot, this function for the wide
+/// table. The round-trip tests' `assert_derived_as_decoded` hold that
+/// derivation to this function over the decoded view.
 ///
 /// **The match below has to name every instruction that reaches another
-/// frame's registers by reference.** An omitted one contributes `0`, so
-/// `MakeClosure` never marks the creating activation, the frame loses its
-/// registers when it returns, and every read through it answers `nil`
-/// without a word (`docs/design/execution.md`, "The divorce"). Adding such
-/// an instruction is therefore a change to this function too.
+/// frame's registers by reference, and `narrow_outer_reach` its eight-byte
+/// form.** An omitted one contributes `0`, so `MakeClosure` never marks the
+/// creating activation, the frame loses its registers when it returns, and
+/// every read through it answers `nil` without a word
+/// (`docs/design/execution.md`, "The divorce"). Adding such an instruction
+/// is therefore a change to both.
 pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
     instructions
         .iter()

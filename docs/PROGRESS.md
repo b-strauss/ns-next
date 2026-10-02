@@ -4040,7 +4040,8 @@ measured program reaches.
   accessors, with `vm::run` unchanged at 8,525 instructions and 0x3A8;
   two `CompiledCode`s are equal when they mean the same, a float literal
   by its bits; loading decodes each body once; and a source of more than
-  `u32::MAX` bytes is refused by `ns_syntax::parse` before it is lexed.
+  `u32::MAX` bytes is refused by `ns_syntax::lex`, which `parse` and
+  `ns-lsp`'s analysis go through, before it is lexed.
 
 **The gate.** Before anything was built, a throwaway copy ran `vm::run` on
 the eight-byte slots and was measured against `master` by the protocol of
