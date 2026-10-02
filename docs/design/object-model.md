@@ -1503,6 +1503,77 @@ record, since it has no identity, and the decoder decides whether it is
 immediate too ([image-format.md](image-format.md), "Planned: the image
 under the new representation").
 
+**How it is built: seven stages, each green.** Decided with the user on
+2026-10-02. Every behaviour change lands on today's enum, apart from the
+change of representation, so that the switch to the word itself moves no
+golden:
+
+1. **`Value` becomes opaque.** `Value<'gc>` becomes a struct around a
+   private representation, and outside `types.rs` and `heap.rs` no code
+   names a variant. It is made with `Value::nil()`, `Value::boolean`,
+   `Value::small_integer` (a `debug_assert!` that the integer fits) and
+   `Value::object`, and read with `is_nil`, `as_boolean`,
+   `as_small_integer` and `as_object`, each answering an `Option`. An
+   exhaustive match goes through `value.kind()`, a view that needs no heap:
+   `ValueKind<'gc> { Nil, Boolean(bool), SmallInteger(i64),
+   SmallFloat(f64), Object(ObjectReference<'gc>) }`. `SmallFloat` is the
+   immediate float only: code that reads a float asks
+   `Heap::float_value(value) -> Option<f64>`, and a float is made only by
+   `Mutator::new_float`, so both are right before stage 3 boxes any float.
+   Tests compare through the accessors (`value.as_small_integer() ==
+   Some(3)`). No representation changes and no golden moves.
+2. **The 61-bit boundary, on the enum.** `SMALL_INTEGER_MIN` and
+   `SMALL_INTEGER_MAX` bound a `SmallInteger`; `Mutator::new_integer`
+   decides by them, every leaf checks them after its `checked_*`, the
+   compiler lowers a literal that fits `i64` but not 61 bits to a
+   `Literal::LargeInteger`, and the decoder makes an `i64` outside them a
+   `LargeInteger`; the wire does not change. `class` then answers
+   `LargeInteger` for such an integer: each golden that moves is checked
+   against §5.1.1 before it is updated.
+3. **Boxed floats, on the enum.** A boxed float is `ObjectData::Float(f64)`,
+   an instance of the builtin `Float` holding no handle.
+   `Mutator::new_float` boxes by Spur's range test
+   (`isSmallFloatValueBits`), so every float has one representation; its
+   equality and hash come from its state, as every value's do, and a NaN
+   still equals a NaN. The encoder writes an `f64` either way, without a
+   record; the decoder decides.
+4. **The word.** The private representation becomes the tagged word of the
+   table above: a handle `index << 3`, a `SmallInteger` `(value << 3) | 1`,
+   `nil`, `false` and `true` the payloads 0, 1 and 2 under `010`, a
+   `SmallFloat64` Spur's rotation under `100`. A release `Value` is the
+   word and the zero-sized brand, eight bytes; a debug `Value` adds
+   `origin` and `epoch`, meaningless for an immediate, so the origin and
+   epoch checks stay as exact as today. `kind()` decodes the tag,
+   `immediate_index` reads it, and `at_rest` and `branded` become trivial.
+   The release size tests of `Signal`, `Result<Step, Signal>`,
+   `EvaluationResult` and `Object` are re-pinned to what the shrunken types
+   measure.
+5. **The heap stores bare words.** A `pub(crate)` type `Word`, eight bytes
+   in both builds and without a brand, is what every field (`Instance`),
+   element (`Array`), register (`ActivationStack.values`, a reified frame's
+   registers) and copied closure value holds. A load gives the word the
+   heap's current id and epoch; a store checks, in a debug build, that the
+   `Value` carries both before it becomes a word. The collector rewrites
+   these words by the object's format rather than through `Trace` on
+   `Value`; what still holds a Rust-side handle -- `ClassData.enclosing`,
+   a host's `Root`, an argument buffer -- keeps its brand and its `Trace`.
+6. **Arithmetic on tagged words.** The operations are methods on `Value` in
+   `types.rs` (`Value::small_integer_sum` and its siblings), called by
+   `vm.rs`'s `IntegerBinary` arm and by `builtins/numbers.rs` alike, so the
+   rule has one copy and `vm.rs` gains no logic of its own. One test,
+   `left & right & 1`, checks both operands; addition and subtraction work
+   on the words with one overflow test, since an `i64` overflow of the
+   tagged word is exactly a 61-bit overflow; comparisons compare the words;
+   multiplication and `//` untag one operand, as Cog's and Soup's do. An
+   inline cache reads an immediate's class from its tag.
+7. **Measured, then documented.** Against the tree the branch started from,
+   in one sitting, by the protocol of "The Are We Fast Yet benchmarks"' baseline
+   ([execution.md](execution.md)): three pinned builds a side, three rounds
+   with the order rotated, all sixteen programs under `bench` and `--timed`
+   and the eight microbenchmark sources, after `dumpbin` has shown
+   `run_stretch` still inlined. A slowdown is recorded and investigated;
+   the word stays, since the road decided it.
+
 ## Planned: the object layout
 
 Would change: an object stops being a slot in an index arena (56 bytes in a
