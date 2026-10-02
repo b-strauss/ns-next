@@ -38,22 +38,23 @@ rest is:
 | `001` | a `SmallInteger` of 61 bits, `(value << 3) \| 1` |
 | `010` | a constant: `nil`, `false` and `true` are the payloads 0, 1 and 2, with room for more |
 | `100` | a `SmallFloat64` |
-| `110` | free |
+| `110` | free: never produced, kept for a future immediate |
 | `011`, `101`, `111` | never produced, so that bit 0 alone tells a `SmallInteger` |
 
 The tags are Spur's (`smallIntegerTag` 1, `smallFloatTag` 4, three tag bits,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779` for the three tag bits, `:2836` for `smallIntegerTag`, `:2784` for `smallFloatTag`): Spur
-writes a `SmallInteger` as `(value << 3) + 1` (`integerObjectOf`,
-`:41159`) and tests it by bit 0 alone. Spur's `Character` tag, `010`, is
-taken for the constants: ns-next has no characters, and `nil`, `true` and
-`false` are immediates rather than heap singletons as in Spur and Soup,
-which is why nothing resembling an object store is needed to name them in a
-serialized image. A `SmallFloat64` is Spur's encoding (`floatObjectOf:`,
-`smallFloatValueOf:`): an eight-bit subset of the exponent -- IEEE exponents
-896 with a non-zero mantissa through 1151, about 2^-127 to just under
-2^129, plus ±0.0 (`isSmallFloatValueBits`, `:41232`; `is_small_float_bits`)
--- with the sign rotated down beside the tag. A release `Value` is the word
-and the zero-sized brand, eight bytes (`a_release_value_is_one_word`).
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2779` for the three tag
+bits, `:2836` for `smallIntegerTag`, `:2784` for `smallFloatTag`): Spur writes a
+`SmallInteger` as `(value << 3) + 1` (`integerObjectOf`, `:41159`) and tests it
+by bit 0 alone. Spur's `Character` tag, `010`, is taken for the constants:
+ns-next has no characters, and `nil`, `true` and `false` are immediates rather
+than heap singletons as in Spur and Soup, which is why nothing resembling an
+object store is needed to name them in a serialized image. A `SmallFloat64` is
+Spur's encoding (`floatObjectOf:`, `smallFloatValueOf:`): an eight-bit subset of
+the exponent -- IEEE exponents 896 with a non-zero mantissa through 1151, about
+2^-127 to just under 2^129, plus ±0.0 (`isSmallFloatValueBits`, `:41232`;
+`is_small_float_bits`) -- with the sign rotated down beside the tag. A release
+`Value` is the word and the zero-sized brand, eight bytes
+(`a_release_value_is_one_word`).
 
 **Why one word.** LLVM copied the 16-byte enum `Value` this replaced as a
 tag byte and two overlapping quadwords, so every `Value` that passed through
@@ -153,35 +154,34 @@ bytes in a release build with it ([dispatch.md](dispatch.md), "The dispatch
 id").
 
 **A symbol is a heap object, and a canonical one**: each `Heap` keeps a
-canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside
-a `Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
-answers the table's object, allocating it only the first time. It is the one
-way to make a symbol, so a symbol literal, `asSymbol` and every selector
-handed to `doesNotUnderstand:` all reach the same object for the same text,
-which is what §5.1.6 and §3.1.1 make two equal symbols. The table is per heap
-because a handle means nothing against another heap. It is weak: the
-collector clears an entry whose symbol nothing else holds ([memory.md](memory.md),
-"Weak references"). This is what every reference does -- Primordial Soup's
-weak `symbolTable` (`KernelForPrimordialSoup.ns`), SOMns's
-`Symbols.symbolFor`, Squeak's symbol table -- and it keeps a symbol an
-indexable object for a kernel where `Symbol` is a subclass of `String`, as
-the references declare it; `Kernel.ns` still puts `Symbol` directly under
-`Value`, beside `String` rather than below it, which the object layout
-changes ("Planned: the object layout" below). Rejected: a symbol as an immediate, a tag of its own, which no
-reference does and which every string primitive, and later the Newspeak
-kernel, would have to accept as a non-object. An image carries a symbol as a
-record; the decoder enters each one into the loading heap's table and refuses
-a second record of the same text
+canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside a
+`Symbol` -- which the interner assigns densely -- and `Mutator::new_symbol`
+answers the table's object, allocating it only the first time. It is the one way
+to make a symbol, so a symbol literal, `asSymbol` and every selector handed to
+`doesNotUnderstand:` all reach the same object for the same text, which is what
+§5.1.6 and §3.1.1 make two equal symbols. The table is per heap because a handle
+means nothing against another heap. It is weak: the collector clears an entry
+whose symbol nothing else holds ([memory.md](memory.md), "Weak references").
+This is what every reference does -- Primordial Soup's weak `symbolTable`
+(`KernelForPrimordialSoup.ns`), SOMns's `Symbols.symbolFor`, Squeak's symbol
+table -- and it keeps a symbol an indexable object for a kernel where `Symbol`
+is a subclass of `String`, as the references declare it; `Kernel.ns` still puts
+`Symbol` directly under `Value`, beside `String` rather than below it, which the
+object layout changes ("Planned: the object layout" below). Rejected: a symbol
+as an immediate, a tag of its own, which no reference does and which every
+string primitive, and later the Newspeak kernel, would have to accept as a
+non-object. An image carries a symbol as a record; the decoder enters each one
+into the loading heap's table and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
 **An `ObjectReference` is an index, not a pointer.** Every `Object` lives in one
 `Heap`'s arena and is reached only through a `Heap` accessor; the index is
-private to `crates/ns-runtime/src/heap.rs` and its submodule `heap/value.rs`,
-which puts it into a word and takes it out again, so the compiler refuses to
-read it anywhere else. `Value` is therefore `Copy` and a handle has no destructor. What
-that representation buys, how the collector reclaims a slot once nothing
-reaches it, and why a handle means nothing against a different `Heap` are in
-[memory.md](memory.md).
+private to the `heap` module -- `crates/ns-runtime/src/heap.rs` and its
+submodules, `heap/value.rs` among them, which puts it into a word and takes it
+out again -- so the compiler refuses to read it anywhere else. `Value` is
+therefore `Copy` and a handle has no destructor. What that representation buys,
+how the collector reclaims a slot once nothing reaches it, and why a handle
+means nothing against a different `Heap` are in [memory.md](memory.md).
 
 **The identity hash is drawn from a monotonic counter the first time `hash`
 asks for one**, never derived from an address and never from the arena index,

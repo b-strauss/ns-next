@@ -877,24 +877,23 @@ A class object keeps a copy of its application's instances id
 (`ClassData.dispatch_id`), which is where allocation and restamping read it
 for the objects whose class it is.
 
-**The id a guard reads is in the object header** (`Object.dispatch_id`),
-stamped at allocation from the object's class's instances id — an
-instance's from its class, a class object's from its metaclass — and
-restamped by `Heap::set_object_class` when `Mutator::attach_metaclass`
-changes a header, so `Heap::dispatch_id(value)` answers
-an object's in one arena load, and a guard is that load and one compare, for
-instances and class objects alike. It is where V8 (the map), HotSpot (the
-klass pointer), Cog (the class index) and Primordial Soup (the class id) keep
-their answer. For an immediate -- `nil`, a boolean, a `SmallInteger` or a
-`SmallFloat64` -- it is a table indexed by the word's tag, and for the
-constant tag by the constant (the heap's `immediate_dispatch_ids`), which the
-bootstrap fills from the builtin classes; a boxed `Float` or a
-`LargeInteger` is an object and carries its own. The header's four bytes are paid for by boxing a class object's
-data, `ObjectData::Class(Box<ClassData>)`, so an `Object` is still 56 bytes
-in a release build, the size `CLAUDE.md`'s amplification figure assumes,
-which a release-build test pins ([memory.md](memory.md)). It is 56 rather
-than 48 because `ClosureData`, 32 bytes, is now `ObjectData`'s largest
-payload.
+**The id a guard reads is in the object header** (`Object.dispatch_id`), stamped
+at allocation from the object's class's instances id — an instance's from its
+class, a class object's from its metaclass — and restamped by
+`Heap::set_object_class` when `Mutator::attach_metaclass` changes a header, so
+`Heap::dispatch_id(value)` answers an object's in one arena load, and a guard is
+that load and one compare, for instances and class objects alike. It is where V8
+(the map), HotSpot (the klass pointer), Cog (the class index) and Primordial
+Soup (the class id) keep their answer. For an immediate -- `nil`, a boolean, a
+`SmallInteger` or a `SmallFloat64` -- it is a table indexed by the word's tag,
+and for the constant tag by the constant (the heap's `immediate_dispatch_ids`),
+which the bootstrap fills from the builtin classes; a boxed `Float` or a
+`LargeInteger` is an object and carries its own. The header's four bytes are
+paid for by boxing a class object's data, `ObjectData::Class(Box<ClassData>)`,
+so an `Object` is still 56 bytes in a release build, the size `CLAUDE.md`'s
+amplification figure assumes, which a release-build test pins
+([memory.md](memory.md)). It is 56 rather than 48 because `ClosureData`, 32
+bytes, is now `ObjectData`'s largest payload.
 
 The header holds a copy, so every place a class's application changes must
 restamp: `Heap::set_class_application` walks the arena and restamps every

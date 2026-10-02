@@ -1400,11 +1400,11 @@ and hash tags, `FLAG_START` and the retired tags and flag
 ## Planned: the image under the new representation
 
 Would change: the decoder builds the planned representation -- one space of
-variably sized objects ([object-model.md](object-model.md), "Planned: the
-object layout"; [memory.md](memory.md), "Planned: the object space") -- from
-a wire format that stays id-based, as the one-word value already is
-("Integers and floats on the wire" above). Nothing on the wire becomes an address or an offset, so an
-artifact stays independent of word size and layout, as Primordial Soup's
+variably sized objects ([object-model.md](object-model.md), "Planned: the object
+layout"; [memory.md](memory.md), "Planned: the object space") -- from a wire
+format that stays id-based, as the one-word value already is ("Integers and
+floats on the wire" above). Nothing on the wire becomes an address or an offset,
+so an artifact stays independent of word size and layout, as Primordial Soup's
 snapshots are (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image,
 which is old space's bytes relocated on load, is the model this does not take.
 

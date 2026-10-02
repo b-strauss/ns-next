@@ -215,11 +215,12 @@ depth.
 
 ### The seam
 
-`crates/ns-runtime/src/heap.rs` is the only place that knows what a handle is,
-with its submodule `heap/value.rs`, which puts a handle's index into a value's
-word and takes it out again. Every read and write of an `Object`, a `Frame` or a running activation goes
-through a `Heap` accessor, so replacing the store behind them touches that file
-rather than the 193 call sites (109 under `src`, 84 in the integration tests) the
+The `heap` module -- `crates/ns-runtime/src/heap.rs` and its submodules,
+`heap/value.rs` among them, which puts a handle's index into a value's word and
+takes it out again -- is the only place that knows what a handle is. Every read
+and write of an `Object`, a `Frame` or a running activation goes through a
+`Heap` accessor, so replacing the store behind them touches that file rather
+than the 193 call sites (109 under `src`, 84 in the integration tests) the
 workspace held before the seam existed. Replacing `Rc<RefCell<_>>` with the
 arena is the evidence that this works: **no call site outside `heap.rs` and
 `types.rs` changed** for either the frame conversion or the object one.
@@ -554,18 +555,17 @@ the slot. The table is swept at every move, and by `stash` whenever it has
 doubled since its last sweep (never below 64 slots), so it stays proportional
 to the roots a host still holds in a release build too, where nothing moves.
 
-Inside an entry, `Mutator::stash` roots any value and `Mutator::fetch` reads
-one back (`Heap::stash`/`fetch`). Outside every entry, `Interpreter::stash`
-roots an immediate a host built itself — `nil`, a Boolean or a
-`SmallInteger`; a float is made only by `Mutator::new_float`, inside an
-entry, since it may be boxed — and takes a `Value<'static>`: a host can build an immediate but
-never hold an object handle outside an entry, so a `Value<'static>` holds
-none. All of them take `&self`, the table sitting behind a `RefCell`, so that
-a host can stash an argument inside the call that sends it —
-`interpreter.send(&receiver, selector, &[interpreter.stash(value)])` — as
-`DynamicRootSet::stash` allows. A value `fetch` answers carries the brand of
-the entry it was read in, so it is good until that entry ends, and a host
-reads the root again in the next one.
+Inside an entry, `Mutator::stash` roots any value and `Mutator::fetch` reads one
+back (`Heap::stash`/`fetch`). Outside every entry, `Interpreter::stash` roots an
+immediate a host built itself — `nil`, a Boolean or a `SmallInteger`; a float is
+made only by `Mutator::new_float`, inside an entry, since it may be boxed — and
+takes a `Value<'static>`: a host can build an immediate but never hold an object
+handle outside an entry, so a `Value<'static>` holds none. All of them take
+`&self`, the table sitting behind a `RefCell`, so that a host can stash an
+argument inside the call that sends it — `interpreter.send(&receiver, selector,
+&[interpreter.stash(value)])` — as `DynamicRootSet::stash` allows. A value
+`fetch` answers carries the brand of the entry it was read in, so it is good
+until that entry ends, and a host reads the root again in the next one.
 
 Every host entry takes and answers roots: `Interpreter::send`, `instantiate`,
 `load_module` and `platform`, and `image::load`, whose `LoadedImage` carries
@@ -1033,19 +1033,19 @@ creator's frame record without registers.
   **Two things none of these figures count.** They count live bytes. First,
   `reserve_for` (`image/decode.rs`) caps a list's capacity at the bytes
   remaining, not at the bytes its elements need, so `decode_words` reserves
-  `min(count, remaining)` 8-byte `Word`s before its first element is read:
-  one array or instance record that claims a huge count reserves up to 8x
-  the bytes remaining, in either build, on top of the placeholders -- about
-  24x in a release build with no allocating value involved (16.0 + 8), and,
-  since that record's elements can then be the integers beyond 61 bits
-  above, about 31x at most (debug about 37x) -- a sum of the terms above
-  (16.0 + 8 + 7.1, and 20.0 + 8 + 8.9), derived rather than measured. The
-  image's root list, read by `decode_values` into `Value`s (8 bytes in a
-  release build, 16 in a debug one), comes after every record, when the
-  placeholders' bytes have been read. Second, an arena `Vec` that doubles while the
-  decoder allocates holds both buffers for a moment. Both stay proportional
-  to the input; bounding `reserve_for`'s reservation in bytes rather than in
-  elements is open work ([OPEN-WORK.md](../OPEN-WORK.md)).
+  `min(count, remaining)` 8-byte `Word`s before its first element is read: one
+  array or instance record that claims a huge count reserves up to 8x the bytes
+  remaining, in either build, on top of the placeholders -- about 24x in a
+  release build with no allocating value involved (16.0 + 8), and, since that
+  record's elements can then be the integers beyond 61 bits above, about 31x at
+  most (debug about 37x) -- a sum of the terms above (16.0 + 8 + 7.1, and 20.0 +
+  8 + 8.9), derived rather than measured. The image's root list, read by
+  `decode_values` into `Value`s (8 bytes in a release build, 16 in a debug one),
+  comes after every record, when the placeholders' bytes have been read. Second,
+  an arena `Vec` that doubles while the decoder allocates holds both buffers for
+  a moment. Both stay proportional to the input; bounding `reserve_for`'s
+  reservation in bytes rather than in elements is open work
+  ([OPEN-WORK.md](../OPEN-WORK.md)).
 
   The release `Object` size is pinned by a release-build test
   (`an_object_is_the_size_the_amplification_figure_assumes`, `heap.rs`),
@@ -1614,28 +1614,28 @@ instruction encoding.
   (`prior-art/primordialsoup/vm/heap.h:373-387`). Objects are 8-byte aligned
   and at least 16 bytes, a header and a class word.
 - **A handle is a 64-bit byte offset from the space's base**, so base plus
-  handle is the object's address, the form generated code will use. The
-  first object starts at offset 16, not 0, so an all-zero word -- a missed
-  initialization -- is never a live reference. There is
-  no 32 GB ceiling: HotSpot's compressed oops save memory because a Java
-  reference field is 32 bits, while every field here is a full `Value` word
-  able to hold any value, so the offset can be as wide as the word allows
-  after its tag. The words in the space are 8 bytes in every build, so the
-  layout a debug build tests is the layout a release build runs. The Rust-side
-  types -- `ObjectReference`, and `Value` in Rust variables, structures,
-  continuations and host roots -- carry the heap id and the move epoch in
-  full in a debug build, as they do today, so the origin guard and the epoch
-  check stay exact wherever a stale handle can arise. Every store already
-  checks in a debug build that the stored Rust-side value's heap id and
-  epoch are current before it becomes a word (`Heap::store`), so a stale
-  value cannot be laundered into a field; a word read out of the
-  space is given the current ones (`Heap::load`), since a full collection rewrites every
-  field it walks by format and cannot miss one the way it can miss an unknown
-  Rust field; under generations a scavenge walks only the young and the
-  remembered objects, and a missed barrier is what
-  `NS_NEXT_STRESS_SCAVENGE` catches ("Planned: generations"). The one exception is deliberate: a married frame's inline registers
-  are skipped, because while it is married its registers live on the
-  activation stack, which is traced as a root.
+  handle is the object's address, the form generated code will use. The first
+  object starts at offset 16, not 0, so an all-zero word -- a missed
+  initialization -- is never a live reference. There is no 32 GB ceiling:
+  HotSpot's compressed oops save memory because a Java reference field is 32
+  bits, while every field here is a full `Value` word able to hold any value, so
+  the offset can be as wide as the word allows after its tag. The words in the
+  space are 8 bytes in every build, so the layout a debug build tests is the
+  layout a release build runs. The Rust-side types -- `ObjectReference`, and
+  `Value` in Rust variables, structures, continuations and host roots -- carry
+  the heap id and the move epoch in full in a debug build, as they do today, so
+  the origin guard and the epoch check stay exact wherever a stale handle can
+  arise. Every store already checks in a debug build that the stored Rust-side
+  value's heap id and epoch are current before it becomes a word
+  (`Heap::store`), so a stale value cannot be laundered into a field; a word
+  read out of the space is given the current ones (`Heap::load`), since a full
+  collection rewrites every field it walks by format and cannot miss one the way
+  it can miss an unknown Rust field; under generations a scavenge walks only the
+  young and the remembered objects, and a missed barrier is what
+  `NS_NEXT_STRESS_SCAVENGE` catches ("Planned: generations"). The one exception
+  is deliberate: a married frame's inline registers are skipped, because while
+  it is married its registers live on the activation stack, which is traced as a
+  root.
 - **Access stays behind `Heap`'s accessors**, which read the space's words
   through bounds-checked slices, so a stale offset reads a wrong object at
   worst, never undefined behaviour; every field, element and register

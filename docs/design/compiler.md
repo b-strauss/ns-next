@@ -35,10 +35,10 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier`, with integer and float text parsed at compile time rather
-  than at each execution. `LargeInteger` carries an integer literal beyond a
-  `SmallInteger`'s 61 bits as its digits (an `ArbitraryInteger`); `UnresolvedIdentifier` is the deferred
-  case, see "Compilation cannot fail".
+  UnresolvedIdentifier`, with integer and float text parsed at compile time
+  rather than at each execution. `LargeInteger` carries an integer literal
+  beyond a `SmallInteger`'s 61 bits as its digits (an `ArbitraryInteger`);
+  `UnresolvedIdentifier` is the deferred case, see "Compilation cannot fail".
 - `LoadSelf { destination }`.
 - `LoadEnclosingObject { destination, depth }` — `outer N` with no message
   after it, `Binding::EnclosingObject`: the kth enclosing object, found as a
@@ -689,15 +689,16 @@ unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
 
-Every integer literal is representable (§5.1.1), so none is deferred. One
-that fits a `SmallInteger`'s 61 bits lowers to `Literal::SmallInteger`, any
-other to `Literal::LargeInteger`, which carries its value as an `ArbitraryInteger`,
-never its text; `LoadLiteral` makes a fresh `LargeInteger` of it through
+Every integer literal is representable (§5.1.1), so none is deferred. One that
+fits a `SmallInteger`'s 61 bits lowers to `Literal::SmallInteger`, any other to
+`Literal::LargeInteger`, which carries its value as an `ArbitraryInteger`, never
+its text; `LoadLiteral` makes a fresh `LargeInteger` of it through
 `Mutator::new_integer` each time it runs, and a float literal outside the
-`SmallFloat64` range a fresh boxed `Float` through `Mutator::new_float`. A radix or digit that denotes
-nothing is a parse error, and a fraction or exponent makes a float, so
-`parse_integer_literal` (`interpreter/literals.rs`) refusing a literal the
-parser accepted is a compiler invariant, and `lower_literal` panics on it.
+`SmallFloat64` range a fresh boxed `Float` through `Mutator::new_float`. A radix
+or digit that denotes nothing is a parse error, and a fraction or exponent makes
+a float, so `parse_integer_literal` (`interpreter/literals.rs`) refusing a
+literal the parser accepted is a compiler invariant, and `lower_literal` panics
+on it.
 
 ## Reading the output
 

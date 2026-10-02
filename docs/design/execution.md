@@ -99,7 +99,7 @@ activation from the block's own `outer_reach` ("Pop" below).
 ```rust
 // heap.rs -- every field private to the module
 struct ActivationStack {
-    values:  Vec<Word>,        // every live activation's registers, contiguously, as stored words
+    values:  Vec<Word>,        // every live activation's registers, contiguously
     entries: Vec<StackEntry>,  // one per live activation, innermost last
     counted: usize,            // how many entries count against the depth limit
 }
@@ -5862,25 +5862,25 @@ variant's numbers above.
 
 ## Planned: the compact instruction encoding
 
-Would change: `Instruction`, today a Rust enum the run loop matches on, gets
-an encoding designed for dispatch. Not designed yet. It comes after the
-eight-byte value, which is built ([object-model.md](object-model.md), "Values
-and objects"), and before the object space ([memory.md](memory.md), "Planned:
-the object space"), so that it is designed against the value representation
-the loop actually moves -- one tagged word -- and the interpreter stays the first tier in front of
-the JIT, as Cog's does. Its inputs are the dispatch findings of "Where the 3%
-goes" above: every dispatch decodes `Instruction`'s discriminant through a
-niche before its jump, and `vm::run` is large enough that `program_counter`
-and the code pointer are spilled to its stack frame. The design starts from
-how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
-an AST interpreter on Truffle, has no instruction encoding to compare. One
-more input: an integer literal beyond the immediate range keeps its digits
-in Rust-side literal data (`Literal::LargeInteger`) and `LoadLiteral`
-allocates its `LargeInteger` when it runs, which is every literal beyond 61
-bits, and a float literal outside the `SmallFloat64` range allocates its
-boxed `Float` the same way ([object-model.md](object-model.md), "Values and
-objects", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
-and a removed one retires its number.
+Would change: `Instruction`, today a Rust enum the run loop matches on, gets an
+encoding designed for dispatch. Not designed yet. It comes after the eight-byte
+value, which is built ([object-model.md](object-model.md), "Values and
+objects"), and before the object space ([memory.md](memory.md), "Planned: the
+object space"), so that it is designed against the value representation the loop
+actually moves -- one tagged word -- and the interpreter stays the first tier in
+front of the JIT, as Cog's does. Its inputs are the dispatch findings of "Where
+the 3% goes" above: every dispatch decodes `Instruction`'s discriminant through
+a niche before its jump, and `vm::run` is large enough that `program_counter`
+and the code pointer are spilled to its stack frame. The design starts from how
+Primordial Soup, Strongtalk and Cog encode their instructions; SOMns, an AST
+interpreter on Truffle, has no instruction encoding to compare. One more input:
+an integer literal beyond the immediate range keeps its digits in Rust-side
+literal data (`Literal::LargeInteger`) and `LoadLiteral` allocates its
+`LargeInteger` when it runs, which is every literal beyond 61 bits, and a float
+literal outside the `SmallFloat64` range allocates its boxed `Float` the same
+way ([object-model.md](object-model.md), "Values and objects", "Literals"). Wire
+tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag, and a
+removed one retires its number.
 
 ## Planned: tail calls, skipped but kept
 

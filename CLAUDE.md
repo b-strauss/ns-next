@@ -92,9 +92,9 @@ it wrong is silent wrong output at exit status 0 (`execution.md`, "Fewer
 protective copies").
 
 **An image is untrusted input.** No byte sequence may panic or abort the
-process: validate every id, tag, count and length before it indexes, allocates or
-slices; bound any recursion the input controls; never add a pre-allocation not
-bounded by `bounded_count`. `image::load` verifies structure and reconciles
+process: validate every id, tag, count and length before it indexes, allocates
+or slices; bound any recursion the input controls; never add a pre-allocation
+not bounded by `bounded_count`. `image::load` verifies structure and reconciles
 mixins before any decoded code runs (`image-format.md`, "Verification"). The
 transient peak of a rejected load is about 16.0x the graph section's bytes in a
 release build, 23.1x with the integers and floats it allocates (debug 20.0x and
@@ -300,6 +300,7 @@ and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
   lines, no more. It names no other implementation. A comment that explains a
   decision, as the rule above asks, goes after it.
 - **Object, frame and activation access goes through
-  `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to it
-  and its submodule `heap/value.rs`; add a missing accessor there. Accessors copy out rather than lend out
-  (`memory.md`, "The seam").
+  `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
+  `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which
+  puts the index into a word); add a missing accessor in `heap.rs`. Accessors
+  copy out rather than lend out (`memory.md`, "The seam").

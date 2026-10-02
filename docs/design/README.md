@@ -115,26 +115,27 @@ editors/
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
 object arena, the activation stack every running activation lives on, and the
-frame arena an activation reaches only when a block captures it. `ObjectReference`,
-`ClassReference` and `FrameReference` are opaque 32-bit handles into the arenas, and
-`ActivationReference` into the stack; each one's inner index is private to that file
-and its submodule `heap/value.rs`, which puts an object's index into a value's word,
+frame arena an activation reaches only when a block captures it.
+`ObjectReference`, `ClassReference` and `FrameReference` are opaque 32-bit
+handles into the arenas, and `ActivationReference` into the stack; each one's
+inner index is private to the `heap` module (`heap.rs` and its submodules,
+`heap/value.rs` among them, which puts an object's index into a value's word),
 so every read and write goes through a `Heap` accessor because the compiler
 refuses anything else. That seam exists so the store behind a handle can be
 replaced by changing one file rather than every caller; replacing
 `Rc<RefCell<_>>` with the arena is the evidence that it works, since no call
-site outside `heap.rs` and `types.rs` changed for either the object or the
-frame conversion. The handle types are not hidden, on purpose: the two
-activation handles are distinct types in every signature — a closure, a frame
-and an image record take only a `FrameReference` — so storing an `ActivationReference` in
+site outside `heap.rs` and `types.rs` changed for either the object or the frame
+conversion. The handle types are not hidden, on purpose: the two activation
+handles are distinct types in every signature — a closure, a frame and an image
+record take only a `FrameReference` — so storing an `ActivationReference` in
 anything that outlives its call is a compile error. And every movable handle
-carries the brand of the entry that minted it, a lifetime obtainable only
-inside `Interpreter::enter`, which `heap/world.rs`'s `World::enter` gives in
-safe Rust — the crate forbids `unsafe` code — so a handle held across a
-safepoint, or kept by a host outside an entry, is a compile error too. Start
-at [memory.md](memory.md) for what the heap guarantees — a mark-compact
-collector reclaims a slot once nothing reaches it, only at a safepoint of the
-run loop — and at [execution.md](execution.md), "Activations", for the stack.
+carries the brand of the entry that minted it, a lifetime obtainable only inside
+`Interpreter::enter`, which `heap/world.rs`'s `World::enter` gives in safe Rust
+— the crate forbids `unsafe` code — so a handle held across a safepoint, or kept
+by a host outside an entry, is a compile error too. Start at
+[memory.md](memory.md) for what the heap guarantees — a mark-compact collector
+reclaims a slot once nothing reaches it, only at a safepoint of the run loop —
+and at [execution.md](execution.md), "Activations", for the stack.
 
 `ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
 should change for runtime work.

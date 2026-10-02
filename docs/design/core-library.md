@@ -833,35 +833,35 @@ declines it on the missing payload, never on the class, and the send falls
 to `Object`'s methods
 (`goldens/library/builtin-subclass/a_subclass_of_large_integer_is_no_number.ns`).
 
-**The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`,
-`bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`,
-`printString` and `asString` to twenty rows of its own, the `largeInteger:`
-rows of `MIRROR` (`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep
-their immediate path and promote where it has no answer: a sum, difference
-or product that does not fit 61 bits is recomputed in `i128`, where two
-`SmallInteger`s' always fits, and `SMALL_INTEGER_MIN // -1`,
-`SMALL_INTEGER_MIN negated` and `SMALL_INTEGER_MIN abs` answer `2^60`. The
-sum, difference, product and comparisons work on the tagged words
-([object-model.md](object-model.md), "Values and objects"). The inlined
-`IntegerBinary` never allocates: it declines a result that does not fit and
-falls back to the send, whose leaf promotes ([compiler.md](compiler.md), "Arithmetic inlining";
+**The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`, `bitAnd:`,
+`bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`, `printString`
+and `asString` to twenty rows of its own, the `largeInteger:` rows of `MIRROR`
+(`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep their
+immediate path and promote where it has no answer: a sum, difference or product
+that does not fit 61 bits is recomputed in `i128`, where two `SmallInteger`s'
+always fits, and `SMALL_INTEGER_MIN // -1`, `SMALL_INTEGER_MIN negated` and
+`SMALL_INTEGER_MIN abs` answer `2^60`. The sum, difference, product and
+comparisons work on the tagged words ([object-model.md](object-model.md),
+"Values and objects"). The inlined `IntegerBinary` never allocates: it declines
+a result that does not fit and falls back to the send, whose leaf promotes
+([compiler.md](compiler.md), "Arithmetic inlining";
 `goldens/library/number/large-integer/an_overflowing_integer_operation_answers_a_large_integer.ns`).
-Both classes' arithmetic and ordering accept an argument of either integer
-class (`integer_operand`), so `5 + big` and `big + 5` both answer
-(`goldens/library/number/large-integer/large_integer_arithmetic.ns`). A `Float`'s leaves
-convert a `LargeInteger` argument to the nearest `double`
+Both classes' arithmetic and ordering accept an argument of either integer class
+(`integer_operand`), so `5 + big` and `big + 5` both answer
+(`goldens/library/number/large-integer/large_integer_arithmetic.ns`). A
+`Float`'s leaves convert a `LargeInteger` argument to the nearest `double`
 (`ArbitraryInteger::to_f64`, rounded to nearest with ties to even, infinite
 beyond `f64::MAX`), as Primordial Soup's `LargeInteger::AsDouble`
 (`prior-art/primordialsoup/vm/large_integer.cc:1242`) serves, and as they
-convert an `Integer` argument; an integer's `+ - * < > <= >=` convert
-themselves and a `Float` argument to doubles the same way, whichever integer
-class the receiver is, so the two directions agree
-(`goldens/library/number/float/a_float_meets_a_large_integer.ns`). An argument that
-is neither an integer nor a `Float` is a type mismatch naming "a numeric
-argument" (`goldens/library/number/large-integer/a_large_integer_meets_nil.ns`). That is a derived
-choice, pinned by goldens, which the numeric tower may revisit ("Gap: an
-integer has no `/`" below). `//` and `\\` by zero raise "division by zero"
-from either class's leaf
+convert an `Integer` argument; an integer's `+ - * < > <= >=` convert themselves
+and a `Float` argument to doubles the same way, whichever integer class the
+receiver is, so the two directions agree
+(`goldens/library/number/float/a_float_meets_a_large_integer.ns`). An argument
+that is neither an integer nor a `Float` is a type mismatch naming "a numeric
+argument" (`goldens/library/number/large-integer/a_large_integer_meets_nil.ns`).
+That is a derived choice, pinned by goldens, which the numeric tower may revisit
+("Gap: an integer has no `/`" below). `//` and `\\` by zero raise "division by
+zero" from either class's leaf
 (`goldens/library/number/large-integer/large_integer_floor_division_by_zero_is_uncaught.ns`,
 `goldens/library/number/integer/floor_modulo_by_zero_is_uncaught.ns`).
 
