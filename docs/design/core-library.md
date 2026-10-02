@@ -123,27 +123,25 @@ below); `Integer`'s `+ - * // \\ < >
 <= >= =`, `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `negated`, `abs`, `asFloat`,
 `printString` and `asString`, beside `bitInvert`, which is ordinary Newspeak,
 Primordial Soup's `^-1 - self`, and reaches no leaf; `LargeInteger`'s the same
-leaves and `hash` ("Large integers" below);
-`Float`'s `+ - * / < > <= >= =`, `hash`, `sqrt`, `sin`, `cos`,
-`asInteger`, `asStringFixed:`, `printString` and `asString`; `String`'s
-`size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`, `asSymbol` and
-`printString`, and on its class side `with:`; `Symbol`'s `asString`, `=`,
-`hash` and `printString`; `Array`'s `do:`, `at:put:`, `size` and `at:`; `Block`'s `value` to `value:value:value:`,
-`numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript`
-forwards `show:` and `newLine` the same way, and its `Stopwatch` its clock
-reading ("The platform" below). `Number` reaches no leaf of its own: its
-`to:do:` and `to:by:do:` are ordinary Newspeak (below), and so are
-`Number>>max:` and `Integer>>timesRepeat:`, Primordial Soup's bodies.
-`UndefinedObject` reaches no leaf either: its nil protocol is quick methods
-and its `printString` an ordinary one ("The nil protocol" below). `True` and
-`False` reach no leaf at all:
-their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
+leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
+`hash`, `sqrt`, `sin`, `cos`, `asInteger`, `asStringFixed:`, `printString` and
+`asString`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
+`asSymbol` and `printString`, and on its class side `with:`; `Symbol`'s
+`asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`
+and `at:`; `Block`'s `value` to `value:value:value:`, `numArgs`, `whileTrue:`
+and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
+`newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
+below). `Number` reaches no leaf of its own: its `to:do:` and `to:by:do:` are
+ordinary Newspeak (below), and so are `Number>>max:` and
+`Integer>>timesRepeat:`, Primordial Soup's bodies. `UndefinedObject` reaches
+no leaf either: its nil protocol is quick methods and its `printString` an
+ordinary one ("The nil protocol" below). `True` and `False` reach no leaf at
+all: their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
-`hash` ordinary ones. `Boolean` declares nothing of its own either.
-`Object`'s protected `doesNotUnderstand:` and `halt`, the exception
-classes, `Block`'s `on:do:`, `ensure:` and `ifCurtailed:` and `Message`
-are the exception machinery, ordinary Newspeak over the
-activation leaves ("Exceptions" below).
+`hash` ordinary ones. `Boolean` declares nothing of its own either. `Object`'s
+protected `doesNotUnderstand:` and `halt`, the exception classes, `Block`'s
+`on:do:`, `ensure:` and `ifCurtailed:` and `Message` are the exception
+machinery, ordinary Newspeak over the activation leaves ("Exceptions" below).
 
 The other exceptions are `hash` on `Integer` (`^self`) and `asString` on
 `String` (`^self`), both quick methods ("`True` and `False` are quick
@@ -186,17 +184,18 @@ and ordering meet a `Float` argument: `1 to: 2 by: 0.5 do:` answers `1`,
 (`goldens/language/control-flow/an_integer_counts_to_a_float_bound`).
 
 **`asStringFixed:` rounds as Primordial Soup's double-conversion does.**
-`Float>>asStringFixed:` writes a count of fraction digits from 0 to 20,
-and raises for any other count, as Primordial Soup's primitive fails and
-its method raises (`goldens/library/number/float/as_string_fixed_refuses_more_than_twenty_digits.ns`).
-A tie rounds up on the exact binary value, where Rust's formatter would
-round it to even, so `0.125 asStringFixed: 2` is `'0.13'` and
-`1.005 asStringFixed: 2`, just below the tie in binary, is `'1.00'`; the
-sign is the value's even when the digits round to zero (`-0.04
-asStringFixed: 1` is `'-0.0'`); and outside ±1e21, and for a NaN or an
-infinity, it answers the text `printString` does (`fixed_text` in
-`builtins/numbers.rs`; `goldens/library/number/float/as_float_and_as_string_fixed.ns`).
-The Are We Fast Yet harness prints its scores with it.
+`Float>>asStringFixed:` writes a count of fraction digits from 0 to 20, and
+raises for any other count, as Primordial Soup's primitive fails and its
+method raises
+(`goldens/library/number/float/as_string_fixed_refuses_more_than_twenty_digits.ns`).
+A tie rounds up on the exact binary value, where Rust's formatter would round
+it to even, so `0.125 asStringFixed: 2` is `'0.13'` and
+`1.005 asStringFixed: 2`, just below the tie in binary, is `'1.00'`; the sign
+is the value's even when the digits round to zero (`-0.04 asStringFixed: 1` is
+`'-0.0'`); and outside ±1e21, and for a NaN or an infinity, it answers the
+text `printString` does (`fixed_text` in `builtins/numbers.rs`;
+`goldens/library/number/float/as_float_and_as_string_fixed.ns`). The Are We
+Fast Yet harness prints its scores with it.
 
 **A `Symbol`'s hash is its interner number** (`text::symbol_hash`): §5.1.6
 makes equal symbols one object, so it agrees with `Symbol>>=` by
@@ -784,10 +783,11 @@ program that demanded it is named in a comment beside it: the comments of
 `Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
 
 This is not minimalism for its own sake. A capability nothing on that list or
-under `benchmarks/` asks for has no test that would catch it rotting, so it is a liability rather than an
-asset. A module that needs something nobody has asked for is a reason to widen
-the whitelist deliberately — with a real module, run end to end, its output
-recorded — not a reason to build a speculative library.
+under `benchmarks/` asks for has no test that would catch it rotting, so it is
+a liability rather than an asset. A module that needs something nobody has
+asked for is a reason to widen the whitelist deliberately — with a real
+module, run end to end, its output recorded — not a reason to build a
+speculative library.
 
 The `collections` namespace is the worked example. It hands out `List`,
 `Map` and `Set`, because those are asked for: `List` because `Ducts.ns`,
@@ -1269,9 +1269,9 @@ and loosening any one of them lets a program claim every primitive:
 - Only `resolver::resolve_kernel` records `Binding::MirrorSend`, the mark the
   compiler's recognizers read, and only the shipped core-library modules —
   `Kernel.ns`, and `PlatformFactory.ns` and `CollectionsFactory.ns` from
-  `interpreter/core_library.rs`'s table — are resolved with it; a user module goes through `resolve`, so
-  copying shipped text gets an ordinary send to whatever that module's own
-  `vmMirror` holds.
+  `interpreter/core_library.rs`'s table — are resolved with it; a user module
+  goes through `resolve`, so copying shipped text gets an ordinary send to
+  whatever that module's own `vmMirror` holds.
 - The bootstrap checks what the resolver cannot: that `Kernel`'s root class
   declares exactly one slot, the immutable `vmMirror`, and that after
   instantiation it holds the mirror (`interpreter::kernel`), and that
@@ -1333,12 +1333,13 @@ Every kernel method that reaches a leaf is this: the mirror selector, with
 `self` and then the method's own parameters in order, and a literal failure
 block that resends the same message to `super`. The rest reach none — the
 quick methods ("`True` and `False` are quick methods", "The nil protocol"),
-the accessors for the predefined classes, and the few ordinary methods such
-as `True>>printString` or `Value`'s derived equality. The failure path is an explicit `ifFail:` block
-rather than something the runtime does implicitly (decided with the user on
-2026-09-21): a real send to the mirror, as §8.3.1 requires, whose failure
-path is visible Newspeak code, as Cog's method body is. SOMns uses the same
-shape for its I/O primitives (`prior-art/somns/core-lib/Files.ns`,
+the accessors for the predefined classes, and the few ordinary methods such as
+`True>>printString` or `Value`'s derived equality. The failure path is an
+explicit `ifFail:` block rather than something the runtime does implicitly
+(decided with the user on 2026-09-21): a real send to the mirror, as §8.3.1
+requires, whose failure path is visible Newspeak code, as Cog's method body
+is. SOMns uses the same shape for its I/O primitives
+(`prior-art/somns/core-lib/Files.ns`,
 `vmMirror file: self readAt: pos ifFail: errf`).
 
 The one rule `[^super …]` reproduces what a declining native used to do by
@@ -1515,23 +1516,23 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    only `Object` names `Top`, as §3.2 allows; and the literal-block rule
    above. A kernel that breaks it is a defect in the binary, and panics.
 3. **Each placeholder gets its kernel application**, in `fill_order`, which
-   sorts the kinds by how many superclass links separate them from `Top`, so
-   a superclass is always filled before its subclasses. `BuiltinClass::ALL`
-   is no longer that order and cannot become it again: a class added later is
+   sorts the kinds by how many superclass links separate them from `Top`, so a
+   superclass is always filled before its subclasses. `BuiltinClass::ALL` is
+   no longer that order and cannot become it again: a class added later is
    appended, because its position is a wire tag, so `Value` and `Number` sit
-   at the end of `ALL` and in the middle of the hierarchy. Each class gets
-   the nested mixin named like it, applied to the application of the class
-   its clause names — `Top`'s to none, `Object`'s to `Top`'s, and so on down
-   — installed with `Heap::set_class_application`, which restamps the
-   dispatch id of the few objects that exist this early, and the class
-   object's superclass link set to match. `Value`'s *mixin* is recorded just
-   before `Value` is filled, and `Behavior`'s just before `Behavior` is, rather than its application after the loop:
-   `apply_mixin` asks whether the mixin it is applying is that one, so that
-   `Value`'s own application also carries `inherits_value` (§3.2's "subclass
-   of" is inclusive, so `Value new` is a value) and `Behavior`'s carries the
-   refusal to instantiate a class object, and every class below each reads
-   it off its superclass.
-   `VmMirror` keeps its own Rust mixin, re-applied over the filled `Value`
+   at the end of `ALL` and in the middle of the hierarchy. Each class gets the
+   nested mixin named like it, applied to the application of the class its
+   clause names — `Top`'s to none, `Object`'s to `Top`'s, and so on down —
+   installed with `Heap::set_class_application`, which restamps the dispatch
+   id of the few objects that exist this early, and the class object's
+   superclass link set to match. `Value`'s *mixin* is recorded just before
+   `Value` is filled, and `Behavior`'s just before `Behavior` is, rather than
+   its application after the loop: `apply_mixin` asks whether the mixin it is
+   applying is that one, so that `Value`'s own application also carries
+   `inherits_value` (§3.2's "subclass of" is inclusive, so `Value new` is a
+   value) and `Behavior`'s carries the refusal to instantiate a class object,
+   and every class below each reads it off its superclass. `VmMirror` keeps
+   its own Rust mixin, re-applied over the filled `Value`
    (`superclass_of_kind`); `fill_order` sorts by depth, so `Value` is filled
    first.
 4. **The immediate dispatch-id table is refreshed**, because an immediate's
@@ -1883,31 +1884,30 @@ with an argument that is no `Message` fails inside the handler, on
 **The VM side.**
 
 - **Activation objects.** `ObjectData::Activation(FrameReference)`, of the
-  private kernel class `Activation`, which no program can name — no
-  accessor on `Object`, and its builtin class tag is refused wherever an
-  image names a class but the header of an activation record, as `Top`'s is
-  everywhere. An activation reads another frame's temporaries and unwinds
-  stacks, so it is a capability, and Newspeak hands those out only through
-  mirrors, which the reflection step builds on it. The ten leaves
-  (`builtins/activation.rs`, rows appended to the end of `MIRROR`): `currentActivation` — the activation of the kernel method
-  making the mirror send, reified, answered as a fresh `Activation` object
-  each time, so the kernel compares two only when both came from one call
-  (`handlerActivation` still the `signalActivation` it was set to) -- two
-  calls answer two objects for one frame, so the coming `ActivationMirror`
-  needs an identity by frame instead; an
-  activation's `sender` — the stack entry below it, or nil
-  at the bottom or once it has returned; the three the `on:do:` marker's
-  registers answer, `isActiveHandler` (false for a returned activation or
-  one with no marker), `handlerClass` and `handlerBlock`, and
-  `handlerActive:`, which writes the flag; `returnValue:` and `restart`,
-  which answer the signals the unwinder carries out (a returned target is
-  §7.2's "cannotReturn: the activation has already returned");
-  `inheritsMixinOf:` for `Class>>handles:`; and `terminate…` for
-  `defaultAction`. `Message>>sentTo:`'s row, `message:sendTo:ifFail:`, is
-  the last row (`builtins/message.rs`), and the row `Object>>doesNotUnderstand:`
-  used to forward to retired with the Rust handler it ran, which moved the
-  rows after it down by one. The tracer follows the frame reference, so the stress
-  modes cover it.
+  private kernel class `Activation`, which no program can name — no accessor
+  on `Object`, and its builtin class tag is refused wherever an image names a
+  class but the header of an activation record, as `Top`'s is everywhere. An
+  activation reads another frame's temporaries and unwinds stacks, so it is a
+  capability, and Newspeak hands those out only through mirrors, which the
+  reflection step builds on it. The ten leaves (`builtins/activation.rs`, rows
+  appended to the end of `MIRROR`): `currentActivation` — the activation of
+  the kernel method making the mirror send, reified, answered as a fresh
+  `Activation` object each time, so the kernel compares two only when both
+  came from one call (`handlerActivation` still the `signalActivation` it was
+  set to) -- two calls answer two objects for one frame, so the coming
+  `ActivationMirror` needs an identity by frame instead; an activation's
+  `sender` — the stack entry below it, or nil at the bottom or once it has
+  returned; the three the `on:do:` marker's registers answer,
+  `isActiveHandler` (false for a returned activation or one with no marker),
+  `handlerClass` and `handlerBlock`, and `handlerActive:`, which writes the
+  flag; `returnValue:` and `restart`, which answer the signals the unwinder
+  carries out (a returned target is §7.2's "cannotReturn: the activation has
+  already returned"); `inheritsMixinOf:` for `Class>>handles:`; and
+  `terminate…` for `defaultAction`. `Message>>sentTo:`'s row,
+  `message:sendTo:ifFail:`, is the last row (`builtins/message.rs`), and the
+  row `Object>>doesNotUnderstand:` used to forward to retired with the Rust
+  handler it ran, which moved the rows after it down by one. The tracer
+  follows the frame reference, so the stress modes cover it.
 - **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
   a property of its compiled code (`bytecode::UnwindMarker`, naming the
   registers of the method's arguments and of its `handlerActive` or
@@ -2047,17 +2047,21 @@ changed; two golden sources that read the old two-element message with
 `at:` moved to `Message`'s protocol.
 
 **Measured** 2026-09-26 against `3cbfd31`, the `master` it started from
-([execution.md](execution.md), "What exceptions cost"). None of the
-`bench` fixtures uses exceptions. The branch first measured slower on
-block activation and deep returns -- 4.6% to 6.4% -- from two causes it
-located and fixed: a `Signal` grown by 8 bytes once `Terminate` held a
-second `NewspeakError` in place, and an arena the collector shrank below
-its next limit at every collection. With those and an out-of-line error
-in the slot accessor, every fixture and both controls are faster than the
-base, by 2.5% (twenty sends deep) to 24.3% (`bench_loop.ns`). Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero. With
+([execution.md](execution.md), "What exceptions cost"). None of the `bench`
+fixtures uses exceptions. The branch first measured slower on block activation
+and deep returns -- 4.6% to 6.4% -- from two causes it located and fixed: a
+`Signal` grown by 8 bytes once `Terminate` held a second `NewspeakError` in
+place, and an arena the collector shrank below its next limit at every
+collection. With those and an out-of-line error in the slot accessor, every
+fixture and both controls are faster than the base, by 2.5% (twenty sends
+deep) to 24.3% (`bench_loop.ns`). Only the `Signal` boxing repairs a cost the
+branch introduced; the arena shrink and the slot accessor repair defects
+`master` has too, so being faster than the base is not a property of the
+exceptions branch, and its net cost against a `master` carrying the same two
+fixes was not measured -- the per-commit attribution suggests about zero. With
 nothing signalled, one `ensure:` and one `on:do:` cost about 145 ns an
-iteration over sending `value` to the same blocks; an `Error` signalled
-and caught twenty activations up costs about 6.4 µs.
+iteration over sending `value` to the same blocks; an `Error` signalled and
+caught twenty activations up costs about 6.4 µs.
 
 ### The platform and collections as core-library modules
 
@@ -2176,28 +2180,28 @@ source; the flag comes with the first user module the table holds. The
 mirror's `moduleNamed:` came with `CollectionsFactory.ns` in plan 2, and
 the table has two entries. The design as decided:
 
-- **One module table, on the mirror** (the decision of 2026-09-21 in
-  "Where the library source lives, and how modules are found"). The host
-  fills a table of name to source at bootstrap; the shipped modules —
-  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit beside `Kernel.ns`
-  in `crates/ns-runtime/core-library/` and are embedded the same way.
-  **Loading is unified; trust and visibility are not:** every entry carries
-  whether it is shipped core-library source, set by the host and never by
-  the module, and only such an entry is resolved with `resolve_kernel`.
-  The mirror leaf `moduleNamed:` (the row `moduleNamed:ifFail:`, whose
-  subject is the name, `builtins/module.rs`) answers an entry's root class,
-  built by `Mutator::load_root_class` on every request, and declines a
-  subject that is no `Symbol` or names no entry. It keeps nothing: the
-  caller keeps the class it wants, `PlatformFactory`'s root the one
-  instance of it in its lazy `collectionsModule`, which Newspeak evaluates
-  once. The design had the leaf keep the class, built on its first
-  request; decided with the user on 2026-09-28, a lazy slot keeps it
-  instead, which needs no new root in `Mutator` and no tracing. Compiling
-  is total, so the leaf runs no Newspeak. The same table later holds user modules and falls back to the
-  file system. The loader a program is later handed through the platform
-  sees user modules only: a program reaches the standard modules as the
-  instances the platform built (`platform collections`), never as module
-  definitions, whose code was compiled for a trusted context.
+- **One module table, on the mirror** (the decision of 2026-09-21 in "Where
+  the library source lives, and how modules are found"). The host fills a
+  table of name to source at bootstrap; the shipped modules —
+  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit beside `Kernel.ns` in
+  `crates/ns-runtime/core-library/` and are embedded the same way. **Loading
+  is unified; trust and visibility are not:** every entry carries whether it
+  is shipped core-library source, set by the host and never by the module, and
+  only such an entry is resolved with `resolve_kernel`. The mirror leaf
+  `moduleNamed:` (the row `moduleNamed:ifFail:`, whose subject is the name,
+  `builtins/module.rs`) answers an entry's root class, built by
+  `Mutator::load_root_class` on every request, and declines a subject that is
+  no `Symbol` or names no entry. It keeps nothing: the caller keeps the class
+  it wants, `PlatformFactory`'s root the one instance of it in its lazy
+  `collectionsModule`, which Newspeak evaluates once. The design had the leaf
+  keep the class, built on its first request; decided with the user on
+  2026-09-28, a lazy slot keeps it instead, which needs no new root in
+  `Mutator` and no tracing. Compiling is total, so the leaf runs no Newspeak.
+  The same table later holds user modules and falls back to the file system.
+  The loader a program is later handed through the platform sees user modules
+  only: a program reaches the standard modules as the instances the platform
+  built (`platform collections`), never as module definitions, whose code was
+  compiled for a trusted context.
 - **The boot.** After `install_kernel` the host takes `Platform` from the
   table and instantiates it with `usingVmMirror: mirror kernel: kernel` — an
   ordinary run, as the kernel's instantiation is, so the stress modes see
@@ -2295,15 +2299,15 @@ superclass clause — Newspeak the decoder must never run.
   or its class, and an image that reaches them -- which only a host
   walking `class_enclosing` can -- is refused the same way as the
   kernel's.
-- **On load, before the graph is decoded**, the host sends each listed
-  path's members to the loading interpreter's platform, each step a public
-  slot's, nested class's or class accessor of the shipped instance reached
-  so far, sent as an ordinary public send: exactly what the program's own
-  `platform collections` may do, and starting a packaged application runs
-  its code anyway. Each member must be a symbol, the path length and the
-  number of paths are bounded, and a step that is no such accessor, a send
-  that fails or an answer that is not a shipped object refuses the image. The decoder then only looks paths up, so it still
-  runs no code.
+- **On load, before the graph is decoded**, the host sends each listed path's
+  members to the loading interpreter's platform, each step a public slot's,
+  nested class's or class accessor of the shipped instance reached so far,
+  sent as an ordinary public send: exactly what the program's own
+  `platform collections` may do, and starting a packaged application runs its
+  code anyway. Each member must be a symbol, the path length and the number of
+  paths are bounded, and a step that is no such accessor, a send that fails or
+  an answer that is not a shipped object refuses the image. The decoder then
+  only looks paths up, so it still runs no code.
 - **A stored platform is a reference, never its state.** A program that
   keeps `platform` in a slot and sends `platform collections` only after a
   load gets the loading platform, whose lazy slot builds the module then;
@@ -2556,13 +2560,13 @@ in a handler the subclass declares. Before the move a declining native passed
 its level over and the *receiver's* own lookup continued, which reached that
 handler.
 
-It follows from the explicit failure block, and nothing short of the
-rejected implicit pass-over could keep the old answer: Newspeak has no send
-that continues a public lookup above a given level. No golden had pinned the
-old behaviour. `goldens/library/builtin-subclass/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
-pins the new one: `Handled = Array new`, declaring
-`doesNotUnderstand:`, answers `Handled new size` with `Object`'s error, not
-with `'handled here'`.
+It follows from the explicit failure block, and nothing short of the rejected
+implicit pass-over could keep the old answer: Newspeak has no send that
+continues a public lookup above a given level. No golden had pinned the old
+behaviour.
+`goldens/library/builtin-subclass/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
+pins the new one: `Handled = Array new`, declaring `doesNotUnderstand:`,
+answers `Handled new size` with `Object`'s error, not with `'handled here'`.
 
 ### The ordering, and what it cost
 
@@ -2691,16 +2695,18 @@ builtin name by inheritance: the constant won before, the inherited member
 wins now, as §2.3.1 says. No existing golden and none of the runnable corpus
 modules had that shape, and no recorded outcome moved. New goldens pin a
 module that declares its own `String`
-(`goldens/language/builtin-names/a_module_that_declares_string_uses_its_own.ns`), an
-inherited member named like a builtin
-(`goldens/language/builtin-names/an_inherited_member_named_like_a_builtin_wins.ns`), an
-enclosing member named like a builtin as a superclass
+(`goldens/language/builtin-names/a_module_that_declares_string_uses_its_own.ns`),
+an inherited member named like a builtin
+(`goldens/language/builtin-names/an_inherited_member_named_like_a_builtin_wins.ns`),
+an enclosing member named like a builtin as a superclass
 (`goldens/language/builtin-names/an_enclosing_member_named_like_a_builtin_is_the_superclass.ns`),
-a class-side `Array` (`goldens/language/class/class-side/a_class_side_method_names_a_builtin.ns`),
+a class-side `Array`
+(`goldens/language/class/class-side/a_class_side_method_names_a_builtin.ns`),
 `self Top` and the mirror's class name ending in `doesNotUnderstand:`
 (`goldens/language/builtin-names/top_is_not_a_name.ns`,
-`goldens/language/builtin-names/the_mirrors_class_is_not_a_name.ns`), and the super-prefixed
-clause (`goldens/language/class/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`).
+`goldens/language/builtin-names/the_mirrors_class_is_not_a_name.ns`), and the
+super-prefixed clause
+(`goldens/language/class/nesting/a_super_prefixed_clause_starts_above_the_declaring_class.ns`).
 `crates/ns-runtime/tests/object_class_accessors.rs` pins the recognizer and
 the answer under both lowerings.
 

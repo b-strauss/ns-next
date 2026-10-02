@@ -91,8 +91,9 @@ guarantee it gives up or the complexity it adds.
 Real programs to measure the runtime on, beside the microbenchmarks under
 `goldens/tool/bench/`, live in `benchmarks/`: today
 `benchmarks/are-we-fast-yet/`, the fourteen Are We Fast Yet benchmarks,
-Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which [execution.md](execution.md), "The Are We Fast Yet
-benchmarks", describes and `goldens/tool/awfy/` verifies.
+Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which
+[execution.md](execution.md), "The Are We Fast Yet benchmarks", describes and
+`goldens/tool/awfy/` verifies.
 
 ## Architecture
 

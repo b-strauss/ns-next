@@ -1,13 +1,13 @@
 # Execution — activations, the VM
 
 > **Status:** built, including the trampoline; nothing re-enters the run loop
-> from Rust, the loop polls a safepoint, it runs eight-byte instructions
-> over the running frame's state in locals, each stretch between two safepoints one entry of the step
-> state, the sends it executes go through inline
-> caches, except the reference lowering's, and the optimized lowering converts
-> closures, so only by-reference code keeps a returning frame's registers;
-> one unwinder carries every non-local return, exception unwind and
-> termination, running `ensure:` blocks as trampoline steps.
+> from Rust, the loop polls a safepoint, it runs eight-byte instructions over
+> the running frame's state in locals, each stretch between two safepoints one
+> entry of the step state, the sends it executes go through inline caches,
+> except the reference lowering's, and the optimized lowering converts
+> closures, so only by-reference code keeps a returning frame's registers; one
+> unwinder carries every non-local return, exception unwind and termination,
+> running `ensure:` blocks as trampoline steps.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
 > arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
@@ -476,11 +476,11 @@ activation's `program_counter` current for as long as it runs; a frame married t
 divorce gives the frame the last `program_counter` stored — often a later send's, not the
 `MakeClosure` that reified it.
 
-The loop itself reads it back. While a callee runs, the caller's only record of
-where it stopped is the `program_counter` its send stored; when the callee returns,
-`vm::resume_caller` reads that `program_counter` (`Heap::activation_program_counter`), writes the value to
-the destination register of the send it names, and resumes the caller at the
-next instruction.
+The loop itself reads it back. While a callee runs, the caller's only record
+of where it stopped is the `program_counter` its send stored; when the callee
+returns, `vm::resume_caller` reads that `program_counter`
+(`Heap::activation_program_counter`), writes the value to the destination
+register of the send it names, and resumes the caller at the next instruction.
 
 Nothing can read `program_counter` while a straight-line instruction executes, because the
 loop never switches activations between them. Keeping the store out of the
@@ -1029,11 +1029,11 @@ moved onto the declaration it belongs to (see "The VM").
 ### A 13% regression, found and recovered
 
 Routing every `Object`/`Frame` access through `Heap` (`docs/design/memory.md`,
-"The seam") was designed to cost nothing: `--release` inlines an accessor
-call away, and each one does the same borrow-clone-drop the call site did
-before. Migrating the lexical-send helper (`dispatch_lexical_send`, now
-`sends::decide_lexical_send`) broke that measurably: `bench_loop.ns` went from 20.07 ms to 22.77 ms, about 13%
-(13.45%).
+"The seam") was designed to cost nothing: `--release` inlines an accessor call
+away, and each one does the same borrow-clone-drop the call site did before.
+Migrating the lexical-send helper (`dispatch_lexical_send`, now
+`sends::decide_lexical_send`) broke that measurably: `bench_loop.ns` went from
+20.07 ms to 22.77 ms, about 13% (13.45%).
 
 The cause was `dispatch_lexical_send`'s head, which every implicit-receiver
 send runs. Before the migration it took one `RefCell` borrow and read both
@@ -1146,9 +1146,9 @@ attribution is an inference from what the change removed; no profile was taken.
 Step B, the behaviour-preserving cleanup that followed the retirement
 ([clean-up-with-one-engine](../superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md)),
 was measured whole against its merge-base in one sitting, on 2026-09-12, the
-same way: the before-binary built in a throwaway worktree, `ns-next bench` over
-the three fixtures, three rounds, alternating the binaries within each round.
-Bytecode medians in ms:
+same way: the before-binary built in a throwaway worktree, `ns-next bench`
+over the three fixtures, three rounds, alternating the binaries within each
+round. Bytecode medians in ms:
 
 | Source | Before, rounds 1–3 | After, rounds 1–3 | ns/iteration |
 |---|---|---|---|
@@ -1589,8 +1589,8 @@ takes 12.5 s for 662 tests, in two runs alike — as long as before the step,
 nested-class accessor to the activation limit, about 50,000 creations underway
 at the deepest, and the cyclic-definition check scanned a list of every
 creation underway at each level, quadratic in the depth, where the bound on
-re-entries had stopped such a recursion at 1,000 levels. With the marker in the
-cache slot the check is one read, and
+re-entries had stopped such a recursion at 1,000 levels. With the marker in
+the cache slot the check is one read, and
 `goldens/runtime/depth-limit/recursion_through_the_nested_class_accessor_is_bounded_by_the_activation_limit.ns`
 takes 0.3 s again.
 
@@ -2166,27 +2166,27 @@ below).
 measured in four parts, each against the commit it started from, and then
 whole, against 3a's head (`49a2a38`, "start") and `be3eb40`. Every part used
 the protocol of "What removing the re-entries moved" above: every binary built
-with the same `RUSTFLAGS` (`+crt-static` and the function-alignment pin),
-the before-binaries in throwaway worktrees; each binary checked to print the
-expected answer for every source first; `ns-next bench <source> --iterations
-30` over the seven sources, five rounds, the order of the binaries rotating
-from round to round; two whole sittings, nothing else running. The import
-check and the inlining checks below used `dumpbin` from the Visual Studio
-Build Tools, which is installed but not on `PATH` — on this machine, found
-through `vswhere.exe` in `C:\Program Files (x86)\Microsoft Visual Studio\Installer\`,
-at `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`.
+with the same `RUSTFLAGS` (`+crt-static` and the function-alignment pin), the
+before-binaries in throwaway worktrees; each binary checked to print the
+expected answer for every source first;
+`ns-next bench <source> --iterations 30` over the seven sources, five rounds,
+the order of the binaries rotating from round to round; two whole sittings,
+nothing else running. The import check and the inlining checks below used
+`dumpbin` from the Visual Studio Build Tools, which is installed but not on
+`PATH` — on this machine, found through `vswhere.exe` in
+`C:\Program Files (x86)\Microsoft Visual Studio\Installer\`, at
+`C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`.
 From Git Bash it must be invoked as `dumpbin -disasm`, not `/disasm`: MSYS
-rewrites a `/option` argument into a Windows path, and the tool then
-silently tries to dump a file called `C:\Program Files\Git\disasm`.
-`/dependents` on every binary, and `/disasm` (or `-disasm`, from Git Bash) on
-a release copy built with debug information to see which functions the
-optimizer kept whole. That copy is built with the same
-`RUSTFLAGS` as the timed binary, plus `CARGO_PROFILE_RELEASE_DEBUG=true` and
-a separate `--target-dir` so it does not disturb the timed build:
-`CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release -p ns-cli
---target-dir target-debuginfo`. "Entirely below" and "entirely above" are the
-protocol's gate: all five after-medians below, or above, all five of the
-group compared with.
+rewrites a `/option` argument into a Windows path, and the tool then silently
+tries to dump a file called `C:\Program Files\Git\disasm`. `/dependents` on
+every binary, and `/disasm` (or `-disasm`, from Git Bash) on a release copy
+built with debug information to see which functions the optimizer kept whole.
+That copy is built with the same `RUSTFLAGS` as the timed binary, plus
+`CARGO_PROFILE_RELEASE_DEBUG=true` and a separate `--target-dir` so it does
+not disturb the timed build: `CARGO_PROFILE_RELEASE_DEBUG=true cargo build
+--release -p ns-cli --target-dir target-debuginfo`. "Entirely below" and
+"entirely above" are the protocol's gate: all five after-medians below, or
+above, all five of the group compared with.
 
 **`feedback_base` on its own** (`f8fdcfa`, against its parent `401817a`).
 Every activation carries the base, `vm::run` holds it in a local and
@@ -2227,14 +2227,15 @@ against the same parent, two sittings each:
 | 3, kept | `#[inline(never)]` on `decide_super_send`; the step inline again | +3.8% / +4.3% | `bench_loop.ns` |
 | 4 | 3, `resolve_public` forced inline and the lexical fall-through behind a cold wrapper | +3.4% / +4.9% | `bench_loop.ns`, `bench_new.ns` |
 
-Variant 3 against its parent, sitting 1 / 2: `bench_send.ns` +0.98% /
-+1.94%, `bench_block.ns` +1.18% / +3.14%, `bench_do.ns` +1.43% / +2.26%,
+Variant 3 against its parent, sitting 1 / 2: `bench_send.ns` +0.98% / +1.94%,
+`bench_block.ns` +1.18% / +3.14%, `bench_do.ns` +1.43% / +2.26%,
 `bench_new.ns` +1.28% / +2.32%, `bench_new2.ns` +2.32% / +1.67%,
-`bench_newarg.ns` +1.02% / +0.82%; entirely above for `bench_loop.ns` in
-both sittings, and for `bench_block.ns`, `bench_do.ns` and `bench_new2.ns` in
-one sitting each. The gate was not met on `bench_loop.ns`, and the miss was
-accepted and carried into the caches' own measurement: the split exists only to put the caches between `resolve` and
-`act`, and the caches had to leave `bench_loop.ns` no slower than 3a's head.
+`bench_newarg.ns` +1.02% / +0.82%; entirely above for `bench_loop.ns` in both
+sittings, and for `bench_block.ns`, `bench_do.ns` and `bench_new2.ns` in one
+sitting each. The gate was not met on `bench_loop.ns`, and the miss was
+accepted and carried into the caches' own measurement: the split exists only
+to put the caches between `resolve` and `act`, and the caches had to leave
+`bench_loop.ns` no slower than 3a's head.
 
 **The caches** (`ead0d85` and `a702875`, against `1f4d6c6`). On the caches'
 first shape the step had fallen out of line again. Four reshapings were
@@ -2857,16 +2858,16 @@ interim cost, and the one question still open"), and it was measured against
 the expectation recorded in [memory.md](memory.md), "How the collector is
 measured", written before any of the numbers below existed.
 
-**Measured 2026-09-20, against `dc0ffe5` (the merge of closure conversion
-into `master`) and `be3eb40`, by the protocol of "What removing the
-re-entries moved" above.** Every binary — `dc0ffe5` and `be3eb40` built in
-throwaway worktrees, the head `014f0ff` in the current tree — built with
+**Measured 2026-09-20, against `dc0ffe5` (the merge of closure conversion into
+`master`) and `be3eb40`, by the protocol of "What removing the re-entries
+moved" above.** Every binary — `dc0ffe5` and `be3eb40` built in throwaway
+worktrees, the head `014f0ff` in the current tree — built with
 `RUSTFLAGS="-C target-feature=+crt-static -C llvm-args=-align-all-functions=6"`;
 each checked to print the expected answer for all eight sources first;
 `ns-next bench <source> --iterations 30`, five rounds per sitting, the order
-of the three binaries rotating by one position from round to round, two
-whole sittings, nothing else running. Two facts that cost real time and are
-recorded here for the next measurement to skip past them: `dumpbin` lives at
+of the three binaries rotating by one position from round to round, two whole
+sittings, nothing else running. Two facts that cost real time and are recorded
+here for the next measurement to skip past them: `dumpbin` lives at
 `C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Tools\MSVC\14.51.36231\bin\Hostx64\x64\dumpbin.exe`
 on this machine, found via `vswhere.exe` in
 `C:\Program Files (x86)\Microsoft Visual Studio\Installer\`, and is not on
@@ -3193,32 +3194,31 @@ this measurement makes a case for.
 
 ### What the core library's move cost
 
-Every builtin method now lives in `crates/ns-runtime/core-library/Kernel.ns` as a
-forwarder over the one VM mirror ([core-library.md](core-library.md),
-"The core library as Newspeak source over a VM mirror"). A kernel
-method whose whole body forwards to one mirror row is a primitive method: a
-send of it runs the row's leaf in `act`, without an activation, and
-activates the body only when the leaf declines
-([dispatch.md](dispatch.md), "Primitive methods").
-`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without them, for measuring only, so the same binary shows what they
-recover.
+Every builtin method now lives in `crates/ns-runtime/core-library/Kernel.ns`
+as a forwarder over the one VM mirror ([core-library.md](core-library.md),
+"The core library as Newspeak source over a VM mirror"). A kernel method whose
+whole body forwards to one mirror row is a primitive method: a send of it runs
+the row's leaf in `act`, without an activation, and activates the body only
+when the leaf declines ([dispatch.md](dispatch.md), "Primitive methods").
+`NS_NEXT_NO_PRIMITIVE_METHODS=1` compiles the kernel without them, for
+measuring only, so the same binary shows what they recover.
 
 **The expectation, recorded before any binary was built.** With primitive
-methods on, against `e2bb31e`: level on every source. A leaf send that `IntegerBinary` does not absorb costs one
-cached send plus one field test on the method, where it cost one cached
-send; the rest of the path is the same primitive. The one new cost on every
-method send is that field test; if a source that sends no leaf moves, that is
-where to look. Under `NS_NEXT_NO_PRIMITIVE_METHODS=1`, against `e2bb31e`:
-slower on every source that sends a leaf the fast path does not absorb, since
-each such send becomes an activation of the kernel method, a lexical send of
-`vmMirror` and a `SendMirror`. From their text those are `bench_block.ns`
-(`value:`, 50,000 a run), `bench_megamorphic.ns` (`at:`, 50,000 a run) and
-`bench_do.ns` (`do:`, 5,000 a run, each running ten block activations the
-leaf makes); `bench_loop.ns`, `bench_send.ns` and the three `bench_new*`
-sources send `printString`, `show:` and `newLine` only once, after their
-loop, and should be level. Start-up, against `e2bb31e`: slower by the
-kernel's parse, resolution, compilation and instantiation, which did not
-exist.
+methods on, against `e2bb31e`: level on every source. A leaf send that
+`IntegerBinary` does not absorb costs one cached send plus one field test on
+the method, where it cost one cached send; the rest of the path is the same
+primitive. The one new cost on every method send is that field test; if a
+source that sends no leaf moves, that is where to look. Under
+`NS_NEXT_NO_PRIMITIVE_METHODS=1`, against `e2bb31e`: slower on every source
+that sends a leaf the fast path does not absorb, since each such send becomes
+an activation of the kernel method, a lexical send of `vmMirror` and a
+`SendMirror`. From their text those are `bench_block.ns` (`value:`, 50,000 a
+run), `bench_megamorphic.ns` (`at:`, 50,000 a run) and `bench_do.ns` (`do:`,
+5,000 a run, each running ten block activations the leaf makes);
+`bench_loop.ns`, `bench_send.ns` and the three `bench_new*` sources send
+`printString`, `show:` and `newLine` only once, after their loop, and should
+be level. Start-up, against `e2bb31e`: slower by the kernel's parse,
+resolution, compilation and instantiation, which did not exist.
 
 **Measured 2026-09-22, against `e2bb31e` (the merge of leaf inlining into
 `master`) and `be3eb40`, by the protocol of "What removing the re-entries
@@ -3965,14 +3965,15 @@ blocks and are inlined. One throwaway source exercises the change,
 `[taken:: taken + 1]` — four sent Boolean methods and three sent
 conditionals per iteration; it prints `300000` under both trees.
 
-**Measured 2026-09-24, `e8a2884` against `ddd9e4f`**, the `master` it
-started from -- before the fix that marks the block a control-flow step only
-for a Boolean receiver (`d4e7924`), one test of the receiver on the quick
-path, which was not measured separately -- by the protocol of "What removing the re-entries moved" above:
-two builds of each tree, every build with the pinned flags, the four
-binaries differing byte for byte; `ns-next bench <source> --iterations 30`,
-five rounds of all four binaries in turn, after one sitting of five rounds
-of one build each. Medians of the five rounds, in ms:
+**Measured 2026-09-24, `e8a2884` against `ddd9e4f`**, the `master` it started
+from -- before the fix that marks the block a control-flow step only for a
+Boolean receiver (`d4e7924`), one test of the receiver on the quick path,
+which was not measured separately -- by the protocol of "What removing the
+re-entries moved" above: two builds of each tree, every build with the pinned
+flags, the four binaries differing byte for byte;
+`ns-next bench <source> --iterations 30`, five rounds of all four binaries in
+turn, after one sitting of five rounds of one build each. Medians of the five
+rounds, in ms:
 
 | Source | before | before, second build | after | after, second build | Pooled |
 |---|---|---|---|---|---|
@@ -4282,11 +4283,15 @@ five rounds, rotating. Medians in ms per layout, the sittings pooled:
 Every source is faster than the base in every sitting, and the head's layouts
 agree to within 1.3% on each; `bench_block.ns` no longer draws a slow layout
 in any of the three builds. Attributed by builds of each commit on its own,
-two layouts each, five rounds: the arena accounts for `bench_block.ns`
-(20.2 → 16.7 ms) and `bench_value.ns` (46.0 → 43.4), `Signal` for
-`bench_deep.ns` (17.4 → 16.4), and the slot accessor for most of the rest,
-`bench_loop.ns` 7.3 → 5.5, `bench_send.ns` 8.8 → 7.1–7.4 and
-`bench_megamorphic.ns` 11.7 → 10.2. Only the `Signal` boxing repairs a cost the branch introduced; the arena shrink and the slot accessor repair defects `master` has too, so being faster than the base is not a property of the exceptions branch, and its net cost against a `master` carrying the same two fixes was not measured -- the per-commit attribution suggests about zero.
+two layouts each, five rounds: the arena accounts for `bench_block.ns` (20.2 →
+16.7 ms) and `bench_value.ns` (46.0 → 43.4), `Signal` for `bench_deep.ns`
+(17.4 → 16.4), and the slot accessor for most of the rest, `bench_loop.ns` 7.3
+→ 5.5, `bench_send.ns` 8.8 → 7.1–7.4 and `bench_megamorphic.ns` 11.7 → 10.2.
+Only the `Signal` boxing repairs a cost the branch introduced; the arena
+shrink and the slot accessor repair defects `master` has too, so being faster
+than the base is not a property of the exceptions branch, and its net cost
+against a `master` carrying the same two fixes was not measured -- the
+per-commit attribution suggests about zero.
 
 **What the protocol costs when nothing is signalled**, measured at
 `3d5f69c`, before the three fixes above. `bench_ensure.ns`
@@ -4927,19 +4932,20 @@ before-and-after measurement ("What the trampoline moved" above).
 
 ### Deciding, then running
 
-**The trampoline falls out of the stack rather than driving it.** The activation
-stack is what a trampolined run loop needs, so replacing the Rust-stack
-recursion with a loop that pushes is the same change viewed from the other
-side. Getting there split every send so that it *decides* without *executing*:
-lookup, `doesNotUnderstand:`, native dispatch and the nested-class accessor stay
-in `interpreter/` (`inline_cache::send_public`, `send_lexical` and
-`send_super`, over the lookups in `resolve.rs`), unchanged in what they
-produce, but they answer a `Step` — a value, a method to activate, or a block to activate and what to do
-with its value — instead of activating it. That keeps `vm.rs` free of dispatch
-logic: what moved into the loop is the act of running a body, never the
-decision of which body. The loop gathers a send's arguments from the caller's
-registers into one reusable buffer, and a push copies them from there into the
-callee's window, so a send allocates no vector of its own.
+**The trampoline falls out of the stack rather than driving it.** The
+activation stack is what a trampolined run loop needs, so replacing the
+Rust-stack recursion with a loop that pushes is the same change viewed from
+the other side. Getting there split every send so that it *decides* without
+*executing*: lookup, `doesNotUnderstand:`, native dispatch and the
+nested-class accessor stay in `interpreter/` (`inline_cache::send_public`,
+`send_lexical` and `send_super`, over the lookups in `resolve.rs`), unchanged
+in what they produce, but they answer a `Step` — a value, a method to
+activate, or a block to activate and what to do with its value — instead of
+activating it. That keeps `vm.rs` free of dispatch logic: what moved into the
+loop is the act of running a body, never the decision of which body. The loop
+gathers a send's arguments from the caller's registers into one reusable
+buffer, and a push copies them from there into the callee's window, so a send
+allocates no vector of its own.
 
 Three things the trampoline settles on its own:
 
@@ -5206,22 +5212,23 @@ The semantics and the order of every observable effect are what they were
 when these paths ran in nested runs of the loop.
 
 - **`do:`** (`builtins/collections.rs`) walks a snapshot of the elements. An
-  empty collection, or an argument that is not a block, answers the receiver at
-  once: a non-block stands for its own value, so handing it the elements would
-  observe nothing. Otherwise `do_step` answers `Step::Block` for the first
-  element with `Continuation::DoElement`, whose `DoLoop` carries the receiver,
-  the block, the snapshot and the next index; `resume` hands it to
+  empty collection, or an argument that is not a block, answers the receiver
+  at once: a non-block stands for its own value, so handing it the elements
+  would observe nothing. Otherwise `do_step` answers `Step::Block` for the
+  first element with `Continuation::DoElement`, whose `DoLoop` carries the
+  receiver, the block, the snapshot and the next index; `resume` hands it to
   `after_element`, which activates the block for the next element or answers
   the receiver. `collections::execute` matches the enumerated
   `CollectionPrimitive` a lookup found ([dispatch.md](dispatch.md),
   "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
   every other primitive's leaf result is lifted into a step through
-  `leaf_step`. These are `Array`'s leaves alone. Each element's activation is counted, like any block a `value`
-  send activates; a `^` in it unwinds like any other activation's, and its
-  arity is checked by the same `check_block_arity`. Its argument is a
-  one-element vector, allocated per element: a `StepArguments` variant that carried
-  one value would avoid that, and would change `Step`'s layout, which the
-  trampoline measured as a 4–8% risk ("What the trampoline moved" above).
+  `leaf_step`. These are `Array`'s leaves alone. Each element's activation is
+  counted, like any block a `value` send activates; a `^` in it unwinds like
+  any other activation's, and its arity is checked by the same
+  `check_block_arity`. Its argument is a one-element vector, allocated per
+  element: a `StepArguments` variant that carried one value would avoid that,
+  and would change `Step`'s layout, which the trampoline measured as a 4–8%
+  risk ("What the trampoline moved" above).
 - **The nested-class accessor** (`interpreter/nested.rs`) answers the class as
   a value when the receiver's cache already holds it, and also when the
   declaration has no superclass clause, whose superclass is `Object` with no
@@ -5357,21 +5364,22 @@ source of truth and a JIT is an accelerator that must be able to deoptimize to
 it. A stack is an accelerator over the reified activation model, and
 reification is its deoptimization.
 
-That resolves the one requirement that looks like a conflict. Edit-and-continue
-must be able to add a local to a method while an activation of it is live, and
-only the top entry's register window can grow in place. The answer is that
-editing a method takes its affected activations off the stack first — reified
-and divorced while still running, the operation Cog's `divorceAllFrames`
-performs on every stack page before a snapshot — and a divorced frame's `temporaries`
-is a growable `Vec`. Under the planned object space a frame object will never
-grow; the activation will be divorced into a newly allocated, larger frame
-object and the VM will rewrite every reference to the old one by a walk of every
-root the collector traces (`trace.rs`) and every heap object, the new frame allocated old and born remembered
-([object-model.md](object-model.md), "Planned: the object layout").
-Continuing an activation from its divorced frame needs a
-way to put the frame back on the stack, which does not exist yet; it is the
-same missing piece as resuming a decoded frame
-([image-format.md](image-format.md), "Planned: suspend and resume"). The document already accepts that entering the debugger forces the
+That resolves the one requirement that looks like a conflict.
+Edit-and-continue must be able to add a local to a method while an activation
+of it is live, and only the top entry's register window can grow in place. The
+answer is that editing a method takes its affected activations off the stack
+first — reified and divorced while still running, the operation Cog's
+`divorceAllFrames` performs on every stack page before a snapshot — and a
+divorced frame's `temporaries` is a growable `Vec`. Under the planned object
+space a frame object will never grow; the activation will be divorced into a
+newly allocated, larger frame object and the VM will rewrite every reference
+to the old one by a walk of every root the collector traces (`trace.rs`) and
+every heap object, the new frame allocated old and born remembered
+([object-model.md](object-model.md), "Planned: the object layout"). Continuing
+an activation from its divorced frame needs a way to put the frame back on the
+stack, which does not exist yet; it is the same missing piece as resuming a
+decoded frame ([image-format.md](image-format.md), "Planned: suspend and
+resume"). The document already accepts that entering the debugger forces the
 frames it touches out of their fast representation; this is the same step, one
 level below the JIT.
 
@@ -5984,10 +5992,11 @@ stall is the one-word value ([object-model.md](object-model.md),
 "Values and objects"); this section records the design and the
 experiment that decided against it.
 
-**Prior art.** Primordial Soup's primitives push their result onto the
-stack themselves and answer only whether they succeeded
-(`Primitives::Invoke`); Cog's primitives do the same through `pop:thenPush:`
-(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:72079`). Neither hands a result object back to the loop.
+**Prior art.** Primordial Soup's primitives push their result onto the stack
+themselves and answer only whether they succeeded (`Primitives::Invoke`);
+Cog's primitives do the same through `pop:thenPush:`
+(`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:72079`). Neither hands
+a result object back to the loop.
 
 **The sink, as designed.** `interpreter/` would have gained a trait,
 `DecisionSink`, with three methods: `value(mutator, value)`, `step(step)` and
@@ -6041,18 +6050,19 @@ variant's numbers above.
 ## The compact instruction encoding
 
 **Status: built** (designed with the user on 2026-10-02 and built the same
-day; [plan](../superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md)).
+day;
+[plan](../superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md)).
 `CompiledCode` stores its body as fixed eight-byte instructions
 (`bytecode/compact.rs`), a `#[repr(u8)]` enum with no heap field, and keeps
 everything that does not fit eight bytes in side tables beside them; the run
-loop matches on that enum. `Instruction` stays the compiler's and every
-tool's vocabulary, but no body is stored as a list of them: a body is encoded as it is emitted and read back through a decoded
-view, and only an instruction with no eight-byte form keeps its
-`Instruction`, in the body's `wide` table. The encoding came after the
-eight-byte value ([object-model.md](object-model.md), "Values and
-objects"), and before the object space ([memory.md](memory.md), "Planned:
-the object space"), so that it was designed against the value the loop
-actually moves -- one tagged word -- and the interpreter stays the first
+loop matches on that enum. `Instruction` stays the compiler's and every tool's
+vocabulary, but no body is stored as a list of them: a body is encoded as it
+is emitted and read back through a decoded view, and only an instruction with
+no eight-byte form keeps its `Instruction`, in the body's `wide` table. The
+encoding came after the eight-byte value ([object-model.md](object-model.md),
+"Values and objects"), and before the object space ([memory.md](memory.md),
+"Planned: the object space"), so that it was designed against the value the
+loop actually moves -- one tagged word -- and the interpreter stays the first
 tier in front of the JIT, as Cog's does. What it moved is "What the compact
 instruction encoding moved" above.
 

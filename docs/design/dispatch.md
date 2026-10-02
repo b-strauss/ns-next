@@ -337,12 +337,12 @@ by the presence-only "defined for" relation instead: the first
 `doesNotUnderstand:` found walking the receiver's class chain, whatever its
 access modifier.
 
-**A class side's own `doesNotUnderstand:` handles its class object's
-sends.** §5.5's handler is "the `#doesNotUnderstand:` method defined for the
-class of the receiver", and a class object's class is its metaclass (§3.2),
-so the walk from `class_of(receiver)` meets a class side's
-`doesNotUnderstand:` before `Object`'s, for an explicit-receiver send, an
-implicit-receiver send inside a class-side method and a keyword send alike
+**A class side's own `doesNotUnderstand:` handles its class object's sends.**
+§5.5's handler is "the `#doesNotUnderstand:` method defined for the class of
+the receiver", and a class object's class is its metaclass (§3.2), so the walk
+from `class_of(receiver)` meets a class side's `doesNotUnderstand:` before
+`Object`'s, for an explicit-receiver send, an implicit-receiver send inside a
+class-side method and a keyword send alike
 (`goldens/language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
 **The reified message is a `Message`.** §3.4 says a message "may be
@@ -565,22 +565,22 @@ failure block, the `[^super …]` every kernel method writes:
   ("Primitive methods" below).
 
 **A leaf that declines or raises has changed nothing.** Each one checks its
-operands before it writes anything — a register, a slot, an array element,
-the transcript — so running it again, or running again the instruction that
-sent it, is running it once. The search for §6.3.2's futures rests on
-this: once a program has made one, the three ways a leaf runs —
-`mirror::execute_sent`, `send_inlined` and `execute_method` — look for a
-future among the operands on the path where the leaf could not answer, it
-declined or raised (`future::after_a_failed_leaf`), and run the leaf again
-on the values, or force the future and run the sending instruction again
-([object-model.md](object-model.md), "Where Rust sees a future"). Identity
-and the equality leaves, which answer `false` to a stranger, decline instead
-when that answer is `false` and an operand is a future, so the same path
-sees through it. A leaf that answers pays nothing — but for those equality
-leaves, which pay one flag test when they answer `false` — and a program
-that never made a future pays one flag test on those paths
-([execution.md](execution.md), "What simultaneous slots cost"). A new leaf that writes before its last
-check breaks this silently.
+operands before it writes anything — a register, a slot, an array element, the
+transcript — so running it again, or running again the instruction that sent
+it, is running it once. The search for §6.3.2's futures rests on this: once a
+program has made one, the three ways a leaf runs — `mirror::execute_sent`,
+`send_inlined` and `execute_method` — look for a future among the operands on
+the path where the leaf could not answer, it declined or raised
+(`future::after_a_failed_leaf`), and run the leaf again on the values, or
+force the future and run the sending instruction again
+([object-model.md](object-model.md), "Where Rust sees a future"). Identity and
+the equality leaves, which answer `false` to a stranger, decline instead when
+that answer is `false` and an operand is a future, so the same path sees
+through it. A leaf that answers pays nothing — but for those equality leaves,
+which pay one flag test when they answer `false` — and a program that never
+made a future pays one flag test on those paths ([execution.md](execution.md),
+"What simultaneous slots cost"). A new leaf that writes before its last check
+breaks this silently.
 
 So a failure is Newspeak code, as in Cog, where a failing primitive falls
 into its method's body — whose code often sends the message on to `super`,
@@ -652,12 +652,13 @@ variants:
   ([core-library.md](core-library.md), "`True` and `False` are quick
   methods", "The nil protocol").
 
-Only a method of shipped core-library source carries one -- `Kernel.ns`'s,
-and `PlatformFactory.ns`'s `Transcript` forwarders to the mirror. Every other method -- a lazy slot's
-getter included ("Slot accessors" above) -- and every method decoded from
-an image has `None`. Each variant is an arm inlined into every send site of
-the run loop, so a new one is paid for by every method send, whether or
-not it is ever reached: that is why a lazy slot's getter has none.
+Only a method of shipped core-library source carries one -- `Kernel.ns`'s, and
+`PlatformFactory.ns`'s `Transcript` forwarders to the mirror. Every other
+method -- a lazy slot's getter included ("Slot accessors" above) -- and every
+method decoded from an image has `None`. Each variant is an arm inlined into
+every send site of the run loop, so a new one is paid for by every method
+send, whether or not it is ever reached: that is why a lazy slot's getter has
+none.
 
 **Recognition** (`compiler/primitive_method.rs`, `recognize`) runs as a
 method is built onto its mixin, and stores the variant on the method. For
@@ -696,10 +697,11 @@ method. `NS_NEXT_NO_PRIMITIVE_METHODS` does not switch it off, since an
 accessor runs no leaf.
 
 For the quick methods, `recognize_quick_method` accepts a method whose body is
-one statement with no temporaries, a `^` of `true`, `false`, `nil`,
-`self`, a parameter, a unary `value` sent to a parameter, or `cull: self`
-sent to a parameter -- the parameter by binding, as for `Mirror`. It runs only in the kernel, like the accessor, and
-is not switched off either: a quick method runs no leaf.
+one statement with no temporaries, a `^` of `true`, `false`, `nil`, `self`, a
+parameter, a unary `value` sent to a parameter, or `cull: self` sent to a
+parameter -- the parameter by binding, as for `Mirror`. It runs only in the
+kernel, like the accessor, and is not switched off either: a quick method runs
+no leaf.
 
 **The fast path is in `act`** (`interpreter/resolve.rs`), on a
 `Resolved::Method` of any chain but the two handler chains. A
@@ -1468,64 +1470,61 @@ dispatches on one.
 
 ### Planned: the guard in the header word
 
-Would change: the guard is read from the object's one header word instead
-of from an `Object` slot, and nothing else about the caches changes. The
-object layout ([object-model.md](object-model.md), "Planned: the object
-layout", road step 3) keeps the application id in the header's low 22
-bits and the class object in a word of its own, precisely
-so that this guard stays a per-application id -- a class-index guard as in
-Spur and Primordial Soup would make every site that sees nested-class
-instances from two enclosing objects polymorphic. Two things follow for the
-caches. The application cache (`Mutator.applications`) is keyed by the
-mixin's id and the superclass application's full-width index rather than
-by two `Rc::as_ptr` addresses, since the mixins and `MixinApplication`s will
-live in Rust-side tables indexed by their ids, and a class object will name
-its application by that full-width index, separate from the 22-bit guard
-id; with ids that are never reused while a key can name them, the cache is
-free to become weak
-([memory.md](memory.md), "Weak references"). And a forwarder
-([object-model.md](object-model.md), "Planned: `become:` through
-forwarders", road step 5) carries a reserved application id that is never a
-guard, so every send whose guard is the receiver's own header misses on a
-forwarder -- Spur's read barrier on send, which needs no check on a hit. A
-super send and a private lexical send guard on the running method's or N's
-application instead, so they check the receiver's header for the forwarded
-format before using a hit, as Spur's explicit barrier in super sends does
-(`ensureReceiverUnforwarded`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A
-forwarded receiver is unforwarded in one shared step at the top of each send
-entry, before resolve and act -- `decide_send` (`interpreter/mod.rs`),
+Would change: the guard is read from the object's one header word instead of
+from an `Object` slot, and nothing else about the caches changes. The object
+layout ([object-model.md](object-model.md), "Planned: the object layout", road
+step 3) keeps the application id in the header's low 22 bits and the class
+object in a word of its own, precisely so that this guard stays a
+per-application id -- a class-index guard as in Spur and Primordial Soup would
+make every site that sees nested-class instances from two enclosing objects
+polymorphic. Two things follow for the caches. The application cache
+(`Mutator.applications`) is keyed by the mixin's id and the superclass
+application's full-width index rather than by two `Rc::as_ptr` addresses,
+since the mixins and `MixinApplication`s will live in Rust-side tables indexed
+by their ids, and a class object will name its application by that full-width
+index, separate from the 22-bit guard id; with ids that are never reused while
+a key can name them, the cache is free to become weak ([memory.md](memory.md),
+"Weak references"). And a forwarder ([object-model.md](object-model.md),
+"Planned: `become:` through forwarders", road step 5) carries a reserved
+application id that is never a guard, so every send whose guard is the
+receiver's own header misses on a forwarder -- Spur's read barrier on send,
+which needs no check on a hit. A super send and a private lexical send guard
+on the running method's or N's application instead, so they check the
+receiver's header for the forwarded format before using a hit, as Spur's
+explicit barrier in super sends does (`ensureReceiverUnforwarded`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A forwarded
+receiver is unforwarded in one shared step at the top of each send entry,
+before resolve and act -- `decide_send` (`interpreter/mod.rs`),
 `decide_lexical_send` and `decide_super_send` (`interpreter/sends.rs:26`,
 `:78`), and the caches' `miss` and their hit check for super and private
 lexical sends -- so the receiver `act` gets is the followed one and the two
-lowerings cannot diverge. An immediate's guard comes
-from a table indexed by its tag, and for the constant tag by the constant,
-since `nil`, `true` and `false` share a tag but have three guards. At 22 bits the guard ids can run out where today's `u32` counter
-practically cannot; running out keeps today's rule, an application without
-a guard id running uncached (`NONE`, "The dispatch id" above). The guard id
-serves only as a guard -- in object headers, inline- and global-cache
-entries and recorded guards ([object-model.md](object-model.md), "Planned:
-the object layout") -- and every identity comparison of applications uses
-the full-width index instead: the application cache's key and value,
-`behavior:sharesApplicationWith:` (`Kernel.ns:116`), and the global cache's
-`Lexical` key, which keeps never recording a `NONE` guard, as step 6 of the
-lookup order in "3b — The caches" says today. So an application without a
-guard id stays reachable and distinct. A guard id is reclaimed once no
-object header, no inline- or global-cache entry and no recorded guard names
-it; a full-width index once no class object, no application-cache key or
-value and no other application's superclass link names it; a mixin id once
-the `Mixin` itself is dropped -- its table entry freed, no declaration,
-enclosing mixin or code holding it -- and no application, no
-application-cache key or value and no class object's applied-clause field
-names it. The collector can tell all three. A class's change of application
-restamps every instance's header by a heap walk, as
+lowerings cannot diverge. An immediate's guard comes from a table indexed by
+its tag, and for the constant tag by the constant, since `nil`, `true` and
+`false` share a tag but have three guards. At 22 bits the guard ids can run
+out where today's `u32` counter practically cannot; running out keeps today's
+rule, an application without a guard id running uncached (`NONE`, "The
+dispatch id" above). The guard id serves only as a guard -- in object headers,
+inline- and global-cache entries and recorded guards
+([object-model.md](object-model.md), "Planned: the object layout") -- and
+every identity comparison of applications uses the full-width index instead:
+the application cache's key and value, `behavior:sharesApplicationWith:`
+(`Kernel.ns:116`), and the global cache's `Lexical` key, which keeps never
+recording a `NONE` guard, as step 6 of the lookup order in "3b — The caches"
+says today. So an application without a guard id stays reachable and distinct.
+A guard id is reclaimed once no object header, no inline- or global-cache
+entry and no recorded guard names it; a full-width index once no class object,
+no application-cache key or value and no other application's superclass link
+names it; a mixin id once the `Mixin` itself is dropped -- its table entry
+freed, no declaration, enclosing mixin or code holding it -- and no
+application, no application-cache key or value and no class object's
+applied-clause field names it. The collector can tell all three. A class's
+change of application restamps every instance's header by a heap walk, as
 `Heap::set_class_application` walks the arena today
 (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
-become reclaimable. The debug build's check in
-`Heap::dispatch_id`, which recomputes an object's id from its class and
-asserts that the header agrees, answers the reserved id for an object of the
-forwarded format instead of reading its class word, which then names the
-target rather than a class.
+become reclaimable. The debug build's check in `Heap::dispatch_id`, which
+recomputes an object's id from its class and asserts that the header agrees,
+answers the reserved id for an object of the forwarded format instead of
+reading its class word, which then names the target rather than a class.
 
 ### Considered and rejected
 

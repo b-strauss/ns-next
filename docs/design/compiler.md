@@ -73,23 +73,25 @@ ignored a member of that name, is retired, and so is its wire tag 2
 **Sends** — each carries a `call_site`; see "Safepoints and call-site
 identity".
 
-- `SendPublic { selector, receiver_register, argument_registers, destination, call_site }` — an ordinary
-  explicit-receiver send, resolved with `lookupPublic`.
+- `SendPublic { selector, receiver_register, argument_registers, destination,
+  call_site }` — an ordinary explicit-receiver send, resolved with
+  `lookupPublic`.
 - `SendInlinable { selector, receiver_register, argument_registers, destination, call_site }` — the
   same send, decided exactly as `SendPublic` is, marking one the optimized
   lowering would have inlined. Only the reference lowering emits it, and only
   the depth count reads the mark; see "How the limit counts".
-- `SendLexical { depth, selector, argument_registers, destination, call_site }` — `Binding::LexicalSend`.
-  **No receiver register**: the receiver is `self` by construction, and the
-  kth-enclosing object is computed at run time.
+- `SendLexical { depth, selector, argument_registers, destination, call_site
+  }` — `Binding::LexicalSend`. **No receiver register**: the receiver is
+  `self` by construction, and the kth-enclosing object is computed at run
+  time.
 - `SendSuper { selector, argument_registers, destination, call_site }` — receiver is `self`, lookup
   starts at the current activation's `current_class`'s superclass.
-- `SendMirror { primitive, mirror_register, subject_register, argument_registers, destination, failure }`
-  — a send to the VM mirror whose failure block is lowered inline at
-  `failure`: it runs the mirror row `primitive`, bound at compile time, with
-  no lookup and no call site, and jumps to `failure` when the leaf declines.
-  Emitted only into `Kernel.ns`, which no image carries, so it has **no wire
-  tag**; see "Mirror sends".
+- `SendMirror { primitive, mirror_register, subject_register,
+  argument_registers, destination, failure }` — a send to the VM mirror whose
+  failure block is lowered inline at `failure`: it runs the mirror row
+  `primitive`, bound at compile time, with no lookup and no call site, and
+  jumps to `failure` when the leaf declines. Emitted only into `Kernel.ns`,
+  which no image carries, so it has **no wire tag**; see "Mirror sends".
 
 **Construction**
 
@@ -129,8 +131,10 @@ identity".
 
 **Branches**
 
-- `Jump { target }`, `BranchIfFalse { register, target }`, `BranchIfTrue { register, target }`,
-  `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation, destination, left, right, target }`.
+- `Jump { target }`, `BranchIfFalse { register, target }`,
+  `BranchIfTrue { register, target }`,
+  `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation,
+  destination, left, right, target }`.
 
 **Nothing but control-flow inlining, arithmetic inlining and a mirror send's
 inlined failure block emits a branch.** Every other construct in the language
@@ -193,26 +197,28 @@ with no initializer is skipped: its register keeps the **nil** every register
 starts with.
 
 A compiled body lives on the declaration it belongs to. A method's is on its
-`MixinMethod` (`code`); a mixin's instance initializer and its superclass clause's
-two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,
-`superclass_message_code`) — the clause's because a nested class's superclass
-clause is code too, evaluated by the accessor once per enclosing instance, and
-its message's because §6.2 evaluates the message's arguments on every
-instantiation. A declaration that applies mixins carries one more message
-body per `<:` clause, on that clause's `MixinApplicationClause`
-(`message_code`), compiled exactly as the superclass clause's message is —
-kind `SuperclassMessage`, in the declaration's own factory scope and with its
-factory's arity, since §6.2 evaluates every clause message with the applying
-class's factory arguments — and its superclass clause body answers the
-superclass and every `<:` receiver as one array
-([object-model.md](object-model.md), "Mixin application"). While the tree is built from source, `MixinMethod::from_declaration`
-compiles each method and `compile_mixin_bodies` a mixin's three bodies, before
-the mixin is wrapped in the `Rc` every application shares; `image::mixins::decode`
-attaches the bodies a row names from the image's code table. So a method without
-a body cannot exist, and nothing looks code up beside a declaration: a send that
-found a method has found its code. That is how the prior art holds it — Primordial
-Soup's `Method::bytecode()`, SOMns's `SInvokable.invokable`. Lowering turns every
-resolver binding into an instruction, so no bindings map outlives compilation.
+`MixinMethod` (`code`); a mixin's instance initializer and its superclass
+clause's two bodies are on the `Mixin` (`initializer_code`,
+`superclass_clause_code`, `superclass_message_code`) — the clause's because a
+nested class's superclass clause is code too, evaluated by the accessor once
+per enclosing instance, and its message's because §6.2 evaluates the message's
+arguments on every instantiation. A declaration that applies mixins carries
+one more message body per `<:` clause, on that clause's
+`MixinApplicationClause` (`message_code`), compiled exactly as the superclass
+clause's message is — kind `SuperclassMessage`, in the declaration's own
+factory scope and with its factory's arity, since §6.2 evaluates every clause
+message with the applying class's factory arguments — and its superclass
+clause body answers the superclass and every `<:` receiver as one array
+([object-model.md](object-model.md), "Mixin application"). While the tree is
+built from source, `MixinMethod::from_declaration` compiles each method and
+`compile_mixin_bodies` a mixin's three bodies, before the mixin is wrapped in
+the `Rc` every application shares; `image::mixins::decode` attaches the bodies
+a row names from the image's code table. So a method without a body cannot
+exist, and nothing looks code up beside a declaration: a send that found a
+method has found its code. That is how the prior art holds it — Primordial
+Soup's `Method::bytecode()`, SOMns's `SInvokable.invokable`. Lowering turns
+every resolver binding into an instruction, so no bindings map outlives
+compilation.
 
 ### One body per mixin
 
@@ -569,8 +575,8 @@ mirror row and the failure block for a send that is:
 - marked `Binding::MirrorSend` — which only `resolver::resolve_kernel`
   records, on a plain explicit-receiver send whose receiver is the bare
   identifier `vmMirror` naming the module root's member, so only shipped
-  core-library source (`Kernel.ns`, `PlatformFactory.ns`) ever has one (a cascade to `vmMirror` is not marked, and compiles as
-  ordinary sends);
+  core-library source (`Kernel.ns`, `PlatformFactory.ns`) ever has one (a
+  cascade to `vmMirror` is not marked, and compiles as ordinary sends);
 - a keyword send whose selector names a `MIRROR` row
   (`builtins::primitive::mirror_primitive_named`); and
 - ending in a literal block the inlining gate would accept, with no
@@ -834,10 +840,10 @@ that kind, identically wrong under both engines.
 
 `compiler/reference.rs`, written from the AST and the resolver's bindings. It
 shares with `lower.rs` only what must have one definition or is purely
-mechanical: the bytecode types, `lower_literal`, `selector_of`, the parameter counting, the span helpers,
-and `nested::superclass_clause_expression` and
-`superclass_clause_message_arguments_expression` — the one definition of what a superclass
-clause evaluates.
+mechanical: the bytecode types, `lower_literal`, `selector_of`, the parameter
+counting, the span helpers, and `nested::superclass_clause_expression` and
+`superclass_clause_message_arguments_expression` — the one definition of what
+a superclass clause evaluates.
 
 A flag inside `Lowerer` was the alternative, and was rejected on two counts. It
 would check only the four differences above and leave the rest shared, the
@@ -941,10 +947,10 @@ covered by handing the switch to the same `program::load_program` call.
   under both lowerings against the same recorded answer. Under the reference
   lowering `golden_round_trips.rs` also takes the encoder and decoder over code with
   no jumps and many registers.
-- `run-corpus` runs every row four ways — `run` of its generated
-  application, and `build` then `load` of it, under each lowering — with no switch, because a gate must not be optional. A
-  row fails if any of the four differs, and the report names which. The gate's
-  counts stay per row.
+- `run-corpus` runs every row four ways — `run` of its generated application,
+  and `build` then `load` of it, under each lowering — with no switch, because
+  a gate must not be optional. A row fails if any of the four differs, and the
+  report names which. The gate's counts stay per row.
 - `crates/ns-runtime/tests/reference_lowering.rs` loads every corpus module the
   resolver accepts, under both lowerings, compiling without running. It
   exercises "Compilation cannot fail" and the reference lowering's shape
@@ -1027,12 +1033,12 @@ that only the reference lowering emits, for exactly the sends
 `control_flow::recognize` and `recognize_mirror_send` accept.
 
 - **The count agrees at every point of every program.** The optimized lowering
-  omits exactly these activations and no others. On a non-Boolean receiver both
-  lowerings make the same real send with real closures, and from there count
-  alike; the `mustBeBoolean` send is made alike too. That holds for an
-  instance of a user subclass of `True`, which reaches `True`'s quick
-  methods: they mark the block as a control-flow step only for a Boolean
-  receiver, so its block is counted under both lowerings
+  omits exactly these activations and no others. On a non-Boolean receiver
+  both lowerings make the same real send with real closures, and from there
+  count alike; the `mustBeBoolean` send is made alike too. That holds for an
+  instance of a user subclass of `True`, which reaches `True`'s quick methods:
+  they mark the block as a control-flow step only for a Boolean receiver, so
+  its block is counted under both lowerings
   (`goldens/runtime/depth-limit/recursion_through_a_subclass_of_true_counts_alike_under_both_lowerings`).
 - **The agreement depends on the kernel's fast paths, which is why they
   apply under both lowerings.** The reference lowering's `SendInlinable` of
@@ -1064,11 +1070,12 @@ that only the reference lowering emits, for exactly the sends
   reference lowering passes to a `SendInlinable` is a literal created right
   before the send — a mirror send's failure block included, and `Kernel.ns`
   passes no other literal block to one ("Mirror sends") — so the condition
-  holds for every program either lowering compiles, and a chain of exempt activations is then bounded by how deeply
-  blocks nest in the artifact — which the decoder caps at the parser's
-  ceiling of 128 ([image-format.md](image-format.md), "Verification"), so an
-  artifact stacks no more exempt activations above a counted one than source
-  can. A block that fails the condition is counted like any other.
+  holds for every program either lowering compiles, and a chain of exempt
+  activations is then bounded by how deeply blocks nest in the artifact —
+  which the decoder caps at the parser's ceiling of 128
+  ([image-format.md](image-format.md), "Verification"), so an artifact stacks
+  no more exempt activations above a counted one than source can. A block that
+  fails the condition is counted like any other.
 
 So the oracle compares even an overflow byte for byte — the output up to it,
 the error and the exit status. Two alternatives were rejected. Counting

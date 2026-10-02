@@ -238,16 +238,16 @@ sites already did — borrow, clone one field, drop the borrow — and it is
 what keeps a rooting discipline from being needed at every site that calls
 back into the interpreter while holding a reference.
 
-**The seam is compiler-enforced.** `ObjectReference`, `FrameReference`, `ActivationReference` and the
-`ClassReference` alias are declared in `heap.rs` with a **private** inner field, so
-reading a handle's index from anywhere else — any other module of `ns-runtime`
-included — fails to compile. There is no grep gate to remember and no
-visibility to widen: an accessor that is missing has to be added in `heap.rs`,
-which is where the store is. The one way out is the pair of
-`pub(crate)` identity-key accessors described above, which hand the index over
-as an opaque key and are used as one — a named exception rather than an
-unenforced boundary, and one the origin guard still covers, since they are
-accessors on `Heap` like any other.
+**The seam is compiler-enforced.** `ObjectReference`, `FrameReference`,
+`ActivationReference` and the `ClassReference` alias are declared in `heap.rs`
+with a **private** inner field, so reading a handle's index from anywhere else
+— any other module of `ns-runtime` included — fails to compile. There is no
+grep gate to remember and no visibility to widen: an accessor that is missing
+has to be added in `heap.rs`, which is where the store is. The one way out is
+the pair of `pub(crate)` identity-key accessors described above, which hand
+the index over as an opaque key and are used as one — a named exception rather
+than an unenforced boundary, and one the origin guard still covers, since they
+are accessors on `Heap` like any other.
 
 Where a site needs several fields of one object, frame or activation at once, a
 batched accessor answers them together rather than the caller taking several —
@@ -441,9 +441,9 @@ are compile errors rather than mistakes the stress mode finds at run time
 contains one (`Object`, `ObjectData`, `ClassData`, `ClosureData`, `Frame`,
 `FrameKind`, `Continuation` and the state its variants carry, `Step`,
 `Signal`, `NewspeakError`, `Heap` itself) — carries a lifetime `'gc`,
-invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized `PhantomData<fn(&'gc ()) ->
-&'gc ()>`) so that it can be neither shortened nor extended. A release handle
-is still exactly its 32-bit index.
+invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized
+`PhantomData<fn(&'gc ()) -> &'gc ()>`) so that it can be neither shortened nor
+extended. A release handle is still exactly its 32-bit index.
 
 **The step state is a `Mutator<'gc>`** (`interpreter/mod.rs`): the heap, the
 builtin classes, the application caches, the argument buffer and the spare
@@ -463,86 +463,84 @@ is chosen outside the `for<'gc>` and cannot name it. The crate forbids
 **Nothing branded leaves an entry, and nothing in an entry reaches the loop.**
 `Mutator` offers no way back to the `Interpreter`, so no step — no decision,
 native or continuation, each of which is handed only a `&mut Mutator` — can
-run `vm::run`, reach the safepoint or start a host's send. The loop makes
-one entry per stretch between two safepoints, and the safepoint is outside
-every one; what the loop carries from one stretch to the next names no brand
-— `FrameRegisters`: the running `ActivationReference`, its code, its
+run `vm::run`, reach the safepoint or start a host's send. The loop makes one
+entry per stretch between two safepoints, and the safepoint is outside every
+one; what the loop carries from one stretch to the next names no brand —
+`FrameRegisters`: the running `ActivationReference`, its code, its
 `program_counter`, its `FeedbackBase` and its `RegisterBase` — and a run ends
 inside its last entry, its answer rooted for the host (`vm::run`, and
 [execution.md](execution.md), "The VM" and "The loop over locals"). A host
-makes one entry per read.
-`World::enter` is `#[inline(always)]`, and a lifetime is gone before code is
-generated.
+makes one entry per read. `World::enter` is `#[inline(always)]`, and a
+lifetime is gone before code is generated.
 
 **Only the `heap` module changes a brand.** A host root's slot is shared with
 a host outside every entry, so it holds a `Value<'static>`, and `Heap::stash`
 passes a value through `at_rest` on the way in, `fetch` through `branded` on
 the way out — two functions of `heap/value.rs`, `pub(super)` so that only
-`heap` reaches them, each monomorphic in its direction. The split
-does not make rebranding impossible inside `heap`: composing the two,
+`heap` reaches them, each monomorphic in its direction. The split does not
+make rebranding impossible inside `heap`: composing the two,
 `branded(at_rest(value))`, carries a value from one brand to another. What it
 guarantees is that no single call does, so a misuse there has to spell out
 both calls and pass visibly through `'static` at the call site. They are the
-only conversions of a brand, and there is **no public
-`unbind`** — which is where Nova's discipline leaves a hole that its own
-documentation closes by convention ("NEVER unbind a `Value` into a local
-variable"). A stored `Word` carries no brand either, so `Heap::load` and
-`Heap::store` are `pub(crate)`: public, the pair would carry a value from
-one heap's brand into another's, `heap_b.load(heap_a.store(value))`, past
-every debug check. `Heap::new` and `Heap::move_everything` are private to
-the heap module, so only `World` builds the heap an interpreter has and only `World`
-moves it — never while a `Mutator` is lent out, since `enter` holds `&mut
-self`.
+only conversions of a brand, and there is **no public `unbind`** — which is
+where Nova's discipline leaves a hole that its own documentation closes by
+convention ("NEVER unbind a `Value` into a local variable"). A stored `Word`
+carries no brand either, so `Heap::load` and `Heap::store` are `pub(crate)`:
+public, the pair would carry a value from one heap's brand into another's,
+`heap_b.load(heap_a.store(value))`, past every debug check. `Heap::new` and
+`Heap::move_everything` are private to the heap module, so only `World` builds
+the heap an interpreter has and only `World` moves it — never while a
+`Mutator` is lent out, since `enter` holds `&mut self`.
 
 **Three `compile_fail` doctests pin it**, on `Interpreter::enter`
-(`interpreter/mod.rs`), each beside a passing twin that differs from it in
-the one line that matters, so that each fails for the reason it names:
-answering a handle out of an entry ("lifetime may not live long enough"),
-storing one in a host's own field (E0521), and a host's send from inside an
-entry, the shape a native re-entering the loop would have (the interpreter is
-already borrowed by the entry).
+(`interpreter/mod.rs`), each beside a passing twin that differs from it in the
+one line that matters, so that each fails for the reason it names: answering a
+handle out of an entry ("lifetime may not live long enough"), storing one in a
+host's own field (E0521), and a host's send from inside an entry, the shape a
+native re-entering the loop would have (the interpreter is already borrowed by
+the entry).
 
 **No branded code can hold a stale handle.** `same` compares two handles with
 no heap in reach, so a debug build can check their move epochs only against
 each other, and two stale handles from the same old epoch would pass it where
 a live handle against a stale one panics. Within one entry nothing moves, and
 no handle survives from one entry to the next, so every handle `same` is
-handed was minted or read in the entry that compares it. Only a bare `Heap`
-in `heap.rs`'s own unit tests can still make a stale handle, and those tests
-are about the debug check itself.
+handed was minted or read in the entry that compares it. Only a bare `Heap` in
+`heap.rs`'s own unit tests can still make a stale handle, and those tests are
+about the debug check itself.
 
-`ActivationReference` stays unbranded: the collector moves no stack entry,
-and its generation check already covers an index reused after a pop.
+`ActivationReference` stays unbranded: the collector moves no stack entry, and
+its generation check already covers an index reused after a pop.
 
-**Why no cast is needed.** The heap stores handles in their at-rest form and
-a step sees them branded, so something has to connect the two. Converting
-each payload safely was rejected for its cost ("Considered and rejected: a
-safe conversion per payload" below), and one audited lifetime cast of the
-whole step state was chosen in its place, then found unnecessary ("Considered
-and rejected: an audited lifetime cast"). The two systems that cast have
-reasons that do not apply here. gc-arena's `Gc<'gc, T>` is a real pointer
-whose `'gc` must end with the borrow of the arena, so `mutate` has to bring
-its root, a generic type projected through `Rootable<'gc>`, down from its
-at-rest lifetime to that shorter one, which the compiler cannot check through
-the projection. Nova's `Bindable for Box<T>` rebrands a payload that already
-exists from one lifetime to another (`prior-art/nova/nova_vm/src/engine/context.rs`).
-Here `'gc` names no real reference, only the `PhantomData` in a handle, and
+**Why no cast is needed.** The heap stores handles in their at-rest form and a
+step sees them branded, so something has to connect the two. Converting each
+payload safely was rejected for its cost ("Considered and rejected: a safe
+conversion per payload" below), and one audited lifetime cast of the whole
+step state was chosen in its place, then found unnecessary ("Considered and
+rejected: an audited lifetime cast"). The two systems that cast have reasons
+that do not apply here. gc-arena's `Gc<'gc, T>` is a real pointer whose `'gc`
+must end with the borrow of the arena, so `mutate` has to bring its root, a
+generic type projected through `Rootable<'gc>`, down from its at-rest lifetime
+to that shorter one, which the compiler cannot check through the projection.
+Nova's `Bindable for Box<T>` rebrands a payload that already exists from one
+lifetime to another (`prior-art/nova/nova_vm/src/engine/context.rs`). Here
+`'gc` names no real reference, only the `PhantomData` in a handle, and
 `Mutator` is a plain type with a lifetime parameter: no step state is ever
-brought from one brand to another, because the at-rest `'static` is itself
-one of the lifetimes the closure is checked for.
+brought from one brand to another, because the at-rest `'static` is itself one
+of the lifetimes the closure is checked for.
 
 The stress mode below keeps running under the brand: the brand covers what
 Rust holds, the stress mode what the tracer knows. Its price is ergonomic —
 every host and test reads through `enter` — and that price is accepted. What
 the whole step measured is in [execution.md](execution.md), "What 2c moved":
-level with the commit it started from on every source, every group
-overlapping in both sittings. A first measurement had read 1–2.5% slower on
-the instantiation and block benchmarks; the brand commit's hot machine code
-turned out identical to its parent's, moved into another 64-byte phase by
-smaller cold code ahead of it, which is why a measurement now builds every
-binary it compares with function starts pinned to 64 bytes — the shipped
-build stays unpinned ([execution.md](execution.md), "What removing the
-re-entries moved", the protocol).
+level with the commit it started from on every source, every group overlapping
+in both sittings. A first measurement had read 1–2.5% slower on the
+instantiation and block benchmarks; the brand commit's hot machine code turned
+out identical to its parent's, moved into another 64-byte phase by smaller
+cold code ahead of it, which is why a measurement now builds every binary it
+compares with function starts pinned to 64 bytes — the shipped build stays
+unpinned ([execution.md](execution.md), "What removing the re-entries moved",
+the protocol).
 
 ### Host roots
 
@@ -796,12 +794,12 @@ break.
 
 The stress runs are gates: `CLAUDE.md` requires the whole suite and
 `run-corpus` — every runnable module through `run` and through `build` then
-`load`, under both lowerings — under the variable at the end of a batch, as the `finishing-a-batch` skill
-lists them. A release build
-contains none of it: `trace.rs`, the epoch, the move, the schedule and the
-test hooks (`Interpreter::move_now`, `moves`, `stress_safepoints`,
-`set_stress_moves`) are `#[cfg(debug_assertions)]`, and only the poll is
-left, whose price is measured in "Where a collection can happen" above.
+`load`, under both lowerings — under the variable at the end of a batch, as
+the `finishing-a-batch` skill lists them. A release build contains none of it:
+`trace.rs`, the epoch, the move, the schedule and the test hooks
+(`Interpreter::move_now`, `moves`, `stress_safepoints`, `set_stress_moves`)
+are `#[cfg(debug_assertions)]`, and only the poll is left, whose price is
+measured in "Where a collection can happen" above.
 
 ### Considered and rejected: Nova's scopes
 
@@ -1278,30 +1276,31 @@ belongs to the object rather than to the symbol; a program that keeps the
 number `identityHash` answered instead of the object has no guarantee today
 either, and Squeak's weak symbol table behaves the same way.
 
-**The application cache stays strong, and the reason is its key rather than the
-collector.** `mixin_key` and `application_key` are `Rc::as_ptr(...) as usize`
-(`mixin.rs`), and the strong `Rc` the cache holds is what keeps that address
-valid and unique. A weak cache would let a freed `Rc<Mixin>` hand its address
-to a newly allocated one, and the new mixin would hit the old entry and be
-given a **different, perfectly valid** application, reporting nothing — the
-failure class the handle invariants exist to prevent. Weakness becomes
-decidable only once a mixin carries an id of its own instead of an address,
-and the object layout (road step 3) will give mixins and applications ids
-([object-model.md](object-model.md), "Planned: the object layout"). The same
-per-mixin id is wanted by dispatch's open option of guarding a private
-lexical site on N's mixin ([dispatch.md](dispatch.md), "Decisions"). What will make the weak cache sound is that its key and value
+**The application cache stays strong, and the reason is its key rather than
+the collector.** `mixin_key` and `application_key` are
+`Rc::as_ptr(...) as usize` (`mixin.rs`), and the strong `Rc` the cache holds
+is what keeps that address valid and unique. A weak cache would let a freed
+`Rc<Mixin>` hand its address to a newly allocated one, and the new mixin would
+hit the old entry and be given a **different, perfectly valid** application,
+reporting nothing — the failure class the handle invariants exist to prevent.
+Weakness becomes decidable only once a mixin carries an id of its own instead
+of an address, and the object layout (road step 3) will give mixins and
+applications ids ([object-model.md](object-model.md), "Planned: the object
+layout"). The same per-mixin id is wanted by dispatch's open option of
+guarding a private lexical site on N's mixin ([dispatch.md](dispatch.md),
+"Decisions"). What will make the weak cache sound is that its key and value
 use an application's full-width index, never its 22-bit guard id, and the
 reuse rules: a full-width index will be reclaimed once no class object, no
 application-cache key or value and no other application's superclass link
 names it; a guard id once no object header, no inline- or global-cache entry
-and no recorded guard names it; a mixin id once the `Mixin` itself is
-dropped -- its table entry freed, no declaration, enclosing mixin or code
-holding it -- and no application, no application-cache key or value and no
-class object's applied-clause field names it ([object-model.md](object-model.md),
-"Planned: the object layout"). A class's change of application will restamp
-every instance's header by a heap walk, as `Heap::set_class_application`
-walks the arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the
-old guard id can become reclaimable. The cache's unbounded growth under live editing
+and no recorded guard names it; a mixin id once the `Mixin` itself is dropped --
+its table entry freed, no declaration, enclosing mixin or code holding it --
+and no application, no application-cache key or value and no class object's
+applied-clause field names it ([object-model.md](object-model.md), "Planned:
+the object layout"). A class's change of application will restamp every
+instance's header by a heap walk, as `Heap::set_class_application` walks the
+arena today (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard
+id can become reclaimable. The cache's unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) will end with it.
 
 The cache holds no handle at all — a pair of numbers for a key, an `Rc` for a
@@ -1494,24 +1493,24 @@ object space" below).
 **A payload is size-stable on every hot path.** Both reference runtimes
 implement a growable collection in Newspeak over a fixed `Array`: Primordial
 Soup's `List` (`prior-art/primordialsoup/newspeak/Collections.ns`) holds
-`data ::= Array new: capacity` and on overflow does `data:: data
-copyWithSize: (capacity >> 1 + capacity | 7)`; SOMns's `Vector`
+`data ::= Array new: capacity` and on overflow does `data:: data copyWithSize:
+(capacity >> 1 + capacity | 7)`; SOMns's `Vector`
 (`prior-art/somns/core-lib/Kernel.ns`) allocates `Array new: 2 * storage size`
 and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
 same. **Every `ObjectData::Array` is fixed-size once allocated: no payload
 grows in place** outside a test -- `Heap::frame_grow_temporaries` grows a dead
 frame's registers for `tests/image.rs` alone, and goes with the frame arena --
-so the planned object space needs no growth-in-place case. What
-changes an object's size is reflective and rare -- edit-and-continue adding
-locals to a live activation, a MirrorBuilder adding or removing slots of live
-instances (requirements 2 and 3 of
-[liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a new
-object: for instances, a `become:` will forward the old one to it
-([object-model.md](object-model.md), "Planned: `become:` through
-forwarders"); for a frame, the activation will be divorced into the larger
-frame object and the VM will rewrite the references to the old one by a walk
-of every root the collector traces (`trace.rs`) and every heap object, the new frame allocated old and born remembered
-("Planned: the object layout", there).
+so the planned object space needs no growth-in-place case. What changes an
+object's size is reflective and rare -- edit-and-continue adding locals to a
+live activation, a MirrorBuilder adding or removing slots of live instances
+(requirements 2 and 3 of
+[liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a
+new object: for instances, a `become:` will forward the old one to it
+([object-model.md](object-model.md), "Planned: `become:` through forwarders");
+for a frame, the activation will be divorced into the larger frame object and
+the VM will rewrite the references to the old one by a walk of every root the
+collector traces (`trace.rs`) and every heap object, the new frame allocated
+old and born remembered ("Planned: the object layout", there).
 
 **No existing arena crate does what the space needs.** Every arena crate
 models one lifetime pattern -- everything lives until a reset -- where this
@@ -1581,24 +1580,25 @@ should be is left to road step 3.
   pick the slice by an offset's range, so an offset into a protected or
   uncommitted range finds no slice: that selection is the bounds check the
   accessors rely on.
-- **Two implementations behind one interface**: Windows
-  (`VirtualAlloc`, `VirtualFree`, `VirtualProtect`, through `windows-sys`) and
-  POSIX (`mmap` with `PROT_NONE` to reserve, `mprotect` to commit and protect,
-  a re-mapping of the range with `mmap(MAP_FIXED | MAP_PRIVATE | MAP_ANON,
-  PROT_NONE)` to decommit, which gives the memory back on Linux and macOS
-  alike where `madvise(MADV_DONTNEED)` does not on macOS; it is mapped without
+- **Two implementations behind one interface**: Windows (`VirtualAlloc`,
+  `VirtualFree`, `VirtualProtect`, through `windows-sys`) and POSIX (`mmap`
+  with `PROT_NONE` to reserve, `mprotect` to commit and protect, a re-mapping
+  of the range with `mmap(MAP_FIXED | MAP_PRIVATE | MAP_ANON, PROT_NONE)` to
+  decommit, which gives the memory back on Linux and macOS alike where
+  `madvise(MADV_DONTNEED)` does not on macOS; it is mapped without
   `MAP_NORESERVE`, since a `PROT_NONE` private mapping is not charged anyway,
   so a later commit by `mprotect` is accounted where the kernel accounts
   commit -- Linux under strict overcommit (`overcommit_memory=2`) -- and can
   fail there as a value; under Linux's default heuristic overcommit and on
   macOS, which does no commit accounting, first touch can still end in the
   out-of-memory killer, as for any process. Windows always accounts a commit,
-  so there it always fails as a value. `munmap` releases, all through `libc`). The POSIX half is checked with
-  clippy for Linux and macOS targets, not run. `windows-sys` and `libc` are declaration-only crates, with no
-  run-time code of their own. Primordial Soup has the same split behind the
-  same three verbs (`prior-art/primordialsoup/vm/virtual_memory.h`,
-  `virtual_memory_win.cc:65`, `virtual_memory_posix.cc`); it commits
-  everything at once, which a single large reservation cannot.
+  so there it always fails as a value. `munmap` releases, all through `libc`).
+  The POSIX half is checked with clippy for Linux and macOS targets, not run.
+  `windows-sys` and `libc` are declaration-only crates, with no run-time code
+  of their own. Primordial Soup has the same split behind the same three verbs
+  (`prior-art/primordialsoup/vm/virtual_memory.h`, `virtual_memory_win.cc:65`,
+  `virtual_memory_posix.cc`); it commits everything at once, which a single
+  large reservation cannot.
 - **A failure is a value, never a panic**: a reservation or a commit the
   operating system refuses answers a `MemoryError::Refused` carrying the
   operation and the system's error number, which the heap will report as running out of
@@ -1654,11 +1654,11 @@ instruction encoding.
   root.
 - **Access stays behind `Heap`'s accessors**, which read the space's words
   through bounds-checked slices, so a stale offset reads a wrong object at
-  worst, never undefined behaviour; every field, element and register
-  accessor also checks its index against the object's own word count, so no
-  access through one object reaches the next object's header. Accessors may lend a string's bytes or an
-  object's fields as a slice rather than copy them out, which ends the copy-out
-  costs "Known rough edges in the seam" names.
+  worst, never undefined behaviour; every field, element and register accessor
+  also checks its index against the object's own word count, so no access
+  through one object reaches the next object's header. Accessors may lend a
+  string's bytes or an object's fields as a slice rather than copy them out,
+  which ends the copy-out costs "Known rough edges in the seam" names.
 - **The frame arena goes**: a reified frame is an object of the frame format
   with its registers inline, so there is one graph, one mark, one compaction
   and one forwarding table. Married and divorced frames keep their meaning
@@ -1738,17 +1738,20 @@ Road step 4.
   code.
 - **The scavenger** is a Cheney copy of the survivors, as in all three
   references (Spur `doScavenge:`, `cointerp.c:48477`; Strongtalk
-  `Universe::scavenge`, `prior-art/strongtalk/vm/memory/universe_more.cpp:81-137`).
-  An object's age lives in the header's four age bits (bits 27-30), and it is tenured once its
+  `Universe::scavenge`,
+  `prior-art/strongtalk/vm/memory/universe_more.cpp:81-137`). An object's age
+  lives in the header's four age bits (bits 27-30), and it is tenured once its
   age reaches a threshold that adapts to how full the survivor space is,
-  Strongtalk's age table (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`).
-  A copied object's old copy becomes a forwarder -- the forwarded format, its
-  class word naming the new location -- the same mechanism `become:` uses. A
-  reference to a forwarder is followed along the whole chain, whatever made
-  each link, and the object at its end is copied only if it is young and not
-  already in the survivor space being filled, as Spur's `scavengeReferentsOf:`
-  does (`cointerp.c:43278`, the `isReallyYoungObject:` test at `:43316-43322`; [object-model.md](object-model.md), "Planned:
-  `become:` through forwarders").
+  Strongtalk's age table
+  (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`). A copied object's old
+  copy becomes a forwarder -- the forwarded format, its class word naming the
+  new location -- the same mechanism `become:` uses. A reference to a
+  forwarder is followed along the whole chain, whatever made each link, and
+  the object at its end is copied only if it is young and not already in the
+  survivor space being filled, as Spur's `scavengeReferentsOf:` does
+  (`cointerp.c:43278`, the `isReallyYoungObject:` test at `:43316-43322`;
+  [object-model.md](object-model.md), "Planned: `become:` through
+  forwarders").
 - **Before a scavenge starts it commits old space for the worst case** -- the
   occupancy of eden and the survivor space -- so a promotion never meets a
   commit failure halfway through; a commit the operating system refuses is
@@ -1812,9 +1815,10 @@ Road step 4.
 ## Planned: inline allocation
 
 Would change: the instructions that allocate take their memory by a bump in
-eden instead of a call into the collector's allocation path. Road step 6, and the groundwork the JIT tiers take over, as Cogit's
-`genPrimitiveNew` and `genCreateFullClosure:…` do in machine code
-(`cogitX64SysV.c:16464`, `:19026`).
+eden instead of a call into the collector's allocation path. Road step 6, and
+the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
+`genCreateFullClosure:…` do in machine code (`cogitX64SysV.c:16464`,
+`:19026`).
 
 - **What bumps**: `new` of a class whose instances fall below the
   large-object threshold, `MakeClosure`, a boxed
@@ -1831,8 +1835,8 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   allocations are bounded by a stretch's straight-line instructions times the
   large-object threshold, but no fixed reserve fits every body, so an
   allocation that finds the reserve spent allocates in old space, born
-  remembered by the rule in "Planned: generations", and requests a safepoint, as Strongtalk's `allocate_tenured`
-  does when a scavenge cannot run
+  remembered by the rule in "Planned: generations", and requests a safepoint,
+  as Strongtalk's `allocate_tenured` does when a scavenge cannot run
   (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
 - **The bump path lives in `heap.rs`**; an instruction arm calls it and does
   nothing else with it, since one more calling arm measures about 3% on the
@@ -1866,10 +1870,10 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   neither: an arena entry holds indices, so there is nothing to unwind.
 - **A collection happens only at a safepoint in the run loop, or between
   entries where only roots hold values** (as `Interpreter::collect_now` does
-  for tests), never inside an allocation (decided 2026-09-13), so no allocating Rust path roots anything
-  and a JIT keeps its freedom across allocations. Cog, Nova, CPython and
-  piccolo put it there; V8 and HotSpot's runtime pay for the alternative with
-  handles and verifiers.
+  for tests), never inside an allocation (decided 2026-09-13), so no
+  allocating Rust path roots anything and a JIT keeps its freedom across
+  allocations. Cog, Nova, CPython and piccolo put it there; V8 and HotSpot's
+  runtime pay for the alternative with handles and verifiers.
 - **No Rust frame is live below a safepoint**: nothing re-enters the run loop
   from Rust, so there is nothing to root but what the host keeps. Chosen over
   rooting those frames with Nova's `Scoped` values, because the re-entries were
@@ -1900,11 +1904,12 @@ eden instead of a call into the collector's allocation path. Road step 6, and th
   holds no handle, stays shared. It also made `bench_block.ns`
   about 4% faster, since `MakeClosure` no longer allocates an `Rc` and a popped
   block activation drops none.
-- **Mark-compact over the index arena, one space, stop-the-world** (decided with
-  the user on 2026-09-20). Under the planned generations it is the old space's
-  collector, over variably sized objects ("Planned: generations"). Over uniform slots a free list has no fragmentation to solve and a
-  copier little locality to win, so the choice rested on what the step is for —
-  the table shrinks and the pages go back — on rewriting being O(1) per handle
+- **Mark-compact over the index arena, one space, stop-the-world** (decided
+  with the user on 2026-09-20). Under the planned generations it is the old
+  space's collector, over variably sized objects ("Planned: generations").
+  Over uniform slots a free list has no fragmentation to solve and a copier
+  little locality to win, so the choice rested on what the step is for — the
+  table shrinks and the pages go back — on rewriting being O(1) per handle
   through a flat forwarding table over an index arena, and on the machinery
   already built and under test. Nova, the one engine with this representation,
   compacts; Strongtalk, Spur and HotSpot compact or evacuate their old
