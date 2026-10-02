@@ -668,9 +668,9 @@ closure object: `ClosureData` is stored inline in the object's payload,
 sharing only `code`, which holds no handle, through its own
 `Rc` with the `MakeClosure` instruction that made it; and everything else
 that needs a closure — `FrameKind::Closure` on each of its activations,
-`WhileLoop.condition`, `DoLoop.block`, `Step::Block` — names the closure object,
-whose `captured_frame` and copied values the tracer then rewrites once, in its
-record.
+`WhileLoop.condition` and `.body`, `DoLoop.block`, `Step::Block` — names the
+closure object, whose `captured_frame` and copied values the tracer then
+rewrites once, in its record.
 A native loop's state is boxed in its continuation (`Box<WhileLoop>`,
 `Box<DoLoop>`), owned by exactly one stack entry.
 
