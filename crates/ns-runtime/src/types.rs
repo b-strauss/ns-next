@@ -555,15 +555,17 @@ pub enum UnwindAction<'gc> {
 }
 
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
-/// body -- any value, since a body that is not a block evaluates to itself --
-/// and the condition value that keeps it going.
+/// body's closure -- `None` for a body that is not a block, which evaluates
+/// to itself and so has nothing to run -- and the condition value that keeps
+/// it going. Whether the body is a block is decided once, when the loop
+/// starts: an object never stops or starts being a closure.
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
 pub struct WhileLoop<'gc> {
     /// The condition's closure object.
     pub(crate) condition: ObjectReference<'gc>,
-    pub(crate) body: Value<'gc>,
+    pub(crate) body: Option<ObjectReference<'gc>>,
     pub(crate) expect: bool,
 }
 
