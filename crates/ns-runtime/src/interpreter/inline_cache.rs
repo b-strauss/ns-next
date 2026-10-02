@@ -727,8 +727,8 @@ fn materialize<'gc>(
         // (`resolve::resolved_for` records nothing found anywhere else). A
         // receiver with that id is a class object of that metaclass's
         // declaration, so a hit reaches what a miss would.
-        Target::Factory { chain } => match *key.receiver {
-            Value::Object(class_object) => (
+        Target::Factory { chain } => match key.receiver.as_object() {
+            Some(class_object) => (
                 Resolved::Factory {
                     level: class_object,
                     chain,

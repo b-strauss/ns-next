@@ -60,6 +60,14 @@ impl<'gc> Value<'gc> {
         Value::Object(object)
     }
 
+    /// The immediate float. Only `Mutator::new_float` and the image's scalar
+    /// decoder make one: everywhere else a float is made through
+    /// `new_float`, so that once floats outside the immediate range are
+    /// boxed, every float still has one representation.
+    pub(crate) const fn small_float(value: f64) -> Value<'gc> {
+        Value::Float(value)
+    }
+
     pub fn kind(self) -> ValueKind<'gc> {
         match self {
             Value::Nil => ValueKind::Nil,
@@ -853,11 +861,11 @@ mod tests {
             let instance = mutator
                 .heap
                 .allocate_object(class, ObjectData::Instance(vec![]));
-            let original = Value::Object(instance);
+            let original = Value::object(instance);
             let copy = original;
-            match (original, copy) {
-                (Value::Object(left), Value::Object(right)) => assert!(left.same(right)),
-                _ => panic!("expected Value::Object"),
+            match (original.as_object(), copy.as_object()) {
+                (Some(left), Some(right)) => assert!(left.same(right)),
+                _ => panic!("expected both copies to be objects"),
             }
         });
     }
@@ -865,7 +873,7 @@ mod tests {
     #[test]
     fn frame_kind_top_level_has_no_current_class() {
         let frame = Frame {
-            receiver: Value::Nil,
+            receiver: Value::nil(),
             arguments: vec![],
             temporaries: vec![],
             program_counter: 0,

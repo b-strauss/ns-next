@@ -292,8 +292,8 @@ fn resolved_for<'gc>(
     receiver: Value<'gc>,
     chain: Chain,
 ) -> Resolved<'gc> {
-    match (lookup, receiver) {
-        (Lookup::Factory(level), Value::Object(class_object))
+    match (lookup, receiver.as_object()) {
+        (Lookup::Factory(level), Some(class_object))
             if heap.is_class(class_object) && heap.class_of_object(class_object).same(level) =>
         {
             Resolved::Factory {
@@ -362,7 +362,7 @@ impl<'gc> Mutator<'gc> {
                     // the method does.
                     match method.fast_path {
                         Some(MethodFastPath::BuiltinClass(kind)) => {
-                            return Ok(Step::Value(Value::Object(self.builtin_class(kind))));
+                            return Ok(Step::Value(Value::object(self.builtin_class(kind))));
                         }
                         Some(MethodFastPath::Mirror(primitive)) => {
                             if let Some(result) = crate::interpreter::mirror::execute_method(
@@ -398,11 +398,12 @@ impl<'gc> Mutator<'gc> {
                         // activates the method, whose `value` send answers
                         // what any other send of `value` to it would.
                         Some(MethodFastPath::ValueOfParameter(position)) => {
-                            if let Some(Value::Object(object)) =
-                                arguments.get(usize::from(position)).copied()
+                            if let Some(object) = arguments
+                                .get(usize::from(position))
+                                .and_then(|value| value.as_object())
                             {
                                 if self.heap().is_closure(object) {
-                                    let block_arguments = if matches!(receiver, Value::Boolean(_)) {
+                                    let block_arguments = if receiver.as_boolean().is_some() {
                                         StepArguments::ControlFlow
                                     } else {
                                         StepArguments::Owned(Vec::new())
@@ -422,8 +423,9 @@ impl<'gc> Mutator<'gc> {
                         // as `value:` would. Never control flow: no lowering
                         // inlines these sends, so both count the block.
                         Some(MethodFastPath::CullParameter(position)) => {
-                            if let Some(Value::Object(object)) =
-                                arguments.get(usize::from(position)).copied()
+                            if let Some(object) = arguments
+                                .get(usize::from(position))
+                                .and_then(|value| value.as_object())
                             {
                                 if let Some(parameter_count) =
                                     self.heap().closure_parameter_count(object)
@@ -575,8 +577,8 @@ impl<'gc> Mutator<'gc> {
     /// hashes being drawn lazily.
     fn handler_message(&mut self, selector: Symbol, arguments: &[Value<'gc>]) -> Value<'gc> {
         let selector_value = self.new_symbol(selector);
-        let arguments_value = Value::Object(self.new_array(arguments.to_vec()));
-        Value::Object(
+        let arguments_value = Value::object(self.new_array(arguments.to_vec()));
+        Value::object(
             self.new_kernel_instance(BuiltinClass::Message, |name| match name {
                 "selector" => selector_value,
                 "arguments" => arguments_value,
@@ -651,7 +653,7 @@ mod tests {
     fn act_answers_a_class_accessor_without_an_activation() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let receiver = Value::SmallInteger(3);
+            let receiver = Value::small_integer(3);
             let selector = Symbol::intern("String");
             let resolved = mutator.resolve_public(receiver, selector);
             let Resolved::Method { ref method, .. } = resolved else {
@@ -669,8 +671,13 @@ mod tests {
                 selector,
                 &[],
             ) {
-                Ok(Step::Value(Value::Object(answered))) => {
-                    assert!(answered.same(string), "the accessor answers String itself");
+                Ok(Step::Value(answer)) => {
+                    assert!(
+                        answer
+                            .as_object()
+                            .is_some_and(|answered| answered.same(string)),
+                        "the accessor answers String itself"
+                    );
                 }
                 _ => panic!("the accessor must answer a value without an activation"),
             }
@@ -724,7 +731,7 @@ mod tests {
             // `Integer`'s `+` is a kernel primitive method (`Kernel.ns`),
             // found as a `Resolved::Method` whose
             // `MixinMethod.fast_path` names the mirror row.
-            match mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+")) {
+            match mutator.resolve_public(Value::small_integer(3), Symbol::intern("+")) {
                 Resolved::Method {
                     method,
                     chain: Chain::Public,
@@ -766,7 +773,7 @@ mod tests {
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(&instance);
-            let Value::Object(class) = mutator.fetch(&class) else {
+            let Some(class) = mutator.fetch(&class).as_object() else {
                 panic!("load_module answers a class object");
             };
             for (name, expected_chain) in [("helper", Chain::Private), ("other", Chain::Protected)]
@@ -803,14 +810,14 @@ mod tests {
     fn acting_on_a_primitive_answers_its_value() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let resolved = mutator.resolve_public(Value::SmallInteger(3), Symbol::intern("+"));
+            let resolved = mutator.resolve_public(Value::small_integer(3), Symbol::intern("+"));
             match mutator.act(
                 resolved,
-                Value::SmallInteger(3),
+                Value::small_integer(3),
                 Symbol::intern("+"),
-                &[Value::SmallInteger(4)],
+                &[Value::small_integer(4)],
             ) {
-                Ok(Step::Value(Value::SmallInteger(7))) => {}
+                Ok(Step::Value(answer)) if answer.as_small_integer() == Some(7) => {}
                 _ => panic!("3 + 4 is 7"),
             }
         });

@@ -13,9 +13,7 @@ pub(crate) fn execute<'gc>(
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let Value::Object(closure) = receiver else {
-        return None;
-    };
+    let closure = receiver.as_object()?;
     let parameters = mutator.heap().closure_parameter_count(closure)?;
     // A loop keeps its body and takes a non-block for a value of its own,
     // which a future is not: it stands for its value, which may well be a
@@ -23,9 +21,8 @@ pub(crate) fn execute<'gc>(
     // it before the loop keeps anything. Asked only of a body that is no
     // block, as `do:` asks it, so a block body pays nothing for it.
     if let BlockPrimitive::WhileTrue | BlockPrimitive::WhileFalse = primitive {
-        if let Some(Value::Object(body)) = arguments.first() {
-            if !mutator.heap().is_closure(*body)
-                && mutator.as_future(Value::Object(*body)).is_some()
+        if let Some(body) = arguments.first().and_then(|value| value.as_object()) {
+            if !mutator.heap().is_closure(body) && mutator.as_future(Value::object(body)).is_some()
             {
                 return None;
             }
@@ -37,7 +34,7 @@ pub(crate) fn execute<'gc>(
             arguments: StepArguments::Send,
             then: Continuation::Deliver,
         },
-        BlockPrimitive::ArgumentCount => Step::Value(Value::SmallInteger(parameters as i64)),
+        BlockPrimitive::ArgumentCount => Step::Value(Value::small_integer(parameters as i64)),
         BlockPrimitive::WhileTrue => condition_step(Box::new(WhileLoop {
             condition: closure,
             body: arguments[0],
@@ -74,10 +71,10 @@ pub(crate) fn after_condition<'gc>(
     state: Box<WhileLoop<'gc>>,
     value: Value<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    match value {
-        Value::Boolean(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
-        Value::Boolean(_) => Ok(Step::Value(Value::Nil)),
-        other => mutator.decide_send(other, Symbol::MUST_BE_BOOLEAN, &[]),
+    match value.as_boolean() {
+        Some(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
+        Some(_) => Ok(Step::Value(Value::nil())),
+        None => mutator.decide_send(value, Symbol::MUST_BE_BOOLEAN, &[]),
     }
 }
 
@@ -89,7 +86,7 @@ pub(crate) fn after_body<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
 /// The body, activated -- or, when it is not a block, taken as its own value,
 /// so the condition runs again straight away.
 fn body_step<'gc>(mutator: &Mutator<'gc>, state: Box<WhileLoop<'gc>>) -> Step<'gc> {
-    if let Value::Object(body) = state.body {
+    if let Some(body) = state.body.as_object() {
         if mutator.heap().is_closure(body) {
             return Step::Block {
                 closure: body,

@@ -162,7 +162,7 @@ pub fn package<'gc>(
     write_image(
         mutator,
         modules,
-        &Value::Nil,
+        &Value::nil(),
         &[application],
         encode::FLAG_START,
     )
@@ -310,7 +310,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         let module_roots = module_classes
             .roots
             .iter()
-            .map(|root| mutator.stash(Value::Object(*root)))
+            .map(|root| mutator.stash(Value::object(*root)))
             .collect();
         let module_levels = module_classes
             .levels
@@ -318,7 +318,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             .map(|levels| {
                 levels
                     .iter()
-                    .map(|level| mutator.stash(Value::Object(*level)))
+                    .map(|level| mutator.stash(Value::object(*level)))
                     .collect()
             })
             .collect();
@@ -361,8 +361,8 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         paths: _,
     } = described;
     let roots = interpreter.enter(|mutator| -> Result<Vec<Root>, String> {
-        let class_of = |root: &Root| match mutator.fetch(root) {
-            Value::Object(class) => class,
+        let class_of = |root: &Root| match mutator.fetch(root).as_object() {
+            Some(class) => class,
             _ => unreachable!("internal: a module class is a class object"),
         };
         let module_classes = ModuleClasses {
@@ -468,10 +468,8 @@ fn resolve_platform_paths(
             // class accessor of the shipped instance reached so far. Any
             // other public method -- `transcript newLine` -- would run
             // arbitrary shipped code while the image is still being read.
-            let is_step = interpreter.enter(|mutator| match mutator.fetch(&current) {
-                Value::Object(object) => {
-                    platform_paths::is_path_step(&mutator.heap, object, *member)
-                }
+            let is_step = interpreter.enter(|mutator| match mutator.fetch(&current).as_object() {
+                Some(object) => platform_paths::is_path_step(&mutator.heap, object, *member),
                 _ => false,
             });
             if !is_step {
@@ -499,8 +497,8 @@ fn resolve_platform_paths(
                 }
             };
         }
-        let shipped = interpreter.enter(|mutator| match mutator.fetch(&current) {
-            Value::Object(object) => platform_paths::is_shipped_object(&mutator.heap, object),
+        let shipped = interpreter.enter(|mutator| match mutator.fetch(&current).as_object() {
+            Some(object) => platform_paths::is_shipped_object(&mutator.heap, object),
             _ => false,
         });
         if !shipped {

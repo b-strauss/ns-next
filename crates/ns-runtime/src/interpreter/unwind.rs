@@ -179,15 +179,16 @@ fn block_to_run<'gc>(
             } => (block_register, complete_register),
             UnwindMarker::Handler { .. } => return None,
         };
-    if !matches!(
-        mutator.heap.activation_local(activation, complete_register),
-        Value::Nil
-    ) {
+    if !mutator
+        .heap
+        .activation_local(activation, complete_register)
+        .is_nil()
+    {
         return None;
     }
     mutator
         .heap
-        .activation_set_local(activation, complete_register, Value::Boolean(true));
+        .activation_set_local(activation, complete_register, Value::boolean(true));
     Some(mutator.heap.activation_local(activation, block_register))
 }
 
@@ -249,7 +250,7 @@ fn exit_signal(pending: PendingUnwind<'_>) -> Signal<'_> {
 pub(crate) fn dead_activation_error<'gc>(selector: Symbol) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
-        receiver: Value::Nil,
+        receiver: Value::nil(),
         message: "cannotReturn: the activation has already returned".to_string(),
     }
 }
@@ -326,18 +327,18 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         error: NewspeakError<'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let text = Value::Object(self.new_string(error.message));
+        let text = Value::object(self.new_string(error.message));
         let selector = self.new_symbol(error.selector);
         let receiver = error.receiver;
         let exception = self.new_kernel_instance(BuiltinClass::Error, |name| match name {
             "messageText" => text,
             "originSelector" => selector,
             "originReceiver" => receiver,
-            "reachedDefault" | "searching" => Value::Boolean(false),
-            "signalActivation" | "handlerActivation" => Value::Nil,
+            "reachedDefault" | "searching" => Value::boolean(false),
+            "signalActivation" | "handlerActivation" => Value::nil(),
             other => panic!("internal: Kernel.ns's Error has a slot {other} the VM does not fill"),
         });
-        self.decide_send(Value::Object(exception), Symbol::SIGNAL, &[])
+        self.decide_send(Value::object(exception), Symbol::SIGNAL, &[])
     }
 
     /// What the run ends with when a push overruns the depth limit's
@@ -418,14 +419,10 @@ impl<'gc> Mutator<'gc> {
         &self,
         activation: ActivationReference,
     ) -> Option<NewspeakError<'gc>> {
-        let Value::Object(message) = self.heap.activation_local(activation, 0) else {
-            return None;
-        };
-        let Value::Object(selector) =
-            self.kernel_slot(message, BuiltinClass::Message, "selector")?
-        else {
-            return None;
-        };
+        let message = self.heap.activation_local(activation, 0).as_object()?;
+        let selector = self
+            .kernel_slot(message, BuiltinClass::Message, "selector")?
+            .as_object()?;
         let selector = self.heap.symbol_value(selector)?;
         Some(NewspeakError {
             selector,
@@ -439,12 +436,12 @@ impl<'gc> Mutator<'gc> {
     /// invoked one yet, or has found none and is running the default action.
     /// Read off the slots `Kernel.ns`'s `Exception` declares for it.
     fn is_finding_its_handler(&self, exception: Value<'gc>) -> bool {
-        let Value::Object(object) = exception else {
+        let Some(object) = exception.as_object() else {
             return false;
         };
         let slot = |name: &str| self.kernel_slot(object, BuiltinClass::Exception, name);
-        matches!(slot("searching"), Some(Value::Boolean(true)))
-            || matches!(slot("reachedDefault"), Some(Value::Boolean(true)))
+        slot("searching").and_then(|value| value.as_boolean()) == Some(true)
+            || slot("reachedDefault").and_then(|value| value.as_boolean()) == Some(true)
     }
 
     /// Pushes what runs `block` -- an `ensure:` or `ifCurtailed:` argument
@@ -468,7 +465,7 @@ impl<'gc> Mutator<'gc> {
         block: Value<'gc>,
         then: Box<PendingUnwind<'gc>>,
     ) -> Result<ActivationReference, Signal<'gc>> {
-        if let Value::Object(closure) = block {
+        if let Some(closure) = block.as_object() {
             if self.heap.closure_activation(closure).is_some() {
                 return self.push_step(
                     Step::Block {
@@ -547,7 +544,7 @@ mod tests {
     /// superclass clause's, which needs no method to build.
     fn header<'gc>(class: ClassReference<'gc>) -> ActivationHeader<'gc> {
         ActivationHeader {
-            receiver: Value::Nil,
+            receiver: Value::nil(),
             current_class: Some(class),
             kind: FrameKind::SuperclassClause(class),
             feedback_base: FeedbackBase::NOT_ASSIGNED,
@@ -581,7 +578,7 @@ mod tests {
                 mutator,
                 PendingUnwind {
                     target: Some(frame),
-                    action: UnwindAction::Return(Value::SmallInteger(1)),
+                    action: UnwindAction::Return(Value::small_integer(1)),
                 },
                 floor,
             );
@@ -608,7 +605,7 @@ mod tests {
                 mutator,
                 PendingUnwind {
                     target: Some(frame),
-                    action: UnwindAction::Return(Value::SmallInteger(1)),
+                    action: UnwindAction::Return(Value::small_integer(1)),
                 },
                 floor,
             );
@@ -656,7 +653,7 @@ mod tests {
                     target: None,
                     action: UnwindAction::Terminate(NewspeakError {
                         selector: crate::Symbol::intern("signal"),
-                        receiver: Value::Nil,
+                        receiver: Value::nil(),
                         message: "boom".to_string(),
                     }),
                 },
@@ -683,7 +680,7 @@ mod tests {
             let signalling = |class| ActivationHeader {
                 then: Continuation::VmErrorSignalled(Box::new(NewspeakError {
                     selector: crate::Symbol::SIGNAL,
-                    receiver: Value::Nil,
+                    receiver: Value::nil(),
                     message: "boom".to_string(),
                 })),
                 ..header(class)

@@ -80,10 +80,10 @@ pub(crate) fn main_arguments(
     let arguments = interpreter.enter(|mutator| {
         let strings = program_arguments
             .iter()
-            .map(|argument| ns_runtime::Value::Object(mutator.new_string(argument.clone())))
+            .map(|argument| ns_runtime::Value::object(mutator.new_string(argument.clone())))
             .collect();
         let array = mutator.new_array(strings);
-        mutator.stash(ns_runtime::Value::Object(array))
+        mutator.stash(ns_runtime::Value::object(array))
     });
     vec![platform, arguments]
 }
@@ -105,8 +105,8 @@ pub(crate) fn class_reference<'gc>(
     mutator: &ns_runtime::Mutator<'gc>,
     class: &ns_runtime::Root,
 ) -> ns_runtime::ClassReference<'gc> {
-    match mutator.fetch(class) {
-        ns_runtime::Value::Object(class) => class,
-        _ => unreachable!("internal: a module's root class is a class object"),
+    match mutator.fetch(class).as_object() {
+        Some(class) => class,
+        None => unreachable!("internal: a module's root class is a class object"),
     }
 }

@@ -93,8 +93,8 @@ pub(crate) fn load_vector<'gc>(
     index: u16,
 ) -> EvaluationResult<'gc> {
     let value = heap.activation_local(activation, vector);
-    match value {
-        Value::Object(object) => match heap.array_at(object, index as usize) {
+    match value.as_object() {
+        Some(object) => match heap.array_at(object, index as usize) {
             Some(element) => Ok(element),
             None => Err(vector_error(value)),
         },
@@ -112,8 +112,8 @@ pub(crate) fn store_vector<'gc>(
     source: u16,
 ) -> Result<(), Signal<'gc>> {
     let value = heap.activation_local(activation, vector);
-    let written = match value {
-        Value::Object(object) => {
+    let written = match value.as_object() {
+        Some(object) => {
             let source_value = heap.activation_local(activation, source);
             heap.array_set(object, index as usize, source_value)
         }
@@ -148,12 +148,10 @@ pub(crate) fn filled_own_slot<'gc>(
     activation: ActivationReference,
     own_index: u32,
 ) -> Option<Value<'gc>> {
-    let Value::Object(object) = heap.activation_receiver(activation) else {
-        return None;
-    };
+    let object = heap.activation_receiver(activation).as_object()?;
     let base = heap.activation_slot_base(activation);
     heap.instance_field(object, base + own_index as usize)
-        .filter(|value| !matches!(value, Value::Nil))
+        .filter(|value| !value.is_nil())
 }
 
 /// The value of the running activation's receiver's own slot `own_index`,
@@ -168,12 +166,12 @@ pub(crate) fn load_own_slot<'gc>(
     activation: ActivationReference,
     own_index: u32,
 ) -> Value<'gc> {
-    let Value::Object(object) = heap.activation_receiver(activation) else {
-        return Value::Nil;
+    let Some(object) = heap.activation_receiver(activation).as_object() else {
+        return Value::nil();
     };
     let base = heap.activation_slot_base(activation);
     heap.instance_field(object, base + own_index as usize)
-        .unwrap_or(Value::Nil)
+        .unwrap_or(Value::nil())
 }
 
 /// Writes `value` into instance field `index` on `instance`'s
@@ -187,7 +185,7 @@ pub(crate) fn store_instance_field<'gc>(
     index: usize,
     value: Value<'gc>,
 ) {
-    if let Value::Object(object) = instance {
-        heap.set_instance_field(*object, index, value);
+    if let Some(object) = instance.as_object() {
+        heap.set_instance_field(object, index, value);
     }
 }

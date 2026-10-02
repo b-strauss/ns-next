@@ -472,7 +472,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     .iter()
                     .map(|register| mutator.heap.register(register_base, *register))
                     .collect();
-                let value = Value::Object(mutator.new_closure(ClosureData {
+                let value = Value::object(mutator.new_closure(ClosureData {
                     code: block.clone(),
                     captured_frame,
                     copied: copied_values,
@@ -495,7 +495,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     .iter()
                     .map(|register| mutator.heap.register(register_base, *register))
                     .collect();
-                let value = Value::Object(mutator.new_array(values));
+                let value = Value::object(mutator.new_array(values));
                 mutator
                     .heap
                     .set_register(register_base, *destination, value);
@@ -503,7 +503,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 continue;
             }
             Instruction::MakeVector { destination, size } => {
-                let value = Value::Object(mutator.new_array(vec![Value::Nil; *size as usize]));
+                let value = Value::object(mutator.new_array(vec![Value::nil(); *size as usize]));
                 mutator
                     .heap
                     .set_register(register_base, *destination, value);
@@ -611,30 +611,26 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             }
             Instruction::Jump { target } => jump_to!(*target),
             Instruction::JumpIfNotBoolean { register, target } => {
-                if matches!(
-                    mutator.heap.register(register_base, *register),
-                    Value::Boolean(_)
-                ) {
+                if mutator
+                    .heap
+                    .register(register_base, *register)
+                    .as_boolean()
+                    .is_some()
+                {
                     program_counter += 1;
                     continue;
                 }
                 jump_to!(*target)
             }
             Instruction::BranchIfFalse { register, target } => {
-                if matches!(
-                    mutator.heap.register(register_base, *register),
-                    Value::Boolean(false)
-                ) {
+                if mutator.heap.register(register_base, *register).as_boolean() == Some(false) {
                     jump_to!(*target)
                 }
                 program_counter += 1;
                 continue;
             }
             Instruction::BranchIfTrue { register, target } => {
-                if matches!(
-                    mutator.heap.register(register_base, *register),
-                    Value::Boolean(true)
-                ) {
+                if mutator.heap.register(register_base, *register).as_boolean() == Some(true) {
                     jump_to!(*target)
                 }
                 program_counter += 1;
@@ -657,21 +653,22 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
             } => {
                 let left_value = mutator.heap.register(register_base, *left);
                 let right_value = mutator.heap.register(register_base, *right);
-                let (Value::SmallInteger(left_integer), Value::SmallInteger(right_integer)) =
-                    (left_value, right_value)
-                else {
+                let (Some(left_integer), Some(right_integer)) = (
+                    left_value.as_small_integer(),
+                    right_value.as_small_integer(),
+                ) else {
                     jump_to!(*target)
                 };
                 let result = match operation {
                     IntegerOperation::Add => left_integer
                         .checked_add(right_integer)
-                        .map(Value::SmallInteger),
+                        .map(Value::small_integer),
                     IntegerOperation::Subtract => left_integer
                         .checked_sub(right_integer)
-                        .map(Value::SmallInteger),
+                        .map(Value::small_integer),
                     IntegerOperation::Multiply => left_integer
                         .checked_mul(right_integer)
-                        .map(Value::SmallInteger),
+                        .map(Value::small_integer),
                     // `checked_floor_divide` answers `None` for a zero divisor
                     // as well as for `i64::MIN // -1`, so both take the
                     // fallback and the primitive decides what they answer. It
@@ -679,17 +676,17 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     // rule has one copy.
                     IntegerOperation::FloorDivide => {
                         crate::builtins::numbers::checked_floor_divide(left_integer, right_integer)
-                            .map(Value::SmallInteger)
+                            .map(Value::small_integer)
                     }
-                    IntegerOperation::Less => Some(Value::Boolean(left_integer < right_integer)),
-                    IntegerOperation::Greater => Some(Value::Boolean(left_integer > right_integer)),
+                    IntegerOperation::Less => Some(Value::boolean(left_integer < right_integer)),
+                    IntegerOperation::Greater => Some(Value::boolean(left_integer > right_integer)),
                     IntegerOperation::LessOrEqual => {
-                        Some(Value::Boolean(left_integer <= right_integer))
+                        Some(Value::boolean(left_integer <= right_integer))
                     }
                     IntegerOperation::GreaterOrEqual => {
-                        Some(Value::Boolean(left_integer >= right_integer))
+                        Some(Value::boolean(left_integer >= right_integer))
                     }
-                    IntegerOperation::Equal => Some(Value::Boolean(left_integer == right_integer)),
+                    IntegerOperation::Equal => Some(Value::boolean(left_integer == right_integer)),
                 };
                 match result {
                     Some(value) => {
@@ -1026,8 +1023,8 @@ fn make_future<'gc>(
     handoff: &mut Handoff,
 ) -> Transfer {
     let operand = read_local(&mutator.heap, activation, closure);
-    let closure = match operand {
-        Value::Object(object) if mutator.heap.is_closure(object) => object,
+    let closure = match operand.as_object() {
+        Some(object) if mutator.heap.is_closure(object) => object,
         _ => return unwind(mutator, not_a_closure(operand), floor, handoff),
     };
     let future = mutator.new_future(closure);
@@ -1035,7 +1032,7 @@ fn make_future<'gc>(
         &mut mutator.heap,
         activation,
         destination,
-        Value::Object(future),
+        Value::object(future),
     );
     Transfer::Next
 }
@@ -1185,11 +1182,11 @@ fn make_value<'gc>(
     literal: &Literal,
 ) -> EvaluationResult<'gc> {
     Ok(match literal {
-        Literal::Nil => Value::Nil,
-        Literal::Boolean(boolean) => Value::Boolean(*boolean),
-        Literal::SmallInteger(integer) => Value::SmallInteger(*integer),
-        Literal::Float(float) => Value::Float(*float),
-        Literal::String(string) => Value::Object(mutator.new_string(string.clone())),
+        Literal::Nil => Value::nil(),
+        Literal::Boolean(boolean) => Value::boolean(*boolean),
+        Literal::SmallInteger(integer) => Value::small_integer(*integer),
+        Literal::Float(float) => mutator.new_float(*float),
+        Literal::String(string) => Value::object(mutator.new_string(string.clone())),
         Literal::Symbol(symbol) => mutator.new_symbol(*symbol),
         Literal::LargeInteger(integer) => mutator.new_integer(integer.clone()),
         Literal::UnresolvedIdentifier(name) => {

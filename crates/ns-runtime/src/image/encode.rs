@@ -9,7 +9,7 @@ use crate::heap::Heap;
 use crate::interpreter::future;
 use crate::types::{
     BuiltinClass, ClassData, ClassReference, ClosureData, FrameKind, FrameReference, ObjectData,
-    ObjectReference, SourceOrigin, Value,
+    ObjectReference, SourceOrigin, Value, ValueKind,
 };
 use crate::{ArbitraryInteger, Mutator, Symbol};
 
@@ -140,23 +140,23 @@ pub fn encode_source_origin(writer: &mut Writer, origin: &SourceOrigin) {
     }
 }
 
-/// Encodes the four non-`Object` `Value` variants (tags 0-4); returns `false`
-/// for `Value::Object`, which `encode_value` (the object-graph encoder)
+/// Encodes the four kinds of `Value` that are no object (tags 0-4); returns
+/// `false` for an object, which `encode_value` (the object-graph encoder)
 /// handles.
 pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: &Value<'gc>) -> bool {
-    match value {
-        Value::Nil => writer.write_u8(VALUE_NIL),
-        Value::Boolean(false) => writer.write_u8(VALUE_FALSE),
-        Value::Boolean(true) => writer.write_u8(VALUE_TRUE),
-        Value::SmallInteger(integer) => {
+    match value.kind() {
+        ValueKind::Nil => writer.write_u8(VALUE_NIL),
+        ValueKind::Boolean(false) => writer.write_u8(VALUE_FALSE),
+        ValueKind::Boolean(true) => writer.write_u8(VALUE_TRUE),
+        ValueKind::SmallInteger(integer) => {
             writer.write_u8(VALUE_SMALL_INTEGER);
-            writer.write_i64(*integer);
+            writer.write_i64(integer);
         }
-        Value::Float(float) => {
+        ValueKind::SmallFloat(float) => {
             writer.write_u8(VALUE_FLOAT);
-            writer.write_f64(*float);
+            writer.write_f64(float);
         }
-        Value::Object(_) => return false,
+        ValueKind::Object(_) => return false,
     }
     true
 }
@@ -827,7 +827,7 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
 // ---------------------------------------------------------------------------
 
 fn is_same_object<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
-    matches!((first, second), (Value::Object(left), Value::Object(right)) if left.same(*right))
+    matches!((first.as_object(), second.as_object()), (Some(left), Some(right)) if left.same(right))
 }
 
 /// One entry of `GraphTable::build`'s explicit work stack: the traversal
@@ -1054,10 +1054,12 @@ impl<'gc> GraphTable<'gc> {
         // written as its value (`encode_value`), so its value is what the
         // graph holds.
         let value = &future::seen_through(heap, *value);
-        let Value::Object(object) = value else { return };
+        let Some(object) = value.as_object() else {
+            return;
+        };
         // A value, not a record: `encode_value` writes its digits wherever it
         // is referenced, so it takes no object id (§3.1.1).
-        if heap.is_large_integer(*object) {
+        if heap.is_large_integer(object) {
             return;
         }
         if is_same_object(value, platform) {
@@ -1065,36 +1067,36 @@ impl<'gc> GraphTable<'gc> {
         }
         // Named by its path, like the platform by its tag: the loading
         // platform answers it, so the image carries nothing of it.
-        if self.use_platform_path(heap, *object) {
+        if self.use_platform_path(heap, object) {
             return;
         }
-        if is_class_tag(heap, *object, modules, &self.platform_paths) {
+        if is_class_tag(heap, object, modules, &self.platform_paths) {
             if self.unnameable.is_none() {
-                self.unnameable = unnameable_class(heap, *object);
+                self.unnameable = unnameable_class(heap, object);
             }
             // The metaclass of a class a path names is written as a
             // reference through that path (`CLASS_METACLASS`).
-            if let Some(this_class) = heap.class_this_class(*object) {
+            if let Some(this_class) = heap.class_this_class(object) {
                 self.use_platform_path(heap, this_class);
             }
             return;
         }
-        if let Some(refusal) = shipped_without_path(heap, *object) {
+        if let Some(refusal) = shipped_without_path(heap, object) {
             if self.shipped_without_path.is_none() {
                 self.shipped_without_path = Some(refusal);
             }
             return;
         }
-        let key = heap.object_identity_key(*object);
+        let key = heap.object_identity_key(object);
         if self.object_ids.contains_key(&key) {
             return;
         }
         self.object_ids
             .insert(key, u32_field("object table id", self.objects.len()));
-        self.objects.push(*object);
+        self.objects.push(object);
         let before = stack.len();
         {
-            let record = heap.object_snapshot(*object);
+            let record = heap.object_snapshot(object);
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
@@ -1113,7 +1115,7 @@ impl<'gc> GraphTable<'gc> {
             );
             let future = heap.class_builtin(record.class) == Some(BuiltinClass::Future);
             if !activation && !future {
-                stack.push(Pending::Value(Value::Object(record.class)));
+                stack.push(Pending::Value(Value::object(record.class)));
             }
             match &record.data {
                 ObjectData::Instance(fields) | ObjectData::Array(fields) => {
@@ -1133,14 +1135,14 @@ impl<'gc> GraphTable<'gc> {
                     stack.extend(
                         data.this_class
                             .iter()
-                            .map(|class| Pending::Value(Value::Object(*class))),
+                            .map(|class| Pending::Value(Value::object(*class))),
                     );
                 }
                 // A class object's three references; its metaclass is its
                 // header, pushed above like every object's class.
                 ObjectData::Class(data) => {
                     stack.extend(
-                        class_references(data).map(|class| Pending::Value(Value::Object(class))),
+                        class_references(data).map(|class| Pending::Value(Value::object(class))),
                     );
                 }
                 ObjectData::Activation(frame) => stack.push(Pending::Frame(*frame)),
@@ -1182,13 +1184,13 @@ impl<'gc> GraphTable<'gc> {
                     .current_class
                     .iter()
                     .copied()
-                    .map(|class| Pending::Value(Value::Object(class))),
+                    .map(|class| Pending::Value(Value::object(class))),
             );
             match &snapshot.kind {
                 // The closure object a closure activation runs is a record
                 // of its own, so it needs an id like any other object.
                 FrameKind::Closure(closure) => {
-                    stack.push(Pending::Value(Value::Object(*closure)));
+                    stack.push(Pending::Value(Value::object(*closure)));
                 }
                 // The class-carrying kinds name a class the same way
                 // `current_class` does, so the class needs an id the same way.
@@ -1196,7 +1198,7 @@ impl<'gc> GraphTable<'gc> {
                 | FrameKind::SuperclassClause(class)
                 | FrameKind::SuperclassMessage(class)
                 | FrameKind::MixinApplicationMessage(class) => {
-                    stack.push(Pending::Value(Value::Object(*class)));
+                    stack.push(Pending::Value(Value::object(*class)));
                 }
                 FrameKind::Method(_) | FrameKind::TopLevel => {}
             }
@@ -1395,13 +1397,13 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
     if encode_scalar_value(writer, value) {
         return;
     }
-    let Value::Object(object) = value else {
+    let Some(object) = value.as_object() else {
         unreachable!("encode_scalar_value handles every non-Obj case")
     };
     // Written by value wherever it is referenced: two references to one
     // `LargeInteger` object load as two equal integers, which is all a value
     // without identity can promise.
-    if let Some(integer) = context.heap.large_integer(*object) {
+    if let Some(integer) = context.heap.large_integer(object) {
         writer.write_u8(VALUE_LARGE_INTEGER);
         write_large_integer(writer, &integer);
         return;
@@ -1410,18 +1412,18 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
         writer.write_u8(VALUE_PLATFORM);
         return;
     }
-    if let Some(index) = context.table.platform_path_index(context.heap, *object) {
+    if let Some(index) = context.table.platform_path_index(context.heap, object) {
         writer.write_u8(VALUE_PLATFORM_PATH);
         writer.write_u32(index);
         return;
     }
-    if context.heap.is_class(*object) {
+    if context.heap.is_class(object) {
         writer.write_u8(VALUE_CLASS_TAG);
-        encode_class_tag(writer, *object, context);
+        encode_class_tag(writer, object, context);
         return;
     }
     writer.write_u8(VALUE_OBJECT_ID);
-    writer.write_u32(context.table.object_id(context.heap, *object));
+    writer.write_u32(context.table.object_id(context.heap, object));
 }
 
 fn encode_values<'gc>(
@@ -1566,7 +1568,7 @@ fn encode_class_record<'gc>(
     match &data.enclosing {
         Some(enclosing) => {
             writer.write_boolean(true);
-            encode_value(writer, &Value::Object(*enclosing), context);
+            encode_value(writer, &Value::object(*enclosing), context);
         }
         None => writer.write_boolean(false),
     }
@@ -1749,8 +1751,8 @@ pub fn encode_graph_section<'gc>(
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
 ) -> Result<UsedPlatformPaths<'gc>, String> {
-    let paths = match platform {
-        Value::Object(platform) => platform_paths::discover(heap, *platform),
+    let paths = match platform.as_object() {
+        Some(platform) => platform_paths::discover(heap, platform),
         _ => PlatformPaths::empty(),
     };
     let table = GraphTable::build(heap, roots, platform, modules, paths);
@@ -1882,9 +1884,9 @@ pub fn encode_tag_named_hashes<'gc>(
             }
         }
     }
-    if let Value::Object(platform) = platform {
-        entered.insert(heap.object_identity_key(*platform));
-        let hash = heap.identity_hash(*platform);
+    if let Some(platform) = platform.as_object() {
+        entered.insert(heap.object_identity_key(platform));
+        let hash = heap.identity_hash(platform);
         if hash != 0 {
             entries.push((HASHED_PLATFORM, Vec::new(), hash));
         }

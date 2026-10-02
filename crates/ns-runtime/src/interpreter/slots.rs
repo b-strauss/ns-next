@@ -33,7 +33,7 @@ impl<'gc> Mutator<'gc> {
         field: usize,
         arguments: &[Value<'gc>],
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        if let Value::Object(object) = receiver {
+        if let Some(object) = receiver.as_object() {
             match kind {
                 AccessorKind::Getter => {
                     if let Some(value) = self.heap.instance_field(object, field) {

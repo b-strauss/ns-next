@@ -307,12 +307,12 @@ pub enum Instruction {
         target: u32,
     },
     /// Control-flow inlining's runtime guard: jumps if `register` does not hold
-    /// a `Value::Boolean` at all.
+    /// a boolean at all.
     JumpIfNotBoolean {
         register: u16,
         target: u32,
     },
-    /// Jumps if `register` is exactly `Value::Boolean(false)`; falls through
+    /// Jumps if `register` holds exactly `false`; falls through
     /// for anything else (a `JumpIfNotBoolean` on the same register always
     /// precedes it in inlined code).
     BranchIfFalse {
@@ -325,7 +325,7 @@ pub enum Instruction {
         target: u32,
     },
     /// An integer leaf's inlined fast path. Performs `operation` on `left` and
-    /// `right` into `destination` when both hold `Value::SmallInteger` and the
+    /// `right` into `destination` when both hold a `SmallInteger` and the
     /// result fits `i64`; otherwise jumps to `target`, where the ordinary
     /// send stands. That send's primitive promotes a result that does not fit
     /// to a `LargeInteger` and raises every error -- a non-integer operand, a

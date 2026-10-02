@@ -869,11 +869,13 @@ pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeE
 
 pub fn decode_scalar_value<'gc>(reader: &mut Reader) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
-        0 => Ok(Value::Nil),
-        1 => Ok(Value::Boolean(false)),
-        2 => Ok(Value::Boolean(true)),
-        3 => Ok(Value::SmallInteger(reader.read_i64()?)),
-        4 => Ok(Value::Float(reader.read_f64()?)),
+        0 => Ok(Value::nil()),
+        1 => Ok(Value::boolean(false)),
+        2 => Ok(Value::boolean(true)),
+        3 => Ok(Value::small_integer(reader.read_i64()?)),
+        // The immediate itself: this decoder holds no mutator to call
+        // `Mutator::new_float` with.
+        4 => Ok(Value::small_float(reader.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
 }
@@ -2340,8 +2342,8 @@ fn read_platform_path_class<'gc>(
     heap: &Heap<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
-    match read_platform_path(reader, platform_paths)? {
-        Value::Object(class) if heap.is_class(class) => Ok(class),
+    match read_platform_path(reader, platform_paths)?.as_object() {
+        Some(class) if heap.is_class(class) => Ok(class),
         _ => Err(DecodeError::PlatformPathNotAClass),
     }
 }
@@ -2390,13 +2392,13 @@ fn decode_value<'gc>(
     tables: &Tables<'_, 'gc>,
 ) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
-        VALUE_NIL => Ok(Value::Nil),
-        VALUE_FALSE => Ok(Value::Boolean(false)),
-        VALUE_TRUE => Ok(Value::Boolean(true)),
-        VALUE_SMALL_INTEGER => Ok(Value::SmallInteger(reader.read_i64()?)),
-        VALUE_FLOAT => Ok(Value::Float(reader.read_f64()?)),
-        VALUE_OBJECT_ID => Ok(Value::Object(decode_object_id(reader, tables)?)),
-        VALUE_CLASS_TAG => Ok(Value::Object(decode_class_tag(reader, context, tables)?)),
+        VALUE_NIL => Ok(Value::nil()),
+        VALUE_FALSE => Ok(Value::boolean(false)),
+        VALUE_TRUE => Ok(Value::boolean(true)),
+        VALUE_SMALL_INTEGER => Ok(Value::small_integer(reader.read_i64()?)),
+        VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
+        VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
+        VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),
         VALUE_PLATFORM => Ok(context.platform),
         VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
         // Allocating here is sound: the decoder never polls a safepoint, so
@@ -2600,7 +2602,7 @@ fn decode_frame<'gc>(
 /// `decode_graph_section`'s second pass before anything can observe it.
 fn placeholder_frame<'gc>() -> Frame<'gc> {
     Frame {
-        receiver: Value::Nil,
+        receiver: Value::nil(),
         arguments: Vec::new(),
         temporaries: Vec::new(),
         program_counter: 0,
@@ -2689,7 +2691,7 @@ pub fn build_root_class<'gc>(
     let applied: Vec<(usize, Value<'gc>)> = section
         .levels
         .iter()
-        .map(|&(index, kind)| (index as usize, Value::Object(mutator.builtin_class(kind))))
+        .map(|&(index, kind)| (index as usize, Value::object(mutator.builtin_class(kind))))
         .collect();
     // `decode_root_section` held every index to the root row's clauses, and a
     // builtin class is always a class object, so this cannot fail; the
@@ -3096,7 +3098,7 @@ fn metaclass_rows(mixins: &[Rc<crate::mixin::Mixin>]) -> HashSet<usize> {
 /// knowable once every record has been read, so it is checked here rather
 /// than where each tag is decoded. These five positions are the complete
 /// set: a class tag appears nowhere else in the graph section, and a plain
-/// `Value::Object` pointing at a class object is legitimate (that is what a
+/// object value pointing at a class object is legitimate (that is what a
 /// cached nested class in a slot *is*).
 ///
 /// The extra rule for a class object's *own* `class` is the runtime's
@@ -3387,8 +3389,8 @@ pub fn decode_graph_section<'gc>(
     // never: `future_state` reads an unresolved future with anything else
     // there as malformed.
     for computation in &pending_futures {
-        match computation {
-            Value::Object(closure) if context.mutator.heap.is_closure(*closure) => {}
+        match computation.as_object() {
+            Some(closure) if context.mutator.heap.is_closure(closure) => {}
             _ => return Err(DecodeError::FutureRecord),
         }
     }
@@ -3437,14 +3439,17 @@ pub fn decode_tag_named_hashes<'gc>(
             HASHED_BUILTIN_CLASS => mutator.builtin_class(read_builtin_class(reader)?),
             HASHED_MODULE_CLASS => read_module_class(reader, modules)?,
             HASHED_MODULE_LEVEL => read_module_level(reader, modules)?,
-            HASHED_PLATFORM => match mutator.platform_value() {
-                Value::Object(platform) => platform,
+            HASHED_PLATFORM => match mutator.platform_value().as_object() {
+                Some(platform) => platform,
                 _ => unreachable!("the platform singleton is always an object"),
             },
             HASHED_PLATFORM_PATH => {
                 let index = reader.read_u32()?;
-                match platform_paths.get(index as usize) {
-                    Some(Value::Object(object)) => *object,
+                match platform_paths
+                    .get(index as usize)
+                    .and_then(|value| value.as_object())
+                {
+                    Some(object) => object,
                     _ => return Err(DecodeError::BadPlatformPath(index)),
                 }
             }
@@ -3525,8 +3530,8 @@ fn decode_class_record<'gc>(
     };
     let superclass = decode_optional_class(reader, context, tables)?;
     let enclosing = if reader.read_boolean()? {
-        match decode_value(reader, context, tables)? {
-            Value::Object(object) => Some(object),
+        match decode_value(reader, context, tables)?.as_object() {
+            Some(object) => Some(object),
             _ => return Err(DecodeError::EnclosingNotAnObject),
         }
     } else {

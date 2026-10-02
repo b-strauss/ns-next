@@ -13,7 +13,7 @@ pub(crate) fn execute<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
-        ObjectPrimitive::Class => Some(Ok(Value::Object(mutator.class_of(&receiver)))),
+        ObjectPrimitive::Class => Some(Ok(Value::object(mutator.class_of(&receiver)))),
         // Identity, and `Object`'s default `=`: declined for a future it
         // would answer `false` to (`interpreter::future::declines_for_a_future`).
         ObjectPrimitive::Identical | ObjectPrimitive::Equal => {
@@ -24,33 +24,35 @@ pub(crate) fn execute<'gc>(
                 receiver,
                 arguments,
             )
-            .map(|answer| Ok(Value::Boolean(answer)))
+            .map(|answer| Ok(Value::boolean(answer)))
         }
-        ObjectPrimitive::Hash => Some(Ok(Value::SmallInteger(identity_hash_of(
+        ObjectPrimitive::Hash => Some(Ok(Value::small_integer(identity_hash_of(
             &mut mutator.heap,
             &receiver,
         ) as i64))),
-        ObjectPrimitive::PrintString => Some(Ok(Value::Object(
+        ObjectPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string("an Object".to_string()),
         ))),
     }
 }
 
 fn identical<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
-    match (first, second) {
-        (Value::Nil, Value::Nil) => true,
-        (Value::Boolean(left), Value::Boolean(right)) => left == right,
-        (Value::SmallInteger(left), Value::SmallInteger(right)) => left == right,
-        (Value::Float(left), Value::Float(right)) => left.to_bits() == right.to_bits(),
-        (Value::Object(left), Value::Object(right)) => left.same(*right),
+    match (first.kind(), second.kind()) {
+        (ValueKind::Nil, ValueKind::Nil) => true,
+        (ValueKind::Boolean(left), ValueKind::Boolean(right)) => left == right,
+        (ValueKind::SmallInteger(left), ValueKind::SmallInteger(right)) => left == right,
+        (ValueKind::SmallFloat(left), ValueKind::SmallFloat(right)) => {
+            left.to_bits() == right.to_bits()
+        }
+        (ValueKind::Object(left), ValueKind::Object(right)) => left.same(right),
         _ => false,
     }
 }
 
 fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: &Value<'gc>) -> u32 {
-    match value {
-        Value::Object(object) => heap.ensure_identity_hash(*object),
-        _ => 0, // primitives are values and get no distinct identity
-                // hash (revisit if a fixture needs one)
+    match value.as_object() {
+        Some(object) => heap.ensure_identity_hash(object),
+        None => 0, // primitives are values and get no distinct identity
+                   // hash (revisit if a fixture needs one)
     }
 }

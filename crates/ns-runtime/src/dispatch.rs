@@ -91,21 +91,21 @@ pub fn kth_enclosing_object<'gc>(
         return *self_value;
     }
     let Some(mut level) = defining_class.copied() else {
-        return Value::Nil;
+        return Value::nil();
     };
     let mut remaining = depth;
     loop {
         let Some(enclosing) = heap.class_enclosing(level) else {
-            return Value::Nil;
+            return Value::nil();
         };
         remaining -= 1;
         if remaining == 0 {
-            return Value::Object(enclosing);
+            return Value::object(enclosing);
         }
         // One step out along the declaration chain -- the class object of
         // the level that lexically declares `level`.
         let Some(next) = heap.class_declaring(level) else {
-            return Value::Nil;
+            return Value::nil();
         };
         level = next;
     }

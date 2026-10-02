@@ -18,9 +18,7 @@ pub(crate) fn execute<'gc>(
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    let Value::Object(object) = receiver else {
-        return None;
-    };
+    let object = receiver.as_object()?;
     if !mutator.heap().is_class(object) {
         return None;
     }
@@ -37,30 +35,28 @@ pub(crate) fn execute<'gc>(
                 .mixin
                 .name
                 .to_string();
-            Some(Ok(Value::Object(mutator.new_string(name))))
+            Some(Ok(Value::object(mutator.new_string(name))))
         }
         BehaviorPrimitive::ThisClass => mutator
             .heap()
             .class_this_class(object)
-            .map(|this_class| Ok(Value::Object(this_class))),
+            .map(|this_class| Ok(Value::object(this_class))),
         BehaviorPrimitive::SharesApplication => {
-            let Some(Value::Object(other)) = arguments.first() else {
-                return None;
-            };
-            if !mutator.heap().is_class(*other) {
+            let other = arguments.first().and_then(|value| value.as_object())?;
+            if !mutator.heap().is_class(other) {
                 return None;
             }
             let own = mutator.heap().class_application(object)?;
-            let others = mutator.heap().class_application(*other)?;
-            Some(Ok(Value::Boolean(Rc::ptr_eq(&own, &others))))
+            let others = mutator.heap().class_application(other)?;
+            Some(Ok(Value::boolean(Rc::ptr_eq(&own, &others))))
         }
         BehaviorPrimitive::Enclosing => Some(Ok(mutator
             .heap()
             .class_enclosing(object)
-            .map_or(Value::Nil, Value::Object))),
+            .map_or(Value::nil(), Value::object))),
         BehaviorPrimitive::Superclass => Some(Ok(mutator
             .heap()
             .class_superclass(object)
-            .map_or(Value::Nil, Value::Object))),
+            .map_or(Value::nil(), Value::object))),
     }
 }

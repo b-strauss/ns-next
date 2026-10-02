@@ -93,28 +93,24 @@ pub(crate) fn execute<'gc>(
                 receiver,
                 arguments,
             )
-            .map(|answer| Ok(Value::Boolean(answer)))
+            .map(|answer| Ok(Value::boolean(answer)))
         }
         ValuePrimitive::Hash => {
-            derived_hash(mutator, receiver).map(|hash| Ok(Value::SmallInteger(hash)))
+            derived_hash(mutator, receiver).map(|hash| Ok(Value::small_integer(hash)))
         }
         ValuePrimitive::SlotCount => {
             let count = with_declared_slots(mutator, receiver, <[usize]>::len)?;
-            Some(Ok(Value::SmallInteger(count as i64)))
+            Some(Ok(Value::small_integer(count as i64)))
         }
         ValuePrimitive::SlotAt => {
-            let Value::Object(object) = receiver else {
-                return None;
-            };
+            let object = receiver.as_object()?;
             // Resolved to a field index inside the borrow, never by
             // copying the list out: the declared slots and the fields
             // differ as soon as a level declares a nested class, and the
             // leaf must answer the same slot the walks compare.
             let (count, field) = with_declared_slots(mutator, receiver, |declared| {
-                let field = match arguments.first() {
-                    Some(Value::SmallInteger(index)) if *index >= 1 => {
-                        declared.get((*index as usize) - 1).copied()
-                    }
+                let field = match arguments.first().and_then(|value| value.as_small_integer()) {
+                    Some(index) if index >= 1 => declared.get((index as usize) - 1).copied(),
                     _ => None,
                 };
                 (declared.len(), field)
@@ -125,28 +121,30 @@ pub(crate) fn execute<'gc>(
                 // Newspeak error in the words `Array>>at:` already uses --
                 // never a decline, which would answer the `ifFail:` block
                 // and hide it.
-                return Some(Err(match arguments.first() {
-                    Some(Value::SmallInteger(index)) => NewspeakError {
-                        selector,
-                        receiver,
-                        message: format!(
-                            "index {index} out of range: valid indices are 1..{count} (size {count})"
-                        ),
+                return Some(Err(
+                    match arguments.first().and_then(|value| value.as_small_integer()) {
+                        Some(index) => NewspeakError {
+                            selector,
+                            receiver,
+                            message: format!(
+                                "index {index} out of range: valid indices are 1..{count} (size {count})"
+                            ),
+                        },
+                        None => NewspeakError {
+                            selector,
+                            receiver,
+                            message: format!(
+                                "{selector} requires an Integer index, got {}",
+                                mutator.heap.describe_argument(arguments.first())
+                            ),
+                        },
                     },
-                    other => NewspeakError {
-                        selector,
-                        receiver,
-                        message: format!(
-                            "{selector} requires an Integer index, got {}",
-                            mutator.heap.describe_argument(other)
-                        ),
-                    },
-                }));
+                ));
             };
             Some(Ok(mutator
                 .heap
                 .instance_field(object, field)
-                .unwrap_or(Value::Nil)))
+                .unwrap_or(Value::nil())))
         }
     }
 }
@@ -174,9 +172,7 @@ fn with_declared_slots<'gc, T>(
     receiver: Value<'gc>,
     read: impl FnOnce(&[usize]) -> T,
 ) -> Option<T> {
-    let Value::Object(object) = receiver else {
-        return None;
-    };
+    let object = receiver.as_object()?;
     if mutator.heap().is_class(object) {
         return None;
     }
@@ -255,14 +251,14 @@ fn state_is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -
 /// is also what the two leaves answer from, so a walk and the Newspeak
 /// fallback see the same state.
 fn slots_of<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'gc>) -> Vec<Value<'gc>> {
-    with_declared_slots(mutator, Value::Object(object), |declared| {
+    with_declared_slots(mutator, Value::object(object), |declared| {
         declared
             .iter()
             .map(|index| {
                 mutator
                     .heap()
                     .instance_field(object, *index)
-                    .unwrap_or(Value::Nil)
+                    .unwrap_or(Value::nil())
             })
             .collect()
     })
@@ -279,14 +275,18 @@ fn compare_node<'gc>(
     first: Value<'gc>,
     second: Value<'gc>,
 ) -> Option<Pair<'gc>> {
-    match (first, second) {
-        (Value::Nil, Value::Nil) => Some(Pair::Decided(true)),
-        (Value::Boolean(left), Value::Boolean(right)) => Some(Pair::Decided(left == right)),
-        (Value::SmallInteger(left), _) => {
+    match (first.kind(), second.kind()) {
+        (ValueKind::Nil, ValueKind::Nil) => Some(Pair::Decided(true)),
+        (ValueKind::Boolean(left), ValueKind::Boolean(right)) => Some(Pair::Decided(left == right)),
+        (ValueKind::SmallInteger(left), _) => {
             Some(Pair::Decided(numbers::integer_equals(left, Some(&second))))
         }
-        (Value::Float(left), _) => Some(Pair::Decided(numbers::float_equals(left, Some(&second)))),
-        (Value::Object(left), Value::Object(right)) => {
+        (ValueKind::SmallFloat(left), _) => Some(Pair::Decided(numbers::float_equals(
+            mutator.heap(),
+            left,
+            Some(&second),
+        ))),
+        (ValueKind::Object(left), ValueKind::Object(right)) => {
             if mutator.heap().is_class(left) && mutator.heap().is_class(right) {
                 return Some(Pair::Classes(left, right));
             }
@@ -323,19 +323,19 @@ fn compare_node<'gc>(
 
 /// One node of the hash walk: `None` declines the whole hash.
 fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>> {
-    match value {
-        Value::Nil => Some(Node::Leaf(NIL_HASH)),
+    match value.kind() {
+        ValueKind::Nil => Some(Node::Leaf(NIL_HASH)),
         // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
         // boolean itself does.
-        Value::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
+        ValueKind::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
         // Not `Integer>>hash`, which answers the integer itself and so can
         // be negative or as large as an `i64`: a slot's hash has to stay
         // below 2^32 for the sum below to stay inside one. Nothing requires
         // the two to agree -- an `Integer` declares its own `hash` and never
         // reaches this leaf as a receiver.
-        Value::SmallInteger(integer) => Some(Node::Leaf(crate::hash::content_hash(integer))),
-        Value::Float(float) => Some(Node::Leaf(numbers::float_hash(float))),
-        Value::Object(object) => {
+        ValueKind::SmallInteger(integer) => Some(Node::Leaf(crate::hash::content_hash(integer))),
+        ValueKind::SmallFloat(float) => Some(Node::Leaf(numbers::float_hash(float))),
+        ValueKind::Object(object) => {
             // A value class object hashes as its name: two equal ones share
             // an application, hence a mixin, hence a name, so this is a
             // valid hash, and unlike one that folded in the enclosing
@@ -383,7 +383,7 @@ fn derived_equality<'gc>(
     // building the walk wherever the walk's first step would decide. Only
     // for class objects -- an instance is never equal to itself on identity
     // alone, since a value holding a NaN is unequal to itself.
-    if let (Value::Object(first), Value::Object(second)) = (left, right) {
+    if let (Some(first), Some(second)) = (left.as_object(), right.as_object()) {
         if mutator.heap().is_class(first) && mutator.heap().is_class(second) {
             if first.same(second) {
                 return Some(true);
@@ -420,7 +420,7 @@ fn derived_equality<'gc>(
                 return None;
             }
             charged += 1;
-            Some((Value::Object(first_class), Value::Object(second_class)))
+            Some((Value::object(first_class), Value::object(second_class)))
         };
         match compare_node(mutator, first, second)? {
             Pair::Decided(true) => {}
@@ -530,14 +530,15 @@ fn class_state_pairs<'gc>(
         (heap.class_this_class(first), heap.class_this_class(second))
     {
         return Some(vec![(
-            Value::Object(first_class),
-            Value::Object(second_class),
+            Value::object(first_class),
+            Value::object(second_class),
         )]);
     }
     if !classes_can_be_equal(mutator, first, second) {
         return None;
     }
-    let as_value = |object: Option<ObjectReference<'gc>>| object.map_or(Value::Nil, Value::Object);
+    let as_value =
+        |object: Option<ObjectReference<'gc>>| object.map_or(Value::nil(), Value::object);
     Some(vec![
         (
             as_value(heap.class_enclosing(first)),
@@ -590,7 +591,7 @@ fn derived_hash<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<i64> {
 mod tests {
     use indoc::indoc;
 
-    use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value};
+    use crate::{HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
     fn expect_ok(result: HostResult, what: &str) -> Root {
         match result {
@@ -621,16 +622,19 @@ mod tests {
         });
         let mut sent = vec![subject.clone()];
         sent.extend(arguments.iter().cloned());
-        sent.push(interpreter.stash(Value::SmallInteger(DECLINED)));
+        sent.push(interpreter.stash(Value::small_integer(DECLINED)));
         interpreter.send(&mirror, Symbol::intern(selector), &sent)
     }
 
     /// The integer a leaf answered, or `DECLINED`.
     fn answered_integer(interpreter: &mut Interpreter, result: HostResult, what: &str) -> i64 {
         let root = expect_ok(result, what);
-        interpreter.enter(|mutator| match mutator.fetch(&root) {
-            Value::SmallInteger(integer) => integer,
-            other => panic!("{what} answered {}", mutator.heap().describe(&other)),
+        interpreter.enter(|mutator| {
+            let answer = mutator.fetch(&root);
+            match answer.as_small_integer() {
+                Some(integer) => integer,
+                None => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+            }
         })
     }
 
@@ -641,26 +645,35 @@ mod tests {
         what: &str,
     ) -> Option<bool> {
         let root = expect_ok(result, what);
-        interpreter.enter(|mutator| match mutator.fetch(&root) {
-            Value::Boolean(flag) => Some(flag),
-            Value::SmallInteger(DECLINED) => None,
-            other => panic!("{what} answered {}", mutator.heap().describe(&other)),
+        interpreter.enter(|mutator| {
+            let answer = mutator.fetch(&root);
+            match answer.kind() {
+                ValueKind::Boolean(flag) => Some(flag),
+                ValueKind::SmallInteger(DECLINED) => None,
+                _ => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+            }
         })
     }
 
     /// The boolean an ordinary Newspeak send answered.
     fn answered_flag(interpreter: &mut Interpreter, root: &Root, what: &str) -> bool {
-        interpreter.enter(|mutator| match mutator.fetch(root) {
-            Value::Boolean(flag) => flag,
-            other => panic!("{what} answered {}", mutator.heap().describe(&other)),
+        interpreter.enter(|mutator| {
+            let answer = mutator.fetch(root);
+            match answer.as_boolean() {
+                Some(flag) => flag,
+                None => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+            }
         })
     }
 
     /// The integer an ordinary Newspeak send answered.
     fn answered_number(interpreter: &mut Interpreter, root: &Root, what: &str) -> i64 {
-        interpreter.enter(|mutator| match mutator.fetch(root) {
-            Value::SmallInteger(integer) => integer,
-            other => panic!("{what} answered {}", mutator.heap().describe(&other)),
+        interpreter.enter(|mutator| {
+            let answer = mutator.fetch(root);
+            match answer.as_small_integer() {
+                Some(integer) => integer,
+                None => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+            }
         })
     }
 
@@ -840,14 +853,14 @@ mod tests {
     fn a_string(interpreter: &mut Interpreter, text: &str) -> Root {
         interpreter.enter(|mutator| {
             let string = mutator.new_string(text.to_string());
-            mutator.stash(Value::Object(string))
+            mutator.stash(Value::object(string))
         })
     }
 
     fn an_array(interpreter: &mut Interpreter) -> Root {
         interpreter.enter(|mutator| {
-            let array = mutator.new_array(vec![Value::SmallInteger(1)]);
-            mutator.stash(Value::Object(array))
+            let array = mutator.new_array(vec![Value::small_integer(1)]);
+            mutator.stash(Value::object(array))
         })
     }
 
@@ -884,8 +897,11 @@ mod tests {
     #[test]
     fn an_integer_and_a_float_of_one_magnitude_are_not_one_value() {
         let (mut interpreter, _fixture) = a_fixture();
-        let float = interpreter.stash(Value::Float(1.0));
-        let integer = interpreter.stash(Value::SmallInteger(1));
+        let float = interpreter.enter(|mutator| {
+            let float = mutator.new_float(1.0);
+            mutator.stash(float)
+        });
+        let integer = interpreter.stash(Value::small_integer(1));
         let compared = leaf(&mut interpreter, "value:sameAs:ifFail:", &float, &[integer]);
         assert_eq!(
             answered_boolean(&mut interpreter, compared, "1.0 sameAs: 1"),
@@ -897,9 +913,9 @@ mod tests {
     fn two_instances_of_one_value_class_compare_by_their_slots() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
-        let three = interpreter.stash(Value::SmallInteger(3));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let three = interpreter.stash(Value::small_integer(3));
         let first = send(
             &mut interpreter,
             &fixture,
@@ -942,8 +958,8 @@ mod tests {
     fn an_instance_of_another_class_is_never_equal() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
         let pair = send(
             &mut interpreter,
             &fixture,
@@ -993,7 +1009,7 @@ mod tests {
     fn a_value_deeper_than_the_budget_declines_and_still_hashes() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let depth = interpreter.stash(Value::SmallInteger(super::NODE_BUDGET as i64 + 100));
+        let depth = interpreter.stash(Value::small_integer(super::NODE_BUDGET as i64 + 100));
         let first = send(
             &mut interpreter,
             &fixture,
@@ -1030,7 +1046,7 @@ mod tests {
     fn a_slot_holding_an_array_makes_the_leaf_decline() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let array = an_array(&mut interpreter);
         let other_array = an_array(&mut interpreter);
         let first = send(
@@ -1053,7 +1069,7 @@ mod tests {
     fn a_slot_whose_class_declares_its_own_equality_makes_the_leaf_decline() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let overriding = send(&mut interpreter, &fixture, "overriding", &[]);
         let other = send(&mut interpreter, &fixture, "overriding", &[]);
         let first = send(
@@ -1082,8 +1098,8 @@ mod tests {
             interpreter.enter(|mutator| mutator.value_equality_method.is_some()),
             "the bootstrap records Kernel.ns's Value>>="
         );
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
         let first = send(
             &mut interpreter,
             &fixture,
@@ -1113,9 +1129,9 @@ mod tests {
     #[test]
     fn two_points_below_the_real_value_class_are_one_value() {
         let (mut interpreter, fixture) = a_value_fixture();
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
-        let three = interpreter.stash(Value::SmallInteger(3));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let three = interpreter.stash(Value::small_integer(3));
         let first = send(
             &mut interpreter,
             &fixture,
@@ -1183,7 +1199,7 @@ mod tests {
     #[test]
     fn a_leaf_hashed_value_and_a_fallback_hashed_value_are_never_equal() {
         let (mut interpreter, fixture) = a_value_fixture();
-        let one = interpreter.stash(Value::SmallInteger(1));
+        let one = interpreter.stash(Value::small_integer(1));
         let decided = send(
             &mut interpreter,
             &fixture,
@@ -1245,7 +1261,7 @@ mod tests {
 
     /// `outer: x`'s nested `Inner`, one class object per `Outer`.
     fn an_inner_class(interpreter: &mut Interpreter, fixture: &Root, x_value: i64) -> Root {
-        let argument = interpreter.stash(Value::SmallInteger(x_value));
+        let argument = interpreter.stash(Value::small_integer(x_value));
         let outer = send(interpreter, fixture, "outer:", &[argument]);
         send(interpreter, &outer, "Inner", &[])
     }
@@ -1262,7 +1278,7 @@ mod tests {
             !interpreter.enter(|mutator| {
                 let first = mutator.fetch(&first);
                 let second = mutator.fetch(&second);
-                matches!((first, second), (Value::Object(left), Value::Object(right)) if left.same(right))
+                matches!((first.as_object(), second.as_object()), (Some(left), Some(right)) if left.same(right))
             }),
             "each Outer has a class object of its own"
         );
@@ -1507,7 +1523,7 @@ mod tests {
         let builtin = |interpreter: &mut Interpreter, kind: crate::BuiltinClass| {
             interpreter.enter(|mutator| {
                 let class = mutator.builtin_class(kind);
-                mutator.stash(Value::Object(class))
+                mutator.stash(Value::object(class))
             })
         };
         let string = builtin(&mut interpreter, crate::BuiltinClass::String);
@@ -1590,8 +1606,8 @@ mod tests {
     #[test]
     fn a_cycle_through_a_nested_class_terminates() {
         let (mut interpreter, fixture) = a_value_fixture();
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
         let first = send(
             &mut interpreter,
             &fixture,
@@ -1636,11 +1652,11 @@ mod tests {
     fn the_equality_and_the_hash_decline_on_the_same_shapes() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
         let a_class = interpreter.enter(|mutator| {
             let class = mutator.builtin_class(crate::BuiltinClass::String);
-            mutator.stash(Value::Object(class))
+            mutator.stash(Value::object(class))
         });
         let subjects: Vec<(&str, Root)> = vec![
             (
@@ -1678,9 +1694,15 @@ mod tests {
             // `a_class_object_that_is_no_value_compares_by_identity` pins.
             ("a value class object", a_class),
             ("an Integer", one),
-            ("nil", interpreter.stash(Value::Nil)),
-            ("a Boolean", interpreter.stash(Value::Boolean(true))),
-            ("a Float", interpreter.stash(Value::Float(1.5))),
+            ("nil", interpreter.stash(Value::nil())),
+            ("a Boolean", interpreter.stash(Value::boolean(true))),
+            (
+                "a Float",
+                interpreter.enter(|mutator| {
+                    let float = mutator.new_float(1.5);
+                    mutator.stash(float)
+                }),
+            ),
         ];
         let mut declined = 0;
         let mut answered = 0;
@@ -1724,8 +1746,8 @@ mod tests {
     fn a_nested_classs_cache_slot_is_not_part_of_a_values_state() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
         // Three shapes: neither accessor run, one run, both run. The
         // one-sided case is the one a fix that merely ignored a *differing*
         // class object would still get wrong, since one side's slot is nil.
@@ -1788,7 +1810,7 @@ mod tests {
     #[test]
     fn a_lazy_slot_is_not_part_of_a_values_state() {
         let (mut interpreter, fixture) = a_value_fixture();
-        let three = interpreter.stash(Value::SmallInteger(3));
+        let three = interpreter.stash(Value::small_integer(3));
         let first = send(
             &mut interpreter,
             &fixture,
@@ -1841,9 +1863,9 @@ mod tests {
     fn a_hidden_slot_between_two_levels_does_not_shift_the_reflective_leaves() {
         let (mut interpreter, fixture) = a_fixture();
         record_marker_as_values_equality(&mut interpreter, &fixture);
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
-        let three = interpreter.stash(Value::SmallInteger(3));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
+        let three = interpreter.stash(Value::small_integer(3));
         let deeper = send(
             &mut interpreter,
             &fixture,
@@ -1858,7 +1880,7 @@ mod tests {
             "first, second and third -- not the inherited cache slot"
         );
         for (index, expected) in [(1, 1), (2, 2), (3, 3)] {
-            let position = interpreter.stash(Value::SmallInteger(index));
+            let position = interpreter.stash(Value::small_integer(index));
             let slot = leaf(
                 &mut interpreter,
                 "value:slotAt:ifFail:",
@@ -1876,13 +1898,13 @@ mod tests {
     #[test]
     fn the_reflective_leaves_read_the_slots_and_refuse_an_index_out_of_range() {
         let (mut interpreter, fixture) = a_fixture();
-        let one = interpreter.stash(Value::SmallInteger(1));
-        let two = interpreter.stash(Value::SmallInteger(2));
+        let one = interpreter.stash(Value::small_integer(1));
+        let two = interpreter.stash(Value::small_integer(2));
         let pair = send(&mut interpreter, &fixture, "pair:and:", &[one, two]);
         let count = leaf(&mut interpreter, "valueSlotCount:ifFail:", &pair, &[]);
         assert_eq!(answered_integer(&mut interpreter, count, "slotCount"), 2);
         for (index, expected) in [(1, 1), (2, 2)] {
-            let argument = interpreter.stash(Value::SmallInteger(index));
+            let argument = interpreter.stash(Value::small_integer(index));
             let slot = leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]);
             assert_eq!(
                 answered_integer(&mut interpreter, slot, "slotAt:"),
@@ -1890,7 +1912,7 @@ mod tests {
             );
         }
         for index in [0, 3] {
-            let argument = interpreter.stash(Value::SmallInteger(index));
+            let argument = interpreter.stash(Value::small_integer(index));
             match leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]) {
                 Err(HostSignal::Error(error)) => {
                     assert_eq!(error.selector, Symbol::intern("slotAt:"));

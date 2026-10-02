@@ -54,10 +54,10 @@ fn stream<'gc>(
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     match primitive {
         PlatformPrimitive::Show => {
-            let text = match arguments.first() {
-                Some(Value::Object(string)) => mutator.heap().str_value(*string),
-                _ => None,
-            };
+            let text = arguments
+                .first()
+                .and_then(|value| value.as_object())
+                .and_then(|string| mutator.heap().str_value(string));
             let Some(text) = text else {
                 return Err(NewspeakError {
                     selector,
@@ -81,7 +81,7 @@ fn stream<'gc>(
         // rather than wraps if it ever did.
         PlatformPrimitive::MonotonicNanoseconds => {
             let elapsed = CLOCK_ORIGIN.get_or_init(std::time::Instant::now).elapsed();
-            Ok(Value::SmallInteger(
+            Ok(Value::small_integer(
                 i64::try_from(elapsed.as_nanos()).unwrap_or(i64::MAX),
             ))
         }

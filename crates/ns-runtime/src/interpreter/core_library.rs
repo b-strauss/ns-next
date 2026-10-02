@@ -195,7 +195,7 @@ fn booted(result: HostResult, step: &str) -> Root {
 /// receiver. The one instance checked is the only one there is: no program
 /// reaches the root's class to make another.
 fn check_factory_holds_the_mirror<'gc>(mutator: &Mutator<'gc>, factory: Value<'gc>) {
-    let Value::Object(factory) = factory else {
+    let Some(factory) = factory.as_object() else {
         panic!("internal: PlatformFactory's instance is an object");
     };
     let heap = mutator.heap();
@@ -258,7 +258,10 @@ mod tests {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let name = mutator.new_symbol(Symbol::intern("CollectionsFactory"));
-            let Some(Ok(Value::Object(class))) = module_named(mutator, name) else {
+            let Some(Ok(answer)) = module_named(mutator, name) else {
+                panic!("moduleNamed: #CollectionsFactory answers no class");
+            };
+            let Some(class) = answer.as_object() else {
                 panic!("moduleNamed: #CollectionsFactory answers no class");
             };
             assert!(mutator.heap().is_class(class));
@@ -269,7 +272,7 @@ mod tests {
             );
             let unknown = mutator.new_symbol(Symbol::intern("NoSuchModule"));
             assert!(module_named(mutator, unknown).is_none());
-            let string = Value::Object(mutator.new_string("CollectionsFactory".to_string()));
+            let string = Value::object(mutator.new_string("CollectionsFactory".to_string()));
             assert!(module_named(mutator, string).is_none());
         });
     }

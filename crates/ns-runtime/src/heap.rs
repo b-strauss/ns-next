@@ -37,13 +37,13 @@ fn next_heap_id() -> u32 {
 
 /// Where `immediate_dispatch_ids` keeps an immediate's id.
 fn immediate_index(value: &Value<'_>) -> usize {
-    match value {
-        Value::Nil => 0,
-        Value::Boolean(false) => 1,
-        Value::Boolean(true) => 2,
-        Value::SmallInteger(_) => 3,
-        Value::Float(_) => 4,
-        Value::Object(_) => unreachable!("an object carries its own class"),
+    match value.kind() {
+        ValueKind::Nil => 0,
+        ValueKind::Boolean(false) => 1,
+        ValueKind::Boolean(true) => 2,
+        ValueKind::SmallInteger(_) => 3,
+        ValueKind::SmallFloat(_) => 4,
+        ValueKind::Object(_) => unreachable!("an object carries its own class"),
     }
 }
 
@@ -1638,13 +1638,13 @@ impl<'gc> Heap<'gc> {
     /// reaches stderr, and that message needs to name what the value *is*
     /// -- "the String \"foo\"", not its Rust representation.
     pub fn describe(&self, value: &Value<'gc>) -> String {
-        match value {
-            Value::Nil => "nil".to_string(),
-            Value::Boolean(boolean) => boolean.to_string(),
-            Value::SmallInteger(integer) => integer.to_string(),
-            Value::Float(float) => float.to_string(),
-            Value::Object(object) => {
-                self.check_object_origin(*object);
+        match value.kind() {
+            ValueKind::Nil => "nil".to_string(),
+            ValueKind::Boolean(boolean) => boolean.to_string(),
+            ValueKind::SmallInteger(integer) => integer.to_string(),
+            ValueKind::SmallFloat(float) => float.to_string(),
+            ValueKind::Object(object) => {
+                self.check_object_origin(object);
                 match &self.objects[object.index as usize].data {
                     ObjectData::String(string) => format!("the String {string:?}"),
                     // Bare digits, as a `SmallInteger` describes: which of the
@@ -1655,7 +1655,7 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Closure(_) => "a Block".to_string(),
                     ObjectData::Activation(_) => "an Activation".to_string(),
                     ObjectData::Class(_) => {
-                        format!("the class {}", self.class_display_name(*object))
+                        format!("the class {}", self.class_display_name(object))
                     }
                     ObjectData::Instance(_) => {
                         let class = &self.objects[object.index as usize].class;
@@ -1693,7 +1693,7 @@ impl<'gc> Heap<'gc> {
     /// (`docs/design/memory.md`, "Where a collection can happen"), and only
     /// what the collector traces is rewritten.
     pub fn stash(&self, value: Value<'gc>) -> Root {
-        if let Value::Object(object) = value {
+        if let Some(object) = value.as_object() {
             self.check_object_origin(object);
         }
         let slot = std::rc::Rc::new(std::cell::Cell::new(at_rest(value)));
@@ -1709,7 +1709,7 @@ impl<'gc> Heap<'gc> {
     /// loop, which may move it; read the root again after one.
     pub fn fetch(&self, root: &Root) -> Value<'gc> {
         let value = branded(root.slot.get());
-        if let Value::Object(object) = value {
+        if let Some(object) = value.as_object() {
             self.check_object_origin(object);
         }
         value
@@ -1980,10 +1980,10 @@ impl<'gc> Heap<'gc> {
     /// outside this file knows where the id lives.
     #[inline(always)]
     pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
-        let Value::Object(object) = value else {
+        let Some(object) = value.as_object() else {
             return self.immediate_dispatch_ids[immediate_index(value)];
         };
-        self.check_object_origin(*object);
+        self.check_object_origin(object);
         let entry = &self.objects[object.index as usize];
         debug_assert_eq!(
             entry.dispatch_id,
@@ -2255,7 +2255,7 @@ impl<'gc> Heap<'gc> {
         );
         let stored_frame = &mut self.frames[frame.index as usize].frame;
         if stored_frame.temporaries.len() < needed {
-            stored_frame.temporaries.resize(needed, Value::Nil);
+            stored_frame.temporaries.resize(needed, Value::nil());
         }
     }
 
@@ -2401,7 +2401,7 @@ impl<'gc> Heap<'gc> {
             .expect("more than u32::MAX live activations in one heap");
         self.stack.values.extend_from_slice(arguments);
         let end = self.stack.values.len() + temporary_count;
-        self.stack.values.resize(end, Value::Nil);
+        self.stack.values.resize(end, Value::nil());
         self.stack.counted += usize::from(header.counted);
         #[cfg(debug_assertions)]
         let generation = {
@@ -2812,7 +2812,7 @@ impl<'gc> Heap<'gc> {
                         .temporaries
                         .get(register_index - stored_frame.arguments.len())
                         .copied()
-                        .unwrap_or(Value::Nil)
+                        .unwrap_or(Value::nil())
                 }
             }
         }
@@ -3117,15 +3117,19 @@ impl<'gc> Heap<'gc> {
             let ObjectData::Instance(fields) = &object.data else {
                 continue;
             };
-            if let (Some(Value::SmallInteger(state)), Some(value)) =
-                (fields.get(state_index), fields.get(computation_index))
-            {
+            if let (Some(state), Some(value)) = (
+                fields
+                    .get(state_index)
+                    .and_then(|state| state.as_small_integer()),
+                fields.get(computation_index),
+            ) {
                 // A "resolved" future whose value is a future is one crafted
                 // code corrupted (`FutureState::Malformed`): it is left in
                 // place, for a forcing to refuse.
-                let value_is_a_future = matches!(value, Value::Object(target)
-                    if self.class_of_object(*target).same(future_class));
-                if *state == resolved && !value_is_a_future {
+                let value_is_a_future = value
+                    .as_object()
+                    .is_some_and(|target| self.class_of_object(target).same(future_class));
+                if state == resolved && !value_is_a_future {
                     let index = u32::try_from(index)
                         .expect("internal: an arena index fits the handle's u32");
                     values.insert(index, *value);
@@ -3139,7 +3143,7 @@ impl<'gc> Heap<'gc> {
         let mut replaced = 0;
         let mut replace = |fields: &mut [Value<'gc>]| {
             for field in fields {
-                if let Value::Object(handle) = field {
+                if let Some(handle) = field.as_object() {
                     if let Some(value) = values.get(&handle.index) {
                         *field = *value;
                         replaced += 1;
@@ -3277,7 +3281,7 @@ mod tests {
     #[cfg(debug_assertions)]
     fn bare_frame<'gc>() -> Frame<'gc> {
         Frame {
-            receiver: Value::Nil,
+            receiver: Value::nil(),
             arguments: Vec::new(),
             temporaries: Vec::new(),
             program_counter: 0,
@@ -3457,7 +3461,7 @@ mod tests {
 
     fn top_level_frame<'gc>() -> Frame<'gc> {
         Frame {
-            receiver: Value::Nil,
+            receiver: Value::nil(),
             arguments: vec![],
             temporaries: vec![],
             program_counter: 0,
@@ -3481,8 +3485,8 @@ mod tests {
         temporary_count: usize,
     ) -> Frame<'gc> {
         Frame {
-            arguments: vec![Value::Nil; argument_count],
-            temporaries: vec![Value::Nil; temporary_count],
+            arguments: vec![Value::nil(); argument_count],
+            temporaries: vec![Value::nil(); temporary_count],
             program_counter,
             ..top_level_frame()
         }
@@ -3499,7 +3503,7 @@ mod tests {
         for _ in 0..1000 {
             heap.allocate_frame(top_level_frame());
         }
-        assert!(matches!(heap.frame_receiver(first), Value::Nil));
+        assert!(heap.frame_receiver(first).is_nil());
         assert_eq!(heap.frame_register_shape(first), (3, 2, 1));
     }
 
@@ -3574,7 +3578,7 @@ mod tests {
         let class = named_class(&mut heap, "Foo");
         let instance = heap.allocate_object(class, ObjectData::Instance(vec![]));
         assert_eq!(
-            heap.describe(&Value::Object(instance)),
+            heap.describe(&Value::object(instance)),
             "an instance of Foo"
         );
     }
@@ -3592,14 +3596,14 @@ mod tests {
             ObjectData::String(crate::CodePoints::from("not a class")),
         );
         let instance = heap.allocate_object(not_a_class, ObjectData::Instance(vec![]));
-        assert_eq!(heap.describe(&Value::Object(instance)), "an object");
+        assert_eq!(heap.describe(&Value::object(instance)), "an object");
     }
 
     /// The header every activation-stack test below pushes: nothing in it is
     /// read back except where a test sets it on purpose.
     fn header<'gc>() -> ActivationHeader<'gc> {
         ActivationHeader {
-            receiver: Value::Nil,
+            receiver: Value::nil(),
             current_class: None,
             kind: FrameKind::TopLevel,
             feedback_base: FeedbackBase::NOT_ASSIGNED,
@@ -3630,23 +3634,23 @@ mod tests {
         let mut heap = Heap::new();
         let activation = heap.push_activation(
             header(),
-            &[Value::SmallInteger(1), Value::SmallInteger(2)],
+            &[Value::small_integer(1), Value::small_integer(2)],
             2,
         );
-        assert!(matches!(
-            heap.activation_local(activation, 0),
-            Value::SmallInteger(1)
-        ));
-        assert!(matches!(
-            heap.activation_local(activation, 1),
-            Value::SmallInteger(2)
-        ));
-        assert!(matches!(heap.activation_local(activation, 2), Value::Nil));
-        heap.activation_set_local(activation, 3, Value::SmallInteger(9));
-        assert!(matches!(
-            heap.activation_local(activation, 3),
-            Value::SmallInteger(9)
-        ));
+        assert_eq!(
+            heap.activation_local(activation, 0).as_small_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            heap.activation_local(activation, 1).as_small_integer(),
+            Some(2)
+        );
+        assert!(heap.activation_local(activation, 2).is_nil());
+        heap.activation_set_local(activation, 3, Value::small_integer(9));
+        assert_eq!(
+            heap.activation_local(activation, 3).as_small_integer(),
+            Some(9)
+        );
         heap.pop_activation(activation);
     }
 
@@ -3655,26 +3659,14 @@ mod tests {
     #[test]
     fn nested_activations_keep_separate_register_windows() {
         let mut heap = Heap::new();
-        let outer = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
-        let inner = heap.push_activation(header(), &[Value::SmallInteger(2)], 1);
-        heap.activation_set_local(inner, 1, Value::SmallInteger(20));
-        heap.activation_set_local(outer, 1, Value::SmallInteger(10));
-        assert!(matches!(
-            heap.activation_local(outer, 0),
-            Value::SmallInteger(1)
-        ));
-        assert!(matches!(
-            heap.activation_local(outer, 1),
-            Value::SmallInteger(10)
-        ));
-        assert!(matches!(
-            heap.activation_local(inner, 0),
-            Value::SmallInteger(2)
-        ));
-        assert!(matches!(
-            heap.activation_local(inner, 1),
-            Value::SmallInteger(20)
-        ));
+        let outer = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let inner = heap.push_activation(header(), &[Value::small_integer(2)], 1);
+        heap.activation_set_local(inner, 1, Value::small_integer(20));
+        heap.activation_set_local(outer, 1, Value::small_integer(10));
+        assert_eq!(heap.activation_local(outer, 0).as_small_integer(), Some(1));
+        assert_eq!(heap.activation_local(outer, 1).as_small_integer(), Some(10));
+        assert_eq!(heap.activation_local(inner, 0).as_small_integer(), Some(2));
+        assert_eq!(heap.activation_local(inner, 1).as_small_integer(), Some(20));
         assert_eq!(heap.activation_depth(), 2);
         heap.pop_activation(inner);
         heap.pop_activation(outer);
@@ -3689,7 +3681,7 @@ mod tests {
     fn an_activation_that_is_never_reified_leaves_nothing_behind() {
         let mut heap = Heap::new();
         for _ in 0..1000 {
-            let activation = heap.push_activation(header(), &[Value::SmallInteger(1)], 3);
+            let activation = heap.push_activation(header(), &[Value::small_integer(1)], 3);
             heap.pop_activation(activation);
         }
         assert_eq!(heap.frames.len(), 0);
@@ -3714,15 +3706,15 @@ mod tests {
     #[test]
     fn a_married_frame_reads_and_writes_the_live_registers() {
         let mut heap = Heap::new();
-        let activation = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
+        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
         let frame = heap.reify(activation);
-        heap.activation_set_local(activation, 1, Value::SmallInteger(5));
-        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInteger(5)));
-        heap.frame_set_local(frame, 1, Value::SmallInteger(7));
-        assert!(matches!(
-            heap.activation_local(activation, 1),
-            Value::SmallInteger(7)
-        ));
+        heap.activation_set_local(activation, 1, Value::small_integer(5));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(5));
+        heap.frame_set_local(frame, 1, Value::small_integer(7));
+        assert_eq!(
+            heap.activation_local(activation, 1).as_small_integer(),
+            Some(7)
+        );
         assert!(heap
             .frame_activation(frame)
             .is_some_and(|live| live.same(activation)));
@@ -3738,24 +3730,24 @@ mod tests {
     #[test]
     fn popping_a_reified_activation_divorces_its_frame() {
         let mut heap = Heap::new();
-        let activation = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
+        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
         heap.set_activation_program_counter(activation, 4);
         let frame = heap.reify(activation);
         // What a `MakeClosure` whose block reads this frame by reference
         // does, and the only reason the registers below survive the pop.
         heap.retain_registers(activation);
         // Written after reification: it must survive the divorce.
-        heap.activation_set_local(activation, 1, Value::SmallInteger(3));
+        heap.activation_set_local(activation, 1, Value::small_integer(3));
         heap.pop_activation(activation);
 
         assert!(heap.frame_activation(frame).is_none());
-        assert!(matches!(heap.frame_local(frame, 0), Value::SmallInteger(1)));
-        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInteger(3)));
+        assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(1));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(3));
         assert_eq!(heap.frame_register_shape(frame), (4, 1, 1));
         assert!(heap.frame_is_uncontinuable(frame));
         assert!(heap.frame_sender(frame).is_none());
-        heap.frame_set_local(frame, 1, Value::SmallInteger(8));
-        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInteger(8)));
+        heap.frame_set_local(frame, 1, Value::small_integer(8));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(8));
     }
 
     /// A block's copied values land in the registers between its parameters
@@ -3774,21 +3766,21 @@ mod tests {
             ObjectData::Closure(ClosureData {
                 code: trivial_code(),
                 captured_frame,
-                copied: Box::new([Value::SmallInteger(7), Value::SmallInteger(8)]),
+                copied: Box::new([Value::small_integer(7), Value::small_integer(8)]),
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
 
-        let activation = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
+        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
         heap.fill_copied_values(activation, closure);
-        assert!(matches!(
-            heap.activation_local(activation, 0),
-            Value::SmallInteger(1)
-        ));
-        assert!(matches!(
-            heap.activation_local(activation, 1),
-            Value::SmallInteger(7)
-        ));
+        assert_eq!(
+            heap.activation_local(activation, 0).as_small_integer(),
+            Some(1)
+        );
+        assert_eq!(
+            heap.activation_local(activation, 1).as_small_integer(),
+            Some(7)
+        );
         // The activation has two registers, so the second copied value has
         // nowhere to go and is dropped rather than written past the window.
         assert_eq!(heap.stack.values.len(), 2);
@@ -3801,14 +3793,14 @@ mod tests {
     fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
         let mut heap = Heap::new();
         let first = heap.push_activation(header(), &[], 2);
-        heap.activation_set_local(first, 1, Value::SmallInteger(3));
+        heap.activation_set_local(first, 1, Value::small_integer(3));
         let frame = heap.reify(first);
         heap.retain_registers(first);
         heap.pop_activation(first);
 
         let second = heap.push_activation(header(), &[], 2);
-        heap.activation_set_local(second, 1, Value::SmallInteger(99));
-        assert!(matches!(heap.frame_local(frame, 1), Value::SmallInteger(3)));
+        heap.activation_set_local(second, 1, Value::small_integer(99));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(3));
         heap.pop_activation(second);
     }
 
@@ -3818,14 +3810,14 @@ mod tests {
     #[test]
     fn a_register_base_reads_and_writes_its_activations_registers() {
         let mut heap = Heap::new();
-        let activation = heap.push_activation(header(), &[Value::SmallInteger(7)], 2);
+        let activation = heap.push_activation(header(), &[Value::small_integer(7)], 2);
         let base = heap.register_base(activation);
-        assert!(matches!(heap.register(base, 0), Value::SmallInteger(7)));
-        heap.set_register(base, 2, Value::SmallInteger(9));
-        assert!(matches!(
-            heap.activation_local(activation, 2),
-            Value::SmallInteger(9)
-        ));
+        assert_eq!(heap.register(base, 0).as_small_integer(), Some(7));
+        heap.set_register(base, 2, Value::small_integer(9));
+        assert_eq!(
+            heap.activation_local(activation, 2).as_small_integer(),
+            Some(9)
+        );
         heap.pop_activation(activation);
     }
 
@@ -3849,10 +3841,10 @@ mod tests {
     #[test]
     fn a_register_base_survives_a_deeper_push() {
         let mut heap = Heap::new();
-        let caller = heap.push_activation(header(), &[Value::SmallInteger(1)], 1);
+        let caller = heap.push_activation(header(), &[Value::small_integer(1)], 1);
         let base = heap.register_base(caller);
         let callee = heap.push_activation(header(), &[], 4096);
-        assert!(matches!(heap.register(base, 0), Value::SmallInteger(1)));
+        assert_eq!(heap.register(base, 0).as_small_integer(), Some(1));
         heap.pop_activation(callee);
         heap.pop_activation(caller);
     }
@@ -4011,7 +4003,7 @@ mod tests {
         }
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let block_header = |closure| ActivationHeader {
-            receiver: Value::Nil,
+            receiver: Value::nil(),
             current_class: None,
             kind: FrameKind::Closure(closure),
             feedback_base: FeedbackBase::NOT_ASSIGNED,
@@ -4071,9 +4063,9 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let string = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("a")));
-        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::Object(string)]));
+        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::object(string)]));
         let frame = heap.allocate_frame(Frame {
-            receiver: Value::Object(string),
+            receiver: Value::object(string),
             ..top_level_frame()
         });
         heap.allocate_frame(top_level_frame());
@@ -4082,7 +4074,7 @@ mod tests {
             ObjectData::Closure(ClosureData {
                 code: trivial_code(),
                 captured_frame: frame,
-                copied: Box::new([Value::Object(string)]),
+                copied: Box::new([Value::object(string)]),
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
             }),
         );
@@ -4094,17 +4086,17 @@ mod tests {
         ];
         let frame_before = heap.frame_identity_key(frame);
         let roots = [
-            heap.stash(Value::Object(class)),
-            heap.stash(Value::Object(string)),
-            heap.stash(Value::Object(array)),
-            heap.stash(Value::Object(closure)),
+            heap.stash(Value::object(class)),
+            heap.stash(Value::object(string)),
+            heap.stash(Value::object(array)),
+            heap.stash(Value::object(closure)),
         ];
         move_bare_heap(&mut heap);
         let after: Vec<ObjectReference> = roots
             .iter()
-            .map(|root| match heap.fetch(root) {
-                Value::Object(object) => object,
-                _ => panic!("a root keeps its object"),
+            .map(|root| match heap.fetch(root).as_object() {
+                Some(object) => object,
+                None => panic!("a root keeps its object"),
             })
             .collect();
         for (key, object) in before.iter().zip(&after) {
@@ -4119,13 +4111,14 @@ mod tests {
             heap.class_of_object(class).same(class),
             "a class's own class is rewritten"
         );
-        assert!(
-            matches!(heap.array_at(array, 0), Some(Value::Object(element)) if element.same(string))
-        );
+        assert!(heap
+            .array_at(array, 0)
+            .and_then(|element| element.as_object())
+            .is_some_and(|element| element.same(string)));
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
         let data = heap.closure_data(closure).expect("still a closure");
         assert!(
-            matches!(data.copied[..], [Value::Object(copied)] if copied.same(string)),
+            matches!(data.copied[..], [copied] if copied.as_object().is_some_and(|copied| copied.same(string))),
             "a copied value is rewritten"
         );
         assert_ne!(
@@ -4133,9 +4126,10 @@ mod tests {
             heap.frame_identity_key(data.captured_frame),
             "every frame moved"
         );
-        assert!(
-            matches!(heap.frame_receiver(data.captured_frame), Value::Object(receiver) if receiver.same(string))
-        );
+        assert!(heap
+            .frame_receiver(data.captured_frame)
+            .as_object()
+            .is_some_and(|receiver| receiver.same(string)));
     }
 
     #[test]
@@ -4168,9 +4162,9 @@ mod tests {
     fn comparing_a_stale_handle_with_a_fresh_one_panics() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        let root = heap.stash(Value::Object(class));
+        let root = heap.stash(Value::object(class));
         move_bare_heap(&mut heap);
-        let Value::Object(fresh) = heap.fetch(&root) else {
+        let Some(fresh) = heap.fetch(&root).as_object() else {
             panic!("a root keeps its object")
         };
         let _ = class.same(fresh);
@@ -4187,13 +4181,13 @@ mod tests {
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let stale =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("stale")));
-        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::Nil]));
-        let root = heap.stash(Value::Object(array));
+        let array = heap.allocate_object(class, ObjectData::Array(vec![Value::nil()]));
+        let root = heap.stash(Value::object(array));
         move_bare_heap(&mut heap);
-        let Value::Object(array) = heap.fetch(&root) else {
+        let Some(array) = heap.fetch(&root).as_object() else {
             panic!("a root keeps its object")
         };
-        heap.array_set(array, 0, Value::Object(stale));
+        heap.array_set(array, 0, Value::object(stale));
         move_bare_heap(&mut heap);
     }
 
@@ -4210,7 +4204,7 @@ mod tests {
                 .heap
                 .allocate_object(not_a_class, ObjectData::Instance(vec![]));
             assert_eq!(
-                mutator.heap.dispatch_id(&Value::Object(instance)),
+                mutator.heap.dispatch_id(&Value::object(instance)),
                 crate::mixin::DispatchId::NONE
             );
         });
@@ -4242,7 +4236,7 @@ mod tests {
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
         let unreachable =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
-        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+        let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
         let marker = heap.mark_from_roots_for_test();
 
@@ -4260,8 +4254,8 @@ mod tests {
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let target =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("target")));
-        let holder = heap.allocate_object(class, ObjectData::Instance(vec![Value::Object(target)]));
-        let activation = heap.push_activation(header(), &[Value::Object(holder)], 1);
+        let holder = heap.allocate_object(class, ObjectData::Instance(vec![Value::object(target)]));
+        let activation = heap.push_activation(header(), &[Value::object(holder)], 1);
 
         let marker = heap.mark_from_roots_for_test();
 
@@ -4303,7 +4297,7 @@ mod tests {
         assert_eq!(answered.index, frame.index);
         assert!(heap.activation_object_frame(other).is_none());
         assert_eq!(
-            heap.describe(&Value::Object(activation_object)),
+            heap.describe(&Value::object(activation_object)),
             "an Activation"
         );
     }
@@ -4316,7 +4310,7 @@ mod tests {
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
         let frame = heap.allocate_frame(top_level_frame());
         let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
-        let activation = heap.push_activation(header(), &[Value::Object(activation_object)], 1);
+        let activation = heap.push_activation(header(), &[Value::object(activation_object)], 1);
 
         let marker = heap.mark_from_roots_for_test();
 
@@ -4336,10 +4330,10 @@ mod tests {
     fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        let first = heap.allocate_object(class, ObjectData::Instance(vec![Value::Nil]));
-        let second = heap.allocate_object(class, ObjectData::Instance(vec![Value::Object(first)]));
-        heap.set_instance_field(first, 0, Value::Object(second));
-        let activation = heap.push_activation(header(), &[Value::Object(first)], 1);
+        let first = heap.allocate_object(class, ObjectData::Instance(vec![Value::nil()]));
+        let second = heap.allocate_object(class, ObjectData::Instance(vec![Value::object(first)]));
+        heap.set_instance_field(first, 0, Value::object(second));
+        let activation = heap.push_activation(header(), &[Value::object(first)], 1);
 
         let marker = heap.mark_from_roots_for_test();
 
@@ -4361,7 +4355,7 @@ mod tests {
             class,
             ObjectData::String(crate::CodePoints::from("also dead")),
         );
-        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+        let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
         let before = heap.objects.len();
 
         heap.collect_for_test();
@@ -4382,11 +4376,11 @@ mod tests {
         heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
         let reachable =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
-        let activation = heap.push_activation(header(), &[Value::Object(reachable)], 1);
+        let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
         heap.collect_for_test();
 
-        let Value::Object(survivor) = heap.activation_local(activation, 0) else {
+        let Some(survivor) = heap.activation_local(activation, 0).as_object() else {
             panic!("the register no longer holds an object");
         };
         assert_eq!(heap.str_value(survivor), Some("live".to_string()));

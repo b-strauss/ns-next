@@ -123,7 +123,7 @@ pub fn discover<'gc>(heap: &Heap<'gc>, platform: ObjectReference<'gc>) -> Platfo
             continue;
         }
         for (member, value) in public_members(heap, object) {
-            let Value::Object(target) = value else {
+            let Some(target) = value.as_object() else {
                 continue;
             };
             let key = heap.object_identity_key(target);
@@ -228,14 +228,13 @@ fn class_accessor_target<'gc>(
         return None;
     };
     let accessor = method.class_accessor?;
-    let Value::Object(root) = dispatch::kth_enclosing_object(
+    let root = dispatch::kth_enclosing_object(
         heap,
-        &Value::Object(object),
+        &Value::object(object),
         Some(&defining_class),
         accessor.depth,
-    ) else {
-        return None;
-    };
+    )
+    .as_object()?;
     let root_class = heap.class_of_object(root);
     if heap.class_enclosing(root_class).is_some() || !is_shipped_object(heap, root) {
         return None;
@@ -439,7 +438,7 @@ mod tests {
     fn a_class_accessor_two_levels_down_is_a_path_step() {
         let (mut interpreter, inner) = an_inner_instance(true);
         interpreter.enter(|mutator| {
-            let Value::Object(inner) = mutator.fetch(&inner) else {
+            let Some(inner) = mutator.fetch(&inner).as_object() else {
                 panic!("Inner new is an object");
             };
             let heap = mutator.heap();
@@ -452,11 +451,14 @@ mod tests {
             );
             assert!(is_path_step(heap, inner, Symbol::intern("Other")));
             let members = class_accessor_members(heap, inner);
-            let [(name, Value::Object(other))] = members.as_slice() else {
+            let [(name, member)] = members.as_slice() else {
+                panic!("one class accessor member, holding a class");
+            };
+            let Some(other) = member.as_object() else {
                 panic!("one class accessor member, holding a class");
             };
             assert_eq!(name.as_str(), "Other");
-            assert_eq!(heap.class_display_name(*other), "Other");
+            assert_eq!(heap.class_display_name(other), "Other");
         });
     }
 
@@ -467,7 +469,7 @@ mod tests {
     fn a_user_modules_class_accessor_is_unmarked() {
         let (mut interpreter, inner) = an_inner_instance(false);
         interpreter.enter(|mutator| {
-            let Value::Object(inner) = mutator.fetch(&inner) else {
+            let Some(inner) = mutator.fetch(&inner).as_object() else {
                 panic!("Inner new is an object");
             };
             let heap = mutator.heap();
