@@ -36,7 +36,9 @@ the re-entries moved", has the full measurement protocol and its history.
    Havlak, Mandelbrot, NBody and DeltaBlue take seconds per run: time them
    with `bench --iterations 3`, every other program with `--iterations 10`
    (`execution.md`, "The Are We Fast Yet benchmarks"). Ten runs of them
-   made a three-builds-a-side comparison take an hour and a half.
+   made a three-builds-a-side comparison take an hour and a half. Two
+   ns-next trees are compared with `bench` alone; the harness's `--timed`
+   is for comparing with Primordial Soup or another VM.
 5. **Before timing a change to a send's path, check the inlining.**
    `run_stretch` (the loop over the frame's locals between two safepoints)
    sits near LLVM's inlining threshold and is forced inline into `vm::run`. On

@@ -732,7 +732,14 @@ timed with `bench --iterations 3`, every other program with
 `--iterations 10` (decided with the user on 2026-10-02): a run of seconds
 varies by far less than the changes measured, and ten of them made a
 comparison of three builds a side take an hour and a half, three bring it
-to about half an hour.
+to about half an hour. A comparison of two ns-next trees uses `bench`
+alone (decided with the user on 2026-10-02): on the eleven programs whose
+`--timed` score is a throughput it agreed with `bench` ("What the
+eight-byte value moved"), on the five slow ones it is one run's rate to one
+fraction digit, and it added about eighteen minutes. `--timed` is for a
+comparison with Primordial Soup or another VM, whose scores it matches in
+form, and for a short program whose per-application setup might hide a
+change in its workload.
 
 **The baseline**, measured on 2026-10-02 at `1792df5` on one Windows 11
 machine (Intel Core Ultra 9 285K): three pinned release builds of the tree,
