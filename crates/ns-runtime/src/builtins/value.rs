@@ -429,11 +429,17 @@ fn derived_equality<'gc>(
             if !classes_can_be_equal(mutator, first_class, second_class) {
                 return Some(false);
             }
-            if charged >= NODE_BUDGET {
-                return None;
+            // A pair already assumed has been unfolded; pushing it again
+            // would only spend budget on a node the walk discards.
+            if assumed.contains(&identity_pair(mutator, first_class, second_class)) {
+                None
+            } else {
+                if charged >= NODE_BUDGET {
+                    return None;
+                }
+                charged += 1;
+                Some((Value::object(first_class), Value::object(second_class)))
             }
-            charged += 1;
-            Some((Value::object(first_class), Value::object(second_class)))
         };
         match compare_node(mutator, first, second)? {
             Pair::Decided(true) => {}

@@ -781,11 +781,19 @@ Small, deliberately left, none affecting an outcome.
 - `image/encode.rs`: `encode_class_tag` scans the root levels twice;
   `image/decode.rs`'s `build_root_class` maps every error to
   `NotAClassReference`.
-- `builtins/value.rs`: `derived_equality` still pushes a class pair per node
-  that is discarded when already assumed; the hash of a value class object,
-  from its mixin's name alone, collides for same-named nested classes under
-  different enclosing values; every `<:` level gets a metaclass no program can
-  send to, part of the eager cost.
+- `builtins/value.rs`: the hash of a value class object, from its mixin's
+  name alone, collides for same-named nested classes under different
+  enclosing values. A collision breaks no contract, and folding in the
+  enclosing value is not plainly safe: the hash walk would unfold it, and
+  any node there that declines (an `Array` slot, `Kernel`'s `vmMirror`)
+  declines the whole hash, which `Behavior>>hash` then answers by identity,
+  so two equal class objects would hash apart. Distinguishing them needs a
+  walk that tolerates a decline below a class object -- a design decision.
+- Every `<:` level gets a metaclass (`Mutator::new_applied_level` calls
+  `attach_metaclass`) that no program sends to, part of the eager cost of
+  building levels. Removing it is a design point, not a clean-up: the
+  metaclass takes part in class-object equality (`class_state_pairs`) and in
+  what the image encoder walks.
 - `core-library/Kernel.ns`: `defaultAction`'s `ifFail: [nil]` is unreachable;
   `searching` and `reachedDefault` stay true after a search.
 - `builtins/activation.rs:157`: `activation_leaf` has an `unreachable!` arm;
