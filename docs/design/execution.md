@@ -938,6 +938,10 @@ breaking out of its own kind's labelled block, removed it, and turned
 pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`), with no
 `vm::run::closure` and no `run_stretch` of its own; `run_wide`, which runs
 every instruction that has no eight-byte form, is a function of its own.
+It is 8,498 instructions and 0x398 bytes at `a098c40`, where a `super`
+send reads its classes only for a cached site and a lexical miss computes
+N once (`interpreter/inline_cache.rs`); the benchmark figures above were
+not taken again for that.
 The loop grew by the arity forms of the sends and the side-table reads, and
 is faster for it.
 
