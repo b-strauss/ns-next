@@ -4028,6 +4028,11 @@ measured program reaches.
   compiles to one that raises `Literal::BodyTooLarge`'s error (literal tag
   11) when it runs, where the optimized lowering's counts wrapped silently
   in a release build and the reference lowering panicked.
+- "an image too large for its fields is refused, and a too-large clause
+  message raises" — `image::snapshot` answers an error where a count a
+  program decides passes its 16- or 32-bit field, rather than aborting, and
+  a factory of more than 65,535 parameters raises the too-large error from
+  its `<:` clause message rather than an arity mismatch.
 
 **The gate.** Before anything was built, a throwaway copy ran `vm::run` on
 the eight-byte slots and was measured against `master` by the protocol of

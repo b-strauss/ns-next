@@ -368,6 +368,20 @@ Literals:
   register ceiling loads first. It raises its error when it runs
   ([compiler.md](compiler.md), "Compilation cannot fail").
 
+**A count past its field refuses the image, never aborts it.** A count a
+program decides is written through a checked narrowing that answers an
+error, `image encoding cannot write a <what> of <n>: it does not fit the
+image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
+closure's parameter and copied-value counts and a method's or factory's
+arity (`encode::u16_field`), all of which a valid program can pass
+([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a string's, a symbol's,
+a value list's and a `LargeInteger`'s digit count (`encode::u32_length`).
+Every other count goes through the asserting `encode::u32_field`, because no
+program can pass it: object and frame ids and counts are bounded by the
+heap's 32-bit handles, declaration, statement and instruction counts by
+source, whose `Span` offsets are 32-bit, and the symbol table's count by the
+two together.
+
 **A call-site number is a property of the code, never a byte on the wire.**
 It is feedback-table bookkeeping, not program meaning: the decoder assigns
 every family's numbers itself, in the compiler's own emission order, once

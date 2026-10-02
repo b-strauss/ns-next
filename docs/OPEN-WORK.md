@@ -698,14 +698,6 @@ where every reified frame will carry its full register file on the wire.
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
   branch.
-- **An image cannot carry a method or a factory of more than 65,535
-  parameters.** It compiles to the raising body of the register ceiling,
-  arity saturated at `u16::MAX`, and raises when it runs; but the wire stores
-  an arity in a `u16`, so `image::snapshot` aborts on its mixin row
-  (`image/mixins.rs`, `u16_arity`). Refusing it with an error from
-  `snapshot`, or a wider arity field in a new format version, would close
-  it. No test reaches it. Noted 2026-10-02.
-  [compiler.md](design/compiler.md), "Compilation cannot fail".
 
 ## Missing tests
 

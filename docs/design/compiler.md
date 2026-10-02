@@ -737,9 +737,18 @@ sibling method still runs. A block with more parameters than a `u16` counts
 takes `u16::MAX` of them, and its `MakeClosure` names as many
 (`compiler::parameters_of`), so a call with more meets the block's arity
 check, which raises too. A method or a factory with more than 65,535
-parameters compiles and raises the same way, but an image cannot carry it:
-the wire stores an arity in a `u16`, and the encoder refuses the mixin
-([OPEN-WORK.md](../OPEN-WORK.md), "Known defects and gaps").
+parameters compiles and raises the same way; the message of a factory's `<:`
+clause, whose arity saturates too, is still handed every factory argument,
+since it raises before it reads one (`CompiledCode::stands_for_too_many_arguments`,
+`instantiate`'s `check_message_arity`). An image cannot carry such a method or
+factory, nor a register list of more than 65,535 entries -- a send or a tuple
+whose operands all read one parameter's register fits the ceiling under the
+optimized lowering -- since the wire stores those counts in 16 bits:
+`image::snapshot`, and so `ns-next build`, refuses the program with
+`image encoding cannot write a method arity of 65536: it does not fit the
+image format's 16-bit field` (or the register list's, the factory arity's)
+rather than aborting ([image-format.md](image-format.md), "The instruction
+encoding").
 
 The two lowerings meet the ceiling at different sizes. The reference lowering
 never reuses a register, so every value costs it one; the optimized lowering

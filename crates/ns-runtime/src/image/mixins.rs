@@ -36,7 +36,7 @@ use crate::types::ClassReference;
 use crate::Symbol;
 
 use super::decode::{reserve_for, DecodeError, Reader};
-use super::encode::{u32_field, CodeIds, Writer};
+use super::encode::{u16_field, u32_field, CodeIds, Writer};
 use super::opcodes::{SLOT_IMMUTABLE, SLOT_LAZY_IMMUTABLE, SLOT_LAZY_MUTABLE, SLOT_MUTABLE};
 use super::symbols;
 
@@ -269,7 +269,7 @@ pub fn encode<'gc>(
             Some(factory) => {
                 writer.write_boolean(true);
                 writer.write_u32(symbols.intern(factory.selector.as_str()));
-                writer.write_u16(u16_arity("factory", factory.argument_count));
+                writer.write_u16(u16_field("factory arity", factory.argument_count)?);
             }
             None => writer.write_boolean(false),
         }
@@ -308,7 +308,7 @@ pub fn encode<'gc>(
         for method in &row.methods {
             writer.write_u32(symbols.intern(method.selector.as_str()));
             writer.write_u8(access_tag(method.access));
-            writer.write_u16(u16_arity("method", method.argument_count));
+            writer.write_u16(u16_field("method arity", method.argument_count)?);
             writer.write_u32(codes.id_of(&method.code)?);
         }
         writer.write_u32(u32_field("mixin's nested count", row.nested.len()));
@@ -346,19 +346,6 @@ pub fn encode<'gc>(
         .enumerate()
         .map(|(index, row)| (mixin_key(&row.mixin), u32_field("mixin table id", index)))
         .collect())
-}
-
-/// A parameter count narrowed to the `u16` the wire (and `CompiledCode`)
-/// stores an arity in. A pattern with more than 65535 keyword parts is not
-/// something any parser produces; writing a truncated one would make the
-/// image self-inconsistent, so it aborts rather than truncating silently --
-/// the same contract as `encode::u32_field`.
-fn u16_arity(what: &str, count: usize) -> u16 {
-    assert!(
-        u16::try_from(count).is_ok(),
-        "image {what} arity of {count} does not fit the format's u16 field"
-    );
-    count as u16
 }
 
 fn write_optional_id(writer: &mut Writer, id: Option<u32>) {

@@ -2141,9 +2141,9 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
 
 /// Materializes a literal -- including the two deferred error cases,
 /// `UnresolvedIdentifier` and `BodyTooLarge`, which raise through
-/// `literals.rs`'s own constructors rather than rebuilding the error here: error text lives in
-/// `interpreter/`, never in the VM. A `LargeInteger` is a fresh object each
-/// time it runs, since a value needs no identity.
+/// `literals.rs`'s own constructors rather than rebuilding the error here:
+/// error text lives in `interpreter/`, never in the VM. A `LargeInteger` is
+/// a fresh object each time it runs, since a value needs no identity.
 fn make_value<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,

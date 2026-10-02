@@ -1324,6 +1324,57 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
+/// The image's error for `source`'s module: a snapshot of its class alone,
+/// which a program the format cannot carry refuses rather than aborts.
+fn snapshot_error(source: &str) -> String {
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+            Ok(_) => panic!("expected the snapshot to be refused"),
+            Err(message) => message,
+        }
+    })
+}
+
+/// A method of more than 65,535 parameters compiles, but its arity does not
+/// fit the mixin table's 16-bit field: building the image is refused with
+/// an error, never a panic.
+#[test]
+fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
+    let pattern: String = (0..=usize::from(u16::MAX))
+        .map(|index| format!("k: p{index} "))
+        .collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public {pattern}= ( ^p0 )
+        ) : ()
+    "};
+    assert_eq!(
+        snapshot_error(&source),
+        "image encoding cannot write a method arity of 65536: it does not fit the image format's 16-bit field"
+    );
+}
+
+/// A tuple of 65,536 elements that all read one parameter's register fits
+/// the register ceiling under the optimized lowering, but its register list
+/// does not fit the code table's 16-bit length: refused, never a panic.
+#[test]
+fn a_register_list_longer_than_the_format_counts_is_refused_not_a_panic() {
+    let elements: String = (0..=usize::from(u16::MAX)).map(|_| "x. ").collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public tuple: x = ( ^{{{elements}}} )
+        ) : ()
+    "};
+    assert_eq!(
+        snapshot_error(&source),
+        "image encoding cannot write a register list of 65536: it does not fit the image format's 16-bit field"
+    );
+}
+
 /// A float outside the immediate range in a slot survives a snapshot as a
 /// value, as a `LargeInteger` does: a boxed Float has no identity (§3.1.1),
 /// so the image carries its bits wherever it is referenced and writes no

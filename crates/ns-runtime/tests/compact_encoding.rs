@@ -36,7 +36,7 @@ fn load(source: &str, lowering: Lowering) -> (Interpreter, Root) {
 }
 
 /// The error a body past the register ceiling raises, sent as `run`.
-const RUN_TOO_LARGE: &str = "method too large: it needs more than 65535 registers";
+const METHOD_TOO_LARGE: &str = "method too large: it needs more than 65535 registers";
 
 /// `HostSignal` carries no `Debug` impl, so `Result::expect` is unusable on
 /// a `HostResult` -- unwrap by hand.
@@ -127,7 +127,7 @@ fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
     let (answer, instruction_count) = run_and_count(&source);
     assert_eq!(answer, 3_000_065_536);
     assert_eq!(instruction_count, 2 * STATEMENTS + 1);
-    assert_eq!(run_error(&source, Lowering::Reference), RUN_TOO_LARGE);
+    assert_eq!(run_error(&source, Lowering::Reference), METHOD_TOO_LARGE);
 }
 
 /// `x:: 0.` is a `LoadLiteral` and a `StoreLocal`; each `x:: x + 1.` a
@@ -141,7 +141,7 @@ fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
     let (answer, instruction_count) = run_and_count(&source);
     assert_eq!(answer, 65_537);
     assert_eq!(instruction_count, 2 + 5 * STATEMENTS + 1);
-    assert_eq!(run_error(&source, Lowering::Reference), RUN_TOO_LARGE);
+    assert_eq!(run_error(&source, Lowering::Reference), METHOD_TOO_LARGE);
 }
 
 /// Each statement is a `LoadLiteral` of its own string and a `StoreLocal`,
@@ -154,7 +154,7 @@ fn an_allocated_literal_past_sixteen_bits_loads_from_the_wide_form() {
     let (answer, instruction_count) = run_and_count(&source);
     assert_eq!(answer, 1);
     assert_eq!(instruction_count, 2 * STATEMENTS + 2);
-    assert_eq!(run_error(&source, Lowering::Reference), RUN_TOO_LARGE);
+    assert_eq!(run_error(&source, Lowering::Reference), METHOD_TOO_LARGE);
 }
 
 /// More named temporaries than a `u16` numbers registers for: no lowering
@@ -178,7 +178,7 @@ fn a_body_with_more_temporaries_than_registers_raises_when_it_runs() {
         let instance = new_instance(&mut interpreter, &class);
         assert_eq!(
             expect_error(send(&mut interpreter, &instance, "run", &[]), "run"),
-            RUN_TOO_LARGE
+            METHOD_TOO_LARGE
         );
         let answer = expect_ok(send(&mut interpreter, &instance, "answer", &[]), "answer");
         assert_eq!(
@@ -186,4 +186,103 @@ fn a_body_with_more_temporaries_than_registers_raises_when_it_runs() {
             7
         );
     }
+}
+
+/// `count` copies of `element`, each followed by a period: a tuple's or a
+/// body's generated contents.
+fn repeated(element: &str, count: usize) -> String {
+    (0..count).map(|_| format!("{element}. ")).collect()
+}
+
+/// Loads `nested` -- declarations nested in `Generated`, beside its
+/// `public make = ( <make> )` -- under `lowering`, and answers the error
+/// `make` raises on an instance.
+fn make_error(nested: &str, make: &str, lowering: Lowering) -> String {
+    let source = format!(
+        "class Generated = Object new () (
+{nested}
+    public make = ( {make} )
+) : ()
+"
+    );
+    let (mut interpreter, class) = load(&source, lowering);
+    let instance = new_instance(&mut interpreter, &class);
+    expect_error(send(&mut interpreter, &instance, "make", &[]), "make")
+}
+
+/// Every kind of body past the ceiling raises with its own kind's name. An
+/// instance initializer: a slot initialized to a tuple of 65,535 values,
+/// each in a register of its own.
+#[test]
+fn an_initializer_past_the_register_ceiling_raises_when_it_runs() {
+    let elements = repeated("1", usize::from(u16::MAX));
+    let nested = format!("    class Big = Object new ( | tuple = {{{elements}}}. | ) () : ()");
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        assert_eq!(
+            make_error(&nested, "^Big new", lowering),
+            "initializer too large: it needs more than 65535 registers"
+        );
+    }
+}
+
+/// A superclass clause answers its superclass and every `<:` clause's
+/// class together, in a tuple: 65,535 of them pass the ceiling, and the
+/// clause raises when the class is first reached.
+#[test]
+fn a_superclass_clause_past_the_register_ceiling_raises_when_it_runs() {
+    let applications: String = (0..usize::from(u16::MAX)).map(|_| " <: Marker").collect();
+    let nested = format!(
+        "    class Marker = Object new () () : ()
+    class Big = Object{applications}."
+    );
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        assert_eq!(
+            make_error(&nested, "^Big", lowering),
+            "superclass clause too large: it needs more than 65535 registers"
+        );
+    }
+}
+
+/// A clause message's arguments, one tuple of 65,535 values.
+#[test]
+fn a_clause_message_past_the_register_ceiling_raises_when_it_runs() {
+    let elements = repeated("1", usize::from(u16::MAX));
+    let nested = format!(
+        "    class Base x: value = Object new () () : ()
+    class Big = Base x: {{{elements}}} () () : ()"
+    );
+    for lowering in [Lowering::Optimized, Lowering::Reference] {
+        assert_eq!(
+            make_error(&nested, "^Big new", lowering),
+            "inheritance clause message too large: it needs more than 65535 registers"
+        );
+    }
+}
+
+/// A factory of 65,536 parameters: the message of its `<:` clause, whose
+/// arity the instantiation checks against the arguments it is handed,
+/// saturates at 65,535, and is handed all 65,536 factory arguments and
+/// raises the too-large error, not an arity mismatch. Under the optimized lowering
+/// `build:` passes one parameter's register 65,536 times; the reference
+/// lowering copies each argument into a register of its own, so there
+/// `build:` itself is past the ceiling.
+#[test]
+fn a_factory_of_more_parameters_than_registers_raises_the_too_large_error() {
+    let pattern: String = (0..=usize::from(u16::MAX))
+        .map(|index| format!("k: p{index} "))
+        .collect();
+    let arguments: String = (0..=usize::from(u16::MAX)).map(|_| "k: x ").collect();
+    let nested = format!(
+        "    class Marker y: value = Object new () () : ()
+    class Wide {pattern}= Object <: Marker y: p0 () () : ()
+    build: x = ( ^Wide {arguments})"
+    );
+    assert_eq!(
+        make_error(&nested, "^build: 1", Lowering::Optimized),
+        "inheritance clause message too large: it needs more than 65535 registers"
+    );
+    assert_eq!(
+        make_error(&nested, "^build: 1", Lowering::Reference),
+        METHOD_TOO_LARGE
+    );
 }

@@ -164,8 +164,14 @@ pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: Value<'gc>) -> bool 
 /// A `usize` count or index narrowed to the wire's `u32` field, refusing to
 /// truncate: a length prefix that does not describe the payload that
 /// follows would make the image self-inconsistent, which no reader could
-/// detect. Unreachable for any image a real program can produce -- an
-/// invariant an image write must not violate, so it aborts loudly.
+/// detect. Only for a count no program can push past `u32::MAX`: an id or
+/// count of heap objects or frames, which the heap's 32-bit handles bound;
+/// one of declarations, statements or instructions, which source bounds (a
+/// `Span` offset is a `u32`); the symbol table's, which the two bound
+/// together; and a frame's program counter, an instruction index. Past it
+/// is an invariant an image write must not violate, so it aborts loudly. A
+/// length a running program decides -- a string's or symbol's text, a value
+/// list, an integer's digits -- is checked with `u32_length` first.
 pub(crate) fn u32_field(what: &str, value: usize) -> u32 {
     assert!(
         u32::try_from(value).is_ok(),
@@ -174,13 +180,27 @@ pub(crate) fn u32_field(what: &str, value: usize) -> u32 {
     value as u32
 }
 
-/// `u32_field`'s `u16` counterpart, for the register and parameter counts.
-fn u16_field(what: &str, value: usize) -> u16 {
-    assert!(
-        u16::try_from(value).is_ok(),
-        "image {what} of {value} does not fit the format's u16 field"
-    );
-    value as u16
+/// A length a running program decides, narrowed to the wire's `u32` field:
+/// a string's, an array's or instance's value list, a `LargeInteger`'s digit
+/// count. One past `u32::MAX` is a program the image format cannot carry,
+/// so the image write is refused with an error rather than aborted.
+fn u32_length(what: &str, value: usize) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| {
+        format!("image encoding cannot write a {what} of {value}: it does not fit the image format's 32-bit field")
+    })
+}
+
+/// A register list's length, a closure's parameter or copied-value count, a
+/// method's or factory's arity, narrowed to the wire's `u16` field. A
+/// program can pass it within the register ceiling -- a send of more than
+/// 65,535 arguments that all read one register, a method of more than 65,535
+/// parameters (`docs/design/compiler.md`, "Compilation cannot fail") -- so
+/// one past `u16::MAX` refuses the image write with an error rather than
+/// aborting it.
+pub(crate) fn u16_field(what: &str, value: usize) -> Result<u16, String> {
+    u16::try_from(value).map_err(|_| {
+        format!("image encoding cannot write a {what} of {value}: it does not fit the image format's 16-bit field")
+    })
 }
 
 /// `Rc<CompiledCode>` pointer -> code-table id, assigned by
@@ -422,7 +442,7 @@ pub fn encode_code_table<'gc>(
     }
     writer.write_u32(u32_field("code table entry count", order.len()));
     for code in &order {
-        encode_code(writer, code, &ids, symbols);
+        encode_code(writer, code, &ids, symbols)?;
     }
     Ok(ids)
 }
@@ -450,7 +470,7 @@ fn encode_code(
     code: &CompiledCode,
     ids: &CodeIds,
     symbols: &mut symbols::Builder,
-) {
+) -> Result<(), String> {
     writer.write_u8(code_kind_tag(code.kind));
     writer.write_u16(code.argument_count);
     writer.write_u16(code.register_count);
@@ -479,8 +499,9 @@ fn encode_code(
     writer.write_boolean(compiled_uncached(code));
     writer.write_u32(u32_field("instruction count", code.instruction_count()));
     for instruction in &code.instructions() {
-        encode_instruction(writer, instruction, ids, symbols);
+        encode_instruction(writer, instruction, ids, symbols)?;
     }
+    Ok(())
 }
 
 /// Whether `code`'s own sends are `CallSite::UNCACHED` -- true exactly for a
@@ -497,11 +518,12 @@ fn compiled_uncached(code: &CompiledCode) -> bool {
         .is_some_and(|site| site == CallSite::UNCACHED)
 }
 
-fn encode_registers(writer: &mut Writer, registers: &[u16]) {
-    writer.write_u16(u16_field("register list length", registers.len()));
+fn encode_registers(writer: &mut Writer, registers: &[u16]) -> Result<(), String> {
+    writer.write_u16(u16_field("register list", registers.len())?);
     for register in registers {
         writer.write_u16(*register);
     }
+    Ok(())
 }
 
 fn encode_instruction(
@@ -509,7 +531,7 @@ fn encode_instruction(
     instruction: &Instruction,
     ids: &CodeIds,
     symbols: &mut symbols::Builder,
-) {
+) -> Result<(), String> {
     match instruction {
         // The code table is collected from the module's own mixin tree
         // (`mixins::plan`), which never contains a shipped mixin, so this is
@@ -525,7 +547,7 @@ fn encode_instruction(
         } => {
             writer.write_u8(OPCODE_LOAD_LITERAL);
             writer.write_u16(*destination);
-            encode_literal(writer, literal, symbols);
+            encode_literal(writer, literal, symbols)?;
         }
         Instruction::LoadSelf { destination } => {
             writer.write_u8(OPCODE_LOAD_SELF);
@@ -579,7 +601,7 @@ fn encode_instruction(
             writer.write_u8(OPCODE_SEND_LEXICAL);
             writer.write_u16(*depth);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers);
+            encode_registers(writer, argument_registers)?;
             writer.write_u16(*destination);
         }
         Instruction::SendPublic {
@@ -592,7 +614,7 @@ fn encode_instruction(
             writer.write_u8(OPCODE_SEND_PUBLIC);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
-            encode_registers(writer, argument_registers);
+            encode_registers(writer, argument_registers)?;
             writer.write_u16(*destination);
         }
         Instruction::SendInlinable {
@@ -605,7 +627,7 @@ fn encode_instruction(
             writer.write_u8(OPCODE_SEND_INLINABLE);
             writer.write_u32(symbols.intern(selector.as_str()));
             writer.write_u16(*receiver_register);
-            encode_registers(writer, argument_registers);
+            encode_registers(writer, argument_registers)?;
             writer.write_u16(*destination);
         }
         Instruction::SendSuper {
@@ -616,7 +638,7 @@ fn encode_instruction(
         } => {
             writer.write_u8(OPCODE_SEND_SUPER);
             writer.write_u32(symbols.intern(selector.as_str()));
-            encode_registers(writer, argument_registers);
+            encode_registers(writer, argument_registers)?;
             writer.write_u16(*destination);
         }
         Instruction::MakeClosure {
@@ -627,7 +649,7 @@ fn encode_instruction(
         } => {
             writer.write_u8(OPCODE_MAKE_CLOSURE);
             writer.write_u16(*destination);
-            writer.write_u16(u16_field("closure parameter count", parameters.len()));
+            writer.write_u16(u16_field("closure parameter count", parameters.len())?);
             for parameter in parameters.iter() {
                 writer.write_u32(symbols.intern(parameter.as_str()));
             }
@@ -636,7 +658,7 @@ fn encode_instruction(
             writer.write_u32(ids.id_of(code).expect(
                 "internal: collect_code assigned every nested block an id before its parent",
             ));
-            encode_registers(writer, copied);
+            encode_registers(writer, copied)?;
         }
         Instruction::MakeArray {
             destination,
@@ -644,7 +666,7 @@ fn encode_instruction(
         } => {
             writer.write_u8(OPCODE_MAKE_ARRAY);
             writer.write_u16(*destination);
-            encode_registers(writer, element_registers);
+            encode_registers(writer, element_registers)?;
         }
         Instruction::MakeVector { destination, size } => {
             writer.write_u8(OPCODE_MAKE_VECTOR);
@@ -755,6 +777,7 @@ fn encode_instruction(
             writer.write_u32(*target);
         }
     }
+    Ok(())
 }
 
 /// `IntegerOperation` as a wire byte. Exhaustive on purpose -- a tenth
@@ -776,18 +799,23 @@ pub fn integer_operation_tag(operation: IntegerOperation) -> u8 {
 
 /// A `LargeInteger`'s wire form, shared by the value and the literal tag:
 /// a sign byte, the digit count, the digits least significant first.
-fn write_large_integer(writer: &mut Writer, integer: &ArbitraryInteger) {
+fn write_large_integer(writer: &mut Writer, integer: &ArbitraryInteger) -> Result<(), String> {
     writer.write_u8(u8::from(integer.is_negative()));
-    writer.write_u32(u32_field(
+    writer.write_u32(u32_length(
         "large integer digit count",
         integer.magnitude().len(),
-    ));
+    )?);
     for digit in integer.magnitude() {
         writer.write_u64(*digit);
     }
+    Ok(())
 }
 
-fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols::Builder) {
+fn encode_literal(
+    writer: &mut Writer,
+    literal: &Literal,
+    symbols: &mut symbols::Builder,
+) -> Result<(), String> {
     match literal {
         Literal::Nil => writer.write_u8(LITERAL_NIL),
         Literal::Boolean(boolean) => {
@@ -818,7 +846,7 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
             }
             None => {
                 writer.write_u8(LITERAL_LARGE_INTEGER);
-                write_large_integer(writer, integer);
+                write_large_integer(writer, integer)?;
             }
         },
         Literal::UnresolvedIdentifier(name) => {
@@ -827,6 +855,7 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
         }
         Literal::BodyTooLarge => writer.write_u8(LITERAL_BODY_TOO_LARGE),
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,12 +1442,16 @@ fn encode_optional_class<'gc>(
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
 /// keeps the encoding canonical.
-fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeContext<'_, 'gc>) {
+fn encode_value<'gc>(
+    writer: &mut Writer,
+    value: Value<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
     // A resolved future is written as its value, which is what the graph
     // walk recorded in its place (`GraphTable::visit_value`).
     let value = future::seen_through(context.heap, value);
     if encode_scalar_value(writer, value) {
-        return;
+        return Ok(());
     }
     let Some(object) = value.as_object() else {
         unreachable!("encode_scalar_value handles every non-Obj case")
@@ -1437,10 +1470,10 @@ fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeCon
             }
             None => {
                 writer.write_u8(VALUE_LARGE_INTEGER);
-                write_large_integer(writer, &integer);
+                write_large_integer(writer, &integer)?;
             }
         }
-        return;
+        return Ok(());
     }
     // A boxed float likewise, under the one tag every float travels as: the
     // decoder's `Mutator::new_float` decides by the range again which
@@ -1448,44 +1481,51 @@ fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeCon
     if let Some(float) = context.heap.float_value(value) {
         writer.write_u8(VALUE_FLOAT);
         writer.write_f64(float);
-        return;
+        return Ok(());
     }
     if is_same_object(value, context.platform) {
         writer.write_u8(VALUE_PLATFORM);
-        return;
+        return Ok(());
     }
     if let Some(index) = context.table.platform_path_index(context.heap, object) {
         writer.write_u8(VALUE_PLATFORM_PATH);
         writer.write_u32(index);
-        return;
+        return Ok(());
     }
     if context.heap.is_class(object) {
         writer.write_u8(VALUE_CLASS_TAG);
         encode_class_tag(writer, object, context);
-        return;
+        return Ok(());
     }
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(context.table.object_id(context.heap, object));
+    Ok(())
 }
 
 fn encode_values<'gc>(
     writer: &mut Writer,
     values: &[Value<'gc>],
     context: &EncodeContext<'_, 'gc>,
-) {
-    writer.write_u32(u32_field("value list length", values.len()));
+) -> Result<(), String> {
+    writer.write_u32(u32_length("value list", values.len())?);
     for value in values {
-        encode_value(writer, *value, context);
+        encode_value(writer, *value, context)?;
     }
+    Ok(())
 }
 
 /// `encode_values` for what a heap object stores, read through
 /// `Heap::load`.
-fn encode_words<'gc>(writer: &mut Writer, words: &[Word], context: &EncodeContext<'_, 'gc>) {
-    writer.write_u32(u32_field("value list length", words.len()));
+fn encode_words<'gc>(
+    writer: &mut Writer,
+    words: &[Word],
+    context: &EncodeContext<'_, 'gc>,
+) -> Result<(), String> {
+    writer.write_u32(u32_length("value list", words.len())?);
     for word in words {
-        encode_value(writer, context.heap.load(*word), context);
+        encode_value(writer, context.heap.load(*word), context)?;
     }
+    Ok(())
 }
 
 fn encode_frame_reference<'gc>(
@@ -1525,9 +1565,9 @@ fn encode_closure_record<'gc>(
     } = closure;
     writer.write_u32(context.code_ids.id_of(code)?);
     writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
-    writer.write_u16(u16_field("closure copied value count", copied.len()));
+    writer.write_u16(u16_field("closure copied value count", copied.len())?);
     for word in copied.iter() {
-        encode_value(writer, context.heap.load(*word), context);
+        encode_value(writer, context.heap.load(*word), context)?;
     }
     Ok(())
 }
@@ -1619,7 +1659,7 @@ fn encode_class_record<'gc>(
     match &data.enclosing {
         Some(enclosing) => {
             writer.write_boolean(true);
-            encode_value(writer, Value::object(*enclosing), context);
+            encode_value(writer, Value::object(*enclosing), context)?;
         }
         None => writer.write_boolean(false),
     }
@@ -1673,25 +1713,30 @@ fn encode_object<'gc>(
                 return Err("image encoding cannot serialize a malformed future".to_string());
             };
             writer.write_u8(OBJECT_INSTANCE);
-            encode_values(writer, &fields, context);
+            encode_values(writer, &fields, context)?;
         }
         ObjectData::Instance(fields) => {
             writer.write_u8(OBJECT_INSTANCE);
-            encode_words(writer, fields, context);
+            encode_words(writer, fields, context)?;
         }
         ObjectData::String(string) => {
             writer.write_u8(OBJECT_STRING);
             // The wire keeps UTF-8 (`docs/design/image-format.md`); the
             // width is the heap's, chosen afresh when the record is decoded.
-            writer.write_str(&string.to_utf8());
+            let text = string.to_utf8();
+            u32_length("string", text.len())?;
+            writer.write_str(&text);
         }
         ObjectData::Symbol(symbol) => {
             writer.write_u8(OBJECT_SYMBOL);
+            // A program can make a symbol of any string (`asSymbol`); the
+            // symbol table writes its text with a `u32` length.
+            u32_length("symbol", symbol.as_str().len())?;
             writer.write_u32(symbols.intern(symbol.as_str()));
         }
         ObjectData::Array(elements) => {
             writer.write_u8(OBJECT_ARRAY);
-            encode_words(writer, elements, context);
+            encode_words(writer, elements, context)?;
         }
         ObjectData::Closure(closure) => {
             writer.write_u8(OBJECT_CLOSURE);
@@ -1732,11 +1777,11 @@ fn encode_frame<'gc>(
     frame: FrameReference<'gc>,
     context: &EncodeContext<'_, 'gc>,
     symbols: &mut symbols::Builder,
-) {
+) -> Result<(), String> {
     let snapshot = context.heap.frame_snapshot(frame);
-    encode_value(writer, context.heap.load(snapshot.receiver), context);
-    encode_words(writer, &snapshot.arguments, context);
-    encode_words(writer, &snapshot.temporaries, context);
+    encode_value(writer, context.heap.load(snapshot.receiver), context)?;
+    encode_words(writer, &snapshot.arguments, context)?;
+    encode_words(writer, &snapshot.temporaries, context)?;
     writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
     // An image's code table holds only compiled bodies, so a frame's
     // `program_counter` is always an instruction index and the record does not
@@ -1777,6 +1822,7 @@ fn encode_frame<'gc>(
         }
     }
     writer.write_boolean(snapshot.uncontinuable);
+    Ok(())
 }
 
 /// The platform paths a graph section uses, in the order its references
@@ -1860,9 +1906,9 @@ pub fn encode_graph_section<'gc>(
         encode_object(writer, *object, &context, symbols)?;
     }
     for frame in table.frames() {
-        encode_frame(writer, *frame, &context, symbols);
+        encode_frame(writer, *frame, &context, symbols)?;
     }
-    encode_values(writer, roots, &context);
+    encode_values(writer, roots, &context)?;
     Ok(used)
 }
 

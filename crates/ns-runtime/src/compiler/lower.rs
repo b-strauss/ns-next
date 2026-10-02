@@ -503,6 +503,10 @@ impl<'a> Lowerer<'a> {
             ValueUse::Discarded
         };
         for (index, statement) in statements.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             let use_ = if index + 1 == statements.len() {
                 last_use
             } else {
@@ -653,6 +657,10 @@ impl<'a> Lowerer<'a> {
             return;
         }
         for (position, temporary) in temporaries.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             let Some(initializer) = &temporary.initializer else {
                 continue;
             };
@@ -679,6 +687,10 @@ impl<'a> Lowerer<'a> {
             self.record_statement(start);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             if !temporary.simultaneous || temporary.initializer.is_none() {
                 continue;
             }
@@ -919,9 +931,14 @@ impl<'a> Lowerer<'a> {
     /// executes -- the arguments still to come, for instance.
     fn lower_operand(&mut self, expression: &Expression, rest: &[Expression]) -> u16 {
         let register = self.lower_expression(expression);
-        let clobbered = rest
-            .iter()
-            .any(|later| self.writes_register(later, register, 0));
+        // Only a writable named local can be clobbered (`materialize`), so
+        // nothing else walks `rest`: a long argument list or tuple of one
+        // parameter would otherwise cost a walk per operand, quadratic.
+        let writable_local = register < self.base && !self.read_only_locals[usize::from(register)];
+        let clobbered = writable_local
+            && rest
+                .iter()
+                .any(|later| self.writes_register(later, register, 0));
         self.materialize(register, clobbered)
     }
 

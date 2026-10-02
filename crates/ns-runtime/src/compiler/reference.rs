@@ -285,6 +285,10 @@ impl<'a> Body<'a> {
             return;
         }
         for (position, temporary) in temporaries.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             let Some(initializer) = &temporary.initializer else {
                 continue;
             };
@@ -306,6 +310,10 @@ impl<'a> Body<'a> {
             self.record_statement(start);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             if !temporary.simultaneous || temporary.initializer.is_none() {
                 continue;
             }
@@ -335,6 +343,10 @@ impl<'a> Body<'a> {
         }
         let mut last_value = None;
         for statement in statements {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             last_value = self.statement(statement);
         }
         self.end(

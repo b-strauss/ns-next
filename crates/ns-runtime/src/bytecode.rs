@@ -510,6 +510,24 @@ impl CompiledCode {
         self.body.len()
     }
 
+    /// Whether this is the body a body past the register ceiling compiled
+    /// to (`compiler::body_too_large`), with its arity saturated at
+    /// `u16::MAX` because it stands for `given` arguments, more than a `u16`
+    /// counts. Such a body raises before it reads a register, so it may be
+    /// handed all of them.
+    pub fn stands_for_too_many_arguments(&self, given: usize) -> bool {
+        self.argument_count == u16::MAX
+            && given > usize::from(u16::MAX)
+            && self.instruction_count() > 0
+            && matches!(
+                self.instruction(0),
+                Instruction::LoadLiteral {
+                    literal: Literal::BodyTooLarge,
+                    ..
+                }
+            )
+    }
+
     pub(crate) fn slot(&self, index: usize) -> CompactInstruction {
         self.body.slot(index)
     }

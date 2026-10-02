@@ -1125,13 +1125,22 @@ impl<'gc> Mutator<'gc> {
     /// not the declaration it was built for, which no source can build.
     /// Refused rather than pushed, since the activation would lay its
     /// registers out from the wrong count.
+    ///
+    /// The one body admitted with other than its own arity is the one a
+    /// factory of more than `u16::MAX` parameters compiles its message to,
+    /// whose arity saturates there (`CompiledCode::stands_for_too_many_arguments`):
+    /// it raises the too-large error before it reads a register, and every
+    /// register it has is an argument, so the window the given arguments lay
+    /// out covers it.
     fn check_message_arity(
         &self,
         code: &crate::bytecode::CompiledCode,
         applying: ClassReference<'gc>,
         arguments: &[Value<'gc>],
     ) -> Result<(), Signal<'gc>> {
-        if usize::from(code.argument_count) == arguments.len() {
+        if usize::from(code.argument_count) == arguments.len()
+            || code.stands_for_too_many_arguments(arguments.len())
+        {
             return Ok(());
         }
         Err(Signal::Error(NewspeakError {
