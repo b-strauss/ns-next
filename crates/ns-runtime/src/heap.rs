@@ -25,7 +25,10 @@ mod value;
 mod world;
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
-pub use value::{fits_small_integer, Value, ValueKind, Word, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+pub use value::{
+    fits_small_integer, Immediate, ImmediateKind, Value, ValueKind, Word, SMALL_INTEGER_MAX,
+    SMALL_INTEGER_MIN,
+};
 pub(crate) use world::World;
 
 /// Hands every `Heap` a distinct id, so a handle can name the heap that

@@ -98,6 +98,55 @@ impl std::fmt::Debug for Word {
     }
 }
 
+/// A value that holds no handle -- `nil`, a Boolean, a `SmallInteger`, a
+/// `SmallFloat64` -- kept as the word it is, so that compiled code can
+/// carry its constants beside its instructions
+/// (`docs/design/execution.md`, "Planned: the compact instruction
+/// encoding"). It means the same in every heap and across every move, so
+/// code holding one needs no `Trace`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Immediate(u64);
+
+/// What an `Immediate` is, for the decoded view of compiled code.
+#[derive(Clone, Copy, Debug)]
+pub enum ImmediateKind {
+    Nil,
+    Boolean(bool),
+    SmallInteger(i64),
+    SmallFloat(f64),
+}
+
+impl Immediate {
+    pub const NIL: Immediate = Immediate(NIL_WORD);
+
+    pub const fn boolean(value: bool) -> Immediate {
+        Immediate(if value { TRUE_WORD } else { FALSE_WORD })
+    }
+
+    /// `None` outside 61 bits, where the integer is a `LargeInteger` object.
+    pub fn small_integer(value: i64) -> Option<Immediate> {
+        fits_small_integer(value).then(|| Immediate(Value::<'static>::small_integer(value).word))
+    }
+
+    /// `None` outside the `SmallFloat64` range, where the float is boxed.
+    pub fn small_float(value: f64) -> Option<Immediate> {
+        is_small_float_bits(value.to_bits())
+            .then(|| Immediate(Value::<'static>::small_float(value).word))
+    }
+
+    pub fn kind(self) -> ImmediateKind {
+        match Value::<'static>::from_immediate(self).kind() {
+            ValueKind::Nil => ImmediateKind::Nil,
+            ValueKind::Boolean(value) => ImmediateKind::Boolean(value),
+            ValueKind::SmallInteger(value) => ImmediateKind::SmallInteger(value),
+            ValueKind::SmallFloat(value) => ImmediateKind::SmallFloat(value),
+            ValueKind::Object(_) => {
+                unreachable!("internal: an Immediate is only ever made from an immediate word")
+            }
+        }
+    }
+}
+
 /// What a `Value` is, for an exhaustive `match`: the view every site
 /// matches on, so that no code outside the representation names it
 /// (`docs/design/object-model.md`, "Values and objects"). `SmallFloat` is the
@@ -130,6 +179,11 @@ impl<'gc> Value<'gc> {
 
     pub const fn boolean(value: bool) -> Value<'gc> {
         Value::immediate(if value { TRUE_WORD } else { FALSE_WORD })
+    }
+
+    /// The value `immediate` holds, in any heap: it carries no handle.
+    pub const fn from_immediate(immediate: Immediate) -> Value<'gc> {
+        Value::immediate(immediate.0)
     }
 
     /// A `SmallInteger`. Panics in every build when `value` is outside 61
@@ -393,7 +447,7 @@ pub(super) fn branded<'gc>(value: Value<'static>) -> Value<'gc> {
 
 #[cfg(test)]
 mod tests {
-    use super::Value;
+    use super::{Immediate, ImmediateKind, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
 
     #[test]
     fn tagged_arithmetic_answers_what_untagged_arithmetic_answers() {
@@ -563,5 +617,53 @@ mod tests {
     #[test]
     fn a_release_value_is_one_word() {
         assert_eq!(std::mem::size_of::<Value<'static>>(), 8);
+    }
+
+    #[test]
+    fn an_immediate_answers_the_value_it_was_made_from() {
+        let integer = Immediate::small_integer(SMALL_INTEGER_MAX).expect("61 bits fit");
+        assert_eq!(
+            Value::<'static>::from_immediate(integer).as_small_integer(),
+            Some(SMALL_INTEGER_MAX)
+        );
+        assert!(Value::<'static>::from_immediate(Immediate::NIL).is_nil());
+        assert_eq!(
+            Value::<'static>::from_immediate(Immediate::boolean(true)).as_boolean(),
+            Some(true)
+        );
+        let float = Immediate::small_float(1.5).expect("1.5 is a SmallFloat64");
+        assert!(matches!(
+            Value::<'static>::from_immediate(float).kind(),
+            ValueKind::SmallFloat(value) if value == 1.5
+        ));
+    }
+
+    #[test]
+    fn an_immediate_refuses_what_needs_an_object() {
+        assert_eq!(Immediate::small_integer(SMALL_INTEGER_MAX + 1), None);
+        assert_eq!(Immediate::small_integer(SMALL_INTEGER_MIN - 1), None);
+        assert_eq!(Immediate::small_float(1.0e300), None);
+        assert_eq!(Immediate::small_float(f64::NAN), None);
+        assert_eq!(Immediate::small_float(f64::MIN_POSITIVE / 2.0), None);
+    }
+
+    #[test]
+    fn an_immediate_keeps_a_floats_bits() {
+        let positive = Immediate::small_float(0.0).expect("zero is immediate");
+        let negative = Immediate::small_float(-0.0).expect("negative zero is immediate");
+        assert_ne!(positive, negative);
+        let ImmediateKind::SmallFloat(back) = negative.kind() else {
+            panic!("expected a SmallFloat");
+        };
+        assert_eq!(back.to_bits(), (-0.0f64).to_bits());
+        assert!(matches!(
+            Immediate::small_integer(-7).expect("fits").kind(),
+            ImmediateKind::SmallInteger(-7)
+        ));
+        assert!(matches!(Immediate::NIL.kind(), ImmediateKind::Nil));
+        assert!(matches!(
+            Immediate::boolean(false).kind(),
+            ImmediateKind::Boolean(false)
+        ));
     }
 }
