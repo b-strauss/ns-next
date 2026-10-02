@@ -394,7 +394,8 @@ fn literal_form(literal: &Literal) -> LiteralForm {
         Literal::String(_)
         | Literal::Symbol(_)
         | Literal::LargeInteger(_)
-        | Literal::UnresolvedIdentifier(_) => LiteralForm::Allocated,
+        | Literal::UnresolvedIdentifier(_)
+        | Literal::BodyTooLarge => LiteralForm::Allocated,
     }
 }
 
@@ -1794,6 +1795,7 @@ mod tests {
                 crate::ArbitraryInteger::parse("99999999999999999999", 10).expect("digits"),
             ),
             Literal::UnresolvedIdentifier("missing".to_string()),
+            Literal::BodyTooLarge,
         ];
         round_trip(
             literals

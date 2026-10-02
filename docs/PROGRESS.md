@@ -4023,6 +4023,11 @@ measured program reaches.
 - `6a03e90` — what the compact instruction encoding moved, on all sixteen
   programs and the microbenchmarks.
 - This commit — the documentation describes the built state.
+- "a body past the register ceiling compiles, and raises when it runs" —
+  under both lowerings, a body that needs more than `u16::MAX` registers
+  compiles to one that raises `Literal::BodyTooLarge`'s error (literal tag
+  11) when it runs, where the optimized lowering's counts wrapped silently
+  in a release build and the reference lowering panicked.
 
 **The gate.** Before anything was built, a throwaway copy ran `vm::run` on
 the eight-byte slots and was measured against `master` by the protocol of
@@ -4050,7 +4055,6 @@ encoding moved".
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 threaded loop through `become`, measured on a throwaway copy; an
-`IntegerBinary` form with an immediate operand; the reference lowering's
-`u16::MAX` register ceiling; the memory the encoding saves, counted but not
-measured; and the task reviews' minor findings under "Missing tests" and
-"Code quality follow-ups".
+`IntegerBinary` form with an immediate operand; the memory the encoding
+saves, counted but not measured; and the task reviews' minor findings under
+"Missing tests" and "Code quality follow-ups".

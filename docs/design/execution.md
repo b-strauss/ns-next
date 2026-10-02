@@ -6163,7 +6163,8 @@ registers, with no niche to decode.
   so the code stays heap-independent and needs no `Trace`;
 - `literals`, the `Literal`s `LoadLiteral` allocates afresh each time it
   runs: a `String`, a `Symbol`, a `LargeInteger`, a `Float` outside the
-  `SmallFloat64` range, and the deferred `UnresolvedIdentifier`;
+  `SmallFloat64` range, and the deferred `UnresolvedIdentifier` and
+  `BodyTooLarge`;
 - `send_sites`, one `SendSite` per send: its selector, its `CallSite`, the
   lexical depth for a `SendLexical`, and, for a wide send, its destination,
   receiver and argument registers;
@@ -6247,9 +6248,10 @@ mode. Goldens and tests pin the forms no measured program reaches:
 `goldens/runtime/encoding/` a method of three hundred registers and sends
 of three to eight arguments, under both lowerings, and
 `crates/ns-runtime/tests/compact_encoding.rs` bodies past 65,536 constants,
-send sites and allocated literals, under the optimized lowering only, since
-the reference lowering runs out of registers first
-([OPEN-WORK.md](../OPEN-WORK.md), "Known defects and gaps").
+send sites and allocated literals, which answer under the optimized lowering;
+the reference lowering passes its register ceiling first, so there each
+raises the too-large error ([compiler.md](compiler.md), "Compilation cannot
+fail").
 
 **Measured before it was built** (2026-10-02), like the decision sink ("A
 send's value delivered where it is decided" above): a throwaway copy ran

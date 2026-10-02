@@ -21,7 +21,7 @@ use crate::interpreter::future::{
 };
 use crate::interpreter::inline_cache::{send_lexical, send_public, send_super};
 use crate::interpreter::instantiate::check_value_slot;
-use crate::interpreter::literals::unresolved_identifier_error;
+use crate::interpreter::literals::{body_too_large_error, unresolved_identifier_error};
 use crate::interpreter::locals::{
     filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
     store_instance_field, store_vector, write_local, write_outer_local,
@@ -2139,9 +2139,9 @@ fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
     }
 }
 
-/// Materializes a literal -- including the one deferred error case,
-/// `UnresolvedIdentifier`, which raises through `literals.rs`'s own
-/// constructor rather than rebuilding the error here: error text lives in
+/// Materializes a literal -- including the two deferred error cases,
+/// `UnresolvedIdentifier` and `BodyTooLarge`, which raise through
+/// `literals.rs`'s own constructors rather than rebuilding the error here: error text lives in
 /// `interpreter/`, never in the VM. A `LargeInteger` is a fresh object each
 /// time it runs, since a value needs no identity.
 fn make_value<'gc>(
@@ -2160,6 +2160,11 @@ fn make_value<'gc>(
         Literal::UnresolvedIdentifier(name) => {
             let receiver = mutator.heap.activation_receiver(activation);
             return Err(unresolved_identifier_error(name, receiver));
+        }
+        Literal::BodyTooLarge => {
+            let receiver = mutator.heap.activation_receiver(activation);
+            let kind = mutator.heap.activation_kind(activation);
+            return Err(body_too_large_error(&kind, receiver));
         }
     })
 }

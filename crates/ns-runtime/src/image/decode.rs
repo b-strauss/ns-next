@@ -2159,6 +2159,7 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
         LITERAL_UNRESOLVED_IDENTIFIER => Literal::UnresolvedIdentifier(reader.read_str()?),
         LITERAL_LARGE_INTEGER => Literal::LargeInteger(read_large_integer(reader)?),
+        LITERAL_BODY_TOO_LARGE => Literal::BodyTooLarge,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",

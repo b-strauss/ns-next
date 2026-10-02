@@ -825,6 +825,7 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
             writer.write_u8(LITERAL_UNRESOLVED_IDENTIFIER);
             writer.write_str(name);
         }
+        Literal::BodyTooLarge => writer.write_u8(LITERAL_BODY_TOO_LARGE),
     }
 }
 

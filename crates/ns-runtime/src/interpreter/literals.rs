@@ -20,6 +20,37 @@ pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>)
     })
 }
 
+/// The program-level error a body past the register ceiling raises when it
+/// runs: the compiler replaces such a body with one that loads
+/// `bytecode::Literal::BodyTooLarge` first (`docs/design/compiler.md`,
+/// "Compilation cannot fail"), so only a body that runs fails. Named after
+/// the kind of body the activation runs, with a method's own selector and a
+/// block's `value`, as `recursion_too_deep_error` names them.
+///
+/// Raised by `vm::make_value` for `bytecode::Literal::BodyTooLarge`.
+pub(crate) fn body_too_large_error<'gc>(
+    kind: &FrameKind<'gc>,
+    receiver: Value<'gc>,
+) -> Signal<'gc> {
+    let (selector, body) = match kind {
+        FrameKind::Method(method) => (method.selector, "method"),
+        FrameKind::Closure(_) => (Symbol::VALUE, "block"),
+        FrameKind::Initializer(_) | FrameKind::TopLevel => (Symbol::NEW, "initializer"),
+        FrameKind::SuperclassClause(_) => (Symbol::NEW, "superclass clause"),
+        FrameKind::SuperclassMessage(_) | FrameKind::MixinApplicationMessage(_) => {
+            (Symbol::NEW, "inheritance clause message")
+        }
+    };
+    Signal::Error(NewspeakError {
+        selector,
+        receiver,
+        message: format!(
+            "{body} too large: it needs more than {} registers",
+            u16::MAX
+        ),
+    })
+}
+
 /// An integer literal's value: `Small` whenever it fits a `SmallInteger`'s
 /// 61 bits, so an integer keeps its one representation from the literal on.
 #[derive(Debug, Clone, PartialEq, Eq)]

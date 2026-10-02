@@ -31,13 +31,18 @@ pub use compact::{
 /// `LoadLiteral` allocates the `LargeInteger` object each time it runs, which
 /// is sound because a value has no identity.
 ///
-/// `UnresolvedIdentifier` is the one program-level error a *resolved* module
-/// can still carry: an identifier with no binding -- a module root's clause
+/// `UnresolvedIdentifier` is the one unbound name a *resolved* module can
+/// still carry: an identifier with no binding -- a module root's clause
 /// receiver, which the root rule decides and which never runs (see
 /// `interpreter::literals::unresolved_identifier_error`). Compilation cannot
 /// raise a `NewspeakError`, so it is deferred: it is no lowered
 /// `ast::Literal` but the payload of a `LoadLiteral` that raises instead of
 /// producing a value.
+///
+/// `BodyTooLarge` is the other deferral: a body that needs more registers
+/// than a `u16` names compiles to a body that loads it first and raises
+/// `interpreter::literals::body_too_large_error` (`docs/design/compiler.md`,
+/// "Compilation cannot fail"), so a body never run never fails.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -48,6 +53,7 @@ pub enum Literal {
     Symbol(Symbol),
     LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
+    BodyTooLarge,
 }
 
 /// One send's identity within its code family (`docs/design/dispatch.md`,
@@ -934,6 +940,7 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Symbol(symbol) => format!("#{symbol}"),
         Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
+        Literal::BodyTooLarge => "body-too-large".to_string(),
     }
 }
 

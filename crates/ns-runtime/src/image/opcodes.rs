@@ -130,7 +130,7 @@ pub const OPCODE_INITIALIZE_SLOT_PROVISIONALLY: u8 = 39;
 pub const RETIRED_OPCODES: [u8; 10] = [2, 7, 8, 9, 10, 11, 21, 22, 23, 24];
 
 // Literals, carried by `OPCODE_LOAD_LITERAL`.
-// Next free number: 11.
+// Next free number: 12.
 
 /// `nil`.
 pub const LITERAL_NIL: u8 = 0;
@@ -153,6 +153,9 @@ pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 /// A `LargeInteger` literal that fits `i64` travels as
 /// `LITERAL_SMALL_INTEGER`, which loads as a `LargeInteger` beyond 61 bits.
 pub const LITERAL_LARGE_INTEGER: u8 = 10;
+/// The body that stands in for one past the register ceiling; it raises
+/// its error when it runs. No payload.
+pub const LITERAL_BODY_TOO_LARGE: u8 = 11;
 
 /// Literal tags that no longer name anything and are never reused: 6 was the
 /// character literal, retired 2026-09-25 when `"c"` became a one-character

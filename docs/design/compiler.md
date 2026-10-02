@@ -44,10 +44,11 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier`, with integer and float text parsed at compile time
-  rather than at each execution. `LargeInteger` carries an integer literal
-  beyond a `SmallInteger`'s 61 bits as its digits (an `ArbitraryInteger`);
-  `UnresolvedIdentifier` is the deferred case, see "Compilation cannot fail".
+  UnresolvedIdentifier | BodyTooLarge`, with integer and float text parsed at
+  compile time rather than at each execution. `LargeInteger` carries an
+  integer literal beyond a `SmallInteger`'s 61 bits as its digits (an
+  `ArbitraryInteger`); `UnresolvedIdentifier` and `BodyTooLarge` are the
+  deferred cases, see "Compilation cannot fail".
 - `LoadSelf { destination }`.
 - `LoadEnclosingObject { destination, depth }` — `outer N` with no message
   after it, `Binding::EnclosingObject`: the kth enclosing object, found as a
@@ -704,11 +705,56 @@ Compilation is a total, deterministic lowering; a compiler-invariant violation i
 
 A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
-it, so a method that is never run never fails. One literal carries that
-deferral, `Literal::UnresolvedIdentifier`: an identifier the resolver left
+it, so a method that is never run never fails. Two literals carry that
+deferral. `Literal::UnresolvedIdentifier` is an identifier the resolver left
 unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
+
+`Literal::BodyTooLarge` is the register ceiling. A register is numbered by a
+`u16`, so a body can use at most `u16::MAX` (65,535) of them: its
+parameters, the values a block is handed, its named temporaries, the vector
+register and the scratch registers its expressions need. Both lowerings count
+them with checked arithmetic in every build -- `named_locals_fit` before a
+body is laid out (the capture analysis neither declares nor walks a body that
+fails it), `Layout::converted`'s checked sums, and `fresh` and
+`allocate_scratch` as it is lowered -- because a wrapped index would be
+silently wrong code. A body past the ceiling is marked too large, nothing it
+emits is kept, and it compiles to the one body `compiler::body_too_large`
+builds: `LoadLiteral` of `Literal::BodyTooLarge` into the register after its
+arguments, then `ImplicitReturn` of that register, of the same kind and arity,
+with no copied value and statement 0 covering both instructions. Its
+`register_count` is its arguments and that one register; a body whose every
+register is an argument loads into its last argument's register instead, since
+the literal raises before anything is written. When it runs it raises
+`method too large: it needs more than 65535 registers`, with `block`,
+`initializer`, `superclass clause` or `inheritance clause message` in place of
+`method` for the other kinds (`interpreter/literals.rs`,
+`body_too_large_error`, which `vm::make_value` only calls). Each body is judged
+on its own: a block past the ceiling makes only that block raise, its creator
+hands it no copied value and compiles as it would around any block, and a
+sibling method still runs. A block with more parameters than a `u16` counts
+takes `u16::MAX` of them, and its `MakeClosure` names as many
+(`compiler::parameters_of`), so a call with more meets the block's arity
+check, which raises too. A method or a factory with more than 65,535
+parameters compiles and raises the same way, but an image cannot carry it:
+the wire stores an arity in a `u16`, and the encoder refuses the mixin
+([OPEN-WORK.md](../OPEN-WORK.md), "Known defects and gaps").
+
+The two lowerings meet the ceiling at different sizes. The reference lowering
+never reuses a register, so every value costs it one; the optimized lowering
+reuses its scratch registers from statement to statement. A method of 65,537
+statements answers under the optimized lowering and raises under the reference
+lowering (`crates/ns-runtime/tests/compact_encoding.rs`), and a body of more
+than 65,535 named temporaries raises under both. A body between the two
+ceilings is the one known case where the two lowerings' outcomes differ, and
+it is accepted: the ceiling is an implementation limit no shipped, measured or
+golden program comes near, far above the 8-bit temporary count of Primordial
+Soup's method header (`prior-art/primordialsoup/vm/object.h`, `NumTemps`) and
+the 6-bit one of Cog's (`temporaryCountOfMethodHeader`,
+`prior-art/opensmalltalk-vm/src/spur32.cog/cointerp.c`), and the
+specification states no limit (its text searched for "limit", "maximum", "at
+most" and "implementation-defined").
 
 Every integer literal is representable (§5.1.1), so none is deferred. One that
 fits a `SmallInteger`'s 61 bits lowers to `Literal::SmallInteger`, any other to
@@ -844,16 +890,12 @@ runs (`check_shape`): no branch instruction, since only inlining emits one;
 every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
-changing under its consumer. The ceilings — at most `u16::MAX` temporaries,
-block parameters, named locals and registers in a body — are checked in every
-build (`Body::new` and its callers, `fresh`), because an index that wrapped
-would be silently wrong code. A method's or a factory's parameter count comes
-from the shared `argument_count_of` and `factory_argument_count`, whose
-narrowing rests on the parser's bound instead. The optimized lowering is not
-yet as strict: `lower.rs`'s `allocate_scratch` adds without a check, so a
-body past that ceiling is silently wrong in a release build. Aligning it with
-`fresh` is open. (Its call-site counter is checked in every build; see
-"Safepoints and call-site identity".)
+changing under its consumer. The register ceiling is checked in every
+build (`Body::new`, `fresh`), as it is in `lower.rs`, and a body past it
+compiles to the raising body of "Compilation cannot fail"; the shape check
+does not run on a body it replaced. (The optimized lowering's call-site
+counter is checked in every build too; see "Safepoints and call-site
+identity".)
 
 ### Selecting it
 

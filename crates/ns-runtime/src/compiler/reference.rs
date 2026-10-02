@@ -29,8 +29,7 @@ pub(crate) fn compile_method(method: &ast::MethodDeclaration, bindings: &Binding
     let mut body = Body::new(
         CodeKind::Method,
         super::argument_count_of(&method.pattern),
-        u16::try_from(method.body.temporaries.len())
-            .expect("internal: more than u16::MAX temporaries in one method"),
+        method.body.temporaries.len(),
         bindings,
     );
     body.local_initializers(&method.body.temporaries);
@@ -201,11 +200,18 @@ fn clause_message(
 struct Body<'a> {
     bindings: &'a Bindings,
     kind: CodeKind,
+    /// Saturated at `u16::MAX`: only a body that is `too_large` meets a
+    /// count past it.
     argument_count: u16,
     /// The first register above the named locals. Every register from here
     /// on is written by exactly one instruction.
     first_scratch: u16,
     next_register: u16,
+    /// Whether the body needs more registers than a `u16` numbers. Set the
+    /// moment it is known, and from then on nothing emitted is kept:
+    /// `finish` answers `super::body_too_large` instead, never a body whose
+    /// register indices wrapped.
+    too_large: bool,
     code: CodeBuilder,
     statement_program_counter: Vec<(usize, Range<usize>)>,
 }
@@ -213,21 +219,28 @@ struct Body<'a> {
 impl<'a> Body<'a> {
     fn new(
         kind: CodeKind,
-        argument_count: u16,
-        temporary_count: u16,
+        argument_count: usize,
+        temporary_count: usize,
         bindings: &'a Bindings,
     ) -> Self {
-        // Checked in every build, like `fresh`: a wrapped sum would place
-        // scratch registers on top of the named locals.
-        let first_scratch = argument_count
-            .checked_add(temporary_count)
-            .expect("internal: more than u16::MAX named locals in one body");
+        // Checked in every build: a wrapped sum would place scratch
+        // registers on top of the named locals. A body whose named locals do
+        // not fit is too large before it lowers anything, and lowers
+        // nothing (`local_initializers`, `statements_and_end`): the
+        // resolver's indices for its locals past `u16::MAX` name nothing.
+        let too_large = !super::named_locals_fit(argument_count, temporary_count);
+        let first_scratch = if too_large {
+            u16::MAX
+        } else {
+            super::saturated_count(argument_count + temporary_count)
+        };
         Body {
             bindings,
             kind,
-            argument_count,
+            argument_count: super::saturated_count(argument_count),
             first_scratch,
             next_register: first_scratch,
+            too_large,
             code: CodeBuilder::new(),
             statement_program_counter: Vec::new(),
         }
@@ -235,12 +248,14 @@ impl<'a> Body<'a> {
 
     /// A register nothing has written yet. Checked in every build rather than
     /// only under `debug_assertions`: a register index that wrapped would be
-    /// silently wrong code, and compiling is not a hot path.
+    /// silently wrong code. Past the ceiling it marks the body too large and
+    /// answers the last register again, which `finish` never keeps.
     fn fresh(&mut self) -> u16 {
         let register = self.next_register;
-        self.next_register = register
-            .checked_add(1)
-            .expect("internal: more than u16::MAX registers in one body");
+        match register.checked_add(1) {
+            Some(next) => self.next_register = next,
+            None => self.too_large = true,
+        }
         register
     }
 
@@ -266,6 +281,9 @@ impl<'a> Body<'a> {
     /// future instead, and the clause's end reads each one back and stores
     /// it resolved, in declaration order.
     fn local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
+        if self.too_large {
+            return;
+        }
         for (position, temporary) in temporaries.iter().enumerate() {
             let Some(initializer) = &temporary.initializer else {
                 continue;
@@ -283,7 +301,7 @@ impl<'a> Body<'a> {
                 }
                 None => self.value(initializer),
             };
-            let slot = self.argument_count + position as u16;
+            let slot = super::temporary_index(self.argument_count, position);
             self.emit(Instruction::StoreLocal { source, slot });
             self.record_statement(start);
         }
@@ -292,7 +310,7 @@ impl<'a> Body<'a> {
                 continue;
             }
             let start = self.code.len();
-            let slot = self.argument_count + position as u16;
+            let slot = super::temporary_index(self.argument_count, position);
             let copy = self.fresh();
             self.emit(Instruction::Move {
                 destination: copy,
@@ -312,6 +330,9 @@ impl<'a> Body<'a> {
     }
 
     fn statements_and_end(&mut self, statements: &[Statement]) {
+        if self.too_large {
+            return;
+        }
         let mut last_value = None;
         for statement in statements {
             last_value = self.statement(statement);
@@ -599,15 +620,14 @@ impl<'a> Body<'a> {
             .collect();
         let mut inner = Body::new(
             CodeKind::Block,
-            u16::try_from(parameters.len())
-                .expect("internal: more than u16::MAX parameters in one block"),
-            u16::try_from(block.body.temporaries.len())
-                .expect("internal: more than u16::MAX temporaries in one block"),
+            parameters.len(),
+            block.body.temporaries.len(),
             self.bindings,
         );
         inner.local_initializers(&block.body.temporaries);
         inner.statements_and_end(&block.body.statements);
         let code = inner.finish(block.span);
+        let parameters = super::parameters_of(parameters, &code);
         let destination = self.fresh();
         self.emit(Instruction::MakeClosure {
             destination,
@@ -630,6 +650,9 @@ impl<'a> Body<'a> {
     }
 
     fn finish(self, source: Span) -> CompiledCode {
+        if self.too_large {
+            return super::body_too_large(self.kind, self.argument_count, source);
+        }
         if cfg!(debug_assertions) {
             check_shape(&self.code.instructions(), self.first_scratch);
         }
@@ -1308,6 +1331,141 @@ mod tests {
                     literal: BytecodeLiteral::Nil
                 },
                 Instruction::ImplicitReturn { register: 0 },
+            ]
+        );
+    }
+
+    /// The body `compiler::body_too_large` builds for a body of `kind`
+    /// taking `argument_count` arguments: its one register follows them.
+    fn assert_raises_too_large(code: &CompiledCode, kind: CodeKind, argument_count: u16) {
+        assert_eq!(code.kind, kind);
+        assert_eq!(
+            code.instructions(),
+            vec![
+                Instruction::LoadLiteral {
+                    destination: argument_count,
+                    literal: BytecodeLiteral::BodyTooLarge,
+                },
+                Instruction::ImplicitReturn {
+                    register: argument_count
+                },
+            ]
+        );
+        assert_eq!(code.argument_count, argument_count);
+        assert_eq!(code.register_count, argument_count + 1);
+        assert_eq!(code.copied_count, 0);
+        assert_eq!(code.statement_program_counter, vec![(0, 0..2)]);
+    }
+
+    fn loads_body_too_large(code: &CompiledCode) -> bool {
+        code.instructions().iter().any(|instruction| {
+            matches!(
+                instruction,
+                Instruction::LoadLiteral {
+                    literal: BytecodeLiteral::BodyTooLarge,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// `count` statements of `1`, each a register of its own.
+    fn ones(count: usize) -> String {
+        (0..count).map(|_| "1. ").collect()
+    }
+
+    /// Every statement costs this lowering a register, and so does the
+    /// `self` a method falls off its end with: `u16::MAX - 1` statements
+    /// fill the ceiling exactly, and one more passes it -- which compiles to
+    /// the raising body rather than panicking.
+    #[test]
+    fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
+        let at_the_ceiling = compile(
+            &method(&format!("foo = ( {} )", ones(usize::from(u16::MAX) - 1))),
+            0,
+        );
+        assert_eq!(at_the_ceiling.register_count, u16::MAX);
+        assert!(!loads_body_too_large(&at_the_ceiling));
+
+        let past = compile(
+            &method(&format!("foo: a = ( {} )", ones(usize::from(u16::MAX)))),
+            0,
+        );
+        assert_raises_too_large(&past, CodeKind::Method, 1);
+    }
+
+    /// More named temporaries than registers: the body cannot be laid out
+    /// at all, and compiles to the raising body.
+    #[test]
+    fn a_body_with_more_locals_than_registers_compiles_to_one_that_raises() {
+        let temporaries: String = (0..=usize::from(u16::MAX))
+            .map(|index| format!("t{index} "))
+            .collect();
+        let code = compile(&method(&format!("foo = ( | {temporaries}| ^t0 )")), 0);
+        assert_raises_too_large(&code, CodeKind::Method, 0);
+    }
+
+    /// A block is judged on its own: `u16::MAX` statements fill its
+    /// registers exactly, since it answers its last statement's register;
+    /// one more makes only the block raise, and the method creating it
+    /// compiles as it would around any block.
+    #[test]
+    fn a_block_past_the_register_ceiling_raises_on_its_own() {
+        let at_the_ceiling = compile(
+            &method(&format!("foo = ( ^[ {} ] )", ones(usize::from(u16::MAX)))),
+            0,
+        );
+        let block = closure_code(&at_the_ceiling.instruction(0));
+        assert_eq!(block.register_count, u16::MAX);
+        assert!(!loads_body_too_large(&block));
+
+        let code = compile(
+            &method(&format!(
+                "foo = ( ^[ {} ] )",
+                ones(usize::from(u16::MAX) + 1)
+            )),
+            0,
+        );
+        assert!(!loads_body_too_large(&code));
+        assert_raises_too_large(&closure_code(&code.instruction(0)), CodeKind::Block, 0);
+    }
+
+    /// More parameters than a `u16` counts: the raising block takes
+    /// `u16::MAX` of them, all its registers, and loads into the last, which
+    /// the literal raises before writing; its `MakeClosure` names as many,
+    /// so the two agree.
+    #[test]
+    fn a_block_with_more_parameters_than_registers_takes_as_many_as_it_can_count() {
+        let parameters: String = (0..=usize::from(u16::MAX))
+            .map(|index| format!(":p{index} "))
+            .collect();
+        let code = compile(&method(&format!("foo = ( ^[{parameters}| p0 ] )")), 0);
+        let Some(Instruction::MakeClosure {
+            code: block,
+            parameters,
+            copied,
+            ..
+        }) = code
+            .instructions()
+            .into_iter()
+            .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+        else {
+            panic!("the method creates the block")
+        };
+        assert_eq!(parameters.len(), usize::from(u16::MAX));
+        assert!(copied.is_empty());
+        assert_eq!(block.argument_count, u16::MAX);
+        assert_eq!(block.register_count, u16::MAX);
+        assert_eq!(
+            block.instructions(),
+            vec![
+                Instruction::LoadLiteral {
+                    destination: u16::MAX - 1,
+                    literal: BytecodeLiteral::BodyTooLarge,
+                },
+                Instruction::ImplicitReturn {
+                    register: u16::MAX - 1
+                },
             ]
         );
     }

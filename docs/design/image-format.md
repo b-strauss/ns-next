@@ -364,6 +364,9 @@ Literals:
 - 10 `LargeInteger`: an integer literal beyond `i64`, in the same wire form
   as value tag 9 below -- a sign byte, a `u32` digit count and that many
   `u64` digits, least significant first -- so the decoder parses no text.
+- 11 `BodyTooLarge`: no payload; what the body standing in for one past the
+  register ceiling loads first. It raises its error when it runs
+  ([compiler.md](compiler.md), "Compilation cannot fail").
 
 **A call-site number is a property of the code, never a byte on the wire.**
 It is feedback-table bookkeeping, not program meaning: the decoder assigns

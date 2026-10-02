@@ -52,6 +52,13 @@ pub(crate) struct Layout {
     /// only when it has vector variables.
     vector_register: Option<u16>,
     vector_size: u16,
+    /// `copied.len()`, which fits a `u16` because `base` does.
+    copied_count: u16,
+    /// One past this body's last named register: the parameters, the copied
+    /// values, the temporaries and the vector register. Everything above is
+    /// scratch. A layout exists only when this fits a `u16`, which is what
+    /// keeps every named register's index below from overflowing.
+    base: u16,
 }
 
 /// Where one frame keeps a variable, in that frame's own registers -- the
@@ -90,62 +97,81 @@ impl Layout {
     /// The layout of a converted body: the copied values sit between the
     /// parameters and the temporaries, and one hidden register after the
     /// temporaries holds the indirection vector when the body has one.
+    /// `None` when its named registers do not fit a `u16`: the body is past
+    /// the register ceiling.
     fn converted(
         key: BodyKey,
         argument_count: u16,
         temporary_count: u16,
         captures: &Captures,
-    ) -> Self {
+    ) -> Option<Self> {
         let body = captures.body(key);
         let copied = body.copied.clone();
-        let vector_register = if body.vector_size > 0 {
-            Some(argument_count + copied.len() as u16 + temporary_count)
+        let copied_count = u16::try_from(copied.len()).ok()?;
+        let below_vector = argument_count
+            .checked_add(copied_count)?
+            .checked_add(temporary_count)?;
+        let (vector_register, base) = if body.vector_size > 0 {
+            (Some(below_vector), below_vector.checked_add(1)?)
         } else {
-            None
+            (None, below_vector)
         };
-        Layout {
+        Some(Layout {
             key,
             argument_count,
             copied,
             places: body.places.clone(),
             vector_register,
             vector_size: body.vector_size,
-        }
+            copied_count,
+            base,
+        })
     }
 
     /// The layout of a fallback closure, or of a block nested in one: no
     /// copied values and no vector, so every local sits in the register its
     /// resolver index names (`docs/design/execution.md`, "Fallback blocks").
-    fn by_reference(key: BodyKey, argument_count: u16, temporary_count: u16) -> Self {
-        Layout {
+    /// `None` when its named locals do not fit a `u16`.
+    fn by_reference(key: BodyKey, argument_count: u16, temporary_count: u16) -> Option<Self> {
+        let base = argument_count.checked_add(temporary_count)?;
+        Some(Layout {
             key,
             argument_count,
             copied: Vec::new(),
-            places: vec![Place::Register; (argument_count + temporary_count) as usize],
+            places: vec![Place::Register; usize::from(base)],
             vector_register: None,
             vector_size: 0,
+            copied_count: 0,
+            base,
+        })
+    }
+
+    /// The layout a body past the register ceiling is given, since it is
+    /// never laid out: no register at all. Nothing is lowered against it
+    /// (`Lowerer::too_large`).
+    fn past_the_ceiling(key: BodyKey) -> Self {
+        Layout {
+            key,
+            argument_count: 0,
+            copied: Vec::new(),
+            places: Vec::new(),
+            vector_register: None,
+            vector_size: 0,
+            copied_count: 0,
+            base: 0,
         }
-    }
-
-    fn local_count(&self) -> u16 {
-        self.places.len() as u16
-    }
-
-    /// One past this body's last named register: the parameters, the copied
-    /// values, the temporaries and the vector register. Everything above is
-    /// scratch.
-    fn base(&self) -> u16 {
-        self.local_count() + self.copied.len() as u16 + u16::from(self.vector_register.is_some())
     }
 
     /// The register a local of *this* body sits in: the copied values sit
     /// between the parameters and the temporaries, so every temporary is
-    /// pushed up by their count.
+    /// pushed up by their count. Below `base`, so it fits.
     fn local_register(&self, index: u16) -> u16 {
         if index < self.argument_count {
             index
         } else {
-            index + self.copied.len() as u16
+            index
+                .checked_add(self.copied_count)
+                .expect("internal: a local's register past the body's base")
         }
     }
 
@@ -163,7 +189,7 @@ impl Layout {
                     self.copied.iter().position(|held| *held == entry).expect(
                         "internal: a variable the capture analysis did not hand this block",
                     );
-                self.argument_count + position as u16
+                super::local_index(usize::from(self.argument_count) + position)
             }
         }
     }
@@ -214,10 +240,13 @@ fn access_through(hops: u16, location: Location) -> Access {
 /// The runtime `captured_frame` hop count from the innermost scope up to the
 /// scope at `position`: the number of `Frame` scopes above it.
 fn hops_above(scopes: &[ScopeKind], position: usize) -> u16 {
-    scopes[position + 1..]
+    let hops = scopes[position + 1..]
         .iter()
         .filter(|scope| matches!(scope, ScopeKind::Frame { .. }))
-        .count() as u16
+        .count();
+    // One scope per block literal, and the parser refuses nesting past its
+    // `MAX_DEPTH` of 128, so a hop count never nears `u16::MAX`.
+    u16::try_from(hops).expect("internal: more block nesting than the parser admits")
 }
 
 /// Whether anything reads an expression's value once it is computed. A position
@@ -251,7 +280,16 @@ fn declaring_scope(scopes: &[ScopeKind], depth: u16) -> (usize, BodyKey, bool) {
 pub(crate) struct Lowerer<'a> {
     bindings: &'a Rc<HashMap<Span, Binding>>,
     kind: CodeKind,
+    /// Saturated at `u16::MAX`: only a body that is `too_large` meets a
+    /// count past it.
     argument_count: u16,
+    /// Whether this body needs more registers than a `u16` numbers: its
+    /// named registers do not fit (it is never laid out, and lowers
+    /// nothing), or its scratch registers ran past `u16::MAX`
+    /// (`allocate_scratch`). From then on nothing emitted is kept: `finish`
+    /// answers `super::body_too_large`, never a body whose register indices
+    /// wrapped.
+    too_large: bool,
     /// The capture analysis of the whole code family, shared by every body
     /// of it (`compiler/capture.rs`).
     captures: Rc<Captures>,
@@ -327,7 +365,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn new(
         kind: CodeKind,
         key: BodyKey,
-        argument_count: u16,
+        argument_count: usize,
         temporaries: &[ast::SlotDeclaration],
         bindings: &'a Rc<HashMap<Span, Binding>>,
         captures: Rc<Captures>,
@@ -341,13 +379,26 @@ impl<'a> Lowerer<'a> {
             layouts,
         } = enclosing;
         scopes.push(ScopeKind::Frame { key, by_reference });
-        let temporary_count = temporaries.len() as u16;
-        let layout = if by_reference {
-            Layout::by_reference(key, argument_count, temporary_count)
+        // Judged before the capture analysis is asked for the body: it
+        // declares no body whose named locals do not fit, and the resolver's
+        // indices for its locals past `u16::MAX` name nothing.
+        let layout = if super::named_locals_fit(argument_count, temporaries.len()) {
+            let argument_count = super::local_index(argument_count);
+            let temporary_count = super::local_index(temporaries.len());
+            if by_reference {
+                Layout::by_reference(key, argument_count, temporary_count)
+            } else {
+                Layout::converted(key, argument_count, temporary_count, &captures)
+            }
         } else {
-            Layout::converted(key, argument_count, temporary_count, &captures)
+            None
         };
-        let base = layout.base();
+        let too_large = layout.is_none();
+        let argument_count = super::saturated_count(argument_count);
+        let layout = layout.unwrap_or_else(|| Layout::past_the_ceiling(key));
+        // A body past the ceiling has no register table to fill.
+        let named_temporaries = if too_large { &[][..] } else { temporaries };
+        let base = layout.base;
         // Indexed by *register*, not by resolver index. A parameter and an
         // immutable local slot are read-only because nothing but their
         // initialization writes them (§3.6); a copied register because the
@@ -356,9 +407,9 @@ impl<'a> Lowerer<'a> {
         // and a vector variable's own register because it stays nil. A
         // simultaneous temporary (§6.3.2) is written twice whatever its
         // declaration says: its future, then its value at the clause's end.
-        let mut read_only_locals = vec![true; base as usize];
-        for (offset, temporary) in temporaries.iter().enumerate() {
-            let index = argument_count + offset as u16;
+        let mut read_only_locals = vec![true; usize::from(base)];
+        for (offset, temporary) in named_temporaries.iter().enumerate() {
+            let index = super::temporary_index(argument_count, offset);
             let writable = (temporary.mutability != ast::SlotMutability::Immutable
                 || temporary.simultaneous)
                 && layout.places[index as usize] == Place::Register;
@@ -368,18 +419,20 @@ impl<'a> Lowerer<'a> {
         // analysis of its own -- it was walked as the inlined block it also
         // is -- and anything nested in it reaches every one of its registers,
         // so every writable register counts.
-        let mut reachable_by_a_fallback_closure = vec![false; base as usize];
+        let mut reachable_by_a_fallback_closure = vec![false; usize::from(base)];
         if by_reference {
             for (register, read_only) in read_only_locals.iter().enumerate() {
                 reachable_by_a_fallback_closure[register] = !read_only;
             }
-        } else {
+        } else if !too_large {
+            // A body past the ceiling was never analysed, and has no
+            // register to mark.
             let body = captures.body(key);
             for (index, assigned) in body.branch_assigned.iter().enumerate() {
                 // A vector variable's own register stays nil: the fallback
                 // closure writes the vector slot instead.
                 if *assigned && body.places[index] == Place::Register {
-                    let register = layout.local_register(index as u16);
+                    let register = layout.local_register(super::local_index(index));
                     reachable_by_a_fallback_closure[register as usize] = true;
                 }
             }
@@ -397,6 +450,7 @@ impl<'a> Lowerer<'a> {
             bindings,
             kind,
             argument_count,
+            too_large,
             captures,
             layout: Rc::new(layout),
             layouts,
@@ -417,10 +471,18 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A scratch register. Checked in every build: past `u16::MAX` it
+    /// marks the body too large and answers the last register again, which
+    /// `finish` never keeps -- a wrapped index would be silently wrong code.
     fn allocate_scratch(&mut self) -> u16 {
         let register = self.next_scratch;
-        self.next_scratch += 1;
-        self.max_register = self.max_register.max(self.next_scratch);
+        match register.checked_add(1) {
+            Some(next) => {
+                self.next_scratch = next;
+                self.max_register = self.max_register.max(next);
+            }
+            None => self.too_large = true,
+        }
         register
     }
 
@@ -432,6 +494,9 @@ impl<'a> Lowerer<'a> {
     /// last statement's value is read only when falling off the end answers
     /// it; every other statement's value is discarded.
     pub(crate) fn lower_body(&mut self, statements: &[Statement]) {
+        if self.too_large {
+            return;
+        }
         let last_use = if self.answers_last_value() {
             ValueUse::Read
         } else {
@@ -468,6 +533,9 @@ impl<'a> Lowerer<'a> {
     /// VM turns it into an absolute field index at run time via the executing
     /// activation's slot base (`Heap::activation_slot_base`).
     pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
         let start = self.code.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
@@ -485,6 +553,9 @@ impl<'a> Lowerer<'a> {
         block: &Expression,
         own_index: u32,
     ) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
         let start = self.code.len();
         let closure = self.lower_expression_for(block, ValueUse::Read);
@@ -508,6 +579,9 @@ impl<'a> Lowerer<'a> {
     /// only register live across it is this statement's own scratch
     /// register, which no send can write. One statement.
     pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
         let start = self.code.len();
         let register = self.allocate_scratch();
@@ -545,6 +619,9 @@ impl<'a> Lowerer<'a> {
     /// (`Heap::activation_slot_base`), the class whose slot this is. The
     /// test precedes the one statement, as a prologue.
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
         self.emit(Instruction::ReturnSlotIfFilled { own_index });
         let start = self.code.len();
@@ -572,6 +649,9 @@ impl<'a> Lowerer<'a> {
     /// each of those temporaries back and stores it resolved, one statement
     /// apiece, in declaration order.
     pub(crate) fn lower_local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
+        if self.too_large {
+            return;
+        }
         for (position, temporary) in temporaries.iter().enumerate() {
             let Some(initializer) = &temporary.initializer else {
                 continue;
@@ -593,7 +673,8 @@ impl<'a> Lowerer<'a> {
             // Through the same `Access` as an assignment: a captured-and-
             // written local's initializer writes its scope's vector, not a
             // register (`docs/design/execution.md`, "Converted representation").
-            let access = self.resolve_variable(0, self.argument_count + position as u16);
+            let access =
+                self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             self.emit_store(access, source);
             self.record_statement(start);
         }
@@ -603,7 +684,8 @@ impl<'a> Lowerer<'a> {
             }
             self.next_scratch = self.base;
             let start = self.code.len();
-            let access = self.resolve_variable(0, self.argument_count + position as u16);
+            let access =
+                self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             let read = self.emit_read(access);
             // `ResolveFuture` runs user code -- the future's block -- exactly
             // as a send does, and runs again once that block has answered
@@ -750,16 +832,7 @@ impl<'a> Lowerer<'a> {
         // body, because it walked that block literal as the inlined one it
         // also is (`docs/design/execution.md`, "Fallback blocks").
         let by_reference = self.by_reference || self.blocks_by_reference;
-        let copied: Vec<u16> = if by_reference {
-            Vec::new()
-        } else {
-            self.captures
-                .body(key)
-                .copied
-                .iter()
-                .map(|entry| self.layout.register_holding(*entry))
-                .collect()
-        };
+        let first_call_site = self.next_call_site;
         let mut enclosing_read_only_locals = self.enclosing_read_only_locals.clone();
         enclosing_read_only_locals.push(self.read_only_locals.clone());
         let mut layouts = self.layouts.clone();
@@ -767,7 +840,7 @@ impl<'a> Lowerer<'a> {
         let mut inner = Lowerer::new(
             CodeKind::Block,
             key,
-            parameters.len() as u16,
+            parameters.len(),
             &block.body.temporaries,
             self.bindings,
             self.captures.clone(),
@@ -786,8 +859,25 @@ impl<'a> Lowerer<'a> {
         // family, never restarting at each `MakeClosure`
         // (`docs/design/dispatch.md`, "Code families").
         let after = inner.next_call_site;
+        let too_large = inner.too_large;
         let code = inner.finish(block.span);
-        self.next_call_site = after;
+        // A block past the register ceiling is `super::body_too_large`,
+        // which takes no copied values and makes no send, so its creator
+        // hands it none -- the capture analysis may not even hold an entry
+        // for it -- and the family's numbering resumes where it stood, as
+        // if the block made no send.
+        let copied: Vec<u16> = if by_reference || too_large {
+            Vec::new()
+        } else {
+            self.captures
+                .body(key)
+                .copied
+                .iter()
+                .map(|entry| self.layout.register_holding(*entry))
+                .collect()
+        };
+        self.next_call_site = if too_large { first_call_site } else { after };
+        let parameters = super::parameters_of(parameters, &code);
         let destination = self.allocate_scratch();
         self.emit(Instruction::MakeClosure {
             destination,
@@ -1531,8 +1621,13 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The index the next emitted instruction will get -- a forward label.
+    /// Passing `u32::MAX` would take a body of gigabytes of source, near
+    /// the four gibibytes a `Span`'s `u32` offsets address; were one to, a
+    /// wrapped label would be a jump to the wrong instruction, so it panics
+    /// instead.
     fn here(&self) -> u32 {
-        self.code.len() as u32
+        u32::try_from(self.code.len())
+            .expect("internal: more instructions in one body than a u32 numbers")
     }
 
     fn patch_target(&mut self, instruction_index: usize, target: u32) {
@@ -1867,6 +1962,9 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
+        if self.too_large {
+            return super::body_too_large(self.kind, self.argument_count, source);
+        }
         // Control-flow inlining and the integer leaves' fast path are the two
         // sources of a patched target, and every one of their labels is a
         // `here()` that `finish_body`'s terminator guarantees is a real
@@ -1904,7 +2002,7 @@ impl<'a> Lowerer<'a> {
             self.code,
             self.argument_count,
             self.max_register,
-            self.layout.copied.len() as u16,
+            self.layout.copied_count,
             self.statement_program_counter,
             source,
         )
@@ -1952,7 +2050,7 @@ mod tests {
     /// analysis of that same body.
     fn lowerer_for<'a>(
         kind: CodeKind,
-        argument_count: u16,
+        argument_count: usize,
         temporaries: &[ast::SlotDeclaration],
         slot_initializers: Vec<&Expression>,
         statements: &[Statement],
@@ -2008,7 +2106,7 @@ mod tests {
         let argument_count = match &method.pattern {
             ast::MessagePattern::Unary { .. } => 0,
             ast::MessagePattern::Binary { .. } => 1,
-            ast::MessagePattern::Keyword { parts } => parts.len() as u16,
+            ast::MessagePattern::Keyword { parts } => parts.len(),
         };
         lowerer_for(
             CodeKind::Method,
@@ -4196,6 +4294,153 @@ mod tests {
         assert_eq!(
             code.statement_program_counter[0].1,
             0..code.instructions().len()
+        );
+    }
+
+    /// `foo<pattern> = ( | t0 t1 ... | <statements> )`, with `count`
+    /// generated temporaries, lowered whole.
+    fn lower_with_temporaries(pattern: &str, count: usize, statements: &str) -> CompiledCode {
+        let temporaries: String = (0..count).map(|index| format!("t{index} ")).collect();
+        lower_whole_method(
+            &formatdoc! {"
+                class X = Object new (
+                ) (
+                  foo{pattern} = ( | {temporaries}| {statements} )
+                ) : ()
+            "},
+            0,
+        )
+    }
+
+    /// The body `compiler::body_too_large` builds for a body of `kind`
+    /// taking `argument_count` arguments: its one register follows them.
+    fn assert_raises_too_large(code: &CompiledCode, kind: CodeKind, argument_count: u16) {
+        assert_eq!(code.kind, kind);
+        assert_eq!(
+            code.instructions(),
+            vec![
+                Instruction::LoadLiteral {
+                    destination: argument_count,
+                    literal: BytecodeLiteral::BodyTooLarge,
+                },
+                Instruction::ImplicitReturn {
+                    register: argument_count
+                },
+            ]
+        );
+        assert_eq!(code.argument_count, argument_count);
+        assert_eq!(code.register_count, argument_count + 1);
+        assert_eq!(code.copied_count, 0);
+        assert_eq!(code.statement_program_counter, vec![(0, 0..2)]);
+    }
+
+    fn loads_body_too_large(code: &CompiledCode) -> bool {
+        has(code, |instruction| {
+            matches!(
+                instruction,
+                Instruction::LoadLiteral {
+                    literal: BytecodeLiteral::BodyTooLarge,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// `u16::MAX - 1` temporaries and the scratch register `self` is
+    /// answered from fill the ceiling exactly; one temporary more needs a
+    /// register past it, and more temporaries than registers cannot even be
+    /// laid out. Neither panics: both compile to the raising body.
+    #[test]
+    fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
+        let at_the_ceiling = lower_with_temporaries("", usize::from(u16::MAX) - 1, "");
+        assert_eq!(at_the_ceiling.register_count, u16::MAX);
+        assert!(!loads_body_too_large(&at_the_ceiling));
+
+        let one_scratch_past = lower_with_temporaries("", usize::from(u16::MAX), "");
+        assert_raises_too_large(&one_scratch_past, CodeKind::Method, 0);
+
+        let locals_past = lower_with_temporaries(": a with: b", usize::from(u16::MAX) + 1, "^a");
+        assert_raises_too_large(&locals_past, CodeKind::Method, 2);
+    }
+
+    /// The scratch registers alone can pass the ceiling: a tuple's elements
+    /// are each in a register of their own until `MakeArray` reads them.
+    #[test]
+    fn scratch_registers_past_the_ceiling_compile_to_a_body_that_raises() {
+        let tuple = |count: usize| {
+            let elements: String = (0..count).map(|_| "1. ").collect();
+            compile_foo(&format!("{{{elements}}}"))
+        };
+        // `x` is r0, so `u16::MAX - 2` elements and the tuple's own register
+        // fill it exactly.
+        let at_the_ceiling = tuple(usize::from(u16::MAX) - 2);
+        assert_eq!(at_the_ceiling.register_count, u16::MAX);
+        assert!(!loads_body_too_large(&at_the_ceiling));
+        assert_raises_too_large(&tuple(usize::from(u16::MAX) - 1), CodeKind::Method, 1);
+    }
+
+    /// A block is judged on its own: one whose copied value and temporaries
+    /// pass the ceiling raises, its creator hands it no copied value, and
+    /// the method that creates it compiles as it would around any block.
+    #[test]
+    fn a_block_past_the_register_ceiling_raises_and_its_creator_hands_it_nothing() {
+        let temporaries: String = (0..usize::from(u16::MAX))
+            .map(|index| format!("t{index} "))
+            .collect();
+        let code = compile_foo(&format!("[ | {temporaries}| x ]"));
+        assert!(!loads_body_too_large(&code));
+        let Some(Instruction::MakeClosure {
+            code: block,
+            copied,
+            ..
+        }) = code
+            .instructions()
+            .into_iter()
+            .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+        else {
+            panic!("the method creates the block")
+        };
+        assert!(copied.is_empty());
+        assert_raises_too_large(&block, CodeKind::Block, 0);
+    }
+
+    /// More parameters than a `u16` counts: the raising block takes
+    /// `u16::MAX` of them, all its registers, and loads into the last, which
+    /// the literal raises before writing; its `MakeClosure` names as many,
+    /// so the two agree.
+    #[test]
+    fn a_block_with_more_parameters_than_registers_takes_as_many_as_it_can_count() {
+        let parameters: String = (0..=usize::from(u16::MAX))
+            .map(|index| format!(":p{index} "))
+            .collect();
+        let code = compile_foo(&format!("[{parameters}| p0 ]"));
+        let Some(Instruction::MakeClosure {
+            code: block,
+            parameters,
+            copied,
+            ..
+        }) = code
+            .instructions()
+            .into_iter()
+            .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+        else {
+            panic!("the method creates the block")
+        };
+        assert_eq!(parameters.len(), usize::from(u16::MAX));
+        assert!(copied.is_empty());
+        assert_eq!(block.argument_count, u16::MAX);
+        assert_eq!(block.register_count, u16::MAX);
+        assert_eq!(
+            block.instructions(),
+            vec![
+                Instruction::LoadLiteral {
+                    destination: u16::MAX - 1,
+                    literal: BytecodeLiteral::BodyTooLarge,
+                },
+                Instruction::ImplicitReturn {
+                    register: u16::MAX - 1
+                },
+            ]
         );
     }
 }

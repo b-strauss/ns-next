@@ -1182,7 +1182,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// decoding as whatever literal takes the next free number.
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
-    let mut payloads = vec![vec![LITERAL_LARGE_INTEGER + 1]];
+    let mut payloads = vec![vec![LITERAL_BODY_TOO_LARGE + 1]];
     for tag in RETIRED_LITERALS {
         payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
     }
@@ -1271,6 +1271,57 @@ fn a_large_integer_value_round_trips() {
             );
         });
     }
+}
+
+/// A body past the register ceiling travels as the raising body it compiled
+/// to, `Literal::BodyTooLarge` and all: once loaded it raises the same
+/// error, and its sibling, which never needed the ceiling, still answers.
+#[test]
+fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
+    let temporaries: String = (0..=usize::from(u16::MAX))
+        .map(|index| format!("t{index} "))
+        .collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public run = ( | {temporaries}| t0:: 1. ^t0 )
+          public answer = ( ^7 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    assert_eq!(
+        expect_error(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+            "run",
+        ),
+        "method too large: it needs more than 65535 registers"
+    );
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("answer"), &[]),
+        "answer",
+    );
+    assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
 /// A float outside the immediate range in a slot survives a snapshot as a

@@ -78,7 +78,8 @@ leaf.
 **Compiling an already-resolved module can never raise a `NewspeakError`.** It is
 a total, deterministic lowering; a compiler-invariant violation is `panic!` /
 `debug_assert!`. A program-level error is deferred to execution
-(`Literal::UnresolvedIdentifier`), so a method never run never fails.
+(`Literal::UnresolvedIdentifier`, and `Literal::BodyTooLarge` for a body past
+the `u16` register ceiling), so a method never run never fails.
 
 **An expression's value register must still hold that value when its consumer
 executes.** A named local's register is live storage; `lower_operand` copies it,

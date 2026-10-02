@@ -101,5 +101,5 @@ fn local_register(declaration: &ast::MethodDeclaration, code: &CompiledCode, nam
             panic!("internal: Kernel.ns's marked Block method declares no local {name}")
         });
     debug_assert_eq!(code.copied_count, 0, "a method is handed no copied values");
-    code.argument_count + position as u16
+    super::temporary_index(code.argument_count, position)
 }
