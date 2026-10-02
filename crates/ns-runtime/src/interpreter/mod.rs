@@ -2367,7 +2367,7 @@ mod tests {
     /// This is the size the hot path was measured at, in a release build: a
     /// debug build's handles carry an origin and a move epoch besides their
     /// index, so it measures something else. The measurement protocol runs
-    /// this with `--release`.
+    /// this with `--release`. The eight-byte value left it at 56.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_decision_stays_the_size_the_hot_path_was_measured_at() {
@@ -2379,7 +2379,7 @@ mod tests {
     /// run the measurement protocol makes. It only notices growth: the
     /// release figure is the one the hot path was measured at, and a debug
     /// handle carries its origin and move epoch besides its index, which is
-    /// what puts this above it.
+    /// what puts this above it. The eight-byte value left it at 64.
     #[cfg(all(target_pointer_width = "64", debug_assertions))]
     #[test]
     fn a_decision_stays_the_size_it_has_in_a_debug_build() {
@@ -2455,11 +2455,13 @@ mod tests {
     /// release build, where a handle carries no origin or epoch -- so it runs
     /// only there, under `cargo nextest run --release`, which the measurement
     /// protocol's builds are, and under no gate that runs a debug build.
+    /// The eight-byte value shrank `Signal` and `EvaluationResult` from 48
+    /// to 40 bytes; `Result<Step, Signal>` stayed at 56.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_signal_fits_in_the_niche_of_its_one_unboxed_error() {
-        assert_eq!(std::mem::size_of::<Signal>(), 48);
+        assert_eq!(std::mem::size_of::<Signal>(), 40);
         assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 56);
-        assert_eq!(std::mem::size_of::<EvaluationResult>(), 48);
+        assert_eq!(std::mem::size_of::<EvaluationResult>(), 40);
     }
 }

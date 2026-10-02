@@ -491,3 +491,20 @@ fn every_float_reads_back_with_its_own_bits_whether_immediate_or_boxed() {
         }
     });
 }
+
+#[test]
+fn an_object_handle_survives_the_value_word() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object = mutator.new_array(vec![Value::small_integer(1), Value::nil()]);
+        let value = Value::object(object);
+        let back = value
+            .as_object()
+            .expect("an object value answers its handle");
+        assert!(back.same(object));
+        assert_eq!(
+            mutator.heap().describe(&value),
+            mutator.heap().describe(&Value::object(back))
+        );
+    });
+}

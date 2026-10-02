@@ -39,18 +39,6 @@ fn next_heap_id() -> u32 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Where `immediate_dispatch_ids` keeps an immediate's id.
-fn immediate_index(value: &Value<'_>) -> usize {
-    match value.kind() {
-        ValueKind::Nil => 0,
-        ValueKind::Boolean(false) => 1,
-        ValueKind::Boolean(true) => 2,
-        ValueKind::SmallInteger(_) => 3,
-        ValueKind::SmallFloat(_) => 4,
-        ValueKind::Object(_) => unreachable!("an object carries its own class"),
-    }
-}
-
 /// The brand every movable handle carries (`docs/design/memory.md`, "The
 /// brand"). Invariant in `'gc` -- a `fn(&'gc ()) -> &'gc ()` is
 /// contravariant in its argument and covariant in its result -- so the
@@ -463,7 +451,7 @@ pub struct Heap<'gc> {
     total_pause: std::time::Duration,
     longest_pause: std::time::Duration,
     /// The instance ids of the builtin classes of the immediates, indexed by
-    /// `immediate_index`: an immediate has no class field to read one from.
+    /// `Value::immediate_index`: an immediate has no class field to read one from.
     /// Set once by the bootstrap; `NONE` before it.
     immediate_dispatch_ids: [DispatchId; 5],
     /// This heap's distinct id, stamped onto every handle it mints. Debug
@@ -1961,7 +1949,7 @@ impl<'gc> Heap<'gc> {
     #[inline(always)]
     pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
         let Some(object) = value.as_object() else {
-            return self.immediate_dispatch_ids[immediate_index(value)];
+            return self.immediate_dispatch_ids[value.immediate_index()];
         };
         self.check_object_origin(object);
         let entry = &self.objects[object.index as usize];
@@ -4200,7 +4188,7 @@ mod tests {
     /// The header's dispatch id is paid for by boxing `ClassData`, and the
     /// size stays at 56 rather than 48 because `ClosureData` -- an `Rc`, a
     /// `Box<[Value]>`, a `FrameReference` and a `FeedbackBase`, 32 bytes --
-    /// is `ObjectData`'s largest payload.
+    /// is `ObjectData`'s largest payload; the eight-byte value left it at 56.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {

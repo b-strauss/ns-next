@@ -33,17 +33,39 @@ pub(crate) const fn is_small_float_bits(bits: u64) -> bool {
     }
 }
 
+/// One tagged word, Spur's: the low three bits say what the rest is
+/// (`docs/design/object-model.md`, "Planned: an eight-byte value"). An
+/// object is its arena index shifted past the tag; a `SmallInteger` its
+/// 61 bits over `0b001`; `nil`, `false` and `true` the payloads 0, 1 and 2
+/// over `0b010`; a `SmallFloat` Spur's rotated float over `0b100`. Tags
+/// `0b011`, `0b101`, `0b110` and `0b111` are never made, so bit 0 alone tells
+/// a `SmallInteger`.
 #[derive(Clone, Copy)]
-pub struct Value<'gc>(Representation<'gc>);
-
-#[derive(Clone, Copy)]
-enum Representation<'gc> {
-    Nil,
-    Boolean(bool),
-    SmallInteger(i64),
-    Float(f64),
-    Object(ObjectReference<'gc>),
+pub struct Value<'gc> {
+    word: u64,
+    /// Debug builds only, as on the handle the word may carry: the heap
+    /// and the move epoch it was minted in, so that the origin and epoch
+    /// checks stay exact (`docs/design/memory.md`, "The brand"). Zero for an
+    /// immediate.
+    #[cfg(debug_assertions)]
+    origin: u32,
+    #[cfg(debug_assertions)]
+    epoch: u32,
+    brand: Brand<'gc>,
 }
+
+const TAG_MASK: u64 = 0b111;
+const OBJECT_TAG: u64 = 0b000;
+const SMALL_INTEGER_TAG: u64 = 0b001;
+const CONSTANT_TAG: u64 = 0b010;
+const SMALL_FLOAT_TAG: u64 = 0b100;
+const TAG_BITS: u32 = 3;
+const NIL_WORD: u64 = CONSTANT_TAG;
+const FALSE_WORD: u64 = (1 << TAG_BITS) | CONSTANT_TAG;
+const TRUE_WORD: u64 = (2 << TAG_BITS) | CONSTANT_TAG;
+/// Spur's `smallFloatExponentOffset` shifted to where the rotated exponent
+/// sits: the eight-bit exponent the word keeps starts at 897.
+const SMALL_FLOAT_EXPONENT_OFFSET: u64 = 896 << 53;
 
 /// What a `Value` is, for an exhaustive `match`: the view every site
 /// matches on, so that no code outside the representation names it
@@ -60,21 +82,39 @@ pub enum ValueKind<'gc> {
 }
 
 impl<'gc> Value<'gc> {
+    const fn immediate(word: u64) -> Value<'gc> {
+        Value {
+            word,
+            #[cfg(debug_assertions)]
+            origin: 0,
+            #[cfg(debug_assertions)]
+            epoch: 0,
+            brand: std::marker::PhantomData,
+        }
+    }
+
     pub const fn nil() -> Value<'gc> {
-        Value(Representation::Nil)
+        Value::immediate(NIL_WORD)
     }
 
     pub const fn boolean(value: bool) -> Value<'gc> {
-        Value(Representation::Boolean(value))
+        Value::immediate(if value { TRUE_WORD } else { FALSE_WORD })
     }
 
     pub fn small_integer(value: i64) -> Value<'gc> {
         debug_assert!(fits_small_integer(value), "a SmallInteger outside 61 bits");
-        Value(Representation::SmallInteger(value))
+        Value::immediate((value.cast_unsigned() << TAG_BITS) | SMALL_INTEGER_TAG)
     }
 
     pub const fn object(object: ObjectReference<'gc>) -> Value<'gc> {
-        Value(Representation::Object(object))
+        Value {
+            word: (object.index as u64) << TAG_BITS,
+            #[cfg(debug_assertions)]
+            origin: object.origin,
+            #[cfg(debug_assertions)]
+            epoch: object.epoch,
+            brand: object.brand,
+        }
     }
 
     /// The immediate float. Only `Mutator::new_float` makes one, and only for
@@ -85,41 +125,85 @@ impl<'gc> Value<'gc> {
             is_small_float_bits(value.to_bits()),
             "an immediate float outside the SmallFloat64 range"
         );
-        Value(Representation::Float(value))
+        // Spur's `smallFloatObjectOfBits`: the sign rotates to the bottom,
+        // and the exponent drops its offset so that eight bits hold it; ±0.0
+        // (rotated 0 or 1) keeps a zero exponent.
+        let mut rotated = value.to_bits().rotate_left(1);
+        if rotated > 1 {
+            rotated -= SMALL_FLOAT_EXPONENT_OFFSET;
+        }
+        Value::immediate((rotated << TAG_BITS) | SMALL_FLOAT_TAG)
     }
 
     pub fn kind(self) -> ValueKind<'gc> {
-        match self.0 {
-            Representation::Nil => ValueKind::Nil,
-            Representation::Boolean(flag) => ValueKind::Boolean(flag),
-            Representation::SmallInteger(number) => ValueKind::SmallInteger(number),
-            Representation::Float(number) => ValueKind::SmallFloat(number),
-            Representation::Object(object) => ValueKind::Object(object),
+        match self.word & TAG_MASK {
+            OBJECT_TAG => ValueKind::Object(self.reference()),
+            SMALL_INTEGER_TAG => ValueKind::SmallInteger(self.small_integer_payload()),
+            CONSTANT_TAG => match self.word {
+                NIL_WORD => ValueKind::Nil,
+                FALSE_WORD => ValueKind::Boolean(false),
+                TRUE_WORD => ValueKind::Boolean(true),
+                _ => unreachable!("a value is made only by its constructors"),
+            },
+            SMALL_FLOAT_TAG => {
+                // Spur's `smallFloatValueOf`, the inverse of `small_float`.
+                let mut rotated = self.word >> TAG_BITS;
+                if rotated > 1 {
+                    rotated += SMALL_FLOAT_EXPONENT_OFFSET;
+                }
+                ValueKind::SmallFloat(f64::from_bits(rotated.rotate_right(1)))
+            }
+            _ => unreachable!("a value is made only by its constructors"),
         }
     }
 
     pub fn is_nil(self) -> bool {
-        matches!(self.0, Representation::Nil)
+        self.word == NIL_WORD
     }
 
     pub fn as_boolean(self) -> Option<bool> {
-        match self.0 {
-            Representation::Boolean(flag) => Some(flag),
+        match self.word {
+            TRUE_WORD => Some(true),
+            FALSE_WORD => Some(false),
             _ => None,
         }
     }
 
     pub fn as_small_integer(self) -> Option<i64> {
-        match self.0 {
-            Representation::SmallInteger(number) => Some(number),
-            _ => None,
-        }
+        (self.word & SMALL_INTEGER_TAG == SMALL_INTEGER_TAG).then(|| self.small_integer_payload())
     }
 
     pub fn as_object(self) -> Option<ObjectReference<'gc>> {
-        match self.0 {
-            Representation::Object(object) => Some(object),
-            _ => None,
+        (self.word & TAG_MASK == OBJECT_TAG).then(|| self.reference())
+    }
+
+    /// Where `Heap::immediate_dispatch_ids` keeps an immediate's id: `nil`,
+    /// `false` and `true` are their payloads, so the table reads straight
+    /// off the word.
+    pub(super) fn immediate_index(self) -> usize {
+        match self.word & TAG_MASK {
+            CONSTANT_TAG => (self.word >> TAG_BITS) as usize,
+            SMALL_INTEGER_TAG => 3,
+            SMALL_FLOAT_TAG => 4,
+            _ => unreachable!("an object carries its own class"),
+        }
+    }
+
+    /// The arithmetic shift restores the sign the tag shifted up.
+    fn small_integer_payload(self) -> i64 {
+        self.word.cast_signed() >> TAG_BITS
+    }
+
+    fn reference(self) -> ObjectReference<'gc> {
+        ObjectReference {
+            // An object's word is its 32-bit index shifted past the tag, so
+            // the shift back loses nothing.
+            index: (self.word >> TAG_BITS) as u32,
+            #[cfg(debug_assertions)]
+            origin: self.origin,
+            #[cfg(debug_assertions)]
+            epoch: self.epoch,
+            brand: self.brand,
         }
     }
 }
@@ -133,7 +217,8 @@ impl std::fmt::Debug for Value<'_> {
             ValueKind::Nil => formatter.write_str("nil"),
             ValueKind::Boolean(flag) => write!(formatter, "{flag}"),
             ValueKind::SmallInteger(number) => write!(formatter, "{number}"),
-            ValueKind::SmallFloat(number) => write!(formatter, "{number}"),
+            // `{:?}` so that `1.0` reads as a float, not as the integer 1.
+            ValueKind::SmallFloat(number) => write!(formatter, "{number:?}"),
             ValueKind::Object(object) => write!(formatter, "{object:?}"),
         }
     }
@@ -150,38 +235,26 @@ impl std::fmt::Debug for Value<'_> {
 /// from `heap`, and there is no public counterpart: code outside `heap`
 /// cannot change a handle's brand at all.
 pub(super) fn at_rest(value: Value<'_>) -> Value<'static> {
-    Value(match value.0 {
-        Representation::Nil => Representation::Nil,
-        Representation::Boolean(flag) => Representation::Boolean(flag),
-        Representation::SmallInteger(number) => Representation::SmallInteger(number),
-        Representation::Float(number) => Representation::Float(number),
-        Representation::Object(object) => Representation::Object(ObjectReference {
-            index: object.index,
-            #[cfg(debug_assertions)]
-            origin: object.origin,
-            #[cfg(debug_assertions)]
-            epoch: object.epoch,
-            brand: Brand::default(),
-        }),
-    })
+    Value {
+        word: value.word,
+        #[cfg(debug_assertions)]
+        origin: value.origin,
+        #[cfg(debug_assertions)]
+        epoch: value.epoch,
+        brand: Brand::default(),
+    }
 }
 
 /// See `at_rest`.
 pub(super) fn branded<'gc>(value: Value<'static>) -> Value<'gc> {
-    Value(match value.0 {
-        Representation::Nil => Representation::Nil,
-        Representation::Boolean(flag) => Representation::Boolean(flag),
-        Representation::SmallInteger(number) => Representation::SmallInteger(number),
-        Representation::Float(number) => Representation::Float(number),
-        Representation::Object(object) => Representation::Object(ObjectReference {
-            index: object.index,
-            #[cfg(debug_assertions)]
-            origin: object.origin,
-            #[cfg(debug_assertions)]
-            epoch: object.epoch,
-            brand: Brand::default(),
-        }),
-    })
+    Value {
+        word: value.word,
+        #[cfg(debug_assertions)]
+        origin: value.origin,
+        #[cfg(debug_assertions)]
+        epoch: value.epoch,
+        brand: Brand::default(),
+    }
 }
 
 #[cfg(test)]
@@ -231,5 +304,55 @@ mod tests {
         assert!(!fits_small_integer(SMALL_INTEGER_MAX + 1));
         assert!(!fits_small_integer(i64::MIN));
         assert!(!fits_small_integer(i64::MAX));
+    }
+
+    #[test]
+    fn every_kind_survives_the_word() {
+        use super::{SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+        for number in [0, 1, -1, 42, SMALL_INTEGER_MIN, SMALL_INTEGER_MAX] {
+            assert_eq!(
+                Value::<'static>::small_integer(number).as_small_integer(),
+                Some(number)
+            );
+        }
+        for number in [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            1.0e38,
+            f64::from_bits((896 << 52) | 1),
+            f64::from_bits((1151 << 52) | ((1 << 52) - 1)),
+        ] {
+            let value = Value::<'static>::small_float(number);
+            assert!(
+                matches!(value.kind(), super::ValueKind::SmallFloat(back) if back.to_bits() == number.to_bits()),
+                "{number}"
+            );
+        }
+        assert!(Value::<'static>::nil().is_nil());
+        assert_eq!(Value::<'static>::boolean(false).as_boolean(), Some(false));
+        assert_eq!(Value::<'static>::boolean(true).as_boolean(), Some(true));
+        assert!(Value::<'static>::boolean(false)
+            .as_small_integer()
+            .is_none());
+    }
+
+    #[test]
+    fn the_words_are_spurs() {
+        assert_eq!(Value::<'static>::small_integer(5).word, (5 << 3) | 1);
+        assert_eq!(Value::<'static>::small_integer(-1).word, !0b110);
+        assert_eq!(Value::<'static>::nil().word, 0b010);
+        assert_eq!(Value::<'static>::boolean(false).word, (1 << 3) | 0b010);
+        assert_eq!(Value::<'static>::boolean(true).word, (2 << 3) | 0b010);
+        assert_eq!(Value::<'static>::small_float(0.0).word, 0b100);
+        assert_eq!(Value::<'static>::small_float(-0.0).word, (1 << 3) | 0b100);
+        assert_ne!(Value::<'static>::small_float(1.0).word & 0b111, 0);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_release_value_is_one_word() {
+        assert_eq!(std::mem::size_of::<Value<'static>>(), 8);
     }
 }

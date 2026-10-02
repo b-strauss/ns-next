@@ -37,30 +37,36 @@ pub(crate) fn execute<'gc>(
 }
 
 fn identical<'gc>(heap: &Heap<'gc>, first: &Value<'gc>, second: &Value<'gc>) -> bool {
-    // A float's identity is its bits, whether it is immediate or boxed: a
-    // boxed `Float` is a value (§3.1.1), so two allocations of one float are
-    // the same float, as two immediates of it are.
-    if let (Some(left), Some(right)) = (heap.float_value(*first), heap.float_value(*second)) {
-        return left.to_bits() == right.to_bits();
-    }
     match (first.kind(), second.kind()) {
         (ValueKind::Nil, ValueKind::Nil) => true,
         (ValueKind::Boolean(left), ValueKind::Boolean(right)) => left == right,
         (ValueKind::SmallInteger(left), ValueKind::SmallInteger(right)) => left == right,
-        (ValueKind::Object(left), ValueKind::Object(right)) => left.same(right),
+        (ValueKind::SmallFloat(left), ValueKind::SmallFloat(right)) => {
+            left.to_bits() == right.to_bits()
+        }
+        // A float's identity is its bits: a boxed `Float` is a value
+        // (§3.1.1), so two allocations of one float are the same float, as
+        // two immediates of it are. Only two distinct handles ask the heap,
+        // so `==` on one object, or on immediates, reads nothing; an
+        // immediate and a boxed float never share bits.
+        (ValueKind::Object(left), ValueKind::Object(right)) => {
+            left.same(right)
+                || heap.float_value(*first).is_some_and(|number| {
+                    heap.float_value(*second)
+                        .is_some_and(|other| other.to_bits() == number.to_bits())
+                })
+        }
         _ => false,
     }
 }
 
 fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: &Value<'gc>) -> u32 {
-    // A boxed float hashes as an immediate one does, since `identical`
-    // makes it the same float as every other allocation of its bits.
-    if heap.float_value(*value).is_some() {
-        return 0;
-    }
-    match value.as_object() {
-        Some(object) => heap.ensure_identity_hash(object),
-        None => 0, // primitives are values and get no distinct identity
-                   // hash (revisit if a fixture needs one)
+    match value.kind() {
+        // A boxed float hashes as an immediate one does, since `identical`
+        // makes it the same float as every other allocation of its bits.
+        ValueKind::Object(object) if heap.is_boxed_float(object) => 0,
+        ValueKind::Object(object) => heap.ensure_identity_hash(object),
+        // Immediates are values and get no distinct identity hash.
+        _ => 0,
     }
 }
