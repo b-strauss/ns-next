@@ -532,6 +532,22 @@ impl CompiledCode {
         self.body.slot(index)
     }
 
+    /// Whether the instruction at `index` is stored in a wide form -- a
+    /// `Wide` slot, or a send's wide form -- rather than in eight bytes.
+    /// For tests that a body past a table's sixteen-bit index really took
+    /// the wide form; nothing else needs to tell the forms apart.
+    #[doc(hidden)]
+    pub fn is_wide(&self, index: usize) -> bool {
+        matches!(
+            self.body.slot(index),
+            CompactInstruction::Wide { .. }
+                | CompactInstruction::SendPublicWide { .. }
+                | CompactInstruction::SendInlinableWide { .. }
+                | CompactInstruction::SendLexicalWide { .. }
+                | CompactInstruction::SendSuperWide { .. }
+        )
+    }
+
     pub(crate) fn body(&self) -> &EncodedBody {
         &self.body
     }

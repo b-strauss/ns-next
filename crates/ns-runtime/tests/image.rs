@@ -4519,7 +4519,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
 
 #[test]
 fn a_body_that_runs_past_its_last_instruction_is_refused() {
-    // The VM fetches `code.instruction(program_counter)` after every
+    // The VM fetches `code.slot(program_counter)` after every
     // fall-through, so a body whose last instruction is not a return or a jump
     // indexes one past the end. An empty body indexes past the end immediately.
     for instructions in [vec![], vec![Instruction::LoadSelf { destination: 0 }]] {

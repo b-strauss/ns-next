@@ -1,7 +1,7 @@
 //! Bodies past every sixteen-bit table index: a constant, a send site and
 //! an allocated literal each past the 65,536 an eight-byte instruction can
-//! name, so the last of each takes the wide form and runs. The sources are
-//! generated, not written inline.
+//! name, so the first of each takes the eight-byte form, the last the wide
+//! form, and the body runs. The sources are generated, not written inline.
 //!
 //! Each answers under the optimized lowering. The reference lowering gives
 //! every value a register of its own and never reuses one, so each constant,
@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 use std::rc::Rc;
 
+use ns_runtime::bytecode::{CompiledCode, Instruction, Literal};
 use ns_runtime::{
     HostResult, HostSignal, Interpreter, Lowering, Root, SourceOrigin, Symbol, Value, ValueKind,
 };
@@ -86,11 +87,11 @@ fn module_running(statements: &str) -> String {
 }
 
 /// Loads `source` under the optimized lowering, sends `run` to an instance,
-/// and answers the integer it returns and the instruction count of `run`'s
-/// body.
-fn run_and_count(source: &str) -> (i64, usize) {
+/// and answers the integer it returns and `run`'s body, which holds no
+/// handle and so outlives the entry it is read in.
+fn run_and_compile(source: &str) -> (i64, Rc<CompiledCode>) {
     let (mut interpreter, class) = load(source, Lowering::Optimized);
-    let instruction_count = interpreter.enter(|mutator| {
+    let code = interpreter.enter(|mutator| {
         let Some(object) = mutator.fetch(&class).as_object() else {
             panic!("the module's class is a class object")
         };
@@ -100,12 +101,42 @@ fn run_and_count(source: &str) -> (i64, usize) {
             .compiled_method(Symbol::intern("run"))
             .expect("run is compiled")
             .code
-            .instruction_count()
+            .clone()
     });
     let instance = new_instance(&mut interpreter, &class);
     let answer = expect_ok(send(&mut interpreter, &instance, "run", &[]), "run");
     let integer = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
-    (integer, instruction_count)
+    (integer, code)
+}
+
+/// Whether `NS_NEXT_STRESS_WIDE` puts every instruction in a wide form, as
+/// `CodeBuilder::new` reads it: then the first entry of a table is wide too.
+fn every_instruction_wide() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var_os("NS_NEXT_STRESS_WIDE")
+            .is_some_and(|value| !value.is_empty() && value != "0")
+}
+
+/// The first of a table's entries, at `first`, takes the eight-byte form
+/// (unless the stress mode makes every instruction wide), and the
+/// 65,537th, at `last`, the wide form; `is_entry` says each index holds
+/// the instruction the table serves.
+fn assert_forms(
+    code: &CompiledCode,
+    first: usize,
+    last: usize,
+    is_entry: impl Fn(&Instruction) -> bool,
+) {
+    assert!(
+        is_entry(&code.instruction(first)),
+        "the first entry is at {first}"
+    );
+    assert!(
+        is_entry(&code.instruction(last)),
+        "the last entry is at {last}"
+    );
+    assert_eq!(code.is_wide(first), every_instruction_wide());
+    assert!(code.is_wide(last), "the 65,537th entry takes the wide form");
 }
 
 /// Loads `source` under `lowering` and answers the error `run` raises on an
@@ -124,9 +155,18 @@ fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
         .map(|offset| format!("x:: {}. ", 3_000_000_000_u64 + offset as u64))
         .collect();
     let source = module_running(&format!("{statements}^x"));
-    let (answer, instruction_count) = run_and_count(&source);
+    let (answer, code) = run_and_compile(&source);
     assert_eq!(answer, 3_000_065_536);
-    assert_eq!(instruction_count, 2 * STATEMENTS + 1);
+    assert_eq!(code.instruction_count(), 2 * STATEMENTS + 1);
+    assert_forms(&code, 0, 2 * (STATEMENTS - 1), |instruction| {
+        matches!(
+            instruction,
+            Instruction::LoadLiteral {
+                literal: Literal::SmallInteger(_),
+                ..
+            }
+        )
+    });
     assert_eq!(run_error(&source, Lowering::Reference), METHOD_TOO_LARGE);
 }
 
@@ -138,9 +178,12 @@ fn a_constant_past_sixteen_bits_loads_from_the_wide_form() {
 fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
     let statements = "x:: x + 1. ".repeat(STATEMENTS);
     let source = module_running(&format!("x:: 0. {statements}^x"));
-    let (answer, instruction_count) = run_and_count(&source);
+    let (answer, code) = run_and_compile(&source);
     assert_eq!(answer, 65_537);
-    assert_eq!(instruction_count, 2 + 5 * STATEMENTS + 1);
+    assert_eq!(code.instruction_count(), 2 + 5 * STATEMENTS + 1);
+    assert_forms(&code, 2 + 3, 2 + 5 * (STATEMENTS - 1) + 3, |instruction| {
+        matches!(instruction, Instruction::SendPublic { .. })
+    });
     assert_eq!(run_error(&source, Lowering::Reference), METHOD_TOO_LARGE);
 }
 
@@ -151,9 +194,18 @@ fn a_send_site_past_sixteen_bits_sends_from_the_wide_form() {
 fn an_allocated_literal_past_sixteen_bits_loads_from_the_wide_form() {
     let statements = "x:: 'a'. ".repeat(STATEMENTS);
     let source = module_running(&format!("{statements}^x size"));
-    let (answer, instruction_count) = run_and_count(&source);
+    let (answer, code) = run_and_compile(&source);
     assert_eq!(answer, 1);
-    assert_eq!(instruction_count, 2 * STATEMENTS + 2);
+    assert_eq!(code.instruction_count(), 2 * STATEMENTS + 2);
+    assert_forms(&code, 0, 2 * (STATEMENTS - 1), |instruction| {
+        matches!(
+            instruction,
+            Instruction::LoadLiteral {
+                literal: Literal::String(_),
+                ..
+            }
+        )
+    });
     assert_eq!(run_error(&source, Lowering::Reference), METHOD_TOO_LARGE);
 }
 

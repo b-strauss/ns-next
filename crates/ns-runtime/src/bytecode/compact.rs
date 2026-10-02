@@ -2060,9 +2060,19 @@ mod tests {
         round_trip(instructions);
     }
 
+    /// Every instruction a lowering emits before it knows its target, each
+    /// patched in the form it took: in its slot, in a mirror site's
+    /// `failure`, or in the wide table. `never_wide_by_stress` keeps the
+    /// narrow half narrow under `NS_NEXT_STRESS_WIDE`.
     #[test]
     fn a_patched_target_round_trips_narrow_and_wide() {
-        for mut builder in [CodeBuilder::new(), CodeBuilder::always_wide()] {
+        let primitive =
+            crate::builtins::primitive::mirror_primitive_named("string:concatenate:ifFail:")
+                .expect("the mirror primitive exists");
+        for (mut builder, wide) in [
+            (CodeBuilder::never_wide_by_stress(), false),
+            (CodeBuilder::always_wide(), true),
+        ] {
             let jump = builder.emit(Instruction::Jump { target: 0 });
             let integer = builder.emit(Instruction::IntegerBinary {
                 operation: IntegerOperation::Less,
@@ -2071,16 +2081,72 @@ mod tests {
                 right: 3,
                 target: 0,
             });
+            let mirror = builder.emit(Instruction::SendMirror {
+                primitive,
+                mirror_register: 1,
+                subject_register: 2,
+                argument_registers: vec![3, 4],
+                destination: 5,
+                failure: 0,
+            });
+            let not_boolean = builder.emit(Instruction::JumpIfNotBoolean {
+                register: 1,
+                target: 0,
+            });
+            let if_false = builder.emit(Instruction::BranchIfFalse {
+                register: 1,
+                target: 0,
+            });
+            let if_true = builder.emit(Instruction::BranchIfTrue {
+                register: 1,
+                target: 0,
+            });
             builder.patch_target(jump, 1);
-            builder.patch_target(integer, 0);
+            builder.patch_target(integer, 2);
+            builder.patch_target(mirror, 3);
+            builder.patch_target(not_boolean, 4);
+            builder.patch_target(if_false, 5);
+            builder.patch_target(if_true, 6);
             let body = builder.finish();
+            for index in 0..body.len() {
+                assert_eq!(
+                    matches!(body.slot(index), CompactInstruction::Wide { .. }),
+                    wide,
+                    "slot {index} takes the form its builder asks for"
+                );
+            }
             assert!(matches!(
-                body.instruction(0),
+                body.instruction(jump),
                 Instruction::Jump { target: 1 }
             ));
             assert!(matches!(
-                body.instruction(1),
-                Instruction::IntegerBinary { target: 0, .. }
+                body.instruction(integer),
+                Instruction::IntegerBinary { target: 2, .. }
+            ));
+            assert!(matches!(
+                body.instruction(mirror),
+                Instruction::SendMirror { failure: 3, .. }
+            ));
+            assert!(matches!(
+                body.instruction(not_boolean),
+                Instruction::JumpIfNotBoolean {
+                    register: 1,
+                    target: 4
+                }
+            ));
+            assert!(matches!(
+                body.instruction(if_false),
+                Instruction::BranchIfFalse {
+                    register: 1,
+                    target: 5
+                }
+            ));
+            assert!(matches!(
+                body.instruction(if_true),
+                Instruction::BranchIfTrue {
+                    register: 1,
+                    target: 6
+                }
             ));
         }
     }
@@ -2217,6 +2283,62 @@ mod tests {
             assert_eq!(
                 body.instruction(2).call_site(),
                 Some(CallSite { number: 42 })
+            );
+        }
+    }
+
+    /// The image decoder refuses a body at its first bad block and relies
+    /// on the visit ending there: nothing after the `Err` is visited, and
+    /// the `Err` is what the walk answers.
+    #[test]
+    fn the_visit_stops_at_the_first_error_and_answers_it() {
+        let block = std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            0,
+            1,
+            0,
+            vec![(0, 0..1)],
+            ns_syntax::Span::new(0, 1),
+        ));
+        for mut builder in [
+            CodeBuilder::never_wide_by_stress(),
+            CodeBuilder::always_wide(),
+        ] {
+            builder.emit(send("a", 1, &[], 2));
+            builder.emit(Instruction::MakeClosure {
+                destination: 1,
+                parameters: std::rc::Rc::new(vec![]),
+                code: block.clone(),
+                copied: vec![],
+            });
+            builder.emit(send("b", 1, &[], 2));
+            builder.emit(send("c", 1, &[], 2));
+            let mut body = builder.finish();
+            let mut visited = 0;
+            let answer = body.for_each_emitted_mut(|emitted| {
+                visited += 1;
+                match emitted {
+                    Emitted::Block(_) => Err("the block"),
+                    Emitted::CallSite(site) => {
+                        site.number = 7;
+                        Ok(())
+                    }
+                }
+            });
+            assert_eq!(answer, Err("the block"));
+            assert_eq!(visited, 2);
+            assert_eq!(
+                body.instruction(0).call_site(),
+                Some(CallSite { number: 7 })
+            );
+            assert_eq!(
+                body.instruction(2).call_site(),
+                Some(CallSite { number: 3 })
+            );
+            assert_eq!(
+                body.instruction(3).call_site(),
+                Some(CallSite { number: 3 })
             );
         }
     }
