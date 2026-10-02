@@ -138,7 +138,7 @@ fn write_describing<'gc>(
 pub fn snapshot<'gc>(
     mutator: &Mutator<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
-    platform: &Value<'gc>,
+    platform: Value<'gc>,
     roots: &[Value<'gc>],
 ) -> Result<Vec<u8>, String> {
     write_image(mutator, modules, platform, roots, 0)
@@ -162,7 +162,7 @@ pub fn package<'gc>(
     write_image(
         mutator,
         modules,
-        &Value::nil(),
+        Value::nil(),
         &[application],
         encode::FLAG_START,
     )
@@ -173,7 +173,7 @@ pub fn package<'gc>(
 fn write_image<'gc>(
     mutator: &Mutator<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
-    platform: &Value<'gc>,
+    platform: Value<'gc>,
     roots: &[Value<'gc>],
     flags: u8,
 ) -> Result<Vec<u8>, String> {

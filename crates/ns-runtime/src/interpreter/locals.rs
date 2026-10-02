@@ -181,7 +181,7 @@ pub(crate) fn load_own_slot<'gc>(
 /// writes a slot initializer's value through it.
 pub(crate) fn store_instance_field<'gc>(
     heap: &mut Heap<'gc>,
-    instance: &Value<'gc>,
+    instance: Value<'gc>,
     index: usize,
     value: Value<'gc>,
 ) {

@@ -230,7 +230,7 @@ fn class_accessor_target<'gc>(
     let accessor = method.class_accessor?;
     let root = dispatch::kth_enclosing_object(
         heap,
-        &Value::object(object),
+        Value::object(object),
         Some(&defining_class),
         accessor.depth,
     )

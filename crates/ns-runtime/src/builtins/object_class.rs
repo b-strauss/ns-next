@@ -13,14 +13,14 @@ pub(crate) fn execute<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
-        ObjectPrimitive::Class => Some(Ok(Value::object(mutator.class_of(&receiver)))),
+        ObjectPrimitive::Class => Some(Ok(Value::object(mutator.class_of(receiver)))),
         // Identity, and `Object`'s default `=`: declined for a future it
         // would answer `false` to (`interpreter::future::declines_for_a_future`).
         ObjectPrimitive::Identical | ObjectPrimitive::Equal => {
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Object(primitive),
-                identical(&mutator.heap, &receiver, &arguments[0]),
+                identical(&mutator.heap, receiver, arguments[0]),
                 receiver,
                 arguments,
             )
@@ -28,7 +28,7 @@ pub(crate) fn execute<'gc>(
         }
         ObjectPrimitive::Hash => Some(Ok(Value::small_integer(identity_hash_of(
             &mut mutator.heap,
-            &receiver,
+            receiver,
         ) as i64))),
         ObjectPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string("an Object".to_string()),
@@ -36,7 +36,7 @@ pub(crate) fn execute<'gc>(
     }
 }
 
-fn identical<'gc>(heap: &Heap<'gc>, first: &Value<'gc>, second: &Value<'gc>) -> bool {
+fn identical<'gc>(heap: &Heap<'gc>, first: Value<'gc>, second: Value<'gc>) -> bool {
     match (first.kind(), second.kind()) {
         (ValueKind::Nil, ValueKind::Nil) => true,
         (ValueKind::Boolean(left), ValueKind::Boolean(right)) => left == right,
@@ -51,8 +51,8 @@ fn identical<'gc>(heap: &Heap<'gc>, first: &Value<'gc>, second: &Value<'gc>) -> 
         // immediate and a boxed float never share bits.
         (ValueKind::Object(left), ValueKind::Object(right)) => {
             left.same(right)
-                || heap.float_value(*first).is_some_and(|number| {
-                    heap.float_value(*second)
+                || heap.float_value(first).is_some_and(|number| {
+                    heap.float_value(second)
                         .is_some_and(|other| other.to_bits() == number.to_bits())
                 })
         }
@@ -60,7 +60,7 @@ fn identical<'gc>(heap: &Heap<'gc>, first: &Value<'gc>, second: &Value<'gc>) -> 
     }
 }
 
-fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: &Value<'gc>) -> u32 {
+fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: Value<'gc>) -> u32 {
     match value.kind() {
         // A boxed float hashes as an immediate one does, since `identical`
         // makes it the same float as every other allocation of its bits.

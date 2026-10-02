@@ -176,8 +176,8 @@ fn class_objects_of_one_declaration_share_a_dispatch_id() {
         );
         let heap = mutator.heap();
         assert_eq!(
-            heap.dispatch_id(&Value::object(first)),
-            heap.dispatch_id(&Value::object(second))
+            heap.dispatch_id(Value::object(first)),
+            heap.dispatch_id(Value::object(second))
         );
     });
 }

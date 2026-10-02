@@ -103,7 +103,7 @@ impl<'gc> Mutator<'gc> {
         receiver: Value<'gc>,
         selector: Symbol,
     ) -> Resolved<'gc> {
-        let class = self.class_of(&receiver);
+        let class = self.class_of(receiver);
         let lookup = dispatch::lookup_public(&self.heap, class, selector);
         self.resolved_public(lookup, receiver)
     }
@@ -155,7 +155,7 @@ impl<'gc> Mutator<'gc> {
                 found => return resolved(found, Chain::Private),
             }
         }
-        let class = self.class_of(&enclosing);
+        let class = self.class_of(enclosing);
         match dispatch::lookup_protected(&self.heap, class, selector) {
             Lookup::NotFound => self.resolve_public(enclosing, selector),
             found => resolved_for(&self.heap, found, enclosing, Chain::Protected),
@@ -216,7 +216,7 @@ impl<'gc> Mutator<'gc> {
     #[cold]
     #[inline(never)]
     fn resolve_does_not_understand(&mut self, receiver: Value<'gc>, chain: Chain) -> Resolved<'gc> {
-        let class = self.class_of(&receiver);
+        let class = self.class_of(receiver);
         self.resolve_handler(class, chain)
     }
 
@@ -479,7 +479,7 @@ impl<'gc> Mutator<'gc> {
                 mixin,
                 declaring_class,
                 ..
-            } => nested::nested_class(self, &receiver, &mixin, declaring_class),
+            } => nested::nested_class(self, receiver, &mixin, declaring_class),
             // A primitive entry is a mirror row, and a mirror row's failure
             // path is its block: `builtins::execute` answers `Some` for every
             // one, so no primitive passes its level over any more. The

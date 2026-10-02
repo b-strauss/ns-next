@@ -1639,7 +1639,7 @@ impl<'gc> Heap<'gc> {
     /// caller of this is building the message of a `NewspeakError`, which
     /// reaches stderr, and that message needs to name what the value *is*
     /// -- "the String \"foo\"", not its Rust representation.
-    pub fn describe(&self, value: &Value<'gc>) -> String {
+    pub fn describe(&self, value: Value<'gc>) -> String {
         match value.kind() {
             ValueKind::Nil => "nil".to_string(),
             ValueKind::Boolean(boolean) => boolean.to_string(),
@@ -1683,7 +1683,7 @@ impl<'gc> Heap<'gc> {
 
     /// The `Option` form every one of these error constructors needs, so the
     /// `map_or` is not written out three times.
-    pub fn describe_argument(&self, got: Option<&Value<'gc>>) -> String {
+    pub fn describe_argument(&self, got: Option<Value<'gc>>) -> String {
         match got {
             Some(value) => self.describe(value),
             None => "no argument".to_string(),
@@ -1983,7 +1983,7 @@ impl<'gc> Heap<'gc> {
     /// header -- one arena load -- and an immediate's in a table. Nothing
     /// outside this file knows where the id lives.
     #[inline(always)]
-    pub fn dispatch_id(&self, value: &Value<'gc>) -> DispatchId {
+    pub fn dispatch_id(&self, value: Value<'gc>) -> DispatchId {
         let Some(object) = value.as_object() else {
             return self.immediate_dispatch_ids[value.immediate_index()];
         };
@@ -3594,10 +3594,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = named_class(&mut heap, "Foo");
         let instance = heap.allocate_object(class, ObjectData::Instance(vec![]));
-        assert_eq!(
-            heap.describe(&Value::object(instance)),
-            "an instance of Foo"
-        );
+        assert_eq!(heap.describe(Value::object(instance)), "an instance of Foo");
     }
 
     /// The fallback arm of that same match: `class` names an `ObjectReference`
@@ -3613,7 +3610,7 @@ mod tests {
             ObjectData::String(crate::CodePoints::from("not a class")),
         );
         let instance = heap.allocate_object(not_a_class, ObjectData::Instance(vec![]));
-        assert_eq!(heap.describe(&Value::object(instance)), "an object");
+        assert_eq!(heap.describe(Value::object(instance)), "an object");
     }
 
     /// The header every activation-stack test below pushes: nothing in it is
@@ -4226,7 +4223,7 @@ mod tests {
                 .heap
                 .allocate_object(not_a_class, ObjectData::Instance(vec![]));
             assert_eq!(
-                mutator.heap.dispatch_id(&Value::object(instance)),
+                mutator.heap.dispatch_id(Value::object(instance)),
                 crate::mixin::DispatchId::NONE
             );
         });
@@ -4322,7 +4319,7 @@ mod tests {
         assert_eq!(answered.index, frame.index);
         assert!(heap.activation_object_frame(other).is_none());
         assert_eq!(
-            heap.describe(&Value::object(activation_object)),
+            heap.describe(Value::object(activation_object)),
             "an Activation"
         );
     }

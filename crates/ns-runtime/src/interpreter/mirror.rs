@@ -461,7 +461,7 @@ mod tests {
     ) -> std::rc::Rc<crate::mixin::MixinMethod> {
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(probe);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             let Some(application) = mutator.heap().class_application(class) else {
                 panic!("a Probe's class is a class");
             };
@@ -565,7 +565,7 @@ mod tests {
         let size = probe_method(&mut interpreter, &probe, "size");
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(&probe);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             let accepted = mutator.act_with_base(
                 crate::interpreter::resolve::Resolved::Method {
                     method: same,
@@ -650,7 +650,7 @@ mod tests {
                 origin: &origin,
                 source: None,
             }];
-            crate::image::snapshot(mutator, &modules, &platform, &[holder])
+            crate::image::snapshot(mutator, &modules, platform, &[holder])
         });
         match refused {
             Err(message) => assert!(message.contains("VM mirror"), "{message}"),

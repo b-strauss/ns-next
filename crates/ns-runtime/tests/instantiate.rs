@@ -69,7 +69,7 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
             ValueKind::SmallInteger(42) => {}
             _ => panic!(
                 "expected the small integer 42, got {}",
-                mutator.heap().describe(&mutator.fetch(&root))
+                mutator.heap().describe(mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -167,7 +167,7 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             ),
             _ => panic!(
                 "expected the small integer 10, got {}",
-                mutator.heap().describe(&mutator.fetch(&root))
+                mutator.heap().describe(mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -202,7 +202,7 @@ fn a_factory_parameter_is_visible_in_a_slot_initializer() {
             ValueKind::SmallInteger(99) => {}
             _ => panic!(
                 "expected the slot to hold the factory argument (SmallInteger(99)), got {}",
-                mutator.heap().describe(&mutator.fetch(&root))
+                mutator.heap().describe(mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -242,12 +242,12 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
                 Some(string) => assert_eq!(string, "99"),
                 None => panic!(
                     "expected ObjectData::String(\"99\"), got {}",
-                    mutator.heap().describe(&result)
+                    mutator.heap().describe(result)
                 ),
             },
             _ => panic!(
                 "expected a String object, got {}",
-                mutator.heap().describe(&result)
+                mutator.heap().describe(result)
             ),
         }
     });
@@ -284,7 +284,7 @@ fn a_factory_parameter_is_visible_in_an_initializer_expression() {
             ValueKind::SmallInteger(7) => {}
             _ => panic!(
                 "expected SmallInteger(7) assigned by the initializer expression, got {}",
-                mutator.heap().describe(&mutator.fetch(&root))
+                mutator.heap().describe(mutator.fetch(&root))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -318,7 +318,7 @@ fn a_factory_arity_mismatch_is_a_newspeak_error_not_a_panic() {
             );
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a factory-arity Newspeak error, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `instantiate`"),
@@ -341,7 +341,7 @@ fn sending_an_undefined_selector_is_a_newspeak_error_not_a_panic() {
             assert_eq!(error.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a doesNotUnderstand: error, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -481,7 +481,7 @@ ns_runtime::for_each_lowering! {
                     );
                     assert!(
                         mutator
-                            .class_of(&Value::object(instance_object))
+                            .class_of(Value::object(instance_object))
                             .same(class_object),
                         "{what}: answered an instance of another class"
                     );
@@ -670,7 +670,7 @@ fn a_value_class_accepts_a_slot_holding_an_instance_of_value_itself() {
         ValueKind::Boolean(true) => {}
         _ => panic!(
             "two separately built `Value new`s are one value, got {}",
-            mutator.heap().describe(&mutator.fetch(&equal))
+            mutator.heap().describe(mutator.fetch(&equal))
         ),
     });
 }
@@ -760,7 +760,7 @@ ns_runtime::for_each_lowering! {
             ValueKind::SmallInteger(12_04_08_34) => {}
             _ => panic!(
                 "{lowering:?}: expected the log 12 04 08 34, got {}",
-                mutator.heap().describe(&mutator.fetch(&log))
+                mutator.heap().describe(mutator.fetch(&log))
             ),
         });
     }
@@ -784,7 +784,7 @@ ns_runtime::for_each_lowering! {
             ValueKind::SmallInteger(12_04_08_07_34) => {}
             _ => panic!(
                 "{lowering:?}: expected the log 12 04 08 07 34, got {}",
-                mutator.heap().describe(&mutator.fetch(&log))
+                mutator.heap().describe(mutator.fetch(&log))
             ),
         });
     }
@@ -875,7 +875,7 @@ ns_runtime::for_each_lowering! {
                 ValueKind::SmallInteger(actual) if actual == expected => {}
                 _ => panic!(
                     "{lowering:?} {selector}: expected the log {expected}, got {}",
-                    mutator.heap().describe(&mutator.fetch(&log))
+                    mutator.heap().describe(mutator.fetch(&log))
                 ),
             });
         }

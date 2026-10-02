@@ -71,7 +71,7 @@ impl<'gc> Mutator<'gc> {
             receiver,
             message: format!(
                 "{} has no field {field} for the slot accessor {}",
-                self.heap.describe(&receiver),
+                self.heap.describe(receiver),
                 selector
             ),
         })

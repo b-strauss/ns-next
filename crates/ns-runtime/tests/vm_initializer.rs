@@ -34,7 +34,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
+fn integer_of<'gc>(value: Value<'gc>) -> i64 {
     match value.kind() {
         ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
@@ -57,7 +57,7 @@ fn instantiate_and_get(source: &str, factory_arguments: Vec<Value<'static>>, get
         interpreter.send(&instance, Symbol::intern(getter), &[]),
         getter,
     );
-    interpreter.enter(|mutator| integer_of(&mutator.fetch(&result)))
+    interpreter.enter(|mutator| integer_of(mutator.fetch(&result)))
 }
 
 const FACTORY_PARAMETER: &str = indoc! {"
@@ -214,7 +214,7 @@ fn make_class(
 /// The `SmallInteger` held at `instance`'s field `index` -- `Value` has no
 /// `PartialEq`, so this reads through the one variant the test needs
 /// instead of comparing `Value`s directly.
-fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: &Value<'gc>, index: usize) -> i64 {
+fn field_at<'gc>(heap: &ns_runtime::Heap<'gc>, instance: Value<'gc>, index: usize) -> i64 {
     let Some(object) = instance.as_object() else {
         panic!("expected an instance")
     };
@@ -305,7 +305,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         assert_eq!(
             field_at(
                 mutator.heap(),
-                &mutator.fetch(&a_instance),
+                mutator.fetch(&a_instance),
                 a_application.own_slot_base
             ),
             11,
@@ -314,7 +314,7 @@ fn a_mixin_applied_to_different_superclasses_initializes_its_own_slot_at_each_on
         assert_eq!(
             field_at(
                 mutator.heap(),
-                &mutator.fetch(&b_instance),
+                mutator.fetch(&b_instance),
                 b_application.own_slot_base
             ),
             22,
@@ -361,7 +361,7 @@ fn a_three_level_chain_initializes_every_level_at_its_own_absolute_offsets() {
         let leaf = mutator.fetch(&leaf);
         for (index, expected) in [(0, 3), (1, 10), (2, 2), (3, 20), (4, 3), (5, 30)] {
             assert_eq!(
-                field_at(mutator.heap(), &leaf, index),
+                field_at(mutator.heap(), leaf, index),
                 expected,
                 "field {index} holds the wrong level's value"
             );

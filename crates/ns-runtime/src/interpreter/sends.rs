@@ -37,7 +37,7 @@ pub(crate) fn decide_lexical_send<'gc>(
         .heap
         .activation_receiver_and_current_class(activation);
     let enclosing =
-        dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth);
+        dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth);
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
     let resolved = mutator.resolve_lexical(enclosing, lexical_class, selector);
     mutator.act(resolved, enclosing, selector, arguments)
@@ -53,7 +53,7 @@ pub(crate) fn enclosing_object<'gc>(
     let (self_value, defining_class) = mutator
         .heap
         .activation_receiver_and_current_class(activation);
-    dispatch::kth_enclosing_object(&mutator.heap, &self_value, defining_class.as_ref(), depth)
+    dispatch::kth_enclosing_object(&mutator.heap, self_value, defining_class.as_ref(), depth)
 }
 
 /// `newspeak-spec.pdf` §5.10: starts at S, the superclass of the *current

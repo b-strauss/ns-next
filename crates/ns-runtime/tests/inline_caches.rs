@@ -741,7 +741,7 @@ ns_runtime::for_each_lowering! {
             Err(HostSignal::Error(error)) => assert_eq!(error.selector, Symbol::NEW),
             Ok(value) => {
                 let got =
-                    interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+                    interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
                 panic!("expected doesNotUnderstand: new, got Ok({got})")
             }
             Err(HostSignal::Return) => panic!("expected doesNotUnderstand: new, got a return"),

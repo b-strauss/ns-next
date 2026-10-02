@@ -16,7 +16,7 @@ use crate::{Heap, Mutator, Symbol};
 fn of_the_same_class<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> Option<ObjectReference<'gc>> {
     let other = argument.and_then(|value| value.as_object())?;
     heap.class_of_object(other)
@@ -31,7 +31,7 @@ fn of_the_same_class<'gc>(
 pub(crate) fn text_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> bool {
     match of_the_same_class(heap, receiver, argument) {
         Some(other) => heap.strings_equal(receiver, other) == Some(true),
@@ -48,7 +48,7 @@ pub(crate) fn symbol_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
     symbol: Symbol,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> bool {
     match of_the_same_class(heap, receiver, argument) {
         Some(other) => heap.symbol_value(other) == Some(symbol),
@@ -117,7 +117,7 @@ fn from_code_point<'gc>(
             message: format!(
                 "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
                  outside 55296 to 57343, got {}",
-                mutator.heap.describe_argument(arguments.first())
+                mutator.heap.describe_argument(arguments.first().copied())
             ),
         }),
     })
@@ -136,22 +136,21 @@ fn copy_range<'gc>(
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     // A `LargeInteger` bound is past every position, so it takes the error
     // below, described as it is written.
-    let bound = |argument: Option<&Value<'gc>>| match collections::integer_argument(
-        &mutator.heap,
-        argument,
-    ) {
-        Some(IntegerArgument::Small(bound)) => Ok(Some(bound)),
-        Some(IntegerArgument::Large { .. }) => Ok(None),
-        None => Err(collections::not_an_integer(
-            &mutator.heap,
-            &receiver,
-            selector,
-            argument,
-        )),
-    };
-    let start = bound(arguments.first())?;
-    let stop = bound(arguments.get(1))?;
-    let describe = |bound: Option<i64>, argument: Option<&Value<'gc>>| match bound {
+    let bound =
+        |argument: Option<Value<'gc>>| match collections::integer_argument(&mutator.heap, argument)
+        {
+            Some(IntegerArgument::Small(bound)) => Ok(Some(bound)),
+            Some(IntegerArgument::Large { .. }) => Ok(None),
+            None => Err(collections::not_an_integer(
+                &mutator.heap,
+                receiver,
+                selector,
+                argument,
+            )),
+        };
+    let start = bound(arguments.first().copied())?;
+    let stop = bound(arguments.get(1).copied())?;
+    let describe = |bound: Option<i64>, argument: Option<Value<'gc>>| match bound {
         Some(number) => number.to_string(),
         None => mutator.heap.describe_argument(argument),
     };
@@ -177,8 +176,8 @@ fn copy_range<'gc>(
             message: format!(
                 "copyFrom: {} to: {} out of range: valid ranges lie within \
                  1..{size}, an empty range ends just before it starts (size {size})",
-                describe(start, arguments.first()),
-                describe(stop, arguments.get(1)),
+                describe(start, arguments.first().copied()),
+                describe(stop, arguments.get(1).copied()),
             ),
         }),
     }
@@ -202,7 +201,7 @@ pub(crate) fn execute_string<'gc>(
         StringPrimitive::FromCodePoint => None,
         // Array's errors, so that a program sees one text from either.
         StringPrimitive::ElementAt => Some(
-            match collections::integer_argument(&mutator.heap, arguments.first()) {
+            match collections::integer_argument(&mutator.heap, arguments.first().copied()) {
                 Some(IntegerArgument::Small(index)) => {
                     match usize::try_from(index)
                         .ok()
@@ -210,20 +209,20 @@ pub(crate) fn execute_string<'gc>(
                         .and_then(|position| mutator.heap.string_code_point_at(object, position))
                     {
                         Some(code_point) => Ok(Value::small_integer(i64::from(code_point))),
-                        None => Err(collections::out_of_range(&receiver, selector, index, size)),
+                        None => Err(collections::out_of_range(receiver, selector, index, size)),
                     }
                 }
                 Some(IntegerArgument::Large { .. }) => Err(collections::out_of_range(
-                    &receiver,
+                    receiver,
                     selector,
-                    mutator.heap.describe_argument(arguments.first()),
+                    mutator.heap.describe_argument(arguments.first().copied()),
                     size,
                 )),
                 None => Err(collections::not_an_integer(
                     &mutator.heap,
-                    &receiver,
+                    receiver,
                     selector,
-                    arguments.first(),
+                    arguments.first().copied(),
                 )),
             },
         ),
@@ -245,13 +244,13 @@ pub(crate) fn execute_string<'gc>(
                     receiver,
                     message: format!(
                         "String concatenation (,) requires a String argument, got {}",
-                        mutator.heap.describe_argument(arguments.first())
+                        mutator.heap.describe_argument(arguments.first().copied())
                     ),
                 }),
             })
         }
         StringPrimitive::Equal => {
-            let equal = text_equals(&mutator.heap, object, arguments.first());
+            let equal = text_equals(&mutator.heap, object, arguments.first().copied());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::String(primitive),
@@ -289,7 +288,7 @@ pub(crate) fn execute_symbol<'gc>(
             mutator.new_string(symbol.as_str().to_string()),
         ))),
         SymbolPrimitive::Equal => {
-            let equal = symbol_equals(&mutator.heap, object, symbol, arguments.first());
+            let equal = symbol_equals(&mutator.heap, object, symbol, arguments.first().copied());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Symbol(primitive),

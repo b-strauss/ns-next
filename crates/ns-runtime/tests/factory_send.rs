@@ -44,7 +44,7 @@ fn expect_unhandled(
     match interpreter.send(receiver, sent, &[]) {
         Err(HostSignal::Error(error)) => assert_eq!(error.selector, unhandled, "{what}"),
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("{what}: expected doesNotUnderstand: {unhandled}, got Ok({got})")
         }
         Err(HostSignal::Return) => {
@@ -113,7 +113,7 @@ fn array_new_via_ordinary_send_does_not_understand_add() {
             assert_eq!(error.selector, Symbol::intern("add:"));
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected doesNotUnderstand: add:, got Ok({got})")
         }
         Err(HostSignal::Return) => {
@@ -163,14 +163,12 @@ fn user_defined_class_new_via_ordinary_send_matches_direct_instantiate() {
     // or as the description of whatever else it answered.
     let from_send = a_interpreter.enter(|mutator| match mutator.fetch(&via_send_bar).kind() {
         ValueKind::SmallInteger(integer) => Ok(integer),
-        _ => Err(mutator.heap().describe(&mutator.fetch(&via_send_bar))),
+        _ => Err(mutator.heap().describe(mutator.fetch(&via_send_bar))),
     });
     let from_instantiate =
         b_interpreter.enter(|mutator| match mutator.fetch(&via_instantiate_bar).kind() {
             ValueKind::SmallInteger(integer) => Ok(integer),
-            _ => Err(mutator
-                .heap()
-                .describe(&mutator.fetch(&via_instantiate_bar))),
+            _ => Err(mutator.heap().describe(mutator.fetch(&via_instantiate_bar))),
         });
     match (from_send, from_instantiate) {
         (Ok(sent), Ok(instantiated)) => assert_eq!(sent, instantiated),
@@ -206,7 +204,7 @@ fn a_class_object_receiving_a_non_factory_selector_falls_through_to_ordinary_dis
             assert_eq!(error.selector, Symbol::intern("thisSelectorDoesNotExist"));
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected doesNotUnderstand:, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("expected doesNotUnderstand:, got HostSignal::Return"),
@@ -344,7 +342,7 @@ fn a_superclasss_factory_selector_is_not_understood() {
     match interpreter.send(&keyed, Symbol::NEW, &[]) {
         Err(HostSignal::Error(error)) => assert_eq!(error.selector, Symbol::NEW),
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected doesNotUnderstand: new, got Ok({got})")
         }
         Err(HostSignal::Return) => {
@@ -365,7 +363,7 @@ fn a_superclasss_factory_selector_is_not_understood() {
         ValueKind::SmallInteger(7) => {}
         _ => panic!(
             "expected 7, got {}",
-            mutator.heap().describe(&mutator.fetch(&answered))
+            mutator.heap().describe(mutator.fetch(&answered))
         ),
     });
     let simple = expect_ok(
@@ -423,7 +421,7 @@ ns_runtime::for_each_lowering! {
         );
         interpreter.enter(|mutator| {
             let value = mutator.fetch(&label);
-            assert_eq!(mutator.heap().describe(&value), "the String \"a simple\"");
+            assert_eq!(mutator.heap().describe(value), "the String \"a simple\"");
         });
     }
 }

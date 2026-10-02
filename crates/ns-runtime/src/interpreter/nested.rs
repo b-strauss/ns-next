@@ -134,7 +134,7 @@ pub(crate) fn superclass_clause_message_arguments_expression(
 /// declaration is one or more levels too deep.
 pub(crate) fn nested_class<'gc>(
     mutator: &mut Mutator<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     nested: &Rc<Mixin>,
     declaring_class: ClassReference<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
@@ -253,7 +253,7 @@ pub(crate) fn after_clause<'gc>(
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
         &mut mutator.heap,
-        &Value::object(enclosing),
+        Value::object(enclosing),
         index,
         Value::object(class),
     );
@@ -396,7 +396,7 @@ pub(crate) fn build_applied_levels<'gc>(
 /// inherited `class N` it shadows cache into different slots.
 fn cache_slot<'gc>(
     mutator: &Mutator<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     nested: &Rc<Mixin>,
 ) -> Option<(ObjectReference<'gc>, usize, Value<'gc>)> {
     let class = mutator.class_of(receiver);
@@ -529,10 +529,10 @@ fn not_a_mixin_error<'gc>(name: Symbol, index: usize, value: Value<'gc>) -> Sign
 /// second entry for the same (receiver, declaration) is unconditionally a
 /// cycle. The cache slot detects it, holding `creation_in_progress()` while the
 /// first entry's clause runs.
-fn cyclic_definition_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'gc> {
+fn cyclic_definition_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "cyclic class definition: evaluating the superclass clause of class {name} \
              requires class {name} itself"
@@ -547,10 +547,10 @@ fn cyclic_definition_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'
 /// ordinary slot declared on such a class unwritable. Refusing here is what
 /// keeps §6's "subsequent calls on r always return the same class object"
 /// from silently becoming "a fresh class object every call".
-fn no_cache_slot_error<'gc>(receiver: &Value<'gc>, name: Symbol) -> Signal<'gc> {
+fn no_cache_slot_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError {
         selector: name,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "cannot access nested class {name}: this object has no slot storage to cache it in"
         ),

@@ -45,14 +45,14 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
+fn integer_of<'gc>(value: Value<'gc>) -> i64 {
     match value.kind() {
         ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
     }
 }
 
-fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
+fn string_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     let Some(object) = value.as_object() else {
         panic!("expected a string object")
     };
@@ -77,7 +77,7 @@ fn while_true_loops_until_the_condition_is_false_and_answers_nil() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&value))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         3
     );
     let (mut interpreter, result) =
@@ -94,7 +94,7 @@ fn while_false_loops_until_the_condition_is_true() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&value))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         3
     );
 }
@@ -122,7 +122,7 @@ fn a_non_local_return_escapes_a_while_loop() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&value))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         5
     );
 }
@@ -135,7 +135,7 @@ fn if_false_if_true_picks_the_right_block() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| string_of(mutator.heap(), &mutator.fetch(&value))),
+        interpreter.enter(|mutator| string_of(mutator.heap(), mutator.fetch(&value))),
         "t"
     );
     let (mut interpreter, result) = run_method(
@@ -144,7 +144,7 @@ fn if_false_if_true_picks_the_right_block() {
     );
     let value = expect_ok(result, "run");
     assert_eq!(
-        interpreter.enter(|mutator| string_of(mutator.heap(), &mutator.fetch(&value))),
+        interpreter.enter(|mutator| string_of(mutator.heap(), mutator.fetch(&value))),
         "f"
     );
 }

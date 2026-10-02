@@ -196,7 +196,7 @@ fn inherits_mixin_of<'gc>(
         return None;
     }
     let mixin = mutator.heap.class_application(class)?.mixin.clone();
-    let mut current = Some(mutator.class_of(&subject));
+    let mut current = Some(mutator.class_of(subject));
     while let Some(level) = current {
         if let Some(application) = mutator.heap.class_application(level) {
             if Rc::ptr_eq(&application.mixin, &mixin) {
@@ -232,7 +232,7 @@ fn terminate<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Signal<'g
                     .map(|symbol| symbol.to_string())
             })
         })
-        .unwrap_or_else(|| mutator.heap.describe(&description));
+        .unwrap_or_else(|| mutator.heap.describe(description));
     Signal::Terminate(Box::new(NewspeakError {
         selector,
         receiver: argument(1),

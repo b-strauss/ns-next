@@ -83,12 +83,12 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
 /// positive depth is resolvable in either.
 pub fn kth_enclosing_object<'gc>(
     heap: &Heap<'gc>,
-    self_value: &Value<'gc>,
+    self_value: Value<'gc>,
     defining_class: Option<&ClassReference<'gc>>,
     depth: u16,
 ) -> Value<'gc> {
     if depth == 0 {
-        return *self_value;
+        return self_value;
     }
     let Some(mut level) = defining_class.copied() else {
         return Value::nil();

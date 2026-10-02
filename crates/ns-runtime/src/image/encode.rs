@@ -143,7 +143,7 @@ pub fn encode_source_origin(writer: &mut Writer, origin: &SourceOrigin) {
 /// Encodes the four kinds of `Value` that are no object (tags 0-4); returns
 /// `false` for an object, which `encode_value` (the object-graph encoder)
 /// handles.
-pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: &Value<'gc>) -> bool {
+pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: Value<'gc>) -> bool {
     match value.kind() {
         ValueKind::Nil => writer.write_u8(VALUE_NIL),
         ValueKind::Boolean(false) => writer.write_u8(VALUE_FALSE),
@@ -833,7 +833,7 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
 // "Sections").
 // ---------------------------------------------------------------------------
 
-fn is_same_object<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
+fn is_same_object<'gc>(first: Value<'gc>, second: Value<'gc>) -> bool {
     matches!((first.as_object(), second.as_object()), (Some(left), Some(right)) if left.same(right))
 }
 
@@ -1018,7 +1018,7 @@ impl<'gc> GraphTable<'gc> {
     pub fn build(
         heap: &Heap<'gc>,
         roots: &[Value<'gc>],
-        platform: &Value<'gc>,
+        platform: Value<'gc>,
         modules: &ModuleClasses<'gc>,
         platform_paths: PlatformPaths<'gc>,
     ) -> GraphTable<'gc> {
@@ -1041,7 +1041,7 @@ impl<'gc> GraphTable<'gc> {
         while let Some(pending) = stack.pop() {
             match pending {
                 Pending::Value(value) => {
-                    table.visit_value(heap, &value, platform, modules, &mut stack)
+                    table.visit_value(heap, value, platform, modules, &mut stack)
                 }
                 Pending::Frame(frame) => table.visit_frame(heap, frame, &mut stack),
             }
@@ -1052,15 +1052,15 @@ impl<'gc> GraphTable<'gc> {
     fn visit_value(
         &mut self,
         heap: &Heap<'gc>,
-        value: &Value<'gc>,
-        platform: &Value<'gc>,
+        value: Value<'gc>,
+        platform: Value<'gc>,
         modules: &ModuleClasses<'gc>,
         stack: &mut Vec<Pending<'gc>>,
     ) {
         // A resolved future is never entered: every reference to one is
         // written as its value (`encode_value`), so its value is what the
         // graph holds.
-        let value = &future::seen_through(heap, *value);
+        let value = &future::seen_through(heap, value);
         let Some(object) = value.as_object() else {
             return;
         };
@@ -1070,7 +1070,7 @@ impl<'gc> GraphTable<'gc> {
         if heap.is_large_integer(object) || heap.is_boxed_float(object) {
             return;
         }
-        if is_same_object(value, platform) {
+        if is_same_object(*value, platform) {
             return;
         }
         // Named by its path, like the platform by its tag: the loading
@@ -1412,11 +1412,11 @@ fn encode_optional_class<'gc>(
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
 /// keeps the encoding canonical.
-fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeContext<'_, 'gc>) {
+fn encode_value<'gc>(writer: &mut Writer, value: Value<'gc>, context: &EncodeContext<'_, 'gc>) {
     // A resolved future is written as its value, which is what the graph
     // walk recorded in its place (`GraphTable::visit_value`).
-    let value = &future::seen_through(context.heap, *value);
-    if encode_scalar_value(writer, value) {
+    let value = &future::seen_through(context.heap, value);
+    if encode_scalar_value(writer, *value) {
         return;
     }
     let Some(object) = value.as_object() else {
@@ -1449,7 +1449,7 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
         writer.write_f64(float);
         return;
     }
-    if is_same_object(value, context.platform) {
+    if is_same_object(*value, *context.platform) {
         writer.write_u8(VALUE_PLATFORM);
         return;
     }
@@ -1474,7 +1474,7 @@ fn encode_values<'gc>(
 ) {
     writer.write_u32(u32_field("value list length", values.len()));
     for value in values {
-        encode_value(writer, value, context);
+        encode_value(writer, *value, context);
     }
 }
 
@@ -1483,7 +1483,7 @@ fn encode_values<'gc>(
 fn encode_words<'gc>(writer: &mut Writer, words: &[Word], context: &EncodeContext<'_, 'gc>) {
     writer.write_u32(u32_field("value list length", words.len()));
     for word in words {
-        encode_value(writer, &context.heap.load(*word), context);
+        encode_value(writer, context.heap.load(*word), context);
     }
 }
 
@@ -1526,7 +1526,7 @@ fn encode_closure_record<'gc>(
     writer.write_u32(context.table.frame_id(context.heap, *captured_frame));
     writer.write_u16(u16_field("closure copied value count", copied.len()));
     for word in copied.iter() {
-        encode_value(writer, &context.heap.load(*word), context);
+        encode_value(writer, context.heap.load(*word), context);
     }
     Ok(())
 }
@@ -1618,7 +1618,7 @@ fn encode_class_record<'gc>(
     match &data.enclosing {
         Some(enclosing) => {
             writer.write_boolean(true);
-            encode_value(writer, &Value::object(*enclosing), context);
+            encode_value(writer, Value::object(*enclosing), context);
         }
         None => writer.write_boolean(false),
     }
@@ -1733,7 +1733,7 @@ fn encode_frame<'gc>(
     symbols: &mut symbols::Builder,
 ) {
     let snapshot = context.heap.frame_snapshot(frame);
-    encode_value(writer, &context.heap.load(snapshot.receiver), context);
+    encode_value(writer, context.heap.load(snapshot.receiver), context);
     encode_words(writer, &snapshot.arguments, context);
     encode_words(writer, &snapshot.temporaries, context);
     writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
@@ -1799,7 +1799,7 @@ pub fn encode_graph_section<'gc>(
     writer: &mut Writer,
     heap: &Heap<'gc>,
     roots: &[Value<'gc>],
-    platform: &Value<'gc>,
+    platform: Value<'gc>,
     code_ids: &CodeIds,
     modules: &ModuleClasses<'gc>,
     mixin_ids: &HashMap<usize, u32>,
@@ -1848,7 +1848,7 @@ pub fn encode_graph_section<'gc>(
     let context = EncodeContext {
         table: &table,
         code_ids,
-        platform,
+        platform: &platform,
         modules,
         mixin_ids,
         heap,
@@ -1893,7 +1893,7 @@ pub fn encode_tag_named_hashes<'gc>(
     writer: &mut Writer,
     mutator: &Mutator<'gc>,
     modules: &ModuleClasses<'gc>,
-    platform: &Value<'gc>,
+    platform: Value<'gc>,
     used_platform_objects: &[ObjectReference<'gc>],
 ) {
     let heap = &mutator.heap;

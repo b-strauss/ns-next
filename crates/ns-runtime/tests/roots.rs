@@ -32,7 +32,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
     match result {
         Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
@@ -246,6 +246,6 @@ fn a_world_reached_from_roots_survives_moves() {
         };
         assert_eq!(mutator.heap().array_length(built), Some(2));
         let cell = mutator.heap().array_at(built, 0).expect("the cell");
-        assert_eq!(mutator.heap().describe(&cell), "an instance of Cell");
+        assert_eq!(mutator.heap().describe(cell), "an instance of Cell");
     });
 }

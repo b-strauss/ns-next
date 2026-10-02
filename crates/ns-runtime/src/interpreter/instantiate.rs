@@ -184,7 +184,7 @@ impl Interpreter {
                         receiver: mutator.stash(value),
                         message: format!(
                             "cannot instantiate {}: it is not a class",
-                            mutator.heap.describe(&value)
+                            mutator.heap.describe(value)
                         ),
                     })))
                 }
@@ -1546,7 +1546,7 @@ fn non_value_slot_error<'gc>(
         message: format!(
             "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \
              so every slot it declares holds a value",
-            mutator.heap().describe(&value)
+            mutator.heap().describe(value)
         ),
     }
 }

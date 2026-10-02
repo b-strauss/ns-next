@@ -552,7 +552,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                     Ok(()) => {
                         store_instance_field(
                             &mut mutator.heap,
-                            &receiver,
+                            receiver,
                             base + *own_index as usize,
                             value,
                         );
@@ -947,7 +947,7 @@ fn initialize_slot_refused<'gc>(
                 Ok(()) => {
                     store_instance_field(
                         &mut mutator.heap,
-                        &receiver,
+                        receiver,
                         base + own_index as usize,
                         resolved,
                     );
@@ -1081,7 +1081,7 @@ fn initialize_slot_provisionally<'gc>(
     let base = mutator.heap.activation_slot_base(activation);
     store_instance_field(
         &mut mutator.heap,
-        &receiver,
+        receiver,
         base + own_index as usize,
         value,
     );

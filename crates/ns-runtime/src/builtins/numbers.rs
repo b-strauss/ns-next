@@ -58,10 +58,10 @@ enum Accepted {
 /// only an integer.
 fn type_mismatch<'gc>(
     heap: &Heap<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
     accepted: Accepted,
-    got: Option<&Value<'gc>>,
+    got: Option<Value<'gc>>,
 ) -> NewspeakError<'gc> {
     let required = match accepted {
         Accepted::Integer => "an integer",
@@ -69,7 +69,7 @@ fn type_mismatch<'gc>(
     };
     NewspeakError {
         selector,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "{selector} requires {required} argument, got {}",
             heap.describe_argument(got)
@@ -81,7 +81,7 @@ fn type_mismatch<'gc>(
 /// never an error (this module's note says why). Named so that
 /// `builtins::value`'s derived equality decides an integer exactly as
 /// `Integer>>=` does rather than growing a second copy of the rule.
-pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<&Value<'gc>>) -> bool {
+pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<Value<'gc>>) -> bool {
     argument.and_then(|value| value.as_small_integer()) == Some(receiver)
 }
 
@@ -94,7 +94,7 @@ pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<&Value<'gc>>) 
 pub(crate) fn float_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: f64,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> bool {
     float_operand(heap, argument)
         .is_some_and(|other| other == receiver || (other.is_nan() && receiver.is_nan()))
@@ -231,13 +231,13 @@ fn shift_left<'gc>(
         receiver,
         message,
     };
-    let Some(count) = integer_operand(&mutator.heap, arguments.first()) else {
+    let Some(count) = integer_operand(&mutator.heap, arguments.first().copied()) else {
         return Err(type_mismatch(
             &mutator.heap,
-            &receiver,
+            receiver,
             selector,
             Accepted::Integer,
-            arguments.first(),
+            arguments.first().copied(),
         ));
     };
     if count.is_negative() {
@@ -267,7 +267,7 @@ fn shift_left<'gc>(
 /// An integer operand of either representation, for the slow path: a
 /// `SmallInteger` widened, or a `LargeInteger`'s payload. `None` for
 /// anything else, which each leaf turns into its own type mismatch.
-fn integer_operand<'gc>(heap: &Heap<'gc>, value: Option<&Value<'gc>>) -> Option<ArbitraryInteger> {
+fn integer_operand<'gc>(heap: &Heap<'gc>, value: Option<Value<'gc>>) -> Option<ArbitraryInteger> {
     match value?.kind() {
         ValueKind::SmallInteger(integer) => Some(ArbitraryInteger::from_i64(integer)),
         ValueKind::Object(object) => heap.large_integer(object),
@@ -277,8 +277,8 @@ fn integer_operand<'gc>(heap: &Heap<'gc>, value: Option<&Value<'gc>>) -> Option<
 
 /// A `Float` argument, which an integer's arithmetic and ordering take by
 /// converting the receiver to a double (this module's note).
-fn float_operand<'gc>(heap: &Heap<'gc>, value: Option<&Value<'gc>>) -> Option<f64> {
-    heap.float_value(*value?)
+fn float_operand<'gc>(heap: &Heap<'gc>, value: Option<Value<'gc>>) -> Option<f64> {
+    heap.float_value(value?)
 }
 
 /// What an arithmetic closure answers. The closures hold `mutator` shared,
@@ -312,15 +312,15 @@ pub(crate) fn execute_integer<'gc>(
     let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
             &mutator.heap,
-            &receiver,
+            receiver,
             Symbol::intern(operator),
             accepted,
-            arguments.first(),
+            arguments.first().copied(),
         )
     };
     // A `LargeInteger` argument, read only once the argument is known to be
     // no `SmallInteger`, so the common case never touches the heap.
-    let large_argument = || integer_operand(&mutator.heap, arguments.first());
+    let large_argument = || integer_operand(&mutator.heap, arguments.first().copied());
     // `+`/`-`/`*`: an argument of neither integer class nor `Float` is a type
     // mismatch.
     // A result that fits a `SmallInteger` is answered without allocating.
@@ -350,7 +350,7 @@ pub(crate) fn execute_integer<'gc>(
                     &ArbitraryInteger::from_i64(receiver_integer),
                     &argument,
                 ))),
-                None => match float_operand(&mutator.heap, arguments.first()) {
+                None => match float_operand(&mutator.heap, arguments.first().copied()) {
                     Some(argument) => Ok(Answer::Float(float(receiver_integer as f64, argument))),
                     None => Err(mismatch(operator, Accepted::Number)),
                 },
@@ -370,7 +370,7 @@ pub(crate) fn execute_integer<'gc>(
             Some(argument) => Ok(Value::boolean(operation(
                 ArbitraryInteger::from_i64(receiver_integer).cmp(&argument),
             ))),
-            None => match float_operand(&mutator.heap, arguments.first()) {
+            None => match float_operand(&mutator.heap, arguments.first().copied()) {
                 Some(argument) => Ok(Value::boolean(
                     (receiver_integer as f64)
                         .partial_cmp(&argument)
@@ -506,7 +506,7 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
             mutator,
             Primitive::Integer(primitive),
-            integer_equals(receiver_integer, arguments.first()),
+            integer_equals(receiver_integer, arguments.first().copied()),
             receiver,
             arguments,
         )
@@ -555,7 +555,7 @@ pub(crate) fn large_integer_hash(integer: &ArbitraryInteger) -> i64 {
 pub(crate) fn large_integer_equals<'gc>(
     heap: &Heap<'gc>,
     receiver: &ArbitraryInteger,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> bool {
     argument
         .and_then(|value| value.as_object())
@@ -577,14 +577,14 @@ pub(crate) fn execute_large_integer<'gc>(
     // ordering; anything else is the leaf's type mismatch. As in
     // `execute_integer`, these closures hold `mutator` shared, so each answers
     // an `ArbitraryInteger` or a double for the caller to make a `Value` of.
-    let argument = || integer_operand(&mutator.heap, arguments.first());
+    let argument = || integer_operand(&mutator.heap, arguments.first().copied());
     let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
             &mutator.heap,
-            &receiver,
+            receiver,
             Symbol::intern(operator),
             accepted,
-            arguments.first(),
+            arguments.first().copied(),
         )
     };
     let arithmetic = |operator: &str,
@@ -592,7 +592,7 @@ pub(crate) fn execute_large_integer<'gc>(
                       float: fn(f64, f64) -> f64| {
         match argument() {
             Some(argument) => Ok(Answer::Integer(operation(&receiver_integer, &argument))),
-            None => match float_operand(&mutator.heap, arguments.first()) {
+            None => match float_operand(&mutator.heap, arguments.first().copied()) {
                 Some(argument) => Ok(Answer::Float(float(receiver_integer.to_f64(), argument))),
                 None => Err(mismatch(operator, Accepted::Number)),
             },
@@ -600,7 +600,7 @@ pub(crate) fn execute_large_integer<'gc>(
     };
     let compare = |operator: &str, operation: fn(Ordering) -> bool| match argument() {
         Some(argument) => Ok(Value::boolean(operation(receiver_integer.cmp(&argument)))),
-        None => match float_operand(&mutator.heap, arguments.first()) {
+        None => match float_operand(&mutator.heap, arguments.first().copied()) {
             Some(argument) => Ok(Value::boolean(
                 receiver_integer
                     .to_f64()
@@ -659,7 +659,7 @@ pub(crate) fn execute_large_integer<'gc>(
         LargeIntegerPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
             mutator,
             Primitive::LargeInteger(primitive),
-            large_integer_equals(&mutator.heap, &receiver_integer, arguments.first()),
+            large_integer_equals(&mutator.heap, &receiver_integer, arguments.first().copied()),
             receiver,
             arguments,
         )
@@ -705,10 +705,10 @@ pub(crate) fn execute_float<'gc>(
     let mismatch = |operator: &str| {
         type_mismatch(
             &mutator.heap,
-            &receiver,
+            receiver,
             Symbol::intern(operator),
             Accepted::Number,
-            arguments.first(),
+            arguments.first().copied(),
         )
     };
     // A double, for the caller to make a `Value` of: the closure holds
@@ -742,7 +742,7 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
             mutator,
             Primitive::Float(primitive),
-            float_equals(&mutator.heap, receiver_float, arguments.first()),
+            float_equals(&mutator.heap, receiver_float, arguments.first().copied()),
             receiver,
             arguments,
         )
@@ -768,7 +768,7 @@ pub(crate) fn execute_float<'gc>(
             mutator.new_string(receiver_float.to_string()),
         ))),
         FloatPrimitive::AsStringFixed => Some(
-            match collections::integer_argument(&mutator.heap, arguments.first()) {
+            match collections::integer_argument(&mutator.heap, arguments.first().copied()) {
                 Some(IntegerArgument::Small(count)) if (0..=20).contains(&count) => Ok(
                     Value::object(mutator.new_string(fixed_text(receiver_float, count as usize))),
                 ),
@@ -787,7 +787,7 @@ pub(crate) fn execute_float<'gc>(
                     receiver,
                     message: format!(
                         "asStringFixed: takes 0 to 20 fraction digits, got {}",
-                        mutator.heap.describe_argument(arguments.first())
+                        mutator.heap.describe_argument(arguments.first().copied())
                     ),
                 }),
                 None => Err(mismatch("asStringFixed:")),
@@ -815,15 +815,15 @@ mod tests {
                 assert!(first.is_nan());
                 for second in not_a_numbers {
                     let second_value = mutator.new_float(second);
-                    assert!(float_equals(&mutator.heap, first, Some(&second_value)));
+                    assert!(float_equals(&mutator.heap, first, Some(second_value)));
                     assert_eq!(float_hash(first), float_hash(second));
                 }
             }
             let negative_zero = mutator.new_float(-0.0);
-            assert!(float_equals(&mutator.heap, 0.0, Some(&negative_zero)));
+            assert!(float_equals(&mutator.heap, 0.0, Some(negative_zero)));
             assert_eq!(float_hash(0.0), float_hash(-0.0));
             let one = mutator.new_float(1.0);
-            assert!(!float_equals(&mutator.heap, f64::NAN, Some(&one)));
+            assert!(!float_equals(&mutator.heap, f64::NAN, Some(one)));
         });
     }
 

@@ -474,7 +474,7 @@ fn load_refuses_an_image_that_is_not_started() {
             source: None,
         }];
         let platform = mutator.fetch(&platform);
-        ns_runtime::image::snapshot(mutator, &modules, &platform, &[]).expect("snapshot")
+        ns_runtime::image::snapshot(mutator, &modules, platform, &[]).expect("snapshot")
     });
     let directory = ScratchDirectory::new("not-started");
     let image = directory.join("world.img");

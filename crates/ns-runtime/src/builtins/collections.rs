@@ -19,9 +19,9 @@ pub(crate) enum IntegerArgument {
 
 pub(crate) fn integer_argument<'gc>(
     heap: &Heap<'gc>,
-    argument: Option<&Value<'gc>>,
+    argument: Option<Value<'gc>>,
 ) -> Option<IntegerArgument> {
-    let argument = *argument?;
+    let argument = argument?;
     if let Some(number) = argument.as_small_integer() {
         return Some(IntegerArgument::Small(number));
     }
@@ -32,14 +32,14 @@ pub(crate) fn integer_argument<'gc>(
 }
 
 pub(crate) fn out_of_range<'gc>(
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
     index: impl std::fmt::Display,
     length: usize,
 ) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "index {index} out of range: valid indices are 1..{length} (size {length})"
         ),
@@ -48,13 +48,13 @@ pub(crate) fn out_of_range<'gc>(
 
 pub(crate) fn not_an_integer<'gc>(
     heap: &Heap<'gc>,
-    receiver: &Value<'gc>,
+    receiver: Value<'gc>,
     selector: Symbol,
-    got: Option<&Value<'gc>>,
+    got: Option<Value<'gc>>,
 ) -> NewspeakError<'gc> {
     NewspeakError {
         selector,
-        receiver: *receiver,
+        receiver,
         message: format!(
             "{selector} requires an Integer index, got {}",
             heap.describe_argument(got)
@@ -83,30 +83,32 @@ fn element_at<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let length = mutator.heap.array_length(object)?;
-    Some(match integer_argument(&mutator.heap, arguments.first()) {
-        Some(IntegerArgument::Small(index)) => {
-            if index >= 1 && (index as usize) <= length {
-                Ok(mutator
-                    .heap
-                    .array_at(object, (index as usize) - 1)
-                    .unwrap_or(Value::nil()))
-            } else {
-                Err(out_of_range(&receiver, selector, index, length))
+    Some(
+        match integer_argument(&mutator.heap, arguments.first().copied()) {
+            Some(IntegerArgument::Small(index)) => {
+                if index >= 1 && (index as usize) <= length {
+                    Ok(mutator
+                        .heap
+                        .array_at(object, (index as usize) - 1)
+                        .unwrap_or(Value::nil()))
+                } else {
+                    Err(out_of_range(receiver, selector, index, length))
+                }
             }
-        }
-        Some(IntegerArgument::Large { .. }) => Err(out_of_range(
-            &receiver,
-            selector,
-            mutator.heap.describe_argument(arguments.first()),
-            length,
-        )),
-        None => Err(not_an_integer(
-            &mutator.heap,
-            &receiver,
-            selector,
-            arguments.first(),
-        )),
-    })
+            Some(IntegerArgument::Large { .. }) => Err(out_of_range(
+                receiver,
+                selector,
+                mutator.heap.describe_argument(arguments.first().copied()),
+                length,
+            )),
+            None => Err(not_an_integer(
+                &mutator.heap,
+                receiver,
+                selector,
+                arguments.first().copied(),
+            )),
+        },
+    )
 }
 
 /// `at:put:`.
@@ -118,27 +120,27 @@ fn element_at_put<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let length = mutator.heap.array_length(object)?;
-    let index = match integer_argument(&mutator.heap, arguments.first()) {
+    let index = match integer_argument(&mutator.heap, arguments.first().copied()) {
         Some(IntegerArgument::Small(index)) => index,
         Some(IntegerArgument::Large { .. }) => {
             return Some(Err(out_of_range(
-                &receiver,
+                receiver,
                 selector,
-                mutator.heap.describe_argument(arguments.first()),
+                mutator.heap.describe_argument(arguments.first().copied()),
                 length,
             )));
         }
         None => {
             return Some(Err(not_an_integer(
                 &mutator.heap,
-                &receiver,
+                receiver,
                 selector,
-                arguments.first(),
+                arguments.first().copied(),
             )));
         }
     };
     if index < 1 || (index as usize) > length {
-        return Some(Err(out_of_range(&receiver, selector, index, length)));
+        return Some(Err(out_of_range(receiver, selector, index, length)));
     }
     let value = arguments.get(1).copied().unwrap_or(Value::nil());
     mutator.heap.array_set(object, (index as usize) - 1, value);
@@ -166,10 +168,10 @@ fn allocate<'gc>(
         receiver,
         message,
     };
-    let size = match integer_argument(&mutator.heap, arguments.first()) {
+    let size = match integer_argument(&mutator.heap, arguments.first().copied()) {
         Some(IntegerArgument::Small(size)) => size,
         Some(IntegerArgument::Large { negative }) => {
-            let described = mutator.heap.describe_argument(arguments.first());
+            let described = mutator.heap.describe_argument(arguments.first().copied());
             return Some(Err(refusal(if negative {
                 format!("{selector} requires a size of at least 0, got {described}")
             } else {
@@ -179,7 +181,7 @@ fn allocate<'gc>(
         None => {
             return Some(Err(refusal(format!(
                 "{selector} requires an Integer size, got {}",
-                mutator.heap.describe_argument(arguments.first())
+                mutator.heap.describe_argument(arguments.first().copied())
             ))));
         }
     };

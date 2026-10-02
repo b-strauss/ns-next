@@ -45,7 +45,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
 /// (`ObjectReference(#42)`, not the string's contents), so a class-side send's
 /// result is compared through this rather than `assert_eq!` on the `Value`
 /// itself.
-fn string_contents<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
+fn string_contents<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
@@ -449,7 +449,7 @@ fn a_nested_class_built_on_the_one_it_redeclares_is_not_a_cycle() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&both)),
+            string_contents(mutator.heap(), mutator.fetch(&both)),
             "basesub"
         );
     });
@@ -473,7 +473,7 @@ fn a_class_side_method_dispatches_on_the_class_object() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            string_contents(mutator.heap(), mutator.fetch(&described)),
             "a widget class"
         );
     });
@@ -641,7 +641,7 @@ fn a_class_sides_own_method_is_found_before_falling_through_to_object() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            string_contents(mutator.heap(), mutator.fetch(&described)),
             "a special widget class"
         );
     });
@@ -678,7 +678,7 @@ fn super_and_outer_both_resolve_through_the_defining_level() {
     let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            string_contents(mutator.heap(), mutator.fetch(&described)),
             "outer/derived"
         );
     });
@@ -718,7 +718,7 @@ fn a_super_chain_progresses_through_an_inherited_middle_level() {
     let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            string_contents(mutator.heap(), mutator.fetch(&described)),
             "grand/mid"
         );
     });
@@ -757,7 +757,7 @@ fn outer_in_an_inherited_method_resolves_from_the_defining_level() {
     let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            string_contents(mutator.heap(), mutator.fetch(&described)),
             "top"
         );
     });
@@ -796,7 +796,7 @@ fn a_two_level_outer_through_an_inherited_nested_class_resolves_lexically() {
     let described = expect_ok(interpreter.send(&outer, Symbol::intern("run"), &[]), "run");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&described)),
+            string_contents(mutator.heap(), mutator.fetch(&described)),
             "top"
         );
     });
@@ -841,7 +841,7 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&shallow)),
+            string_contents(mutator.heap(), mutator.fetch(&shallow)),
             "top"
         );
     });
@@ -850,10 +850,7 @@ fn outer_in_a_class_side_method_reaches_the_enclosing_object() {
         "deep",
     );
     interpreter.enter(|mutator| {
-        assert_eq!(
-            string_contents(mutator.heap(), &mutator.fetch(&deep)),
-            "top"
-        );
+        assert_eq!(string_contents(mutator.heap(), mutator.fetch(&deep)), "top");
     });
 }
 
@@ -958,11 +955,11 @@ ns_runtime::for_each_lowering! {
         );
         interpreter.enter(|mutator| {
             assert_eq!(
-                string_contents(mutator.heap(), &mutator.fetch(&mark)),
+                string_contents(mutator.heap(), mutator.fetch(&mark)),
                 "library"
             );
             assert_eq!(
-                string_contents(mutator.heap(), &mutator.fetch(&host_label)),
+                string_contents(mutator.heap(), mutator.fetch(&host_label)),
                 "host",
                 "outer Host from Marker's method reaches the Host"
             );

@@ -157,7 +157,7 @@ ns_runtime::for_each_lowering! {
             };
             assert!(class.same(mutator.builtin_class(ns_runtime::BuiltinClass::Integer)));
             assert_eq!(
-                mutator.heap().describe(&mutator.fetch(&printed)),
+                mutator.heap().describe(mutator.fetch(&printed)),
                 "the String \"3\""
             );
             assert_eq!(mutator.fetch(&identical).as_boolean(), Some(true));

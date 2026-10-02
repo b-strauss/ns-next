@@ -36,7 +36,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
     match result {
         Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
@@ -59,7 +59,7 @@ fn array_at_returns_the_one_based_element() {
         ValueKind::SmallInteger(2) => {}
         _ => panic!(
             "expected the small integer 2, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -99,7 +99,7 @@ fn array_at_put_writes_and_returns_the_receiver() {
         ValueKind::SmallInteger(99) => {}
         _ => panic!(
             "expected the small integer 99, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -123,7 +123,7 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
         ValueKind::SmallInteger(6) => {}
         _ => panic!(
             "expected the small integer 6, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -166,7 +166,7 @@ fn do_walks_a_snapshot_of_its_receiver() {
         ValueKind::SmallInteger(6099) => {}
         _ => panic!(
             "expected 6099, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -264,7 +264,7 @@ fn block_value_invokes_a_zero_argument_closure() {
         ValueKind::SmallInteger(42) => {}
         _ => panic!(
             "expected the small integer 42, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -285,7 +285,7 @@ fn block_value_colon_passes_the_argument_positionally() {
         ValueKind::SmallInteger(42) => {}
         _ => panic!(
             "expected the small integer 42, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -306,7 +306,7 @@ fn block_argument_count_reports_the_declared_parameter_count() {
         ValueKind::SmallInteger(2) => {}
         _ => panic!(
             "expected the small integer 2, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }

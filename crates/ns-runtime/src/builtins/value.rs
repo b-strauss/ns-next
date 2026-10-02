@@ -109,7 +109,7 @@ pub(crate) fn execute<'gc>(
             // copying the list out: the declared slots and the fields
             // differ as soon as a level declares a nested class, and the
             // leaf must answer the same slot the walks compare.
-            let index = collections::integer_argument(&mutator.heap, arguments.first());
+            let index = collections::integer_argument(&mutator.heap, arguments.first().copied());
             let (count, field) = with_declared_slots(mutator, receiver, |declared| {
                 let field = match index {
                     Some(IntegerArgument::Small(index)) if index >= 1 => {
@@ -127,12 +127,12 @@ pub(crate) fn execute<'gc>(
                 // and hide it. A `LargeInteger` index is outside it too.
                 return Some(Err(match index {
                     Some(IntegerArgument::Small(index)) => {
-                        collections::out_of_range(&receiver, selector, index, count)
+                        collections::out_of_range(receiver, selector, index, count)
                     }
                     Some(IntegerArgument::Large { .. }) => collections::out_of_range(
-                        &receiver,
+                        receiver,
                         selector,
-                        mutator.heap.describe_argument(arguments.first()),
+                        mutator.heap.describe_argument(arguments.first().copied()),
                         count,
                     ),
                     None => NewspeakError {
@@ -140,7 +140,7 @@ pub(crate) fn execute<'gc>(
                         receiver,
                         message: format!(
                             "{selector} requires an Integer index, got {}",
-                            mutator.heap.describe_argument(arguments.first())
+                            mutator.heap.describe_argument(arguments.first().copied())
                         ),
                     },
                 }));
@@ -283,12 +283,12 @@ fn compare_node<'gc>(
         (ValueKind::Nil, ValueKind::Nil) => Some(Pair::Decided(true)),
         (ValueKind::Boolean(left), ValueKind::Boolean(right)) => Some(Pair::Decided(left == right)),
         (ValueKind::SmallInteger(left), _) => {
-            Some(Pair::Decided(numbers::integer_equals(left, Some(&second))))
+            Some(Pair::Decided(numbers::integer_equals(left, Some(second))))
         }
         (ValueKind::SmallFloat(left), _) => Some(Pair::Decided(numbers::float_equals(
             mutator.heap(),
             left,
-            Some(&second),
+            Some(second),
         ))),
         (ValueKind::Object(left), ValueKind::Object(right)) => {
             if mutator.heap().is_class(left) && mutator.heap().is_class(right) {
@@ -299,28 +299,28 @@ fn compare_node<'gc>(
                     mutator.heap(),
                     left,
                     symbol,
-                    Some(&second),
+                    Some(second),
                 )));
             }
             if let Some(integer) = mutator.heap().large_integer(left) {
                 return Some(Pair::Decided(numbers::large_integer_equals(
                     mutator.heap(),
                     &integer,
-                    Some(&second),
+                    Some(second),
                 )));
             }
             if let Some(number) = mutator.heap().float_value(Value::object(left)) {
                 return Some(Pair::Decided(numbers::float_equals(
                     mutator.heap(),
                     number,
-                    Some(&second),
+                    Some(second),
                 )));
             }
             if mutator.heap().is_string(left) {
                 return Some(Pair::Decided(text::text_equals(
                     mutator.heap(),
                     left,
-                    Some(&second),
+                    Some(second),
                 )));
             }
             state_is_a_value(mutator, left).then_some(Pair::State(left, right))
@@ -418,8 +418,8 @@ fn derived_equality<'gc>(
         // enclosing values -- so they are a pair of their own, pushed after
         // this node's own pairs and so examined next: a class that settles
         // the answer does so before a slot can decline it.
-        let first_class = mutator.class_of(&first);
-        let second_class = mutator.class_of(&second);
+        let first_class = mutator.class_of(first);
+        let second_class = mutator.class_of(second);
         let classes = if first_class.same(second_class) {
             None
         } else {
@@ -646,7 +646,7 @@ mod tests {
             let answer = mutator.fetch(&root);
             match answer.as_small_integer() {
                 Some(integer) => integer,
-                None => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+                None => panic!("{what} answered {}", mutator.heap().describe(answer)),
             }
         })
     }
@@ -663,7 +663,7 @@ mod tests {
             match answer.kind() {
                 ValueKind::Boolean(flag) => Some(flag),
                 ValueKind::SmallInteger(DECLINED) => None,
-                _ => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+                _ => panic!("{what} answered {}", mutator.heap().describe(answer)),
             }
         })
     }
@@ -674,7 +674,7 @@ mod tests {
             let answer = mutator.fetch(root);
             match answer.as_boolean() {
                 Some(flag) => flag,
-                None => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+                None => panic!("{what} answered {}", mutator.heap().describe(answer)),
             }
         })
     }
@@ -685,7 +685,7 @@ mod tests {
             let answer = mutator.fetch(root);
             match answer.as_small_integer() {
                 Some(integer) => integer,
-                None => panic!("{what} answered {}", mutator.heap().describe(&answer)),
+                None => panic!("{what} answered {}", mutator.heap().describe(answer)),
             }
         })
     }
@@ -773,7 +773,7 @@ mod tests {
         );
         interpreter.enter(|mutator| {
             let receiver = mutator.fetch(&marker);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             let Some(application) = mutator.heap().class_application(class) else {
                 panic!("a Marker's class is a class");
             };

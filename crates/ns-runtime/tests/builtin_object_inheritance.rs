@@ -20,7 +20,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
+fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
@@ -51,7 +51,7 @@ fn a_builtin_receiver_inherits_objects_native_class() {
             ),
             _ => panic!(
                 "expected the Integer class object, got {}",
-                mutator.heap().describe(&mutator.fetch(&result))
+                mutator.heap().describe(mutator.fetch(&result))
             ),
         }
     });
@@ -69,10 +69,7 @@ fn nil_prints_as_nil() {
     );
     let nil_result = expect_ok(nil_result, "nil printString");
     interpreter.enter(|mutator| {
-        assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&nil_result)),
-            "nil"
-        );
+        assert_eq!(as_string(mutator.heap(), mutator.fetch(&nil_result)), "nil");
     });
 }
 
@@ -95,7 +92,7 @@ fn builtins_without_their_own_print_string_inherit_objects_default() {
     let array_result = expect_ok(array_result, "(Array new) printString");
     interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&array_result)),
+            as_string(mutator.heap(), mutator.fetch(&array_result)),
             "an Object"
         );
     });
@@ -158,7 +155,7 @@ fn an_unknown_selector_on_a_builtin_runs_objects_real_does_not_understand() {
             );
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a doesNotUnderstand: error for `3 frobnicate`, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -182,7 +179,7 @@ fn an_unknown_selector_on_a_string_runs_objects_real_does_not_understand() {
             assert_eq!(error.message, "an object does not understand #frobnicate");
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a doesNotUnderstand: error, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -207,7 +204,7 @@ fn a_builtins_own_implementation_still_wins_over_objects() {
     let printed = expect_ok(printed, "7 printString");
     interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&printed)),
+            as_string(mutator.heap(), mutator.fetch(&printed)),
             "7",
             "Integer's own printString must win over Object's generic default"
         );

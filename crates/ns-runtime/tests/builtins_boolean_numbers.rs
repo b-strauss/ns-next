@@ -33,7 +33,7 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
-fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
+fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
@@ -67,7 +67,7 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
         ValueKind::SmallInteger(7) => {}
         _ => panic!(
             "expected the small integer 7, got {}",
-            mutator.heap().describe(&mutator.fetch(&sum))
+            mutator.heap().describe(mutator.fetch(&sum))
         ),
     });
 }
@@ -92,7 +92,7 @@ fn integer_addition_overflow_answers_a_large_integer() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&printed)),
+            as_string(mutator.heap(), mutator.fetch(&printed)),
             "1152921504606846976"
         );
     });
@@ -118,7 +118,7 @@ fn boolean_if_true_if_false_selects_the_right_block_through_a_real_fixture() {
             ValueKind::SmallInteger(1) => {}
             _ => panic!(
                 "{body}: expected the small integer 1, got {}",
-                mutator.heap().describe(&mutator.fetch(&result))
+                mutator.heap().describe(mutator.fetch(&result))
             ),
         });
     }
@@ -147,7 +147,7 @@ fn if_true_block_body_resolves_an_enclosing_slot_reference() {
             ValueKind::SmallInteger(5) => {}
             _ => panic!(
                 "{body}: expected the small integer 5, got {}",
-                mutator.heap().describe(&mutator.fetch(&result))
+                mutator.heap().describe(mutator.fetch(&result))
             ),
         });
     }
@@ -183,7 +183,7 @@ fn and_block_arguments_non_local_return_actually_escapes_not_becomes_false() {
         let result = expect_ok(result, body);
         interpreter.enter(|mutator| {
             assert_eq!(
-                as_string(mutator.heap(), &mutator.fetch(&result)),
+                as_string(mutator.heap(), mutator.fetch(&result)),
                 "escaped",
                 "the block's non-local return must unwind `m`'s own activation directly, not be swallowed into `false` and fall through to the second statement"
             );
@@ -215,7 +215,7 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
         let result = expect_ok(result, body);
         interpreter.enter(|mutator| {
             assert_eq!(
-                as_string(mutator.heap(), &mutator.fetch(&result)),
+                as_string(mutator.heap(), mutator.fetch(&result)),
                 "correct",
                 "false and: [...] and true or: [...] must never invoke their block argument at all"
             );
@@ -240,7 +240,7 @@ fn integer_arithmetic_widens_a_float_argument() {
             mutator.heap().float_value(sum),
             Some(2.5),
             "expected the double 2.5, got {}",
-            mutator.heap().describe(&sum)
+            mutator.heap().describe(sum)
         );
     });
 }
@@ -277,7 +277,7 @@ fn integer_arithmetic_with_an_object_argument_is_an_error_not_a_stack_overflow()
             );
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a Newspeak error for `1 + anArray`, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -307,7 +307,7 @@ fn an_ordering_comparison_against_a_mismatched_type_is_an_error_not_false() {
             }
             _ => panic!(
                 "expected a Newspeak error, got Ok({})",
-                mutator.heap().describe(&mutator.fetch(&value))
+                mutator.heap().describe(mutator.fetch(&value))
             ),
         }),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -333,7 +333,7 @@ fn a_float_receiver_asks_for_a_numeric_argument() {
             assert_eq!(error.message, "* requires a numeric argument, got nil")
         }
         Ok(value) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&value)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&value)));
             panic!("expected a Newspeak error for `1.5 * nil`, got Ok({got})")
         }
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return escaping `send`"),
@@ -356,7 +356,7 @@ fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
         ValueKind::Boolean(false) => {}
         _ => panic!(
             "expected false, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }
@@ -380,7 +380,7 @@ fn float_arithmetic_still_widens_an_integer_argument() {
         let float = mutator.heap().float_value(result).unwrap_or_else(|| {
             panic!(
                 "expected the double 2.5, got {}",
-                mutator.heap().describe(&result)
+                mutator.heap().describe(result)
             )
         });
         assert!(
@@ -409,7 +409,7 @@ fn integer_multiplication_overflow_answers_a_large_integer() {
     );
     interpreter.enter(|mutator| {
         assert_eq!(
-            as_string(mutator.heap(), &mutator.fetch(&printed)),
+            as_string(mutator.heap(), mutator.fetch(&printed)),
             "2305843009213693950"
         );
     });
@@ -433,7 +433,7 @@ fn a_radix_integer_literal_evaluates() {
         ValueKind::SmallInteger(31) => {}
         _ => panic!(
             "expected the small integer 31, got {}",
-            mutator.heap().describe(&mutator.fetch(&result))
+            mutator.heap().describe(mutator.fetch(&result))
         ),
     });
 }

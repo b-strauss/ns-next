@@ -105,7 +105,7 @@ fn object_declares_no_accessor_for_top() {
     assert!(message.contains("Top"), "{message}");
 }
 
-fn as_string<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
+fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
@@ -147,7 +147,7 @@ ns_runtime::for_each_lowering! {
         );
         interpreter.enter(|mutator| {
             assert_eq!(
-                as_string(mutator.heap(), &mutator.fetch(&printed)),
+                as_string(mutator.heap(), mutator.fetch(&printed)),
                 "3",
                 "{lowering:?}"
             );

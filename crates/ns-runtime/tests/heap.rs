@@ -78,7 +78,7 @@ fn is_class_distinguishes_a_class_object_from_an_instance() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let string = mutator.new_string("x".to_string());
-        let class = mutator.class_of(&Value::object(string));
+        let class = mutator.class_of(Value::object(string));
         assert!(!mutator.heap().is_class(string));
         assert!(mutator.heap().is_class(class));
     });
@@ -96,10 +96,10 @@ fn describe_renders_a_distinct_non_empty_text_per_value_shape() {
         let string_value = Value::object(mutator.new_string("hi".to_string()));
         let array_value = Value::object(mutator.new_array(vec![Value::small_integer(1)]));
 
-        let nil = mutator.heap().describe(&Value::nil());
-        let small_integer = mutator.heap().describe(&Value::small_integer(42));
-        let string = mutator.heap().describe(&string_value);
-        let array = mutator.heap().describe(&array_value);
+        let nil = mutator.heap().describe(Value::nil());
+        let small_integer = mutator.heap().describe(Value::small_integer(42));
+        let string = mutator.heap().describe(string_value);
+        let array = mutator.heap().describe(array_value);
 
         let all = [&nil, &small_integer, &string, &array];
         for text in all {
@@ -122,7 +122,7 @@ fn describe_argument_none_names_the_absence_of_an_argument() {
         let text = mutator.heap().describe_argument(None);
         assert!(!text.is_empty());
         // Must not be confusable with a real value's description.
-        assert_ne!(text, mutator.heap().describe(&Value::nil()));
+        assert_ne!(text, mutator.heap().describe(Value::nil()));
     });
 }
 
@@ -132,8 +132,8 @@ fn describe_argument_some_matches_describe_of_the_same_value() {
     interpreter.enter(|mutator| {
         let value = Value::small_integer(7);
         assert_eq!(
-            mutator.heap().describe_argument(Some(&value)),
-            mutator.heap().describe(&value)
+            mutator.heap().describe_argument(Some(value)),
+            mutator.heap().describe(value)
         );
     });
 }
@@ -154,7 +154,7 @@ fn a_builtin_class_reports_its_kind_through_the_seam() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let string = mutator.new_string("x".to_string());
-        let class = mutator.class_of(&Value::object(string));
+        let class = mutator.class_of(Value::object(string));
         assert!(mutator.heap().class_builtin(class).is_some());
     });
 }
@@ -263,7 +263,7 @@ fn instances_of_a_nested_class_share_a_dispatch_id_across_enclosing_objects() {
     );
     interpreter.enter(|mutator| {
         let heap = mutator.heap();
-        let id = |root: &Root| heap.dispatch_id(&mutator.fetch(root));
+        let id = |root: &Root| heap.dispatch_id(mutator.fetch(root));
         assert_eq!(id(&first), id(&second), "one application, one instance id");
         assert_eq!(
             id(&first_class),
@@ -295,23 +295,23 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
         let float = mutator.new_float(2.5);
         let heap = mutator.heap();
         assert_eq!(
-            heap.dispatch_id(&Value::nil()),
+            heap.dispatch_id(Value::nil()),
             expected(mutator, BuiltinClass::UndefinedObject)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::boolean(true)),
+            heap.dispatch_id(Value::boolean(true)),
             expected(mutator, BuiltinClass::True)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::boolean(false)),
+            heap.dispatch_id(Value::boolean(false)),
             expected(mutator, BuiltinClass::False)
         );
         assert_eq!(
-            heap.dispatch_id(&Value::small_integer(3)),
+            heap.dispatch_id(Value::small_integer(3)),
             expected(mutator, BuiltinClass::Integer)
         );
         assert_eq!(
-            heap.dispatch_id(&float),
+            heap.dispatch_id(float),
             expected(mutator, BuiltinClass::Float)
         );
         assert_ne!(
@@ -320,7 +320,7 @@ fn immediates_answer_their_builtin_classes_instance_ids() {
         );
         let array = mutator.new_array(vec![]);
         assert_eq!(
-            mutator.heap().dispatch_id(&Value::object(array)),
+            mutator.heap().dispatch_id(Value::object(array)),
             expected(mutator, BuiltinClass::Array)
         );
     });
@@ -345,7 +345,7 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
             panic!("expected a class object")
         };
         let before = mutator.heap().class_dispatch_ids(class_object);
-        let class_object_id = mutator.heap().dispatch_id(&Value::object(class_object));
+        let class_object_id = mutator.heap().dispatch_id(Value::object(class_object));
         let application = mutator
             .heap()
             .class_application(class_object)
@@ -361,11 +361,11 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
         let after = mutator.heap().class_dispatch_ids(class_object);
         assert_ne!(before, after, "a new application mints new ids");
         let instance = mutator.fetch(&instance);
-        assert_eq!(mutator.heap().dispatch_id(&instance), after.instances);
+        assert_eq!(mutator.heap().dispatch_id(instance), after.instances);
         // The class object is an instance of its metaclass, not of itself,
         // so its own id is its metaclass's and does not move.
         assert_eq!(
-            mutator.heap().dispatch_id(&Value::object(class_object)),
+            mutator.heap().dispatch_id(Value::object(class_object)),
             class_object_id
         );
         let metaclass = mutator
@@ -503,8 +503,8 @@ fn an_object_handle_survives_the_value_word() {
             .expect("an object value answers its handle");
         assert!(back.same(object));
         assert_eq!(
-            mutator.heap().describe(&value),
-            mutator.heap().describe(&Value::object(back))
+            mutator.heap().describe(value),
+            mutator.heap().describe(Value::object(back))
         );
     });
 }

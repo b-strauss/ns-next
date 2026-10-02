@@ -64,7 +64,7 @@ fn stream<'gc>(
                     receiver,
                     message: format!(
                         "{selector} requires a String, got {}",
-                        mutator.heap().describe_argument(arguments.first())
+                        mutator.heap().describe_argument(arguments.first().copied())
                     ),
                 });
             };

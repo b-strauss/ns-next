@@ -2,6 +2,8 @@
 //! what does not, and what that does to the arenas
 //! (`docs/design/memory.md`, "The gates the collector needs").
 
+#![cfg(debug_assertions)]
+
 use indoc::indoc;
 use ns_runtime::{Interpreter, Root, Symbol, Value, ValueKind};
 
@@ -36,7 +38,7 @@ fn expect_ok(result: ns_runtime::HostResult) -> ns_runtime::Root {
 /// The `SmallInteger` a `Value` holds, or a panic. Used by a test that calls
 /// a kept closure back after a collection and checks what it answers, not
 /// merely that it still exists.
-fn integer_of(value: &Value<'_>) -> i64 {
+fn integer_of(value: Value<'_>) -> i64 {
     match value.kind() {
         ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
@@ -257,7 +259,7 @@ fn kept_closures_keep_their_frames() {
     let first_block = expect_ok(interpreter.send(&instance, block_at, &[first_index]));
     let value_selector = Symbol::intern("value");
     let answer = expect_ok(interpreter.send(&first_block, value_selector, &[]));
-    let answer_value = interpreter.enter(|mutator| integer_of(&mutator.fetch(&answer)));
+    let answer_value = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
     assert_eq!(
         answer_value, 51,
         "the kept closure must still answer with its own captured value after a collection"
@@ -340,11 +342,11 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
     let selector = Symbol::intern("upTo:");
 
     let quiet = expect_ok(interpreter.send(&instance, selector, &[count]));
-    let quiet_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&quiet)));
+    let quiet_answer = interpreter.enter(|mutator| integer_of(mutator.fetch(&quiet)));
     interpreter.set_stress_collect(true);
     let count_again = interpreter.stash(Value::small_integer(100));
     let stressed = expect_ok(interpreter.send(&instance, selector, &[count_again]));
-    let stressed_answer = interpreter.enter(|mutator| integer_of(&mutator.fetch(&stressed)));
+    let stressed_answer = interpreter.enter(|mutator| integer_of(mutator.fetch(&stressed)));
 
     assert_eq!(quiet_answer, stressed_answer);
     assert_eq!(quiet_answer, 5050);
@@ -386,7 +388,7 @@ fn allocating_past_the_limit_collects_during_the_run() {
     let selector = Symbol::intern("run:");
 
     let answer = expect_ok(interpreter.send(&instance, selector, &[count]));
-    let answer_value = interpreter.enter(|mutator| integer_of(&mutator.fetch(&answer)));
+    let answer_value = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
     let after = interpreter.heap_statistics();
     let collector = interpreter.collector_statistics();
 

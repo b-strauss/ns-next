@@ -40,7 +40,7 @@ fn expect_error(interpreter: &mut Interpreter, result: HostResult, what: &str) -
     match result {
         Err(HostSignal::Error(error)) => error,
         Ok(root) => {
-            let got = interpreter.enter(|mutator| mutator.heap().describe(&mutator.fetch(&root)));
+            let got = interpreter.enter(|mutator| mutator.heap().describe(mutator.fetch(&root)));
             panic!("{what}: expected a Newspeak error, got {got}")
         }
         Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
@@ -60,7 +60,7 @@ fn send(
     interpreter.send(receiver, Symbol::intern(selector), arguments)
 }
 
-fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
+fn string_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     let Some(object) = value.as_object() else {
         panic!("expected a string object")
     };
@@ -68,7 +68,7 @@ fn string_of<'gc>(heap: &Heap<'gc>, value: &Value<'gc>) -> String {
         .unwrap_or_else(|| panic!("expected ObjectData::String"))
 }
 
-fn integer_of<'gc>(value: &Value<'gc>) -> i64 {
+fn integer_of<'gc>(value: Value<'gc>) -> i64 {
     match value.kind() {
         ValueKind::SmallInteger(integer) => integer,
         _ => panic!("expected a SmallInteger"),
@@ -138,7 +138,7 @@ fn a_user_method_runs_as_bytecode_and_returns_its_value() {
     let instance = new_instance(&mut interpreter, &class);
     let result = expect_ok(send(&mut interpreter, &instance, "answer", &[]), "answer");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         42
     );
 }
@@ -173,7 +173,7 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
     let nine = interpreter.stash(Value::small_integer(9));
     let result = expect_ok(send(&mut interpreter, &block, "value:", &[nine]), "value:");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         10
     );
 }
@@ -191,7 +191,7 @@ fn temporaries_implicit_self_sends_and_arithmetic_work() {
     let instance = new_instance(&mut interpreter, &class);
     let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         42
     );
 }
@@ -210,7 +210,7 @@ fn slots_read_and_write_through_lexical_sends() {
     expect_ok(send(&mut interpreter, &instance, "bump", &[]), "bump");
     let result = expect_ok(send(&mut interpreter, &instance, "bump", &[]), "bump");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         3
     );
 }
@@ -248,7 +248,7 @@ fn a_super_send_falls_through_to_objects_native_print_string() {
     let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_of(mutator.heap(), &mutator.fetch(&result)),
+            string_of(mutator.heap(), mutator.fetch(&result)),
             "an Object"
         );
     });
@@ -268,7 +268,7 @@ fn cascades_and_list_instantiation_work() {
     let instance = expect_ok(interpreter.instantiate(&class, &[platform]), "instantiate");
     let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         2
     );
 }
@@ -287,7 +287,7 @@ fn a_non_local_return_from_a_natively_invoked_block_unwinds_to_the_bytecode_fram
     let result = expect_ok(send(&mut interpreter, &instance, "main", &[]), "main");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_of(mutator.heap(), &mutator.fetch(&result)),
+            string_of(mutator.heap(), mutator.fetch(&result)),
             "foundnot found"
         );
     });
@@ -305,7 +305,7 @@ fn a_block_writes_an_enclosing_temporary_through_store_outer_local() {
     let instance = new_instance(&mut interpreter, &class);
     let result = expect_ok(send(&mut interpreter, &instance, "sum", &[]), "sum");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         6
     );
 }
@@ -325,7 +325,7 @@ fn empty_and_multi_statement_blocks_return_nil_and_the_last_value() {
     assert!(interpreter.enter(|mutator| mutator.fetch(&empty).is_nil()));
     let last = expect_ok(send(&mut interpreter, &instance, "last", &[]), "last");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&last))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&last))),
         2
     );
 }
@@ -343,7 +343,7 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
     let yes = interpreter.stash(Value::boolean(true));
     let yes = expect_ok(send(&mut interpreter, &instance, "foo:", &[yes]), "foo:");
     interpreter.enter(|mutator| {
-        assert_eq!(string_of(mutator.heap(), &mutator.fetch(&yes)), "yes");
+        assert_eq!(string_of(mutator.heap(), mutator.fetch(&yes)), "yes");
     });
     let false_argument = interpreter.stash(Value::boolean(false));
     let answer = expect_ok(
@@ -351,7 +351,7 @@ fn if_true_if_false_dispatches_through_the_native_boolean_with_compiled_blocks()
         "foo:",
     );
     interpreter.enter(|mutator| {
-        assert_eq!(string_of(mutator.heap(), &mutator.fetch(&answer)), "no");
+        assert_eq!(string_of(mutator.heap(), mutator.fetch(&answer)), "no");
     });
 }
 
@@ -384,7 +384,7 @@ fn an_integer_literal_beyond_i64_evaluates_to_a_large_integer() {
     let result = expect_ok(send(&mut interpreter, &instance, "foo", &[]), "foo");
     interpreter.enter(|mutator| {
         assert_eq!(
-            string_of(mutator.heap(), &mutator.fetch(&result)),
+            string_of(mutator.heap(), mutator.fetch(&result)),
             "99999999999999999999"
         );
     });
@@ -410,7 +410,7 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
             .array_elements(object)
             .unwrap_or_else(|| panic!("expected ObjectData::Array"));
         assert_eq!(
-            elements.iter().map(integer_of).collect::<Vec<_>>(),
+            elements.iter().copied().map(integer_of).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
     });
@@ -500,11 +500,11 @@ fn loading_a_second_module_keeps_the_first_modules_code() {
         "B answer",
     );
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&a_answer))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&a_answer))),
         1
     );
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&b_answer))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&b_answer))),
         2
     );
 }
@@ -535,7 +535,7 @@ fn a_correctly_sent_method_reads_its_temporary_as_nil() {
     let instance = new_instance(&mut interpreter, &class);
     let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
     interpreter.enter(|mutator| {
-        assert_eq!(string_of(mutator.heap(), &mutator.fetch(&result)), "nil-ok");
+        assert_eq!(string_of(mutator.heap(), mutator.fetch(&result)), "nil-ok");
     });
 }
 
@@ -612,7 +612,7 @@ fn a_vector_round_trips_a_value_through_its_slot() {
     });
     let result = expect_ok(send(&mut interpreter, &instance, "compute", &[]), "compute");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         42
     );
 }
@@ -669,7 +669,7 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
     // unrelated send.
     let result = expect_ok(send(&mut interpreter, &instance, "good", &[]), "good");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         1
     );
 }
@@ -827,7 +827,7 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
     });
     let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         99
     );
     // Nothing in this body replaces the future `InitializeSlotProvisionally`
@@ -902,7 +902,7 @@ fn resolve_future_answers_a_non_future_value_unchanged() {
     });
     let result = expect_ok(send(&mut interpreter, &instance, "probe", &[]), "probe");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         5
     );
 }
@@ -1004,7 +1004,7 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
     // unrelated send.
     let result = expect_ok(send(&mut interpreter, &instance, "good", &[]), "good");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         1
     );
 }
@@ -1174,7 +1174,7 @@ fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
     // The interpreter goes on.
     let result = expect_ok(send(&mut interpreter, &instance, "good", &[]), "good");
     assert_eq!(
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&result))),
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&result))),
         1
     );
 }
@@ -1214,7 +1214,7 @@ fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
             &[seven.clone(), three.clone()],
         );
         let root = expect_ok(result, selector);
-        interpreter.enter(|mutator| integer_of(&mutator.fetch(&root)))
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&root)))
     };
     assert_eq!(integer_answer(&mut interpreter, "add:to:"), 10);
     assert_eq!(integer_answer(&mut interpreter, "subtract:from:"), -4);
@@ -1233,7 +1233,7 @@ fn an_inlined_integer_operation_answers_what_the_primitive_answers() {
             ValueKind::Boolean(boolean) => boolean,
             _ => panic!(
                 "expected a Boolean, got {}",
-                mutator.heap().describe(&mutator.fetch(&root))
+                mutator.heap().describe(mutator.fetch(&root))
             ),
         })
     };
@@ -1352,7 +1352,7 @@ fn an_inlined_integer_operation_with_a_non_integer_operand_falls_back_to_the_sen
         ValueKind::Boolean(false) => {}
         _ => panic!(
             "expected `false` from the primitive, got {}",
-            mutator.heap().describe(&mutator.fetch(&answer))
+            mutator.heap().describe(mutator.fetch(&answer))
         ),
     });
 }
@@ -1375,7 +1375,7 @@ fn an_inlined_integer_operation_evaluates_its_argument_once_on_the_fallback_path
     let instance = new_instance(&mut interpreter, &class);
     let result = send(&mut interpreter, &instance, "run", &[]);
     let ticks = expect_ok(result, "run");
-    interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&ticks)), 1));
+    interpreter.enter(|mutator| assert_eq!(integer_of(mutator.fetch(&ticks)), 1));
 }
 
 /// Every switch to another activation is a safepoint: with one requested at
@@ -1396,7 +1396,7 @@ fn a_stretch_leaves_for_a_requested_safepoint_and_resumes_where_it_stood() {
     let answer = expect_ok(send(&mut interpreter, &probe, "caller", &[]), "caller");
     let safepoints = interpreter.stress_safepoints();
     interpreter.set_stress_moves(false);
-    interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&answer)), 42));
+    interpreter.enter(|mutator| assert_eq!(integer_of(mutator.fetch(&answer)), 42));
     // 2 switches: the push of callee, and the return to caller. No jump in
     // either method's body, forward or backward, so a safepoint wrongly
     // taken on a forward jump would show up here as a count above 2.
@@ -1423,7 +1423,7 @@ fn a_loop_that_sends_nothing_still_reaches_a_safepoint() {
     let answer = expect_ok(send(&mut interpreter, &probe, "count", &[]), "count");
     let safepoints = interpreter.stress_safepoints();
     interpreter.set_stress_moves(false);
-    interpreter.enter(|mutator| assert_eq!(integer_of(&mutator.fetch(&answer)), 1000));
+    interpreter.enter(|mutator| assert_eq!(integer_of(mutator.fetch(&answer)), 1000));
     // 1000 backward jumps, one per iteration, and no switches: the whole
     // loop is inlined, so nothing here ever sends. The loop's exit is a
     // forward jump; a safepoint wrongly taken there too would show up as a

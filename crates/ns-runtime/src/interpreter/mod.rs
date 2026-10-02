@@ -660,7 +660,7 @@ impl Interpreter {
     pub fn responds_publicly(&mut self, receiver: &Root, selector: Symbol) -> bool {
         self.enter(|mutator| {
             let receiver = mutator.fetch(receiver);
-            let class = mutator.class_of(&receiver);
+            let class = mutator.class_of(receiver);
             !matches!(
                 crate::dispatch::lookup_public(mutator.heap(), class, selector),
                 crate::dispatch::Lookup::NotFound
@@ -1417,7 +1417,7 @@ impl<'gc> Mutator<'gc> {
         Signal::Return(target, value)
     }
 
-    pub fn class_of(&self, value: &Value<'gc>) -> ClassReference<'gc> {
+    pub fn class_of(&self, value: Value<'gc>) -> ClassReference<'gc> {
         match value.as_object() {
             Some(object) => self.heap.class_of_object(object),
             // Nil/Boolean/SmallInteger/Float classes are wired up by the
@@ -1427,7 +1427,7 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
-    fn builtin_class_for_primitive(&self, value: &Value<'gc>) -> ClassReference<'gc> {
+    fn builtin_class_for_primitive(&self, value: Value<'gc>) -> ClassReference<'gc> {
         let kind = match value.kind() {
             ValueKind::Nil => BuiltinClass::UndefinedObject,
             ValueKind::Boolean(true) => BuiltinClass::True,
@@ -1579,7 +1579,7 @@ impl<'gc> Mutator<'gc> {
             .class_application(self.builtin_class(kind))?
             .mixin
             .clone();
-        let mut level = Some(self.class_of(&Value::object(object)));
+        let mut level = Some(self.class_of(Value::object(object)));
         while let Some(current) = level {
             if let Some(application) = self.heap.class_application(current) {
                 if Rc::ptr_eq(&application.mixin, &kernel_mixin) {

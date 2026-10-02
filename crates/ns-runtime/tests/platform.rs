@@ -100,7 +100,7 @@ fn platform_class_accessors_return_the_matching_builtin_class() {
                 ValueKind::Object(object) => assert!(object.same(expected), "platform {name}"),
                 _ => panic!(
                     "expected an object, got {}",
-                    mutator.heap().describe(&mutator.fetch(&got))
+                    mutator.heap().describe(mutator.fetch(&got))
                 ),
             }
         });
@@ -156,7 +156,7 @@ fn platform_collections_answers_the_collections_modules_list() {
             ValueKind::Object(object) => object,
             _ => panic!(
                 "expected a class object, got {}",
-                mutator.heap().describe(&mutator.fetch(root))
+                mutator.heap().describe(mutator.fetch(root))
             ),
         };
         let list = object_of(&list);
@@ -259,7 +259,7 @@ fn the_platform_is_an_instance_of_the_shipped_platform_module() {
         ] {
             let value = mutator.fetch(root);
             let Some(object) = value.as_object() else {
-                panic!("expected a string, got {}", mutator.heap().describe(&value));
+                panic!("expected a string, got {}", mutator.heap().describe(value));
             };
             assert_eq!(mutator.heap().str_value(object).as_deref(), Some(expected));
         }
@@ -564,7 +564,7 @@ fn the_collections_factory_answers_only_new_collections() {
     interpreter.enter(|mutator| {
         let value = mutator.fetch(&list);
         let Some(list) = value.as_object() else {
-            panic!("expected a class, got {}", mutator.heap().describe(&value));
+            panic!("expected a class, got {}", mutator.heap().describe(value));
         };
         assert!(
             mutator.heap().is_class(list),
