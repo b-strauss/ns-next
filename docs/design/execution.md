@@ -869,6 +869,82 @@ baseline; and which of the branch's changes -- the word itself, the bare
 words in the heap, the tagged arithmetic, passing a value by value -- gave
 how much, since only the two ends were measured.
 
+### What the compact instruction encoding moved
+
+Measured on 2026-10-02 on the same machine: the tree the branch
+`feature/compact-instruction-encoding` started from, `49e1fcc`, against the
+branch at `65ad13a`, in one sitting. Three pinned release builds of each
+tree (`-C metadata=alpha`, `beta`, `gamma`), each checked to print `ok` for
+all sixteen programs; three rounds, the six binaries' order rotated from
+round to round; in each round every binary ran `bench --iterations 3 --
+<Name>` for CD, Havlak, Mandelbrot, NBody and DeltaBlue, `--iterations
+10` for the other eleven, and `bench --iterations 30` for the eight
+microbenchmark sources -- `bench` alone, as a comparison of two trees is
+("The Are We Fast Yet benchmarks"). Each figure is the median of a tree's
+nine values, with their range; "separated" says the two ranges do not
+overlap.
+
+| Source | Before, ms | Range | After, ms | Range | Change | Separated |
+|---|---|---|---|---|---|---|
+| Bounce | 1.10 | 1.09–1.13 | 1.09 | 1.06–1.20 | −1.4% | no |
+| CD | 4,284 | 4,234–4,363 | 4,080 | 4,061–4,150 | **−4.8%** | yes |
+| DeltaBlue | 755 | 746–780 | 741 | 721–746 | −1.8% | no |
+| DeltaBlueTon80 | 7.13 | 6.97–7.29 | 6.86 | 6.80–7.14 | −3.8% | no |
+| Havlak | 4,415 | 4,343–4,480 | 4,216 | 4,164–4,355 | −4.5% | no |
+| Json | 10.9 | 10.7–11.1 | 10.5 | 10.4–10.7 | **−3.5%** | yes |
+| List | 0.992 | 0.985–1.011 | 0.993 | 0.976–1.007 | +0.2% | no |
+| Mandelbrot | 3,345 | 3,330–3,378 | 3,238 | 3,218–3,258 | **−3.2%** | yes |
+| NBody | 2,368 | 2,323–2,472 | 2,340 | 2,304–2,388 | −1.2% | no |
+| Permute | 2.45 | 2.40–2.48 | 2.46 | 2.38–2.49 | +0.3% | no |
+| Queens | 2.07 | 2.03–2.10 | 2.03 | 1.99–2.05 | −2.0% | no |
+| Richards | 78.3 | 77.6–79.1 | 77.1 | 76.3–78.8 | −1.5% | no |
+| RichardsTon80 | 4.65 | 4.57–4.75 | 4.54 | 4.50–4.76 | −2.3% | no |
+| Sieve | 1.33 | 1.32–1.36 | 1.30 | 1.26–1.38 | −2.8% | no |
+| Storage | 1.65 | 1.61–1.71 | 1.59 | 1.57–1.64 | −3.2% | no |
+| Towers | 3.72 | 3.70–3.77 | 3.60 | 3.57–3.67 | **−3.3%** | yes |
+| `bench_block.ns` | 10.65 | 10.51–10.74 | 10.37 | 10.25–10.60 | −2.6% | no |
+| `bench_loop.ns` | 2.278 | 2.263–2.298 | 2.235 | 2.225–2.253 | **−1.9%** | yes |
+| `bench_megamorphic.ns` | 5.44 | 5.38–5.49 | 5.15 | 5.13–5.17 | **−5.4%** | yes |
+| `bench_send.ns` | 3.54 | 3.49–3.69 | 3.54 | 3.49–3.59 | +0.1% | no |
+| `bench_do.ns` | 4.00 | 3.99–4.05 | 3.92 | 3.83–4.01 | −2.1% | no |
+| `bench_new.ns` | 3.36 | 3.29–3.41 | 3.29 | 3.27–3.33 | −2.2% | no |
+| `bench_new2.ns` | 4.25 | 4.20–4.32 | 4.10 | 4.04–4.12 | **−3.5%** | yes |
+| `bench_newarg.ns` | 5.97 | 5.87–6.04 | 5.85 | 5.76–5.96 | −2.0% | no |
+
+**Twenty-one of the twenty-four sources are faster, by 1.2% to 5.4%**,
+seven of them with separated ranges; List, Permute and `bench_send.ns` move
+by +0.1% to +0.3%, inside their ranges. The gain is small beside the
+eight-byte value's: the encoding removed the niche decode and the argument
+list's heap indirection, not a stall.
+
+**Measured first, then once more on the way.** The gate (Task 1 of [the
+plan](../superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md))
+ran the same protocol on a throwaway copy whose four send kinds met in one
+join after the match: thirteen of the sixteen programs got faster by 0.3%
+to 6.5%, but `bench_loop.ns` got 3.9% slower, separated, and the branch's
+first loop kept that (+3.5%). An `xperf` profile found the join: the four
+kinds' pending sends merged into one stack aggregate written with narrow
+stores, read back as a byte, bounds-checked, and dispatched through a
+second jump table on the kind -- about 8,600 more samples on the send path
+than the 5,600 the slot dispatch saved. One join per kind, each send arm
+breaking out of its own kind's labelled block, removed it, and turned
+`bench_loop.ns` from 3.5% slower into the 1.9% faster above.
+
+`vm::run` is 8,525 instructions with a stack frame of 0x3A8 bytes at
+`65ad13a`, against 7,000 and 0x358 at `49e1fcc` (`dumpbin /disasm`, a
+pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`), with no
+`vm::run::closure` and no `run_stretch` of its own; `run_wide`, which runs
+every instruction that has no eight-byte form, is a function of its own.
+The loop grew by the arity forms of the sends and the side-table reads, and
+is faster for it.
+
+What the measurement does not cover: one machine and one operating system;
+data layout, which `-C metadata` does not vary; for the `bench` figures,
+what each timed `main:args:` does once per application; the memory the
+encoding saves, which is counted in "Planned: the compact instruction
+encoding" ("The forms compared"), not measured as a working set; and code
+that runs wide forms, which no measured program reaches.
+
 ### What a send costs, and where it goes
 
 Milestone 4's design rests on a decomposition rather than on the aggregate. The
