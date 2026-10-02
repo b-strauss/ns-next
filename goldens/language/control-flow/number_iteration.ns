@@ -1,7 +1,8 @@
 (* `to:do:` and `to:by:do:` are `Number`'s, after Primordial Soup's: the
    bound is inclusive, a negative step counts down, an empty range runs
    nothing, and both answer nil. A `Float` receiver counts in `Float`s, and
-   a range that crosses into `LargeInteger` keeps counting. *)
+   a range that crosses the 61-bit edge of an `Integer` into `LargeInteger`
+   keeps counting. *)
 class NumberIteration = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |
@@ -11,6 +12,6 @@ class NumberIteration = () (
         transcript print: (1 to: 0 do: [:index | index]); newLine.
         transcript print: (1 to: 0 by: 1 do: [:index | index]); newLine.
         1.5 to: 3 do: [:value | transcript print: value; newLine].
-        9223372036854775806 to: 9223372036854775808 do: [:index | transcript print: index; newLine]
+        1152921504606846974 to: 1152921504606846976 do: [:index | transcript print: index; newLine]
     )
 )

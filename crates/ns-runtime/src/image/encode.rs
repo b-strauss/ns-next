@@ -810,10 +810,17 @@ fn encode_literal(writer: &mut Writer, literal: &Literal, symbols: &mut symbols:
             writer.write_u8(LITERAL_SYMBOL);
             writer.write_u32(symbols.intern(symbol.as_str()));
         }
-        Literal::LargeInteger(integer) => {
-            writer.write_u8(LITERAL_LARGE_INTEGER);
-            write_large_integer(writer, integer);
-        }
+        // One that fits `i64` travels as an `i64` (`encode_value`).
+        Literal::LargeInteger(integer) => match integer.to_i64() {
+            Some(number) => {
+                writer.write_u8(LITERAL_SMALL_INTEGER);
+                writer.write_i64(number);
+            }
+            None => {
+                writer.write_u8(LITERAL_LARGE_INTEGER);
+                write_large_integer(writer, integer);
+            }
+        },
         Literal::UnresolvedIdentifier(name) => {
             writer.write_u8(LITERAL_UNRESOLVED_IDENTIFIER);
             writer.write_str(name);
@@ -1402,10 +1409,21 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
     };
     // Written by value wherever it is referenced: two references to one
     // `LargeInteger` object load as two equal integers, which is all a value
-    // without identity can promise.
+    // without identity can promise. One that fits `i64` is written as an
+    // `i64`: the wire keeps one canonical encoding per integer, independent
+    // of where a `SmallInteger` ends, and the decoder decides by that range
+    // which representation it loads as.
     if let Some(integer) = context.heap.large_integer(object) {
-        writer.write_u8(VALUE_LARGE_INTEGER);
-        write_large_integer(writer, &integer);
+        match integer.to_i64() {
+            Some(number) => {
+                writer.write_u8(VALUE_SMALL_INTEGER);
+                writer.write_i64(number);
+            }
+            None => {
+                writer.write_u8(VALUE_LARGE_INTEGER);
+                write_large_integer(writer, &integer);
+            }
+        }
         return;
     }
     if is_same_object(value, context.platform) {

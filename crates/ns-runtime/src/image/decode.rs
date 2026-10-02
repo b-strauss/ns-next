@@ -12,8 +12,8 @@ use crate::heap::Heap;
 use crate::interpreter::instantiate;
 use crate::mixin::DispatchId;
 use crate::types::{
-    BuiltinClass, ClassReference, ClosureData, Frame, FrameKind, FrameReference, Object,
-    ObjectData, ObjectReference, SourceOrigin, Value,
+    fits_small_integer, BuiltinClass, ClassReference, ClosureData, Frame, FrameKind,
+    FrameReference, Object, ObjectData, ObjectReference, SourceOrigin, Value,
 };
 use crate::Symbol;
 use crate::{ArbitraryInteger, Mutator};
@@ -423,10 +423,12 @@ pub enum DecodeError {
         found: usize,
     },
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
-    /// never writes: one that fits `i64`, a zero top digit, or a negative
-    /// zero. Accepting one would give an integer a second representation
-    /// after a load -- a `LargeInteger` object equal to a `SmallInteger`,
-    /// which every arithmetic fast path would treat as a different value.
+    /// never writes: one that fits `i64` (which travels as an `i64`), a zero
+    /// top digit, or a negative zero. Accepting one would give an integer a
+    /// second encoding, and a decoder that trusted the tag rather than the
+    /// range would load a second representation -- a `LargeInteger` object
+    /// equal to a `SmallInteger`, which every arithmetic fast path would
+    /// treat as a different value.
     NonCanonicalInteger,
 }
 
@@ -867,16 +869,28 @@ pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeE
     }
 }
 
-pub fn decode_scalar_value<'gc>(reader: &mut Reader) -> Result<Value<'gc>, DecodeError> {
+pub fn decode_scalar_value<'gc>(
+    reader: &mut Reader,
+    mutator: &mut Mutator<'gc>,
+) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
         0 => Ok(Value::nil()),
         1 => Ok(Value::boolean(false)),
         2 => Ok(Value::boolean(true)),
-        3 => Ok(Value::small_integer(reader.read_i64()?)),
-        // The immediate itself: this decoder holds no mutator to call
-        // `Mutator::new_float` with.
-        4 => Ok(Value::small_float(reader.read_f64()?)),
+        3 => Ok(integer_value(reader.read_i64()?, mutator)),
+        4 => Ok(mutator.new_float(reader.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
+    }
+}
+
+/// An integer the wire carries as an `i64`, as the one representation it
+/// has: a `SmallInteger` in 61 bits, without allocating, which is nearly
+/// every one; a `LargeInteger` beyond them.
+fn integer_value<'gc>(number: i64, mutator: &mut Mutator<'gc>) -> Value<'gc> {
+    if fits_small_integer(number) {
+        Value::small_integer(number)
+    } else {
+        mutator.new_integer(ArbitraryInteger::from_i64(number))
     }
 }
 
@@ -2081,10 +2095,11 @@ fn decode_instruction(
 }
 
 /// The inverse of `encode::write_large_integer`. Refuses every encoding but
-/// the canonical one, so an integer has one representation after a load as
-/// before it: one that fits `i64` must travel as `VALUE_SMALL_INTEGER`
-/// (or `LITERAL_SMALL_INTEGER`), and neither a zero top digit nor a negative
-/// zero is written by the encoder.
+/// the canonical one, so an integer has one encoding on the wire: one that
+/// fits `i64` must travel as `VALUE_SMALL_INTEGER` (or
+/// `LITERAL_SMALL_INTEGER`) -- fits `i64`, not 61 bits, because the wire's
+/// canonical form is independent of where a `SmallInteger` ends -- and
+/// neither a zero top digit nor a negative zero is written by the encoder.
 fn read_large_integer(reader: &mut Reader) -> Result<ArbitraryInteger, DecodeError> {
     let (negative, magnitude) = read_large_integer_parts(reader)?;
     if magnitude.last() == Some(&0) || (magnitude.is_empty() && negative) {
@@ -2127,7 +2142,14 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
     Ok(match reader.read_u8()? {
         LITERAL_NIL => Literal::Nil,
         LITERAL_BOOLEAN => Literal::Boolean(reader.read_boolean()?),
-        LITERAL_SMALL_INTEGER => Literal::SmallInteger(reader.read_i64()?),
+        LITERAL_SMALL_INTEGER => {
+            let number = reader.read_i64()?;
+            if fits_small_integer(number) {
+                Literal::SmallInteger(number)
+            } else {
+                Literal::LargeInteger(ArbitraryInteger::from_i64(number))
+            }
+        }
         LITERAL_FLOAT => Literal::Float(reader.read_f64()?),
         LITERAL_STRING => Literal::String(reader.read_str()?),
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
@@ -2395,7 +2417,13 @@ fn decode_value<'gc>(
         VALUE_NIL => Ok(Value::nil()),
         VALUE_FALSE => Ok(Value::boolean(false)),
         VALUE_TRUE => Ok(Value::boolean(true)),
-        VALUE_SMALL_INTEGER => Ok(Value::small_integer(reader.read_i64()?)),
+        // An `i64` beyond 61 bits allocates its `LargeInteger`, which adds
+        // to the load's peak as `VALUE_LARGE_INTEGER` does (below), and more
+        // per wire byte: 9 bytes (tag, `i64`) for an `Object` and one digit,
+        // 64/9 = 7.1x in a release build and 80/9 = 8.9x in a debug one, on
+        // top of the placeholders' 16.4x and 20.4x: about 23.5x and 29.3x
+        // in all, the worst case of a rejected load.
+        VALUE_SMALL_INTEGER => Ok(integer_value(reader.read_i64()?, context.mutator)),
         VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
         VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
         VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),
@@ -2414,7 +2442,8 @@ fn decode_value<'gc>(
         // an `Object` of 56 bytes in a release build and 72 in a debug one,
         // that is 64/14 = 4.6x and 80/14 = 5.7x of those bytes, on top of
         // the placeholders' 9.3x + 7.1x (release) and 12.0x + 8.4x (debug):
-        // about 21.0x and 26.2x in all. It stays proportional to the input
+        // about 21.0x and 26.2x in all, below `VALUE_SMALL_INTEGER`'s
+        // worst case (above). It stays proportional to the input
         // because the digit count is bounded against the bytes left before
         // anything is allocated for it (`read_large_integer_parts`), and each
         // further digit costs its own 8 wire bytes.

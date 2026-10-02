@@ -4,10 +4,10 @@
 //! # Integers are unbounded; the numeric tower is not there yet
 //!
 //! §5.1.1's integers are not limited in size. Each integer has exactly one
-//! representation: a `SmallInteger` (class `Integer`) when it fits `i64`,
-//! otherwise a `LargeInteger` object, and every leaf answers an integer
-//! through `Mutator::new_integer`, which picks the one that fits. Across
-//! the numeric classes:
+//! representation: a `SmallInteger` (class `Integer`) when it fits 61 bits
+//! (`SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`), otherwise a `LargeInteger`
+//! object, and every leaf answers an integer through `Mutator::new_integer`,
+//! which picks the one that fits. Across the numeric classes:
 //!
 //! * `Integer`'s and `LargeInteger`'s arithmetic and ordering accept an
 //!   argument of either integer class (`integer_operand`): `5 + big` and
@@ -169,10 +169,11 @@ pub(crate) fn fixed_text(value: f64, fraction_digits: usize) -> String {
 
 /// `//` on two `i64`s, rounded toward negative infinity (Primordial Soup's
 /// `Integer>>//`; `num-integer`'s `div_floor`). `None` for a zero divisor
-/// and for `i64::MIN // -1`, whose quotient does not fit -- the leaf
-/// answers `i64::MIN // -1` with a `LargeInteger` and raises for a zero
-/// divisor, and `IntegerBinary` falls back to the send for both, so this is
-/// the only copy of the rule.
+/// and for `i64::MIN // -1`, whose quotient does not fit `i64`. A quotient
+/// it answers can still lie beyond a `SmallInteger` (`SMALL_INTEGER_MIN //
+/// -1`), so its callers test the range: the leaf answers such a quotient
+/// with a `LargeInteger` and raises for a zero divisor, and `IntegerBinary`
+/// falls back to the send for both, so this is the only copy of the rule.
 #[inline]
 pub(crate) fn checked_floor_divide(dividend: i64, divisor: i64) -> Option<i64> {
     let quotient = dividend.checked_div(divisor)?;
@@ -197,7 +198,7 @@ pub(crate) fn floor_modulo(dividend: i64, divisor: i64) -> i64 {
     }
 }
 
-/// An `i64` operation's result that does not fit `i64`, as the
+/// An integer operation's result that does not fit a `SmallInteger`, as the
 /// `LargeInteger` §5.1.1 asks for: "integers are not limited in size".
 fn promote<'gc>(mutator: &mut Mutator<'gc>, wide: i128) -> Value<'gc> {
     mutator.new_integer(ArbitraryInteger::from_i128(wide))
@@ -322,9 +323,10 @@ pub(crate) fn execute_integer<'gc>(
     let large_argument = || integer_operand(&mutator.heap, arguments.first());
     // `+`/`-`/`*`: an argument of neither integer class nor `Float` is a type
     // mismatch.
-    // A result that fits is answered without allocating. One that does not
-    // is recomputed in `i128`, where two `i64`s' sum, difference or product
-    // always fits, and one with a `LargeInteger` argument as an
+    // A result that fits a `SmallInteger` is answered without allocating.
+    // One that does not is recomputed in `i128`, where two `i64`s' sum,
+    // difference or product always fits, and one with a `LargeInteger`
+    // argument as an
     // `ArbitraryInteger`; either is handed back as an `Answer::Integer` for
     // the caller to make a `Value` of -- the closure holds `mutator` shared,
     // so it cannot allocate the `LargeInteger` itself. A `Float` argument
@@ -336,13 +338,17 @@ pub(crate) fn execute_integer<'gc>(
                       large: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger,
                       float: fn(f64, f64) -> f64| {
         match argument_integer() {
-            Some(argument) => Ok(match checked(receiver_integer, argument) {
-                Some(result) => Answer::Value(Value::small_integer(result)),
-                None => Answer::Integer(ArbitraryInteger::from_i128(wide(
-                    i128::from(receiver_integer),
-                    i128::from(argument),
-                ))),
-            }),
+            Some(argument) => Ok(
+                match checked(receiver_integer, argument)
+                    .filter(|number| fits_small_integer(*number))
+                {
+                    Some(result) => Answer::Value(Value::small_integer(result)),
+                    None => Answer::Integer(ArbitraryInteger::from_i128(wide(
+                        i128::from(receiver_integer),
+                        i128::from(argument),
+                    ))),
+                },
+            ),
             None => match large_argument() {
                 Some(argument) => Ok(Answer::Integer(large(
                     &ArbitraryInteger::from_i64(receiver_integer),
@@ -408,11 +414,16 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::FloorDivide => Some(match argument_integer() {
             Some(0) => Err(division_by_zero(receiver, "//")),
             // With the zero divisor refused above, the one quotient that
-            // does not fit is `i64::MIN // -1`'s, which is `-i64::MIN`.
-            Some(divisor) => Ok(match checked_floor_divide(receiver_integer, divisor) {
-                Some(quotient) => Value::small_integer(quotient),
-                None => promote(mutator, -i128::from(receiver_integer)),
-            }),
+            // does not fit is `SMALL_INTEGER_MIN // -1`'s, which is
+            // `-SMALL_INTEGER_MIN`.
+            Some(divisor) => Ok(
+                match checked_floor_divide(receiver_integer, divisor)
+                    .filter(|number| fits_small_integer(*number))
+                {
+                    Some(quotient) => Value::small_integer(quotient),
+                    None => promote(mutator, -i128::from(receiver_integer)),
+                },
+            ),
             // A `LargeInteger` divisor is never zero, since zero fits
             // `i64`; `floor_divide`'s `None` is still answered as the zero
             // divisor it would mean rather than assumed away.
@@ -469,10 +480,15 @@ pub(crate) fn execute_integer<'gc>(
         IntegerPrimitive::ShiftLeft => Some(match argument_integer() {
             Some(count) if (0..64).contains(&count) => {
                 let wide = i128::from(receiver_integer) << count;
-                Ok(match i64::try_from(wide) {
-                    Ok(small) => Value::small_integer(small),
-                    Err(_) => promote(mutator, wide),
-                })
+                Ok(
+                    match i64::try_from(wide)
+                        .ok()
+                        .filter(|number| fits_small_integer(*number))
+                    {
+                        Some(small) => Value::small_integer(small),
+                        None => promote(mutator, wide),
+                    },
+                )
             }
             _ => shift_left(
                 mutator,
@@ -495,16 +511,28 @@ pub(crate) fn execute_integer<'gc>(
             arguments,
         )
         .map(|answer| Ok(Value::boolean(answer))),
-        // `i64::MIN` is the one receiver whose negation and absolute value
-        // do not fit.
-        IntegerPrimitive::Negated => Some(Ok(match receiver_integer.checked_neg() {
-            Some(negated) => Value::small_integer(negated),
-            None => mutator.new_integer(ArbitraryInteger::from_i64(receiver_integer).negated()),
-        })),
-        IntegerPrimitive::Absolute => Some(Ok(match receiver_integer.checked_abs() {
-            Some(absolute) => Value::small_integer(absolute),
-            None => mutator.new_integer(ArbitraryInteger::from_i64(receiver_integer).absolute()),
-        })),
+        // `SMALL_INTEGER_MIN` is the one receiver whose negation and
+        // absolute value do not fit.
+        IntegerPrimitive::Negated => Some(Ok(
+            match receiver_integer
+                .checked_neg()
+                .filter(|number| fits_small_integer(*number))
+            {
+                Some(negated) => Value::small_integer(negated),
+                None => mutator.new_integer(ArbitraryInteger::from_i64(receiver_integer).negated()),
+            },
+        )),
+        IntegerPrimitive::Absolute => Some(Ok(
+            match receiver_integer
+                .checked_abs()
+                .filter(|number| fits_small_integer(*number))
+            {
+                Some(absolute) => Value::small_integer(absolute),
+                None => {
+                    mutator.new_integer(ArbitraryInteger::from_i64(receiver_integer).absolute())
+                }
+            },
+        )),
         IntegerPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string(receiver_integer.to_string()),
         ))),
@@ -771,6 +799,7 @@ pub(crate) fn execute_float<'gc>(
 #[cfg(test)]
 mod tests {
     use super::{checked_floor_divide, float_equals, float_hash};
+    use crate::SMALL_INTEGER_MIN;
 
     #[test]
     fn every_nan_equals_every_other_and_hashes_alike() {
@@ -807,6 +836,12 @@ mod tests {
         assert_eq!(checked_floor_divide(6, -2), Some(-3));
         assert_eq!(checked_floor_divide(i64::MIN, 1), Some(i64::MIN));
         assert_eq!(checked_floor_divide(i64::MIN, -1), None);
+        // An `i64` quotient beyond a `SmallInteger`: the helper answers it,
+        // and the leaf's and `IntegerBinary`'s range test declines it.
+        assert_eq!(
+            checked_floor_divide(SMALL_INTEGER_MIN, -1),
+            Some(1_152_921_504_606_846_976)
+        );
         assert_eq!(checked_floor_divide(1, 0), None);
     }
 

@@ -18,7 +18,10 @@ use crate::Symbol;
 /// can interpret one. They are re-exported here because this module is
 /// where the object model reads as a whole, and because `lib.rs`'s
 /// `pub use types::*` is how the rest of the workspace names them.
-pub use crate::heap::{ClassReference, FrameReference, ObjectReference, Value, ValueKind};
+pub use crate::heap::{
+    fits_small_integer, ClassReference, FrameReference, ObjectReference, Value, ValueKind,
+    SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
+};
 
 #[derive(Debug, Clone)]
 pub struct Object<'gc> {
@@ -56,10 +59,10 @@ pub enum ObjectData<'gc> {
     /// machinery walks and unwinds to. It stores the `FrameReference`, never
     /// an `ActivationReference`, since only a reified frame outlives its pop.
     Activation(FrameReference<'gc>),
-    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit
-    /// `i64`. It never holds a value that does -- `Mutator::new_integer` is
-    /// the one way to make one and decides that -- so each integer has one
-    /// representation. Holds no handle.
+    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit a
+    /// `SmallInteger`'s 61 bits. It never holds a value that does --
+    /// `Mutator::new_integer` is the one way to make one and decides that --
+    /// so each integer has one representation. Holds no handle.
     LargeInteger(crate::ArbitraryInteger),
 }
 
@@ -278,7 +281,7 @@ pub enum BuiltinClass {
     /// §6.3.2's pull future, kernel-private as `Activation` is; its
     /// instances are made by the runtime (`interpreter/future.rs`).
     Future,
-    /// §5.1.1's unbounded integers: an `Integer` that does not fit `i64`. A
+    /// §5.1.1's unbounded integers: an `Integer` beyond 61 bits. A
     /// subclass of `Integer`, whose instances are the immediates, so
     /// `3 class` stays `Integer`.
     LargeInteger,

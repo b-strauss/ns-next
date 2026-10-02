@@ -17,7 +17,7 @@ use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     ArbitraryInteger, BuiltinClass, ClassData, ClassReference, DispatchId, FrameKind, Heap,
     HostResult, HostSignal, Interpreter, Mixin, MixinApplication, Mutator, ObjectData, Root,
-    SourceOrigin, Symbol, Value, ValueKind,
+    SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
 };
 use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
@@ -101,7 +101,7 @@ fn every_scalar_value_variant_round_trips() {
             assert!(encode::encode_scalar_value(&mut writer, &value));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader).expect("decode");
+            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
             match (value.kind(), decoded.kind()) {
                 (ValueKind::Nil, ValueKind::Nil) => {}
                 (ValueKind::Boolean(expected), ValueKind::Boolean(actual)) => {
@@ -150,8 +150,8 @@ fn scalar_value_boundary_cases_round_trip() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let values = [
-            Value::small_integer(i64::MIN),
-            Value::small_integer(i64::MAX),
+            Value::small_integer(SMALL_INTEGER_MIN),
+            Value::small_integer(SMALL_INTEGER_MAX),
             Value::small_integer(0),
             mutator.new_float(f64::NAN),
             mutator.new_float(f64::INFINITY),
@@ -164,7 +164,7 @@ fn scalar_value_boundary_cases_round_trip() {
             assert!(encode::encode_scalar_value(&mut writer, &value));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader).expect("decode");
+            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
             match (value.kind(), decoded.kind()) {
                 (ValueKind::SmallInteger(expected), ValueKind::SmallInteger(actual)) => {
                     assert_eq!(expected, actual)
@@ -175,6 +175,20 @@ fn scalar_value_boundary_cases_round_trip() {
                 _ => panic!("round-trip mismatch"),
             }
         }
+        // An integer in `i64` but beyond a `SmallInteger` travels under the
+        // same tag, the wire's one encoding for it, and loads as the
+        // `LargeInteger` it is.
+        let mut writer = encode::Writer::new();
+        writer.write_u8(VALUE_SMALL_INTEGER);
+        writer.write_i64(i64::MAX);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+        let large = decoded
+            .as_object()
+            .and_then(|object| mutator.heap().large_integer(object));
+        assert!(large.is_some(), "expected a LargeInteger");
+        assert_eq!(mutator.heap().describe(&decoded), "9223372036854775807");
     });
 }
 
@@ -241,14 +255,19 @@ fn a_huge_length_prefix_does_not_overflow_or_panic() {
 fn an_invalid_scalar_tag_is_an_error_not_a_panic() {
     let bytes = vec![200u8];
     let mut reader = decode::Reader::new(&bytes);
-    match decode::decode_scalar_value(&mut reader) {
-        Err(decode::DecodeError::InvalidTag {
-            what: "value",
-            tag: 200,
-        }) => {}
-        Err(error) => panic!("expected InvalidTag{{value, 200}}, got a different error: {error}"),
-        Ok(_) => panic!("expected InvalidTag{{value, 200}}, got Ok"),
-    }
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(
+        |mutator| match decode::decode_scalar_value(&mut reader, mutator) {
+            Err(decode::DecodeError::InvalidTag {
+                what: "value",
+                tag: 200,
+            }) => {}
+            Err(error) => {
+                panic!("expected InvalidTag{{value, 200}}, got a different error: {error}")
+            }
+            Ok(_) => panic!("expected InvalidTag{{value, 200}}, got Ok"),
+        },
+    );
 }
 
 #[test]
@@ -1172,20 +1191,21 @@ fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
     }
 }
 
-/// A `LargeInteger` in a slot survives a snapshot as a value, and one that
-/// fits `i64` comes back an `Integer`: `-2^63` is `9223372036854775807 + 1`
-/// negated, which the arithmetic already answers as a `SmallInteger`, and
-/// the round trip keeps it one.
+/// A `LargeInteger` in a slot survives a snapshot as a value, including one
+/// that fits `i64` and so travels as an `i64`: `-2^63` and `2^60` are beyond
+/// a `SmallInteger`'s 61 bits, and the round trip keeps them `LargeInteger`s.
 #[test]
 fn a_large_integer_value_round_trips() {
     let source = indoc! {"
         class X = Object new (
-          | large = 9223372036854775807 + 1. small = 0 - (9223372036854775807 + 1). |
+          | large = 9223372036854775807 + 1. small = 0 - (9223372036854775807 + 1). edge = 1152921504606846976. |
         ) (
           public largeText = ( ^large printString )
           public largeClass = ( ^large class printString )
           public smallText = ( ^small printString )
           public smallClass = ( ^small class printString )
+          public edgeText = ( ^edge printString )
+          public edgeClass = ( ^edge class printString )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -1210,7 +1230,9 @@ fn a_large_integer_value_round_trips() {
         ("largeText", "9223372036854775808"),
         ("largeClass", "LargeInteger"),
         ("smallText", "-9223372036854775808"),
-        ("smallClass", "Integer"),
+        ("smallClass", "LargeInteger"),
+        ("edgeText", "1152921504606846976"),
+        ("edgeClass", "LargeInteger"),
     ] {
         let answer = expect_ok(
             loaded
@@ -1400,6 +1422,64 @@ fn a_large_integer_is_a_value_not_a_record() {
         "both slots carry the value: {:?}",
         report.graph_objects
     );
+}
+
+/// A `LargeInteger` that fits `i64` travels as `VALUE_SMALL_INTEGER`, the
+/// wire's one encoding for every integer in `i64`, wherever a `SmallInteger`
+/// ends; the decoder makes it a `LargeInteger` again because it lies beyond
+/// 61 bits.
+#[test]
+fn a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer() {
+    let source = indoc! {"
+        class X = Object new (
+          | edge = 1152921504606846976. |
+        ) (
+          public edgeClass = ( ^edge class printString )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("1152921504606846976")
+                && !object.contains("large-int 1152921504606846976")),
+        "written as an i64: {:?}",
+        report.graph_objects
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("edgeClass"), &[]),
+        "edgeClass",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let Some(string) = mutator.fetch(&answer).as_object() else {
+            panic!("edgeClass: expected a string")
+        };
+        assert_eq!(
+            mutator.heap().str_value(string).as_deref(),
+            Some("LargeInteger")
+        );
+    });
 }
 
 /// `inspect` renders an integer in decimal only up to

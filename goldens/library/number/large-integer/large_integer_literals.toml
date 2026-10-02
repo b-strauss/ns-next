@@ -4,7 +4,11 @@ stdout = '''
 1208925819614629174706175
 1180591620717411303424
 LargeInteger
+LargeInteger
+LargeInteger
+LargeInteger
 Integer
+LargeInteger
 Integer
 LargeInteger
 true

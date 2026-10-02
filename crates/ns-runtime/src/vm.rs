@@ -662,20 +662,25 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 let result = match operation {
                     IntegerOperation::Add => left_integer
                         .checked_add(right_integer)
+                        .filter(|number| fits_small_integer(*number))
                         .map(Value::small_integer),
                     IntegerOperation::Subtract => left_integer
                         .checked_sub(right_integer)
+                        .filter(|number| fits_small_integer(*number))
                         .map(Value::small_integer),
                     IntegerOperation::Multiply => left_integer
                         .checked_mul(right_integer)
+                        .filter(|number| fits_small_integer(*number))
                         .map(Value::small_integer),
-                    // `checked_floor_divide` answers `None` for a zero divisor
-                    // as well as for `i64::MIN // -1`, so both take the
-                    // fallback and the primitive decides what they answer. It
-                    // is `builtins::numbers`' own function, so the rounding
-                    // rule has one copy.
+                    // `checked_floor_divide` answers `None` for a zero
+                    // divisor, and the range test declines
+                    // `SMALL_INTEGER_MIN // -1`, so both take the fallback and
+                    // the primitive decides what they answer. It is
+                    // `builtins::numbers`' own function, so the rounding rule
+                    // has one copy.
                     IntegerOperation::FloorDivide => {
                         crate::builtins::numbers::checked_floor_divide(left_integer, right_integer)
+                            .filter(|number| fits_small_integer(*number))
                             .map(Value::small_integer)
                     }
                     IntegerOperation::Less => Some(Value::boolean(left_integer < right_integer)),

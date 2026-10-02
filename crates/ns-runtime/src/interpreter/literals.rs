@@ -20,8 +20,8 @@ pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>)
     })
 }
 
-/// An integer literal's value: `Small` whenever it fits `i64`, so an
-/// integer keeps its one representation from the literal on.
+/// An integer literal's value: `Small` whenever it fits a `SmallInteger`'s
+/// 61 bits, so an integer keeps its one representation from the literal on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum IntegerLiteral {
     Small(i64),
@@ -36,8 +36,8 @@ pub(crate) enum IntegerLiteral {
 /// a plain decimal literal (`42`, `-42`), and the Smalltalk/Newspeak radix
 /// literal `<radix>r<digits>` (`16rFF`, `2r1010`, `16r-1F`, `-16rFF`) --
 /// the spec's Source Format section accepts both. §5.1.1 bounds neither:
-/// "integers are not limited in size", so a literal beyond `i64` is a
-/// `Large` one, never a failure.
+/// "integers are not limited in size", so a literal beyond a
+/// `SmallInteger`'s 61 bits is a `Large` one, never a failure.
 ///
 /// The parser classifies a number with a fraction or an exponent as a
 /// float (`parse_float_literal`) and refuses a radix or digit that denotes
@@ -68,8 +68,8 @@ pub(crate) fn parse_integer_literal(text: &str) -> Result<IntegerLiteral, String
             (negated, radix, digits)
         }
     };
-    // Nearly every literal fits `i64`; the arbitrary parse is the fallback,
-    // not the rule.
+    // Nearly every literal fits a `SmallInteger`; the arbitrary parse is the
+    // fallback, not the rule.
     let small = i64::from_str_radix(digits, radix).ok().and_then(|value| {
         if negated {
             value.checked_neg()
@@ -77,7 +77,7 @@ pub(crate) fn parse_integer_literal(text: &str) -> Result<IntegerLiteral, String
             Some(value)
         }
     });
-    if let Some(value) = small {
+    if let Some(value) = small.filter(|number| fits_small_integer(*number)) {
         return Ok(IntegerLiteral::Small(value));
     }
     let Some(value) = ArbitraryInteger::parse(digits, radix) else {
@@ -86,12 +86,14 @@ pub(crate) fn parse_integer_literal(text: &str) -> Result<IntegerLiteral, String
         ));
     };
     let value = if negated { value.negated() } else { value };
-    // `-16r8000000000000000` is `i64::MIN`: its digits overflow `i64` before
-    // the negation brings them back.
-    Ok(match value.to_i64() {
-        Some(small) => IntegerLiteral::Small(small),
-        None => IntegerLiteral::Large(value),
-    })
+    // A literal in `i64` beyond 61 bits reaches here as well as one beyond
+    // `i64`, so the range is tested again rather than assumed.
+    Ok(
+        match value.to_i64().filter(|number| fits_small_integer(*number)) {
+            Some(small) => IntegerLiteral::Small(small),
+            None => IntegerLiteral::Large(value),
+        },
+    )
 }
 
 /// A non-integral number literal's value (§5.1.1), as the one `f64` this
@@ -198,27 +200,32 @@ mod tests {
         assert_eq!(integer.to_decimal_string(), "99999999999999999999");
     }
 
-    /// A literal that fits `i64` is always `Small`, even when its digits
-    /// alone do not: the negation brings `-16r8000000000000000` back to
-    /// `i64::MIN`. One step past either edge is `Large`.
+    /// A literal that fits a `SmallInteger` is `Small`, and one step past
+    /// either 61-bit edge is `Large`, as are the `i64` edges, which lie
+    /// beyond them.
     #[test]
-    fn a_literal_at_an_i64_edge_is_small_and_one_past_it_is_large() {
+    fn a_literal_at_a_small_integer_edge_is_small_and_one_past_it_is_large() {
         assert_eq!(
-            parse_integer_literal("-9223372036854775808"),
-            Ok(IntegerLiteral::Small(i64::MIN))
+            parse_integer_literal("1152921504606846975"),
+            Ok(IntegerLiteral::Small(1_152_921_504_606_846_975))
         );
         assert_eq!(
-            parse_integer_literal("-16r8000000000000000"),
-            Ok(IntegerLiteral::Small(i64::MIN))
+            parse_integer_literal("-1152921504606846976"),
+            Ok(IntegerLiteral::Small(-1_152_921_504_606_846_976))
         );
         assert_eq!(
-            parse_integer_literal("9223372036854775807"),
-            Ok(IntegerLiteral::Small(i64::MAX))
+            parse_integer_literal("-16r1000000000000000"),
+            Ok(IntegerLiteral::Small(-1_152_921_504_606_846_976))
         );
         for text in [
+            "1152921504606846976",
+            "-1152921504606846977",
+            "16r1000000000000000",
+            "9223372036854775807",
+            "-9223372036854775808",
+            "-16r8000000000000000",
             "9223372036854775808",
             "-9223372036854775809",
-            "16r8000000000000000",
         ] {
             assert!(
                 matches!(parse_integer_literal(text), Ok(IntegerLiteral::Large(_))),

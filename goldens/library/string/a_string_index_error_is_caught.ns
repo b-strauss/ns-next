@@ -1,7 +1,7 @@
 (* A String's `at:` shares `Array>>at:`'s errors, so a program sees one
    text from either; `copyFrom:to:` refuses a range that leaves the string
    or stops more than one before it starts, without overflowing on the
-   largest and smallest SmallInteger; `String with:` refuses what is no
+   `i64` edges, which are `LargeInteger`s; `String with:` refuses what is no
    code point -- a negative Integer, a surrogate, anything past U+10FFFF,
    and what is no Integer. Each is a signalled Error, caught here. *)
 class AStringIndexErrorIsCaught = Object new (

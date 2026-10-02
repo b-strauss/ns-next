@@ -150,6 +150,8 @@ pub const LITERAL_UNRESOLVED_IDENTIFIER: u8 = 9;
 /// An integer beyond `i64`, in `VALUE_LARGE_INTEGER`'s wire form: a sign
 /// byte, a `u32` digit count, that many `u64` digits, least significant
 /// first. Its digits, never its source text, so the decoder parses nothing.
+/// A `LargeInteger` literal that fits `i64` travels as
+/// `LITERAL_SMALL_INTEGER`, which loads as a `LargeInteger` beyond 61 bits.
 pub const LITERAL_LARGE_INTEGER: u8 = 10;
 
 /// Literal tags that no longer name anything and are never reused: 6 was the
@@ -198,7 +200,8 @@ pub const VALUE_PLATFORM_PATH: u8 = 8;
 /// record, since a value has no identity (§3.1.1): a sign byte, a `u32`
 /// digit count, that many `u64` digits, least significant first. Only the
 /// canonical encoding is accepted -- no zero top digit, no negative zero,
-/// and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER`.
+/// and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER` and
+/// loads as a `SmallInteger` in 61 bits, a `LargeInteger` beyond them.
 pub const VALUE_LARGE_INTEGER: u8 = 9;
 
 /// An object record's body, following its class tag and identity hash.

@@ -7,7 +7,7 @@ use std::rc::Rc;
 use ns_runtime::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
 use ns_runtime::{
     ClassReference, Heap, HostError, HostResult, HostSignal, Interpreter, Mixin, Mutator, Root,
-    SourceOrigin, Symbol, Value, ValueKind,
+    SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
 };
 use ns_syntax::Span;
 
@@ -1261,7 +1261,7 @@ fn an_inlined_integer_operation_leaves_promotion_and_division_by_zero_to_the_pri
     let (mut interpreter, class) = load(source);
     let instance = new_instance(&mut interpreter, &class);
 
-    let maximum = interpreter.stash(Value::small_integer(i64::MAX));
+    let maximum = interpreter.stash(Value::small_integer(SMALL_INTEGER_MAX));
     let one = interpreter.stash(Value::small_integer(1));
     let result = send(
         &mut interpreter,
@@ -1272,7 +1272,7 @@ fn an_inlined_integer_operation_leaves_promotion_and_division_by_zero_to_the_pri
     let sum = expect_ok(result, "overflowing addition");
     assert_eq!(
         large_integer_text(&mut interpreter, &sum),
-        "9223372036854775808"
+        "1152921504606846976"
     );
 
     let zero = interpreter.stash(Value::small_integer(0));
@@ -1280,9 +1280,9 @@ fn an_inlined_integer_operation_leaves_promotion_and_division_by_zero_to_the_pri
     let error = expect_error(&mut interpreter, result, "division by zero");
     assert_eq!(error.message, "division by zero");
 
-    // `i64::MIN // -1` has no `i64` result either, and `checked_floor_divide`
-    // declines it as it declines a zero divisor.
-    let minimum = interpreter.stash(Value::small_integer(i64::MIN));
+    // `SMALL_INTEGER_MIN // -1` has no `SmallInteger` result either, and
+    // the inlined operation declines it as it declines a zero divisor.
+    let minimum = interpreter.stash(Value::small_integer(SMALL_INTEGER_MIN));
     let minus_one = interpreter.stash(Value::small_integer(-1));
     let result = send(
         &mut interpreter,
@@ -1293,7 +1293,7 @@ fn an_inlined_integer_operation_leaves_promotion_and_division_by_zero_to_the_pri
     let quotient = expect_ok(result, "overflowing division");
     assert_eq!(
         large_integer_text(&mut interpreter, &quotient),
-        "9223372036854775808"
+        "1152921504606846976"
     );
 }
 

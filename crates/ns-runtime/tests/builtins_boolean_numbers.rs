@@ -3,7 +3,9 @@
 //! lookup via `Interpreter::send`.
 
 use indoc::{formatdoc, indoc};
-use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
+use ns_runtime::{
+    Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind, SMALL_INTEGER_MAX,
+};
 
 /// Parses+resolves a one-class module and loads it (via a freshly
 /// bootstrapped `Interpreter`) into a real class object, returning both --
@@ -75,14 +77,14 @@ fn integer_addition_via_direct_send_evaluates_correctly() {
 #[test]
 fn integer_addition_overflow_answers_a_large_integer() {
     let mut interpreter = Interpreter::bootstrap();
-    let max = interpreter.stash(Value::small_integer(i64::MAX));
+    let max = interpreter.stash(Value::small_integer(SMALL_INTEGER_MAX));
     let sum = expect_ok(
         interpreter.send(
             &max,
             Symbol::intern("+"),
             &[interpreter.stash(Value::small_integer(1))],
         ),
-        "i64::MAX + 1",
+        "SMALL_INTEGER_MAX + 1",
     );
     let printed = expect_ok(
         interpreter.send(&sum, Symbol::intern("printString"), &[]),
@@ -91,7 +93,7 @@ fn integer_addition_overflow_answers_a_large_integer() {
     interpreter.enter(|mutator| {
         assert_eq!(
             as_string(mutator.heap(), &mutator.fetch(&printed)),
-            "9223372036854775808"
+            "1152921504606846976"
         );
     });
 }
@@ -392,14 +394,14 @@ fn float_arithmetic_still_widens_an_integer_argument() {
 #[test]
 fn integer_multiplication_overflow_answers_a_large_integer() {
     let mut interpreter = Interpreter::bootstrap();
-    let max = interpreter.stash(Value::small_integer(i64::MAX));
+    let max = interpreter.stash(Value::small_integer(SMALL_INTEGER_MAX));
     let product = expect_ok(
         interpreter.send(
             &max,
             Symbol::intern("*"),
             &[interpreter.stash(Value::small_integer(2))],
         ),
-        "i64::MAX * 2",
+        "SMALL_INTEGER_MAX * 2",
     );
     let printed = expect_ok(
         interpreter.send(&product, Symbol::intern("printString"), &[]),
@@ -408,7 +410,7 @@ fn integer_multiplication_overflow_answers_a_large_integer() {
     interpreter.enter(|mutator| {
         assert_eq!(
             as_string(mutator.heap(), &mutator.fetch(&printed)),
-            "18446744073709551614"
+            "2305843009213693950"
         );
     });
 }

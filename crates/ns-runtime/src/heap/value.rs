@@ -6,6 +6,16 @@
 
 use super::{Brand, ObjectReference};
 
+/// The bounds of a `SmallInteger`: 61 bits, what the tagged word leaves
+/// (`docs/design/object-model.md`, "Planned: an eight-byte value"). Every
+/// integer outside them is a `LargeInteger`.
+pub const SMALL_INTEGER_MIN: i64 = -(1 << 60);
+pub const SMALL_INTEGER_MAX: i64 = (1 << 60) - 1;
+
+pub const fn fits_small_integer(value: i64) -> bool {
+    SMALL_INTEGER_MIN <= value && value <= SMALL_INTEGER_MAX
+}
+
 #[derive(Clone, Copy)]
 pub struct Value<'gc>(Representation<'gc>);
 
@@ -42,6 +52,7 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn small_integer(value: i64) -> Value<'gc> {
+        debug_assert!(fits_small_integer(value), "a SmallInteger outside 61 bits");
         Value(Representation::SmallInteger(value))
     }
 
@@ -49,10 +60,9 @@ impl<'gc> Value<'gc> {
         Value(Representation::Object(object))
     }
 
-    /// The immediate float. Only `Mutator::new_float` and the image's scalar
-    /// decoder make one: everywhere else a float is made through
-    /// `new_float`, so that once floats outside the immediate range are
-    /// boxed, every float still has one representation.
+    /// The immediate float. Only `Mutator::new_float` makes one: every float
+    /// is made through it, so that once floats outside the immediate range
+    /// are boxed, every float still has one representation.
     pub(crate) const fn small_float(value: f64) -> Value<'gc> {
         Value(Representation::Float(value))
     }
@@ -163,5 +173,18 @@ mod tests {
         let copy = original;
         assert_eq!(original.as_small_integer(), Some(-7));
         assert_eq!(copy.as_small_integer(), Some(-7));
+    }
+
+    #[test]
+    fn a_small_integer_has_sixty_one_bits() {
+        use super::{fits_small_integer, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
+        assert_eq!(SMALL_INTEGER_MIN, -1_152_921_504_606_846_976);
+        assert_eq!(SMALL_INTEGER_MAX, 1_152_921_504_606_846_975);
+        assert!(fits_small_integer(SMALL_INTEGER_MIN));
+        assert!(fits_small_integer(SMALL_INTEGER_MAX));
+        assert!(!fits_small_integer(SMALL_INTEGER_MIN - 1));
+        assert!(!fits_small_integer(SMALL_INTEGER_MAX + 1));
+        assert!(!fits_small_integer(i64::MIN));
+        assert!(!fits_small_integer(i64::MAX));
     }
 }

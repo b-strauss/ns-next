@@ -1472,11 +1472,13 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The one way an `ArbitraryInteger` becomes a `Value`, so that every
-    /// integer has one representation: one that fits `i64` is a
-    /// `SmallInteger`, never a `LargeInteger` object, which `Integer>>=`,
-    /// `hash` and the image's canonical-encoding check all rely on.
+    /// integer has one representation: one in 61 bits is a `SmallInteger`,
+    /// never a `LargeInteger` object, which `Integer>>=` and `hash` rely on.
     pub fn new_integer(&mut self, integer: crate::ArbitraryInteger) -> Value<'gc> {
-        match integer.to_i64() {
+        match integer
+            .to_i64()
+            .filter(|number| fits_small_integer(*number))
+        {
             Some(small) => Value::small_integer(small),
             None => {
                 let class = self.builtin_class(BuiltinClass::LargeInteger);
