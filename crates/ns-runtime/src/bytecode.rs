@@ -11,6 +11,13 @@ use ns_syntax::Span;
 
 use crate::Symbol;
 
+mod compact;
+
+pub use compact::{
+    BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
+    WideSend,
+};
+
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
 /// keeps only what execution needs. Int/float text is parsed once at compile
 /// time; `String`/`Symbol`/`Array` still allocate a fresh heap
@@ -423,6 +430,34 @@ pub struct CompiledCode {
     pub source: Span,
 }
 
+impl CompiledCode {
+    /// A body of `instructions`, its `family_size` and `outer_reach` derived
+    /// from them, as the compiler and the decoder derive them. It carries no
+    /// unwind marker: only the kernel's compilation recognizes one.
+    pub fn new(
+        kind: CodeKind,
+        instructions: Vec<Instruction>,
+        argument_count: u16,
+        register_count: u16,
+        copied_count: u16,
+        statement_program_counter: Vec<(usize, Range<usize>)>,
+        source: Span,
+    ) -> CompiledCode {
+        CompiledCode {
+            kind,
+            family_size: family_size_of(&instructions),
+            outer_reach: outer_reach_of(&instructions),
+            instructions,
+            argument_count,
+            register_count,
+            statement_program_counter,
+            copied_count,
+            unwind_marker: None,
+            source,
+        }
+    }
+}
+
 /// What makes an activation matter to the unwinder
 /// (`docs/design/core-library.md`, "Exceptions"): each variant
 /// names the registers of the kernel method's parameters and locals, in the
@@ -497,6 +532,38 @@ impl Instruction {
         match self {
             call_site_variants!(site) => Some(site),
             _ => None,
+        }
+    }
+
+    /// Sets the target of a jump, of an inlined integer operation's
+    /// fallback, or of a mirror send's failure block -- the instructions a
+    /// lowering emits before it knows where they go.
+    pub(crate) fn set_target(&mut self, target: u32) {
+        match self {
+            Instruction::Jump {
+                target: jump_target,
+            }
+            | Instruction::JumpIfNotBoolean {
+                target: jump_target,
+                ..
+            }
+            | Instruction::BranchIfFalse {
+                target: jump_target,
+                ..
+            }
+            | Instruction::BranchIfTrue {
+                target: jump_target,
+                ..
+            }
+            | Instruction::IntegerBinary {
+                target: jump_target,
+                ..
+            }
+            | Instruction::SendMirror {
+                failure: jump_target,
+                ..
+            } => *jump_target = target,
+            other => unreachable!("internal: set_target on a non-jump instruction {other:?}"),
         }
     }
 }

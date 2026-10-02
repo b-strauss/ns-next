@@ -1536,35 +1536,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn patch_target(&mut self, instruction_index: usize, target: u32) {
-        match &mut self.instructions[instruction_index] {
-            Instruction::Jump {
-                target: jump_target,
-            }
-            | Instruction::JumpIfNotBoolean {
-                target: jump_target,
-                ..
-            }
-            | Instruction::BranchIfFalse {
-                target: jump_target,
-                ..
-            }
-            | Instruction::BranchIfTrue {
-                target: jump_target,
-                ..
-            }
-            // The fast path's own guard: its `target` is where the fallback
-            // send stands, patched exactly like a jump's.
-            | Instruction::IntegerBinary {
-                target: jump_target,
-                ..
-            }
-            // A mirror send's `failure` is where its inlined block stands.
-            | Instruction::SendMirror {
-                failure: jump_target,
-                ..
-            } => *jump_target = target,
-            other => unreachable!("internal: patch_target on a non-jump instruction {other:?}"),
-        }
+        self.instructions[instruction_index].set_target(target);
     }
 
     /// Lowers `block`'s statements directly into the current instruction stream
