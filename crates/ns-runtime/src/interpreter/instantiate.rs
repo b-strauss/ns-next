@@ -61,10 +61,9 @@ fn build_methods(
             if let Some(marker) =
                 crate::compiler::unwind_marker::recognize(declaration, &method.code)
             {
-                method.code = Rc::new(crate::bytecode::CompiledCode {
-                    unwind_marker: Some(marker),
-                    ..(*method.code).clone()
-                });
+                let mut code = (*method.code).clone();
+                code.unwind_marker = Some(marker);
+                method.code = Rc::new(code);
             }
         }
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));

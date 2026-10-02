@@ -85,7 +85,7 @@ pub enum IntegerOperation {
 
 /// Every register operand is a `u16` index into the frame's unified
 /// arguments-then-temporaries register file; every jump target is an instruction
-/// index into the owning `CompiledCode.instructions`.
+/// index into the owning `CompiledCode`'s instructions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     LoadLiteral {
@@ -383,7 +383,11 @@ pub enum CodeKind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledCode {
     pub kind: CodeKind,
-    pub instructions: Vec<Instruction>,
+    /// The instructions, stored only in their eight-byte encoding
+    /// (`docs/design/execution.md`, "Planned: the compact instruction
+    /// encoding"): the loop runs the slots, and every tool reads the decoded
+    /// view (`instruction`, `instructions`).
+    body: EncodedBody,
     pub argument_count: u16,
     /// Total register count, in the order the registers are laid out:
     /// `argument_count`, then `copied_count`, then the named temporaries,
@@ -431,9 +435,10 @@ pub struct CompiledCode {
 }
 
 impl CompiledCode {
-    /// A body of `instructions`, its `family_size` and `outer_reach` derived
-    /// from them, as the compiler and the decoder derive them. It carries no
-    /// unwind marker: only the kernel's compilation recognizes one.
+    /// A body from its instructions, encoded at once; `family_size` and
+    /// `outer_reach` are derived from them, as the compiler derives them.
+    /// It carries no unwind marker: only the kernel's compilation
+    /// recognizes one.
     pub fn new(
         kind: CodeKind,
         instructions: Vec<Instruction>,
@@ -443,18 +448,72 @@ impl CompiledCode {
         statement_program_counter: Vec<(usize, Range<usize>)>,
         source: Span,
     ) -> CompiledCode {
+        let mut builder = CodeBuilder::new();
+        for instruction in instructions {
+            builder.emit(instruction);
+        }
+        CompiledCode::from_builder(
+            kind,
+            builder,
+            argument_count,
+            register_count,
+            copied_count,
+            statement_program_counter,
+            source,
+        )
+    }
+
+    /// A body from the builder a lowering or the image decoder emitted it
+    /// into; `family_size` and `outer_reach` are derived from it.
+    pub(crate) fn from_builder(
+        kind: CodeKind,
+        builder: CodeBuilder,
+        argument_count: u16,
+        register_count: u16,
+        copied_count: u16,
+        statement_program_counter: Vec<(usize, Range<usize>)>,
+        source: Span,
+    ) -> CompiledCode {
+        let instructions = builder.instructions();
         CompiledCode {
             kind,
             family_size: family_size_of(&instructions),
             outer_reach: outer_reach_of(&instructions),
-            instructions,
+            body: builder.finish(),
             argument_count,
             register_count,
-            statement_program_counter,
             copied_count,
+            statement_program_counter,
             unwind_marker: None,
             source,
         }
+    }
+
+    /// The instruction at `index`, decoded: what was emitted there.
+    pub fn instruction(&self, index: usize) -> Instruction {
+        self.body.instruction(index)
+    }
+
+    /// Every instruction, decoded -- for tools and tests; the loop reads
+    /// `slot`.
+    pub fn instructions(&self) -> Vec<Instruction> {
+        self.body.instructions()
+    }
+
+    pub fn instruction_count(&self) -> usize {
+        self.body.len()
+    }
+
+    pub(crate) fn slot(&self, index: usize) -> CompactInstruction {
+        self.body.slot(index)
+    }
+
+    pub(crate) fn body(&self) -> &EncodedBody {
+        &self.body
+    }
+
+    pub(crate) fn body_mut(&mut self) -> &mut EncodedBody {
+        &mut self.body
     }
 }
 
@@ -555,10 +614,13 @@ impl Instruction {
                 target: jump_target,
                 ..
             }
+            // The fast path's own guard: its `target` is where the fallback
+            // send stands, patched exactly like a jump's.
             | Instruction::IntegerBinary {
                 target: jump_target,
                 ..
             }
+            // A mirror send's `failure` is where its inlined block stands.
             | Instruction::SendMirror {
                 failure: jump_target,
                 ..
@@ -634,7 +696,7 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         code.argument_count, code.register_count
     )
     .expect("writing to a String cannot fail");
-    for (index, instruction) in code.instructions.iter().enumerate() {
+    for (index, instruction) in code.instructions().iter().enumerate() {
         let statement = code
             .statement_program_counter
             .iter()
@@ -880,25 +942,22 @@ mod tests {
 
     #[test]
     fn compiled_code_construction_smoke_test() {
-        let code = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 1,
                     literal: Literal::SmallInteger(42),
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 1,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 10),
-        };
-        assert_eq!(code.instructions.len(), 2);
+            1,
+            2,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 10),
+        );
+        assert_eq!(code.instruction_count(), 2);
         assert_eq!(code.register_count - code.argument_count, 1);
         assert_eq!(code, code.clone());
     }
@@ -910,18 +969,17 @@ mod tests {
     #[test]
     fn outer_reach_counts_a_nested_blocks_reach_one_level_less() {
         let make = |outer_reach, instructions| {
-            Rc::new(CompiledCode {
-                kind: CodeKind::Block,
+            let code = CompiledCode::new(
+                CodeKind::Block,
                 instructions,
-                argument_count: 0,
-                register_count: 1,
-                statement_program_counter: vec![],
-                family_size: 0,
-                copied_count: 0,
-                outer_reach,
-                unwind_marker: None,
-                source: Span::new(0, 0),
-            })
+                0,
+                1,
+                0,
+                vec![],
+                Span::new(0, 0),
+            );
+            assert_eq!(code.outer_reach, outer_reach);
+            Rc::new(code)
         };
         let inner = make(
             2,
@@ -1024,18 +1082,15 @@ mod tests {
 
     #[test]
     fn make_closure_carries_compiled_block_code() {
-        let block = Rc::new(CompiledCode {
-            kind: CodeKind::Block,
-            instructions: vec![Instruction::ImplicitReturn { register: 0 }],
-            argument_count: 1,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..1)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 5),
-        });
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            1,
+            1,
+            0,
+            vec![(0, 0..1)],
+            Span::new(0, 5),
+        ));
         let make = Instruction::MakeClosure {
             destination: 0,
             parameters: Rc::new(vec![Symbol::intern("x")]),
@@ -1050,9 +1105,9 @@ mod tests {
 
     #[test]
     fn disassemble_lists_instructions_with_statement_labels_and_nested_blocks() {
-        let block = Rc::new(CompiledCode {
-            kind: CodeKind::Block,
-            instructions: vec![
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![
                 Instruction::LoadOuterLocal {
                     destination: 0,
                     depth: 1,
@@ -1060,18 +1115,16 @@ mod tests {
                 },
                 Instruction::NonLocalReturn { register: 0 },
             ],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 1,
-            unwind_marker: None,
-            source: Span::new(0, 5),
-        });
-        let code = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+            0,
+            1,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 5),
+        ));
+        assert_eq!(block.outer_reach, 1);
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::MakeClosure {
                     destination: 1,
                     parameters: Rc::new(vec![]),
@@ -1088,15 +1141,14 @@ mod tests {
                 Instruction::LoadSelf { destination: 3 },
                 Instruction::ImplicitReturn { register: 3 },
             ],
-            argument_count: 1,
-            register_count: 4,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 2,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 10),
-        };
+            1,
+            4,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 10),
+        );
+        assert_eq!(code.family_size, 2);
+        assert_eq!(code.outer_reach, 0);
         let text = disassemble(&code, "foo:");
         let expected = "\
 method foo: (args 1, registers 4)
@@ -1116,18 +1168,15 @@ method foo: (args 1, registers 4)
     /// every recorded disassembly of by-reference code where it is.
     #[test]
     fn disassembly_names_a_closures_copied_registers_only_when_it_has_some() {
-        let block = Rc::new(CompiledCode {
-            kind: CodeKind::Block,
-            instructions: vec![Instruction::ImplicitReturn { register: 0 }],
-            argument_count: 0,
-            register_count: 3,
-            statement_program_counter: vec![(0, 0..1)],
-            family_size: 0,
-            copied_count: 2,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 5),
-        });
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            0,
+            3,
+            2,
+            vec![(0, 0..1)],
+            Span::new(0, 5),
+        ));
         let copying = format_instruction(&Instruction::MakeClosure {
             destination: 1,
             parameters: Rc::new(vec![Symbol::intern("x")]),

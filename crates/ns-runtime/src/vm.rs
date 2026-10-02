@@ -13,7 +13,8 @@
 
 use std::rc::Rc;
 
-use crate::bytecode::{CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::builtins::primitive::MirrorPrimitive;
+use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
 use crate::heap::{ActivationReference, RegisterBase};
 use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
@@ -181,6 +182,13 @@ pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> H
 /// when the stretch leaves for a safepoint. Each arm advances the program
 /// counter itself; a send, a return, an unwind and a forcing answer a
 /// `Transfer`, the frame they switch to written into `handoff`.
+///
+/// The loop matches the eight-byte slot (`bytecode::CompactInstruction`),
+/// copied out, so the match runs on a value in registers. Each
+/// instruction's effect is one function over `u16` operands, called by the
+/// narrow arm and by `run_wide` alike. A send arm only gathers a
+/// `PendingSend`; the one path per kind after the match runs it, so each
+/// kind's cache hit path is inlined here once, not once per form.
 #[inline(always)]
 fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floor: usize) -> Leave {
     let mut activation = frame.activation;
@@ -195,245 +203,605 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
         feedback_base,
         exit: None,
     };
-    // A jump to `target`, from every instruction that jumps -- written once,
-    // so that the set of jumps that test the safepoint when they go backward
-    // is exactly the set of jumps. A backward jump closes a loop, so that a
-    // loop that makes no send still passes a safepoint. Leaving breaks out of
-    // the loop to the one write-back below it, which every safepoint shares.
-    macro_rules! jump_to {
-        ($target:expr) => {{
-            let target = $target as usize;
-            let backward = target <= program_counter;
-            program_counter = target;
-            if backward && mutator.heap.safepoint_requested() {
-                break;
-            }
-            continue;
-        }};
-    }
-    loop {
+    'run: loop {
+        // A jump to `target`, from every instruction that jumps -- written
+        // once, so that the set of jumps that test the safepoint when they
+        // go backward is exactly the set of jumps. A backward jump closes a
+        // loop, so that a loop that makes no send still passes a safepoint.
+        // Leaving breaks out of the loop to the one write-back below it,
+        // which every safepoint shares. Defined inside the labelled loop so
+        // that its label is in scope where the macro is written.
+        macro_rules! jump_to {
+            ($target:expr) => {{
+                let target = $target as usize;
+                let backward = target <= program_counter;
+                program_counter = target;
+                if backward && mutator.heap.safepoint_requested() {
+                    break 'run;
+                }
+                continue 'run;
+            }};
+        }
+        macro_rules! next {
+            () => {{
+                program_counter += 1;
+                continue 'run;
+            }};
+        }
+        // One opcode per operation, so no arm dispatches on the operation
+        // again: `integer_into` is inlined with it fixed.
+        macro_rules! integer {
+            ($operation:expr, $destination:expr, $left:expr, $right:expr, $target:expr) => {{
+                if integer_into(
+                    mutator,
+                    register_base,
+                    $operation,
+                    u16::from($destination),
+                    u16::from($left),
+                    u16::from($right),
+                ) {
+                    next!()
+                }
+                jump_to!($target)
+            }};
+        }
         debug_assert!(
-            program_counter < code.instructions.len(),
+            program_counter < code.instruction_count(),
             "internal: program counter ran past the end of a CompiledCode with no terminating return"
         );
-        let transfer = match &code.instructions[program_counter] {
-            Instruction::LoadLiteral {
-                destination,
-                literal,
-            } => match make_value(mutator, activation, literal) {
-                Ok(value) => {
+        let transfer = 'decided: {
+            let pending = match code.slot(program_counter) {
+                CompactInstruction::LoadNil { destination } => {
                     mutator
                         .heap
-                        .set_register(register_base, *destination, value);
-                    program_counter += 1;
-                    continue;
+                        .set_register(register_base, u16::from(destination), Value::nil());
+                    next!()
                 }
-                Err(signal) => unwind(mutator, signal, floor, &mut handoff),
-            },
-            Instruction::LoadSelf { destination } => {
-                let value = mutator.heap.activation_receiver(activation);
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::LoadEnclosingObject { destination, depth } => {
-                let value =
-                    crate::interpreter::sends::enclosing_object(mutator, activation, *depth);
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::Move {
-                destination,
-                source,
-            }
-            | Instruction::StoreLocal {
-                source,
-                slot: destination,
-            } => {
-                let value = mutator.heap.register(register_base, *source);
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::LoadOuterLocal {
-                destination,
-                depth,
-                index,
-            } => {
-                let value = read_outer_local(&mutator.heap, activation, *depth, *index);
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::StoreOuterLocal {
-                source,
-                depth,
-                index,
-            } => {
-                let value = mutator.heap.register(register_base, *source);
-                write_outer_local(&mut mutator.heap, activation, *depth, *index, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::SendPublic {
-                selector,
-                receiver_register,
-                argument_registers,
-                destination,
-                call_site,
-            } => {
-                let receiver = mutator.heap.register(register_base, *receiver_register);
-                let family_size = code.family_size;
-                send(
+                CompactInstruction::LoadTrue { destination } => {
+                    mutator.heap.set_register(
+                        register_base,
+                        u16::from(destination),
+                        Value::boolean(true),
+                    );
+                    next!()
+                }
+                CompactInstruction::LoadFalse { destination } => {
+                    mutator.heap.set_register(
+                        register_base,
+                        u16::from(destination),
+                        Value::boolean(false),
+                    );
+                    next!()
+                }
+                CompactInstruction::LoadSmallInteger { destination, value } => {
+                    mutator.heap.set_register(
+                        register_base,
+                        u16::from(destination),
+                        Value::small_integer(i64::from(value)),
+                    );
+                    next!()
+                }
+                CompactInstruction::LoadConstant {
+                    destination,
+                    constant,
+                } => {
+                    let value = Value::from_immediate(code.body().constants[usize::from(constant)]);
+                    mutator
+                        .heap
+                        .set_register(register_base, u16::from(destination), value);
+                    next!()
+                }
+                CompactInstruction::LoadLiteral {
+                    destination,
+                    literal,
+                } => match load_literal_into(
                     mutator,
                     activation,
                     register_base,
-                    program_counter,
-                    argument_registers,
-                    *destination,
-                    floor,
-                    false,
-                    &mut handoff,
-                    |mutator, arguments| {
-                        send_public(
-                            mutator,
-                            feedback_base,
-                            family_size,
-                            *call_site,
-                            receiver,
-                            *selector,
-                            arguments,
-                        )
-                    },
-                )
-            }
-            // Decided as `SendPublic` is, but uncached: only the reference
-            // lowering emits it. Only the depth count treats a control-flow
-            // step's block activated for it differently
-            // (`Mutator::push_step`).
-            Instruction::SendInlinable {
-                selector,
-                receiver_register,
-                argument_registers,
-                destination,
-                ..
-            } => {
-                let receiver = mutator.heap.register(register_base, *receiver_register);
-                send(
-                    mutator,
-                    activation,
-                    register_base,
-                    program_counter,
-                    argument_registers,
-                    *destination,
-                    floor,
-                    true,
-                    &mut handoff,
-                    |mutator, arguments| mutator.decide_send(receiver, *selector, arguments),
-                )
-            }
-            // A send to the VM mirror with its failure block inline: the leaf
-            // runs, or declines and the block runs at `failure`. What the leaf
-            // decided is delivered as any send's decision is. Which leaf, and
-            // whether the receiver is the mirror, is `interpreter::mirror`'s.
-            Instruction::SendMirror {
-                primitive,
-                mirror_register,
-                subject_register,
-                argument_registers,
-                destination,
-                failure,
-            } => {
-                let mirror = mutator.heap.register(register_base, *mirror_register);
-                let subject = mutator.heap.register(register_base, *subject_register);
-                let mut arguments = mutator.take_argument_buffer();
-                arguments.extend(
-                    argument_registers
-                        .iter()
-                        .map(|register| mutator.heap.register(register_base, *register)),
-                );
-                mutator
-                    .heap
-                    .set_activation_program_counter(activation, program_counter);
-                // `None`, the leaf declined: the jump to `failure` waits
-                // until the buffer is handed back.
-                let transfer = crate::interpreter::mirror::send_inlined(
-                    mutator, *primitive, mirror, subject, &arguments,
-                )
-                .map(|decided| {
-                    deliver(
+                    u16::from(destination),
+                    &code.body().literals[usize::from(literal)],
+                ) {
+                    Ok(()) => next!(),
+                    Err(signal) => break 'decided unwind(mutator, signal, floor, &mut handoff),
+                },
+                CompactInstruction::LoadSelf { destination } => {
+                    load_self_into(mutator, activation, register_base, u16::from(destination));
+                    next!()
+                }
+                CompactInstruction::LoadEnclosingObject { destination, depth } => {
+                    load_enclosing_object_into(
                         mutator,
                         activation,
                         register_base,
-                        decided,
-                        &arguments,
-                        *destination,
+                        u16::from(destination),
+                        depth,
+                    );
+                    next!()
+                }
+                CompactInstruction::Move {
+                    destination,
+                    source,
+                }
+                | CompactInstruction::StoreLocal {
+                    source,
+                    slot: destination,
+                } => {
+                    copy_register(
+                        mutator,
+                        register_base,
+                        u16::from(destination),
+                        u16::from(source),
+                    );
+                    next!()
+                }
+                CompactInstruction::LoadOuterLocal {
+                    destination,
+                    index,
+                    depth,
+                } => {
+                    load_outer_local_into(
+                        mutator,
+                        activation,
+                        register_base,
+                        u16::from(destination),
+                        depth,
+                        u16::from(index),
+                    );
+                    next!()
+                }
+                CompactInstruction::StoreOuterLocal {
+                    source,
+                    index,
+                    depth,
+                } => {
+                    store_outer_local_from(
+                        mutator,
+                        activation,
+                        register_base,
+                        u16::from(source),
+                        depth,
+                        u16::from(index),
+                    );
+                    next!()
+                }
+                CompactInstruction::SendPublic0 {
+                    destination,
+                    receiver,
+                    site,
+                } => PendingSend::inline(SendKind::Public, destination, receiver, site, &[]),
+                CompactInstruction::SendPublic1 {
+                    destination,
+                    receiver,
+                    argument,
+                    site,
+                } => {
+                    PendingSend::inline(SendKind::Public, destination, receiver, site, &[argument])
+                }
+                CompactInstruction::SendPublic2 {
+                    destination,
+                    receiver,
+                    arguments,
+                    site,
+                } => PendingSend::inline(SendKind::Public, destination, receiver, site, &arguments),
+                CompactInstruction::SendPublicWide { site } => {
+                    PendingSend::wide(&code, SendKind::Public, site)
+                }
+                // Decided as `SendPublic` is, but uncached: only the
+                // reference lowering emits it. Only the depth count treats a
+                // control-flow step's block activated for it differently
+                // (`Mutator::push_step`).
+                CompactInstruction::SendInlinable0 {
+                    destination,
+                    receiver,
+                    site,
+                } => PendingSend::inline(SendKind::Inlinable, destination, receiver, site, &[]),
+                CompactInstruction::SendInlinable1 {
+                    destination,
+                    receiver,
+                    argument,
+                    site,
+                } => PendingSend::inline(
+                    SendKind::Inlinable,
+                    destination,
+                    receiver,
+                    site,
+                    &[argument],
+                ),
+                CompactInstruction::SendInlinable2 {
+                    destination,
+                    receiver,
+                    arguments,
+                    site,
+                } => PendingSend::inline(
+                    SendKind::Inlinable,
+                    destination,
+                    receiver,
+                    site,
+                    &arguments,
+                ),
+                CompactInstruction::SendInlinableWide { site } => {
+                    PendingSend::wide(&code, SendKind::Inlinable, site)
+                }
+                CompactInstruction::SendLexical0 { destination, site } => {
+                    PendingSend::inline(SendKind::Lexical, destination, 0, site, &[])
+                }
+                CompactInstruction::SendLexical1 {
+                    destination,
+                    argument,
+                    site,
+                } => PendingSend::inline(SendKind::Lexical, destination, 0, site, &[argument]),
+                CompactInstruction::SendLexical2 {
+                    destination,
+                    arguments,
+                    site,
+                } => PendingSend::inline(SendKind::Lexical, destination, 0, site, &arguments),
+                CompactInstruction::SendLexicalWide { site } => {
+                    PendingSend::wide(&code, SendKind::Lexical, site)
+                }
+                CompactInstruction::SendSuper0 { destination, site } => {
+                    PendingSend::inline(SendKind::Super, destination, 0, site, &[])
+                }
+                CompactInstruction::SendSuper1 {
+                    destination,
+                    argument,
+                    site,
+                } => PendingSend::inline(SendKind::Super, destination, 0, site, &[argument]),
+                CompactInstruction::SendSuper2 {
+                    destination,
+                    arguments,
+                    site,
+                } => PendingSend::inline(SendKind::Super, destination, 0, site, &arguments),
+                CompactInstruction::SendSuperWide { site } => {
+                    PendingSend::wide(&code, SendKind::Super, site)
+                }
+                CompactInstruction::SendMirror {
+                    destination,
+                    mirror,
+                    subject,
+                    primitive,
+                    site,
+                } => {
+                    let site = &code.body().mirror_sites[usize::from(site)];
+                    match send_mirror(
+                        mutator,
+                        activation,
+                        register_base,
+                        program_counter,
+                        primitive,
+                        u16::from(mirror),
+                        u16::from(subject),
+                        &site.arguments,
+                        u16::from(destination),
+                        floor,
+                        &mut handoff,
+                    ) {
+                        Some(transfer) => break 'decided transfer,
+                        None => jump_to!(site.failure),
+                    }
+                }
+                CompactInstruction::MakeClosure { destination, block } => {
+                    let block = &code.body().blocks[usize::from(block)];
+                    make_closure_into(
+                        mutator,
+                        activation,
+                        register_base,
+                        program_counter,
+                        feedback_base,
+                        u16::from(destination),
+                        &block.code,
+                        &block.copied,
+                    );
+                    next!()
+                }
+                CompactInstruction::MakeArray {
+                    destination,
+                    elements,
+                } => {
+                    make_array_into(
+                        mutator,
+                        register_base,
+                        u16::from(destination),
+                        &code.body().register_lists[usize::from(elements)],
+                    );
+                    next!()
+                }
+                CompactInstruction::MakeVector { destination, size } => {
+                    make_vector_into(mutator, register_base, u16::from(destination), size);
+                    next!()
+                }
+                CompactInstruction::LoadVector {
+                    destination,
+                    vector,
+                    index,
+                } => match load_vector_into(
+                    mutator,
+                    activation,
+                    register_base,
+                    u16::from(destination),
+                    u16::from(vector),
+                    index,
+                ) {
+                    Ok(()) => next!(),
+                    Err(signal) => break 'decided unwind(mutator, signal, floor, &mut handoff),
+                },
+                CompactInstruction::StoreVector {
+                    vector,
+                    source,
+                    index,
+                } => match store_vector(
+                    &mut mutator.heap,
+                    activation,
+                    u16::from(vector),
+                    index,
+                    u16::from(source),
+                ) {
+                    Ok(()) => next!(),
+                    Err(signal) => break 'decided unwind(mutator, signal, floor, &mut handoff),
+                },
+                CompactInstruction::InitializeSlot { source, own_index } => {
+                    let source = u16::from(source);
+                    match initialize_slot(mutator, activation, register_base, source, own_index) {
+                        Ok(()) => next!(),
+                        // A future can reach a value's slot from outside any
+                        // simultaneous clause's own resolution -- passed in
+                        // as an ordinary argument, since a future is
+                        // indistinguishable from its value (§6.3.2, rule 3).
+                        // What belongs in the slot is what it stands for:
+                        // forced first if it is not resolved yet
+                        // (`value_for_a_value_slot`), then checked again
+                        // with the same accepted path. A refusal that is not
+                        // about a future stands.
+                        Err(signal) => {
+                            break 'decided initialize_slot_refused(
+                                mutator,
+                                activation,
+                                program_counter,
+                                source,
+                                own_index,
+                                signal,
+                                floor,
+                                &mut handoff,
+                            )
+                        }
+                    }
+                }
+                // A lazy slot's getter answers its field once it is filled;
+                // the field's address is `InitializeSlot`'s, and reading it
+                // is a `locals` helper's.
+                CompactInstruction::ReturnSlotIfFilled { own_index } => {
+                    match filled_own_slot(&mutator.heap, activation, own_index) {
+                        Some(value) => {
+                            break 'decided finish(mutator, activation, value, floor, &mut handoff)
+                        }
+                        None => next!(),
+                    }
+                }
+                // §6.3.2's simultaneous slot clauses: one arm and one call,
+                // out of line (`simultaneous_clause_instruction`).
+                slot @ (CompactInstruction::MakeFuture { .. }
+                | CompactInstruction::ResolveFuture { .. }
+                | CompactInstruction::LoadOwnSlot { .. }
+                | CompactInstruction::InitializeSlotProvisionally { .. }) => {
+                    break 'decided simultaneous_clause_instruction(
+                        mutator,
+                        activation,
+                        program_counter,
+                        slot,
+                        floor,
+                        &mut handoff,
+                    )
+                }
+                CompactInstruction::Return { register }
+                | CompactInstruction::ImplicitReturn { register } => {
+                    break 'decided return_from(
+                        mutator,
+                        activation,
+                        register_base,
+                        u16::from(register),
+                        floor,
+                        &mut handoff,
+                    )
+                }
+                CompactInstruction::NonLocalReturn { register } => {
+                    break 'decided non_local_return(
+                        mutator,
+                        activation,
+                        register_base,
+                        program_counter,
+                        u16::from(register),
+                        floor,
+                        &mut handoff,
+                    )
+                }
+                CompactInstruction::Jump { target } => jump_to!(target),
+                CompactInstruction::JumpIfNotBoolean { register, target } => {
+                    if boolean_in(mutator, register_base, u16::from(register)).is_some() {
+                        next!()
+                    }
+                    jump_to!(target)
+                }
+                CompactInstruction::BranchIfFalse { register, target } => {
+                    if boolean_in(mutator, register_base, u16::from(register)) == Some(false) {
+                        jump_to!(target)
+                    }
+                    next!()
+                }
+                CompactInstruction::BranchIfTrue { register, target } => {
+                    if boolean_in(mutator, register_base, u16::from(register)) == Some(true) {
+                        jump_to!(target)
+                    }
+                    next!()
+                }
+                CompactInstruction::IntegerAdd {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(IntegerOperation::Add, destination, left, right, target),
+                CompactInstruction::IntegerSubtract {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(IntegerOperation::Subtract, destination, left, right, target),
+                CompactInstruction::IntegerMultiply {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(IntegerOperation::Multiply, destination, left, right, target),
+                CompactInstruction::IntegerFloorDivide {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(
+                    IntegerOperation::FloorDivide,
+                    destination,
+                    left,
+                    right,
+                    target
+                ),
+                CompactInstruction::IntegerLess {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(IntegerOperation::Less, destination, left, right, target),
+                CompactInstruction::IntegerGreater {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(IntegerOperation::Greater, destination, left, right, target),
+                CompactInstruction::IntegerLessOrEqual {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(
+                    IntegerOperation::LessOrEqual,
+                    destination,
+                    left,
+                    right,
+                    target
+                ),
+                CompactInstruction::IntegerGreaterOrEqual {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(
+                    IntegerOperation::GreaterOrEqual,
+                    destination,
+                    left,
+                    right,
+                    target
+                ),
+                CompactInstruction::IntegerEqual {
+                    destination,
+                    left,
+                    right,
+                    target,
+                } => integer!(IntegerOperation::Equal, destination, left, right, target),
+                CompactInstruction::Wide { index } => match run_wide(
+                    mutator,
+                    &code.body().wide[index as usize],
+                    activation,
+                    register_base,
+                    program_counter,
+                    feedback_base,
+                    floor,
+                    &mut handoff,
+                ) {
+                    WideOutcome::Next => next!(),
+                    WideOutcome::Jump(target) => jump_to!(target),
+                    WideOutcome::Transfer(transfer) => break 'decided transfer,
+                },
+            };
+            // The one send path per kind.
+            let site = &code.body().send_sites[pending.site as usize];
+            let argument_registers: &[u16] = match &pending.arguments {
+                ArgumentRegisters::Inline { count, registers } => &registers[..usize::from(*count)],
+                ArgumentRegisters::Site => &site.wide.as_ref().expect(WIDE_SEND).arguments,
+            };
+            let selector = site.selector;
+            let call_site = site.call_site;
+            let family_size = code.family_size;
+            match pending.kind {
+                SendKind::Public => {
+                    let receiver = mutator.heap.register(register_base, pending.receiver);
+                    send(
+                        mutator,
+                        activation,
+                        register_base,
+                        program_counter,
+                        argument_registers,
+                        pending.destination,
                         floor,
                         false,
                         &mut handoff,
+                        |mutator, arguments| {
+                            send_public(
+                                mutator,
+                                feedback_base,
+                                family_size,
+                                call_site,
+                                receiver,
+                                selector,
+                                arguments,
+                            )
+                        },
                     )
-                });
-                mutator.return_argument_buffer(arguments);
-                match transfer {
-                    Some(transfer) => transfer,
-                    None => jump_to!(*failure),
                 }
-            }
-            Instruction::SendLexical {
-                depth,
-                selector,
-                argument_registers,
-                destination,
-                call_site,
-            } => {
-                let family_size = code.family_size;
-                send(
+                SendKind::Inlinable => {
+                    let receiver = mutator.heap.register(register_base, pending.receiver);
+                    send(
+                        mutator,
+                        activation,
+                        register_base,
+                        program_counter,
+                        argument_registers,
+                        pending.destination,
+                        floor,
+                        true,
+                        &mut handoff,
+                        |mutator, arguments| mutator.decide_send(receiver, selector, arguments),
+                    )
+                }
+                SendKind::Lexical => {
+                    let depth = site.depth;
+                    send(
+                        mutator,
+                        activation,
+                        register_base,
+                        program_counter,
+                        argument_registers,
+                        pending.destination,
+                        floor,
+                        false,
+                        &mut handoff,
+                        |mutator, arguments| {
+                            send_lexical(
+                                mutator,
+                                activation,
+                                feedback_base,
+                                family_size,
+                                call_site,
+                                depth,
+                                selector,
+                                arguments,
+                            )
+                        },
+                    )
+                }
+                SendKind::Super => send(
                     mutator,
                     activation,
                     register_base,
                     program_counter,
                     argument_registers,
-                    *destination,
-                    floor,
-                    false,
-                    &mut handoff,
-                    |mutator, arguments| {
-                        send_lexical(
-                            mutator,
-                            activation,
-                            feedback_base,
-                            family_size,
-                            *call_site,
-                            *depth,
-                            *selector,
-                            arguments,
-                        )
-                    },
-                )
-            }
-            Instruction::SendSuper {
-                selector,
-                argument_registers,
-                destination,
-                call_site,
-            } => {
-                let family_size = code.family_size;
-                send(
-                    mutator,
-                    activation,
-                    register_base,
-                    program_counter,
-                    argument_registers,
-                    *destination,
+                    pending.destination,
                     floor,
                     false,
                     &mut handoff,
@@ -443,257 +811,12 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                             activation,
                             feedback_base,
                             family_size,
-                            *call_site,
-                            *selector,
+                            call_site,
+                            selector,
                             arguments,
                         )
                     },
-                )
-            }
-            Instruction::MakeClosure {
-                destination,
-                code: block,
-                copied,
-                ..
-            } => {
-                // Stored before reifying, so the frame `reify` builds starts
-                // from this program counter.
-                mutator
-                    .heap
-                    .set_activation_program_counter(activation, program_counter);
-                let captured_frame = mutator.heap.reify(activation);
-                // A closure that reads enclosing registers by reference -- the
-                // reference lowering's, and an optimized fallback closure -- is
-                // what makes this activation's registers outlive it.
-                if block.outer_reach > 0 {
-                    mutator.heap.retain_registers(activation);
-                }
-                let copied_values = copied
-                    .iter()
-                    .map(|register| {
-                        mutator
-                            .heap
-                            .store(mutator.heap.register(register_base, *register))
-                    })
-                    .collect();
-                let value = Value::object(mutator.new_closure(ClosureData {
-                    code: block.clone(),
-                    captured_frame,
-                    copied: copied_values,
-                    // A block belongs to its enclosing method's family: the
-                    // running activation's own base, already in hand here, so
-                    // this costs no extra load.
-                    feedback_base,
-                }));
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::MakeArray {
-                destination,
-                element_registers,
-            } => {
-                let values = element_registers
-                    .iter()
-                    .map(|register| mutator.heap.register(register_base, *register))
-                    .collect();
-                let value = Value::object(mutator.new_array(values));
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::MakeVector { destination, size } => {
-                let value = Value::object(mutator.new_array(vec![Value::nil(); *size as usize]));
-                mutator
-                    .heap
-                    .set_register(register_base, *destination, value);
-                program_counter += 1;
-                continue;
-            }
-            Instruction::LoadVector {
-                destination,
-                vector,
-                index,
-            } => match load_vector(&mutator.heap, activation, *vector, *index) {
-                Ok(value) => {
-                    mutator
-                        .heap
-                        .set_register(register_base, *destination, value);
-                    program_counter += 1;
-                    continue;
-                }
-                Err(signal) => unwind(mutator, signal, floor, &mut handoff),
-            },
-            Instruction::StoreVector {
-                vector,
-                index,
-                source,
-            } => match store_vector(&mut mutator.heap, activation, *vector, *index, *source) {
-                Ok(()) => {
-                    program_counter += 1;
-                    continue;
-                }
-                Err(signal) => unwind(mutator, signal, floor, &mut handoff),
-            },
-            Instruction::InitializeSlot { source, own_index } => {
-                // `own_index` is relative to the executing mixin's own slots; the
-                // activation's slot base, its `current_class`'s own, turns it into
-                // this instance's absolute field index.
-                let value = mutator.heap.register(register_base, *source);
-                let receiver = mutator.heap.activation_receiver(activation);
-                let base = mutator.heap.activation_slot_base(activation);
-                // §3.1.1's rule about what a value's slot may hold is decided in
-                // `interpreter/`, as every error is; this only calls it.
-                match check_value_slot(mutator, activation, receiver, *own_index as usize, value) {
-                    Ok(()) => {
-                        store_instance_field(
-                            &mut mutator.heap,
-                            receiver,
-                            base + *own_index as usize,
-                            value,
-                        );
-                        program_counter += 1;
-                        continue;
-                    }
-                    // A future can reach a value's slot from outside any
-                    // simultaneous clause's own resolution -- passed in as an
-                    // ordinary argument, since a future is indistinguishable from
-                    // its value (§6.3.2, rule 3). What belongs in the slot is
-                    // what it stands for: forced first if it is not resolved yet
-                    // (`value_for_a_value_slot`), then checked again with the
-                    // same accepted path above. A refusal that is not about a
-                    // future stands.
-                    Err(signal) => initialize_slot_refused(
-                        mutator,
-                        activation,
-                        program_counter,
-                        signal,
-                        floor,
-                        &mut handoff,
-                    ),
-                }
-            }
-            // A lazy slot's getter answers its field once it is filled; the
-            // field's address is `InitializeSlot`'s, and reading it is a
-            // `locals` helper's.
-            Instruction::ReturnSlotIfFilled { own_index } => {
-                match filled_own_slot(&mutator.heap, activation, *own_index) {
-                    Some(value) => finish(mutator, activation, value, floor, &mut handoff),
-                    None => {
-                        program_counter += 1;
-                        continue;
-                    }
-                }
-            }
-            // §6.3.2's simultaneous slot clauses: one arm and one call, out of
-            // line (`simultaneous_clause_instruction`).
-            Instruction::MakeFuture { .. }
-            | Instruction::ResolveFuture { .. }
-            | Instruction::LoadOwnSlot { .. }
-            | Instruction::InitializeSlotProvisionally { .. } => simultaneous_clause_instruction(
-                mutator,
-                activation,
-                program_counter,
-                floor,
-                &mut handoff,
-            ),
-            Instruction::Return { register } | Instruction::ImplicitReturn { register } => {
-                let value = mutator.heap.register(register_base, *register);
-                finish(mutator, activation, value, floor, &mut handoff)
-            }
-            Instruction::NonLocalReturn { register } => {
-                let value = mutator.heap.register(register_base, *register);
-                mutator
-                    .heap
-                    .set_activation_program_counter(activation, program_counter);
-                let signal = mutator.raise_return(activation, value);
-                unwind(mutator, signal, floor, &mut handoff)
-            }
-            Instruction::Jump { target } => jump_to!(*target),
-            Instruction::JumpIfNotBoolean { register, target } => {
-                if mutator
-                    .heap
-                    .register(register_base, *register)
-                    .as_boolean()
-                    .is_some()
-                {
-                    program_counter += 1;
-                    continue;
-                }
-                jump_to!(*target)
-            }
-            Instruction::BranchIfFalse { register, target } => {
-                if mutator.heap.register(register_base, *register).as_boolean() == Some(false) {
-                    jump_to!(*target)
-                }
-                program_counter += 1;
-                continue;
-            }
-            Instruction::BranchIfTrue { register, target } => {
-                if mutator.heap.register(register_base, *register).as_boolean() == Some(true) {
-                    jump_to!(*target)
-                }
-                program_counter += 1;
-                continue;
-            }
-            // The inlined fast path for an integer leaf. Not dispatch: it either
-            // computes the one answer the primitive would have computed, or
-            // declines and jumps to the ordinary send standing at `target`. Every
-            // case it declines -- a non-integer operand, a result that does not
-            // fit, a zero divisor -- is that send's primitive to decide, so
-            // nothing is promoted and no error or error text is raised here. It
-            // cannot fail for any operand, which is what lets a decoded image
-            // reach it safely.
-            Instruction::IntegerBinary {
-                operation,
-                destination,
-                left,
-                right,
-                target,
-            } => {
-                let left_value = mutator.heap.register(register_base, *left);
-                let right_value = mutator.heap.register(register_base, *right);
-                // Each `small_integer_*` answers `None` for a non-integer
-                // operand too, so the one `match` below declines every case.
-                // A zero divisor and `SMALL_INTEGER_MIN // -1` decline in
-                // `small_integer_floor_quotient`.
-                let result = match operation {
-                    IntegerOperation::Add => left_value.small_integer_sum(right_value),
-                    IntegerOperation::Subtract => left_value.small_integer_difference(right_value),
-                    IntegerOperation::Multiply => left_value.small_integer_product(right_value),
-                    IntegerOperation::FloorDivide => {
-                        left_value.small_integer_floor_quotient(right_value)
-                    }
-                    IntegerOperation::Less => left_value
-                        .small_integer_order(right_value)
-                        .map(|order| Value::boolean(order.is_lt())),
-                    IntegerOperation::Greater => left_value
-                        .small_integer_order(right_value)
-                        .map(|order| Value::boolean(order.is_gt())),
-                    IntegerOperation::LessOrEqual => left_value
-                        .small_integer_order(right_value)
-                        .map(|order| Value::boolean(order.is_le())),
-                    IntegerOperation::GreaterOrEqual => left_value
-                        .small_integer_order(right_value)
-                        .map(|order| Value::boolean(order.is_ge())),
-                    IntegerOperation::Equal => left_value
-                        .small_integer_order(right_value)
-                        .map(|order| Value::boolean(order.is_eq())),
-                };
-                match result {
-                    Some(value) => {
-                        mutator
-                            .heap
-                            .set_register(register_base, *destination, value);
-                        program_counter += 1;
-                        continue;
-                    }
-                    None => jump_to!(*target),
-                }
+                ),
             }
         };
         match transfer {
@@ -708,7 +831,7 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                 feedback_base = handoff.feedback_base;
                 register_base = mutator.heap.register_base(activation);
                 if mutator.heap.safepoint_requested() {
-                    break;
+                    break 'run;
                 }
             }
             Transfer::Exited => {
@@ -731,6 +854,668 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
         register_base,
     };
     Leave::Safepoint
+}
+
+const WIDE_SEND: &str = "internal: a wide send's site holds its registers";
+
+/// A send an arm gathered: what to send and where its value goes. The arms
+/// of one kind differ only in where their argument registers are; the
+/// kind's one path, after the match, runs it, so that each kind's cache hit
+/// path is inlined into `vm::run` once.
+struct PendingSend {
+    kind: SendKind,
+    destination: u16,
+    /// `SendPublic`'s and `SendInlinable`'s receiver register.
+    receiver: u16,
+    site: u32,
+    arguments: ArgumentRegisters,
+}
+
+#[derive(Clone, Copy)]
+enum SendKind {
+    Public,
+    Inlinable,
+    Lexical,
+    Super,
+}
+
+#[derive(Clone, Copy)]
+enum ArgumentRegisters {
+    /// Up to two, from the slot.
+    Inline { count: u8, registers: [u16; 2] },
+    /// From the site's `WideSend`.
+    Site,
+}
+
+impl PendingSend {
+    /// A send whose registers are all in its slot.
+    #[inline(always)]
+    fn inline(
+        kind: SendKind,
+        destination: u8,
+        receiver: u8,
+        site: u16,
+        arguments: &[u8],
+    ) -> PendingSend {
+        let mut registers = [0; 2];
+        for (register, argument) in registers.iter_mut().zip(arguments) {
+            *register = u16::from(*argument);
+        }
+        PendingSend {
+            kind,
+            destination: u16::from(destination),
+            receiver: u16::from(receiver),
+            site: u32::from(site),
+            arguments: ArgumentRegisters::Inline {
+                count: arguments.len() as u8,
+                registers,
+            },
+        }
+    }
+
+    /// A send whose registers are in its site's `WideSend`.
+    fn wide(code: &CompiledCode, kind: SendKind, site: u32) -> PendingSend {
+        let wide = code.body().send_sites[site as usize]
+            .wide
+            .as_ref()
+            .expect(WIDE_SEND);
+        PendingSend {
+            kind,
+            destination: wide.destination,
+            receiver: wide.receiver,
+            site,
+            arguments: ArgumentRegisters::Site,
+        }
+    }
+}
+
+/// How the loop goes on after `run_wide`.
+enum WideOutcome {
+    Next,
+    Jump(u32),
+    Transfer(Transfer),
+}
+
+/// An instruction with no eight-byte form, run out of line so that the rare
+/// wide operands cost `vm::run` one call, not a second copy of every arm. It
+/// calls the same effect functions the narrow arms do.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn run_wide<'gc>(
+    mutator: &mut Mutator<'gc>,
+    instruction: &Instruction,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    program_counter: usize,
+    feedback_base: FeedbackBase,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> WideOutcome {
+    let transfer = match instruction {
+        Instruction::LoadLiteral {
+            destination,
+            literal,
+        } => match load_literal_into(mutator, activation, register_base, *destination, literal) {
+            Ok(()) => return WideOutcome::Next,
+            Err(signal) => unwind(mutator, signal, floor, handoff),
+        },
+        Instruction::LoadSelf { destination } => {
+            load_self_into(mutator, activation, register_base, *destination);
+            return WideOutcome::Next;
+        }
+        Instruction::LoadEnclosingObject { destination, depth } => {
+            load_enclosing_object_into(mutator, activation, register_base, *destination, *depth);
+            return WideOutcome::Next;
+        }
+        Instruction::Move {
+            destination,
+            source,
+        }
+        | Instruction::StoreLocal {
+            source,
+            slot: destination,
+        } => {
+            copy_register(mutator, register_base, *destination, *source);
+            return WideOutcome::Next;
+        }
+        Instruction::LoadOuterLocal {
+            destination,
+            depth,
+            index,
+        } => {
+            load_outer_local_into(
+                mutator,
+                activation,
+                register_base,
+                *destination,
+                *depth,
+                *index,
+            );
+            return WideOutcome::Next;
+        }
+        Instruction::StoreOuterLocal {
+            source,
+            depth,
+            index,
+        } => {
+            store_outer_local_from(mutator, activation, register_base, *source, *depth, *index);
+            return WideOutcome::Next;
+        }
+        Instruction::SendPublic { .. }
+        | Instruction::SendInlinable { .. }
+        | Instruction::SendLexical { .. }
+        | Instruction::SendSuper { .. } => {
+            unreachable!("internal: a send is never encoded through Wide")
+        }
+        Instruction::SendMirror {
+            primitive,
+            mirror_register,
+            subject_register,
+            argument_registers,
+            destination,
+            failure,
+        } => match send_mirror(
+            mutator,
+            activation,
+            register_base,
+            program_counter,
+            *primitive,
+            *mirror_register,
+            *subject_register,
+            argument_registers,
+            *destination,
+            floor,
+            handoff,
+        ) {
+            Some(transfer) => transfer,
+            None => return WideOutcome::Jump(*failure),
+        },
+        Instruction::MakeClosure {
+            destination,
+            code: block,
+            copied,
+            ..
+        } => {
+            make_closure_into(
+                mutator,
+                activation,
+                register_base,
+                program_counter,
+                feedback_base,
+                *destination,
+                block,
+                copied,
+            );
+            return WideOutcome::Next;
+        }
+        Instruction::MakeArray {
+            destination,
+            element_registers,
+        } => {
+            make_array_into(mutator, register_base, *destination, element_registers);
+            return WideOutcome::Next;
+        }
+        Instruction::MakeVector { destination, size } => {
+            make_vector_into(mutator, register_base, *destination, *size);
+            return WideOutcome::Next;
+        }
+        Instruction::LoadVector {
+            destination,
+            vector,
+            index,
+        } => match load_vector_into(
+            mutator,
+            activation,
+            register_base,
+            *destination,
+            *vector,
+            *index,
+        ) {
+            Ok(()) => return WideOutcome::Next,
+            Err(signal) => unwind(mutator, signal, floor, handoff),
+        },
+        Instruction::StoreVector {
+            vector,
+            index,
+            source,
+        } => match store_vector(&mut mutator.heap, activation, *vector, *index, *source) {
+            Ok(()) => return WideOutcome::Next,
+            Err(signal) => unwind(mutator, signal, floor, handoff),
+        },
+        Instruction::InitializeSlot { source, own_index } => {
+            match initialize_slot(mutator, activation, register_base, *source, *own_index) {
+                Ok(()) => return WideOutcome::Next,
+                Err(signal) => initialize_slot_refused(
+                    mutator,
+                    activation,
+                    program_counter,
+                    *source,
+                    *own_index,
+                    signal,
+                    floor,
+                    handoff,
+                ),
+            }
+        }
+        Instruction::ReturnSlotIfFilled { own_index } => {
+            match filled_own_slot(&mutator.heap, activation, *own_index) {
+                Some(value) => finish(mutator, activation, value, floor, handoff),
+                None => return WideOutcome::Next,
+            }
+        }
+        Instruction::MakeFuture {
+            destination,
+            closure,
+        } => make_future(mutator, activation, *destination, *closure, floor, handoff),
+        Instruction::ResolveFuture {
+            destination,
+            source,
+        } => resolve_future(
+            mutator,
+            activation,
+            program_counter,
+            *destination,
+            *source,
+            floor,
+            handoff,
+        ),
+        Instruction::LoadOwnSlot {
+            destination,
+            own_index,
+        } => load_own_slot_into(mutator, activation, *destination, *own_index),
+        Instruction::InitializeSlotProvisionally { source, own_index } => {
+            initialize_slot_provisionally(mutator, activation, *source, *own_index)
+        }
+        Instruction::Return { register } | Instruction::ImplicitReturn { register } => return_from(
+            mutator,
+            activation,
+            register_base,
+            *register,
+            floor,
+            handoff,
+        ),
+        Instruction::NonLocalReturn { register } => non_local_return(
+            mutator,
+            activation,
+            register_base,
+            program_counter,
+            *register,
+            floor,
+            handoff,
+        ),
+        Instruction::Jump { target } => return WideOutcome::Jump(*target),
+        Instruction::JumpIfNotBoolean { register, target } => {
+            return match boolean_in(mutator, register_base, *register) {
+                Some(_) => WideOutcome::Next,
+                None => WideOutcome::Jump(*target),
+            };
+        }
+        Instruction::BranchIfFalse { register, target } => {
+            return match boolean_in(mutator, register_base, *register) {
+                Some(false) => WideOutcome::Jump(*target),
+                _ => WideOutcome::Next,
+            };
+        }
+        Instruction::BranchIfTrue { register, target } => {
+            return match boolean_in(mutator, register_base, *register) {
+                Some(true) => WideOutcome::Jump(*target),
+                _ => WideOutcome::Next,
+            };
+        }
+        Instruction::IntegerBinary {
+            operation,
+            destination,
+            left,
+            right,
+            target,
+        } => {
+            return if integer_into(
+                mutator,
+                register_base,
+                *operation,
+                *destination,
+                *left,
+                *right,
+            ) {
+                WideOutcome::Next
+            } else {
+                WideOutcome::Jump(*target)
+            };
+        }
+    };
+    WideOutcome::Transfer(transfer)
+}
+
+// The effect of each instruction, written once over `u16` operands: the
+// narrow arm widens its bytes and calls it, and `run_wide` calls it with the
+// `Instruction`'s own.
+
+#[inline(always)]
+fn load_literal_into<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    destination: u16,
+    literal: &Literal,
+) -> Result<(), Signal<'gc>> {
+    let value = make_value(mutator, activation, literal)?;
+    mutator.heap.set_register(register_base, destination, value);
+    Ok(())
+}
+
+#[inline(always)]
+fn load_self_into(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    destination: u16,
+) {
+    let value = mutator.heap.activation_receiver(activation);
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn load_enclosing_object_into(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    destination: u16,
+    depth: u16,
+) {
+    let value = crate::interpreter::sends::enclosing_object(mutator, activation, depth);
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn copy_register(
+    mutator: &mut Mutator<'_>,
+    register_base: RegisterBase,
+    destination: u16,
+    source: u16,
+) {
+    let value = mutator.heap.register(register_base, source);
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn load_outer_local_into(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    destination: u16,
+    depth: u16,
+    index: u16,
+) {
+    let value = read_outer_local(&mutator.heap, activation, depth, index);
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn store_outer_local_from(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    source: u16,
+    depth: u16,
+    index: u16,
+) {
+    let value = mutator.heap.register(register_base, source);
+    write_outer_local(&mut mutator.heap, activation, depth, index, value);
+}
+
+/// A send to the VM mirror with its failure block inline: the leaf runs, or
+/// declines and the block runs at the failure target, which the caller
+/// jumps to when this answers `None`. What the leaf decided is delivered as
+/// any send's decision is. Which leaf, and whether the receiver is the
+/// mirror, is `interpreter::mirror`'s.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn send_mirror(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    program_counter: usize,
+    primitive: MirrorPrimitive,
+    mirror_register: u16,
+    subject_register: u16,
+    argument_registers: &[u16],
+    destination: u16,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Option<Transfer> {
+    let mirror = mutator.heap.register(register_base, mirror_register);
+    let subject = mutator.heap.register(register_base, subject_register);
+    let mut arguments = mutator.take_argument_buffer();
+    arguments.extend(
+        argument_registers
+            .iter()
+            .map(|register| mutator.heap.register(register_base, *register)),
+    );
+    mutator
+        .heap
+        .set_activation_program_counter(activation, program_counter);
+    // `None`, the leaf declined: the jump to the failure target waits until
+    // the buffer is handed back. The closure is forced inline: once the arm
+    // moved into this function, LLVM left it out of line, a call on every
+    // mirror send that the arm written in `vm::run` did not pay.
+    let transfer =
+        crate::interpreter::mirror::send_inlined(mutator, primitive, mirror, subject, &arguments)
+            .map(
+                #[inline(always)]
+                |decided| {
+                    deliver(
+                        mutator,
+                        activation,
+                        register_base,
+                        decided,
+                        &arguments,
+                        destination,
+                        floor,
+                        false,
+                        handoff,
+                    )
+                },
+            );
+    mutator.return_argument_buffer(arguments);
+    transfer
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn make_closure_into(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    program_counter: usize,
+    feedback_base: FeedbackBase,
+    destination: u16,
+    block: &Rc<CompiledCode>,
+    copied: &[u16],
+) {
+    // Stored before reifying, so the frame `reify` builds starts from this
+    // program counter.
+    mutator
+        .heap
+        .set_activation_program_counter(activation, program_counter);
+    let captured_frame = mutator.heap.reify(activation);
+    // A closure that reads enclosing registers by reference -- the
+    // reference lowering's, and an optimized fallback closure -- is what
+    // makes this activation's registers outlive it.
+    if block.outer_reach > 0 {
+        mutator.heap.retain_registers(activation);
+    }
+    let copied_values = copied
+        .iter()
+        .map(|register| {
+            mutator
+                .heap
+                .store(mutator.heap.register(register_base, *register))
+        })
+        .collect();
+    let value = Value::object(mutator.new_closure(ClosureData {
+        code: Rc::clone(block),
+        captured_frame,
+        copied: copied_values,
+        // A block belongs to its enclosing method's family: the running
+        // activation's own base, already in hand here, so this costs no
+        // extra load.
+        feedback_base,
+    }));
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn make_array_into(
+    mutator: &mut Mutator<'_>,
+    register_base: RegisterBase,
+    destination: u16,
+    element_registers: &[u16],
+) {
+    let values = element_registers
+        .iter()
+        .map(|register| mutator.heap.register(register_base, *register))
+        .collect();
+    let value = Value::object(mutator.new_array(values));
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn make_vector_into(
+    mutator: &mut Mutator<'_>,
+    register_base: RegisterBase,
+    destination: u16,
+    size: u16,
+) {
+    let value = Value::object(mutator.new_array(vec![Value::nil(); usize::from(size)]));
+    mutator.heap.set_register(register_base, destination, value);
+}
+
+#[inline(always)]
+fn load_vector_into<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    destination: u16,
+    vector: u16,
+    index: u16,
+) -> Result<(), Signal<'gc>> {
+    let value = load_vector(&mutator.heap, activation, vector, index)?;
+    mutator.heap.set_register(register_base, destination, value);
+    Ok(())
+}
+
+/// `own_index` is relative to the executing mixin's own slots; the
+/// activation's slot base, its `current_class`'s own, turns it into this
+/// instance's absolute field index.
+#[inline(always)]
+fn initialize_slot<'gc>(
+    mutator: &mut Mutator<'gc>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    source: u16,
+    own_index: u32,
+) -> Result<(), Signal<'gc>> {
+    let value = mutator.heap.register(register_base, source);
+    let receiver = mutator.heap.activation_receiver(activation);
+    let base = mutator.heap.activation_slot_base(activation);
+    // §3.1.1's rule about what a value's slot may hold is decided in
+    // `interpreter/`, as every error is; this only calls it.
+    check_value_slot(mutator, activation, receiver, own_index as usize, value)?;
+    store_instance_field(
+        &mut mutator.heap,
+        receiver,
+        base + own_index as usize,
+        value,
+    );
+    Ok(())
+}
+
+#[inline(always)]
+fn return_from(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    register: u16,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let value = mutator.heap.register(register_base, register);
+    finish(mutator, activation, value, floor, handoff)
+}
+
+#[inline(always)]
+fn non_local_return(
+    mutator: &mut Mutator<'_>,
+    activation: ActivationReference,
+    register_base: RegisterBase,
+    program_counter: usize,
+    register: u16,
+    floor: usize,
+    handoff: &mut Handoff,
+) -> Transfer {
+    let value = mutator.heap.register(register_base, register);
+    mutator
+        .heap
+        .set_activation_program_counter(activation, program_counter);
+    let signal = mutator.raise_return(activation, value);
+    unwind(mutator, signal, floor, handoff)
+}
+
+#[inline(always)]
+fn boolean_in(mutator: &Mutator<'_>, register_base: RegisterBase, register: u16) -> Option<bool> {
+    mutator.heap.register(register_base, register).as_boolean()
+}
+
+/// The inlined fast path for an integer leaf: whether it wrote its result
+/// to `destination`. Not dispatch: it either computes the one answer the
+/// primitive would have computed, or declines and the caller jumps to the
+/// ordinary send standing at the instruction's target. Every case it
+/// declines -- a non-integer operand, a result that does not fit, a zero
+/// divisor -- is that send's primitive to decide, so nothing is promoted
+/// and no error or error text is raised here. It cannot fail for any
+/// operand, which is what lets a decoded image reach it safely.
+#[inline(always)]
+fn integer_into(
+    mutator: &mut Mutator<'_>,
+    register_base: RegisterBase,
+    operation: IntegerOperation,
+    destination: u16,
+    left: u16,
+    right: u16,
+) -> bool {
+    let left_value = mutator.heap.register(register_base, left);
+    let right_value = mutator.heap.register(register_base, right);
+    // Each `small_integer_*` answers `None` for a non-integer operand too,
+    // so the one `match` below declines every case. A zero divisor and
+    // `SMALL_INTEGER_MIN // -1` decline in `small_integer_floor_quotient`.
+    let result = match operation {
+        IntegerOperation::Add => left_value.small_integer_sum(right_value),
+        IntegerOperation::Subtract => left_value.small_integer_difference(right_value),
+        IntegerOperation::Multiply => left_value.small_integer_product(right_value),
+        IntegerOperation::FloorDivide => left_value.small_integer_floor_quotient(right_value),
+        IntegerOperation::Less => left_value
+            .small_integer_order(right_value)
+            .map(|order| Value::boolean(order.is_lt())),
+        IntegerOperation::Greater => left_value
+            .small_integer_order(right_value)
+            .map(|order| Value::boolean(order.is_gt())),
+        IntegerOperation::LessOrEqual => left_value
+            .small_integer_order(right_value)
+            .map(|order| Value::boolean(order.is_le())),
+        IntegerOperation::GreaterOrEqual => left_value
+            .small_integer_order(right_value)
+            .map(|order| Value::boolean(order.is_ge())),
+        IntegerOperation::Equal => left_value
+            .small_integer_order(right_value)
+            .map(|order| Value::boolean(order.is_eq())),
+    };
+    match result {
+        Some(value) => {
+            mutator.heap.set_register(register_base, destination, value);
+            true
+        }
+        None => false,
+    }
 }
 
 /// A send: the arguments gathered from the caller's registers into the
@@ -885,7 +1670,7 @@ fn resume_caller<'gc>(
     write_local(
         &mut mutator.heap,
         caller,
-        send_destination(&code.instructions[program_counter]),
+        send_destination(&code, program_counter),
         value,
     );
     handoff.switch_with_code(mutator, caller, code, program_counter + 1)
@@ -922,21 +1707,17 @@ fn reexecute<'gc>(mutator: &mut Mutator<'gc>, floor: usize, handoff: &mut Handof
 /// it stands for belongs there, stored and checked again, or forced first
 /// and the instruction run again (`future::value_for_a_value_slot`).
 #[inline(never)]
+#[allow(clippy::too_many_arguments)]
 fn initialize_slot_refused<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     program_counter: usize,
+    source: u16,
+    own_index: u32,
     signal: Signal<'gc>,
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
-    // Read back here rather than handed over, so that the arm `vm::run`
-    // inlines passes no more than an unwind would.
-    let code = mutator.heap.activation_code(activation);
-    let Instruction::InitializeSlot { source, own_index } = code.instructions[program_counter]
-    else {
-        unreachable!("internal: a refused InitializeSlot is an InitializeSlot");
-    };
     let value = read_local(&mutator.heap, activation, source);
     match value_for_a_value_slot(mutator, value) {
         None => unwind(mutator, signal, floor, handoff),
@@ -963,47 +1744,54 @@ fn initialize_slot_refused<'gc>(
     }
 }
 
-/// The four instructions only a simultaneous slot clause emits.
+/// The four instructions only a simultaneous slot clause emits, in their
+/// narrow form; the slot, one word, carries their operands. Their wide
+/// forms call the same functions from `run_wide`.
 #[inline(never)]
 fn simultaneous_clause_instruction<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,
     program_counter: usize,
+    slot: CompactInstruction,
     floor: usize,
     handoff: &mut Handoff,
 ) -> Transfer {
-    // Read back here rather than handed over, so that the arm `vm::run`
-    // inlines passes no more than `initialize_slot_refused`'s does.
-    let code = mutator.heap.activation_code(activation);
-    match code.instructions[program_counter] {
+    match slot {
         // A crafted image can put anything in `closure`'s register (an
         // image must never panic, `CLAUDE.md`, "An image is untrusted
         // input"), so an operand that is not a closure is an ordinary error,
         // not the `unreachable!` a compiler-emitted `MakeFuture` -- whose
         // operand is always the block `MakeClosure` just made -- would
         // never trigger.
-        Instruction::MakeFuture {
+        CompactInstruction::MakeFuture {
             destination,
             closure,
-        } => make_future(mutator, activation, destination, closure, floor, handoff),
-        Instruction::ResolveFuture {
+        } => make_future(
+            mutator,
+            activation,
+            u16::from(destination),
+            u16::from(closure),
+            floor,
+            handoff,
+        ),
+        CompactInstruction::ResolveFuture {
             destination,
             source,
         } => resolve_future(
             mutator,
             activation,
             program_counter,
-            destination,
-            source,
+            u16::from(destination),
+            u16::from(source),
             floor,
             handoff,
         ),
-        Instruction::LoadOwnSlot {
+        CompactInstruction::LoadOwnSlot {
             destination,
             own_index,
-        } => load_own_slot_into(mutator, activation, destination, own_index),
-        Instruction::InitializeSlotProvisionally { source, own_index } => {
-            initialize_slot_provisionally(mutator, activation, source, own_index)
+        } => load_own_slot_into(mutator, activation, u16::from(destination), own_index),
+        CompactInstruction::InitializeSlotProvisionally { source, own_index } => {
+            initialize_slot_provisionally(mutator, activation, u16::from(source), own_index)
         }
         _ => unreachable!("internal: only a simultaneous clause's instructions come here"),
     }
@@ -1152,15 +1940,39 @@ fn unwind<'gc>(
 
 /// The register a send writes its value to: where a callee's value goes when
 /// the loop resumes the caller.
-fn send_destination(instruction: &Instruction) -> u16 {
-    match instruction {
-        Instruction::SendPublic { destination, .. }
-        | Instruction::SendInlinable { destination, .. }
-        | Instruction::SendLexical { destination, .. }
-        | Instruction::SendSuper { destination, .. }
+fn send_destination(code: &CompiledCode, program_counter: usize) -> u16 {
+    match code.slot(program_counter) {
+        CompactInstruction::SendPublic0 { destination, .. }
+        | CompactInstruction::SendPublic1 { destination, .. }
+        | CompactInstruction::SendPublic2 { destination, .. }
+        | CompactInstruction::SendInlinable0 { destination, .. }
+        | CompactInstruction::SendInlinable1 { destination, .. }
+        | CompactInstruction::SendInlinable2 { destination, .. }
+        | CompactInstruction::SendLexical0 { destination, .. }
+        | CompactInstruction::SendLexical1 { destination, .. }
+        | CompactInstruction::SendLexical2 { destination, .. }
+        | CompactInstruction::SendSuper0 { destination, .. }
+        | CompactInstruction::SendSuper1 { destination, .. }
+        | CompactInstruction::SendSuper2 { destination, .. }
         // A leaf that activates a block (`value:`, `do:`) resumes its
         // caller here.
-        | Instruction::SendMirror { destination, .. } => *destination,
+        | CompactInstruction::SendMirror { destination, .. } => u16::from(destination),
+        CompactInstruction::SendPublicWide { site }
+        | CompactInstruction::SendInlinableWide { site }
+        | CompactInstruction::SendLexicalWide { site }
+        | CompactInstruction::SendSuperWide { site } => {
+            code.body().send_sites[site as usize]
+                .wide
+                .as_ref()
+                .expect(WIDE_SEND)
+                .destination
+        }
+        CompactInstruction::Wide { index } => match &code.body().wide[index as usize] {
+            Instruction::SendMirror { destination, .. } => *destination,
+            other => unreachable!(
+                "internal: a caller resumed at an instruction that is not a send: {other:?}"
+            ),
+        },
         other => unreachable!(
             "internal: a caller resumed at an instruction that is not a send: {other:?}"
         ),

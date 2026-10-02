@@ -494,24 +494,21 @@ const RICH: &str = indoc! {"
 "};
 
 fn every_instruction_once() -> CompiledCode {
-    let block = Rc::new(CompiledCode {
-        kind: CodeKind::Block,
-        instructions: vec![Instruction::NonLocalReturn { register: 0 }],
-        argument_count: 1,
+    let block = Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![Instruction::NonLocalReturn { register: 0 }],
+        1,
         // One parameter, two copied values, one temporary: the widest
         // register layout a block can have, so the round trip covers
         // `copied_count` too.
-        register_count: 4,
-        statement_program_counter: vec![(0, 0..1)],
-        family_size: 0,
-        copied_count: 2,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(1, 2),
-    });
-    CompiledCode {
-        kind: CodeKind::Initializer,
-        instructions: vec![
+        4,
+        2,
+        vec![(0, 0..1)],
+        Span::new(1, 2),
+    ));
+    let code = CompiledCode::new(
+        CodeKind::Initializer,
+        vec![
             Instruction::LoadLiteral {
                 destination: 0,
                 literal: Literal::Nil,
@@ -664,21 +661,21 @@ fn every_instruction_once() -> CompiledCode {
                 literal: Literal::UnresolvedIdentifier("Object".into()),
             },
         ],
-        argument_count: 2,
-        register_count: 15,
-        statement_program_counter: vec![(0, 0..3), (1, 3..37)],
-        // One past the highest number among its own sends (0..=3, in
-        // emission order -- what `number_call_site_families` assigns on the
-        // decoded side too) and the block's `family_size` (0): the same
-        // `bytecode::family_size_of` the decoder recomputes with, so the
-        // round trip must agree.
-        family_size: 4,
-        copied_count: 0,
-        // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
-        outer_reach: 2,
-        unwind_marker: None,
-        source: Span::new(10, 20),
-    }
+        2,
+        15,
+        0,
+        vec![(0, 0..3), (1, 3..37)],
+        Span::new(10, 20),
+    );
+    // One past the highest number among its own sends (0..=3, in emission
+    // order -- what `number_call_site_families` assigns on the decoded side
+    // too) and the block's `family_size` (0): the same
+    // `bytecode::family_size_of` the decoder recomputes with, so the round
+    // trip must agree.
+    assert_eq!(code.family_size, 4);
+    // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
+    assert_eq!(code.outer_reach, 2);
+    code
 }
 
 /// The compiled code of `class`'s method `selector` -- the body the method
@@ -836,7 +833,7 @@ fn every_instruction_variant_round_trips() {
 fn call_site_and_call_site_mut_agree_on_every_instruction_variant() {
     let code = every_instruction_once();
     let mut saw_a_call_site = false;
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         let immutable = instruction.call_site();
         let mutable = instruction.clone().call_site_mut().copied();
         assert_eq!(
@@ -871,7 +868,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
             let decoded = &table.codes[*id as usize];
             let original = method_code(mutator.heap(), class, selector.as_str());
             assert_eq!(**decoded, *original, "{selector}");
-            for instruction in &decoded.instructions {
+            for instruction in &decoded.instructions() {
                 if let Instruction::MakeClosure { code, .. } = instruction {
                     let child_id = table
                         .codes
@@ -904,7 +901,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
 /// `bytecode::family_size_of`.
 fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
     let mut numbers = Vec::new();
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             numbers.extend(call_site_numbers(block));
         } else if let Some(site) = instruction.call_site() {
@@ -1372,7 +1369,7 @@ fn a_large_integer_literal_round_trips() {
         let expected =
             Literal::LargeInteger(ArbitraryInteger::parse("99999999999999999999", 10).unwrap());
         assert!(
-            original.instructions.iter().any(|instruction| matches!(
+            original.instructions().iter().any(|instruction| matches!(
                 instruction,
                 Instruction::LoadLiteral { literal, .. } if *literal == expected
             )),
@@ -1442,7 +1439,7 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
         let code = method_code(mutator.heap(), class, "answer");
         let expected = Literal::LargeInteger(ArbitraryInteger::from_i64(i64::MAX));
         assert!(
-            code.instructions.iter().any(|instruction| matches!(
+            code.instructions().iter().any(|instruction| matches!(
                 instruction,
                 Instruction::LoadLiteral { literal, .. } if *literal == expected
             )),
@@ -2136,7 +2133,7 @@ fn deepest_block_nesting_the_parser_accepts() -> usize {
 
 /// How many `MakeClosure` hops the deepest block in `code` sits below it.
 fn block_nesting(code: &CompiledCode) -> usize {
-    code.instructions
+    code.instructions()
         .iter()
         .filter_map(|instruction| match instruction {
             Instruction::MakeClosure { code: block, .. } => Some(1 + block_nesting(block)),
@@ -3587,18 +3584,15 @@ fn a_top_level_frame_kind_decodes() {
 /// `copied_count` copied values, in one register more than the two together
 /// -- enough for the graph decoder, which never runs it.
 fn block_code(argument_count: u16, copied_count: u16) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
-        kind: CodeKind::Block,
-        instructions: vec![Instruction::ImplicitReturn { register: 0 }],
+    Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![Instruction::ImplicitReturn { register: 0 }],
         argument_count,
-        register_count: argument_count + copied_count + 1,
-        statement_program_counter: vec![],
-        family_size: 0,
+        argument_count + copied_count + 1,
         copied_count,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(0, 0),
-    })
+        vec![],
+        Span::new(0, 0),
+    ))
 }
 
 /// A graph section holding one closure object and the one `TopLevel` frame
@@ -4229,22 +4223,15 @@ fn code_with(
     register_count: u16,
     instructions: Vec<Instruction>,
 ) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
+    Rc::new(CompiledCode::new(
         kind,
         instructions,
         argument_count,
         register_count,
-        statement_program_counter: vec![],
-        // `verify_code_table` never looks at `family_size` -- numbering a
-        // family is `number_call_site_families`'s job, and none of these
-        // tests calls it -- so an arbitrary value is fine here. The same
-        // holds for `outer_reach`, which only the VM reads.
-        family_size: 0,
-        copied_count: 0,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(0, 0),
-    })
+        0,
+        vec![],
+        Span::new(0, 0),
+    ))
 }
 
 /// `code_with`, plus a `copied_count` for the bodies that declare one.
@@ -4255,10 +4242,9 @@ fn code_with_copied(
     copied_count: u16,
     instructions: Vec<Instruction>,
 ) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
-        copied_count,
-        ..(*code_with(kind, argument_count, register_count, instructions)).clone()
-    })
+    let mut code = (*code_with(kind, argument_count, register_count, instructions)).clone();
+    code.copied_count = copied_count;
+    Rc::new(code)
 }
 
 fn table_of(codes: Vec<Rc<CompiledCode>>) -> decode::DecodedCodeTable {
@@ -4431,7 +4417,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
 
 #[test]
 fn a_body_that_runs_past_its_last_instruction_is_refused() {
-    // The VM fetches `code.instructions[program_counter]` after every
+    // The VM fetches `code.instruction(program_counter)` after every
     // fall-through, so a body whose last instruction is not a return or a jump
     // indexes one past the end. An empty body indexes past the end immediately.
     for instructions in [vec![], vec![Instruction::LoadSelf { destination: 0 }]] {
@@ -4868,10 +4854,8 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     let (mut interpreter, class) = load(source);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let body = CompiledCode {
-            argument_count: 2,
-            ..(*method_code(mutator.heap(), class, "foo:")).clone()
-        };
+        let mut body = (*method_code(mutator.heap(), class, "foo:")).clone();
+        body.argument_count = 2;
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo:", Rc::new(body));
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
@@ -4898,10 +4882,8 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
     let (mut interpreter, class) = load(source);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let body = CompiledCode {
-            kind: CodeKind::Block,
-            ..(*method_code(mutator.heap(), class, "foo")).clone()
-        };
+        let mut body = (*method_code(mutator.heap(), class, "foo")).clone();
+        body.kind = CodeKind::Block;
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo", Rc::new(body));
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
@@ -6445,24 +6427,21 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         let class = class_reference(mutator, &class);
         // The one thing an image can present that the load-time checks let
         // through: right kind, right arity, wrong value.
-        let doctored = Rc::new(CompiledCode {
-            kind: CodeKind::SuperclassMessage,
-            instructions: vec![
+        let doctored = Rc::new(CompiledCode::new(
+            CodeKind::SuperclassMessage,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 0,
                     literal: Literal::SmallInteger(1),
                 },
                 Instruction::Return { register: 0 },
             ],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        });
+            0,
+            1,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 0),
+        ));
         let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {
             assert!(
                 nested.superclass_message_code.is_some(),
@@ -10964,11 +10943,10 @@ fn a_clause_message_whose_arity_disagrees_with_the_factory_is_refused_at_load() 
     let error = verify_doctored_applied(|applied| {
         let mut clauses = applied.mixin_applications.clone();
         let message = clauses[0].message_code.clone().expect("withMark: x * 10");
-        clauses[0].message_code = Some(Rc::new(CompiledCode {
-            argument_count: message.argument_count + 1,
-            register_count: message.register_count + 1,
-            ..(*message).clone()
-        }));
+        let mut doctored = (*message).clone();
+        doctored.argument_count = message.argument_count + 1;
+        doctored.register_count = message.register_count + 1;
+        clauses[0].message_code = Some(Rc::new(doctored));
         Mixin {
             mixin_applications: clauses,
             ..applied

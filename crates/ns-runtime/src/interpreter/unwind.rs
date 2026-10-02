@@ -526,18 +526,15 @@ mod tests {
 
     /// A body that returns its first register: nothing here runs it.
     fn trivial_code() -> Rc<CompiledCode> {
-        Rc::new(CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![Instruction::Return { register: 0 }],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: Vec::new(),
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: ns_syntax::Span::new(0, 0),
-        })
+        Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            vec![Instruction::Return { register: 0 }],
+            0,
+            1,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        ))
     }
 
     /// An activation that catches a return, as a method's does: a

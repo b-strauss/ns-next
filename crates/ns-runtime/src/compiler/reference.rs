@@ -16,7 +16,9 @@ use ns_syntax::Span;
 use super::control_flow;
 use super::lower::{lower_literal, selector_of};
 use super::simultaneous;
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral};
+use crate::bytecode::{
+    CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, Literal as BytecodeLiteral,
+};
 use crate::mixin::Mixin;
 use crate::types::Binding;
 use crate::Symbol;
@@ -71,7 +73,7 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
         let Some(initializer) = &declaration.initializer else {
             continue;
         };
-        let start = body.instructions.len();
+        let start = body.code.len();
         match simultaneous::future_block(declaration) {
             Some(block) => {
                 let closure = body.value(&block);
@@ -103,7 +105,7 @@ fn initializer(mixin: &Mixin, bindings: &Bindings) -> CompiledCode {
         if slot.lazy || !simultaneous_with_initializer {
             continue;
         }
-        let start = body.instructions.len();
+        let start = body.code.len();
         let slot_value = body.fresh();
         body.emit(Instruction::LoadOwnSlot {
             destination: slot_value,
@@ -143,7 +145,7 @@ pub(crate) fn compile_lazy_slot_getter(
 ) -> CompiledCode {
     let mut body = Body::new(CodeKind::Method, 0, 0, bindings);
     body.emit(Instruction::ReturnSlotIfFilled { own_index });
-    let start = body.instructions.len();
+    let start = body.code.len();
     let source = body.value(initializer);
     body.emit(Instruction::InitializeSlot { source, own_index });
     // One statement, its `Return` included, as a `^e` statement's is.
@@ -204,7 +206,7 @@ struct Body<'a> {
     /// on is written by exactly one instruction.
     first_scratch: u16,
     next_register: u16,
-    instructions: Vec<Instruction>,
+    code: CodeBuilder,
     statement_program_counter: Vec<(usize, Range<usize>)>,
 }
 
@@ -226,7 +228,7 @@ impl<'a> Body<'a> {
             argument_count,
             first_scratch,
             next_register: first_scratch,
-            instructions: Vec::new(),
+            code: CodeBuilder::new(),
             statement_program_counter: Vec::new(),
         }
     }
@@ -243,7 +245,7 @@ impl<'a> Body<'a> {
     }
 
     fn emit(&mut self, instruction: Instruction) {
-        self.instructions.push(instruction);
+        self.code.emit(instruction);
     }
 
     fn binding(&self, span: Span) -> Option<Binding> {
@@ -253,7 +255,7 @@ impl<'a> Body<'a> {
     fn record_statement(&mut self, start: usize) {
         let index = self.statement_program_counter.len();
         self.statement_program_counter
-            .push((index, start..self.instructions.len()));
+            .push((index, start..self.code.len()));
     }
 
     /// Each local slot with an initializer, in declaration order, as one
@@ -268,7 +270,7 @@ impl<'a> Body<'a> {
             let Some(initializer) = &temporary.initializer else {
                 continue;
             };
-            let start = self.instructions.len();
+            let start = self.code.len();
             let source = match simultaneous::future_block(temporary) {
                 Some(block) => {
                     let closure = self.value(&block);
@@ -289,7 +291,7 @@ impl<'a> Body<'a> {
             if !temporary.simultaneous || temporary.initializer.is_none() {
                 continue;
             }
-            let start = self.instructions.len();
+            let start = self.code.len();
             let slot = self.argument_count + position as u16;
             let copy = self.fresh();
             self.emit(Instruction::Move {
@@ -324,7 +326,7 @@ impl<'a> Body<'a> {
     /// `statement_program_counter`. Answers the statement's value register, or
     /// `None` when it emitted a return.
     fn statement(&mut self, statement: &Statement) -> Option<u16> {
-        let start = self.instructions.len();
+        let start = self.code.len();
         let value = match statement {
             Statement::Expression(expression) => Some(self.value(expression)),
             Statement::Return(expression) => {
@@ -629,20 +631,17 @@ impl<'a> Body<'a> {
 
     fn finish(self, source: Span) -> CompiledCode {
         if cfg!(debug_assertions) {
-            check_shape(&self.instructions, self.first_scratch);
+            check_shape(&self.code.instructions(), self.first_scratch);
         }
-        CompiledCode {
-            kind: self.kind,
-            family_size: crate::bytecode::family_size_of(&self.instructions),
-            copied_count: 0,
-            outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
-            unwind_marker: None,
-            instructions: self.instructions,
-            argument_count: self.argument_count,
-            register_count: self.next_register,
-            statement_program_counter: self.statement_program_counter,
+        CompiledCode::from_builder(
+            self.kind,
+            self.code,
+            self.argument_count,
+            self.next_register,
+            0,
+            self.statement_program_counter,
             source,
-        }
+        )
     }
 }
 
@@ -884,13 +883,13 @@ mod tests {
     fn a_send_the_optimized_lowering_inlines_is_a_send_inlinable() {
         let code = compile(&method("foo: x = ( ^x ifTrue: [1] )"), 0);
         assert!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::SendInlinable { selector, .. } if selector.as_str() == "ifTrue:")),
             "{code:?}"
         );
         assert!(!code
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::SendPublic { .. })));
     }
@@ -906,7 +905,7 @@ mod tests {
             let code = compile(&method(declaration), 0);
             assert!(
                 !code
-                    .instructions
+                    .instructions()
                     .iter()
                     .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. })),
                 "{declaration}: {code:?}"
@@ -933,7 +932,7 @@ mod tests {
         ] {
             let code = compile(&method(declaration), 0);
             assert!(
-                code.instructions.iter().any(
+                code.instructions().iter().any(
                     |instruction| matches!(instruction, Instruction::SendInlinable { selector: inlined_selector, .. } if inlined_selector.as_str() == selector)
                 ),
                 "{declaration}: {code:?}"
@@ -941,15 +940,15 @@ mod tests {
         }
     }
 
-    fn closure_code(instruction: &Instruction) -> &CompiledCode {
+    fn closure_code(instruction: &Instruction) -> Rc<CompiledCode> {
         let Instruction::MakeClosure { code, .. } = instruction else {
             panic!("expected a MakeClosure, got {instruction:?}");
         };
-        code
+        Rc::clone(code)
     }
 
     fn no_branch(code: &CompiledCode) -> bool {
-        code.instructions.iter().all(|instruction| {
+        code.instructions().iter().all(|instruction| {
             !matches!(
                 instruction,
                 Instruction::Jump { .. }
@@ -1001,31 +1000,31 @@ mod tests {
             "foo: argument = ( ^vmMirror string: self concatenate: argument ifFail: [^nil] )",
         );
         assert!(no_branch(&code), "{code:?}");
-        assert_eq!(code.instructions.len(), 6, "{code:?}");
+        assert_eq!(code.instructions().len(), 6, "{code:?}");
         assert!(matches!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::SendLexical { destination: 1, .. }
         ));
         assert_eq!(
-            code.instructions[1],
+            code.instruction(1),
             Instruction::LoadSelf { destination: 2 }
         );
         assert_eq!(
-            code.instructions[2],
+            code.instruction(2),
             Instruction::Move {
                 destination: 3,
                 source: 0
             }
         );
         assert!(matches!(
-            code.instructions[3],
+            code.instruction(3),
             Instruction::MakeClosure { destination: 4, .. }
         ));
         assert_eq!(
-            code.instructions[4],
+            code.instruction(4),
             inlinable("string:concatenate:ifFail:", 1, vec![2, 3, 4], 5)
         );
-        assert_eq!(code.instructions[5], Instruction::Return { register: 5 });
+        assert_eq!(code.instruction(5), Instruction::Return { register: 5 });
     }
 
     /// A failure argument that is not a literal block is not lowered inline
@@ -1035,12 +1034,12 @@ mod tests {
         let code = compile_kernel_method(
             "foo: argument = ( ^vmMirror stringSize: self ifFail: argument )",
         );
-        assert!(code.instructions.iter().any(|instruction| matches!(
+        assert!(code.instructions().iter().any(|instruction| matches!(
             instruction,
             Instruction::SendPublic { selector, .. } if selector.as_str() == "stringSize:ifFail:"
         )));
         assert!(!code
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::SendInlinable { .. })));
     }
@@ -1049,7 +1048,7 @@ mod tests {
     fn reading_a_local_copies_it_into_a_fresh_register() {
         let code = compile(&method("foo: x = ( ^x )"), 0);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::Move {
                     destination: 1,
@@ -1065,7 +1064,7 @@ mod tests {
     fn no_register_is_reused_across_statements() {
         let code = compile(&method("foo = ( 1. 2 )"), 0);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -1087,29 +1086,29 @@ mod tests {
     fn if_true_if_false_is_a_real_send_with_two_real_closures() {
         let code = compile(&method("foo: x = ( ^x ifTrue: [1] ifFalse: [2] )"), 0);
         assert!(no_branch(&code));
-        assert_eq!(code.instructions.len(), 5);
+        assert_eq!(code.instructions().len(), 5);
         assert_eq!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::Move {
                 destination: 1,
                 source: 0
             }
         );
         assert!(matches!(
-            code.instructions[1],
+            code.instruction(1),
             Instruction::MakeClosure { destination: 2, .. }
         ));
         assert!(matches!(
-            code.instructions[2],
+            code.instruction(2),
             Instruction::MakeClosure { destination: 3, .. }
         ));
         assert_eq!(
-            code.instructions[3],
+            code.instruction(3),
             inlinable("ifTrue:ifFalse:", 1, vec![2, 3], 4)
         );
-        assert_eq!(code.instructions[4], Instruction::Return { register: 4 });
+        assert_eq!(code.instruction(4), Instruction::Return { register: 4 });
         assert_eq!(
-            closure_code(&code.instructions[1]).instructions,
+            closure_code(&code.instruction(1)).instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -1128,39 +1127,39 @@ mod tests {
         );
         assert!(no_branch(&code));
         assert_eq!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::LoadLiteral {
                 destination: 1,
                 literal: BytecodeLiteral::SmallInteger(0)
             }
         );
         assert_eq!(
-            code.instructions[1],
+            code.instruction(1),
             Instruction::StoreLocal { source: 1, slot: 0 }
         );
         assert!(matches!(
-            code.instructions[2],
+            code.instruction(2),
             Instruction::MakeClosure { destination: 2, .. }
         ));
         assert!(matches!(
-            code.instructions[3],
+            code.instruction(3),
             Instruction::MakeClosure { destination: 3, .. }
         ));
-        assert_eq!(code.instructions[4], inlinable("whileTrue:", 2, vec![3], 4));
+        assert_eq!(code.instruction(4), inlinable("whileTrue:", 2, vec![3], 4));
         assert_eq!(
-            code.instructions[5],
+            code.instruction(5),
             Instruction::Move {
                 destination: 5,
                 source: 0
             }
         );
-        assert_eq!(code.instructions[6], Instruction::Return { register: 5 });
+        assert_eq!(code.instruction(6), Instruction::Return { register: 5 });
         assert_eq!(
             code.statement_program_counter,
             vec![(0, 0..2), (1, 2..5), (2, 5..7)]
         );
         assert_eq!(
-            closure_code(&code.instructions[2]).instructions,
+            closure_code(&code.instruction(2)).instructions(),
             vec![
                 Instruction::LoadOuterLocal {
                     destination: 0,
@@ -1176,7 +1175,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            closure_code(&code.instructions[3]).instructions,
+            closure_code(&code.instruction(3)).instructions(),
             vec![
                 Instruction::LoadOuterLocal {
                     destination: 0,
@@ -1201,10 +1200,10 @@ mod tests {
     #[test]
     fn a_return_inside_a_block_the_optimized_lowering_inlines_is_a_non_local_return() {
         let code = compile(&method("foo: x = ( x ifTrue: [^1]. ^2 )"), 0);
-        let block = closure_code(&code.instructions[1]);
+        let block = closure_code(&code.instruction(1));
         assert_eq!(block.kind, CodeKind::Block);
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -1219,7 +1218,7 @@ mod tests {
     fn an_assignments_value_is_its_fresh_register_never_the_local() {
         let code = compile(&method("foo = ( | t | ^t:: 3 )"), 0);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -1235,7 +1234,7 @@ mod tests {
     fn a_cascade_evaluates_its_receiver_once_and_answers_the_last_send() {
         let code = compile(&method("foo: x = ( ^x foo; bar )"), 0);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::Move {
                     destination: 1,
@@ -1302,7 +1301,7 @@ mod tests {
     fn an_empty_block_answers_nil() {
         let code = compile(&method("foo = ( ^[] )"), 0);
         assert_eq!(
-            closure_code(&code.instructions[0]).instructions,
+            closure_code(&code.instruction(0)).instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,

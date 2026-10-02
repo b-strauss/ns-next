@@ -15,7 +15,8 @@ use super::control_flow::{self, InlineForm};
 use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
+    CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
+    Literal as BytecodeLiteral,
 };
 use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
 use crate::types::Binding;
@@ -272,7 +273,7 @@ pub(crate) struct Lowerer<'a> {
     /// with `Inlined` entries pushed above it while an inlined block body
     /// is being lowered.
     scopes: Vec<ScopeKind>,
-    instructions: Vec<Instruction>,
+    code: CodeBuilder,
     base: u16,
     next_scratch: u16,
     max_register: u16,
@@ -383,11 +384,11 @@ impl<'a> Lowerer<'a> {
                 }
             }
         }
-        let mut instructions = Vec::new();
+        let mut code = CodeBuilder::new();
         // Before the local initializers, which already write through it:
         // `| x ::= 3. |` on a vector variable is a `StoreVector`.
         if let Some(destination) = layout.vector_register {
-            instructions.push(Instruction::MakeVector {
+            code.emit(Instruction::MakeVector {
                 destination,
                 size: layout.vector_size,
             });
@@ -402,7 +403,7 @@ impl<'a> Lowerer<'a> {
             by_reference,
             blocks_by_reference: false,
             scopes,
-            instructions,
+            code,
             base,
             next_scratch: base,
             max_register: base,
@@ -424,8 +425,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn emit(&mut self, instruction: Instruction) -> usize {
-        self.instructions.push(instruction);
-        self.instructions.len() - 1
+        self.code.emit(instruction)
     }
 
     /// Lowers a body's own statements, then its end (`finish_body`). The
@@ -453,9 +453,9 @@ impl<'a> Lowerer<'a> {
     /// (statements are the safepoint/scratch-liveness boundary).
     fn lower_statement(&mut self, statement: &Statement, use_: ValueUse) {
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         self.lower_statement_inner(statement, use_);
-        let end = self.instructions.len();
+        let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -469,7 +469,7 @@ impl<'a> Lowerer<'a> {
     /// activation's slot base (`Heap::activation_slot_base`).
     pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });
         self.record_statement(start);
@@ -486,7 +486,7 @@ impl<'a> Lowerer<'a> {
         own_index: u32,
     ) {
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         let closure = self.lower_expression_for(block, ValueUse::Read);
         let future = self.allocate_scratch();
         self.emit(Instruction::MakeFuture {
@@ -509,7 +509,7 @@ impl<'a> Lowerer<'a> {
     /// register, which no send can write. One statement.
     pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         let register = self.allocate_scratch();
         self.emit(Instruction::LoadOwnSlot {
             destination: register,
@@ -529,7 +529,7 @@ impl<'a> Lowerer<'a> {
     /// Records the statement that began at instruction `start` and ends
     /// here, and moves on to the next statement index.
     fn record_statement(&mut self, start: usize) {
-        let end = self.instructions.len();
+        let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -547,11 +547,11 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
         self.next_scratch = self.base;
         self.emit(Instruction::ReturnSlotIfFilled { own_index });
-        let start = self.instructions.len();
+        let start = self.code.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });
         self.emit(Instruction::Return { register: source });
-        let end = self.instructions.len();
+        let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -577,7 +577,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             };
             self.next_scratch = self.base;
-            let start = self.instructions.len();
+            let start = self.code.len();
             let source = match simultaneous::future_block(temporary) {
                 Some(block) => {
                     let closure = self.lower_expression_for(&block, ValueUse::Read);
@@ -602,7 +602,7 @@ impl<'a> Lowerer<'a> {
                 continue;
             }
             self.next_scratch = self.base;
-            let start = self.instructions.len();
+            let start = self.code.len();
             let access = self.resolve_variable(0, self.argument_count + position as u16);
             let read = self.emit_read(access);
             // `ResolveFuture` runs user code -- the future's block -- exactly
@@ -1532,11 +1532,11 @@ impl<'a> Lowerer<'a> {
 
     /// The index the next emitted instruction will get -- a forward label.
     fn here(&self) -> u32 {
-        self.instructions.len() as u32
+        self.code.len() as u32
     }
 
     fn patch_target(&mut self, instruction_index: usize, target: u32) {
-        self.instructions[instruction_index].set_target(target);
+        self.code.patch_target(instruction_index, target);
     }
 
     /// Lowers `block`'s statements directly into the current instruction stream
@@ -1882,7 +1882,8 @@ impl<'a> Lowerer<'a> {
         // is a compiler bug, not a program error, so it is a `debug_assert!`
         // -- checked on every debug test run, free in release.
         debug_assert!(
-            self.instructions
+            self.code
+                .instructions()
                 .iter()
                 .filter_map(|instruction| match instruction {
                     Instruction::Jump { target }
@@ -1895,21 +1896,18 @@ impl<'a> Lowerer<'a> {
                     } => Some(*target as usize),
                     _ => None,
                 })
-                .all(|target| target < self.instructions.len()),
+                .all(|target| target < self.code.len()),
             "internal: a jump target does not name an instruction of this body"
         );
-        CompiledCode {
-            kind: self.kind,
-            family_size: crate::bytecode::family_size_of(&self.instructions),
-            copied_count: self.layout.copied.len() as u16,
-            outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
-            unwind_marker: None,
-            instructions: self.instructions,
-            argument_count: self.argument_count,
-            register_count: self.max_register,
-            statement_program_counter: self.statement_program_counter,
+        CompiledCode::from_builder(
+            self.kind,
+            self.code,
+            self.argument_count,
+            self.max_register,
+            self.layout.copied.len() as u16,
+            self.statement_program_counter,
             source,
-        }
+        )
     }
 }
 
@@ -2045,7 +2043,7 @@ mod tests {
         assert_eq!(register, 0);
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::LoadLiteral {
                 destination: 0,
                 literal: BytecodeLiteral::SmallInteger(42)
@@ -2074,7 +2072,7 @@ mod tests {
         );
         let code = lowerer.finish(method.span);
         assert!(
-            code.instructions.is_empty(),
+            code.instructions().is_empty(),
             "no instruction needed to read a param"
         );
         assert_eq!(code.argument_count, 1);
@@ -2102,10 +2100,10 @@ mod tests {
         }
         let code = lowerer.finish(method.span);
         // An explicit `self` receiver is a depth-0 lexical send.
+        let instructions = code.instructions();
         let Some(Instruction::SendLexical {
             argument_registers, ..
-        }) = code
-            .instructions
+        }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
         else {
@@ -2116,7 +2114,7 @@ mod tests {
             "`t` is register 0; the first argument must not be its live register"
         );
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: argument_registers[0],
                 source: 0
             }),
@@ -2142,14 +2140,14 @@ mod tests {
         let code = lowerer.finish(method.span);
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { .. })),
             "no operand needs a copy here: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter_map(|instruction| match instruction {
                     Instruction::SendPublic {
@@ -2184,11 +2182,11 @@ mod tests {
         let code = lowerer.finish(method.span);
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { .. })),
             "a parameter needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2204,23 +2202,24 @@ mod tests {
         let code = lower_whole_method(source, 0); // `local` is register 0
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "an immutable local needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
     /// The receiver register of the one `SendPublic` whose selector is
     /// `selector`.
     fn public_receiver(code: &CompiledCode, selector: &str) -> u16 {
+        let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             receiver_register, ..
-        }) = code.instructions.iter().find(
+        }) = instructions.iter().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector: sent, .. } if sent.as_str() == selector),
         ) else {
-            panic!("expected a `{selector}` send: {:?}", code.instructions)
+            panic!("expected a `{selector}` send: {:?}", code.instructions())
         };
         *receiver_register
     }
@@ -2241,11 +2240,11 @@ mod tests {
         let code = lower_whole_method(source, 0); // `t` is register 0
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "nothing the `foo` send runs can write `t`'s register: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
             public_receiver(&code, "+"),
@@ -2268,17 +2267,18 @@ mod tests {
         let code = lower_whole_method(source, 0); // `c` is register 0, `t` register 1
         let receiver = public_receiver(&code, "+");
         assert_ne!(
-            receiver, 1,
+            receiver,
+            1,
             "the `ifTrue:` fallback closure can write `t` from inside `foo`: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: receiver,
                 source: 1
             }),
             "the copy out of `t` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2295,23 +2295,23 @@ mod tests {
         "};
         let code = lower_whole_method(source, 1); // `t` is register 0
                                                   // An explicit `self` receiver is a depth-0 lexical send.
+        let instructions = code.instructions();
         let Some(Instruction::SendLexical {
             argument_registers, ..
-        }) = code
-            .instructions
+        }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
         else {
-            panic!("expected the keyword send: {:?}", code.instructions);
+            panic!("expected the keyword send: {:?}", code.instructions());
         };
         assert_ne!(argument_registers[0], 0, "`t` is register 0");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: argument_registers[0],
                 source: 0
             }),
             "the copy out of `t` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2331,14 +2331,14 @@ mod tests {
     /// the copy out of `t` (register 0) went into.
     fn receiver_and_copy_of_the_binary_send(code: &CompiledCode) -> (u16, u16) {
         let receiver = public_receiver(code, "+");
-        let Some(Instruction::Move { destination, .. }) = code
-            .instructions
+        let instructions = code.instructions();
+        let Some(Instruction::Move { destination, .. }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::Move { source: 0, .. }))
         else {
             panic!(
                 "expected a copy out of `t`'s register: {:?}",
-                code.instructions
+                code.instructions()
             );
         };
         (receiver, *destination)
@@ -2362,9 +2362,10 @@ mod tests {
         let (receiver, copy) = receiver_and_copy_of_the_binary_send(&code);
         assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
         assert_eq!(
-            receiver, copy,
+            receiver,
+            copy,
             "the `+` send reads the copy of `t`: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2385,8 +2386,9 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(&source, 0);
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
-            panic!("expected the block literal: {:?}", code.instructions);
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
+            panic!("expected the block literal: {:?}", code.instructions());
         };
         assert_eq!(
             block.copied_count, 0,
@@ -2395,9 +2397,10 @@ mod tests {
         let (receiver, copy) = receiver_and_copy_of_the_binary_send(block);
         assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
         assert_eq!(
-            receiver, copy,
+            receiver,
+            copy,
             "the `+` send reads the copy of `t`: {:?}",
-            block.instructions
+            block.instructions()
         );
     }
 
@@ -2416,7 +2419,7 @@ mod tests {
         lowerer.lower_statement(&method.body.statements[0], ValueUse::Discarded); // `t:: 7.`
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -2447,7 +2450,7 @@ mod tests {
         // Both literals land in scratch register 1 -- the allocator reset
         // between statements instead of growing.
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -2480,7 +2483,7 @@ mod tests {
         lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::LoadLiteral {
                 destination: 0,
                 literal: BytecodeLiteral::LargeInteger(
@@ -2505,7 +2508,7 @@ mod tests {
         lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::LoadLiteral {
                 destination: 0,
                 literal: BytecodeLiteral::SmallInteger(255)
@@ -2531,7 +2534,7 @@ mod tests {
         let destination = lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -2567,7 +2570,7 @@ mod tests {
         let destination = lowerer.lower_expression(return_expression(&foo));
         let code = lowerer.finish(foo.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::SendLexical {
                 depth: 0,
                 selector: crate::Symbol::intern("bar"),
@@ -2593,7 +2596,7 @@ mod tests {
         lowerer.lower_statement(&foo.body.statements[0], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
         assert!(matches!(
-            &code.instructions[2],
+            &code.instruction(2),
             Instruction::SendLexical { depth: 0, selector, argument_registers, .. }
                 if selector.as_str() == "at:put:" && argument_registers.len() == 2
         ));
@@ -2605,7 +2608,7 @@ mod tests {
         });
         let code = lowerer.finish(foo.span);
         assert!(matches!(
-            &code.instructions[0],
+            &code.instruction(0),
             Instruction::SendSuper { selector, argument_registers, destination: 0, .. }
                 if selector.as_str() == "printString" && argument_registers.is_empty()
         ));
@@ -2625,7 +2628,7 @@ mod tests {
         lowerer.lower_statement(&bump.body.statements[0], ValueUse::Discarded);
         let code = lowerer.finish(bump.span);
         assert!(matches!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(Instruction::SendLexical { depth: 0, selector, argument_registers, .. })
                 if selector.as_str() == "n:" && argument_registers.len() == 1
         ));
@@ -2633,7 +2636,7 @@ mod tests {
 
     /// The argument register of every `n:` setter send in `code`, in order.
     fn setter_arguments(code: &CompiledCode) -> Vec<u16> {
-        code.instructions
+        code.instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::SendLexical {
@@ -2675,11 +2678,11 @@ mod tests {
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "nothing reads the assignment's value, so it needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
             setter_arguments(&code),
@@ -2699,15 +2702,15 @@ mod tests {
         "};
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
         let [copy] = setter_arguments(&code)[..] else {
-            panic!("expected one setter send: {:?}", code.instructions);
+            panic!("expected one setter send: {:?}", code.instructions());
         };
         assert_ne!(copy, 0, "the setter can write `t` before `Return` reads");
-        assert!(code.instructions.contains(&Instruction::Move {
+        assert!(code.instructions().contains(&Instruction::Move {
             destination: copy,
             source: 0
         }));
         assert_eq!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(&Instruction::Return { register: copy })
         );
     }
@@ -2753,22 +2756,22 @@ mod tests {
         lowerer.lower_slot_initializer(initializers[1], 4);
         let code = lowerer.finish(method.span);
         let [copy] = setter_arguments(&code)[..] else {
-            panic!("expected one setter send: {:?}", code.instructions);
+            panic!("expected one setter send: {:?}", code.instructions());
         };
         assert_ne!(
             copy, 1,
             "the setter can write `p` before `InitializeSlot` reads"
         );
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: copy,
                 source: 1
             }),
             "the copy out of `p` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(&Instruction::InitializeSlot {
                 source: copy,
                 own_index: 4
@@ -2801,14 +2804,14 @@ mod tests {
         let code = lowerer.finish(method.span);
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { .. })),
             "a parameter needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::SendLexical {
                     depth: 0,
@@ -2844,23 +2847,23 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
-        let Instruction::MakeClosure { code: block, .. } = &code.instructions[0] else {
-            panic!("expected the block literal: {:?}", code.instructions);
+        let Instruction::MakeClosure { code: block, .. } = &code.instruction(0) else {
+            panic!("expected the block literal: {:?}", code.instructions());
         };
         let [discarded, read] = setter_arguments(block)[..] else {
-            panic!("expected two setter sends: {:?}", block.instructions);
+            panic!("expected two setter sends: {:?}", block.instructions());
         };
         assert_eq!(
             discarded, 0,
             "the first value is discarded: `t`'s own register"
         );
         assert_ne!(read, 0, "the block answers the second value");
-        assert!(block.instructions.contains(&Instruction::Move {
+        assert!(block.instructions().contains(&Instruction::Move {
             destination: read,
             source: 0
         }));
         assert_eq!(
-            block.instructions.last(),
+            block.instructions().last(),
             Some(&Instruction::ImplicitReturn { register: read })
         );
     }
@@ -2879,16 +2882,16 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
-        let Instruction::MakeClosure { code: block, .. } = &code.instructions[0] else {
-            panic!("expected the block literal: {:?}", code.instructions);
+        let Instruction::MakeClosure { code: block, .. } = &code.instruction(0) else {
+            panic!("expected the block literal: {:?}", code.instructions());
         };
         assert!(
             !block
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "a block parameter needs no copy: {:?}",
-            block.instructions
+            block.instructions()
         );
         assert_eq!(
             setter_arguments(block),
@@ -2924,12 +2927,12 @@ mod tests {
             assert!(
                 arguments.iter().all(|&argument| argument > 1),
                 "the send's value is read, so each branch's is: {:?}",
-                returned.instructions
+                returned.instructions()
             );
         }
         let loop_code = lower_whole_method(source, 3);
         let [condition, body] = setter_arguments(&loop_code)[..] else {
-            panic!("expected two setter sends: {:?}", loop_code.instructions);
+            panic!("expected two setter sends: {:?}", loop_code.instructions());
         };
         assert_ne!(condition, 0, "the guard reads the condition's value");
         assert_eq!(body, 0, "nothing reads the loop body's value");
@@ -2956,9 +2959,12 @@ mod tests {
             argument_registers,
             destination: send_destination,
             ..
-        }] = &code.instructions[..]
+        }] = &code.instructions()[..]
         else {
-            panic!("expected one depth-0 lexical send: {:?}", code.instructions);
+            panic!(
+                "expected one depth-0 lexical send: {:?}",
+                code.instructions()
+            );
         };
         assert_eq!(selector.as_str(), "Array");
         assert!(argument_registers.is_empty());
@@ -2979,7 +2985,7 @@ mod tests {
         lowerer.lower_statement(&foo.body.statements[1], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
         let receiver_registers: Vec<u16> = code
-            .instructions
+            .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -2994,9 +3000,10 @@ mod tests {
         // inlinable branch of this body assigns it, so no fallback closure
         // reaches it -- so the cascade reads `c` itself.
         assert_eq!(
-            receiver_registers[1], 0,
+            receiver_registers[1],
+            0,
             "the cascade receiver is `c`'s own register: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
             receiver_registers[1], receiver_registers[2],
@@ -3010,7 +3017,7 @@ mod tests {
     /// The registers the cascade's `add:` sends read their receiver out of.
     fn cascade_receivers(code: &CompiledCode) -> (u16, u16) {
         let receiver_registers: Vec<u16> = code
-            .instructions
+            .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -3022,7 +3029,10 @@ mod tests {
             })
             .collect();
         let [first, second] = receiver_registers[..] else {
-            panic!("expected the cascade's two sends: {:?}", code.instructions);
+            panic!(
+                "expected the cascade's two sends: {:?}",
+                code.instructions()
+            );
         };
         (first, second)
     }
@@ -3048,12 +3058,12 @@ mod tests {
         assert_ne!(first, 0, "the receiver must not be `c`'s own live register");
         assert_eq!(first, second, "both cascade sends share one register");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: first,
                 source: 0
             }),
             "the copy out of `c` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3078,12 +3088,12 @@ mod tests {
         assert_ne!(first, 0, "the receiver must not be `c`'s own live register");
         assert_eq!(first, second, "both cascade sends share one register");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: first,
                 source: 0
             }),
             "the copy out of `c` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3126,7 +3136,7 @@ mod tests {
             0,
         );
         assert_eq!(
-            &code.instructions[code.instructions.len() - 2..],
+            &code.instructions()[code.instructions().len() - 2..],
             &[
                 Instruction::LoadSelf { destination: 3 },
                 Instruction::ImplicitReturn { register: 3 }
@@ -3146,7 +3156,7 @@ mod tests {
             0,
         );
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3168,16 +3178,17 @@ mod tests {
             "},
             0,
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             destination: 0,
             parameters,
             code: block,
             copied,
-        }) = code.instructions.first()
+        }) = instructions.first()
         else {
             panic!(
                 "expected a MakeClosure instruction, got {:?}",
-                code.instructions
+                code.instructions()
             );
         };
         assert_eq!(parameters.as_slice(), &[crate::Symbol::intern("x")]);
@@ -3190,7 +3201,7 @@ mod tests {
         // `x` is the block's own register 0: read with no instruction, then
         // returned as the block's implicit value.
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
         assert_eq!(block.statement_program_counter, vec![(0, 0..0)]);
@@ -3214,14 +3225,14 @@ mod tests {
         "};
         let code = lower_whole_method(source, 0);
         let numbers = |code: &CompiledCode| -> Vec<u32> {
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter_map(Instruction::call_site)
                 .map(|site| site.number)
                 .collect()
         };
         let first_block = |code: &CompiledCode| -> Rc<CompiledCode> {
-            code.instructions
+            code.instructions()
                 .iter()
                 .find_map(|instruction| match instruction {
                     Instruction::MakeClosure { code: block, .. } => Some(block.clone()),
@@ -3260,17 +3271,18 @@ mod tests {
         // `x` is r0, `t` is r1 (unused: it lives in the vector), the vector
         // is r2.
         assert_eq!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::MakeVector {
                 destination: 2,
                 size: 1
             }
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: block,
             copied,
             ..
-        }) = code.instructions.get(1)
+        }) = instructions.get(1)
         else {
             panic!()
         };
@@ -3279,7 +3291,7 @@ mod tests {
         assert_eq!(block.copied_count, 2);
         assert_eq!(block.outer_reach, 0);
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::StoreVector {
                     vector: 1,
@@ -3302,18 +3314,19 @@ mod tests {
             "},
             0,
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: block,
             copied,
             ..
-        }) = code.instructions.first()
+        }) = instructions.first()
         else {
             panic!()
         };
         assert_eq!(*copied, vec![0]); // the parameter's own register
         assert_eq!(block.copied_count, 1);
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
         assert_eq!(block.outer_reach, 0);
@@ -3331,23 +3344,24 @@ mod tests {
             0,
         );
         assert_eq!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::MakeVector {
                 destination: 1,
                 size: 1
             }
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: block,
             copied,
             ..
-        }) = code.instructions.get(1)
+        }) = instructions.get(1)
         else {
             panic!()
         };
         assert_eq!(*copied, vec![1]); // the vector register
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -3374,27 +3388,29 @@ mod tests {
             "},
             0,
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: outer,
             copied,
             ..
-        }) = code.instructions.first()
+        }) = instructions.first()
         else {
             panic!()
         };
         assert_eq!(*copied, vec![0]);
+        let instructions = outer.instructions();
         let Some(Instruction::MakeClosure {
             code: inner,
             copied: inner_copied,
             ..
-        }) = outer.instructions.first()
+        }) = instructions.first()
         else {
             panic!()
         };
         // The middle block holds it in its own first copied register.
         assert_eq!(*inner_copied, vec![0]);
         assert_eq!(
-            inner.instructions,
+            inner.instructions(),
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
     }
@@ -3411,7 +3427,7 @@ mod tests {
             0,
         );
         let fallback = code
-            .instructions
+            .instructions()
             .iter()
             .find_map(|instruction| match instruction {
                 Instruction::MakeClosure {
@@ -3425,7 +3441,7 @@ mod tests {
                 _ => None,
             })
             .expect("the fallback path builds a real closure");
-        assert!(fallback.instructions.iter().any(|instruction| matches!(
+        assert!(fallback.instructions().iter().any(|instruction| matches!(
             instruction,
             Instruction::StoreOuterLocal {
                 depth: 1,
@@ -3436,7 +3452,7 @@ mod tests {
         assert_eq!(fallback.outer_reach, 1);
         // Nothing captured `t`, so it stays a register.
         assert!(!code
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })));
     }
@@ -3452,11 +3468,12 @@ mod tests {
             "},
             0,
         );
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
             panic!()
         };
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3478,11 +3495,12 @@ mod tests {
             "},
             0,
         );
-        let Some(Instruction::MakeClosure { code: empty, .. }) = code.instructions.first() else {
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: empty, .. }) = instructions.first() else {
             panic!()
         };
         assert_eq!(
-            empty.instructions,
+            empty.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3491,11 +3509,12 @@ mod tests {
                 Instruction::ImplicitReturn { register: 0 }
             ]
         );
-        let Some(Instruction::MakeClosure { code: two, .. }) = code.instructions.get(2) else {
-            panic!("{:?}", code.instructions)
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: two, .. }) = instructions.get(2) else {
+            panic!("{:?}", code.instructions())
         };
         assert_eq!(
-            two.instructions,
+            two.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3547,7 +3566,7 @@ mod tests {
         let destination = lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3593,7 +3612,7 @@ mod tests {
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3630,7 +3649,7 @@ mod tests {
         // `6`, `7`, the inlined `*` with its guard and its fallback send,
         // then the field write: six instructions, all one statement.
         assert!(matches!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(Instruction::InitializeSlot {
                 source: 2,
                 own_index: 4
@@ -3651,7 +3670,7 @@ mod tests {
     }
 
     fn has<F: Fn(&Instruction) -> bool>(code: &CompiledCode, predicate: F) -> bool {
-        code.instructions.iter().any(predicate)
+        code.instructions().iter().any(predicate)
     }
 
     /// Lowers `method` of a nested class `C` in a kernel-shaped module that
@@ -3729,7 +3748,7 @@ mod tests {
             },
             Instruction::Return { register: 3 },
         ];
-        assert_eq!(code.instructions, expected, "{:#?}", code.instructions);
+        assert_eq!(code.instructions(), expected, "{:#?}", code.instructions());
         // The one call site is `vmMirror`'s lexical send: `SendMirror`
         // carries none, since nothing about it is looked up at run time.
         assert_eq!(code.family_size, 1);
@@ -3761,7 +3780,7 @@ mod tests {
                 Instruction::JumpIfNotBoolean { register: 0, .. }
             )),
             "{:#?}",
-            code.instructions
+            code.instructions()
         );
         assert!(has(&code, |instruction| matches!(
             instruction,
@@ -3787,7 +3806,7 @@ mod tests {
             Instruction::SendPublic { selector, receiver_register: 0, .. } if selector.as_str() == "ifTrue:ifFalse:"
         )));
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
                 .count(),
@@ -3833,7 +3852,7 @@ mod tests {
                 }
             )),
             "{:#?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3856,26 +3875,27 @@ mod tests {
     #[test]
     fn the_inlined_fast_paths_fallback_reuses_the_registers_the_guard_read() {
         let code = compile_foo("x + (x bump)");
-        let Some(Instruction::IntegerBinary { left, right, .. }) = code
-            .instructions
+        let instructions = code.instructions();
+        let Some(Instruction::IntegerBinary { left, right, .. }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
         else {
-            panic!("expected the fast path: {:#?}", code.instructions)
+            panic!("expected the fast path: {:#?}", code.instructions())
         };
+        let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             receiver_register,
             argument_registers,
             ..
-        }) = code.instructions.iter().find(
+        }) = instructions.iter().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "+"),
         ) else {
-            panic!("expected the fallback send: {:#?}", code.instructions)
+            panic!("expected the fallback send: {:#?}", code.instructions())
         };
         assert_eq!(*receiver_register, *left);
         assert_eq!(*argument_registers, vec![*right]);
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter(|instruction| matches!(
                     instruction,
@@ -3884,7 +3904,7 @@ mod tests {
                 .count(),
             1,
             "the argument is evaluated once, on both paths: {:#?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3925,21 +3945,21 @@ mod tests {
             1,
         );
         // `foo` takes no parameters, so its only local `total` is register 0.
-        let Some(Instruction::IntegerBinary { left, .. }) = code
-            .instructions
+        let instructions = code.instructions();
+        let Some(Instruction::IntegerBinary { left, .. }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
         else {
-            panic!("expected the fast path: {:#?}", code.instructions)
+            panic!("expected the fast path: {:#?}", code.instructions())
         };
         assert_ne!(*left, 0, "`total` can be written before the guard reads it");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: *left,
                 source: 0
             }),
             "the guard reads the copy of `total`: {:#?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3947,7 +3967,7 @@ mod tests {
     fn while_true_compiles_to_a_back_edge_jump_and_a_must_be_boolean_fallback() {
         let code = compile_foo("[x] whileTrue: [x]");
         let back_edge =
-            code.instructions.iter().enumerate().find_map(
+            code.instructions().iter().enumerate().find_map(
                 |(index, instruction)| match instruction {
                     Instruction::Jump { target } if (*target as usize) < index => Some(*target),
                     _ => None,
@@ -3956,7 +3976,7 @@ mod tests {
         assert!(
             back_edge.is_some(),
             "expected a backward Jump, got {:#?}",
-            code.instructions
+            code.instructions()
         );
         assert!(has(&code, |instruction| matches!(
             instruction,
@@ -4007,7 +4027,7 @@ mod tests {
     fn a_real_block_nested_in_an_inlined_block_is_converted_and_its_fallback_copy_is_not() {
         let code = compile_foo("x ifTrue: [ [ x ] value ] ifFalse: [nil]");
         let closures: Vec<(Rc<CompiledCode>, Vec<u16>)> = code
-            .instructions
+            .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::MakeClosure { code, copied, .. } => {
@@ -4022,7 +4042,7 @@ mod tests {
         let (inlined_arm_block, copied) = &closures[0];
         assert_eq!(*copied, vec![0], "handed the method's own register for x");
         assert_eq!(
-            inlined_arm_block.instructions[0],
+            inlined_arm_block.instruction(0),
             Instruction::ImplicitReturn { register: 0 }
         );
         assert_eq!(inlined_arm_block.outer_reach, 0);
@@ -4030,17 +4050,18 @@ mod tests {
         // out: through the fallback closure's own frame to the method's.
         let (fallback_true_block, fallback_copied) = &closures[1];
         assert!(fallback_copied.is_empty());
+        let instructions = fallback_true_block.instructions();
         let Some(Instruction::MakeClosure {
             code: nested,
             copied: nested_copied,
             ..
-        }) = fallback_true_block.instructions.first()
+        }) = instructions.first()
         else {
             panic!("the fallback closure re-creates the nested block")
         };
         assert!(nested_copied.is_empty());
         assert_eq!(
-            nested.instructions[0],
+            nested.instruction(0),
             Instruction::LoadOuterLocal {
                 destination: 0,
                 depth: 2,
@@ -4054,13 +4075,13 @@ mod tests {
     fn a_return_inside_an_inlined_block_follows_the_enclosing_code_kind() {
         let code = compile_foo("x ifTrue: [^1] ifFalse: [^2]");
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter(|instruction| matches!(instruction, Instruction::Return { .. }))
                 .count(),
             3,
             "{:#?}",
-            code.instructions
+            code.instructions()
         );
         assert!(!has(&code, |instruction| matches!(
             instruction,
@@ -4068,11 +4089,12 @@ mod tests {
         )));
         // Inside a block body the same `^` is a non-local return.
         let code = compile_foo("[ x ifTrue: [^1] ifFalse: [^2] ]");
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
             panic!()
         };
         assert!(block
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::NonLocalReturn { .. })));
     }
@@ -4083,7 +4105,7 @@ mod tests {
         // first argument's register must survive the inlined `x baz` statement.
         let code = compile_foo("x foo: (x bar) with: (x ifTrue: [x baz. 1] ifFalse: [2])");
         let bar_destination = code
-            .instructions
+            .instructions()
             .iter()
             .find_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -4095,7 +4117,7 @@ mod tests {
             })
             .expect("a bar send");
         let baz_destination = code
-            .instructions
+            .instructions()
             .iter()
             .find_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -4107,9 +4129,10 @@ mod tests {
             })
             .expect("a baz send");
         assert_ne!(bar_destination, baz_destination);
+        let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             selector, argument_registers, ..
-        }) = code.instructions.iter().rev().find(
+        }) = instructions.iter().rev().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "foo:with:"),
         )
         else {
@@ -4159,7 +4182,7 @@ mod tests {
         // (`self` r0, `x` r1, guard+destination r2-r3, and the costliest arm's
         // own 3 scratch registers r4-r6).
         let code = compile_foo("x ifTrue: [(x + 1) + (x + 2)] ifFalse: [(x + 3) + (x + 4)]");
-        assert_eq!(code.register_count, 7, "{:#?}", code.instructions);
+        assert_eq!(code.register_count, 7, "{:#?}", code.instructions());
     }
 
     #[test]
@@ -4172,7 +4195,7 @@ mod tests {
         );
         assert_eq!(
             code.statement_program_counter[0].1,
-            0..code.instructions.len()
+            0..code.instructions().len()
         );
     }
 }

@@ -7,7 +7,9 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{
+    CallSite, CodeBuilder, CodeKind, CompiledCode, Emitted, Instruction, IntegerOperation, Literal,
+};
 use crate::heap::{Heap, Word};
 use crate::interpreter::instantiate;
 use crate::mixin::DispatchId;
@@ -312,8 +314,8 @@ pub enum DecodeError {
         argument_count: u16,
     },
     /// A body with no instructions, or one whose last instruction falls
-    /// through: the VM fetches `instructions[program_counter]` after every
-    /// fall-through, so either runs off the end of the vector.
+    /// through: the VM fetches the instruction at `program_counter` after
+    /// every fall-through, so either runs off the end of the body.
     UnterminatedBody,
     /// A register operand outside its own body's register file.
     RegisterOutOfRange {
@@ -1088,7 +1090,7 @@ fn block_nesting(
     nesting: &HashMap<usize, usize>,
 ) -> Result<usize, DecodeError> {
     let mut depth = 0;
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             // `decode_instruction` resolved the id against the bodies already
             // read, and every one of them was measured.
@@ -1288,7 +1290,7 @@ fn check_code_arity(
 //
 // Decoding is byte-safe: every id, tag and length is checked as it is read. It
 // does not make the result *coherent*. The VM indexes
-// `code.instructions[program_counter]` directly, and
+// `code.slot(program_counter)` directly, and
 // `locals::read_local`/`write_local` index a frame's `arguments`/`temporaries`
 // directly, so a jump target, a register operand or an arity that decoded
 // cleanly can still panic the process the first time the body runs. Everything
@@ -1321,7 +1323,7 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
     let index_of = code_index(table);
     let mut parents: Vec<Option<usize>> = vec![None; table.codes.len()];
     for (index, code) in table.codes.iter().enumerate() {
-        for instruction in &code.instructions {
+        for instruction in &code.instructions() {
             let Instruction::MakeClosure {
                 parameters,
                 code: block,
@@ -1434,30 +1436,34 @@ fn number_call_sites(
     index_of: &HashMap<usize, usize>,
     writeback: &mut Vec<(usize, Rc<CompiledCode>)>,
 ) -> Result<(), DecodeError> {
-    for instruction in &mut code.instructions {
-        if let Instruction::MakeClosure { code: block, .. } = instruction {
-            // Captured before `Rc::make_mut` can move the block to a fresh
-            // allocation: `index_of` was built from the table's original
-            // pointers, and `lexical_parents` already proved this one names
-            // exactly one table entry.
-            let block_index = *index_of
-                .get(&(Rc::as_ptr(block) as usize))
-                .ok_or(DecodeError::CodeNotInTable)?;
-            number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
-            writeback.push((block_index, block.clone()));
-            continue;
-        }
-        // `call_site_mut` is the same variant list `call_site` reads
-        // through everywhere else, so a call-site-carrying instruction this
-        // arm does not know about is not a risk this function can introduce.
-        if let Some(call_site) = instruction.call_site_mut() {
-            if *call_site != CallSite::UNCACHED {
-                *call_site = CallSite { number: *next };
-                *next += 1;
+    // `for_each_emitted_mut` visits every send's call site and every block
+    // in emission order, whichever form each was encoded in -- a wide one's
+    // through `call_site_mut`, the same variant list `call_site` reads for
+    // `family_size_of` -- so no call-site-carrying instruction can go
+    // unnumbered here.
+    code.body_mut().for_each_emitted_mut(|emitted| {
+        match emitted {
+            Emitted::Block(block) => {
+                // Captured before `Rc::make_mut` can move the block to a
+                // fresh allocation: `index_of` was built from the table's
+                // original pointers, and `lexical_parents` already proved
+                // this one names exactly one table entry.
+                let block_index = *index_of
+                    .get(&(Rc::as_ptr(block) as usize))
+                    .ok_or(DecodeError::CodeNotInTable)?;
+                number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
+                writeback.push((block_index, block.clone()));
+            }
+            Emitted::CallSite(call_site) => {
+                if *call_site != CallSite::UNCACHED {
+                    *call_site = CallSite { number: *next };
+                    *next += 1;
+                }
             }
         }
-    }
-    code.family_size = crate::bytecode::family_size_of(&code.instructions);
+        Ok(())
+    })?;
+    code.family_size = crate::bytecode::family_size_of(&code.instructions());
     Ok(())
 }
 
@@ -1484,10 +1490,11 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
             register_count: code.register_count,
         });
     }
-    // The VM fetches `instructions[program_counter]` at the top of the loop and
-    // again after every fall-through, so an empty body -- or one whose last
-    // instruction falls through -- indexes past the end of the vector.
-    match code.instructions.last() {
+    // The VM fetches the instruction at `program_counter` at the top of the
+    // loop and again after every fall-through, so an empty body -- or one
+    // whose last instruction falls through -- indexes past its end.
+    let instructions = code.instructions();
+    match instructions.last() {
         Some(
             Instruction::Return { .. }
             | Instruction::ImplicitReturn { .. }
@@ -1496,7 +1503,7 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
         ) => {}
         _ => return Err(DecodeError::UnterminatedBody),
     }
-    for instruction in &code.instructions {
+    for instruction in &instructions {
         for register in own_registers(instruction) {
             if register >= code.register_count {
                 return Err(DecodeError::RegisterOutOfRange {
@@ -1506,10 +1513,10 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
             }
         }
         if let Some(target) = jump_target(instruction) {
-            if target as usize >= code.instructions.len() {
+            if target as usize >= instructions.len() {
                 return Err(DecodeError::JumpTargetOutOfRange {
                     target,
-                    instructions: code.instructions.len(),
+                    instructions: instructions.len(),
                 });
             }
         }
@@ -1685,7 +1692,7 @@ fn verify_outer_locals(
     index: usize,
     code: &CompiledCode,
 ) -> Result<(), DecodeError> {
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         let (depth, local) = match instruction {
             Instruction::LoadOuterLocal { depth, index, .. }
             | Instruction::StoreOuterLocal { depth, index, .. } => (*depth, *index),
@@ -1791,31 +1798,28 @@ fn decode_code(
     // number once every body in the table is read.
     let uncached = reader.read_boolean()?;
     let instruction_count = reader.read_u32()? as usize;
-    let mut instructions = reserve_for(instruction_count, reader);
+    let mut builder = CodeBuilder::new();
     for _ in 0..instruction_count {
-        instructions.push(decode_instruction(reader, codes, symbols, uncached)?);
+        builder.emit(decode_instruction(reader, codes, symbols, uncached)?);
     }
-    Ok(CompiledCode {
+    // `from_builder` derives `family_size` and `outer_reach` with the
+    // functions the compiler uses. `family_size` is a placeholder, not yet
+    // the real answer: every send here carries a number-shaped stand-in,
+    // not the number `number_call_site_families` will give it, so this
+    // would double-count a non-uncached body's sends as if they were
+    // already dense from 0; it is recomputed there, once the real numbers
+    // exist. `outer_reach`, never on the wire, reads each nested block's
+    // own, which is already filled because post-order puts a block's code
+    // before its parent's.
+    Ok(CompiledCode::from_builder(
         kind,
-        // A placeholder, not yet the real answer: every send here carries a
-        // number-shaped stand-in, not the number `number_call_site_families`
-        // will give it, so this would double-count a non-uncached body's
-        // sends as if they were already dense from 0. Recomputed there, once
-        // the real numbers exist.
-        family_size: crate::bytecode::family_size_of(&instructions),
-        // Not on the wire: derived from the instructions with the same
-        // function the compiler used. It reads each nested block's own
-        // `outer_reach`, which is already filled because post-order puts a
-        // block's code before its parent's.
-        outer_reach: crate::bytecode::outer_reach_of(&instructions),
-        unwind_marker: None,
-        instructions,
+        builder,
         argument_count,
         register_count,
         copied_count,
         statement_program_counter,
         source,
-    })
+    ))
 }
 
 fn decode_registers(reader: &mut Reader) -> Result<Vec<u16>, DecodeError> {
@@ -3773,10 +3777,10 @@ pub fn verify_graph<'gc>(
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
         // that has not run a single instruction yet -- satisfies this.
-        if program_counter >= code.instructions.len() {
+        if program_counter >= code.instruction_count() {
             return Err(DecodeError::ProgramCounterOutOfRange {
                 program_counter,
-                instructions: code.instructions.len(),
+                instructions: code.instruction_count(),
             });
         }
         // An empty register file is what a returning activation that was

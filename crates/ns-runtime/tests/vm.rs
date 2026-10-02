@@ -575,9 +575,9 @@ fn a_vector_round_trips_a_value_through_its_slot() {
         let class = class_reference(mutator, &class);
         // MakeVector r0, size 1; LoadLiteral r1 <- 42; StoreVector r0[0] <- r1;
         // LoadVector r2 <- r0[0]; Return r2  =>  42
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::MakeVector {
                     destination: 0,
                     size: 1,
@@ -598,15 +598,12 @@ fn a_vector_round_trips_a_value_through_its_slot() {
                 },
                 Instruction::Return { register: 2 },
             ],
-            argument_count: 0,
-            register_count: 3,
-            statement_program_counter: vec![(0, 0..5)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            3,
+            0,
+            vec![(0, 0..5)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "compute", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -631,9 +628,9 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         // LoadLiteral r0 <- 7 (not an Array); LoadVector r1 <- r0[0]; Return r1
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 0,
                     literal: Literal::SmallInteger(7),
@@ -645,15 +642,12 @@ fn reading_a_vector_slot_that_is_not_there_is_an_error_not_a_panic() {
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 0,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..3)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -693,9 +687,9 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
         let class = class_reference(mutator, &class);
         // MakeVector r0, size 1 (one slot); LoadVector r1 <- r0[5] (out of
         // range); Return r1
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::MakeVector {
                     destination: 0,
                     size: 1,
@@ -707,15 +701,12 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 0,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..3)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -741,24 +732,21 @@ fn a_vector_index_past_the_arrays_end_is_the_same_error_not_a_panic() {
 /// A block whose body answers `value` and nothing else -- the future's
 /// computation in the tests below.
 fn constant_block(value: i64) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
-        kind: CodeKind::Block,
-        instructions: vec![
+    Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![
             Instruction::LoadLiteral {
                 destination: 0,
                 literal: Literal::SmallInteger(value),
             },
             Instruction::Return { register: 0 },
         ],
-        argument_count: 0,
-        register_count: 1,
-        statement_program_counter: vec![(0, 0..2)],
-        family_size: 0,
-        copied_count: 0,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(0, 0),
-    })
+        0,
+        1,
+        0,
+        vec![(0, 0..2)],
+        Span::new(0, 0),
+    ))
 }
 
 #[test]
@@ -786,9 +774,9 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
         //                                            `reexecute` -- and finds it
         //                                            resolved)
         // Return r3  =>  99
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::MakeClosure {
                     destination: 0,
                     parameters: Rc::new(vec![]),
@@ -813,15 +801,12 @@ fn make_future_load_own_slot_and_resolve_future_run_a_simultaneous_clause_by_han
                 },
                 Instruction::Return { register: 3 },
             ],
-            argument_count: 0,
-            register_count: 4,
-            statement_program_counter: vec![(0, 0..6)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            4,
+            0,
+            vec![(0, 0..6)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -875,9 +860,9 @@ fn resolve_future_answers_a_non_future_value_unchanged() {
         let class = class_reference(mutator, &class);
         // LoadLiteral r0 <- 5 (not a future); ResolveFuture r1 <- r0
         // (answers r0 unchanged, no forcing); Return r1
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 0,
                     literal: Literal::SmallInteger(5),
@@ -888,15 +873,12 @@ fn resolve_future_answers_a_non_future_value_unchanged() {
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 0,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..3)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -921,24 +903,21 @@ fn load_own_slot_answers_nil_for_an_unfilled_slot() {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         // LoadOwnSlot r0 <- own 0 (n, never initialized: nil); Return r0
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadOwnSlot {
                     destination: 0,
                     own_index: 0,
                 },
                 Instruction::Return { register: 0 },
             ],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            1,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -967,9 +946,9 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
         let class = class_reference(mutator, &class);
         // LoadLiteral r0 <- 5 (not a closure); MakeFuture r1 <- future of r0;
         // Return r1
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 0,
                     literal: Literal::SmallInteger(5),
@@ -980,15 +959,12 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 0,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..3)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "bad", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });
@@ -1092,9 +1068,9 @@ fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
         let class = class_reference(mutator, &class);
         // LoadOwnSlot r0 <- own 0 (held, the corrupted future);
         // ResolveFuture r1 <- r0; Return r1
-        let body = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let body = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadOwnSlot {
                     destination: 0,
                     own_index: 0,
@@ -1105,15 +1081,12 @@ fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 0,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..3)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        };
+            0,
+            2,
+            0,
+            vec![(0, 0..3)],
+            Span::new(0, 0),
+        );
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "probe", Rc::new(body));
         install_mixin(mutator, class, doctored);
     });

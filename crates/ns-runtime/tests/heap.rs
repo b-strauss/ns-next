@@ -380,18 +380,15 @@ fn a_class_given_a_new_application_moves_its_live_instances_with_it() {
 
 /// A body that returns its first register; nothing here runs it.
 fn trivial_code() -> std::rc::Rc<CompiledCode> {
-    std::rc::Rc::new(CompiledCode {
-        kind: CodeKind::Method,
-        instructions: vec![Instruction::Return { register: 0 }],
-        argument_count: 1,
-        register_count: 2,
-        statement_program_counter: Vec::new(),
-        family_size: 0,
-        copied_count: 0,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: ns_syntax::Span::new(0, 0),
-    })
+    std::rc::Rc::new(CompiledCode::new(
+        CodeKind::Method,
+        vec![Instruction::Return { register: 0 }],
+        1,
+        2,
+        0,
+        Vec::new(),
+        ns_syntax::Span::new(0, 0),
+    ))
 }
 
 fn activation_header<'gc>() -> ActivationHeader<'gc> {

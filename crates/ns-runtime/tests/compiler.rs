@@ -56,7 +56,7 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
     for method in mixin.compiled_methods() {
         assert_eq!(method.code.kind, CodeKind::Method);
         assert!(matches!(
-            method.code.instructions.last(),
+            method.code.instructions().last(),
             Some(Instruction::Return { .. })
         ));
     }
@@ -66,7 +66,7 @@ fn loading_compiles_every_method_and_the_initializer_onto_the_mixin() {
         .expect("root initializer compiled");
     assert_eq!(initializer.kind, CodeKind::Initializer);
     assert_eq!(
-        initializer.instructions,
+        initializer.instructions(),
         vec![
             Instruction::LoadSelf { destination: 0 },
             Instruction::ImplicitReturn { register: 0 }
@@ -117,7 +117,7 @@ fn the_initializer_lowers_slots_then_initializer_expressions_with_own_slot_indic
         "the factory parameter `a` is the one argument"
     );
     assert_eq!(
-        initializer.instructions,
+        initializer.instructions(),
         vec![
             // `p = a.` -- `a` is register 0, written straight into own
             // slot 0 (the VM adds the activation's slot base at run
@@ -175,7 +175,7 @@ fn an_uninitialized_slot_emits_nothing() {
         .clone()
         .expect("an initializer");
     let initialize_slots: Vec<u32> = initializer
-        .instructions
+        .instructions()
         .iter()
         .filter_map(|instruction| match instruction {
             Instruction::InitializeSlot { own_index, .. } => Some(*own_index),
@@ -268,11 +268,11 @@ ns_runtime::for_each_lowering! {
             .unwrap_or_else(|| panic!("the lazy slot's getter is a compiled method"));
         assert_eq!(getter.fast_path, None);
         assert_eq!(
-            getter.code.instructions.first(),
+            getter.code.instructions().first(),
             Some(&Instruction::ReturnSlotIfFilled { own_index: 1 })
         );
         assert!(
-            getter.code.instructions[1..]
+            getter.code.instructions()[1..]
                 .iter()
                 .all(|instruction| !matches!(instruction, Instruction::ReturnSlotIfFilled { .. })),
             "the test runs once, first"

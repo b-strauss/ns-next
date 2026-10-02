@@ -1164,11 +1164,11 @@ impl InlineCaches {
         // Call-site numbers are dense in emission order across the family,
         // so sorting by number is emission order.
         let mut numbers = Vec::new();
-        let mut pending: Vec<&CompiledCode> = vec![code];
+        let mut pending: Vec<Rc<CompiledCode>> = vec![Rc::clone(code)];
         while let Some(body) = pending.pop() {
-            for instruction in &body.instructions {
+            for instruction in &body.instructions() {
                 if let Instruction::MakeClosure { code: block, .. } = instruction {
-                    pending.push(block);
+                    pending.push(Rc::clone(block));
                 }
                 if let Some(site) = instruction.call_site() {
                     if site != CallSite::UNCACHED && sent_selector(instruction) == Some(sent) {
@@ -1262,18 +1262,19 @@ mod tests {
     use ns_syntax::Span;
 
     fn body(family_size: u32) -> Rc<CompiledCode> {
-        Rc::new(CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![Instruction::Return { register: 0 }],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: vec![],
-            family_size,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        })
+        let mut code = CompiledCode::new(
+            CodeKind::Method,
+            vec![Instruction::Return { register: 0 }],
+            0,
+            1,
+            0,
+            vec![],
+            Span::new(0, 0),
+        );
+        // Only the cache table's arithmetic is under test, so the family
+        // size is set rather than derived from sends.
+        code.family_size = family_size;
+        Rc::new(code)
     }
 
     /// A family gets one contiguous range the first time it is asked for,

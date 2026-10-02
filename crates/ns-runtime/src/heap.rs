@@ -3678,18 +3678,15 @@ mod tests {
 
     /// A body that returns its first register: no test here runs it.
     fn trivial_code() -> std::rc::Rc<crate::bytecode::CompiledCode> {
-        std::rc::Rc::new(crate::bytecode::CompiledCode {
-            kind: crate::bytecode::CodeKind::Method,
-            instructions: vec![crate::bytecode::Instruction::Return { register: 0 }],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: Vec::new(),
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: ns_syntax::Span::new(0, 0),
-        })
+        std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Method,
+            vec![crate::bytecode::Instruction::Return { register: 0 }],
+            0,
+            1,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        ))
     }
 
     #[test]
@@ -4047,20 +4044,15 @@ mod tests {
             heap.allocate_object(
                 class,
                 ObjectData::Closure(ClosureData {
-                    code: std::rc::Rc::new(crate::bytecode::CompiledCode {
-                        kind: crate::bytecode::CodeKind::Block,
-                        instructions: vec![crate::bytecode::Instruction::ImplicitReturn {
-                            register: 0,
-                        }],
-                        argument_count: 0,
-                        register_count: 1,
-                        statement_program_counter: vec![],
-                        family_size: 0,
-                        copied_count: 0,
-                        outer_reach: 0,
-                        unwind_marker: None,
-                        source: ns_syntax::Span::new(0, 0),
-                    }),
+                    code: std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+                        crate::bytecode::CodeKind::Block,
+                        vec![crate::bytecode::Instruction::ImplicitReturn { register: 0 }],
+                        0,
+                        1,
+                        0,
+                        vec![],
+                        ns_syntax::Span::new(0, 0),
+                    )),
                     captured_frame,
                     copied: Box::new([]),
                     feedback_base: FeedbackBase::NOT_ASSIGNED,

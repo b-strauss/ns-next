@@ -448,7 +448,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     let sender = codes
         .iter()
         .find(|code| {
-            code.instructions.iter().any(|instruction| {
+            code.instructions().iter().any(|instruction| {
                 matches!(instruction, Instruction::SendInlinable { selector, .. }
                     if selector.as_str() == "ifTrue:")
             })
@@ -457,7 +457,7 @@ fn crafted_recursion_is_counted(block: &str, sender_reified: bool) {
     assert_eq!(sender.kind, CodeKind::Block, "{block}: sent from the block");
     assert_eq!(
         sender
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::MakeClosure { .. })),
         sender_reified,

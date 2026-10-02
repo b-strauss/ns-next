@@ -436,7 +436,7 @@ fn collect_code(code: &Rc<CompiledCode>, order: &mut Vec<Rc<CompiledCode>>, ids:
     if ids.ids.contains_key(&key) {
         return;
     }
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             collect_code(block, order, ids);
         }
@@ -477,8 +477,8 @@ fn encode_code(
     // of them, and that is a whole-body property the decoder cannot recover
     // from the instructions alone once their numbers are gone.
     writer.write_boolean(compiled_uncached(code));
-    writer.write_u32(u32_field("instruction count", code.instructions.len()));
-    for instruction in &code.instructions {
+    writer.write_u32(u32_field("instruction count", code.instruction_count()));
+    for instruction in &code.instructions() {
         encode_instruction(writer, instruction, ids, symbols);
     }
 }
@@ -490,7 +490,7 @@ fn encode_code(
 /// story; a body with no sends of its own needs no flag, since
 /// `decode_instruction` never reads it without a send to build.
 fn compiled_uncached(code: &CompiledCode) -> bool {
-    code.instructions
+    code.instructions()
         .iter()
         .filter_map(Instruction::call_site)
         .next()
