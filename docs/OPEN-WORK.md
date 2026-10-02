@@ -794,9 +794,6 @@ Small, deliberately left, none affecting an outcome.
   building levels. Removing it is a design point, not a clean-up: the
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
-- `builtins/activation.rs:157`: `activation_leaf` has an `unreachable!` arm;
-  a restart sets the target's program counter twice (`interpreter/unwind.rs`,
-  then `vm.rs`).
 - `tests/image.rs:9463`: `a_level_applying_the_mirrors_or_tops_mixin_is_refused`
   has a stale name.
 - `heap.rs`: accessor names grew by accretion (`class_of_object` beside

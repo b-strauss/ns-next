@@ -2092,7 +2092,12 @@ fn unwind<'gc>(
             UnwindOutcome::Returned { target, value } => {
                 return finish(mutator, target, value, floor, handoff)
             }
-            UnwindOutcome::Restarted { target } => return handoff.switch_to(mutator, target, 0),
+            // Where the target starts again is the unwinder's to decide, and
+            // it stored it; the loop resumes the target there.
+            UnwindOutcome::Restarted { target } => {
+                let program_counter = mutator.heap.activation_program_counter(target);
+                return handoff.switch_to(mutator, target, program_counter);
+            }
             UnwindOutcome::Signalling(next) => next,
             UnwindOutcome::RunBlock { block, then } => {
                 match mutator.start_unwind_block(block, then) {
