@@ -1,6 +1,6 @@
 //! `String` and `Symbol` native methods.
 
-use crate::builtins::collections;
+use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -134,28 +134,38 @@ fn copy_range<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
-    let bound =
-        |argument: Option<&Value<'gc>>| match argument.and_then(|value| value.as_small_integer()) {
-            Some(bound) => Ok(bound),
-            None => Err(collections::not_an_integer(
-                &mutator.heap,
-                &receiver,
-                selector,
-                argument,
-            )),
-        };
+    // A `LargeInteger` bound is past every position, so it takes the error
+    // below, described as it is written.
+    let bound = |argument: Option<&Value<'gc>>| match collections::integer_argument(
+        &mutator.heap,
+        argument,
+    ) {
+        Some(IntegerArgument::Small(bound)) => Ok(Some(bound)),
+        Some(IntegerArgument::Large { .. }) => Ok(None),
+        None => Err(collections::not_an_integer(
+            &mutator.heap,
+            &receiver,
+            selector,
+            argument,
+        )),
+    };
     let start = bound(arguments.first())?;
     let stop = bound(arguments.get(1))?;
-    // `start` is tested first, so that `start - 1` cannot overflow; the
-    // slice refuses a `stop` past the end.
-    let slice = if start >= 1 && stop >= start - 1 {
-        usize::try_from(stop).ok().and_then(|stop| {
-            mutator
-                .heap
-                .string_slice(object, (start - 1) as usize, stop)
-        })
-    } else {
-        None
+    let describe = |bound: Option<i64>, argument: Option<&Value<'gc>>| match bound {
+        Some(number) => number.to_string(),
+        None => mutator.heap.describe_argument(argument),
+    };
+    let slice = match (start, stop) {
+        // `start` is tested first, so that `start - 1` cannot overflow; the
+        // slice refuses a `stop` past the end.
+        (Some(start), Some(stop)) if start >= 1 && stop >= start - 1 => {
+            usize::try_from(stop).ok().and_then(|stop| {
+                mutator
+                    .heap
+                    .string_slice(object, (start - 1) as usize, stop)
+            })
+        }
+        _ => None,
     };
     match slice {
         Some(code_points) => Ok(Value::object(
@@ -165,8 +175,10 @@ fn copy_range<'gc>(
             selector,
             receiver,
             message: format!(
-                "copyFrom: {start} to: {stop} out of range: valid ranges lie within \
-                 1..{size}, an empty range ends just before it starts (size {size})"
+                "copyFrom: {} to: {} out of range: valid ranges lie within \
+                 1..{size}, an empty range ends just before it starts (size {size})",
+                describe(start, arguments.first()),
+                describe(stop, arguments.get(1)),
             ),
         }),
     }
@@ -190,8 +202,8 @@ pub(crate) fn execute_string<'gc>(
         StringPrimitive::FromCodePoint => None,
         // Array's errors, so that a program sees one text from either.
         StringPrimitive::ElementAt => Some(
-            match arguments.first().and_then(|value| value.as_small_integer()) {
-                Some(index) => {
+            match collections::integer_argument(&mutator.heap, arguments.first()) {
+                Some(IntegerArgument::Small(index)) => {
                     match usize::try_from(index)
                         .ok()
                         .and_then(|index| index.checked_sub(1))
@@ -201,6 +213,12 @@ pub(crate) fn execute_string<'gc>(
                         None => Err(collections::out_of_range(&receiver, selector, index, size)),
                     }
                 }
+                Some(IntegerArgument::Large { .. }) => Err(collections::out_of_range(
+                    &receiver,
+                    selector,
+                    mutator.heap.describe_argument(arguments.first()),
+                    size,
+                )),
                 None => Err(collections::not_an_integer(
                     &mutator.heap,
                     &receiver,

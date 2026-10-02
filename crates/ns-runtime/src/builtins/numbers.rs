@@ -36,6 +36,7 @@
 
 use std::cmp::Ordering;
 
+use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::primitive::{
     FloatPrimitive, IntegerPrimitive, LargeIntegerPrimitive, Primitive,
 };
@@ -739,20 +740,29 @@ pub(crate) fn execute_float<'gc>(
             mutator.new_string(receiver_float.to_string()),
         ))),
         FloatPrimitive::AsStringFixed => Some(
-            match arguments.first().and_then(|value| value.as_small_integer()) {
-                Some(count) if (0..=20).contains(&count) => Ok(Value::object(
-                    mutator.new_string(fixed_text(receiver_float, count as usize)),
-                )),
+            match collections::integer_argument(&mutator.heap, arguments.first()) {
+                Some(IntegerArgument::Small(count)) if (0..=20).contains(&count) => Ok(
+                    Value::object(mutator.new_string(fixed_text(receiver_float, count as usize))),
+                ),
                 // The 20 is Primordial Soup's own wrapper, not double-conversion's
                 // (which allows 100): its `DoubleToCStringAsFixed` fixes 20 digits
                 // either side of the point to size its buffer, so its primitive
                 // fails outside 0 to 20 and its method raises.
-                Some(count) => Err(NewspeakError {
+                Some(IntegerArgument::Small(count)) => Err(NewspeakError {
                     selector: Symbol::intern("asStringFixed:"),
                     receiver,
                     message: format!("asStringFixed: takes 0 to 20 fraction digits, got {count}"),
                 }),
-                _ => Err(mismatch("asStringFixed:")),
+                // A `LargeInteger` is past 20 as surely as a `SmallInteger` is.
+                Some(IntegerArgument::Large { .. }) => Err(NewspeakError {
+                    selector: Symbol::intern("asStringFixed:"),
+                    receiver,
+                    message: format!(
+                        "asStringFixed: takes 0 to 20 fraction digits, got {}",
+                        mutator.heap.describe_argument(arguments.first())
+                    ),
+                }),
+                None => Err(mismatch("asStringFixed:")),
             },
         ),
     }

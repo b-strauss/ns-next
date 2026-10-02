@@ -45,6 +45,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::primitive::{Primitive, ValuePrimitive};
 use crate::builtins::{numbers, text};
 use crate::dispatch::{self, Lookup};
@@ -108,9 +109,12 @@ pub(crate) fn execute<'gc>(
             // copying the list out: the declared slots and the fields
             // differ as soon as a level declares a nested class, and the
             // leaf must answer the same slot the walks compare.
+            let index = collections::integer_argument(&mutator.heap, arguments.first());
             let (count, field) = with_declared_slots(mutator, receiver, |declared| {
-                let field = match arguments.first().and_then(|value| value.as_small_integer()) {
-                    Some(index) if index >= 1 => declared.get((index as usize) - 1).copied(),
+                let field = match index {
+                    Some(IntegerArgument::Small(index)) if index >= 1 => {
+                        declared.get((index as usize) - 1).copied()
+                    }
                     _ => None,
                 };
                 (declared.len(), field)
@@ -120,26 +124,26 @@ pub(crate) fn execute<'gc>(
                 // shape this leaf does not serve, so it is an ordinary
                 // Newspeak error in the words `Array>>at:` already uses --
                 // never a decline, which would answer the `ifFail:` block
-                // and hide it.
-                return Some(Err(
-                    match arguments.first().and_then(|value| value.as_small_integer()) {
-                        Some(index) => NewspeakError {
-                            selector,
-                            receiver,
-                            message: format!(
-                                "index {index} out of range: valid indices are 1..{count} (size {count})"
-                            ),
-                        },
-                        None => NewspeakError {
-                            selector,
-                            receiver,
-                            message: format!(
-                                "{selector} requires an Integer index, got {}",
-                                mutator.heap.describe_argument(arguments.first())
-                            ),
-                        },
+                // and hide it. A `LargeInteger` index is outside it too.
+                return Some(Err(match index {
+                    Some(IntegerArgument::Small(index)) => {
+                        collections::out_of_range(&receiver, selector, index, count)
+                    }
+                    Some(IntegerArgument::Large { .. }) => collections::out_of_range(
+                        &receiver,
+                        selector,
+                        mutator.heap.describe_argument(arguments.first()),
+                        count,
+                    ),
+                    None => NewspeakError {
+                        selector,
+                        receiver,
+                        message: format!(
+                            "{selector} requires an Integer index, got {}",
+                            mutator.heap.describe_argument(arguments.first())
+                        ),
                     },
-                ));
+                }));
             };
             Some(Ok(mutator
                 .heap
@@ -1919,6 +1923,27 @@ mod tests {
                     assert!(error.message.contains("out of range"), "{}", error.message);
                 }
                 _ => panic!("slotAt: {index} must raise an error, not answer"),
+            }
+        }
+        // A LargeInteger is an Integer no slot index reaches: out of range,
+        // not "no Integer".
+        for negative in [false, true] {
+            let argument = interpreter.enter(|mutator| {
+                let integer = crate::ArbitraryInteger::from_parts(negative, vec![0, 1]);
+                let value = mutator.new_integer(integer);
+                mutator.stash(value)
+            });
+            match leaf(&mut interpreter, "value:slotAt:ifFail:", &pair, &[argument]) {
+                Err(HostSignal::Error(error)) => {
+                    let sign = if negative { "-" } else { "" };
+                    assert_eq!(
+                        error.message,
+                        format!(
+                            "index {sign}18446744073709551616 out of range: valid indices are 1..2 (size 2)"
+                        )
+                    );
+                }
+                _ => panic!("slotAt: with a LargeInteger must raise an error, not answer"),
             }
         }
         let text = a_string(&mut interpreter, "abc");

@@ -8,10 +8,33 @@ use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
+/// An index, size or count argument as a leaf reads it. A `LargeInteger`
+/// is an Integer that no index, size or count can reach, so a leaf refuses
+/// it in the words it refuses an out-of-range `SmallInteger`, never as
+/// something that is no Integer.
+pub(crate) enum IntegerArgument {
+    Small(i64),
+    Large { negative: bool },
+}
+
+pub(crate) fn integer_argument<'gc>(
+    heap: &Heap<'gc>,
+    argument: Option<&Value<'gc>>,
+) -> Option<IntegerArgument> {
+    let argument = *argument?;
+    if let Some(number) = argument.as_small_integer() {
+        return Some(IntegerArgument::Small(number));
+    }
+    let integer = heap.large_integer(argument.as_object()?)?;
+    Some(IntegerArgument::Large {
+        negative: integer.is_negative(),
+    })
+}
+
 pub(crate) fn out_of_range<'gc>(
     receiver: &Value<'gc>,
     selector: Symbol,
-    index: i64,
+    index: impl std::fmt::Display,
     length: usize,
 ) -> NewspeakError<'gc> {
     NewspeakError {
@@ -60,26 +83,30 @@ fn element_at<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let length = mutator.heap.array_length(object)?;
-    Some(
-        match arguments.first().and_then(|value| value.as_small_integer()) {
-            Some(index) => {
-                if index >= 1 && (index as usize) <= length {
-                    Ok(mutator
-                        .heap
-                        .array_at(object, (index as usize) - 1)
-                        .unwrap_or(Value::nil()))
-                } else {
-                    Err(out_of_range(&receiver, selector, index, length))
-                }
+    Some(match integer_argument(&mutator.heap, arguments.first()) {
+        Some(IntegerArgument::Small(index)) => {
+            if index >= 1 && (index as usize) <= length {
+                Ok(mutator
+                    .heap
+                    .array_at(object, (index as usize) - 1)
+                    .unwrap_or(Value::nil()))
+            } else {
+                Err(out_of_range(&receiver, selector, index, length))
             }
-            None => Err(not_an_integer(
-                &mutator.heap,
-                &receiver,
-                selector,
-                arguments.first(),
-            )),
-        },
-    )
+        }
+        Some(IntegerArgument::Large { .. }) => Err(out_of_range(
+            &receiver,
+            selector,
+            mutator.heap.describe_argument(arguments.first()),
+            length,
+        )),
+        None => Err(not_an_integer(
+            &mutator.heap,
+            &receiver,
+            selector,
+            arguments.first(),
+        )),
+    })
 }
 
 /// `at:put:`.
@@ -91,13 +118,24 @@ fn element_at_put<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
     let length = mutator.heap.array_length(object)?;
-    let Some(index) = arguments.first().and_then(|value| value.as_small_integer()) else {
-        return Some(Err(not_an_integer(
-            &mutator.heap,
-            &receiver,
-            selector,
-            arguments.first(),
-        )));
+    let index = match integer_argument(&mutator.heap, arguments.first()) {
+        Some(IntegerArgument::Small(index)) => index,
+        Some(IntegerArgument::Large { .. }) => {
+            return Some(Err(out_of_range(
+                &receiver,
+                selector,
+                mutator.heap.describe_argument(arguments.first()),
+                length,
+            )));
+        }
+        None => {
+            return Some(Err(not_an_integer(
+                &mutator.heap,
+                &receiver,
+                selector,
+                arguments.first(),
+            )));
+        }
     };
     if index < 1 || (index as usize) > length {
         return Some(Err(out_of_range(&receiver, selector, index, length)));
@@ -128,11 +166,22 @@ fn allocate<'gc>(
         receiver,
         message,
     };
-    let Some(size) = arguments.first().and_then(|value| value.as_small_integer()) else {
-        return Some(Err(refusal(format!(
-            "{selector} requires an Integer size, got {}",
-            mutator.heap.describe_argument(arguments.first())
-        ))));
+    let size = match integer_argument(&mutator.heap, arguments.first()) {
+        Some(IntegerArgument::Small(size)) => size,
+        Some(IntegerArgument::Large { negative }) => {
+            let described = mutator.heap.describe_argument(arguments.first());
+            return Some(Err(refusal(if negative {
+                format!("{selector} requires a size of at least 0, got {described}")
+            } else {
+                format!("{selector} cannot allocate an Array of {described} elements")
+            })));
+        }
+        None => {
+            return Some(Err(refusal(format!(
+                "{selector} requires an Integer size, got {}",
+                mutator.heap.describe_argument(arguments.first())
+            ))));
+        }
     };
     if size < 0 {
         return Some(Err(refusal(format!(
