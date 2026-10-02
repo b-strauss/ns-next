@@ -15,9 +15,11 @@ Rust 1.98.0, edition 2021, five crates:
   `interpreter/core_library.rs`), `LargeInteger` arithmetic (`arbitrary_integer/`,
   adapted from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of
   32-bit handles, an activation stack reified on demand, a mark-compact
-  collector run only at run-loop safepoints; the step state `Mutator` in
-  `interpreter/mod.rs`, held at rest by `World` in `heap/world.rs` and reached
-  only through `Interpreter::enter`) and the image format (`image/`).
+  collector run only at run-loop safepoints; `heap/value.rs`, a value as one
+  tagged word, Spur's, and `Word`, the bare word a heap object stores; the
+  step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
+  `heap/world.rs` and reached only through `Interpreter::enter`) and the image
+  format (`image/`).
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
@@ -94,9 +96,9 @@ process: validate every id, tag, count and length before it indexes, allocates o
 slices; bound any recursion the input controls; never add a pre-allocation not
 bounded by `bounded_count`. `image::load` verifies structure and reconciles
 mixins before any decoded code runs (`image-format.md`, "Verification"). The
-transient peak of a rejected load is about 16.4x the graph section's bytes in a
-release build, 21.0x with `LargeInteger`s (debug 20.4x and 26.2x; `memory.md`
-has the breakdown and what is not counted). The guarantee covers decoding only:
+transient peak of a rejected load is about 16.0x the graph section's bytes in a
+release build, 23.1x with the integers and floats it allocates (debug 20.0x and
+28.9x; `memory.md` has the breakdown and what is not counted). The guarantee covers decoding only:
 `ns-next load` runs the packaged application's code, recursion bounded by the
 100,000-activation depth limit plus its 1,000 reserve (`execution.md`, "The
 depth limit"), and an image that names platform paths first follows them
@@ -114,15 +116,15 @@ different, valid object in another heap. Reach the real `Heap` (a `&Heap`
 parameter, or read through `interpreter.enter` while it lives, as `disasm` does).
 A host keeps a value across a run only as a `Root`. The debug-only origin guard,
 move epochs and the stress modes catch mistakes; a release build does not. A new
-field holding a handle needs its `Trace` impl (`memory.md`, "A handle is
-arena-relative", "The move stress mode").
+field holding a handle or a stored `Word` needs its `Trace` impl (`memory.md`, "A
+handle is arena-relative", "The move stress mode").
 
 **The brand is the compiler's, and needs no cast.** `World::enter` hands the
 `Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
-to change a handle's brand (`heap.rs`'s private `at_rest`/`branded` are the only
-conversions; there is no `unbind`), and never give `Mutator` a way to reach the
-`Interpreter`. Three `compile_fail` doctests on `Interpreter::enter` pin it
-(`memory.md`, "The brand").
+to change a handle's brand (`heap::value`'s `pub(super)` `at_rest`/`branded` are
+the only conversions; there is no `unbind`), and never give `Mutator` a way to
+reach the `Interpreter`. Three `compile_fail` doctests on `Interpreter::enter`
+pin it (`memory.md`, "The brand").
 
 **A running activation is an `ActivationReference`; only a `FrameReference` is
 ever stored.** An activation's index is reused after its pop; `ClosureData`,
@@ -298,6 +300,6 @@ and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
   lines, no more. It names no other implementation. A comment that explains a
   decision, as the rule above asks, goes after it.
 - **Object, frame and activation access goes through
-  `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to it;
-  add a missing accessor there. Accessors copy out rather than lend out
+  `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to it
+  and its submodule `heap/value.rs`; add a missing accessor there. Accessors copy out rather than lend out
   (`memory.md`, "The seam").

@@ -99,7 +99,7 @@ activation from the block's own `outer_reach` ("Pop" below).
 ```rust
 // heap.rs -- every field private to the module
 struct ActivationStack {
-    values:  Vec<Value>,       // every live activation's registers, contiguously
+    values:  Vec<Word>,        // every live activation's registers, contiguously, as stored words
     entries: Vec<StackEntry>,  // one per live activation, innermost last
     counted: usize,            // how many entries count against the depth limit
 }
@@ -2877,7 +2877,7 @@ The compiler now recognizes the nine binary integer primitives
 (`+ - * // < > <= >= =`) at an ordinary explicit-receiver send and emits
 `Instruction::IntegerBinary` instead of a send, with the send kept as the
 fallback the instruction jumps to when either operand is not a
-`Value::SmallInteger` or the `checked_*` operation declines
+`SmallInteger` or the operation declines
 ([compiler.md](compiler.md), "Arithmetic inlining"). This is the step
 [core-library.md](core-library.md) sequences ahead of the move to a VM
 mirror: once every builtin method is Newspeak over a mirror, a leaf send
@@ -3932,9 +3932,10 @@ sites, and the literal `vm::make_value` answers. `decide_slot_accessor`
 stalls the same way inside (another quarter of the samples, most of them on
 two instructions), and so does `push_activation` on the activation
 description `push_step` writes as a doubleword and a quadword and reads as
-one 16-byte field. None of them moved with this branch. Handing a `Value`
-back in a form that is written the way it is read is an open performance
-item, not part of this measurement. This profile predates `1d7587f` (below,
+one 16-byte field. None of them moved with this branch. A value handed
+back in a form that is written the way it is read is what the one-word value
+gives ([object-model.md](object-model.md), "Values and objects"; "What the
+eight-byte value moved"). This profile predates `1d7587f` (below,
 "What exceptions cost"), which moved `decide_slot_accessor`'s error out of
 line and with it the spill inside the accessor; the shares above have not
 been profiled again since.
@@ -4730,12 +4731,13 @@ cost is not where the dispatch is:
 A decision that is a `Step::Value` must not pass through a joined stack
 slot, and must not reach `Step`'s drop glue. Delivering it where it is
 decided was tried and halted ("A send's value delivered where it is decided:
-tried and halted" below): the stall belongs to the 16-byte `Value` itself,
-which "Planned: an eight-byte value" ([object-model.md](object-model.md))
-removes. The dispatch findings -- the spilled `program_counter` and code
-pointer, the discriminant decoded through a niche -- are the input of
-"Planned: the compact instruction encoding" below. Until both land, an
-instruction arm is not free.
+tried and halted" below): the stall belonged to the 16-byte enum `Value`
+itself, and a value is now one tagged word, read and written whole
+([object-model.md](object-model.md), "Values and objects"); what that moved
+is "What the eight-byte value moved". The dispatch findings -- the spilled
+`program_counter` and code pointer, the discriminant decoded through a
+niche -- are the input of "Planned: the compact instruction encoding"
+below. Until it lands, an instruction arm is not free.
 
 ## The trampoline
 
@@ -5441,7 +5443,7 @@ file writes nothing above it.
 
 **`ClosureData` is 32 bytes**, so that an `Object` stays at 56 in a
 release build (`heap.rs`'s pinned size, the figure `CLAUDE.md`'s amplification
-paragraph is computed from). It carries `copied: Box<[Value]>` (16 bytes; an
+paragraph is computed from). It carries `copied: Box<[Word]>` (16 bytes; an
 empty one allocates nothing) in place of two fields that duplicated something
 already held: `parameters`, whose only use was its length, which the block
 code's `argument_count` already is, and which `Heap::closure_parameter_count`
@@ -5797,11 +5799,11 @@ the sending instruction's destination register and answer one byte, handing
 over only an activation or a signal whole, instead of coming back to the
 loop as a `Result<Step, Signal>`. It came from the profile in "What the loop
 over locals moved", "Where the 3% goes": the joined `Result<Step, Signal>`
-slot costs a store-forwarding stall on every send (28% of `vm::run`'s
+slot cost a store-forwarding stall on every send (28% of `vm::run`'s
 samples on `bench_loop.ns`) and a call of `Step`'s drop glue (4.7%), and it
-is where one more instruction arm moves the timing. What addresses that
-stall is the eight-byte value ([object-model.md](object-model.md),
-"Planned: an eight-byte value"); this section records the design and the
+was where one more instruction arm moved the timing. What addressed that
+stall is the one-word value ([object-model.md](object-model.md),
+"Values and objects"); this section records the design and the
 experiment that decided against it.
 
 **Prior art.** Primordial Soup's primitives push their result onto the
@@ -5849,23 +5851,23 @@ instructions and its frame from 0x3E8 to 0x7D8 bytes, with
 `Heap::instance_field` and `set_instance_field` left out of line (13.8% of
 samples) and `LoadLiteral`'s own stall (through `make_value`, 12.3% of
 `vm::run` on `master`, 18.6% after) untouched. What the experiment showed
-beyond the send path: LLVM copies a `Value` as its tag byte and two
-overlapping quadwords, so **any** `Value` that passes through a memory
-temporary stalls, and a sink helps only where delivery is inlined all the
+beyond the send path: LLVM copied the 16-byte enum `Value` as its tag byte and two
+overlapping quadwords, so **any** such `Value` that passed through a memory
+temporary stalled, and a sink helped only where delivery is inlined all the
 way to the register write. The user halted the plan there (2026-09-28): the
-stall is a property of the 16-byte `Value`, which "Planned: an eight-byte
-value" ([object-model.md](object-model.md)) removes everywhere. A revisit,
-should one be wanted after that, starts from the forced-inline variant's
-numbers above.
+stall is a property of a 16-byte enum `Value`, and the one-word value
+([object-model.md](object-model.md), "Values and objects") removes it
+everywhere. A revisit, should one be wanted, starts from the forced-inline
+variant's numbers above.
 
 ## Planned: the compact instruction encoding
 
 Would change: `Instruction`, today a Rust enum the run loop matches on, gets
 an encoding designed for dispatch. Not designed yet. It comes after the
-eight-byte value ([object-model.md](object-model.md), "Planned: an eight-byte
-value") and before the object space ([memory.md](memory.md), "Planned: the
-object space"), so that it is designed against the value representation the
-loop will actually move, and the interpreter stays the first tier in front of
+eight-byte value, which is built ([object-model.md](object-model.md), "Values
+and objects"), and before the object space ([memory.md](memory.md), "Planned:
+the object space"), so that it is designed against the value representation
+the loop actually moves -- one tagged word -- and the interpreter stays the first tier in front of
 the JIT, as Cog's does. Its inputs are the dispatch findings of "Where the 3%
 goes" above: every dispatch decodes `Instruction`'s discriminant through a
 niche before its jump, and `vm::run` is large enough that `program_counter`
@@ -5874,9 +5876,10 @@ how Primordial Soup, Strongtalk and Cog encode their instructions; SOMns,
 an AST interpreter on Truffle, has no instruction encoding to compare. One
 more input: an integer literal beyond the immediate range keeps its digits
 in Rust-side literal data (`Literal::LargeInteger`) and `LoadLiteral`
-allocates its `LargeInteger` when it runs, which under the eight-byte value
-is every literal beyond 61 bits ([object-model.md](object-model.md),
-"Planned: an eight-byte value", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
+allocates its `LargeInteger` when it runs, which is every literal beyond 61
+bits, and a float literal outside the `SmallFloat64` range allocates its
+boxed `Float` the same way ([object-model.md](object-model.md), "Values and
+objects", "Literals"). Wire tags follow `CLAUDE.md`'s rule: a changed instruction takes a new tag,
 and a removed one retires its number.
 
 ## Planned: tail calls, skipped but kept

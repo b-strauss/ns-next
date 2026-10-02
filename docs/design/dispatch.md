@@ -885,9 +885,11 @@ changes a header, so `Heap::dispatch_id(value)` answers
 an object's in one arena load, and a guard is that load and one compare, for
 instances and class objects alike. It is where V8 (the map), HotSpot (the
 klass pointer), Cog (the class index) and Primordial Soup (the class id) keep
-their answer. For `nil`, a boolean, an integer or a float it is a table
-indexed by the `Value` variant, which the bootstrap fills from the builtin
-classes. The header's four bytes are paid for by boxing a class object's
+their answer. For an immediate -- `nil`, a boolean, a `SmallInteger` or a
+`SmallFloat64` -- it is a table indexed by the word's tag, and for the
+constant tag by the constant (the heap's `immediate_dispatch_ids`), which the
+bootstrap fills from the builtin classes; a boxed `Float` or a
+`LargeInteger` is an object and carries its own. The header's four bytes are paid for by boxing a class object's
 data, `ObjectData::Class(Box<ClassData>)`, so an `Object` is still 56 bytes
 in a release build, the size `CLAUDE.md`'s amplification figure assumes,
 which a release-build test pins ([memory.md](memory.md)). It is 56 rather

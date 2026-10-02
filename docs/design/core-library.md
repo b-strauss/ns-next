@@ -684,8 +684,9 @@ transcript's does not.
 
 **The clock's origin is per process.** The leaf answers nanoseconds since an
 `Instant` taken on the first reading in the process, shared by every
-interpreter in it, so two interpreters' stopwatches agree; an `i64` holds
-292 years of nanoseconds, and the conversion saturates rather than wraps.
+interpreter in it, so two interpreters' stopwatches agree; a `SmallInteger`
+holds 36 years of nanoseconds, and a longer reading is a `LargeInteger`, the
+`u128` converted whole rather than saturated.
 Primordial Soup's primitive reads the operating system's monotonic clock,
 whose origin is per boot. So a **started stopwatch does not survive a
 snapshot into another process**: loaded into a fresh process, its start
@@ -806,13 +807,13 @@ stay off the whitelist.
 §5.1.1: "*Note that integers are not limited in size*", and it puts no bound
 on the *n* in the digit sum it defines a literal by. So an `Integer` is
 unbounded, and **every integer has exactly one representation**: a
-`SmallInteger` (`Value::SmallInteger(i64)`, class `Integer`) when it fits
-`i64`, a `LargeInteger` object otherwise. `Mutator::new_integer` is the only
-way to make a `Value` from an `ArbitraryInteger`, and it decides which, so
-every leaf, which answers through it, answers an immediate again once a
-result fits. The eight-byte value (road step 2's second plan,
-[object-model.md](object-model.md), "Planned: an eight-byte value") moves the
-boundary from 64 bits to 61; the rule stays.
+`SmallInteger` (an immediate of the tagged word, class `Integer`) when it
+fits 61 bits, `SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX` (-2^60 to
+2^60 - 1), a `LargeInteger` object otherwise. 61 bits are what the word
+leaves beside its tag ([object-model.md](object-model.md), "Values and
+objects"). `Mutator::new_integer` is the only way to make a `Value` from an
+`ArbitraryInteger`, and it decides which, so every leaf, which answers
+through it, answers an immediate again once a result fits.
 
 **The class.** `LargeInteger` is a kernel class, a subclass of `Integer`,
 which stays the class of the immediate integers: §5.1.1 asks only that an
@@ -837,11 +838,13 @@ to `Object`'s methods
 `printString` and `asString` to twenty rows of its own, the `largeInteger:`
 rows of `MIRROR` (`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep
 their immediate path and promote where it has no answer: a sum, difference
-or product that does not fit `i64` is recomputed in `i128`, where two
-`i64`s' always fits, and `i64::MIN // -1`, `i64::MIN negated` and
-`i64::MIN abs` answer `2^63`. The inlined `IntegerBinary` never allocates:
-it declines a result that does not fit and falls back to the send, whose
-leaf promotes ([compiler.md](compiler.md), "Arithmetic inlining";
+or product that does not fit 61 bits is recomputed in `i128`, where two
+`SmallInteger`s' always fits, and `SMALL_INTEGER_MIN // -1`,
+`SMALL_INTEGER_MIN negated` and `SMALL_INTEGER_MIN abs` answer `2^60`. The
+sum, difference, product and comparisons work on the tagged words
+([object-model.md](object-model.md), "Values and objects"). The inlined
+`IntegerBinary` never allocates: it declines a result that does not fit and
+falls back to the send, whose leaf promotes ([compiler.md](compiler.md), "Arithmetic inlining";
 `goldens/library/number/large-integer/an_overflowing_integer_operation_answers_a_large_integer.ns`).
 Both classes' arithmetic and ordering accept an argument of either integer
 class (`integer_operand`), so `5 + big` and `big + 5` both answer
@@ -861,6 +864,15 @@ integer has no `/`" below). `//` and `\\` by zero raise "division by zero"
 from either class's leaf
 (`goldens/library/number/large-integer/large_integer_floor_division_by_zero_is_uncaught.ns`,
 `goldens/library/number/integer/floor_modulo_by_zero_is_uncaught.ns`).
+
+**An index, size or count that is a `LargeInteger` is out of range, not of
+the wrong class.** It is still an `Integer`, and no index, size or count
+reaches one, so `at:`, `at:put:`, `Array new:`, `String`'s `at:`,
+`copyFrom:to:`, `Value`'s `slotAt:` and `asStringFixed:` refuse it in the
+words they use for a `SmallInteger` out of range -- "index
+18446744073709551616 out of range: valid indices are 1..3 (size 3)", "new:
+cannot allocate an Array of … elements" -- never with a type mismatch
+(`goldens/library/collection/an_index_or_size_past_every_small_integer_is_out_of_range.ns`).
 
 **`//` rounds toward negative infinity**, so `7 // -2` and `-7 // 2` are
 both `-4`: Primordial Soup's `Integer>>//`, commented "Integer division,
@@ -902,7 +914,7 @@ operation, checked against `i128` and by
 
 **`<<` shifts the magnitude and keeps the sign**, which is exact for a
 negative receiver: `-9223372036854775808 << 1` is `-18446744073709551616`,
-and `-1 << 63` is exactly `i64::MIN`, still an `Integer`
+and `-1 << 63` is exactly `-2^63`, beyond 61 bits and so a `LargeInteger`
 (`goldens/library/number/integer/shift_left_widens_into_a_large_integer.ns`). A negative
 count raises an error that says the count must be non-negative. A result
 whose digits cannot be reserved raises "cannot allocate" rather than
@@ -1042,9 +1054,8 @@ program sends it, by the on-demand rule): `Number>>isNaN` answers `false`,
 so every integer answers it without a method of its own, and `Float`
 overrides it with a leaf over `f64::is_nan`. A NaN stays an ordinary
 `Float`; a class of its own was considered and set aside:
-- a `Float` is an unboxed `Value::Float`, whose class follows from its
-  representation, so a NaN class would make the class of every float depend
-  on its bits;
+- a `Float` is one class whether it is an immediate or boxed, and a NaN
+  class would make the class of every float depend on its bits;
 - every send site that computes with floats would then see two classes, and
   its inline cache would turn polymorphic for all float arithmetic, not
   only for NaN;
@@ -1056,8 +1067,10 @@ overrides it with a leaf over `f64::is_nan`. A NaN stays an ordinary
 
 Spur's `SmallFloat64` and `BoxedFloat64`, where NaN and the infinities are
 boxed because they fall outside the immediate exponent range, split `Float`
-by representation, not by meaning; the eight-byte value (road step 2) may
-bring that split here too, with one `isNaN` test shared by both.
+by representation, not by meaning. ns-next boxes the same floats and keeps
+one class, `Float`, for both representations
+([object-model.md](object-model.md), "Values and objects"), so one `isNaN`
+test serves both.
 
 ## Gap: an integer has no `/`
 

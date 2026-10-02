@@ -3,9 +3,11 @@
 > **Status:** built. One artifact: an application assembled from one source
 > file or a project of several modules, packaged just before `main:args:`,
 > round-trips through `build` and `load` and can be inspected without being
-> loaded. **Planned:** the decoder builds the planned eight-byte values and
-> variably sized objects from a wire format that stays id-based ("Planned:
-> the image under the new representation"); and suspend and resume.
+> loaded. The decoder decides from the value alone whether an integer or a
+> float loads as an immediate or as an object ("Integers and floats on the
+> wire"). **Planned:** the decoder builds variably sized objects from a wire
+> format that stays id-based ("Planned: the image under the new
+> representation"); and suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
 > `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
@@ -424,6 +426,26 @@ the same at any length
 (`inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal`,
 `crates/ns-runtime/tests/image.rs`).
 
+**Integers and floats on the wire** are independent of where a
+`SmallInteger` ends or which floats are immediate, so an artifact does not
+depend on the value representation. An integer that fits `i64` is written as
+an `i64`, `VALUE_SMALL_INTEGER` or `LITERAL_SMALL_INTEGER`, whichever
+representation it has in memory, and every other one as value tag 9 or
+literal tag 10; `read_large_integer` still refuses a payload that fits
+`i64`. The decoder decides by the 61-bit range: an `i64` within it loads as
+a `SmallInteger` (`Literal::SmallInteger`), and one beyond it as a
+`LargeInteger` (`Literal::LargeInteger`), so an integer between 2^60 and
+2^63 travels as an `i64` and loads as a `LargeInteger`
+(`a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer`).
+A float, immediate or boxed, is `VALUE_FLOAT` and an `f64`, with no record,
+since a boxed `Float` is a value with no identity; the decoder answers an
+immediate `SmallFloat64` or a boxed `Float` through `Mutator::new_float`,
+from the value alone (`a_boxed_float_value_round_trips_without_a_record`).
+Neither needs a tag of its own. A decoded integer beyond 61 bits and a decoded
+boxed float allocate, and add to a failed load's peak
+([memory.md](memory.md), "The interim cost, and the one question still
+open").
+
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids
 of its nested declarations with their accessor names and accessibility, the
@@ -498,10 +520,11 @@ is one level deep. The encoder refuses a class record whose class object has no
 metaclass rather than write a header the decoder could not pair. A metaclass
 record is a record like any other — no shorter than the minimum record, one
 placeholder in the first pass — so it adds nothing to the decode
-amplification, whose placeholders come to about 16.4x of the bytes left at
-the graph section in a release build and whose decoded `LargeInteger`
-values bring it to about 21.0x ([memory.md](memory.md), "The interim cost,
-and the one question still open"); a tag-named metaclass is no record at all
+amplification, whose placeholders come to about 16.0x of the bytes left at
+the graph section in a release build and whose decoded values that allocate
+-- the worst an `i64` beyond 61 bits, a `LargeInteger` for 9 bytes -- bring
+it to about 23.1x ([memory.md](memory.md), "The interim cost, and the one
+question still open"); a tag-named metaclass is no record at all
 and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
@@ -1376,24 +1399,18 @@ and hash tags, `FLAG_START` and the retired tags and flag
 
 ## Planned: the image under the new representation
 
-Would change: the decoder builds the planned representation -- eight-byte
-values and one space of variably sized objects ([object-model.md](object-model.md),
-"Planned: an eight-byte value", "Planned: the object layout";
-[memory.md](memory.md), "Planned: the object space") -- from a wire format that stays id-based. Nothing on the wire becomes an address or an offset, so an
+Would change: the decoder builds the planned representation -- one space of
+variably sized objects ([object-model.md](object-model.md), "Planned: the
+object layout"; [memory.md](memory.md), "Planned: the object space") -- from
+a wire format that stays id-based, as the one-word value already is
+("Integers and floats on the wire" above). Nothing on the wire becomes an address or an offset, so an
 artifact stays independent of word size and layout, as Primordial Soup's
 snapshots are (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image,
 which is old space's bytes relocated on load, is the model this does not take.
 
-- **Integers.** The wire stays as it is: `VALUE_SMALL_INTEGER` carries an
-  `i64`, and an integer beyond it travels as value tag 9 or literal tag 10
-  ("A `LargeInteger` is a value on the wire, never a record" above). What
-  changes is the decoder's answer: a `SmallInteger` when the value fits 61
-  bits and a `LargeInteger` otherwise, so an `i64` between 2^60 and 2^63
-  decodes to a `LargeInteger`, and in the object space a negative
-  `LargeInteger` sets the header's negative bit.
-- **Floats** stay `VALUE_FLOAT`, an `f64` on the wire, and the decoder answers
-  an immediate SmallFloat64 or a boxed `Float` from the value alone. A boxed
-  `Float` is a value with no identity, so it needs no record of its own.
+- **Integers and floats** keep their wire form. In the object space a
+  decoded negative `LargeInteger` sets the header's negative bit, and a
+  boxed `Float` is an object of a header, a class word and its `f64`.
 - **Symbols** stay UTF-8 on the wire, as strings do; the decoder picks a
   symbol's one-byte or four-byte form from the code points it reads, as it
   already does a string's, and both become byte- or 32-bit-indexed objects

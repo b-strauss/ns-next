@@ -15,17 +15,23 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: road step 2's second plan, the eight-byte value**
-([object-model.md](design/object-model.md), "Planned: an eight-byte value"):
-one tagged 64-bit word with a 61-bit `SmallInteger`, on today's arena. Its
-first plan, large integers, is built ("Large integers" below;
-[core-library.md](design/core-library.md), "Large integers"), so the word
-moves the `SmallInteger`/`LargeInteger` boundary rather than introducing it.
-It is measured against the baseline over all sixteen programs ("The
-baseline over all sixteen programs" below), recorded in
-[execution.md](design/execution.md), "The Are We Fast Yet benchmarks". The
-whole road, decided with the user on 2026-09-29, is in
-[OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
+**Next: the compact instruction encoding**
+([execution.md](design/execution.md), "Planned: the compact instruction
+encoding"), which the road puts after road step 2 and before road step 3, the
+object space. Road step 2 is built: a value is one tagged word, Spur's, with
+a 61-bit `SmallInteger` over the `LargeInteger` that makes integers
+unbounded and boxed `Float`s beyond the `SmallFloat64` range ("The
+eight-byte value" below; [object-model.md](design/object-model.md), "Values
+and objects"). The encoding is not designed yet: its inputs are the dispatch
+findings of [execution.md](design/execution.md), "Where the 3% goes" -- a
+discriminant decoded through a niche before every jump, `program_counter`
+and the code pointer spilled from `vm::run`'s registers -- and the
+instruction encodings of Primordial Soup, Strongtalk and Cog, and it is
+designed against the one-word value and measured against the Are We Fast
+Yet benchmarks as [execution.md](design/execution.md), "The Are We Fast Yet
+benchmarks", describes. The whole road, decided with the user on
+2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the
@@ -1286,9 +1292,9 @@ design, and one revised on the way:
 2. **The brand is phantom**: `'gc` appears in a field only through the
    `PhantomData` in a handle, which is why no conversion of the state is
    needed.
-3. **No public `unbind`**: `at_rest` and `branded`, private to `heap.rs` and
-   one per direction, convert a value for the host root table, and nothing
-   else changes a brand.
+3. **No public `unbind`**: `at_rest` and `branded`, private to the `heap`
+   module (`pub(super)` in `heap/value.rs`) and one per direction, convert a
+   value for the host root table, and nothing else changes a brand.
 4. **`Mutator` never reaches the `Interpreter`**: `vm::run`, the safepoint
    and the host entries take `&mut Interpreter`, and a decision, a native or
    a continuation only a `&mut Mutator`.
@@ -3004,7 +3010,7 @@ reference to the send's own local, which keeps it one object in memory.
 kind of stall on every tree costing far more -- a quarter of `bench_send.ns`'s
 samples on `Value`s a callee writes through its out-parameter in pieces that
 do not line up with the load that reads them; the eight-byte value is its
-planned answer ([OPEN-WORK.md](OPEN-WORK.md)).
+answer ("The eight-byte value" below).
 
 ## Exceptions (2026-09-25)
 
@@ -3507,7 +3513,8 @@ Plan: [ns-next-large-integers](superpowers/plans/2026-09-29-0911-ns-next-large-i
 
 Road step 2's first plan ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
 high-performance VM"): §5.1.1's integers "are not limited in size". An
-integer that fits `i64` is a `SmallInteger`, any other a `LargeInteger`, a
+integer that fits `i64` is a `SmallInteger` (61 bits since the eight-byte
+value, below), any other a `LargeInteger`, a
 kernel subclass of `Integer`, and `Mutator::new_integer` decides which, so
 each integer has one representation; `3 class` stays `Integer`. The
 arithmetic in `crates/ns-runtime/src/arbitrary_integer/` is adapted under MIT
@@ -3890,3 +3897,70 @@ every benchmark; the slowest programs, Havlak and CD, take about 5.2 s and
 4.9 s a run, Mandelbrot 4.0 s and NBody 2.6 s.
 
 - This commit — the baseline recorded, and the next step named.
+
+## The eight-byte value (2026-10-02)
+
+Plan: [ns-next-eight-byte-value](superpowers/plans/2026-10-02-1310-ns-next-eight-byte-value.md);
+[object-model.md](design/object-model.md), "Values and objects".
+
+Road step 2's second plan ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM"), built in stages each green, as decided with the user
+the same day. A `Value` is one tagged 64-bit word with Spur's tags: a
+handle, a `SmallInteger` of 61 bits, `nil`, `false` and `true` under one
+constant tag, and a `SmallFloat64`; every integer beyond 61 bits is a
+`LargeInteger` and every float outside the `SmallFloat64` range a boxed
+`Float`, so each number keeps one representation. `Value` is opaque, in
+`crates/ns-runtime/src/heap/value.rs`, made by constructors and read
+through accessors and `ValueKind`. A heap object, a register and a copied
+closure value store a bare eight-byte `Word`; `Heap::store` checks in a
+debug build that the value it stores carries the heap's id and current
+epoch, so a stale handle is caught where it is stored. `SmallInteger`
+arithmetic works on the tagged words, shared by `IntegerBinary` and the
+leaves. A release `Value` is 8 bytes (16 before), `Signal` and
+`EvaluationResult` 40 (48 before); `Result<Step, Signal>` stays 56 and
+`Object` 56. The wire gained no tag: an integer that fits `i64` travels as
+an `i64` and the decoder decides by the 61-bit range, and a float, boxed or
+not, travels as an `f64` ([image-format.md](design/image-format.md),
+"Integers and floats on the wire"). The worst case of a rejected load is
+now about 23.1x the graph section's bytes in a release build, an `i64`
+beyond 61 bits decoding to a `LargeInteger` ([memory.md](design/memory.md),
+"The interim cost, and the one question still open").
+
+- `1ad761d` — the design: the value is built in seven stages, each green.
+- `56cc40d` — the implementation plan, and why floor division untags both
+  operands.
+- `d611748` — `Value` answers through constructors, accessors and the
+  `ValueKind` view.
+- `daa2957` — the runtime's and the CLI's sources read and make values
+  through the API.
+- `80ec8fa` — the tests read and make values through the API.
+- `c5030ad` — `Value` is opaque and lives under `heap`, beside the handles
+  it takes apart.
+- `d15c6a3` — an index, size or count beyond every `SmallInteger` is refused
+  as out of range, not as a type mismatch
+  (`goldens/library/collection/an_index_or_size_past_every_small_integer_is_out_of_range.ns`).
+- `affb53b` — a `SmallInteger` has 61 bits, and every integer beyond them is
+  a `LargeInteger`, in the leaves, the compiler's literals and the decoder;
+  five goldens' outcomes moved where an integer crosses 2^60.
+- `d5290ce` — a float outside the `SmallFloat64` range is a boxed `Float`
+  (`goldens/library/number/float/a_float_beyond_the_immediate_range_behaves_as_any_float.ns`).
+- `fe2dad2` — a value is one tagged word, Spur's tags, in a release build.
+- `6ca65af` — a heap object stores bare words, and a store checks the value
+  it stores.
+- `269c707` — `SmallInteger` arithmetic works on the tagged words, one test
+  for both operands.
+- `16c6022` — a value passes by value, now that it is one word; `vm::run`
+  is 6,985 instructions.
+- This commit — the documentation describes the built state.
+
+**Measured** against the baseline over all sixteen programs, by the
+protocol of [execution.md](design/execution.md), "The Are We Fast Yet
+benchmarks": the figures are in [execution.md](design/execution.md), "What
+the eight-byte value moved".
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): whether
+`Object>>==` should compare two `LargeInteger`s by state, as it does two
+boxed floats; a float literal outside the immediate range allocating a
+`Float` each time it runs; a `Word` crossing heaps through the public
+payload fields; and `Float>>printString` printing 1.0e303 without an
+exponent.
