@@ -8,6 +8,7 @@
 //! on a `Resolved` rebuilt from an entry, so it can do nothing a miss would
 //! not (`resolve.rs`).
 
+use std::cell::Cell;
 use std::hash::BuildHasher;
 use std::rc::Rc;
 
@@ -826,19 +827,18 @@ pub(crate) fn send_lexical<'gc>(
             arguments,
         );
     };
-    let key = if private {
+    let (key, known_lexical_class) = if private {
         let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
-        SendKey {
-            guard: lexical_class.map_or(DispatchId::NONE, |class| {
-                mutator.heap.class_dispatch_ids(class).instances
-            }),
+        let key = SendKey {
+            guard: lexical_dispatch_id(&mutator.heap, lexical_class),
             rule: CacheRule::LexicalPrivate,
             receiver: &enclosing,
             lexical_class,
             superclass: None,
-        }
+        };
+        (key, Some(lexical_class))
     } else {
-        SendKey {
+        let key = SendKey {
             guard: mutator.heap.dispatch_id(enclosing),
             // A placeholder payload: `miss` fills it in only on a genuine
             // miss, so a monomorphic hit still never computes N.
@@ -846,7 +846,19 @@ pub(crate) fn send_lexical<'gc>(
             receiver: &enclosing,
             lexical_class: None,
             superclass: None,
-        }
+        };
+        (key, None)
+    };
+    // A miss needs N for the `Lexical` rule's payload and again for the
+    // lookup; it is computed once, and not at all where a private key
+    // already holds it.
+    let lexical_class = Cell::new(known_lexical_class);
+    let lexical_class_of = |heap: &Heap<'gc>| {
+        lexical_class.get().unwrap_or_else(|| {
+            let class = dispatch::kth_lexical_class(heap, defining_class, depth);
+            lexical_class.set(Some(class));
+            class
+        })
     };
     cached(
         mutator,
@@ -854,15 +866,15 @@ pub(crate) fn send_lexical<'gc>(
         key,
         selector,
         arguments,
-        move |mutator| {
+        |mutator| {
             if private {
                 DispatchId::NONE
             } else {
-                lexical_dispatch_id(mutator, defining_class, depth)
+                lexical_dispatch_id(&mutator.heap, lexical_class_of(&mutator.heap))
             }
         },
         |mutator| {
-            let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
+            let lexical_class = lexical_class_of(&mutator.heap);
             mutator.resolve_lexical(enclosing, lexical_class, selector)
         },
     )
@@ -873,14 +885,12 @@ pub(crate) fn send_lexical<'gc>(
 /// lexical chain does not reach that far.
 #[inline(always)]
 fn lexical_dispatch_id<'gc>(
-    mutator: &Mutator<'gc>,
-    defining_class: Option<ClassReference<'gc>>,
-    depth: u16,
+    heap: &Heap<'gc>,
+    lexical_class: Option<ClassReference<'gc>>,
 ) -> DispatchId {
-    dispatch::kth_lexical_class(&mutator.heap, defining_class, depth)
-        .map_or(DispatchId::NONE, |class| {
-            mutator.heap.class_dispatch_ids(class).instances
-        })
+    lexical_class.map_or(DispatchId::NONE, |class| {
+        heap.class_dispatch_ids(class).instances
+    })
 }
 
 /// A vacant lexical site's first send. Whether §5.9's private rule applies
@@ -902,9 +912,7 @@ fn send_lexical_first<'gc>(
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let lexical_class = dispatch::kth_lexical_class(&mutator.heap, defining_class, depth);
-    let lexical_id = lexical_class.map_or(DispatchId::NONE, |class| {
-        mutator.heap.class_dispatch_ids(class).instances
-    });
+    let lexical_id = lexical_dispatch_id(&mutator.heap, lexical_class);
     if lexical_id != DispatchId::NONE {
         let private_key = SendKey {
             guard: lexical_id,
@@ -984,13 +992,13 @@ pub(crate) fn send_super<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
-    let current_class = mutator.heap.activation_current_class(activation);
-    let superclass = current_class.and_then(|class| mutator.heap.class_superclass(class));
-    let (Some(index), Some(current_class), Some(superclass)) = (
-        site_index(feedback_base, family_size, site),
-        current_class,
-        superclass,
-    ) else {
+    let Some(index) = site_index(feedback_base, family_size, site) else {
+        return decide_super_send(mutator, activation, selector, arguments);
+    };
+    let Some(current_class) = mutator.heap.activation_current_class(activation) else {
+        return decide_super_send(mutator, activation, selector, arguments);
+    };
+    let Some(superclass) = mutator.heap.class_superclass(current_class) else {
         return decide_super_send(mutator, activation, selector, arguments);
     };
     let self_value = mutator.heap.activation_receiver(activation);

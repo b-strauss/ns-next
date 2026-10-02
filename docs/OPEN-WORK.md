@@ -749,9 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `interpreter/inline_cache.rs`: `send_super` reads the current class and its
-  superclass before it knows whether the send is cached; `send_lexical`
-  computes N twice on a miss.
 - `interpreter/mod.rs`: `catches_return` clones a `FrameKind`
   (`heap.activation_kind`).
 - `builtins/block.rs`: a native `whileTrue:`/`whileFalse:` loop checks its
