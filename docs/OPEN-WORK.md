@@ -794,8 +794,6 @@ Small, deliberately left, none affecting an outcome.
   building levels. Removing it is a design point, not a clean-up: the
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
-- `core-library/Kernel.ns`: `defaultAction`'s `ifFail: [nil]` is unreachable;
-  `searching` and `reachedDefault` stay true after a search.
 - `builtins/activation.rs:157`: `activation_leaf` has an `unreachable!` arm;
   a restart sets the target's program counter twice (`interpreter/unwind.rs`,
   then `vm.rs`).

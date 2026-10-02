@@ -194,8 +194,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
        set by the VM for an error it raises, so a host still receives the
        selector and receiver it received before exceptions existed.
        `searching` is true from `signal` or `pass` until a handler is
-       invoked: the VM reads it to tell a search that overran the depth
-       limit's reserve from a handler that did (`Mutator::overrun_of_the_reserve`). *)
+       invoked or the default action runs, and `reachedDefault` from then on
+       until the next `signal`: the VM reads both to tell a search that
+       overran the depth limit's reserve from a handler that did
+       (`Mutator::overrun_of_the_reserve`). *)
     public class Exception = Object new (
         | private signalActivation ::= nil.
           private handlerActivation ::= nil.
@@ -225,6 +227,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public signal = (
             signalActivation:: vmMirror currentActivation: self ifFail: [nil].
             handlerActivation:: signalActivation.
+            reachedDefault:: false.
             searching:: true.
             ^self invokeNextHandler
         )
@@ -330,6 +333,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
                         ^self invokeHandlerAt: (handlers at: count) disabling: handlers]].
                 activation:: vmMirror activationSender: activation ifFail: [nil]].
             reachedDefault:: true.
+            searching:: false.
             handlerActivation:: nil.
             ^self defaultAction
         )

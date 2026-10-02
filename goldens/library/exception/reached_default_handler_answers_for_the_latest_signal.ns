@@ -1,0 +1,23 @@
+(* `reachedDefaultHandler` answers whether the exception's latest `signal`
+   found no handler and ran `defaultAction`. `Quiet`'s default action
+   answers a value instead of ending the run, so the same exception can be
+   signalled again: unhandled first, then handled, when it no longer says
+   it reached the default handler. *)
+class ReachedDefaultHandlerAnswersForTheLatestSignal = Object new (
+    |
+      private Exception ::= nil. |
+) (
+    public class Quiet = Exception new () (
+        public defaultAction = ( ^42 )
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. quiet |
+        Exception:: platform kernel Exception.
+        quiet:: Quiet new.
+        transcript show: quiet reachedDefaultHandler printString; newLine.
+        transcript show: quiet signal printString; newLine.
+        transcript show: quiet reachedDefaultHandler printString; newLine.
+        transcript show: ([quiet signal] on: Quiet do: [:e | e return: 7]) printString; newLine.
+        transcript show: quiet reachedDefaultHandler printString; newLine.
+    )
+) : ()
