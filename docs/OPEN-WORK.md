@@ -744,9 +744,6 @@ where every reified frame will carry its full register file on the wire.
   `two_modules_draw_the_same_identity_hashes_under_run_and_load`'s comment
   claims it pins module order, which a review judged its fixture probably
   cannot tell apart from a load that merely draws no new hash.
-- The compact encoding's round-trip tests compare through `same`, which
-  compares `Debug` text and cannot tell two NaN payloads apart, although the
-  encoding keeps them (a NaN goes to `literals`).
 
 ## Code quality follow-ups
 
@@ -825,10 +822,6 @@ Small, deliberately left, none affecting an outcome.
   three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
-- `CompiledCode`'s derived `PartialEq` compares encodings, so a body built
-  wide by `CodeBuilder::always_wide` differs from the same body built narrow;
-  every comparison today is between bodies built in one process under one
-  mode (`bytecode.rs`).
 - The run loop's `match` sits five labelled blocks deep, the price of one
   send path per kind and of the measured 5% it bought
   ([execution.md](design/execution.md), "What the compact instruction

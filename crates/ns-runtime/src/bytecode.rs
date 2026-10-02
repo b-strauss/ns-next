@@ -386,7 +386,7 @@ pub enum CodeKind {
     SuperclassMessage,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CompiledCode {
     pub kind: CodeKind,
     /// The instructions, stored only in their eight-byte encoding
@@ -557,6 +557,46 @@ impl CompiledCode {
     }
 }
 
+/// Two bodies are equal when they mean the same: every field but the
+/// encoding, and the instructions the encoding decodes to, so a body built
+/// narrow equals the same body built by `CodeBuilder::always_wide`. A
+/// `Float` literal compares by its bits: the question is whether two bodies
+/// are the same, not whether their floats are numerically equal, so a NaN
+/// equals the NaN of the same payload and no other, and `0.0` differs from
+/// `-0.0` -- what the encoding keeps, and what a program can observe.
+impl PartialEq for CompiledCode {
+    fn eq(&self, other: &CompiledCode) -> bool {
+        // Destructured, so that a field added to `CompiledCode` must be
+        // decided here.
+        let CompiledCode {
+            kind,
+            body: _,
+            argument_count,
+            register_count,
+            statement_program_counter,
+            family_size,
+            copied_count,
+            outer_reach,
+            unwind_marker,
+            source,
+        } = self;
+        *kind == other.kind
+            && *argument_count == other.argument_count
+            && *register_count == other.register_count
+            && *statement_program_counter == other.statement_program_counter
+            && *family_size == other.family_size
+            && *copied_count == other.copied_count
+            && *outer_reach == other.outer_reach
+            && *unwind_marker == other.unwind_marker
+            && *source == other.source
+            && self.instruction_count() == other.instruction_count()
+            && (0..self.instruction_count()).all(|index| {
+                self.instruction(index)
+                    .is_identical_to(&other.instruction(index))
+            })
+    }
+}
+
 /// What makes an activation matter to the unwinder
 /// (`docs/design/core-library.md`, "Exceptions"): each variant
 /// names the registers of the kernel method's parameters and locals, in the
@@ -632,6 +672,27 @@ impl Instruction {
         match self {
             call_site_variants!(site) => Some(site),
             _ => None,
+        }
+    }
+
+    /// Whether `self` and `other` are the same instruction: `==`, except
+    /// that a `Float` literal compares by its bits, so that a NaN's payload
+    /// and a zero's sign count (`CompiledCode`'s `PartialEq`).
+    pub(crate) fn is_identical_to(&self, other: &Instruction) -> bool {
+        match (self, other) {
+            (
+                Instruction::LoadLiteral {
+                    destination: own_destination,
+                    literal: Literal::Float(own_value),
+                },
+                Instruction::LoadLiteral {
+                    destination: other_destination,
+                    literal: Literal::Float(other_value),
+                },
+            ) => {
+                own_destination == other_destination && own_value.to_bits() == other_value.to_bits()
+            }
+            _ => self == other,
         }
     }
 
@@ -1274,5 +1335,89 @@ method foo: (args 1, registers 4)
             format_literal(&literal),
             "large-int <100000 words> 0x186a0000000000001869f...00000000000000020000000000000001"
         );
+    }
+
+    /// A body from `instructions`, emitted into `builder`.
+    fn built(builder: CodeBuilder, instructions: &[Instruction]) -> CompiledCode {
+        let mut builder = builder;
+        for instruction in instructions {
+            builder.emit(instruction.clone());
+        }
+        CompiledCode::from_builder(
+            CodeKind::Method,
+            builder,
+            1,
+            300,
+            0,
+            vec![(0, 0..instructions.len())],
+            Span::new(0, 10),
+        )
+    }
+
+    fn load_float(value: f64) -> Instruction {
+        Instruction::LoadLiteral {
+            destination: 1,
+            literal: Literal::Float(value),
+        }
+    }
+
+    /// Equality is about what a body means, so the encoding a builder chose
+    /// does not enter it -- a NaN literal, sends, a block and a register
+    /// past a byte included.
+    #[test]
+    fn a_body_built_narrow_equals_the_same_body_built_wide() {
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            0,
+            1,
+            0,
+            vec![(0, 0..1)],
+            Span::new(0, 1),
+        ));
+        let instructions = [
+            load_float(f64::from_bits(0x7ff8_0000_0000_0001)),
+            load_float(1.5),
+            Instruction::SendPublic {
+                selector: Symbol::intern("at:put:"),
+                receiver_register: 1,
+                argument_registers: vec![2, 3],
+                destination: 4,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::MakeClosure {
+                destination: 5,
+                parameters: Rc::new(vec![]),
+                code: block,
+                copied: vec![],
+            },
+            Instruction::Move {
+                destination: 299,
+                source: 1,
+            },
+            Instruction::Return { register: 1 },
+        ];
+        let narrow = built(CodeBuilder::never_wide_by_stress(), &instructions);
+        let wide = built(CodeBuilder::always_wide(), &instructions);
+        assert!(!narrow.is_wide(0) && wide.is_wide(0));
+        assert_eq!(narrow, wide);
+        assert_eq!(wide, narrow);
+    }
+
+    /// A `Float` literal compares by its bits: the same NaN is the same
+    /// body, a NaN of another payload or a zero of the other sign is not.
+    #[test]
+    fn a_float_literal_compares_by_its_bits() {
+        let body = |value: f64| {
+            built(
+                CodeBuilder::never_wide_by_stress(),
+                &[load_float(value), Instruction::Return { register: 1 }],
+            )
+        };
+        let payload = f64::from_bits(0x7ff8_0000_0000_0001);
+        assert_eq!(body(payload), body(payload));
+        assert_ne!(body(payload), body(f64::NAN));
+        assert_ne!(body(0.0), body(-0.0));
+        assert_ne!(body(1.5), body(2.5));
     }
 }

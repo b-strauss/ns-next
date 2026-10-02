@@ -6238,7 +6238,10 @@ tables. `CompiledCode::instruction(index)` and `instructions()` decode the
 view back -- for `disasm`, the image encoder, the decoder's verification,
 `outer_reach_of`, `family_size_of` and the tests -- and the round trip is
 exact; `instruction_count()` answers the body's length, and only `vm.rs`
-reads `slot(index)`. The decoder numbers a family's call sites in place
+reads `slot(index)`. Two `CompiledCode`s are equal when they mean the
+same -- every field but the encoding, and the decoded instructions, a
+`Float` literal by its bits -- so a body built narrow equals the same body
+built wide. The decoder numbers a family's call sites in place
 through `EncodedBody::for_each_emitted_mut`, which visits every send's
 `CallSite`, in `send_sites` or in `wide`, and every block, in emission
 order whatever form each took -- the compiler's own order

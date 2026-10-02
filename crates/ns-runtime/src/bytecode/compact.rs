@@ -395,8 +395,11 @@ impl MirrorSite {
     }
 }
 
-/// A compiled body as it is stored: the slots and their tables.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// A compiled body as it is stored: the slots and their tables. It has no
+/// `PartialEq`: two encodings of one body differ (one built by
+/// `CodeBuilder::always_wide`, say), and `CompiledCode` compares what a body
+/// means.
+#[derive(Debug, Clone, Default)]
 pub struct EncodedBody {
     slots: Box<[CompactInstruction]>,
     constants: Box<[Immediate]>,
@@ -1859,10 +1862,14 @@ mod tests {
     use crate::bytecode::{CallSite, Instruction, IntegerOperation, Literal};
     use crate::Symbol;
 
+    /// Whether two instruction lists are the same, a `Float` literal by its
+    /// bits, so that a NaN's payload and a zero's sign must survive.
     fn same(left: &[Instruction], right: &[Instruction]) -> bool {
-        // `Debug` prints a float's shortest round-tripping text, `-0.0` and
-        // `NaN` included, so equal text is equal bits for every literal here.
-        format!("{left:?}") == format!("{right:?}")
+        left.len() == right.len()
+            && left
+                .iter()
+                .zip(right)
+                .all(|(own, other)| own.is_identical_to(other))
     }
 
     fn round_trip(instructions: Vec<Instruction>) {
@@ -1914,6 +1921,9 @@ mod tests {
             Literal::Float(1.5),
             Literal::Float(1.0e300),
             Literal::Float(f64::MIN_POSITIVE / 2.0),
+            Literal::Float(f64::NAN),
+            // A NaN no arithmetic here makes: its payload must survive too.
+            Literal::Float(f64::from_bits(0x7ff8_0000_0000_0001)),
             Literal::String("text".to_string()),
             Literal::Symbol(Symbol::intern("symbol")),
             Literal::LargeInteger(
