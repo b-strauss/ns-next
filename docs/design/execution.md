@@ -6235,9 +6235,10 @@ runs.
 patches jump targets in place (`Instruction::set_target` for a target in
 `wide`); `CompiledCode` stores only the `EncodedBody`, the slots and their
 tables. `CompiledCode::instruction(index)` and `instructions()` decode the
-view back -- for `disasm`, the image encoder, the decoder's verification,
-`outer_reach_of`, `family_size_of` and the tests -- and the round trip is
-exact; `instruction_count()` answers the body's length, and only `vm.rs`
+view back -- for `disasm`, the image encoder, the decoder's verification
+(once a body) and the tests -- and the round trip is exact; `family_size`
+and `outer_reach` are read off the tables without a decode, answering what
+`family_size_of` and `outer_reach_of` answer over the view; `instruction_count()` answers the body's length, and only `vm.rs`
 reads `slot(index)`. Two `CompiledCode`s are equal when they mean the
 same -- every field but the encoding, and the decoded instructions, a
 `Float` literal by its bits -- so a body built narrow equals the same body

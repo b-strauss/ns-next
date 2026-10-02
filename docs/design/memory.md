@@ -1245,16 +1245,16 @@ validation finishes, so they are live, and the amplification figures stay
 valid.
 
 A second transient, not in those figures and not measured: a compiled body is
-stored as eight-byte instructions, and `CompiledCode::from_builder` holds the
-builder and a full decoded `Vec<Instruction>` (48 bytes an instruction, literal
-clones included) at once. At load the decoder reads each body back through that
-view five more times (`verify_body`, `block_nesting`, `lexical_parents`,
-`verify_outer_locals` and the call-site numbering), about six full decodes of
-each body. The memory stays bounded by the input, since every instruction
-consumed at least one wire byte and each copy is dropped before the next; what
-is unknown is the load-time constant factor. Decoding each body once in
-`image::load` and handing the `Vec<Instruction>` to the verifiers would remove
-it.
+stored as eight-byte instructions, and the decoder reads each body back into a
+full decoded `Vec<Instruction>` (48 bytes an instruction, literal clones
+included) once, in `verify_code_table`, whose two checks that read every
+instruction (`verify_body`, `verify_outer_locals`) share it; it is dropped
+before the next body is decoded. Everything else at load reads the encoding in
+place: `CompiledCode::from_builder` derives `family_size` and `outer_reach` off
+the builder's tables, and `block_nesting`, `lexical_parents` and the call-site
+numbering walk the body's blocks and send sites
+(`EncodedBody::created_blocks`, `for_each_emitted_mut`). The memory stays
+bounded by the input, since every instruction consumed at least one wire byte.
 
 In a release build this gives the safepoint's slow path its first real work.
 

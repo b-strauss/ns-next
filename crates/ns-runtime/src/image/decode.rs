@@ -8,7 +8,8 @@ use std::rc::Rc;
 use ns_syntax::Span;
 
 use crate::bytecode::{
-    CallSite, CodeBuilder, CodeKind, CompiledCode, Emitted, Instruction, IntegerOperation, Literal,
+    CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
+    IntegerOperation, Literal,
 };
 use crate::heap::{Heap, Word};
 use crate::interpreter::instantiate;
@@ -1090,15 +1091,13 @@ fn block_nesting(
     nesting: &HashMap<usize, usize>,
 ) -> Result<usize, DecodeError> {
     let mut depth = 0;
-    for instruction in &code.instructions() {
-        if let Instruction::MakeClosure { code: block, .. } = instruction {
-            // `decode_instruction` resolved the id against the bodies already
-            // read, and every one of them was measured.
-            let below = nesting
-                .get(&(Rc::as_ptr(block) as usize))
-                .ok_or(DecodeError::CodeNotInTable)?;
-            depth = depth.max(below + 1);
-        }
+    for block in code.body().created_blocks() {
+        // `decode_instruction` resolved the id against the bodies already
+        // read, and every one of them was measured.
+        let below = nesting
+            .get(&(Rc::as_ptr(block.code) as usize))
+            .ok_or(DecodeError::CodeNotInTable)?;
+        depth = depth.max(below + 1);
     }
     if depth > MAX_BLOCK_NESTING {
         return Err(DecodeError::BlockNestingTooDeep {
@@ -1323,16 +1322,12 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
     let index_of = code_index(table);
     let mut parents: Vec<Option<usize>> = vec![None; table.codes.len()];
     for (index, code) in table.codes.iter().enumerate() {
-        for instruction in &code.instructions() {
-            let Instruction::MakeClosure {
-                parameters,
-                code: block,
-                copied,
-                ..
-            } = instruction
-            else {
-                continue;
-            };
+        for CreatedBlock {
+            code: block,
+            parameters,
+            copied,
+        } in code.body().created_blocks()
+        {
             let id = *index_of
                 .get(&(Rc::as_ptr(block) as usize))
                 .ok_or(DecodeError::CodeNotInTable)?;
@@ -1463,7 +1458,7 @@ fn number_call_sites(
         }
         Ok(())
     })?;
-    code.family_size = crate::bytecode::family_size_of(&code.instructions());
+    code.family_size = code.body().family_size();
     Ok(())
 }
 
@@ -1472,16 +1467,22 @@ fn number_call_sites(
 /// instruction, every jump target is one of its own instructions, every
 /// register operand is inside its own register file, and every outer local
 /// is inside the register file of the body it addresses.
+///
+/// Each body is decoded here once, and both checks that read every
+/// instruction read that one view; everything else at load reads the
+/// encoding directly (`EncodedBody::created_blocks`,
+/// `EncodedBody::family_size`).
 pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
     let parents = lexical_parents(table)?;
     for (index, code) in table.codes.iter().enumerate() {
-        verify_body(code)?;
-        verify_outer_locals(table, &parents, index, code)?;
+        let instructions = code.instructions();
+        verify_body(code, &instructions)?;
+        verify_outer_locals(table, &parents, index, &instructions)?;
     }
     Ok(())
 }
 
-fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
+fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), DecodeError> {
     // Every activation is pushed with `register_count - argument_count`
     // temporaries, a `u16` subtraction.
     if code.argument_count > code.register_count {
@@ -1493,7 +1494,6 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
     // The VM fetches the instruction at `program_counter` at the top of the
     // loop and again after every fall-through, so an empty body -- or one
     // whose last instruction falls through -- indexes past its end.
-    let instructions = code.instructions();
     match instructions.last() {
         Some(
             Instruction::Return { .. }
@@ -1503,7 +1503,7 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
         ) => {}
         _ => return Err(DecodeError::UnterminatedBody),
     }
-    for instruction in &instructions {
+    for instruction in instructions {
         for register in own_registers(instruction) {
             if register >= code.register_count {
                 return Err(DecodeError::RegisterOutOfRange {
@@ -1690,9 +1690,9 @@ fn verify_outer_locals(
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index: usize,
-    code: &CompiledCode,
+    instructions: &[Instruction],
 ) -> Result<(), DecodeError> {
-    for instruction in &code.instructions() {
+    for instruction in instructions {
         let (depth, local) = match instruction {
             Instruction::LoadOuterLocal { depth, index, .. }
             | Instruction::StoreOuterLocal { depth, index, .. } => (*depth, *index),
@@ -1802,8 +1802,8 @@ fn decode_code(
     for _ in 0..instruction_count {
         builder.emit(decode_instruction(reader, codes, symbols, uncached)?);
     }
-    // `from_builder` derives `family_size` and `outer_reach` with the
-    // functions the compiler uses. `family_size` is a placeholder, not yet
+    // `from_builder` derives `family_size` and `outer_reach` as the
+    // compiler's bodies derive them, off the encoding. `family_size` is a placeholder, not yet
     // the real answer: every send here carries a number-shaped stand-in,
     // not the number `number_call_site_families` will give it, so this
     // would double-count a non-uncached body's sends as if they were

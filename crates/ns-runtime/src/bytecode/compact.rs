@@ -1211,6 +1211,18 @@ impl CodeBuilder {
         self.slots.iter().map(|slot| tables.decode(*slot)).collect()
     }
 
+    /// `bytecode::family_size_of` over what has been emitted, read off the
+    /// tables without decoding a slot.
+    pub(crate) fn family_size(&self) -> u32 {
+        self.tables().family_size()
+    }
+
+    /// `bytecode::outer_reach_of` over what has been emitted, read off the
+    /// slots and tables without decoding them.
+    pub(crate) fn outer_reach(&self) -> u16 {
+        self.tables().outer_reach(&self.slots)
+    }
+
     fn tables(&self) -> Tables<'_> {
         Tables {
             constants: &self.constants,
@@ -1332,6 +1344,44 @@ impl EncodedBody {
         Ok(())
     }
 
+    /// Every block the body creates, in the order its `MakeClosure`s were
+    /// emitted, whatever form each took -- what the image decoder's checks
+    /// on blocks read, without decoding a slot.
+    pub fn created_blocks(&self) -> impl Iterator<Item = CreatedBlock<'_>> + '_ {
+        self.slots
+            .iter()
+            .filter_map(move |slot| match emitted_entry(*slot) {
+                EmittedEntry::Block(block) => {
+                    let site = &self.blocks[block];
+                    Some(CreatedBlock {
+                        code: &site.code,
+                        parameters: &site.parameters,
+                        copied: &site.copied,
+                    })
+                }
+                EmittedEntry::Wide(wide) => match &self.wide[wide] {
+                    Instruction::MakeClosure {
+                        parameters,
+                        code,
+                        copied,
+                        ..
+                    } => Some(CreatedBlock {
+                        code,
+                        parameters,
+                        copied,
+                    }),
+                    _ => None,
+                },
+                EmittedEntry::SendSite(_) | EmittedEntry::Nothing => None,
+            })
+    }
+
+    /// `bytecode::family_size_of` over the body, read off its tables
+    /// without decoding a slot.
+    pub(crate) fn family_size(&self) -> u32 {
+        self.tables().family_size()
+    }
+
     fn tables(&self) -> Tables<'_> {
         Tables {
             constants: &self.constants,
@@ -1343,6 +1393,14 @@ impl EncodedBody {
             wide: &self.wide,
         }
     }
+}
+
+/// A block a body creates, as `EncodedBody::created_blocks` answers it:
+/// borrowed from the body, read-only.
+pub struct CreatedBlock<'a> {
+    pub code: &'a Rc<CompiledCode>,
+    pub parameters: &'a Rc<Vec<Symbol>>,
+    pub copied: &'a [u16],
 }
 
 /// Where a slot keeps what `for_each_emitted_mut` visits.
@@ -1418,6 +1476,75 @@ fn emitted_entry(slot: CompactInstruction) -> EmittedEntry {
     }
 }
 
+/// How many frames out a narrow slot reads or writes registers by
+/// reference: `outer_reach_of`'s list, in the eight-byte forms. No `_`
+/// arm, so that a new form must decide: one that reached out unnamed would
+/// leave its creating activation unmarked, and every read through it would
+/// answer `nil` at exit status 0 (`docs/design/execution.md`,
+/// "Activations"). A `MakeClosure`'s reach is its block's, counted from
+/// `blocks`; a `Wide`'s is counted from `wide`.
+fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
+    match slot {
+        CompactInstruction::LoadOuterLocal { depth, .. }
+        | CompactInstruction::StoreOuterLocal { depth, .. } => depth,
+        CompactInstruction::LoadNil { .. }
+        | CompactInstruction::LoadTrue { .. }
+        | CompactInstruction::LoadFalse { .. }
+        | CompactInstruction::LoadSmallInteger { .. }
+        | CompactInstruction::LoadConstant { .. }
+        | CompactInstruction::LoadLiteral { .. }
+        | CompactInstruction::LoadSelf { .. }
+        | CompactInstruction::LoadEnclosingObject { .. }
+        | CompactInstruction::Move { .. }
+        | CompactInstruction::StoreLocal { .. }
+        | CompactInstruction::SendPublic0 { .. }
+        | CompactInstruction::SendPublic1 { .. }
+        | CompactInstruction::SendPublic2 { .. }
+        | CompactInstruction::SendPublicWide { .. }
+        | CompactInstruction::SendInlinable0 { .. }
+        | CompactInstruction::SendInlinable1 { .. }
+        | CompactInstruction::SendInlinable2 { .. }
+        | CompactInstruction::SendInlinableWide { .. }
+        | CompactInstruction::SendLexical0 { .. }
+        | CompactInstruction::SendLexical1 { .. }
+        | CompactInstruction::SendLexical2 { .. }
+        | CompactInstruction::SendLexicalWide { .. }
+        | CompactInstruction::SendSuper0 { .. }
+        | CompactInstruction::SendSuper1 { .. }
+        | CompactInstruction::SendSuper2 { .. }
+        | CompactInstruction::SendSuperWide { .. }
+        | CompactInstruction::SendMirror { .. }
+        | CompactInstruction::MakeClosure { .. }
+        | CompactInstruction::MakeArray { .. }
+        | CompactInstruction::MakeVector { .. }
+        | CompactInstruction::LoadVector { .. }
+        | CompactInstruction::StoreVector { .. }
+        | CompactInstruction::InitializeSlot { .. }
+        | CompactInstruction::ReturnSlotIfFilled { .. }
+        | CompactInstruction::MakeFuture { .. }
+        | CompactInstruction::ResolveFuture { .. }
+        | CompactInstruction::LoadOwnSlot { .. }
+        | CompactInstruction::InitializeSlotProvisionally { .. }
+        | CompactInstruction::Return { .. }
+        | CompactInstruction::ImplicitReturn { .. }
+        | CompactInstruction::NonLocalReturn { .. }
+        | CompactInstruction::Jump { .. }
+        | CompactInstruction::JumpIfNotBoolean { .. }
+        | CompactInstruction::BranchIfFalse { .. }
+        | CompactInstruction::BranchIfTrue { .. }
+        | CompactInstruction::IntegerAdd { .. }
+        | CompactInstruction::IntegerSubtract { .. }
+        | CompactInstruction::IntegerMultiply { .. }
+        | CompactInstruction::IntegerFloorDivide { .. }
+        | CompactInstruction::IntegerLess { .. }
+        | CompactInstruction::IntegerGreater { .. }
+        | CompactInstruction::IntegerLessOrEqual { .. }
+        | CompactInstruction::IntegerGreaterOrEqual { .. }
+        | CompactInstruction::IntegerEqual { .. }
+        | CompactInstruction::Wide { .. } => 0,
+    }
+}
+
 /// The tables a slot indexes, borrowed from a builder or a finished body,
 /// so that both decode with the one inverse below.
 struct Tables<'a> {
@@ -1431,6 +1558,43 @@ struct Tables<'a> {
 }
 
 impl Tables<'_> {
+    /// What `bytecode::family_size_of` answers over the decoded view: a
+    /// send's call site is in `send_sites` whatever its form, a narrow
+    /// block in `blocks`, and every other wide instruction in `wide`. The
+    /// image decoder asks it of every body it loads, so it decodes nothing
+    /// (`docs/design/memory.md`, after "The image decoder never collects").
+    fn family_size(&self) -> u32 {
+        let sends = self
+            .send_sites
+            .iter()
+            .filter(|site| site.call_site != CallSite::UNCACHED)
+            .map(|site| site.call_site.number + 1);
+        let blocks = self.blocks.iter().map(|site| site.code.family_size);
+        sends
+            .chain(blocks)
+            .chain(std::iter::once(crate::bytecode::family_size_of(self.wide)))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// What `bytecode::outer_reach_of` answers over the decoded view: the
+    /// narrow forms that reach another frame's registers are named in
+    /// `narrow_outer_reach`, a narrow block's reach is in `blocks`, and
+    /// every wide instruction is in `wide`, where `outer_reach_of` itself
+    /// names them.
+    fn outer_reach(&self, slots: &[CompactInstruction]) -> u16 {
+        let narrow = slots.iter().map(|slot| narrow_outer_reach(*slot));
+        let blocks = self
+            .blocks
+            .iter()
+            .map(|site| site.code.outer_reach.saturating_sub(1));
+        narrow
+            .chain(blocks)
+            .chain(std::iter::once(crate::bytecode::outer_reach_of(self.wide)))
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The exact inverse of `CodeBuilder::encode`.
     fn decode(&self, slot: CompactInstruction) -> Instruction {
         let register = u16::from;
@@ -1880,6 +2044,7 @@ mod tests {
             for instruction in &instructions {
                 builder.emit(instruction.clone());
             }
+            assert_derived_as_decoded(&builder);
             let body = builder.finish();
             assert!(
                 same(&body.instructions(), &instructions),
@@ -1887,6 +2052,100 @@ mod tests {
                 body.instructions()
             );
             assert_eq!(body.len(), instructions.len());
+        }
+    }
+
+    /// `family_size` and `outer_reach`, read off the encoding, answer what
+    /// `family_size_of` and `outer_reach_of` answer over the decoded view.
+    fn assert_derived_as_decoded(builder: &CodeBuilder) {
+        let instructions = builder.instructions();
+        assert_eq!(
+            builder.family_size(),
+            crate::bytecode::family_size_of(&instructions)
+        );
+        assert_eq!(
+            builder.outer_reach(),
+            crate::bytecode::outer_reach_of(&instructions)
+        );
+    }
+
+    /// What the decoder and the compiler both derive from a body without
+    /// decoding it, in every form: sends numbered and `UNCACHED`, blocks
+    /// with a family and a reach of their own, and outer locals, narrow,
+    /// wide, and mixed in one body.
+    #[test]
+    fn the_family_size_and_outer_reach_read_off_the_encoding_are_the_decoded_ones() {
+        let block = |family_size, outer_reach| {
+            let mut code = crate::bytecode::CompiledCode::new(
+                crate::bytecode::CodeKind::Block,
+                vec![Instruction::ImplicitReturn { register: 0 }],
+                0,
+                1,
+                0,
+                vec![(0, 0..1)],
+                ns_syntax::Span::new(0, 1),
+            );
+            code.family_size = family_size;
+            code.outer_reach = outer_reach;
+            std::rc::Rc::new(code)
+        };
+        let closure = |code, copied: &[u16]| Instruction::MakeClosure {
+            destination: 1,
+            parameters: std::rc::Rc::new(vec![]),
+            code,
+            copied: copied.to_vec(),
+        };
+        let numbered = |number| Instruction::SendPublic {
+            selector: Symbol::intern("a"),
+            receiver_register: 1,
+            argument_registers: vec![],
+            destination: 2,
+            call_site: CallSite { number },
+        };
+        let outer = |depth, index| Instruction::LoadOuterLocal {
+            destination: 1,
+            depth,
+            index,
+        };
+        let bodies = [
+            vec![],
+            vec![numbered(4), closure(block(9, 3), &[])],
+            vec![numbered(12), closure(block(9, 3), &[300])],
+            vec![closure(block(2, 6), &[300]), closure(block(7, 1), &[])],
+            vec![
+                Instruction::SendSuper {
+                    selector: Symbol::intern("b"),
+                    argument_registers: vec![],
+                    destination: 2,
+                    call_site: CallSite::UNCACHED,
+                },
+                outer(2, 1),
+            ],
+            vec![outer(2, 1), outer(5, 256), numbered(70_000)],
+            vec![
+                Instruction::StoreOuterLocal {
+                    source: 300,
+                    depth: 4,
+                    index: 1,
+                },
+                send("c:d:e:", 1, &[2, 3, 4], 5),
+            ],
+        ];
+        for instructions in bodies {
+            for mut builder in [
+                CodeBuilder::never_wide_by_stress(),
+                CodeBuilder::always_wide(),
+            ] {
+                for instruction in &instructions {
+                    builder.emit(instruction.clone());
+                }
+                assert_derived_as_decoded(&builder);
+                let body = builder.finish();
+                assert_eq!(
+                    body.family_size(),
+                    crate::bytecode::family_size_of(&body.instructions())
+                );
+            }
         }
     }
 

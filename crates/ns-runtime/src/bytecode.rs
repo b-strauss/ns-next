@@ -14,8 +14,8 @@ use crate::Symbol;
 mod compact;
 
 pub use compact::{
-    BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
-    WideSend,
+    BlockSite, CodeBuilder, CompactInstruction, CreatedBlock, Emitted, EncodedBody, MirrorSite,
+    SendSite, WideSend,
 };
 
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
@@ -470,7 +470,9 @@ impl CompiledCode {
     }
 
     /// A body from the builder a lowering or the image decoder emitted it
-    /// into; `family_size` and `outer_reach` are derived from it.
+    /// into; `family_size` and `outer_reach` are derived from it, read off
+    /// its tables as `family_size_of` and `outer_reach_of` read the decoded
+    /// view, so that building a body decodes none of it.
     pub(crate) fn from_builder(
         kind: CodeKind,
         builder: CodeBuilder,
@@ -480,11 +482,10 @@ impl CompiledCode {
         statement_program_counter: Vec<(usize, Range<usize>)>,
         source: Span,
     ) -> CompiledCode {
-        let instructions = builder.instructions();
         CompiledCode {
             kind,
-            family_size: family_size_of(&instructions),
-            outer_reach: outer_reach_of(&instructions),
+            family_size: builder.family_size(),
+            outer_reach: builder.outer_reach(),
             body: builder.finish(),
             argument_count,
             register_count,

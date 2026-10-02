@@ -826,11 +826,6 @@ Small, deliberately left, none affecting an outcome.
   send path per kind and of the measured 5% it bought
   ([execution.md](design/execution.md), "What the compact instruction
   encoding moved").
-- Loading decodes each body about six times (`from_builder` and five
-  verifiers in `image/decode.rs`); the cost is unmeasured and memory stays
-  bounded by the input ([memory.md](design/memory.md), after "The image
-  decoder never collects"). Decoding once in `image::load` and passing the
-  `Vec<Instruction>` to the verifiers would settle it.
 
 ## Goldens and documentation
 
