@@ -768,7 +768,15 @@ Small, deliberately left, none affecting an outcome.
 - `image/inspect.rs`: `read_closure_record` bounds its pre-allocation with
   `min(1024)` rather than `reserve_for`, as the rest of the walk does.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
-  reloads its scope's indirection vector on every access.
+  reloads its scope's indirection vector (`LoadOuterLocal`, then
+  `LoadVector`/`StoreVector`) on every access. The vector register is
+  written once, by the frame's `MakeVector` at instruction 0, so one load
+  per activation would do; but it must dominate every use, so the fallback
+  body would need to know before it is lowered which outer vectors it
+  reaches (a pre-scan), a register for each in its by-reference `Layout`,
+  and a prologue outside every statement range -- not a simple change. The
+  cost falls only on a fallback closure's run, as "Fallback blocks" in
+  [execution.md](design/execution.md) intends: the common path pays nothing.
 - `mixin.rs`: `MixinApplicationClause` repeats `SuperclassClause`'s fields.
 - `interpreter/nested.rs`: `after_clause` looks the application up twice; the
   not-a-class error names a clause by position.
