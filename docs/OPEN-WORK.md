@@ -749,9 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- Wrapping: `Interpreter::stash`'s doc has a 102-column line; memory.md's
-  "The brand" and object-model.md's paragraph on stored words are wrapped
-  unevenly (left by the eight-byte value's final review).
 - `image/inspect.rs:460` bounds the tag-named hash count with a minimum record
   of 1 byte where the decoder uses `MIN_TAG_NAMED_HASH_BYTES` (5).
 - `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by

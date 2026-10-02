@@ -544,10 +544,10 @@ impl Interpreter {
 
     /// Roots an immediate -- `nil`, a Boolean or a `SmallInteger` -- a host
     /// built itself, outside any entry; a float is made only inside one, by
-    /// `Mutator::new_float`, since one outside the immediate range is boxed. An object is rooted with
-    /// `Mutator::stash`, inside the entry that reached it. A host can build
-    /// an immediate but never hold an object handle outside an entry, so a
-    /// `Value<'static>` holds none.
+    /// `Mutator::new_float`, since one outside the immediate range is boxed.
+    /// An object is rooted with `Mutator::stash`, inside the entry that
+    /// reached it. A host can build an immediate but never hold an object
+    /// handle outside an entry, so a `Value<'static>` holds none.
     pub fn stash(&self, value: Value<'static>) -> Root {
         self.world.stash(value)
     }
