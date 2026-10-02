@@ -374,29 +374,32 @@ error, `image encoding cannot write a <what> of <n>: it does not fit the
 image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
 closure's parameter and copied-value counts and a method's or factory's
 arity (`encode::u16_field`), all of which a valid program can pass
-([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a string's, a symbol's,
-a value list's and a `LargeInteger`'s digit count (`encode::u32_length`).
-Every other count goes through the asserting `encode::u32_field`, because no
-program can pass it: object and frame ids and counts are bounded by the
-heap's 32-bit handles, declaration, statement and instruction counts by
-source, whose `Span` offsets are 32-bit, and the symbol table's count by the
-two together.
+([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a
+string's, a symbol's, a value list's and a `LargeInteger`'s digit count
+(`encode::u32_length`). Every other count goes through the asserting
+`encode::u32_field`, because no program can pass it: object and frame ids
+and counts are bounded by the heap's 32-bit handles, declaration, statement
+and instruction counts by source, whose `Span` offsets are 32-bit --
+`ns_syntax::parse` refuses a source of more than `u32::MAX` bytes with a
+parse diagnostic before lexing it -- and the symbol table's count by the two
+together.
 
 **A call-site number is a property of the code, never a byte on the wire.**
 It is feedback-table bookkeeping, not program meaning: the decoder assigns
 every family's numbers itself, in the compiler's own emission order, once
 the whole code table is read (`decode::number_call_site_families`), rather
 than trusting a number the file claims, writing each into the decoded body
-in place through `EncodedBody::for_each_emitted_mut`. A code record carries one flag,
-whether its sends were compiled uncached (the reference lowering never
-numbers a send at all, so it marks the whole body rather than leaving each
-send to say so), and one count, `copied_count`, so that a block's register
-layout is known from its code alone. `outer_reach` is not on the wire either:
-the decoder derives it with the compiler's own `bytecode::outer_reach_of`,
-which works because a block's code precedes its parent's in the table. A
-body's `family_size` is not on the wire either way; both
-sides derive it from the sends' numbers and the blocks' sizes with the same
-function (`bytecode::family_size_of`). A block precedes its parent in the
+in place through `EncodedBody::for_each_emitted_mut`. A code record carries
+one flag, whether its sends were compiled uncached (the reference lowering
+never numbers a send at all, so it marks the whole body rather than leaving
+each send to say so), and one count, `copied_count`, so that a block's
+register layout is known from its code alone. `outer_reach` is not on the
+wire either: the decoder derives it as the compiler does, in
+`CompiledCode::from_builder`, which works because a block's code precedes
+its parent's in the table. A body's `family_size` is not on the wire either
+way; both sides derive it from the sends' numbers and the blocks' sizes the
+same way, read off the encoding as `bytecode::family_size_of` reads the
+decoded view. A block precedes its parent in the
 table, but its numbers depend on where its `MakeClosure` sits in its root's
 emission order, so the decoder numbers a family only once its root -- the
 body nothing else's `MakeClosure` creates -- has been read in full. The
@@ -1518,29 +1521,29 @@ entry on the explicit activation stack ([execution.md](execution.md),
 activation stack is its only copy, since sends do not recurse through the Rust
 call stack ([execution.md](execution.md), "The trampoline") and nothing
 re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
-from Rust"). What is missing is a yield path out of `vm::run`, a re-entry
-point that would continue a decoded frame at its `program_counter`, and an encoding for
-what each stack entry's `Continuation` carries in Rust: a native loop's
+from Rust"). What is missing is a yield path out of `vm::run`, a re-entry point
+that would continue a decoded frame at its `program_counter`, and an encoding
+for what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
-instantiation's `Instantiation`, the unwind an `ensure:` block's return
-carries on (`Unwind`, holding a `PendingUnwind`: its target frame and whether
-it returns a value, restarts or terminates), the end of the run a VM
-error's `signal` returns into (`VmErrorSignalled`) and a future's forcing
-(`Future`, holding a `FutureForcing`). An image records none of
-them today, and a suspended activation without its continuation would resume
-without the rest of the loop, the class creation, the walk or the unwind it
-belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame
-held while an error near the limit is signalled, would have to travel with
-the stack as well ([execution.md](execution.md), "The depth limit").
-Under the planned object layout every reified frame will have room for its
-registers, since a frame object will be allocated with its code's full
-register count ([object-model.md](object-model.md),
-"Planned: the object layout"). Suspending then means reifying and divorcing the whole stack, which is the same
-operation a debugger performs on the frames it touches — and the same operation upstream
+instantiation's `Instantiation`, the unwind an `ensure:` block's return carries
+on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
+a value, restarts or terminates), the end of the run a VM error's `signal`
+returns into (`VmErrorSignalled`) and a future's forcing (`Future`, holding a
+`FutureForcing`). An image records none of them today, and a suspended
+activation without its continuation would resume without the rest of the loop,
+the class creation, the walk or the unwind it belongs to. The depth limit's
+reserve (`Mutator.depth_reserve`), a frame held while an error near the limit is
+signalled, would have to travel with the stack as well
+([execution.md](execution.md), "The depth limit"). Under the planned object
+layout every reified frame will have room for its registers, since a frame
+object will be allocated with its code's full register count
+([object-model.md](object-model.md), "Planned: the object layout"). Suspending
+then means reifying and divorcing the whole stack, which is the same operation a
+debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
-before taking a snapshot. An activation's `program_counter` being stored only at sends,
-`MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
-safepoints, and a suspension could only happen at a send boundary.
+before taking a snapshot. An activation's `program_counter` being stored only at
+sends, `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are
+exactly the safepoints, and a suspension could only happen at a send boundary.
 
 Whoever builds this must first close a decoder gap that today is inert only
 because nothing reactivates a decoded frame. `decode::verify_graph` checks a
