@@ -1,0 +1,20 @@
+(* A float outside the immediate range -- huge, denormal -- is a Float like
+   any other: same class, equality and hash by value, arithmetic in and out
+   of the range. *)
+class AFloatBeyondTheImmediateRangeBehavesAsAnyFloat = Object new (
+) (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. big = 1.0e300. tiny = 1.0 / 1.0e300 / 1.0e10. |
+        transcript show: big class name; newLine.
+        transcript show: (big + big = (big * 2.0)) printString; newLine.
+        transcript show: ((big + big) hash = (big * 2.0) hash) printString; newLine.
+        transcript show: (big + big == (big * 2.0)) printString; newLine.
+        transcript show: (big / big = 1.0) printString; newLine.
+        transcript show: (big > 1.0e38) printString; newLine.
+        transcript show: (tiny class = big class) printString; newLine.
+        transcript show: (tiny > 0.0) printString; newLine.
+        transcript show: (tiny + tiny = (tiny * 2.0)) printString; newLine.
+        transcript show: (tiny < (1.0 / 1.0e300)) printString; newLine.
+        transcript show: (big asInteger > 0) printString; newLine
+    )
+) : ()

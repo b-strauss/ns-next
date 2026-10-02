@@ -23,6 +23,7 @@ use crate::Symbol;
 pub(crate) mod mark;
 mod value;
 mod world;
+pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
 pub use value::{fits_small_integer, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN};
 pub(crate) use world::World;
@@ -1306,12 +1307,31 @@ impl<'gc> Heap<'gc> {
             .map(crate::CodePoints::content_hash)
     }
 
-    /// Any float, immediate or boxed; `None` for anything else.
+    /// Any float, immediate or boxed; `None` for anything else. Reads the
+    /// payload, never the class, so that `Float new`, an `Instance`, is no
+    /// number, as `LargeInteger new` is not.
     pub fn float_value(&self, value: Value<'gc>) -> Option<f64> {
         match value.kind() {
             ValueKind::SmallFloat(number) => Some(number),
+            ValueKind::Object(object) => {
+                self.check_object_origin(object);
+                match self.objects[object.index as usize].data {
+                    ObjectData::Float(number) => Some(number),
+                    _ => None,
+                }
+            }
             _ => None,
         }
+    }
+
+    /// Whether `object` is a boxed `Float`, a float outside the immediate
+    /// range.
+    pub fn is_boxed_float(&self, object: ObjectReference<'gc>) -> bool {
+        self.check_object_origin(object);
+        matches!(
+            self.objects[object.index as usize].data,
+            ObjectData::Float(_)
+        )
     }
 
     /// The integer a `LargeInteger` object holds; `None` for any other
@@ -1608,6 +1628,8 @@ impl<'gc> Heap<'gc> {
                     // Bare digits, as a `SmallInteger` describes: which of the
                     // two an integer is, is no business of an error message.
                     ObjectData::LargeInteger(integer) => integer.to_decimal_string(),
+                    // As an immediate float describes, for the same reason.
+                    ObjectData::Float(float) => float.to_string(),
                     ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
@@ -3124,7 +3146,10 @@ impl<'gc> Heap<'gc> {
                     replace(copied);
                 }
                 // No `Value` field at all.
-                ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
+                ObjectData::String(_)
+                | ObjectData::Symbol(_)
+                | ObjectData::LargeInteger(_)
+                | ObjectData::Float(_) => {}
                 // Every handle a class object holds -- its enclosing object,
                 // its declaring class, its superclass, itself -- is an
                 // `ObjectReference`, not a `Value`: no future can stand in

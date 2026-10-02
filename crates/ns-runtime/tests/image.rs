@@ -153,9 +153,6 @@ fn scalar_value_boundary_cases_round_trip() {
             Value::small_integer(SMALL_INTEGER_MIN),
             Value::small_integer(SMALL_INTEGER_MAX),
             Value::small_integer(0),
-            mutator.new_float(f64::NAN),
-            mutator.new_float(f64::INFINITY),
-            mutator.new_float(f64::NEG_INFINITY),
             mutator.new_float(-0.0),
             mutator.new_float(0.0),
         ];
@@ -189,6 +186,32 @@ fn scalar_value_boundary_cases_round_trip() {
             .and_then(|object| mutator.heap().large_integer(object));
         assert!(large.is_some(), "expected a LargeInteger");
         assert_eq!(mutator.heap().describe(&decoded), "9223372036854775807");
+        // A float outside the immediate range travels under the same tag as
+        // every float and loads as a boxed Float with its own bits: every
+        // NaN payload, the infinities, and 2^-127, whose exponent is the
+        // immediate range's lowest but whose mantissa is zero.
+        for bits in [
+            f64::NAN.to_bits(),
+            f64::NAN.to_bits() | (1 << 63),
+            0x7FF0_0000_0000_0001,
+            0x7FF8_0000_DEAD_BEEF,
+            f64::INFINITY.to_bits(),
+            f64::NEG_INFINITY.to_bits(),
+            896 << 52,
+        ] {
+            let mut writer = encode::Writer::new();
+            writer.write_u8(VALUE_FLOAT);
+            writer.write_f64(f64::from_bits(bits));
+            let bytes = writer.into_bytes();
+            let mut reader = decode::Reader::new(&bytes);
+            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            assert!(decoded.as_object().is_some(), "{bits:#x} is boxed");
+            assert_eq!(
+                mutator.heap().float_value(decoded).map(f64::to_bits),
+                Some(bits),
+                "{bits:#x}"
+            );
+        }
     });
 }
 
@@ -1233,6 +1256,84 @@ fn a_large_integer_value_round_trips() {
         ("smallClass", "LargeInteger"),
         ("edgeText", "1152921504606846976"),
         ("edgeClass", "LargeInteger"),
+    ] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            let Some(string) = mutator.fetch(&answer).as_object() else {
+                panic!("{selector}: expected a string")
+            };
+            assert_eq!(
+                mutator.heap().str_value(string).as_deref(),
+                Some(expected),
+                "{selector}"
+            );
+        });
+    }
+}
+
+/// A float outside the immediate range in a slot survives a snapshot as a
+/// value, as a `LargeInteger` does: a boxed Float has no identity (§3.1.1),
+/// so the image carries its bits wherever it is referenced and writes no
+/// object record for it.
+#[test]
+fn a_boxed_float_value_round_trips_without_a_record() {
+    let source = indoc! {"
+        class X = Object new (
+          | notANumber = 0.0 / 0.0. infinity = 1.0 / 0.0. huge = 1.0e300. |
+        ) (
+          public notANumberText = ( ^notANumber printString )
+          public infinityText = ( ^infinity printString )
+          public hugeText = ( ^huge printString )
+          public hugeClass = ( ^huge class printString )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let huge = 1.0e300_f64.to_string();
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        !report
+            .graph_objects
+            .iter()
+            .any(|object| object.starts_with("class Float")),
+        "no Float record: {:?}",
+        report.graph_objects
+    );
+    for value in ["NaN", "inf", huge.as_str()] {
+        assert!(
+            report.graph_objects.iter().any(|object| object
+                .split(|character: char| !character.is_ascii_alphanumeric())
+                .any(|word| word == value)),
+            "{value} is carried as a value: {:?}",
+            report.graph_objects
+        );
+    }
+    let mut loaded = image::load(&bytes).expect("load");
+    for (selector, expected) in [
+        ("notANumberText", "NaN"),
+        ("infinityText", "inf"),
+        ("hugeText", huge.as_str()),
+        ("hugeClass", "Float"),
     ] {
         let answer = expect_ok(
             loaded

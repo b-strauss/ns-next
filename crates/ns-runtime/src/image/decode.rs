@@ -2424,6 +2424,11 @@ fn decode_value<'gc>(
         // top of the placeholders' 16.4x and 20.4x: about 23.5x and 29.3x
         // in all, the worst case of a rejected load.
         VALUE_SMALL_INTEGER => Ok(integer_value(reader.read_i64()?, context.mutator)),
+        // A float outside the immediate range allocates its boxed `Float`:
+        // 9 bytes (tag, `f64`) for an `Object` alone, its payload inline,
+        // 56/9 = 6.2x in a release build and 72/9 = 8.0x in a debug one, on
+        // top of the placeholders: about 22.6x and 28.4x, below
+        // `VALUE_SMALL_INTEGER`'s, which stays the worst case.
         VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
         VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
         VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),

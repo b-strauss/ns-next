@@ -1064,9 +1064,10 @@ impl<'gc> GraphTable<'gc> {
         let Some(object) = value.as_object() else {
             return;
         };
-        // A value, not a record: `encode_value` writes its digits wherever it
-        // is referenced, so it takes no object id (§3.1.1).
-        if heap.is_large_integer(object) {
+        // A value, not a record: `encode_value` writes its digits, or a
+        // boxed float's bits, wherever it is referenced, so it takes no
+        // object id (§3.1.1).
+        if heap.is_large_integer(object) || heap.is_boxed_float(object) {
             return;
         }
         if is_same_object(value, platform) {
@@ -1153,7 +1154,10 @@ impl<'gc> GraphTable<'gc> {
                     );
                 }
                 ObjectData::Activation(frame) => stack.push(Pending::Frame(*frame)),
-                ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
+                ObjectData::String(_)
+                | ObjectData::Symbol(_)
+                | ObjectData::LargeInteger(_)
+                | ObjectData::Float(_) => {}
             }
         }
         stack[before..].reverse();
@@ -1392,7 +1396,8 @@ fn encode_optional_class<'gc>(
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
 /// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton, 8 = an
 /// object a platform path names, a class object's included, 9 = a
-/// `LargeInteger`'s digits.
+/// `LargeInteger`'s digits. A boxed float travels as tag 4, as every float
+/// does.
 ///
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
@@ -1424,6 +1429,14 @@ fn encode_value<'gc>(writer: &mut Writer, value: &Value<'gc>, context: &EncodeCo
                 write_large_integer(writer, &integer);
             }
         }
+        return;
+    }
+    // A boxed float likewise, under the one tag every float travels as: the
+    // decoder's `Mutator::new_float` decides by the range again which
+    // representation it loads as.
+    if let Some(float) = context.heap.float_value(*value) {
+        writer.write_u8(VALUE_FLOAT);
+        writer.write_f64(float);
         return;
     }
     if is_same_object(value, context.platform) {
@@ -1685,6 +1698,10 @@ fn encode_object<'gc>(
         // give two equal integers two identities.
         ObjectData::LargeInteger(_) => {
             unreachable!("a LargeInteger is written as a value, never as an object record")
+        }
+        // Likewise a boxed `Float`, whose bits `encode_value` writes.
+        ObjectData::Float(_) => {
+            unreachable!("a boxed Float is written as a value, never as an object record")
         }
     }
     Ok(())

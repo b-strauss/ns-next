@@ -1465,10 +1465,16 @@ impl<'gc> Mutator<'gc> {
     }
 
     /// The one way an `f64` becomes a `Value`, so that every float has one
-    /// representation once floats outside the `SmallFloat64` range are boxed
+    /// representation: one inside the `SmallFloat64` range is immediate,
+    /// every other a boxed `Float`, which `Float>>=` and `hash` rely on
     /// (`docs/design/object-model.md`, "Planned: an eight-byte value").
     pub fn new_float(&mut self, value: f64) -> Value<'gc> {
-        Value::small_float(value)
+        if crate::heap::is_small_float_bits(value.to_bits()) {
+            Value::small_float(value)
+        } else {
+            let class = self.builtin_class(BuiltinClass::Float);
+            Value::object(self.new_instance_object(class, ObjectData::Float(value)))
+        }
     }
 
     /// The one way an `ArbitraryInteger` becomes a `Value`, so that every

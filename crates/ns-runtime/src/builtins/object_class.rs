@@ -20,7 +20,7 @@ pub(crate) fn execute<'gc>(
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Object(primitive),
-                identical(&receiver, &arguments[0]),
+                identical(&mutator.heap, &receiver, &arguments[0]),
                 receiver,
                 arguments,
             )
@@ -36,20 +36,28 @@ pub(crate) fn execute<'gc>(
     }
 }
 
-fn identical<'gc>(first: &Value<'gc>, second: &Value<'gc>) -> bool {
+fn identical<'gc>(heap: &Heap<'gc>, first: &Value<'gc>, second: &Value<'gc>) -> bool {
+    // A float's identity is its bits, whether it is immediate or boxed: a
+    // boxed `Float` is a value (§3.1.1), so two allocations of one float are
+    // the same float, as two immediates of it are.
+    if let (Some(left), Some(right)) = (heap.float_value(*first), heap.float_value(*second)) {
+        return left.to_bits() == right.to_bits();
+    }
     match (first.kind(), second.kind()) {
         (ValueKind::Nil, ValueKind::Nil) => true,
         (ValueKind::Boolean(left), ValueKind::Boolean(right)) => left == right,
         (ValueKind::SmallInteger(left), ValueKind::SmallInteger(right)) => left == right,
-        (ValueKind::SmallFloat(left), ValueKind::SmallFloat(right)) => {
-            left.to_bits() == right.to_bits()
-        }
         (ValueKind::Object(left), ValueKind::Object(right)) => left.same(right),
         _ => false,
     }
 }
 
 fn identity_hash_of<'gc>(heap: &mut Heap<'gc>, value: &Value<'gc>) -> u32 {
+    // A boxed float hashes as an immediate one does, since `identical`
+    // makes it the same float as every other allocation of its bits.
+    if heap.float_value(*value).is_some() {
+        return 0;
+    }
     match value.as_object() {
         Some(object) => heap.ensure_identity_hash(object),
         None => 0, // primitives are values and get no distinct identity

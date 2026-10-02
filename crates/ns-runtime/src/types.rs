@@ -64,6 +64,11 @@ pub enum ObjectData<'gc> {
     /// `Mutator::new_integer` is the one way to make one and decides that --
     /// so each integer has one representation. Holds no handle.
     LargeInteger(crate::ArbitraryInteger),
+    /// An instance of `Float` whose value lies outside the immediate range:
+    /// NaN, the infinities, denormals and magnitudes outside about 2^-127 to
+    /// 2^129. `Mutator::new_float` is the one way to make one and decides
+    /// that, so each float has one representation. Holds no handle.
+    Float(f64),
 }
 
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing

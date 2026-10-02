@@ -309,6 +309,13 @@ fn compare_node<'gc>(
                     Some(&second),
                 )));
             }
+            if let Some(number) = mutator.heap().float_value(Value::object(left)) {
+                return Some(Pair::Decided(numbers::float_equals(
+                    mutator.heap(),
+                    number,
+                    Some(&second),
+                )));
+            }
             if mutator.heap().is_string(left) {
                 return Some(Pair::Decided(text::text_equals(
                     mutator.heap(),
@@ -362,6 +369,9 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
             if let Some(integer) = mutator.heap().large_integer(object) {
                 return Some(Node::Leaf(numbers::large_integer_hash(&integer)));
             }
+            if let Some(number) = mutator.heap().float_value(Value::object(object)) {
+                return Some(Node::Leaf(numbers::float_hash(number)));
+            }
             if let Some(hash) = mutator.heap().string_hash(object) {
                 return Some(Node::Leaf(hash));
             }
@@ -385,8 +395,7 @@ fn derived_equality<'gc>(
     // of every `self class == other class`, which was `Object`'s identity
     // leaf before class objects became values: answered here without
     // building the walk wherever the walk's first step would decide. Only
-    // for class objects -- an instance is never equal to itself on identity
-    // alone, since a value holding a NaN is unequal to itself.
+    // for class objects.
     if let (Some(first), Some(second)) = (left.as_object(), right.as_object()) {
         if mutator.heap().is_class(first) && mutator.heap().is_class(second) {
             if first.same(second) {

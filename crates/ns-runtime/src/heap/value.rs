@@ -16,6 +16,23 @@ pub const fn fits_small_integer(value: i64) -> bool {
     SMALL_INTEGER_MIN <= value && value <= SMALL_INTEGER_MAX
 }
 
+/// Spur's `isSmallFloatValueBits`: an exponent of 897 to 1151, or 896 with a
+/// non-zero mantissa, or ±0.0. That is the eight-bit subset of the exponent
+/// the tagged word keeps (`docs/design/object-model.md`, "Planned: an
+/// eight-byte value"); every other float is a boxed `Float`.
+pub(crate) const fn is_small_float_bits(bits: u64) -> bool {
+    const OFFSET: u64 = 896;
+    let exponent = (bits >> 52) & 0x7FF;
+    let mantissa = bits & ((1 << 52) - 1);
+    if exponent > OFFSET {
+        exponent <= OFFSET + 0xFF
+    } else if mantissa != 0 {
+        exponent == OFFSET
+    } else {
+        exponent == 0
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Value<'gc>(Representation<'gc>);
 
@@ -60,10 +77,14 @@ impl<'gc> Value<'gc> {
         Value(Representation::Object(object))
     }
 
-    /// The immediate float. Only `Mutator::new_float` makes one: every float
-    /// is made through it, so that once floats outside the immediate range
-    /// are boxed, every float still has one representation.
-    pub(crate) const fn small_float(value: f64) -> Value<'gc> {
+    /// The immediate float. Only `Mutator::new_float` makes one, and only for
+    /// a float inside the immediate range, so that every float has one
+    /// representation: a float outside it is a boxed `Float`.
+    pub(crate) fn small_float(value: f64) -> Value<'gc> {
+        debug_assert!(
+            is_small_float_bits(value.to_bits()),
+            "an immediate float outside the SmallFloat64 range"
+        );
         Value(Representation::Float(value))
     }
 
@@ -173,6 +194,30 @@ mod tests {
         let copy = original;
         assert_eq!(original.as_small_integer(), Some(-7));
         assert_eq!(copy.as_small_integer(), Some(-7));
+    }
+
+    #[test]
+    fn the_small_float_range_is_spurs() {
+        use super::is_small_float_bits;
+        let bits = |number: f64| number.to_bits();
+        assert!(is_small_float_bits(bits(0.0)));
+        assert!(is_small_float_bits(bits(-0.0)));
+        assert!(is_small_float_bits(bits(1.0)));
+        assert!(is_small_float_bits(bits(-2.5)));
+        assert!(is_small_float_bits(bits(1.0e38)));
+        // Exponent 896 with a non-zero mantissa is the smallest immediate.
+        assert!(is_small_float_bits((896 << 52) | 1));
+        // Exponent 896 with a zero mantissa, 2^-127, would encode as zero.
+        assert!(!is_small_float_bits(896 << 52));
+        // Exponent 1151 is the largest immediate, 1152 the first boxed.
+        assert!(is_small_float_bits((1151 << 52) | ((1 << 52) - 1)));
+        assert!(!is_small_float_bits(1152 << 52));
+        assert!(!is_small_float_bits(bits(1.0e300)));
+        assert!(!is_small_float_bits(bits(1.0e-300)));
+        assert!(!is_small_float_bits(bits(f64::MIN_POSITIVE / 2.0)));
+        assert!(!is_small_float_bits(bits(f64::NAN)));
+        assert!(!is_small_float_bits(bits(f64::INFINITY)));
+        assert!(!is_small_float_bits(bits(f64::NEG_INFINITY)));
     }
 
     #[test]

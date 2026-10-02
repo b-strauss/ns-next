@@ -461,3 +461,33 @@ fn a_float_is_made_by_the_mutator_and_read_by_the_heap() {
         assert!(matches!(value.kind(), ValueKind::SmallFloat(number) if number == 2.5));
     });
 }
+
+#[test]
+fn every_float_reads_back_with_its_own_bits_whether_immediate_or_boxed() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        // (number, whether it is boxed)
+        for (number, boxed) in [
+            (0.0, false),
+            (-0.0, false),
+            (1.5, false),
+            (1.0e38, false),
+            (f64::from_bits((896 << 52) | 1), false),
+            (f64::from_bits(896 << 52), true),
+            (1.0e300, true),
+            (-1.0e300, true),
+            (1.0e-300, true),
+            (5.0e-324, true),
+            (f64::NAN, true),
+            (f64::INFINITY, true),
+            (f64::NEG_INFINITY, true),
+            (f64::MAX, true),
+            (f64::MIN_POSITIVE, true),
+        ] {
+            let value = mutator.new_float(number);
+            let back = mutator.heap().float_value(value).map(f64::to_bits);
+            assert_eq!(back, Some(number.to_bits()), "{number}");
+            assert_eq!(value.as_object().is_some(), boxed, "{number}");
+        }
+    });
+}

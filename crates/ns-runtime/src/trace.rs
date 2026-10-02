@@ -63,7 +63,10 @@ impl Trace for ObjectData<'_> {
             ObjectData::Instance(values) | ObjectData::Array(values) => {
                 trace_values(values, tracer)
             }
-            ObjectData::String(_) | ObjectData::Symbol(_) | ObjectData::LargeInteger(_) => {}
+            ObjectData::String(_)
+            | ObjectData::Symbol(_)
+            | ObjectData::LargeInteger(_)
+            | ObjectData::Float(_) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
             ObjectData::Activation(frame) => tracer.frame(frame),
