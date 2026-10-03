@@ -32,6 +32,40 @@ impl CodePoints {
         })
     }
 
+    /// Latin-1 code points, one byte each; every byte is one, so this
+    /// needs no check.
+    pub(crate) fn from_bytes(bytes: Box<[u8]>) -> CodePoints {
+        CodePoints(Representation::Narrow(bytes))
+    }
+
+    /// Code points 32 bits each, narrowed when every one fits Latin-1, so
+    /// the result stays canonical. Each must be a scalar value: the caller
+    /// read them out of a string that held them.
+    pub(crate) fn from_wide(words: Box<[u32]>) -> CodePoints {
+        debug_assert!(words.iter().all(|word| char::from_u32(*word).is_some()));
+        if words.iter().all(|word| *word <= 0xFF) {
+            CodePoints::from_words(&words)
+        } else {
+            CodePoints(Representation::Wide(words))
+        }
+    }
+
+    /// The elements, one byte each, when the string is narrow.
+    pub(crate) fn as_bytes(&self) -> Option<&[u8]> {
+        match &self.0 {
+            Representation::Narrow(bytes) => Some(bytes),
+            Representation::Wide(_) => None,
+        }
+    }
+
+    /// The elements, 32 bits each, when the string is wide.
+    pub(crate) fn as_wide(&self) -> Option<&[u32]> {
+        match &self.0 {
+            Representation::Narrow(_) => None,
+            Representation::Wide(words) => Some(words),
+        }
+    }
+
     pub fn size(&self) -> usize {
         match &self.0 {
             Representation::Narrow(bytes) => bytes.len(),
@@ -237,6 +271,23 @@ mod tests {
             Some(CodePoints::from("é"))
         );
         assert_ne!(CodePoints::from("€"), CodePoints::from("e"));
+    }
+
+    #[test]
+    fn units_read_back_into_the_canonical_width() {
+        for text in TEXTS {
+            let code_points = CodePoints::from(text);
+            let rebuilt = match (code_points.as_bytes(), code_points.as_wide()) {
+                (Some(bytes), None) => CodePoints::from_bytes(bytes.into()),
+                (None, Some(words)) => CodePoints::from_wide(words.into()),
+                _ => unreachable!("a string is narrow or wide"),
+            };
+            assert_eq!(rebuilt, code_points, "{text}");
+        }
+        assert_eq!(
+            CodePoints::from_wide(Box::new([0x63, 0xE9])),
+            CodePoints::from("cé")
+        );
     }
 
     #[test]

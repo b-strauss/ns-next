@@ -39,21 +39,16 @@ pub(crate) fn text_equals<'gc>(
     }
 }
 
-/// `Symbol>>=`'s rule: equal symbols are one interned symbol. A `Symbol`
-/// payload only ever belongs to the one `Symbol` class, so the class guard
-/// decides nothing here on its own; it is written out so that the three
-/// rules read alike and a later payload that is shared the way `String`'s
-/// is cannot quietly reopen the cross-class hole.
+/// `Symbol>>=`'s rule: a symbol is canonical, one object per text (§5.1.6),
+/// so two symbols are equal exactly when they are the same object. A String
+/// of the same text is never equal to it.
 pub(crate) fn symbol_equals<'gc>(
-    heap: &Heap<'gc>,
     receiver: ObjectReference<'gc>,
-    symbol: Symbol,
     argument: Option<Value<'gc>>,
 ) -> bool {
-    match of_the_same_class(heap, receiver, argument) {
-        Some(other) => heap.symbol_value(other) == Some(symbol),
-        None => false,
-    }
+    argument
+        .and_then(|value| value.as_object())
+        .is_some_and(|other| other.same(receiver))
 }
 
 /// A string's content hash: its text, not its address, since two separately
@@ -282,13 +277,20 @@ pub(crate) fn execute_symbol<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
-    let symbol = mutator.heap.symbol_value(object)?;
     match primitive {
-        SymbolPrimitive::AsString => Some(Ok(Value::object(
-            mutator.new_string(symbol.as_str().to_string()),
-        ))),
+        SymbolPrimitive::AsString => {
+            let symbol = mutator.heap.symbol_value(object)?;
+            Some(Ok(Value::object(
+                mutator.new_string(symbol.as_str().to_string()),
+            )))
+        }
+        // Identity, a symbol being canonical (§5.1.6): it asks only whether
+        // the receiver is one, never which.
         SymbolPrimitive::Equal => {
-            let equal = symbol_equals(&mutator.heap, object, symbol, arguments.first().copied());
+            if !mutator.heap.is_symbol(object) {
+                return None;
+            }
+            let equal = symbol_equals(object, arguments.first().copied());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
                 Primitive::Symbol(primitive),
@@ -298,9 +300,15 @@ pub(crate) fn execute_symbol<'gc>(
             )
             .map(|answer| Ok(Value::boolean(answer)))
         }
-        SymbolPrimitive::Hash => Some(Ok(Value::small_integer(symbol_hash(symbol)))),
-        SymbolPrimitive::PrintString => Some(Ok(Value::object(
-            mutator.new_string(format!("#{}", symbol.as_str())),
-        ))),
+        SymbolPrimitive::Hash => {
+            let symbol = mutator.heap.symbol_value(object)?;
+            Some(Ok(Value::small_integer(symbol_hash(symbol))))
+        }
+        SymbolPrimitive::PrintString => {
+            let symbol = mutator.heap.symbol_value(object)?;
+            Some(Ok(Value::object(
+                mutator.new_string(format!("#{}", symbol.as_str())),
+            )))
+        }
     }
 }

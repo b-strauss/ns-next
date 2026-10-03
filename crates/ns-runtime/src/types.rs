@@ -1,5 +1,7 @@
 //! Core runtime data types: the object model, activation records, and the
-//! resolver's output shape. Pure data -- see
+//! resolver's output shape. What an object or a reified frame stores is not
+//! here: it lives behind the heap seam (`heap/object.rs`), and is built and
+//! read through `Heap`. Pure data -- see
 //! `docs/design/object-model.md`, `docs/design/execution.md`'s
 //! "Activations", and `docs/design/dispatch.md`'s "Resolution".
 
@@ -23,65 +25,19 @@ pub use crate::heap::{
     SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
 };
 
-#[derive(Debug, Clone)]
-pub struct Object<'gc> {
-    pub class: ClassReference<'gc>,
-    /// 0 until something asks for it; then drawn from a monotonic counter
-    /// (`Heap::object_ensure_identity_hash`), so allocation order stays
-    /// unobservable. Never derived from the arena index, which a moving
-    /// collector or `become:` would change (liveness spec's stable-identity
-    /// constraint).
-    pub identity_hash: u32,
-    /// The id an inline cache guards this object's sends on
-    /// (`docs/design/dispatch.md`, "The dispatch id"): its class's instances
-    /// id -- a class object's class is its metaclass. A copy, so that a
-    /// guard is one load and one compare rather than a walk to the class --
-    /// which makes every place a class's application changes responsible for
-    /// restamping it (`Heap::class_set_application`,
-    /// `Heap::stamp_dispatch_ids`). Not a handle; a move carries it along.
-    pub(crate) dispatch_id: crate::mixin::DispatchId,
-    pub data: ObjectData<'gc>,
-}
-
-#[derive(Debug, Clone)]
-pub enum ObjectData<'gc> {
-    Instance(Vec<Word>),
-    String(crate::CodePoints),
-    Symbol(Symbol),
-    Array(Vec<Word>),
-    Closure(ClosureData<'gc>),
-    /// Boxed: a class object's data is what would otherwise set every
-    /// object's size, and class objects are few (`docs/design/dispatch.md`,
-    /// "The dispatch id").
-    Class(Box<ClassData<'gc>>),
-    /// An instance of the kernel-private `Activation` class: a reified
-    /// activation, reachable only from `Kernel.ns`, which the exception
-    /// machinery walks and unwinds to. It stores the `FrameReference`, never
-    /// an `ActivationReference`, since only a reified frame outlives its pop.
-    Activation(FrameReference<'gc>),
-    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit a
-    /// `SmallInteger`'s 61 bits. It never holds a value that does --
-    /// `Mutator::new_integer` is the one way to make one and decides that --
-    /// so each integer has one representation. Holds no handle.
-    LargeInteger(crate::ArbitraryInteger),
-    /// An instance of `Float` whose value lies outside the immediate range:
-    /// NaN, the infinities, denormals and magnitudes outside about 2^-127 to
-    /// 2^129. `Mutator::new_float` is the one way to make one and decides
-    /// that, so each float has one representation. Holds no handle.
-    Float(f64),
-}
-
 /// §3.1.1's enclosing-object condition on a value class -- every enclosing
 /// object, at every level of its class chain, must be a value -- decided
 /// once, where the class object is created
 /// (`interpreter::value_class::check_value_class`, called from
-/// `interpreter::nested::after_clause`), and recorded on `ClassData` rather
+/// `interpreter::nested::after_clause`), and recorded on the class object rather
 /// than raised there: `decide_instantiation` is what refuses, since the
 /// specification's own §2.3 example creates such a class and never
 /// instantiates it (`docs/design/object-model.md`, "A value object's four
-/// conditions"). Holds no handle -- a `Symbol` and a `String`, both already
-/// rendered at creation time -- so it survives a move. An image carries none
-/// of it: `ClassData::new` defaults every decoded class's field to `None`,
+/// conditions"). Recorded as heap data, an `Array` of the offending object
+/// and the level's name (`Mutator::record_value_class_refusal`), so the
+/// collector keeps the offender and moves it like any other field; the
+/// message names it with `Heap::describe` when `new` refuses. An image
+/// carries none of it: every decoded class object starts with none,
 /// and `image::decode::rebuild_applications` recomputes it with the same
 /// `check_value_class`, once every decoded class's real application is
 /// installed, so a legitimate snapshot of a value class created carrying a
@@ -100,131 +56,19 @@ pub enum ObjectData<'gc> {
 /// refusal of its own -- such a class was checked the same way when it was
 /// created, so everything above it holds by induction. A class that does
 /// carry one is not trusted blindly: the new class inherits the fault
-/// instead, `described` and `level` carried over from that class's own
+/// instead, `offender` and `level` carried over from that class's own
 /// verdict, except that a `level` of `None` -- a fault in the stopping
 /// class's own enclosing object -- becomes `Some(<the stopping class's
 /// name>)`. A fault inherited over several levels thus keeps naming the
 /// level whose enclosing object is at fault.
-#[derive(Debug, Clone)]
-pub enum ValueClassRefusal {
-    /// `level` is `None` for the class's own enclosing object; `described`
-    /// is `Heap::describe` of the offending object, taken at creation.
+#[derive(Debug, Clone, Copy)]
+pub enum ValueClassRefusal<'gc> {
+    /// `level` is `None` for the class's own enclosing object; `offender` is
+    /// the enclosing object that is no value.
     NonValueEnclosingObject {
         level: Option<Symbol>,
-        described: String,
+        offender: ObjectReference<'gc>,
     },
-}
-
-/// A class object is *identity*; everything a class object can *do* lives
-/// on its `MixinApplication`. Two class objects built from the same mixin
-/// and the same superclass application share one `application`, which is
-/// what lets an inline cache stay monomorphic across enclosing instances
-/// once nested classes give a mixin one class object per enclosing object.
-#[derive(Debug, Clone)]
-pub struct ClassData<'gc> {
-    /// Behaviour: code, layout and the superclass chain. Shared with every
-    /// other class object built from the same mixin and superclass.
-    pub application: Rc<crate::mixin::MixinApplication>,
-    /// `newspeak-spec.pdf` §6: the enclosing object is the nested class's
-    /// only state, which is why a class object cannot be shared between
-    /// instances of its enclosing class.
-    pub enclosing: Option<ObjectReference<'gc>>,
-    /// The class object of the level whose declaration *lexically contains*
-    /// this class's declaration -- `Lookup::NestedClass`'s `ClassReference`,
-    /// the level `interpreter::nested` evaluated the declaration at. `None` for
-    /// a class that no declaration encloses: the module's root class, and a
-    /// builtin. A metaclass copies the class it belongs to (§6.3 puts a class
-    /// side in the same declaration as its instance side), so a class-side
-    /// `outer` walks the same chain.
-    ///
-    /// This is what makes the enclosing-object chain of §3.3 *lexical* the
-    /// whole way up rather than only at its first step. `enclosing` alone
-    /// gives one hop; hopping again needs the class object of the level
-    /// just reached, and that is this field, not the reached object's own
-    /// class -- those differ exactly when the declaration is inherited
-    /// across a nesting boundary. See `dispatch::kth_enclosing_object`.
-    pub declaring_class: Option<ClassReference<'gc>>,
-    /// The per-instance class-object chain, parallel to the application
-    /// chain. `outer` and `super` need it, and lookup steps it beside the
-    /// application chain for each level's class object -- the level a found
-    /// method runs in.
-    pub superclass: Option<ClassReference<'gc>>,
-    /// `None` for a user-defined class. `Some(kind)` marks one of the
-    /// core-library classes the bootstrap fills from `Kernel.ns` (or the VM
-    /// mirror's class), for the image's class tags and for `decide_factory`,
-    /// which instantiates `Array` with its own payload and refuses the
-    /// mirror's class. Lookup does not read it: a
-    /// builtin's methods are `Kernel.ns`'s, found in its mixin's method table
-    /// like any other class's, and the only primitive entries are the VM
-    /// mirror's.
-    pub builtin: Option<BuiltinClass>,
-    /// A metaclass's class: the class object whose class side this metaclass
-    /// applies. `None` for every class object that is not a metaclass. The
-    /// other direction needs no field: a class object's metaclass is its
-    /// header class (`Heap::class_metaclass`).
-    pub this_class: Option<ClassReference<'gc>>,
-    /// A copy of `application.dispatch_ids.instances`. A cache's guard does
-    /// not read it (it reads `Object::dispatch_id` in the header, through
-    /// `Heap::dispatch_id`); this is where allocating an instance of this
-    /// class, `Heap::class_dispatch_ids` and restamping
-    /// (`Heap::header_dispatch_id`) read the instances id from. Kept equal to
-    /// the application's by `ClassData::new` and
-    /// `Heap::class_install_application`, the only ways either changes. A
-    /// class object's own id is not this one but its metaclass's, read off
-    /// its header like any object's.
-    pub dispatch_id: crate::mixin::DispatchId,
-    /// For a level a mixin application added (`newspeak-spec.pdf` §6.2), the
-    /// `<:` clause that added it -- which of the applying declaration's
-    /// clauses, and so the factory message that declaration wrote for it and
-    /// that message's compiled arguments (`AppliedClause::clause`). `None` for
-    /// every other class object.
-    ///
-    /// It cannot live on the level's mixin, where an ordinary level's
-    /// superclass-clause message lives: the level's mixin is the *applied*
-    /// class's, one mixin shared by every declaration that applies it, and
-    /// each of them writes its own message. Nor on the level's application,
-    /// which the application cache shares between two declarations applying
-    /// the same mixin to the same superclass with different messages.
-    ///
-    /// Boxed, so that it adds one word to every class object rather than
-    /// three: the instantiation walk and the collector read this struct for
-    /// every class object, applied level or not.
-    pub applied_clause: Option<Box<crate::mixin::AppliedClause>>,
-    /// `ValueClassRefusal`'s own doc comment says where this is decided and
-    /// where it is refused. `None` for every class that is no value and for
-    /// a value class whose enclosing objects are all values -- which is
-    /// most of them, so `decide_instantiation` pays this read only behind
-    /// `application.inherits_value`. `ClassData::new` defaults it to `None`;
-    /// `interpreter::nested::after_clause` sets it to `Some` right after
-    /// creating the class object it is about, for a class built from
-    /// source, and `image::decode::rebuild_applications` does the same for
-    /// a decoded one, recomputed rather than carried over the wire.
-    pub value_class_refusal: Option<ValueClassRefusal>,
-}
-
-impl<'gc> ClassData<'gc> {
-    /// A class object's data around `application`. Its metaclass is not
-    /// part of it: `Mutator::attach_metaclass` builds one and makes it the
-    /// class object's header class.
-    pub fn new(
-        application: Rc<crate::mixin::MixinApplication>,
-        enclosing: Option<ObjectReference<'gc>>,
-        declaring_class: Option<ClassReference<'gc>>,
-        superclass: Option<ClassReference<'gc>>,
-        builtin: Option<BuiltinClass>,
-    ) -> ClassData<'gc> {
-        ClassData {
-            dispatch_id: application.dispatch_ids.instances,
-            application,
-            enclosing,
-            declaring_class,
-            superclass,
-            builtin,
-            this_class: None,
-            applied_clause: None,
-            value_class_refusal: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -332,40 +176,6 @@ impl BuiltinClass {
     ];
 }
 
-/// A block closure. Its compiled body is an `Rc` it shares with the
-/// `MakeClosure` instruction that made it -- the same for every closure one
-/// instruction makes -- and the frame it captured is its own. Stored inline
-/// in the closure object, never behind an `Rc`
-/// of its own: a handle lives only where the tracer can rewrite it in place
-/// (`docs/design/memory.md`, "What the collector traces"), so everything
-/// else that needs a closure -- an activation's `FrameKind`, a native
-/// loop's state, a decided `Step` -- names the closure object instead.
-///
-/// 32 bytes in a release build, which is what keeps an `Object` at 56 --
-/// this is `ObjectData`'s largest payload, and `heap.rs`'s
-/// `an_object_is_the_size_the_amplification_figure_assumes` pins the
-/// figure `CLAUDE.md`'s amplification paragraph is computed from.
-#[derive(Debug, Clone)]
-pub struct ClosureData<'gc> {
-    pub code: Rc<crate::bytecode::CompiledCode>,
-    /// The activation the closure was created in, reified. A closure keeps
-    /// it whatever it captured: `enclosingActivation` and the debugger's
-    /// "[] in Foo bar" are read off it (`docs/design/execution.md`, "The
-    /// closure keeps its defining activation").
-    pub captured_frame: FrameReference<'gc>,
-    /// What the closure was handed when it was created: a copied variable's
-    /// value, or an enclosing body's indirection vector. Its registers are
-    /// `code.argument_count + position`. `Box<[_]>`, not a `Vec`, because
-    /// `ClosureData` is `ObjectData`'s largest payload and an `Object` is
-    /// pinned at 56 bytes in a release build (`heap.rs`).
-    pub copied: Box<[Word]>,
-    /// The start of its family's range in the heap's cache table, copied from
-    /// the activation that created it, since a block belongs to its method's
-    /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
-    /// and is given a fresh range when it is first activated.
-    pub feedback_base: crate::interpreter::FeedbackBase,
-}
-
 // ---------- Resolver output ----------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -447,7 +257,7 @@ pub enum FrameKind<'gc> {
     Closure(ObjectReference<'gc>),
     /// A top-of-chain activation with no method or class of its own.
     /// Nothing that runs a program builds one (an instance initializer is
-    /// `Initializer`); kept for the image format's frame table and a future
+    /// `Initializer`); kept for the image format's frame records and a future
     /// REPL/top-level activation.
     TopLevel,
     /// An instance-initializer activation (Class Instantiation step 2)
@@ -476,7 +286,8 @@ pub enum FrameKind<'gc> {
     /// like `SuperclassMessage`'s, on the instance being initialized and with
     /// the applying class's factory arguments. It names the *level* the
     /// clause added, not the applying class: the applying class's mixin has
-    /// one body per clause, and the level's `ClassData::applied_clause` says
+    /// one body per clause, and the level's applied clause
+    /// (`Heap::class_applied_clause`) says
     /// which of them ran here -- a frame kind is how
     /// `image::decode::frame_body` finds an activation's body.
     MixinApplicationMessage(ClassReference<'gc>),
@@ -675,41 +486,6 @@ pub enum InstantiationPhase<'gc> {
     Applying { index: usize, applying: usize },
 }
 
-/// A *reified* activation: one a block captured, or one the image decoder
-/// rebuilt. A running activation lives on the `Heap`'s activation stack and
-/// becomes a `Frame` only when `Heap::reify` is asked for one; while it runs,
-/// the frame is married to its stack entry and its registers live there.
-/// See `docs/design/execution.md`, "Activations".
-#[derive(Debug, Clone)]
-pub struct Frame<'gc> {
-    pub receiver: Word,
-    pub arguments: Vec<Word>,
-    /// Indexable by resolver slot index, growable (liveness spec's
-    /// reified-activation constraint).
-    pub temporaries: Vec<Word>,
-    /// How far this activation has progressed: an instruction index into
-    /// the `CompiledCode` it runs.
-    pub program_counter: usize,
-    /// `None` for every frame the runtime reifies: a live activation's
-    /// sender is the stack entry below it, and a returned activation has
-    /// none. Kept for the image format, which records one per frame.
-    pub sender: Option<FrameReference<'gc>>,
-    /// Set only for `FrameKind::Closure` -- the enclosing method or
-    /// initializer activation.
-    pub home: Option<FrameReference<'gc>>,
-    /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6: a
-    /// top-level activation's current class is `nil`).
-    pub current_class: Option<ClassReference<'gc>>,
-    pub kind: FrameKind<'gc>,
-    /// Set once this frame's activation has returned (`Heap::pop_activation`
-    /// divorces it). A `^` whose home is such a frame is a `cannotReturn`
-    /// error (`newspeak-spec.pdf` §3.6, §7.2). `raise_return` decides by
-    /// `Heap::frame_activation`, which also covers a decoded frame, dead by
-    /// construction whatever this flag says; the flag itself is what an image
-    /// records.
-    pub uncontinuable: bool,
-}
-
 // ---------- Errors ----------
 
 /// A name-resolution failure, reported before execution begins.
@@ -733,12 +509,17 @@ pub struct NewspeakError<'gc> {
 mod tests {
     use super::*;
 
-    /// A root application with no code, no slots and no superclass. Built
-    /// directly rather than through `Mutator::apply_mixin`, so that the
-    /// tests below read only the objects they build themselves; they run in
-    /// an interpreter's entry because only `World` builds a heap.
-    fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
-        Rc::new(crate::mixin::MixinApplication {
+    /// A root application with no code, no slots and no superclass,
+    /// registered in `heap`. Built directly rather than through
+    /// `Mutator::apply_mixin`, so that the tests below read only the objects
+    /// they build themselves; they run in an interpreter's entry because
+    /// only `World` builds a heap.
+    fn empty_application(
+        heap: &mut crate::Heap<'_>,
+        name: &str,
+    ) -> Rc<crate::mixin::MixinApplication> {
+        heap.register_application(crate::mixin::MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
@@ -761,13 +542,14 @@ mod tests {
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
     fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
-        heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
-            empty_application("Object"),
-            None,
-            None,
-            None,
-            Some(BuiltinClass::Object),
-        ))))
+        let application = empty_application(heap, "Object");
+        heap.allocate_self_referential_class(crate::heap::NewClass {
+            application,
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: Some(BuiltinClass::Object),
+        })
     }
 
     #[test]
@@ -784,9 +566,7 @@ mod tests {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let class = dummy_class(&mut mutator.heap);
-            let instance = mutator
-                .heap
-                .allocate_object(class, ObjectData::Instance(vec![]));
+            let instance = mutator.heap.allocate_instance(class, 0);
             let original = Value::object(instance);
             let copy = original;
             match (original.as_object(), copy.as_object()) {
@@ -798,8 +578,8 @@ mod tests {
 
     #[test]
     fn frame_kind_top_level_has_no_current_class() {
-        let frame = Frame {
-            receiver: Word::NIL,
+        let frame = crate::heap::FrameRecord {
+            receiver: Value::nil(),
             arguments: vec![],
             temporaries: vec![],
             program_counter: 0,

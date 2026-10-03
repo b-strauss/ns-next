@@ -30,7 +30,9 @@ use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::heap::MixinId;
 use crate::types::Binding;
+use crate::types::BuiltinClass;
 use crate::Symbol;
 
 /// The guard an inline cache compares: a dense number, minted per heap, that
@@ -43,18 +45,47 @@ pub struct DispatchId(u32);
 impl DispatchId {
     /// What `Heap::dispatch_id` answers for a value whose class has no
     /// application -- only a crafted image makes one -- and what an
-    /// application built outside `apply_mixin` carries. Never cached.
-    pub const NONE: DispatchId = DispatchId(u32::MAX);
+    /// application built outside `apply_mixin` carries. Never cached. 0, so
+    /// that a header word left zero by a missed initialization carries a
+    /// guard no application was minted (`docs/design/object-model.md`, "The
+    /// reserved guard values sit at the low end").
+    pub const NONE: DispatchId = DispatchId(0);
     /// The guard of a cache entry that guards nothing: a vacant, polymorphic
     /// or megamorphic site. `Heap::dispatch_id` never answers it, so no
     /// receiver matches one.
-    pub(crate) const VACANT: DispatchId = DispatchId(u32::MAX - 1);
+    pub(crate) const VACANT: DispatchId = DispatchId(1);
+    /// A forwarder's guard (road step 5): never minted, so that every send
+    /// guarded on a forwarded receiver's own header misses.
+    pub(crate) const FORWARDED: DispatchId = DispatchId(2);
+    /// The first id the counter mints.
+    pub(crate) const FIRST_MINTED: u32 = 3;
+    /// One past the last id: the header word's guard field is 22 bits wide.
+    pub(crate) const LIMIT: u32 = 1 << 22;
 
     pub(crate) fn from_counter(value: u32) -> DispatchId {
-        debug_assert!(value < DispatchId::VACANT.0);
+        debug_assert!((DispatchId::FIRST_MINTED..DispatchId::LIMIT).contains(&value));
         DispatchId(value)
     }
+
+    /// The id as the header word's low 22 bits hold it: an object's guard
+    /// lives in its header, so that a cache's check is one load and one
+    /// compare (`heap::header`).
+    pub(crate) const fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// The id a header word's low 22 bits hold -- the header's reader, and
+    /// nothing else: unlike `from_counter` it accepts the reserved values,
+    /// since a header carries `NONE` until it is stamped.
+    pub(crate) fn from_bits(bits: u32) -> DispatchId {
+        debug_assert!(bits < DispatchId::LIMIT);
+        DispatchId(bits)
+    }
 }
+
+// The forwarder's guard is reserved now and used from road step 5 on; the
+// assertion keeps it below every minted id.
+const _: () = assert!(DispatchId::FORWARDED.0 < DispatchId::FIRST_MINTED);
 
 /// An application's id, for its instances. There is no second, class-side
 /// id: a class object's class is its metaclass (`newspeak-spec.pdf` §3.2),
@@ -475,7 +506,7 @@ pub struct MixinApplicationClause {
     pub message_code: Option<Rc<CompiledCode>>,
 }
 
-/// Which `<:` clause added a level (`types::ClassData::applied_clause`): the
+/// Which `<:` clause added a level (`Heap::class_applied_origin`): the
 /// applying declaration's mixin and the clause's position in its
 /// `mixin_applications`, rather than a copy of the clause.
 ///
@@ -506,10 +537,53 @@ impl AppliedClause {
     }
 }
 
-/// `Debug` is derived so `ObjectData::Class` keeps its own derived `Debug`
-/// now that a class object's behaviour lives here. Printing one walks the
-/// whole superclass chain and every method's AST -- as `ClassData`'s own
-/// `Debug` already did before the split.
+/// How many `<:` clauses one superclass clause may apply: the clause index
+/// is 23 bits of the class object's applied-clause `SmallInteger` -- a limit
+/// a valid program can reach, taken knowingly (decided with the user on
+/// 2026-10-03; `docs/design/object-model.md`, "Planned: the object layout").
+pub(crate) const CLAUSE_INDEX_LIMIT: usize = 1 << 23;
+
+const CLAUSE_INDEX_SHIFT: u32 = 32;
+const BUILTIN_TAG_SHIFT: u32 = 55;
+const BUILTIN_TAG_MASK: u64 = 0b11_1111;
+const SIXTY_ONE_BITS: u64 = (1 << 61) - 1;
+
+impl AppliedClause {
+    /// The three parts as one `SmallInteger`: the 61-bit pattern
+    /// sign-extended, so bit 60 makes it negative rather than too large.
+    pub(crate) fn pack(mixin: MixinId, index: usize, named_builtin: Option<BuiltinClass>) -> i64 {
+        debug_assert!(index < CLAUSE_INDEX_LIMIT);
+        let tag = named_builtin.map_or(0, |builtin| {
+            1 + BuiltinClass::ALL
+                .iter()
+                .position(|candidate| *candidate == builtin)
+                .expect("every builtin is in BuiltinClass::ALL") as u64
+        });
+        let pattern =
+            mixin.index() as u64 | (index as u64) << CLAUSE_INDEX_SHIFT | tag << BUILTIN_TAG_SHIFT;
+        ((pattern << 3) as i64) >> 3
+    }
+
+    /// `None` for a tag that names no builtin, which only a corrupt field
+    /// could hold.
+    pub(crate) fn unpack(packed: i64) -> Option<(MixinId, usize, Option<BuiltinClass>)> {
+        let pattern = packed as u64 & SIXTY_ONE_BITS;
+        let mixin = MixinId::from_index((pattern & u64::from(u32::MAX)) as usize)?;
+        let index = ((pattern >> CLAUSE_INDEX_SHIFT) as usize) & (CLAUSE_INDEX_LIMIT - 1);
+        let tag = (pattern >> BUILTIN_TAG_SHIFT) & BUILTIN_TAG_MASK;
+        let named_builtin = match tag {
+            0 => None,
+            tag => Some(*BuiltinClass::ALL.get(tag as usize - 1)?),
+        };
+        Some((mixin, index, named_builtin))
+    }
+}
+
+const _: () = assert!(BuiltinClass::ALL.len() < BUILTIN_TAG_MASK as usize);
+
+/// `Debug` is derived so a class object's payload keeps its own derived
+/// `Debug` now that a class object's behaviour lives here. Printing one
+/// walks the whole superclass chain and every method's AST.
 #[derive(Debug, Clone)]
 pub struct Mixin {
     pub name: Symbol,
@@ -725,6 +799,11 @@ pub enum InstantiationRefusal {
 
 #[derive(Debug)]
 pub struct MixinApplication {
+    /// Its index in its heap's table, the full-width identity every class
+    /// object of it names and every identity comparison of applications uses
+    /// (`docs/design/object-model.md`, "An application has two ids"); set by
+    /// `Heap::register_application`.
+    pub(crate) index: crate::heap::ApplicationIndex,
     pub mixin: Rc<Mixin>,
     pub superclass: Option<Rc<MixinApplication>>,
     /// §3.1.1: whether this application's superclass chain reaches `Value`,
@@ -850,6 +929,13 @@ pub fn declared_slots_of(
     declared
 }
 
+impl MixinApplication {
+    /// Its index in its heap's table (`Heap::application` answers it back).
+    pub fn index(&self) -> crate::heap::ApplicationIndex {
+        self.index
+    }
+}
+
 /// Unlinks the superclass list in a loop rather than through the stack.
 ///
 /// An application chain is as long as the class chain it mirrors, and once
@@ -885,10 +971,6 @@ pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
     Rc::as_ptr(mixin) as *const () as usize
 }
 
-pub fn application_key(application: &Rc<MixinApplication>) -> usize {
-    Rc::as_ptr(application) as *const () as usize
-}
-
 /// `mixin`, then every nested declaration (recursively), then its class
 /// side (recursively) -- the traversal order `image::encode`/`decode` both
 /// walk the mixin tree in, so an image's code table and its mixin table
@@ -908,5 +990,66 @@ pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
     }
     if let Some(class_side) = &mixin.class_side {
         preorder(class_side, out);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_id_tests {
+    use super::DispatchId;
+
+    #[test]
+    fn the_reserved_guards_are_the_three_lowest_ids() {
+        assert_eq!(DispatchId::NONE.bits(), 0);
+        assert_eq!(DispatchId::VACANT.bits(), 1);
+        assert_eq!(DispatchId::FORWARDED.bits(), 2);
+        assert_eq!(DispatchId::FIRST_MINTED, 3);
+        assert_eq!(DispatchId::LIMIT, 1 << 22);
+    }
+}
+
+#[cfg(test)]
+mod applied_clause_tests {
+    use super::{AppliedClause, CLAUSE_INDEX_LIMIT};
+    use crate::heap::MixinId;
+    use crate::types::BuiltinClass;
+
+    #[test]
+    fn an_applied_clause_round_trips_through_its_small_integer_at_every_edge() {
+        let largest_tag = *BuiltinClass::ALL.last().expect("builtins exist");
+        let cases = [
+            (0u32, 0usize, None),
+            (u32::MAX, CLAUSE_INDEX_LIMIT - 1, Some(largest_tag)),
+            (7, 1, Some(BuiltinClass::Object)),
+            (u32::MAX, 0, None),
+        ];
+        for (mixin, index, builtin) in cases {
+            let mixin = MixinId::from_index(mixin as usize).expect("fits");
+            let packed = AppliedClause::pack(mixin, index, builtin);
+            assert!(
+                crate::fits_small_integer(packed),
+                "{packed} is not a SmallInteger"
+            );
+            assert_eq!(AppliedClause::unpack(packed), Some((mixin, index, builtin)));
+        }
+    }
+
+    #[test]
+    fn a_negative_pattern_with_bit_sixty_set_is_read_back_through_its_sign_extension() {
+        // The builtins' tags stay below 32, so `pack` never sets bit 60; a
+        // field holding it is corrupt, and `unpack` must still answer by the
+        // 61-bit pattern -- tag 33 names no builtin.
+        let packed = ((33i64 << 55) << 3) >> 3;
+        assert!(packed < 0);
+        assert_eq!(AppliedClause::unpack(packed), None);
+        let largest_tag = *BuiltinClass::ALL.last().expect("builtins exist");
+        let mixin = MixinId::from_index(0).expect("fits");
+        assert!(AppliedClause::pack(mixin, 0, Some(largest_tag)) > 0);
+    }
+
+    #[test]
+    fn an_unpacked_builtin_tag_past_the_builtins_is_refused() {
+        // tag 63 names no builtin: 63 - 1 = 62 >= BuiltinClass::ALL.len()
+        let packed = ((63i64 << 55) << 3) >> 3;
+        assert_eq!(AppliedClause::unpack(packed), None);
     }
 }

@@ -123,7 +123,7 @@ fn activation_leaf<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let object = subject.as_object()?;
-    let frame = mutator.heap.activation_object_frame(object)?;
+    let frame = mutator.heap.object_frame(object)?;
     let live = mutator.heap.frame_activation(frame);
     let answer = match leaf {
         SubjectLeaf::Sender => {
@@ -182,8 +182,8 @@ fn activation_leaf<'gc>(
     Some(Ok(Step::Value(answer)))
 }
 
-/// A fresh object for `activation`, reified. Each call answers a new one,
-/// so the kernel compares activations only as objects one call answered.
+/// The object for `activation`: its frame object, reified on the first
+/// call and the same object on every later one while it runs.
 fn activation_object<'gc>(
     mutator: &mut Mutator<'gc>,
     activation: ActivationReference,

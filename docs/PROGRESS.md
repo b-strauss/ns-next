@@ -15,24 +15,22 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: road step 3a, the object representation**
-([object-model.md](design/object-model.md), "Planned: the object layout";
-[memory.md](design/memory.md), "Planned: the object space"):
-every object a header word, a class word and its fields, one block of words
-per slot of today's arena; class objects, closures and reified frames
-become such objects and the frame arena goes. Road step 3 is built in two
-plans, this one and then 3b, the space in `ns-memory`'s reservation with
-byte-offset handles. The design, its five open details included, was
-completed with the user on 2026-10-03; its implementation plan is
-[2026-10-03-1338-ns-next-object-representation.md](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md).
+**Next: road step 3b, the object space**
+([memory.md](design/memory.md), "Planned: the object space";
+[object-model.md](design/object-model.md), "Planned with road step 3b:
+handles"): the arena of boxed blocks gives way to one space of variably
+sized objects in `ns-memory`'s reservation, with byte-offset handles, bump
+allocation and sliding compaction; the layout of an object's words does not
+change. Its design was decided with the user on 2026-09-29 and 2026-10-03;
+it has no implementation plan yet, so the session starts by writing one.
 Everything before it on the road is built: road step 2's eight-byte value
-("The eight-byte value" below), and after it the compact instruction
-encoding ("The compact instruction encoding" below;
-[execution.md](design/execution.md), "The compact instruction encoding"),
-which stores and runs every body as eight-byte instructions with side
-tables, the program counter still an instruction index. The whole road,
-decided with the user on 2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md),
-"The road to a high-performance VM".
+("The eight-byte value" below), the compact instruction encoding ("The
+compact instruction encoding" below) and road step 3a, the object
+representation ("The object representation" below;
+[object-model.md](design/object-model.md), "The object layout"), which made
+every object a header word, a class word and its fields in one block of
+words per arena slot. The whole road, decided with the user on 2026-09-29,
+is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the
@@ -4076,3 +4074,75 @@ threaded loop through `become`, measured on a throwaway copy; an
 `IntegerBinary` form with an immediate operand; the memory the encoding
 saves, counted but not measured; and the task reviews' minor findings under
 "Missing tests" and "Code quality follow-ups".
+
+## The object representation (2026-10-03)
+
+Plan: [ns-next-object-representation](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md);
+[object-model.md](design/object-model.md), "The object layout".
+
+Road step 3a ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM"), the first of road step 3's two plans, designed with
+the user on 2026-09-29 and 2026-10-03 and built in thirteen stages, each
+green. Every object in the arena is one `Box<[u64]>` in road step 3's final
+layout: a header word -- the dispatch guard in bits 0-21, the format, a
+`LargeInteger`'s negative bit, a 22-bit identity hash and the word count --
+then the class word, then the fields. The handle is still the arena index,
+and the space in `ns-memory`'s reservation is road step 3b.
+
+- `c66bb94` -- the reserved guard values are the three lowest ids (`NONE`
+  0, `VACANT` 1, `FORWARDED` 2), and minting stops below 2^22.
+- `a7e6254` -- mixins, applications and compiled code have per-heap ids
+  (`MixinId`, `ApplicationIndex`, `CodeId`, `heap/tables.rs`), and the
+  application cache is keyed by them; none is reclaimed before live editing.
+- `c9e4e7e` -- the applied clause packs into one `SmallInteger` (mixin id,
+  clause index, builtin tag: 32, 23 and 6 bits), and more than 2^23 clauses
+  is a resolve and a decode error.
+- `cd2339b` -- nothing outside the heap module names an object's or a
+  frame's Rust payload; callers build through typed allocations and the
+  value types of `heap/records.rs`.
+- `311e8a9` -- `Symbol` is a subclass of `String`; `Symbol new` is refused
+  and `String new` answers an empty string, each pinned by a golden.
+- `20972be` -- every object has a header word, and the identity hash is 22
+  bits wide, wrapping and skipping 0; the decoder refuses a wider one
+  (`IdentityHashTooWide`).
+- `85ec6f6`, `937753e` -- instances, arrays, large integers, boxed floats,
+  strings and symbols are words read by format; a `LargeInteger`'s digits
+  are lent in place to `=`, `hash`, the comparisons and the sign tests.
+- `35f2ad6`, `5fed498` -- reified frames are objects of the frame format,
+  ten fixed fields and the whole register file, and the frame arena goes;
+  the kernel's `Activation` object is the frame object itself. A married
+  frame is pinned across a move and a collection.
+- `17436d4` -- closures are words: code id, captured frame, feedback base,
+  copied values.
+- `07a87e4` -- class objects are eight words, `Format::Class` a format of
+  its own, and a value-class refusal is heap data rendered when `new`
+  refuses.
+- `b245c9e` -- each arena slot is one block of words, traced by format
+  (`trace_block`).
+- `dc3130e`, `203b568`, `3cdbd5e` -- frames are object records on the wire
+  (`OBJECT_FRAME`, 10; the activation record's 9 retired), and the decoder
+  sizes every record in a first pass before it allocates, then fills each
+  placeholder in place; a rejected load's transient peak is about 12.0x of
+  the graph section's bytes in a release build and 16x in a debug one, plus
+  at most 4x of the symbol section's ([memory.md](design/memory.md), "The
+  amplification bound of a rejected load"), where it was 23.1x and 28.9x.
+- `e664c77` -- a symbol object's `Symbol` is one probe of a per-heap inverse
+  map kept in step with the canonical symbol table, where it rebuilt the
+  text and looked it up in the interner on every call; a closure is built
+  without a temporary list of its copied values.
+- `7c7d7f3`, `04bc394` -- the documentation describes the built state and
+  records the measurement.
+- `52dff65` -- the final review's fixes: `Heap::fill_frame`, the one public
+  way to rebuild a frame object at another size, gives way to a one-field
+  `frame_set_uncontinuable`; `symbol_value` and `fill_placeholder_class`
+  debug-assert what they rely on.
+
+Measured against `d0e8b08`, nineteen of the twenty-four sources are slower
+with separated ranges, by 3.6% to 30.5% ([execution.md](design/execution.md),
+"What the object representation moved").
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): lending a
+`LargeInteger`'s digits to its arithmetic; `reserve_for`'s cap in elements;
+the recorded guard and the slot-access check, with road step 5; the ids'
+reclamation and a weak application cache, with live editing; and the task
+reviews' minor findings under "Missing tests" and "Code quality follow-ups".

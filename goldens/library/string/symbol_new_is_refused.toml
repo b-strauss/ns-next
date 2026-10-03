@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+before
+'''
+stderr = '''
+Uncaught Newspeak error: cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol
+'''

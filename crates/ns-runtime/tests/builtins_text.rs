@@ -27,7 +27,7 @@ fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
+            .unwrap_or_else(|| panic!("expected a String, got {}", heap.describe(value))),
         _ => panic!("expected an object, got {}", heap.describe(value)),
     }
 }
@@ -265,7 +265,7 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
         ValueKind::Object(object) => match mutator.heap().symbol_value(object) {
             Some(symbol) => assert_eq!(symbol, Symbol::intern("foo:bar:")),
             None => panic!(
-                "expected ObjectData::Symbol, got {}",
+                "expected a Symbol, got {}",
                 mutator.heap().describe(Value::object(object))
             ),
         },
@@ -274,4 +274,43 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
             mutator.heap().describe(mutator.fetch(&back_to_symbol))
         ),
     });
+}
+
+/// A String's code points are packed into words, eight bytes or two 32-bit
+/// units each; every String message reads them across a word boundary and
+/// in either width, and a Symbol of a wide text is still one object.
+#[test]
+fn strings_answer_their_code_points_across_words_in_either_width() {
+    let source = indoc! {"
+        class Packed usingPlatform: p = Object new () (
+            public narrow = (
+                | text = 'abcdefghi'. |
+                ^(text size = 9)
+                    & ((text at: 9) = 105)
+                    & ((text , 'j') = 'abcdefghij')
+                    & ((text copyFrom: 8 to: 9) = 'hi')
+                    & (text hash = 'abcdefghi' hash)
+            )
+            public wide = (
+                | text = '€uro 😀'. |
+                ^(text size = 6)
+                    & ((text at: 1) = 8364)
+                    & ((text at: 6) = 128512)
+                    & ((text , '!') = '€uro 😀!')
+                    & ((text copyFrom: 2 to: 4) = 'uro')
+                    & (text asSymbol == '€uro 😀' asSymbol)
+                    & (text asSymbol asString = text)
+            )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    for selector in ["narrow", "wide"] {
+        let result = instantiate_and_send(&mut interpreter, &class, selector);
+        interpreter.enter(|mutator| {
+            assert!(
+                as_boolean(mutator.heap(), mutator.fetch(&result)),
+                "{selector}"
+            );
+        });
+    }
 }

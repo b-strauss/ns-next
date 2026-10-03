@@ -87,6 +87,18 @@ impl Word {
     pub(super) fn with_object_index(index: u32) -> Word {
         Word(u64::from(index) << TAG_BITS)
     }
+
+    /// The word a pointer field of a word-format object holds, back from
+    /// its bits; only the heap, which stored it through `Heap::store`,
+    /// converts.
+    pub(super) fn from_bits(bits: u64) -> Word {
+        Word(bits)
+    }
+
+    /// The bits a word-format object keeps for this word.
+    pub(super) fn bits(self) -> u64 {
+        self.0
+    }
 }
 
 /// Never `{:?}` a `Word` in Newspeak-facing text; this exists so that the

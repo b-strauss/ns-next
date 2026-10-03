@@ -64,9 +64,9 @@ pub struct Report {
     /// The platform paths the graph names objects by, in section order, each
     /// its members separated by spaces.
     pub platform_paths: Vec<String>,
-    /// The object graph, read record by record rather than rebuilt.
+    /// The object graph, read record by record rather than rebuilt; a
+    /// frame is an object record like any other.
     pub graph_objects: Vec<String>,
-    pub graph_frames: Vec<String>,
     pub graph_roots: Vec<String>,
     /// The identity hashes the graph section records for the objects it
     /// names by tag. Rendered only by `render_full`.
@@ -210,7 +210,6 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
 /// printing plausible nonsense.
 struct GraphView {
     objects: Vec<String>,
-    frames: Vec<String>,
     roots: Vec<String>,
     tag_named: Vec<String>,
 }
@@ -380,10 +379,55 @@ fn read_optional_class(
 
 fn read_frame_reference(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
     Ok(if reader.read_boolean()? {
-        format!("frame {}", reader.read_u32()?)
+        format!("object {}", reader.read_u32()?)
     } else {
         "-".to_string()
     })
+}
+
+/// An `OBJECT_FRAME` body, in the order the wire has it.
+fn read_frame_record(
+    reader: &mut decode::Reader,
+    symbols: &symbols::Table,
+    targets: &TagTargets<'_>,
+) -> Result<String, decode::DecodeError> {
+    let kind = match reader.read_u8()? {
+        opcodes::FRAME_METHOD => format!("method {}", symbols.get(reader.read_u32()?)?),
+        opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
+        opcodes::FRAME_INITIALIZER => {
+            format!("initializer of {}", read_class_tag(reader, targets)?)
+        }
+        opcodes::FRAME_SUPERCLASS_CLAUSE => {
+            format!("superclass clause of {}", read_class_tag(reader, targets)?)
+        }
+        opcodes::FRAME_SUPERCLASS_MESSAGE => {
+            format!("superclass message of {}", read_class_tag(reader, targets)?)
+        }
+        opcodes::FRAME_MIXIN_APPLICATION_MESSAGE => format!(
+            "mixin application message of {}",
+            read_class_tag(reader, targets)?
+        ),
+        opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
+        tag => {
+            return Err(decode::DecodeError::InvalidTag {
+                what: "frame kind",
+                tag,
+            })
+        }
+    };
+    let program_counter = reader.read_u32()?;
+    let uncontinuable = reader.read_boolean()?;
+    let receiver = read_value(reader, targets)?;
+    let sender = read_frame_reference(reader)?;
+    let home = read_frame_reference(reader)?;
+    let current_class = read_optional_class(reader, targets)?;
+    let registers = read_values(reader, targets)?;
+    Ok(format!(
+        "frame {kind}, pc {program_counter}, uncontinuable {uncontinuable}, \
+         receiver {receiver}, sender {sender}, home {home}, current class {current_class}, \
+         registers [{}]",
+        registers.join(", ")
+    ))
 }
 
 fn read_value(
@@ -450,11 +494,6 @@ fn walk_graph(
         decode::MIN_OBJECT_RECORD_BYTES,
         reader,
     )?;
-    let frame_count = decode::bounded_count(
-        reader.read_u32()? as usize,
-        decode::MIN_FRAME_RECORD_BYTES,
-        reader,
-    )?;
 
     let mut objects = Vec::with_capacity(object_count);
     for _ in 0..object_count {
@@ -474,7 +513,7 @@ fn walk_graph(
             opcodes::OBJECT_METACLASS => {
                 format!("metaclass of {}", read_class_tag(reader, targets)?)
             }
-            opcodes::OBJECT_ACTIVATION => format!("activation of frame {}", reader.read_u32()?),
+            opcodes::OBJECT_FRAME => read_frame_record(reader, symbols, targets)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "object body",
@@ -483,49 +522,6 @@ fn walk_graph(
             }
         };
         objects.push(format!("class {class}, hash {hash}, {body}"));
-    }
-
-    let mut frames = Vec::with_capacity(frame_count);
-    for _ in 0..frame_count {
-        let receiver = read_value(reader, targets)?;
-        let arguments = read_values(reader, targets)?;
-        let temporaries = read_values(reader, targets)?;
-        let program_counter = reader.read_u32()?;
-        let sender = read_frame_reference(reader)?;
-        let home = read_frame_reference(reader)?;
-        let current_class = read_optional_class(reader, targets)?;
-        let kind = match reader.read_u8()? {
-            opcodes::FRAME_METHOD => format!("method {}", symbols.get(reader.read_u32()?)?),
-            opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
-            opcodes::FRAME_INITIALIZER => {
-                format!("initializer of {}", read_class_tag(reader, targets)?)
-            }
-            opcodes::FRAME_SUPERCLASS_CLAUSE => {
-                format!("superclass clause of {}", read_class_tag(reader, targets)?)
-            }
-            opcodes::FRAME_SUPERCLASS_MESSAGE => {
-                format!("superclass message of {}", read_class_tag(reader, targets)?)
-            }
-            opcodes::FRAME_MIXIN_APPLICATION_MESSAGE => format!(
-                "mixin application message of {}",
-                read_class_tag(reader, targets)?
-            ),
-            opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
-            tag => {
-                return Err(decode::DecodeError::InvalidTag {
-                    what: "frame kind",
-                    tag,
-                })
-            }
-        };
-        let uncontinuable = reader.read_boolean()?;
-        frames.push(format!(
-            "{kind}, receiver {receiver}, args [{}], temps [{}], pc {program_counter}, \
-             sender {sender}, home {home}, current class {current_class}, \
-             uncontinuable {uncontinuable}",
-            arguments.join(", "),
-            temporaries.join(", ")
-        ));
     }
 
     let roots = read_values(reader, targets)?;
@@ -558,7 +554,6 @@ fn walk_graph(
 
     Ok(GraphView {
         objects,
-        frames,
         roots,
         tag_named,
     })
@@ -746,9 +741,8 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         // last byte is what `graph_walk_consumes_the_whole_section` pins.
         end: reader.position(),
         detail: format!(
-            "{} objects, {} frames, {} roots, {} tag-named hashes",
+            "{} objects, {} roots, {} tag-named hashes",
             graph.objects.len(),
-            graph.frames.len(),
             graph.roots.len(),
             graph.tag_named.len()
         ),
@@ -769,7 +763,6 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
             .map(|path| platform_paths::describe(path))
             .collect(),
         graph_objects: graph.objects,
-        graph_frames: graph.frames,
         graph_roots: graph.roots,
         graph_tag_named_hashes: graph.tag_named,
         total_length: bytes.len(),
@@ -857,10 +850,7 @@ pub fn render_full(report: &Report) -> String {
 
     // An image with no graph records prints no empty heading that would
     // invite the reader to look for state that is not there.
-    if !report.graph_objects.is_empty()
-        || !report.graph_frames.is_empty()
-        || !report.graph_tag_named_hashes.is_empty()
-    {
+    if !report.graph_objects.is_empty() || !report.graph_tag_named_hashes.is_empty() {
         let _ = writeln!(out, "\nplatform paths ({})", report.platform_paths.len());
         for (index, path) in report.platform_paths.iter().enumerate() {
             let _ = writeln!(out, "  {index:>4} {path}");
@@ -869,10 +859,6 @@ pub fn render_full(report: &Report) -> String {
         let _ = writeln!(out, "  objects ({})", report.graph_objects.len());
         for (index, object) in report.graph_objects.iter().enumerate() {
             let _ = writeln!(out, "    {index:>4} {object}");
-        }
-        let _ = writeln!(out, "  frames ({})", report.graph_frames.len());
-        for (index, frame) in report.graph_frames.iter().enumerate() {
-            let _ = writeln!(out, "    {index:>4} {frame}");
         }
         let _ = writeln!(out, "  roots  {}", report.graph_roots.join(", "));
         let _ = writeln!(

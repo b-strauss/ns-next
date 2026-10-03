@@ -15,8 +15,8 @@ use ns_runtime::image::opcodes::*;
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    ArbitraryInteger, BuiltinClass, ClassData, ClassReference, DispatchId, FrameKind, Heap,
-    HostResult, HostSignal, Interpreter, Mixin, MixinApplication, Mutator, ObjectData, Root,
+    ArbitraryInteger, BuiltinClass, ClassReference, DispatchId, FrameKind, Heap, HostResult,
+    HostSignal, Interpreter, Mixin, MixinApplication, Mutator, NewClass, NewClosure, Root,
     SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
 };
 use ns_syntax::ast::AccessModifier;
@@ -2580,21 +2580,20 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                 "makeClosure",
             );
             // Synthetic "paused" state: edit the home frame's program counter
-            // and grow its register file before snapshotting.
+            // and its last register before snapshotting. `mk` reads nothing
+            // by reference, so its registers were not kept, but its frame
+            // has its code's full register file, every one nil.
             interpreter.enter(|mutator| {
                 let closure_value = mutator.fetch(&closure);
                 let home = mutator
                     .heap()
                     .closure_home(object(closure_value))
                     .expect("expected a closure");
-                let (_, argument_count, temporary_count) =
-                    mutator.heap().frame_register_shape(home);
-                mutator
-                    .heap_mut()
-                    .frame_grow_temporaries(home, temporary_count + 1);
+                let (_, _, register_count) = mutator.heap().frame_register_shape(home);
+                assert!(register_count > 0, "`mk` has a register to write");
                 mutator.heap_mut().frame_set_local(
                     home,
-                    (argument_count + temporary_count) as u16,
+                    (register_count - 1) as u16,
                     Value::small_integer(9),
                 );
                 mutator.heap_mut().frame_set_program_counter(home, 1);
@@ -2606,31 +2605,29 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         let original_0 = mutator.fetch(&original[0]);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let original_code = {
-            let closure_data = heap
-                .closure_data(object(original_0))
-                .expect("expected a closure");
-            let code = &closure_data.code;
-            code.clone()
-        };
-        let closure_data = heap
-            .closure_data(object(decoded_0))
+        let original_code = heap
+            .closure_code(object(original_0))
+            .expect("expected a closure");
+        let code = heap
+            .closure_code(object(decoded_0))
+            .expect("expected a closure");
+        let captured_frame = heap
+            .closure_captured_frame(object(decoded_0))
             .expect("expected a closure");
         let closure_home = heap
             .closure_home(object(decoded_0))
             .expect("expected a closure");
-        let code = &closure_data.code;
-        assert_eq!(**code, *original_code);
+        assert_eq!(*code, *original_code);
         assert!(
-            closure_data.captured_frame.same(closure_home),
+            captured_frame.same(closure_home),
             "captured_frame and home were the same frame"
         );
-        let home = heap.frame_snapshot(closure_home);
+        let home = heap.frame_record(closure_home);
         assert_eq!(home.program_counter, 1);
-        let (_, argument_count, temporary_count) = heap.frame_register_shape(closure_home);
-        assert_eq!(temporary_count, home.temporaries.len());
+        let (_, argument_count, register_count) = heap.frame_register_shape(closure_home);
+        assert_eq!(register_count - argument_count, home.temporaries.len());
         assert_eq!(
-            heap.frame_local(closure_home, (argument_count + temporary_count - 1) as u16)
+            heap.frame_local(closure_home, (register_count - 1) as u16)
                 .as_small_integer(),
             Some(9)
         );
@@ -2858,18 +2855,42 @@ impl GraphFixture {
     }
 }
 
-/// `object_count`, `frame_count` -- the two counts every graph section
-/// starts with.
-fn graph_counts(writer: &mut encode::Writer, objects: u32, frames: u32) {
+/// `object_count`, the count every graph section starts with. Frames are
+/// object records, so it counts them too.
+fn graph_counts(writer: &mut encode::Writer, objects: u32) {
     writer.write_u32(objects);
-    writer.write_u32(frames);
+}
+
+/// A frame record's header: `Activation`'s builtin tag -- the one header a
+/// frame record may carry -- the identity hash `hash`, and `OBJECT_FRAME`.
+fn frame_header(writer: &mut encode::Writer, hash: u32) {
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Activation));
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_FRAME); // object body: Frame
+}
+
+/// Everything of a frame record after its kind: `program_counter`,
+/// continuable, a nil receiver, no sender, no home, no current class, and
+/// `registers` registers, each nil.
+fn frame_tail(writer: &mut encode::Writer, program_counter: u32, registers: u32) {
+    writer.write_u32(program_counter);
+    writer.write_boolean(false); // continuable
+    writer.write_u8(VALUE_NIL); // receiver: nil
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
+    writer.write_u32(registers);
+    for _ in 0..registers {
+        writer.write_u8(VALUE_NIL); // each register: nil
+    }
 }
 
 /// A one-object graph section whose single object is an array of one
 /// element, written by `element`.
 fn one_array_object(element: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
+    graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
     writer.write_u32(5); // identity hash
@@ -2890,34 +2911,133 @@ fn an_object_id_out_of_range_is_a_decode_error_not_a_panic() {
     assert_eq!(error.to_string(), "object id 99 out of range");
 }
 
+/// A frame names its sender by object id, range-checked like every other.
 #[test]
 fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 0, 1);
-    writer.write_u8(VALUE_NIL); // receiver: nil
-    writer.write_u32(0); // no arguments
-    writer.write_u32(0); // no temporaries
+    graph_counts(&mut writer, 1);
+    frame_header(&mut writer, 0);
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
     writer.write_u32(0); // program_counter
+    writer.write_boolean(false); // continuable
+    writer.write_u8(VALUE_NIL); // receiver: nil
     writer.write_boolean(true); // has a sender...
     writer.write_u32(99); // ...whose id is out of range
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
+    writer.write_u32(0); // no registers
+    writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(error, decode::DecodeError::BadFrameId(99));
-    assert_eq!(error.to_string(), "frame id 99 out of range");
+    assert_eq!(error, decode::DecodeError::BadObjectId(99));
+    assert_eq!(error.to_string(), "object id 99 out of range");
+}
+
+/// A frame reference whose id is in range but names a record that is not a
+/// frame record is refused where it is read: every frame record's
+/// placeholder is a frame object from the start, so the decoder knows.
+#[test]
+fn a_frame_reference_naming_a_string_is_refused() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2);
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_STRING); // object body: String
+    writer.write_str("not a frame");
+    frame_header(&mut writer, 0);
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    writer.write_u32(0); // program_counter
+    writer.write_boolean(false); // continuable
+    writer.write_u8(VALUE_NIL); // receiver: nil
+    writer.write_boolean(true); // has a sender...
+    writer.write_u32(0); // ...object 0, the string
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
+    writer.write_u32(0); // no registers
+    writer.write_u32(0); // no roots
+    let error = GraphFixture::new().decode_error(&writer.into_bytes());
+    assert_eq!(error, decode::DecodeError::NotAFrameReference(0));
+    assert_eq!(
+        error.to_string(),
+        "object 0 is named as a frame but is not a frame record"
+    );
 }
 
 #[test]
-fn a_huge_object_or_frame_count_does_not_allocate_gigabytes() {
+fn a_huge_object_count_does_not_allocate_gigabytes() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, u32::MAX);
+    let bytes = writer.into_bytes();
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+}
+
+/// A frame record carries its register count, and a count the bytes left
+/// cannot hold is refused by the first pass, before any record -- this one
+/// included -- is allocated.
+#[test]
+fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before_allocating() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1);
+    frame_header(&mut writer, 0);
+    writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
+    writer.write_u32(0); // program_counter
+    writer.write_boolean(false); // continuable
+    writer.write_u8(VALUE_NIL); // receiver: nil
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(false); // no home
+    writer.write_boolean(false); // no current class
+    writer.write_u32(u32::MAX); // registers, none of them written
+    let bytes = writer.into_bytes();
     let mut fixture = GraphFixture::new();
-    for (objects, frames) in [(u32::MAX, 0), (0, u32::MAX)] {
-        let mut writer = encode::Writer::new();
-        graph_counts(&mut writer, objects, frames);
-        let bytes = writer.into_bytes();
-        assert_eq!(
-            fixture.decode_error(&bytes),
-            decode::DecodeError::UnexpectedEndOfFile
-        );
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
+/// The premise of the load's amplification bound: the first pass sizes
+/// every record before anything is allocated, so an image whose declared
+/// sizes exceed what its bytes can hold is refused with nothing allocated --
+/// not even the well-formed record ahead of the one that overclaims.
+#[test]
+fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 2);
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_ARRAY); // object body: Array
+    writer.write_u32(0); // no elements: a record that fits
+    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    writer.write_u32(2); // identity hash
+    writer.write_u8(OBJECT_ARRAY); // object body: Array
+    writer.write_u32(1_000_000); // a million elements...
+    for _ in 0..8 {
+        writer.write_u8(VALUE_NIL); // ...of which eight are written
     }
+    let bytes = writer.into_bytes();
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
 }
 
 #[test]
@@ -2935,7 +3055,7 @@ fn an_invalid_value_tag_in_the_graph_is_a_decode_error_not_a_panic() {
 #[test]
 fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
+    graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_BUILTIN);
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
     writer.write_u32(1);
@@ -2957,7 +3077,7 @@ fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     // no module now rather than whichever came first.
     for tag in [200].into_iter().chain(RETIRED_CLASS_TAGS) {
         let mut writer = encode::Writer::new();
-        graph_counts(&mut writer, 1, 0);
+        graph_counts(&mut writer, 1);
         writer.write_u8(tag);
         // Padded out to the shortest object record the wire admits, so
         // `bounded_count` admits the announced record and the class tag
@@ -2978,7 +3098,7 @@ fn a_symbol_recorded_twice_is_refused() {
     // that holds two is crafted or corrupt; merging them would mean
     // rewriting every reference to the second.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
+    graph_counts(&mut writer, 2);
     for identity_hash in [1, 2] {
         writer.write_u8(CLASS_BUILTIN);
         writer.write_u8(encode::builtin_class_tag(BuiltinClass::Symbol));
@@ -2998,6 +3118,27 @@ fn a_symbol_recorded_twice_is_refused() {
 }
 
 #[test]
+fn a_string_recorded_with_the_class_symbol_is_refused() {
+    // A Symbol is a String whose class is `Symbol`, one object per text;
+    // a string record of that class would be a second object of a text the
+    // canonical table never hears of.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1);
+    writer.write_u8(CLASS_BUILTIN);
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Symbol));
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_STRING);
+    writer.write_str("new");
+    writer.write_u32(0); // no roots
+    let error = GraphFixture::new().decode_error(&writer.into_bytes());
+    assert_eq!(error, decode::DecodeError::StringOfSymbolClass);
+    assert_eq!(
+        error.to_string(),
+        "a string record has the class Symbol, which only a symbol record may have"
+    );
+}
+
+#[test]
 fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
     // `decode_graph_section` enters every `OBJECT_SYMBOL` record into the
     // heap's canonical symbol table as it decodes it, before anything else
@@ -3005,7 +3146,7 @@ fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
     // `Symbol` would still answer every later literal of that text if it
     // were let through.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
+    graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_BUILTIN);
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
     writer.write_u32(1); // identity hash
@@ -3067,7 +3208,7 @@ fn metaclass_record(writer: &mut encode::Writer, class_id: u32) {
 /// record (object 1) and no roots.
 fn one_class_object(mixin_id: u32, references: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
+    graph_counts(&mut writer, 2);
     class_record(&mut writer, 1, mixin_id, references);
     metaclass_record(&mut writer, 0);
     writer.write_u32(0); // no roots
@@ -3108,7 +3249,7 @@ fn two_class_records_with_the_same_mixin_and_superclass_share_one_application() 
     // the two records ties them together, so if `apply_mixin`'s cache did
     // not answer both, sharing could only come back by accident.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 4, 0);
+    graph_counts(&mut writer, 4);
     class_record(&mut writer, 2, 0, no_class_references);
     class_record(&mut writer, 3, 0, no_class_references);
     metaclass_record(&mut writer, 0);
@@ -3204,7 +3345,7 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
     // class tag to name a *class* record, and a class object whose
     // superclass is an array has no application chain to rebuild.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 3, 0);
+    graph_counts(&mut writer, 3);
     class_record(&mut writer, 2, 0, |writer| {
         writer.write_boolean(true);
         writer.write_u8(CLASS_RECORD);
@@ -3232,7 +3373,7 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
     // order in which the two could be rebuilt. Refusing is what keeps the
     // rebuild a finite walk rather than one that never ends.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 4, 0);
+    graph_counts(&mut writer, 4);
     for (metaclass, other) in [(2u32, 1u32), (3, 0)] {
         class_record(&mut writer, metaclass, 0, move |writer| {
             writer.write_boolean(true);
@@ -3255,14 +3396,8 @@ fn class_objects_inheriting_from_each_other_in_a_cycle_are_refused() {
 /// A one-frame graph section up to (but excluding) the frame-kind tag.
 fn one_frame_prefix() -> encode::Writer {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 0, 1);
-    writer.write_u8(VALUE_NIL); // receiver: nil
-    writer.write_u32(0); // no arguments
-    writer.write_u32(0); // no temporaries
-    writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // no sender
-    writer.write_boolean(false); // no home
-    writer.write_boolean(false); // no current class
+    graph_counts(&mut writer, 1);
+    frame_header(&mut writer, 0);
     writer
 }
 
@@ -3270,9 +3405,10 @@ fn one_frame_prefix() -> encode::Writer {
 fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
     let mut writer = one_frame_prefix();
     writer.write_u8(200);
-    // Padded out to the shortest frame record the wire admits (see the
-    // class-tag test), so the kind tag is what the decoder rejects.
-    writer.write_boolean(false); // continuable
+    // The rest of a well-formed record, so the kind tag is what the
+    // decoder rejects.
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -3283,28 +3419,23 @@ fn an_invalid_frame_kind_tag_is_a_decode_error_not_a_panic() {
     );
 }
 
-/// The byte after `program_counter` is the frame's `sender` flag. A record
-/// with one stray byte there has it read as "a sender follows", and the next
-/// four bytes (the sender, home and current-class flags and the kind tag) as
-/// a sender id far outside the one-frame table, so it is refused rather than
-/// read as a different frame.
+/// The byte after the body tag is the frame's kind tag. A record with one
+/// stray byte 1 there has it read as `FRAME_CLOSURE`, and the next four
+/// bytes (the real kind tag and three bytes of the program counter) as a
+/// closure object id outside the one-record table, so it is refused rather
+/// than read as a different frame.
 #[test]
 fn a_frame_record_with_a_stray_byte_is_refused() {
-    let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 0, 1);
-    writer.write_u8(VALUE_NIL); // receiver: nil
-    writer.write_u32(0); // no arguments
-    writer.write_u32(0); // no temporaries
-    writer.write_u32(0); // program_counter
+    let mut writer = one_frame_prefix();
     writer.write_u8(1); // the stray byte
-    writer.write_boolean(false); // no sender
-    writer.write_boolean(false); // no home
-    writer.write_boolean(false); // no current class
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
-    writer.write_boolean(false); // continuable
+    frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
-    assert!(GraphFixture::new().decode(&bytes, |_, decoded| decoded.is_err()));
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::BadObjectId(u32::from(FRAME_TOP_LEVEL))
+    );
 }
 
 #[test]
@@ -3312,6 +3443,8 @@ fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_METHOD); // frame kind: Method
     writer.write_u32(0); // selector id 0 ("gone")
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     let mut fixture = GraphFixture::new();
     fixture.symbols = table_with(&["gone"]);
@@ -3325,7 +3458,7 @@ fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
 #[test]
 fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
+    graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
@@ -3344,8 +3477,9 @@ fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
 fn a_closure_frames_object_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
-    writer.write_u32(42); // ...naming an object past the empty object table
-    writer.write_boolean(false); // continuable
+    writer.write_u32(42); // ...naming an object past the one-record table
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
@@ -3438,26 +3572,38 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         let class = class_reference(mutator, &class);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let inner = heap
-            .closure_data(object(decoded_0))
+        let inner_captured_frame = heap
+            .closure_captured_frame(object(decoded_0))
             .expect("expected the inner closure");
         let inner_home = heap
             .closure_home(object(decoded_0))
             .expect("expected the inner closure");
         assert!(
-            !inner.captured_frame.same(inner_home),
+            !inner_captured_frame.same(inner_home),
             "the inner closure was captured by the block activation, not by `mk`"
         );
-        let captured = heap.frame_snapshot(inner.captured_frame);
-        let FrameKind::Closure(_) = &captured.kind else {
+        let captured = heap.frame_record(inner_captured_frame);
+        let FrameKind::Closure(outer) = &captured.kind else {
             panic!("the captured frame is a block activation")
         };
+        // Every reified frame travels with its whole register file, so the
+        // decoded one has every register its body declares.
+        let outer_code = heap.closure_code(*outer).expect("the outer block");
+        assert_eq!(
+            captured.arguments.len() + captured.temporaries.len(),
+            usize::from(outer_code.register_count),
+            "the captured frame carries its full register file"
+        );
         // The optimized lowering converts `[ x ]`: `x` is copied into the
         // inner closure when it is created, so the outer block's activation
         // returned without copying its registers into its frame
-        // (`docs/design/execution.md`, "Lifecycle"). The value survives in
+        // (`docs/design/execution.md`, "Lifecycle"): its frame has the
+        // block's one argument register, still nil. The value survives in
         // the closure, not in the frame.
-        assert!(captured.arguments.is_empty());
+        assert!(
+            matches!(captured.arguments[..], [argument] if argument.is_nil()),
+            "the frame's argument register was never written"
+        );
         assert_eq!(
             heap.closure_copied_values(object(decoded_0))
                 .expect("expected a closure")
@@ -3511,13 +3657,13 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
     interpreter.enter(|mutator| {
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let inner = heap
-            .closure_data(object(decoded_0))
+        let inner_captured_frame = heap
+            .closure_captured_frame(object(decoded_0))
             .expect("expected the inner closure");
         let inner_home = heap
             .closure_home(object(decoded_0))
             .expect("expected the inner closure");
-        let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
+        let FrameKind::Closure(outer) = heap.frame_kind(inner_captured_frame) else {
             panic!("the captured frame is a block activation")
         };
         assert_eq!(
@@ -3539,12 +3685,10 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
 fn unknown_frame_kind_graph() -> Vec<u8> {
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE + 1); // one past the last frame kind
-
-    // Padded past the shortest frame record the wire admits, so
-    // `bounded_count` admits the announced frame and the kind tag itself is
-    // what the reader rejects.
-    writer.write_boolean(false);
-    writer.write_u32(0);
+                                                          // The rest of a well-formed record, so the kind tag itself is what the
+                                                          // reader rejects.
+    frame_tail(&mut writer, 0, 0);
+    writer.write_u32(0); // no roots
     writer.into_bytes()
 }
 
@@ -3637,19 +3781,19 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
     });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     let closure_frames: Vec<&String> = report
-        .graph_frames
+        .graph_objects
         .iter()
-        .filter(|frame| frame.starts_with("closure object "))
+        .filter(|record| record.contains(", frame closure object "))
         .collect();
     let [frame] = closure_frames[..] else {
         panic!(
             "expected one closure frame, the outer block's activation, in {:?}",
-            report.graph_frames
+            report.graph_objects
         )
     };
     let id: usize = frame
-        .strip_prefix("closure object ")
-        .and_then(|rest| rest.split(',').next())
+        .split_once(", frame closure object ")
+        .and_then(|(_, rest)| rest.split(',').next())
         .expect("the id ends the kind")
         .parse()
         .expect("an object id");
@@ -3666,23 +3810,23 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
 #[test]
 fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 1);
+    graph_counts(&mut writer, 2);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("not a closure");
-    writer.write_u8(VALUE_NIL); // receiver: nil
-    writer.write_u32(0); // no arguments
-    writer.write_u32(0); // no temporaries
-    writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // no sender
-    writer.write_boolean(true); // a home...
-    writer.write_u32(0); // ...frame 0 itself
-    writer.write_boolean(false); // no current class
+    frame_header(&mut writer, 0);
     writer.write_u8(FRAME_CLOSURE); // frame kind: a closure...
     writer.write_u32(0); // ...naming object 0, the string
+    writer.write_u32(0); // program_counter
     writer.write_boolean(false); // continuable
+    writer.write_u8(VALUE_NIL); // receiver: nil
+    writer.write_boolean(false); // no sender
+    writer.write_boolean(true); // a home...
+    writer.write_u32(1); // ...object 1, the frame itself
+    writer.write_boolean(false); // no current class
+    writer.write_u32(0); // no registers
     writer.write_u32(0); // no roots
     let error = GraphFixture::new().decode_error(&writer.into_bytes());
     assert_eq!(error, decode::DecodeError::NotAClosureReference);
@@ -3699,7 +3843,7 @@ fn a_top_level_frame_kind_decodes() {
     // decoder's tag-2 branch.
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
-    writer.write_boolean(false); // continuable
+    frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     GraphFixture::new().decoded(&bytes, "a TopLevel frame", |_, decoded| {
@@ -3729,27 +3873,21 @@ fn block_code(argument_count: u16, copied_count: u16) -> Rc<CompiledCode> {
 /// reconciliation can reject it.
 fn closure_object_with_copied_values(copied: &[i64]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 1);
+    graph_counts(&mut writer, 2);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(0); // code id
-    writer.write_u32(0); // captured frame id -- frame 0 exists
+    writer.write_u32(1); // captured frame -- object 1, the frame
     writer.write_u16(copied.len() as u16);
     for value in copied {
         writer.write_u8(VALUE_SMALL_INTEGER);
         writer.write_i64(*value);
     }
-    writer.write_u8(VALUE_NIL); // frame 0: receiver nil
-    writer.write_u32(0); // no arguments
-    writer.write_u32(0); // no temporaries
-    writer.write_u32(0); // program_counter
-    writer.write_boolean(false); // no sender
-    writer.write_boolean(false); // no home
-    writer.write_boolean(false); // no current class
+    frame_header(&mut writer, 0);
     writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel
-    writer.write_boolean(false); // continuable
+    frame_tail(&mut writer, 0, 0);
     writer.write_u32(1); // one root...
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0); // ...the closure
@@ -3811,10 +3949,10 @@ fn a_closure_record_with_no_copied_values_decodes() {
         &closure_object_with_copied_values(&[]),
         "no copied values",
         |heap, decoded| {
-            let closure_data = heap
-                .closure_data(object(decoded.roots[0]))
+            let copied = heap
+                .closure_copied_values(object(decoded.roots[0]))
                 .expect("expected a closure");
-            assert!(closure_data.copied.is_empty());
+            assert!(copied.is_empty());
             // The arity a call is checked against now has one source.
             assert_eq!(
                 heap.closure_parameter_count(object(decoded.roots[0])),
@@ -5085,18 +5223,20 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
 }
 
 /// A graph section holding one closure object over code id 0 and the one
-/// frame it names as its `captured_frame`, written by `frame`. The home
-/// follows from the captured frame, so the record carries no second id.
+/// frame it names as its `captured_frame`, object 1, whose record `frame`
+/// writes after its header. The home follows from the captured frame, so the
+/// record carries no second id.
 fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 1);
+    graph_counts(&mut writer, 2);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(0); // code id 0 -- the block body
-    writer.write_u32(0); // captured frame id
+    writer.write_u32(1); // captured frame -- object 1
     writer.write_u16(0); // copying nothing
+    frame_header(&mut writer, 0);
     frame(&mut writer);
     writer.write_u32(1); // one root...
     writer.write_u8(VALUE_OBJECT_ID);
@@ -5104,30 +5244,20 @@ fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     writer.into_bytes()
 }
 
-/// Frame 0 as an activation of method `foo` with `temporaries` temporaries.
-fn foo_frame(temporaries: u32) -> impl FnOnce(&mut encode::Writer) {
-    foo_frame_at_program_counter(temporaries, 0)
+/// The frame as an activation of method `foo` with `registers` registers.
+fn foo_frame(registers: u32) -> impl FnOnce(&mut encode::Writer) {
+    foo_frame_at_program_counter(registers, 0)
 }
 
 /// `foo_frame` with the activation's `program_counter` left to the caller.
 fn foo_frame_at_program_counter(
-    temporaries: u32,
+    registers: u32,
     program_counter: u32,
 ) -> impl FnOnce(&mut encode::Writer) {
     move |writer: &mut encode::Writer| {
-        writer.write_u8(VALUE_NIL); // receiver: nil
-        writer.write_u32(0); // no arguments
-        writer.write_u32(temporaries);
-        for _ in 0..temporaries {
-            writer.write_u8(VALUE_NIL); // each temporary: nil
-        }
-        writer.write_u32(program_counter);
-        writer.write_boolean(false); // no sender
-        writer.write_boolean(false); // no home
-        writer.write_boolean(false); // no current class
         writer.write_u8(FRAME_METHOD); // frame kind: Method
         writer.write_u32(0); // selector id 0 -- "foo", per `closure_world`'s fixture
-        writer.write_boolean(false); // continuable
+        frame_tail(writer, program_counter, registers);
     }
 }
 
@@ -5146,19 +5276,26 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
     );
 }
 
-/// A returning activation nothing reads by reference keeps no registers at
-/// all (`Heap::pop_activation`), so the frame it leaves behind is empty --
-/// and that is exactly what a snapshot of it records. An empty file is
-/// legitimate; every other shape is still held to the body's.
+/// Every reified frame has its body's whole register file and the encoder
+/// writes all of it, so a frame with none for a body that has some is not
+/// something a run produces: refused like any other register file that
+/// disagrees with its body.
 #[test]
-fn a_frame_with_no_registers_at_all_verifies() {
+fn a_frame_with_no_registers_for_a_body_that_has_some_is_refused() {
     let (mut fixture, table) = closure_world();
     fixture.decoded(
         &closure_over_frame(foo_frame(0)),
         "decode",
         |heap, graph| {
-            decode::verify_graph(heap, graph, &table)
-                .expect("a frame that kept no registers is what an unmarked return leaves");
+            assert_eq!(
+                decode::verify_graph(heap, graph, &table),
+                Err(decode::DecodeError::FrameRegisterFile {
+                    arguments: 0,
+                    locals: 0,
+                    argument_count: 0,
+                    register_count: 2
+                })
+            );
         },
     );
 }
@@ -5195,15 +5332,8 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     // body's lexical parent, and the whole outer-local bound rests on it.
     let (mut fixture, table) = closure_world();
     let bytes = closure_over_frame(|writer: &mut encode::Writer| {
-        writer.write_u8(VALUE_NIL); // receiver: nil
-        writer.write_u32(0); // no arguments
-        writer.write_u32(0); // no temporaries
-        writer.write_u32(0); // program_counter
-        writer.write_boolean(false); // no sender
-        writer.write_boolean(false); // no home
-        writer.write_boolean(false); // no current class
         writer.write_u8(FRAME_TOP_LEVEL); // frame kind: TopLevel -- runs no code at all
-        writer.write_boolean(false); // continuable
+        frame_tail(writer, 0, 0);
     });
     fixture.decoded(&bytes, "decode", |heap, graph| {
         assert_eq!(
@@ -5362,9 +5492,8 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
             .expect("expected an instance");
         let captured = mutator
             .heap()
-            .closure_data(object(held))
-            .expect("the slot holds the inner closure")
-            .captured_frame;
+            .closure_captured_frame(object(held))
+            .expect("the slot holds the inner closure");
         assert!(
             matches!(mutator.heap().frame_kind(captured), FrameKind::Closure(_)),
             "the inner closure was captured by the outer block's activation"
@@ -5477,36 +5606,32 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
 
 #[test]
 fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter() {
-    // `load` hands the maximum decoded hash to `advance_identity_hash_past`,
-    // which computes `max + 1`: an overflow panic under this workspace's dev
-    // profile, and a wrap to 0 -- so a collision with every loaded object --
-    // in release.
+    // The header word holds 22 bits of identity hash: a wider one would
+    // alias another object's hash, and `advance_identity_hash_past` could
+    // not place the counter past it.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
+    graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
-    writer.write_u32(u32::MAX); // identity hash, at the ceiling
+    writer.write_u32(1 << 22); // identity hash, at the ceiling
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("x");
     writer.write_u32(0); // no roots -- otherwise complete, so the hash is what
                          // the decoder rejects, not a truncation
     let bytes = writer.into_bytes();
     let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(error, decode::DecodeError::IdentityHashExhausted);
+    assert_eq!(error, decode::DecodeError::IdentityHashTooWide(1 << 22));
     assert_eq!(
         error.to_string(),
-        "an image object's identity hash is 4294967295, leaving no hash for a loaded world to allocate next"
+        "identity hash 4194304 does not fit the header word's 22 bits"
     );
 }
 
 #[test]
 fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
-    // The step the ceiling check alone does not cover: a maximum of
-    // `u32::MAX - 1` is a legal image, and it leaves the counter at
-    // `u32::MAX` -- where the counter's own `+= 1` would overflow on the
-    // very first hash assigned after the load. Saturating
-    // there costs a shared hash (identity is `Rc` identity, never the
-    // hash) instead of aborting the process.
+    // The widest legal hash leaves the counter at the ceiling, where the
+    // next hash drawn after the load wraps to 1: hashes need not be
+    // unique, since identity is the handle, never the hash.
     let source = indoc! {"
         class X = Object new (
         ) (
@@ -5519,7 +5644,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let instance_object = object(mutator.fetch(&instance));
         mutator
             .heap_mut()
-            .object_set_identity_hash(instance_object, u32::MAX - 1);
+            .object_set_identity_hash(instance_object, (1 << 22) - 1);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -5538,18 +5663,18 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let root_0 = mutator.fetch(&loaded.roots[0]);
         assert_eq!(
             mutator.heap().object_identity_hash(object(root_0)),
-            u32::MAX - 1,
+            (1 << 22) - 1,
             "the image's hash is preserved, not clamped"
         );
         let first = mutator.new_string("a".to_string());
         let second = mutator.new_string("b".to_string());
         let heap = mutator.heap_mut();
-        assert_eq!(heap.object_ensure_identity_hash(first), u32::MAX);
         assert_eq!(
-            heap.object_ensure_identity_hash(second),
-            u32::MAX,
-            "an exhausted counter shares its last hash instead of overflowing"
+            heap.object_ensure_identity_hash(first),
+            1,
+            "the counter wraps past the widest hash, skipping 0"
         );
+        assert_eq!(heap.object_ensure_identity_hash(second), 2);
     });
 }
 
@@ -5733,10 +5858,10 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
     writer.write_u32(1);
     writer.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
-    writer.write_u32(u32::MAX);
+    writer.write_u32(1 << 22);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::IdentityHashExhausted)
+        Err(decode::DecodeError::IdentityHashTooWide(1 << 22))
     );
 }
 
@@ -5836,15 +5961,15 @@ fn apply_and_wrap<'gc>(
     superclass: Option<&Rc<MixinApplication>>,
 ) -> ClassReference<'gc> {
     let application = mutator.apply_mixin(mixin, superclass);
-    mutator.heap_mut().allocate_object(
+    mutator.heap_mut().allocate_class(
         class_of_class,
-        ObjectData::Class(Box::new(ClassData::new(
+        NewClass {
             application,
-            None,
-            None,
-            None,
-            None,
-        ))),
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: None,
+        },
     )
 }
 
@@ -6342,7 +6467,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     });
 }
 
-/// `dispatch::kth_enclosing_object` steps `ClassData::declaring_class`, not
+/// `dispatch::kth_enclosing_object` steps a class's declaring class, not
 /// the reached object's own class, from its second hop on -- so an image
 /// that dropped that field would come back resolving `outer` along the
 /// receiver's *dynamic* chain. `Mid`'s decoy `label` is what such a walk
@@ -6643,7 +6768,7 @@ fn the_superclass_clause_frame_kinds_decode() {
         writer.write_u8(tag);
         writer.write_u8(CLASS_BUILTIN); // class tag: builtin
         writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
-        writer.write_boolean(false); // continuable
+        frame_tail(&mut writer, 0, 0);
         writer.write_u32(0); // no roots
         let bytes = writer.into_bytes();
         GraphFixture::new().decoded(&bytes, "a superclass clause frame", |heap, decoded| {
@@ -8016,15 +8141,15 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     let error = interpreter.enter(|mutator| {
         let application = mutator.apply_mixin(&mixin, None);
         let object_class = mutator.builtin_class(BuiltinClass::Object);
-        let class: ClassReference = mutator.heap_mut().allocate_object(
+        let class: ClassReference = mutator.heap_mut().allocate_class(
             object_class,
-            ObjectData::Class(Box::new(ClassData::new(
+            NewClass {
                 application,
-                None,
-                None,
-                None,
-                None,
-            ))),
+                enclosing: None,
+                declaring_class: None,
+                superclass: None,
+                builtin: None,
+            },
         );
         let platform = mutator.fetch(&platform);
         let Err(error) = snapshot_one(
@@ -8093,15 +8218,15 @@ fn instance_chain_depth<'gc>(heap: &Heap<'gc>, head: Value<'gc>) -> u32 {
 
 /// A complete image whose graph section is `graph` verbatim. Everything
 /// before it comes from a real `snapshot` of `EMPTY`, whose own graph
-/// section is exactly the four zero counts at the end of the file -- so
+/// section is exactly the three zero counts at the end of the file -- so
 /// the splice point is found by structure, not by a hardcoded offset.
 fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
     let mut bytes = snapshot_of(EMPTY);
-    let tail = bytes.len() - 16;
+    let tail = bytes.len() - 12;
     assert_eq!(
         &bytes[tail..],
-        &[0u8; 16],
-        "a rootless snapshot ends in four zero counts: objects, frames, roots, tag-named hashes"
+        &[0u8; 12],
+        "a rootless snapshot ends in three zero counts: objects, roots, tag-named hashes"
     );
     bytes.truncate(tail);
     bytes.extend_from_slice(graph);
@@ -8113,7 +8238,7 @@ fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
 /// metaclass records in the same order.
 fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2 * levels, 0);
+    graph_counts(&mut writer, 2 * levels);
     for level in 0..levels {
         class_record(&mut writer, levels + level, 0, |writer| {
             if level + 1 < levels {
@@ -8143,7 +8268,7 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
 /// expressible since the object table existed.
 fn instance_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, levels, 0);
+    graph_counts(&mut writer, levels);
     for level in 0..levels {
         writer.write_u8(CLASS_BUILTIN); // class tag: builtin
         writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
@@ -8252,7 +8377,7 @@ fn a_class_object_whose_own_class_is_another_class_record_is_refused() {
     // `Drop` cannot hand to its worklist, so a chain of them would be the one
     // link that would still release recursively.
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 3, 0);
+    graph_counts(&mut writer, 3);
     // Object 0: a class record whose own class is object 1.
     class_record(&mut writer, 1, 0, no_class_references);
     // Object 1: an ordinary class record, with its metaclass, object 2.
@@ -8451,7 +8576,7 @@ fn the_debug_variants_source_is_never_parsed() {
 /// frame married to a live activation keeps its registers on the stack, not
 /// in the frame the encoder reads, so a mid-execution snapshot would write
 /// that frame with empty registers and report nothing. The encoder's
-/// `frame_snapshot` debug-asserts against it; this pins the refusal a
+/// `frame_record` debug-asserts against it; this pins the refusal a
 /// release build also makes.
 #[test]
 fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
@@ -8522,16 +8647,12 @@ fn a_frames_sender_survives_a_round_trip() {
                     Some(sender),
                     Some(class),
                 );
-                let block_class = mutator.builtin_class(BuiltinClass::Block);
-                let closure = mutator.heap_mut().allocate_object(
-                    block_class,
-                    ObjectData::Closure(ns_runtime::ClosureData {
-                        code: foo.clone(),
-                        captured_frame: frame,
-                        copied: Box::new([]),
-                        feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
-                    }),
-                );
+                let closure = mutator.new_closure(NewClosure {
+                    code: foo.clone(),
+                    captured_frame: frame,
+                    copied: Vec::new(),
+                    feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
+                });
                 vec![mutator.stash(Value::object(closure))]
             })
         });
@@ -8612,7 +8733,7 @@ fn an_activation_object_round_trips() {
         let held = object(held);
         assert!(heap.object_class(held).same(activation_class));
         let frame = heap
-            .activation_object_frame(held)
+            .object_frame(held)
             .expect("the slot holds an activation object");
         let receiver = heap.frame_receiver(frame);
         assert!(
@@ -8647,10 +8768,11 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
             .heap()
             .closure_home(object(mutator.fetch(&closure)))
             .expect("expected a closure");
-        let mut forged = mutator.heap().frame_snapshot(home);
-        assert!(forged.uncontinuable, "`mk` had returned");
-        forged.uncontinuable = false;
-        mutator.heap_mut().frame_replace(home, forged);
+        assert!(
+            mutator.heap().frame_is_uncontinuable(home),
+            "`mk` had returned"
+        );
+        mutator.heap_mut().frame_set_uncontinuable(home, false);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -9154,9 +9276,8 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
             .expect("expected an instance");
         let captured = mutator
             .heap()
-            .closure_data(object(held))
-            .expect("the slot holds the class side's block")
-            .captured_frame;
+            .closure_captured_frame(object(held))
+            .expect("the slot holds the class side's block");
         let metaclass = mutator
             .heap()
             .frame_current_class(captured)
@@ -9594,7 +9715,7 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
 fn a_class_record_naming_another_classs_metaclass_is_refused() {
     let two_classes = |first_metaclass: u32, second_metaclass: u32| {
         let mut writer = encode::Writer::new();
-        graph_counts(&mut writer, 4, 0);
+        graph_counts(&mut writer, 4);
         class_record(&mut writer, first_metaclass, 0, no_class_references);
         class_record(&mut writer, second_metaclass, 0, no_class_references);
         metaclass_record(&mut writer, 0);
@@ -9623,7 +9744,7 @@ fn a_class_record_naming_another_classs_metaclass_is_refused() {
 #[test]
 fn a_metaclass_record_named_by_no_class_record_is_refused() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 3, 0);
+    graph_counts(&mut writer, 3);
     class_record(&mut writer, 1, 0, no_class_references);
     metaclass_record(&mut writer, 0);
     metaclass_record(&mut writer, 0); // a second metaclass of object 0
@@ -9639,7 +9760,7 @@ fn a_metaclass_record_named_by_no_class_record_is_refused() {
 #[test]
 fn a_metaclass_record_naming_a_non_class_is_refused() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 3, 0);
+    graph_counts(&mut writer, 3);
     class_record(&mut writer, 1, 0, no_class_references);
     metaclass_record(&mut writer, 2); // names object 2, an instance
     writer.write_u8(CLASS_BUILTIN); // object 2's class tag: builtin
@@ -9659,7 +9780,7 @@ fn a_metaclass_record_naming_a_non_class_is_refused() {
 #[test]
 fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2, 0);
+    graph_counts(&mut writer, 2);
     class_record(&mut writer, 1, 0, no_class_references);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin, not `Metaclass`
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Class));
@@ -9732,7 +9853,7 @@ fn a_nested_metaclass_reference_is_refused() {
 fn an_instance_of_metaclass_is_refused() {
     let instance_of = |class: &dyn Fn(&mut encode::Writer)| {
         let mut writer = encode::Writer::new();
-        graph_counts(&mut writer, 1, 0);
+        graph_counts(&mut writer, 1);
         class(&mut writer);
         writer.write_u32(3); // identity hash
         writer.write_u8(OBJECT_INSTANCE);
@@ -10151,7 +10272,7 @@ fn applied_level_record(
 /// A graph section of exactly `records`, written by `write`, and no roots.
 fn class_records(count: u32, write: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, count, 0);
+    graph_counts(&mut writer, count);
     write(&mut writer);
     writer.write_u32(0); // no roots
     writer.into_bytes()
@@ -10197,7 +10318,7 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
-    for (row, index) in [(applied, 1), (marker, 0), (applied, u32::MAX)] {
+    for (row, index) in [(applied, 1), (marker, 0)] {
         let bytes = class_records(2, |writer| {
             applied_level_record(writer, (1, marker), None, (row, index));
             metaclass_record(writer, 0);
@@ -10212,6 +10333,36 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
             format!(
                 "the image names mixin application clause {index} of mixin row {row}, which the \
                  row does not declare in that place"
+            )
+        );
+    }
+}
+
+/// A clause index the applied-clause field cannot number is refused before
+/// it is looked up, so it is never truncated into another clause.
+#[test]
+fn an_applied_levels_clause_index_past_twenty_three_bits_is_refused() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    for index in [1u32 << 23, u32::MAX] {
+        let bytes = class_records(2, |writer| {
+            applied_level_record(writer, (1, marker), None, (applied, index));
+            metaclass_record(writer, 0);
+        });
+        let error = fixture.decode_error(&bytes);
+        assert_eq!(
+            error,
+            decode::DecodeError::ClauseIndexTooLarge {
+                row: applied,
+                index
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "mixin application clause index {index} of row {applied} is past the 2^23 \
+                 clauses a class object can name"
             )
         );
     }
@@ -10373,92 +10524,82 @@ fn an_objects_class_naming_the_mirrors_class_or_top_is_refused() {
     }
 }
 
-/// One activation record, its header written by `header`, its body tag
-/// `body` and frame id `frame`; `frames` minimal top-level frames follow it,
-/// and no roots.
-fn activation_record(
-    header: impl FnOnce(&mut encode::Writer),
-    body: u8,
-    frame: u32,
-    frames: u32,
-) -> Vec<u8> {
+/// One record under the header `header` writes, identity hash 5, body tag
+/// `body`, then -- for a frame record -- a top-level frame's body, or for
+/// any other tag the four bytes of the frame-table id the retired activation
+/// record (tag 9) carried; no roots.
+fn record_under(header: impl FnOnce(&mut encode::Writer), body: u8) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, frames);
+    graph_counts(&mut writer, 1);
     header(&mut writer);
     writer.write_u32(5); // identity hash
     writer.write_u8(body);
-    writer.write_u32(frame);
-    for _ in 0..frames {
-        writer.write_u8(VALUE_NIL); // receiver: nil
-        writer.write_u32(0); // no arguments
-        writer.write_u32(0); // no temporaries
-        writer.write_u32(0); // program_counter
-        writer.write_boolean(false); // no sender
-        writer.write_boolean(false); // no home
-        writer.write_boolean(false); // no current class
+    if body == OBJECT_FRAME {
         writer.write_u8(FRAME_TOP_LEVEL);
-        writer.write_boolean(true); // uncontinuable
+        frame_tail(&mut writer, 0, 0);
+    } else {
+        writer.write_u32(0);
     }
     writer.write_u32(0); // no roots
     writer.into_bytes()
 }
 
-/// The one header an activation record may carry: the builtin `Activation`.
+/// The one header a frame record may carry: the builtin `Activation`.
 fn activation_header(writer: &mut encode::Writer) {
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Activation));
 }
 
-/// A well-formed activation record decodes into an activation object over
-/// the frame it names. The refusals below are this record with one thing
-/// changed.
+/// A well-formed frame record decodes into a frame object -- the object the
+/// kernel holds as an activation -- carrying the record's identity hash. The
+/// refusals below are this record with one thing changed.
 #[test]
-fn an_activation_record_decodes_over_its_frame() {
-    let bytes = activation_record(activation_header, OBJECT_ACTIVATION, 0, 1);
-    GraphFixture::new().decoded(&bytes, "an activation record", |heap, graph| {
-        let frame = heap
-            .activation_object_frame(graph.objects[0])
-            .expect("an activation object");
+fn a_frame_record_decodes_into_a_frame_object() {
+    let bytes = record_under(activation_header, OBJECT_FRAME);
+    GraphFixture::new().decoded(&bytes, "a frame record", |heap, graph| {
+        let frame = heap.object_frame(graph.objects[0]).expect("a frame object");
         assert!(frame.same(graph.frames[0]));
+        assert_eq!(heap.object_identity_hash(graph.objects[0]), 5);
     });
 }
 
-/// An activation record's frame id is range-checked like every other: an id
-/// past the frame table is a decode error, not a panic.
+/// The activation record's tag, 9, is retired: its body was a frame-table
+/// id, which an object id read in its place would resolve to another record.
 #[test]
-fn an_activation_record_naming_no_frame_is_refused() {
-    let bytes = activation_record(activation_header, OBJECT_ACTIVATION, 99, 0);
+fn a_record_under_the_retired_activation_tag_is_refused() {
+    let bytes = record_under(activation_header, 9);
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::BadFrameId(99)
+        decode::DecodeError::InvalidTag {
+            what: "object body",
+            tag: 9
+        }
     );
 }
 
-/// An activation record under any class but `Activation` would be an
-/// activation answering that class's methods; no live world has one.
+/// A frame record under any class but `Activation` would be an activation
+/// answering that class's methods; no live world has one.
 #[test]
-fn an_activation_record_under_another_class_is_refused() {
-    let bytes = activation_record(
+fn a_frame_record_under_another_class_is_refused() {
+    let bytes = record_under(
         |writer| {
             writer.write_u8(CLASS_BUILTIN); // class tag: builtin
             writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
         },
-        OBJECT_ACTIVATION,
-        0,
-        1,
+        OBJECT_FRAME,
     );
     let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(error, decode::DecodeError::ActivationHeader);
+    assert_eq!(error, decode::DecodeError::FrameRecordUnderAnotherClass);
     assert_eq!(
         error.to_string(),
-        "an object in the image is an Activation without an activation's record, \
-         or an activation's record under another class"
+        "a frame record in the image names a class other than Activation"
     );
 }
 
-/// The `Activation` header is accepted on an activation record only: on any
-/// other record it would make an ordinary object answer `Activation`'s
-/// methods, which read other frames and unwind the stack.
+/// The `Activation` header is accepted on a frame record only: on any other
+/// record it would make an ordinary object answer `Activation`'s methods,
+/// which read other frames and unwind the stack. It is refused there as it
+/// is everywhere else a program cannot name it.
 #[test]
 fn an_activation_header_on_another_record_is_refused() {
     let bytes = class_records(1, |writer| {
@@ -10469,11 +10610,14 @@ fn an_activation_header_on_another_record_is_refused() {
     });
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::ActivationHeader
+        decode::DecodeError::InvalidTag {
+            what: "builtin class a program may name",
+            tag: encode::builtin_class_tag(BuiltinClass::Activation)
+        }
     );
 }
 
-/// Everywhere but an activation record's header, `Activation` is refused
+/// Everywhere but a frame record's header, `Activation` is refused
 /// like `Top`: as a value, and behind a metaclass reference.
 #[test]
 fn activation_named_anywhere_else_is_refused() {
@@ -10583,6 +10727,32 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     assert_eq!(
         decode::DecodeError::FutureRecord.to_string(),
         "an object in the image is a Future without an unresolved future's record"
+    );
+}
+
+/// A record under the `Future` header has exactly a future's two fields, so
+/// the first pass refuses any other count before anything is allocated:
+/// neither the record's placeholder nor a copy of its fields ever exists,
+/// however many fields it claims and carries.
+#[test]
+fn a_future_record_with_another_field_count_is_refused_before_allocating() {
+    let bytes = future_record(|writer| {
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(100_000);
+        for _ in 0..100_000 {
+            writer.write_u8(VALUE_NIL);
+        }
+    });
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::FutureRecord
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
     );
 }
 
@@ -10997,7 +11167,7 @@ fn the_mixin_application_message_frame_kind_decodes() {
     writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
-    writer.write_boolean(false); // continuable
+    frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     GraphFixture::new().decoded(
@@ -11408,7 +11578,7 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
 
 /// §3.1.1's enclosing-object condition on a value class is decided when the
 /// class object is created and only *recorded* on it
-/// (`ClassData::value_class_refusal`, `docs/design/object-model.md`, "A
+/// (`Heap::class_value_refusal`, `docs/design/object-model.md`, "A
 /// value object's four conditions", "Enclosing objects are values");
 /// `decide_instantiation` is what refuses, at instantiation. A decoded class
 /// object starts with no verdict of its own, so a legitimate snapshot
@@ -11999,7 +12169,7 @@ fn an_index_past_the_path_section_is_refused() {
 /// platform path 0, carrying `fields` `nil` fields.
 fn one_instance_of_platform_path_zero(fields: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1, 0);
+    graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_PLATFORM_PATH);
     writer.write_u32(0);
     writer.write_u32(5); // identity hash
@@ -12117,10 +12287,10 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
     });
 }
 
-/// A graph section of no objects and no frames whose one root `root` writes.
+/// A graph section of no objects whose one root `root` writes.
 fn a_graph_of_one_root(root: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 0, 0);
+    graph_counts(&mut writer, 0);
     writer.write_u32(1);
     root(&mut writer);
     writer.into_bytes()

@@ -5,9 +5,10 @@
 > round-trips through `build` and `load` and can be inspected without being
 > loaded. The decoder decides from the value alone whether an integer or a
 > float loads as an immediate or as an object ("Integers and floats on the
-> wire"). **Planned:** the decoder builds variably sized objects from a wire
-> format that stays id-based ("Planned: the image under the new
-> representation"); and suspend and resume.
+> wire"). The decoder reads the graph section in two passes, sizing every
+> record's object from its own bytes before it allocates any ("Two
+> passes"), and a reified frame is an object record like every other
+> ("Frames are object records"). **Planned:** suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
 > `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
@@ -107,7 +108,7 @@ the same reason: encoding runs no code.
 
 header:  magic "NSNX", FORMAT_VERSION (u32), flags (u8)
 modules: count (u32), then per module [origin][source?][root section]
-graph:   object table, frame table, roots
+graph:   object table, roots
 ```
 
 The header carries magic, `FORMAT_VERSION` and a flag byte. Two flags are
@@ -196,7 +197,7 @@ against the fresh bootstrap rather than against file content.
 ## Sections
 
 In order: the symbol table, the code table, the mixin table, the module
-section, the platform paths, the graph (object table, frame table, roots),
+section, the platform paths, the graph (object table, roots),
 and the tag-named hashes. Each is described below; the code table's
 instruction encoding has a section of its own.
 
@@ -377,8 +378,8 @@ arity (`encode::u16_field`), all of which a valid program can pass
 ([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a
 string's, a symbol's, a value list's and a `LargeInteger`'s digit count
 (`encode::u32_length`). Every other count goes through the asserting
-`encode::u32_field`, because no program can pass it: object and frame ids
-and counts are bounded by the heap's 32-bit handles, declaration, statement
+`encode::u32_field`, because no program can pass it: object ids, a
+frame's among them, and counts are bounded by the heap's 32-bit handles, declaration, statement
 and instruction counts by source, whose `Span` offsets are 32-bit --
 `ns_syntax::lex`, which `parse` goes through, refuses a source of more than
 `u32::MAX` bytes with a parse diagnostic before lexing it -- and the symbol
@@ -437,9 +438,9 @@ and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER` or
 (or `InvalidTag` for the sign), so each integer has one encoding on the wire
 and one representation after a load (`a_non_canonical_large_integer_is_refused`,
 `crates/ns-runtime/tests/image.rs`). The decoder makes the object through
-`Mutator::new_integer`, which adds to a failed load's peak
-([memory.md](memory.md), "The interim cost, and the one question still
-open"). `inspect` renders one as `large-int <decimal>`, through the same
+`Mutator::new_integer`, which counts toward a failed load's peak
+([memory.md](memory.md), "The amplification bound of a rejected load").
+`inspect` renders one as `large-int <decimal>`, through the same
 bounded read (`decode::read_large_integer_parts`), without the canonical
 checks, since a structural walk reports what the bytes say. The decimal is
 bounded too, in `inspect` and in `disasm`'s literals alike
@@ -470,9 +471,8 @@ since a boxed `Float` is a value with no identity; the decoder answers an
 immediate `SmallFloat64` or a boxed `Float` through `Mutator::new_float`,
 from the value alone (`a_boxed_float_value_round_trips_without_a_record`).
 Neither needs a tag of its own. A decoded integer beyond 61 bits and a decoded
-boxed float allocate, and add to a failed load's peak
-([memory.md](memory.md), "The interim cost, and the one question still
-open").
+boxed float allocate, and count toward a failed load's peak
+([memory.md](memory.md), "The amplification bound of a rejected load").
 
 **Mixin table.** One row per declaration: the name, its own slots, the primary
 factory selector and arity, the compiled methods as selector → code id, the ids
@@ -546,14 +546,12 @@ one of its levels, or a class a platform path names — is named by class tag 4,
 `CLASS_PLATFORM_PATH` and nothing else (`read_prebuilt_class`), so the nesting
 is one level deep. The encoder refuses a class record whose class object has no
 metaclass rather than write a header the decoder could not pair. A metaclass
-record is a record like any other — no shorter than the minimum record, one
-placeholder in the first pass — so it adds nothing to the decode
-amplification, whose placeholders come to about 16.0x of the bytes left at
-the graph section in a release build and whose decoded values that allocate
--- the worst an `i64` beyond 61 bits, a `LargeInteger` for 9 bytes -- bring
-it to about 23.1x ([memory.md](memory.md), "The interim cost, and the one
-question still open"); a tag-named metaclass is no record at all
-and allocates nothing.
+record is a record like any other, sized and allocated as one placeholder, and
+the smallest record there is: 9 bytes for a class object of 96, about 10.7x,
+which with the decoder's own tables sets the bound a rejected load reaches,
+about 12.0x of the graph section's bytes in a release build and 16x in a
+debug one ([memory.md](memory.md), "The amplification bound of a rejected
+load"); a tag-named metaclass is no record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
@@ -667,36 +665,84 @@ shipped mixin but belongs to the user class, and stays a `MIXIN_BUILTIN`
 record.
 
 **Object table.** Every heap object reachable from the roots — instances,
-strings, symbols, arrays, closures — decoded in two passes (placeholder, then
-fill) so cycles and shared references round-trip with identity preserved. A
-closure encodes its compiled body as a code id, its captured frame as a frame
-id, and the values it was handed when it was created: a `u16` count and that
-many encoded values. It encodes neither its parameter names, which nothing
-reads — the one thing anything asked of them was how many there were, and that
-is its body's `argument_count` — nor its home, which `Heap::closure_home`
-derives from the captured frame. That is a different record shape, so the
-closure body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the
-record is 6.
+strings, symbols, arrays, closures, class and metaclass records, reified
+frames — after a `u32` count, each record a header (its class tag and its
+`u32` identity hash) and a body under a body tag, so cycles and shared
+references round-trip with identity preserved. A closure encodes its compiled
+body as a code id, its captured frame as the object id of its frame record,
+and the values it was handed when it was created: a `u16` count and that many
+encoded values. It encodes neither its parameter names, which nothing reads —
+the one thing anything asked of them was how many there were, and that is its
+body's `argument_count` — nor its home, which `Heap::closure_home` derives
+from the captured frame. That is a different record shape, so the closure
+body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the record is 6.
 
-**Frame table.** Every `Frame` reachable from the roots, with receiver, args,
-temps, `program_counter` — an instruction index into the frame's compiled body — `sender`,
-`home`, `current_class`, `kind` and `uncontinuable`. A closure frame's `kind`
-names the closure object it runs, by object id; that the id names a closure is
-checked once every record has been read (`NotAClosureReference`), as a class
-reference is. A `<:` clause message's frame (`FRAME_MIXIN_APPLICATION_MESSAGE`,
-6) names the *level* its clause added rather than the applying class: the
-applying class's mixin carries one message body per clause, and the level's
-applied clause says which one ran, which is how `verify_graph` finds the body to
-reconcile the frame with. A block written in such a message captures that
-frame, so a snapshot can hold one.
-Frames and objects reference each other freely, so both tables are
-placeholder-allocated before either is filled.
+**Frames are object records.** A reified frame is an object of the frame
+format, an instance of the kernel-private `Activation`
+([object-model.md](object-model.md), "The object layout"), and it is written
+as one: `OBJECT_FRAME` (body tag 10) under a header whose class tag is
+`Activation`'s builtin tag, 23 — the one place an image may name that class
+(`decode::read_referenced_builtin_class`); a frame record under any other
+header is `FrameRecordUnderAnotherClass`, and `Activation`'s header on any
+other body is refused as the class tag no program may name. The body is, in
+order: the frame's kind tag (`FRAME_*`) and that kind's payload — a method
+frame's selector symbol id, a closure frame's closure object id, nothing for
+a top-level frame, a class tag for the four class-carrying kinds — a `u32`
+`program_counter`, an instruction index into the frame's compiled body;
+`uncontinuable`; the receiver; the `sender` and the `home`, each a presence
+flag and an object id; the `current_class`, a presence flag and a class tag;
+then a `u32` register count and that many values — every register the frame
+object has, `nil` where its activation copied none. A reference to a frame —
+a closure's captured frame, a frame's sender or home — is an object id that
+must name a frame record (`NotAFrameReference`), checked as it is read, since
+every placeholder exists by then; that a closure frame's kind names a closure
+(`NotAClosureReference`) is checked once every record has been read, as a
+class reference is. A `<:` clause message's frame
+(`FRAME_MIXIN_APPLICATION_MESSAGE`, 6) names the *level* its clause added
+rather than the applying class: the applying class's mixin carries one
+message body per clause, and the level's applied clause says which one ran,
+which is how `verify_graph` finds the body to reconcile the frame with. A
+block written in such a message captures that frame, so a snapshot can hold
+one. The kernel's `Activation` object for a frame is the frame object itself,
+so an activation object in a graph is this one record. There is no frame
+table: tag 9, the activation record whose body was one frame-table id, is
+retired with it (`RETIRED_OBJECT_BODIES` is 4, 5 and 9; "Next free number:
+11" in `opcodes.rs`).
+
+**Two passes.** Records reference each other freely and forward, so every
+record's object must exist before any is filled. `decode_graph_section`
+therefore reads the object table twice. The first pass (`Sizing`) reads
+every header and body exactly as the second will and stores nothing: values
+are parsed and dropped, ids range-checked against the count, prebuilt class
+tags, code ids, mixin rows, clause indices and symbol ids resolved, a symbol
+record naming a symbol-table entry already named refused (`DuplicateSymbol`),
+and a `Future` record of a field count other than two refused
+(`FutureRecord`); each record yields its object's size, read from its own
+bytes — the kind comes first in a frame record and the register count is on
+the wire, so no size depends on another record. If the objects would take
+more than eight words a byte of the input left, the load is refused
+(`UnexpectedEndOfFile`) before anything is allocated; a symbol's text is not
+counted against that, since it is bounded once per entry by the symbol
+section. Then every record's placeholder is allocated at exactly its size —
+an instance of the builtin `Object` with nil fields, or for a frame record a
+frame object of its register count — and the second pass fills each in place:
+a header and class word rewritten, each value stored as it is read, a string
+packed straight from the buffer, a class record's eight fields copied in
+(`Heap::shape_placeholder` and the `fill_placeholder_*` and `fill_frame_*`
+accessors), so no record is ever built beside its placeholder. A frame
+record's body is filled last, from its remembered position, once the
+applications are rebuilt and the headers stamped, since a method frame's
+code is found through its class's application. What that
+bounds a rejected load's peak at is "Verification" below.
 
 **Identity hashes are preserved verbatim** for every object the image carries
-as a record. After a load the identity-hash counter is advanced past the largest
-hash the image contained, so a hash assigned afterwards never collides with a
-loaded one. A record's 0 means "not yet assigned" and is preserved the same way
-([object-model.md](object-model.md)).
+as a record. A hash is 22 bits of the header word, so a hash of 2^22 or more
+is refused (`IdentityHashTooWide`). After a load the identity-hash counter is
+advanced past the largest hash the image contained, so a hash assigned
+afterwards does not collide with a loaded one until the counter wraps within
+its 22 bits, which a hash may ([object-model.md](object-model.md), "The
+identity hash is 22 bits wide"). A record's 0 means "not yet assigned" and is
+preserved the same way.
 
 **The exception is an object the image names by tag rather than by record**: a
 builtin class, a module's root class or one of its levels, the `platform`
@@ -723,9 +769,10 @@ past the ones the module section rebuilt is `BadModuleReference` or
 class a path names keeps only its builtin entry, since the loader refuses one
 object listed twice. `load` restores each hash onto the object
 the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
-duplicate entry or `u32::MAX` like any other malformed hash. The
-identity-hash counter is then advanced past the larger of this table's maximum
-and the object table's, so a hash assigned afterward never collides with either.
+duplicate entry or a hash of 2^22 or more (`IdentityHashTooWide`) like any
+other malformed hash. The identity-hash counter is then advanced past the
+larger of this table's maximum and the object table's, so a hash assigned
+afterward does not collide with either before the counter wraps.
 `inspect` reads the table as part of the graph section
 (`Report::graph_tag_named_hashes`).
 
@@ -756,24 +803,26 @@ what "verbatim" promises for every other object.
 
 ## How frames actually get into an image
 
-Only through a closure or an activation object. A running activation lives on
-the activation stack and is not in the object graph at all; a frame exists for
-it only once a block captured it or an activation object reified it
-([execution.md](execution.md), "Activations"). So a frame enters the
-table only as a closure's `captured_frame` — a closure a value names, or the
-one a closure frame already in the table runs — as the frame an activation
-object reifies, or as the `home` of a frame already in it. (A closure has no
-`home` field of its own to bring one in: `Heap::closure_home` derives it from
-the captured frame.) An image is written
+Only as objects something reaches. A running activation lives on the
+activation stack and is not in the object graph at all; a frame object exists
+for it only once something reified it -- a block capturing it, or the
+exception machinery naming it as an `Activation` object, which is the frame
+object itself ([execution.md](execution.md), "Activations"). So a frame record
+enters the object table only as a closure's captured frame — a closure a
+value names, or the one a closure frame already in the table runs — as an
+`Activation` object a value names, or as the `sender` or `home` of a frame
+already in it. (A closure has no `home` field of its own to bring one in:
+`Heap::closure_home` derives it from the captured frame.) An image is written
 at a **quiesced** point — `build` writes one once the application's factory
 and initializers have returned and before `main:args:` is sent, and a host
 calling `image::snapshot` between sends, with the Rust call stack already
 unwound and the activation stack empty; the one writer refuses to
 encode otherwise — so every frame in it is dead:
 divorced when its activation returned, or decoded from an earlier image and never
-run. Such a frame has no sender, and carries its own registers only when
-something could still read them by reference, so a closure brings in the frames
-it names, the values it copied, and nothing of the call chain that created
+run. Such a frame has no sender, and holds its registers' values only when
+something could still read them by reference -- its other registers are
+`nil`, written as one byte each -- so a closure brings in the frames it
+names, the values it copied, and nothing of the call chain that created
 them, and the table never holds a suspended computation.
 
 The format still records a `sender` per frame, and the decoder restores one if a
@@ -822,23 +871,16 @@ a `MakeClosure` copies, and every register operand of `MakeVector`,
 every other register operand; a vector slot is not a register and is checked at
 run time, since a vector's size is a run-time value.
 
-**A frame with no registers at all is accepted, which a by-reference closure
-can then read as `nil`.** A returning activation copies its registers into its
-reified frame only when something can reach them by reference
-([execution.md](execution.md), "Lifecycle"), so an empty register file is now
-the ordinary shape of a returned converted frame, and `verify_graph`'s
-register-file check accepts it instead of demanding a file that matches the
-body. A crafted image can use that to pair a by-reference closure with a
-register-less frame; the reads then answer `nil` and the writes are dropped
-(`Heap::frame_local`/`frame_set_local`) where the file used to be refused.
-Tightening the check is not available: nothing on the wire distinguishes a
-legitimately register-less frame from a crafted one. It is the same class as
-the `own_index` gap below — wrong but safe output from a mutated program,
-never a panic. Under the planned object layout the gap will close: every
-reified frame will have room for its registers and the encoder will write its
-full register file, so a frame record's register file will have to match its
-body and `verify_graph` will be able to refuse one that does not ("Planned:
-the image under the new representation" below).
+**A frame record's register file matches its body.** Every reified frame is
+allocated with its code's full register file ([object-model.md](object-model.md),
+"The object layout"), and the encoder writes every register it has, `nil`
+where its activation copied none ([execution.md](execution.md),
+"Lifecycle"), so `verify_graph` refuses a frame record whose register count
+is anything but its body's `register_count` (`FrameRegisterFile`; a frame
+record with no registers for a body that has some is refused,
+`a_frame_with_no_registers_for_a_body_that_has_some_is_refused`). A crafted
+image therefore cannot pair a by-reference closure with a frame too small
+for the registers its code reads, and no frame object ever grows.
 
 **`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and
@@ -862,7 +904,10 @@ message takes none has none (`UnexpectedMixinApplicationMessage`), so a row and
 the frames running its clauses agree on what each clause runs; a row with `<:`
 clauses but no superclass clause is refused
 (`MixinApplicationWithoutSuperclass`). A level's record names an applying row
-and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`), and
+and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`) and
+fit the 23 bits a class object's packed applied clause gives it
+(`ClauseIndexTooLarge`, at 2^23 or more, the limit the resolver holds a
+source to; [object-model.md](object-model.md), "The object layout"), and
 each module's root section lists its root's levels at rising positions within
 the clauses of that module's own root row -- never another module's
 (`a_root_section_clause_is_checked_against_its_own_modules_row`) -- which
@@ -977,8 +1022,9 @@ and the retired tags.
 **A symbol is one record per text, of the builtin `Symbol` class.** Symbols
 are canonical per heap ([object-model.md](object-model.md), "Values and
 objects"), so no encoder writes two symbol records of the same text; a graph
-section that holds two is corrupt or crafted, and `decode_graph_section`
-refuses it with `DecodeError::DuplicateSymbol` rather than merging them,
+section that holds two is corrupt or crafted, and `decode_graph_section`'s
+first pass refuses it with `DecodeError::DuplicateSymbol`, before anything is
+allocated, rather than merging them,
 which would mean rewriting every reference to the second
 (`a_symbol_recorded_twice_is_refused` in `crates/ns-runtime/tests/image.rs`).
 Every symbol record it accepts enters the loading heap's canonical table
@@ -990,7 +1036,14 @@ made: a record whose class names anything other than the builtin `Symbol`
 class is refused with `DecodeError::SymbolOfWrongClass`
 (`a_symbol_recorded_with_a_class_other_than_symbol_is_refused`), since
 entering it under the wrong class would make every later literal of that
-text answer the mis-classed object too.
+text answer the mis-classed object too. The converse is refused as well: a
+string record (`OBJECT_STRING`) whose class is the builtin `Symbol` is
+`DecodeError::StringOfSymbolClass`
+(`a_string_recorded_with_the_class_symbol_is_refused`). A symbol's words are
+a string's and only its class tells them apart
+([object-model.md](object-model.md), "Strings have two widths"), so such a
+record would be a second `Symbol` of its text that no canonical table
+holds, against §5.1.6.
 
 **The VM mirror is refused on both sides of the format.** The mirror is a
 capability: whoever holds it can run any leaf, and the bootstrap hands it to
@@ -1051,22 +1104,23 @@ instance of `Class`, `Metaclass` or a metaclass — is `InstanceOfAClassClass`,
 and a class record whose row is some row's class side is
 `ClassRecordAppliesAClassSide`: no source makes either.
 
-**An activation object is a record of its own; its class is named nowhere
-else.** `ObjectData::Activation`, an instance of the kernel-private
-`Activation` class (builtin tag **23**), is written as object body tag 9,
-`OBJECT_ACTIVATION`, whose body is one frame id, resolved and range-checked
-like a closure's captured frame (`BadFrameId`). Its header is `CLASS_BUILTIN`
-followed by tag 23, and that header is the one place an image may name
-`Activation`: `decode_object_header` accepts it there, holds header and body
-to each other both ways — an activation record under any other class, or the
-`Activation` header on any other record, is `ActivationHeader` — and
-`read_referenced_builtin_class` refuses tag 23 everywhere else, as a value, a
-superclass, a `<:` clause's builtin and behind `CLASS_METACLASS`, exactly as
-it refuses `Top`'s 15. An activation reads other frames and unwinds stacks, a
-capability Newspeak hands out only through mirrors, so no program may name its
-class; the encoder never walks an activation object's header as a reference
-(`GraphTable::visit_value`), so writing activations never trips the refusal of
-a graph that reaches the class itself.
+**A frame record is the one place an image names `Activation`.** The kernel's
+activation object is the frame object itself, an instance of the
+kernel-private `Activation` class (builtin tag **23**), written as an
+`OBJECT_FRAME` record ("Frames are object records" above). Its header is
+`CLASS_BUILTIN` followed by tag 23, and that header is the one place an image
+may name `Activation`: `decode_object_header` accepts it there, and header and
+body are held to each other both ways — a frame record under any other class
+is `FrameRecordUnderAnotherClass`, and the `Activation` header on any other
+record is refused as an invalid tag — and `read_referenced_builtin_class`
+refuses tag 23 everywhere else, as a value, a superclass, a `<:` clause's
+builtin and behind `CLASS_METACLASS`, exactly as it refuses `Top`'s 15. An
+activation reads other frames and unwinds stacks, a capability Newspeak hands
+out only through mirrors, so no program may name its class; the encoder never
+walks a frame object's header as a reference (`GraphTable::visit_value`), so
+writing frames never trips the refusal of a graph that reaches the class
+itself. A record under the retired activation body tag 9 is an unknown tag
+(`a_record_under_the_retired_activation_tag_is_refused`).
 
 **The other classes the exceptions added are ordinary nameable builtins.**
 `Exception`, `Error`, `MessageNotUnderstood`, `Message` and `Halt` carry
@@ -1229,8 +1283,10 @@ materializes objects and resolves class tags against live builtins, so it needs
 an `Interpreter`; a viewer must not bootstrap one, any more than `javap`
 instantiates a class to print it. `inspect` therefore walks the same bytes and
 reports each record: an object's class tag, identity hash and slot values, a
-frame's receiver, arguments, temporaries, `program_counter` and kind, and the
-roots, and a started image's one root is the application. Nothing else shows
+frame record's kind, `program_counter`, `uncontinuable`, receiver, sender,
+home, current class and registers (`class Activation, hash H, frame <kind>,
+pc P, …, registers [..]`), and the roots, and a started image's one root is
+the application. Nothing else shows
 the graph. A module count that disagrees with the mixin table's trees is
 refused, as `load` refuses it, rather than listed past: which tree a root
 section is read against depends on the count, so a report past it would
@@ -1243,7 +1299,7 @@ And the walk must consume the section exactly — its recorded end is the file's
 last byte — so a disagreement about record *shape* desynchronizes it and fails
 loudly instead of printing plausible nonsense. That guard is only as good as
 its fixtures: the first version of the test passed with a field deliberately
-dropped, because every fixture produced zero frames and the frame half was
+dropped, because every fixture produced zero frames and no frame record was
 never walked. A source with a block in a slot, the only way a frame reaches the
 graph, is what makes it bite.
 
@@ -1425,104 +1481,39 @@ and mutation and truncation tests for the module section, the module class
 and hash tags, `FLAG_START` and the retired tags and flag
 (`crates/ns-runtime/tests/image.rs`).
 
-## Planned: the image under the new representation
+## Planned: the image under the object space and generations
 
-Would change: the decoder builds the planned representation -- one space of
-variably sized objects ([object-model.md](object-model.md), "Planned: the object
-layout"; [memory.md](memory.md), "Planned: the object space") -- from a wire
-format that stays id-based, as the one-word value already is ("Integers and
-floats on the wire" above). Nothing on the wire becomes an address or an offset,
-so an artifact stays independent of word size and layout, as Primordial Soup's
-snapshots are (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image,
-which is old space's bytes relocated on load, is the model this does not take.
+Would change: the decoder builds its objects in the object space of road
+step 3b ([memory.md](memory.md), "Planned: the object space") and, from road
+step 4, allocates them old. The wire format stays id-based, as it is under
+road step 3a's layout, whose records, two passes and refusals are built
+("Frames are object records" and "Two passes" above): nothing on the wire
+becomes an address or an offset, so an artifact stays independent of word
+size and layout, as Primordial Soup's snapshots are
+(`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image, which is
+old space's bytes relocated on load, is the model this does not take.
 
-- **Integers and floats** keep their wire form. In the object space a
-  decoded negative `LargeInteger` sets the header's negative bit, and a
-  boxed `Float` is an object of a header, a class word and its `f64`.
-- **Symbols** stay UTF-8 on the wire, as strings do; the decoder picks a
-  symbol's one-byte or four-byte form from the code points it reads, as it
-  already does a string's, and both become byte- or 32-bit-indexed objects
-  in the space.
-- **Frames become object records.** A reified frame is an object of the frame
-  format ([object-model.md](object-model.md), "Planned: the object layout"), so
-  its record joins the object table under a new object tag, `OBJECT_FRAME`,
-  the next free number (10), its header's class tag `Activation`'s. The separate frame
-  count and frame table go, and a frame id in a closure record or any other
-  record becomes an object id. `OBJECT_ACTIVATION` (9), whose body is one
-  frame id, retires into the new frame object tag, since a kernel-private
-  `Activation` is then the frame object itself. The frame's kind stays a field
-  of the frame object and keeps its `FRAME_*` kind tags. The encoder writes
-  every frame's full register file, `nil` where no value was copied, since
-  every reified frame has room for its registers, so a frame record's count
-  is its size like any other record's and the register-less frame record of
-  today goes.
-- **The decoder learns each record's size before it allocates.** A placeholder
-  per record, allocated before any record is read, assumes a fixed size; in a
-  space of variably sized objects the first pass parses each record's body,
-  whose field, element or unit count gives the object's size -- records carry
-  no size field, and none is added -- and checks it against the bytes
-  remaining, then allocates, and the second pass fills the fields, whose
-  forward references then name objects that already exist.
-- **The decode amplification is recomputed** as the largest of the ratios:
-  per record kind, that kind's fixed object size against its minimum record
-  -- a class or metaclass object, eight fields and its header and class word,
-  80 bytes against the smallest metaclass record, 9 bytes (a class tag of 2,
-  the hash's 4, `OBJECT_METACLASS` and a two-byte `CLASS_BUILTIN` reference
-  for the class it describes, which `decode_class_tag` accepts and
-  `pair_metaclasses` refuses only once every record is read:
-  `image/encode.rs:1645-1648`, `image/decode.rs:3306-3311`), about 8.9x, and a
-  frame object, about 96 bytes against a record of about 19, some 5x -- and
-  per value, the words a decoded value occupies against the bytes that
-  encode it -- a one-byte `VALUE_NIL` element becomes an 8-byte word, 8x,
-  a UTF-8 byte widened to the 32-bit string form 4x, and a
-  `VALUE_LARGE_INTEGER` of one digit, 14 bytes, becomes an object of a
-  header, a class word and its digit. The class kind's
-  8.9x is the largest, and the bound is whichever ratio is largest once the
-  layouts are final, since the first pass allocates each object's full size
-  before validation. A symbol record names a symbol-table entry rather than
-  carrying its text, so the first pass refuses a second record naming the
-  same entry, or one the heap's table already holds, before allocating, and
-  allocates each entry's text at most once; that text is bounded by its own
-  UTF-8 encoding in the symbol section -- at most 4x its encoded bytes in the
-  32-bit form -- so the amplification's base is the graph section and the
-  symbol section together, not the graph bytes remaining alone, which a
-  valid image whose graph ends in one symbol record with a long name would
-  otherwise fail ([memory.md](memory.md), "The interim cost, and the one
-  question still open", where the figures are, and `CLAUDE.md`'s paragraph on
-  untrusted images). `bounded_count` keeps bounding every pre-allocation by
-  the bytes remaining.
+- **Road step 3b changes only where the decoder's objects live**: the first
+  pass's sizes, the placeholders and the in-place fills stay as they are.
+  The amplification figures ([memory.md](memory.md), "The amplification
+  bound of a rejected load") are recomputed once a placeholder is a run of
+  words in the space rather than a boxed block behind a 16-byte slot.
 - **Every load tenures before the decoder allocates.** Under generations
   ([memory.md](memory.md), "Planned: generations") the decoder allocates
   everything old, and every load runs `Interpreter::bootstrap()` first
-  (`image/mod.rs:290`) and then rebuilds every module's root class
-  (`modules::build_module_classes`, `image/mod.rs:305`), so every load will
-  scavenge and tenure right after the bootstrap, before the decoder
-  allocates anything; a load whose image names platform paths does it
-  again after following them, before the graph pass. Each is a collection
-  between entries, where only roots hold values, as `Interpreter::collect_now`
-  is today, never one inside a step. The decoder's stores are then
-  old-to-old and need no barrier.
-- **A class record's clause index** is refused from 2^23 on, the width the
-  applied clause packs it into ([object-model.md](object-model.md),
-  "Planned: the object layout"), with a `DecodeError` of its own.
-- **Road step 3a builds all of this on today's arena** (decided with the
-  user on 2026-10-03): the records, the two passes and the refusals arrive
-  with the representation, each object one block of words; road step 3b
-  changes only where the decoder's blocks live. The amplification figures
-  are measured afresh after each.
-- **Identity hashes** are preserved as they are today, per record and in the
-  tag-named table; what changes is their width. The header word holds 22 bits
-  ([object-model.md](object-model.md), "Planned: the object layout"), so the
-  decoder refuses a hash of 2^22 or more where it refuses `u32::MAX` today.
-  The counter is still advanced past the largest loaded hash, so a hash
-  assigned after a load avoids every loaded one until the counter wraps;
-  after a wrap, which skips 0, two objects may share a hash, as any hash
-  allows, so "never collides" above holds only for today's width.
+  (`image/mod.rs`) and then rebuilds every module's root class
+  (`modules::build_module_classes`), so every load will scavenge and tenure
+  right after the bootstrap, before the decoder allocates anything; a load
+  whose image names platform paths does it again after following them,
+  before the graph pass. Each is a collection between entries, where only
+  roots hold values, as `Interpreter::collect_now` is today, never one
+  inside a step. The decoder's stores are then old-to-old and need no
+  barrier.
 
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather
-than format. A reified `Frame` is fully encoded, every running activation is an
+than format. A reified frame is fully encoded, every running activation is an
 entry on the explicit activation stack ([execution.md](execution.md),
 "Activations"), and nothing a running computation does holds a Rust frame: the
 activation stack is its only copy, since sends do not recurse through the Rust
@@ -1541,10 +1532,10 @@ activation without its continuation would resume without the rest of the loop,
 the class creation, the walk or the unwind it belongs to. The depth limit's
 reserve (`Mutator.depth_reserve`), a frame held while an error near the limit is
 signalled, would have to travel with the stack as well
-([execution.md](execution.md), "The depth limit"). Under the planned object
-layout every reified frame will have room for its registers, since a frame
-object will be allocated with its code's full register count
-([object-model.md](object-model.md), "Planned: the object layout"). Suspending
+([execution.md](execution.md), "The depth limit"). Every reified frame has
+room for its registers, since a frame object is allocated with its code's
+full register count ([object-model.md](object-model.md), "The object
+layout"). Suspending
 then means reifying and divorcing the whole stack, which is the same operation a
 debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
@@ -1680,6 +1671,21 @@ builtins.
 - **An image records the hashes of the objects it names by tag**, so a hash the
   program was given survives a load like every other; a reserved-range
   rule was rejected.
+- **Frames are object records, and the decoder sizes every record before it
+  allocates** (decided with the user on 2026-09-29 and 2026-10-03, built with
+  road step 3a on 2026-10-03; "Frames are object records", "Two passes"). A
+  reified frame is an object, so it joined the object table under the next
+  free body tag, `OBJECT_FRAME` (10), and the frame table, its count and the
+  activation record (9, retired, not reused) went; every frame is written
+  with its full register file, so its record's count is its size like any
+  other's. A placeholder sized from its own record's bytes makes each byte
+  count once, so the bound of a rejected load is the largest of the per-record
+  and per-value ratios rather than their sum; the wire stays id-based and
+  records carry no size field.
+- **A string record under the `Symbol` class is refused**
+  (`StringOfSymbolClass`, 2026-10-03): with `Symbol` a subclass of `String`
+  and a symbol told from a string by its class alone, such a record would be
+  a second, non-canonical `Symbol`, which §5.1.6 forbids.
 
 ## Open questions
 

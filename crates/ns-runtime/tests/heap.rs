@@ -11,6 +11,7 @@ use ns_runtime::ValueKind;
 use ns_runtime::{
     ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
 };
+use ns_runtime::{CodePoints, ObjectShape, ValueClassRefusal};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -391,11 +392,13 @@ fn trivial_code() -> std::rc::Rc<CompiledCode> {
     ))
 }
 
-fn activation_header<'gc>() -> ActivationHeader<'gc> {
+/// An initializer activation of `class` running `trivial_code`: a frame
+/// reified from it names its code, so it knows its one argument.
+fn activation_header<'gc>(class: ns_runtime::ClassReference<'gc>) -> ActivationHeader<'gc> {
     ActivationHeader {
         receiver: Value::nil(),
-        current_class: None,
-        kind: FrameKind::TopLevel,
+        current_class: Some(class),
+        kind: FrameKind::Initializer(class),
         feedback_base: FeedbackBase::NOT_ASSIGNED,
         code: trivial_code(),
         then: Continuation::Deliver,
@@ -407,30 +410,37 @@ fn activation_header<'gc>() -> ActivationHeader<'gc> {
 fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
     // A frame reified for a closure that reads nothing by reference needs no
     // registers once its activation has returned: what the closure captured
-    // it carries itself. One that was marked -- a reference-lowering block,
-    // or an optimized fallback closure -- still keeps them.
+    // it carries itself, so its own stay nil. One that was marked -- a
+    // reference-lowering block, or an optimized fallback closure -- still
+    // keeps them.
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
+        let class = mutator.builtin_class(BuiltinClass::Object);
         let heap = mutator.heap_mut();
 
-        let unmarked = heap.push_activation(activation_header(), &[Value::small_integer(1)], 1);
+        let unmarked =
+            heap.push_activation(activation_header(class), &[Value::small_integer(1)], 1);
         heap.activation_set_program_counter(unmarked, 0);
         let forgetful = heap.reify(unmarked);
         heap.activation_set_local(unmarked, 1, Value::small_integer(2));
         heap.pop_activation(unmarked);
         assert_eq!(
             heap.frame_register_shape(forgetful),
-            (0, 0, 0),
-            "an unmarked activation leaves its frame no registers"
+            (0, 1, 2),
+            "a frame has its code's registers whether or not they were kept"
+        );
+        assert!(
+            heap.frame_local(forgetful, 0).is_nil() && heap.frame_local(forgetful, 1).is_nil(),
+            "an unmarked activation leaves its frame's registers nil"
         );
         // A crafted image can pair a by-reference closure with a frame that
-        // has no registers, so a read past the file answers nil rather than
-        // aborting the process.
-        assert!(heap.frame_local(forgetful, 1).is_nil());
-        heap.frame_set_local(forgetful, 1, Value::small_integer(9));
-        assert!(heap.frame_local(forgetful, 1).is_nil());
+        // has fewer registers, so a read past the file answers nil rather
+        // than aborting the process.
+        assert!(heap.frame_local(forgetful, 2).is_nil());
+        heap.frame_set_local(forgetful, 2, Value::small_integer(9));
+        assert!(heap.frame_local(forgetful, 2).is_nil());
 
-        let marked = heap.push_activation(activation_header(), &[Value::small_integer(1)], 1);
+        let marked = heap.push_activation(activation_header(class), &[Value::small_integer(1)], 1);
         heap.activation_set_program_counter(marked, 0);
         let kept = heap.reify(marked);
         // What `MakeClosure` does for a block whose `outer_reach` is
@@ -440,7 +450,7 @@ fn a_returning_activation_keeps_its_registers_only_when_it_was_marked() {
         heap.pop_activation(marked);
         assert_eq!(
             heap.frame_register_shape(kept),
-            (0, 1, 1),
+            (0, 1, 2),
             "a marked activation hands its registers to its frame"
         );
         assert_eq!(heap.frame_local(kept, 0).as_small_integer(), Some(1));
@@ -503,5 +513,65 @@ fn an_object_handle_survives_the_value_word() {
             mutator.heap().describe(value),
             mutator.heap().describe(Value::object(back))
         );
+    });
+}
+
+#[test]
+fn every_kind_of_object_answers_its_shape() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let instance = mutator.heap_mut().allocate_instance(object_class, 2);
+        assert_eq!(mutator.heap().object_shape(instance), ObjectShape::Instance);
+        assert_eq!(
+            mutator
+                .heap()
+                .instance_fields(instance)
+                .map(|fields| fields.len()),
+            Some(2)
+        );
+        let text = mutator.new_string("abc".to_string());
+        assert_eq!(mutator.heap().object_shape(text), ObjectShape::String);
+        assert_eq!(
+            mutator.heap().string_code_points(text),
+            Some(CodePoints::from("abc"))
+        );
+        let symbol = mutator.new_symbol(Symbol::intern("abc"));
+        assert_eq!(
+            mutator
+                .heap()
+                .object_shape(symbol.as_object().expect("an object")),
+            ObjectShape::Symbol
+        );
+        assert_eq!(
+            mutator.heap().object_shape(object_class),
+            ObjectShape::Class
+        );
+    });
+}
+
+#[test]
+fn a_value_class_refusal_keeps_its_offender_and_its_level() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let class = mutator.builtin_class(BuiltinClass::Value);
+        let offender = mutator.heap_mut().allocate_instance(object_class, 0);
+        assert!(mutator.record_value_class_refusal(
+            class,
+            ValueClassRefusal::NonValueEnclosingObject {
+                level: Some(Symbol::intern("Counter")),
+                offender,
+            },
+        ));
+        let Some(ValueClassRefusal::NonValueEnclosingObject {
+            level,
+            offender: kept,
+        }) = mutator.heap().class_value_refusal(class)
+        else {
+            panic!("the refusal was recorded");
+        };
+        assert_eq!(level, Some(Symbol::intern("Counter")));
+        assert!(kept.same(offender));
     });
 }

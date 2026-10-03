@@ -209,8 +209,8 @@ code anywhere in the workspace normalizes. Closing it means normalizing where
 source text becomes a string. It is not on the road to a high-performance VM
 ([OPEN-WORK.md](../OPEN-WORK.md)); the Unicode normalization data it needs is
 to come from the `unicode-normalization` crate (noted with the user on
-2026-09-29 for when it is taken up). The planned string representation
-([object-model.md](object-model.md), "Planned: the object layout") will store
+2026-09-29 for when it is taken up). The string representation
+([object-model.md](object-model.md), "The object layout") stores
 whatever code points it is given and does not depend on it.
 
 **Numbers, selectors and symbols follow §4.2's lexical grammar.**

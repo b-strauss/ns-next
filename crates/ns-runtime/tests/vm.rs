@@ -65,7 +65,7 @@ fn string_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
         panic!("expected a string object")
     };
     heap.str_value(object)
-        .unwrap_or_else(|| panic!("expected ObjectData::String"))
+        .unwrap_or_else(|| panic!("expected a String"))
 }
 
 fn integer_of<'gc>(value: Value<'gc>) -> i64 {
@@ -161,12 +161,12 @@ fn a_block_created_by_bytecode_carries_compiled_code_and_is_invocable() {
         let Some(object) = mutator.fetch(&block).as_object() else {
             panic!("expected a closure object")
         };
-        let closure = mutator
+        let code = mutator
             .heap()
-            .closure_data(object)
+            .closure_code(object)
             .unwrap_or_else(|| panic!("expected a closure"));
         assert_eq!(
-            closure.code.argument_count, 1,
+            code.argument_count, 1,
             "the closure carries the compiled body of `[ :x | x + 1 ]`"
         );
     });
@@ -408,7 +408,7 @@ fn a_dynamic_array_literal_evaluates_its_elements() {
         let elements = mutator
             .heap()
             .array_elements(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::Array"));
+            .unwrap_or_else(|| panic!("expected an Array"));
         assert_eq!(
             elements.iter().copied().map(integer_of).collect::<Vec<_>>(),
             vec![1, 2, 3]
@@ -454,11 +454,11 @@ fn loading_a_module_installs_its_compiled_code() {
         let Some(object) = mutator.fetch(&block).as_object() else {
             panic!("expected a closure object")
         };
-        let closure = mutator
+        let code = mutator
             .heap()
-            .closure_data(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::Closure"));
-        assert_eq!(closure.code.argument_count, 0);
+            .closure_code(object)
+            .unwrap_or_else(|| panic!("expected a closure"));
+        assert_eq!(code.argument_count, 0);
     });
 }
 
@@ -1280,7 +1280,7 @@ fn large_integer_text(interpreter: &mut Interpreter, root: &Root) -> String {
         mutator
             .heap()
             .large_integer(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::LargeInteger"))
+            .unwrap_or_else(|| panic!("expected a LargeInteger"))
             .to_decimal_string()
     })
 }

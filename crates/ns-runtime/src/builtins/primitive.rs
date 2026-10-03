@@ -251,7 +251,7 @@ pub enum IntegerPrimitive {
 }
 
 /// `LargeInteger`'s leaves: `Integer`'s protocol for a receiver whose
-/// payload is `ObjectData::LargeInteger`. A family of its own rather than
+/// shape is `ObjectShape::LargeInteger`. A family of its own rather than
 /// `Integer`'s leaves widened, so `IntegerPrimitive` keeps meaning "the
 /// receiver is a `SmallInteger`", which is what a JIT tier emits inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

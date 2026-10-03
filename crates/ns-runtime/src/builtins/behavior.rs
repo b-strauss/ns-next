@@ -6,8 +6,6 @@
 //! at the base level; reflection is a mirror's
 //! (`docs/design/object-model.md`, "Class sides and metaclasses").
 
-use std::rc::Rc;
-
 use crate::builtins::primitive::BehaviorPrimitive;
 use crate::types::*;
 use crate::Mutator;
@@ -46,9 +44,9 @@ pub(crate) fn execute<'gc>(
             if !mutator.heap().is_class(other) {
                 return None;
             }
-            let own = mutator.heap().class_application(object)?;
-            let others = mutator.heap().class_application(other)?;
-            Some(Ok(Value::boolean(Rc::ptr_eq(&own, &others))))
+            let own = mutator.heap().class_application_index(object)?;
+            let others = mutator.heap().class_application_index(other)?;
+            Some(Ok(Value::boolean(own == others)))
         }
         BehaviorPrimitive::Enclosing => Some(Ok(mutator
             .heap()

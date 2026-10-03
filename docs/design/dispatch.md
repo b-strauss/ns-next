@@ -1,7 +1,8 @@
 # Name resolution and dispatch
 
 > **Status:** built, the inline caches included, with the dispatch id in the
-> object header (3c).
+> object header (3c), its low 22 bits since road step 3a ("The guard in the
+> header word").
 > **Code:** `crates/ns-runtime/src/resolver/`, `dispatch.rs`,
 > `interpreter/resolve.rs` (every send's lookup, `doesNotUnderstand:`, and
 > `act`, which runs what a lookup found), `interpreter/inline_cache.rs` (the
@@ -402,8 +403,9 @@ from the receiver's class. Otherwise `lookupProtected` runs against `o`'s
 sends virtual while private ones are not.
 
 **`outer` walks the lexical declaration chain, never the receiver's dynamic
-class.** `Frame.current_class` seeds the walk and `ClassData::declaring_class`
-continues it level by level. A method or nested-class accessor inherited across a
+class.** The activation's current class seeds the walk and each class
+object's declaring-class field (`Heap::class_declaring`) continues it
+level by level. A method or nested-class accessor inherited across a
 nesting boundary runs with the class that lexically declares it, not with the
 receiver's own class. Using the receiver's class instead silently resolves
 `outer` to the wrong enclosing object — the kind of defect that produces a
@@ -856,7 +858,7 @@ repository already holds:
   and a thread of its own, and an artifact, whose code is written without
   any feedback state and never needs rewriting.
 
-The cost is bookkeeping: a stack entry and a closure (`ClosureData`) carry a
+The cost is bookkeeping: a stack entry and a closure (a fixed field) carry a
 `feedback_base`, and so do `vm::run`, in a local beside the running code, and
 the `Handoff` a switch writes. This repository has measured layout effects of 4–8% from
 a single field on `Step`, so the field was measured on its own before
@@ -867,35 +869,32 @@ two sittings ([execution.md](execution.md), "What the inline caches moved").
 
 #### The dispatch id
 
-The id (`mixin::DispatchId`) is a dense `u32`, minted per heap by a
-counter in the `Mutator` when `apply_mixin` creates an application — one per
-application, for its instances (`MixinApplication.dispatch_ids`,
+The id (`mixin::DispatchId`) is a dense number of 22 bits, minted per heap
+by a counter in the `Mutator` when `apply_mixin` creates an application —
+one per application, for its instances (`MixinApplication.dispatch_ids`,
 `DispatchIds.instances`). There is no second, class-side id: a class
 object's class is its metaclass (§3.2), an application of its own, so a
 class object's id is that metaclass's instances id like any other object's,
 and its behaviour — its class side, the factory among its members, then
 `Class`, `Behavior` and `Object` — is what that application's lookup finds.
-A class object keeps a copy of its application's instances id
-(`ClassData.dispatch_id`), which is where allocation and restamping read it
-for the objects whose class it is.
+A class object keeps no copy of it: allocation and restamping read it off
+the application the class object's application field names
+(`Heap::header_dispatch_id`), without cloning its `Rc`.
 
-**The id a guard reads is in the object header** (`Object.dispatch_id`), stamped
+**The id a guard reads is in the object header**, its bits 0-21
+([object-model.md](object-model.md), "The object layout"), stamped
 at allocation from the object's class's instances id — an instance's from its
 class, a class object's from its metaclass — and restamped by
 `Heap::object_set_class` when `Mutator::attach_metaclass` changes a header, so
-`Heap::dispatch_id(value)` answers an object's in one arena load, and a guard is
-that load and one compare, for instances and class objects alike. It is where V8
+`Heap::dispatch_id(value)` answers an object's from its header word -- the
+arena slot's pointer to its block, then the header -- and a guard is that
+read and one compare, for instances and class objects alike. It is where V8
 (the map), HotSpot (the klass pointer), Cog (the class index) and Primordial
 Soup (the class id) keep their answer. For an immediate -- `nil`, a boolean, a
 `SmallInteger` or a `SmallFloat64` -- it is a table indexed by the word's tag,
 and for the constant tag by the constant (the heap's `immediate_dispatch_ids`),
 which the bootstrap fills from the builtin classes; a boxed `Float` or a
-`LargeInteger` is an object and carries its own. The header's four bytes are
-paid for by boxing a class object's data, `ObjectData::Class(Box<ClassData>)`,
-so an `Object` is still 56 bytes in a release build, the size `CLAUDE.md`'s
-amplification figure assumes, which a release-build test pins
-([memory.md](memory.md)). It is 56 rather than 48 because `ClosureData`, 32
-bytes, is now `ObjectData`'s largest payload.
+`LargeInteger` is an object and carries its own.
 
 The header holds a copy, so every place a class's application changes must
 restamp: `Heap::class_set_application` walks the arena and restamps every
@@ -918,12 +917,14 @@ forwarders"). In a debug build
 asserts that the header agrees, so a missed restamp fails the first test
 that dispatches on the stale object. Outside `heap.rs` nothing knows where
 the id lives: every read goes through `Heap::dispatch_id` or
-`Heap::class_dispatch_ids`. Two values are
-reserved: `DispatchId::NONE`, which a value whose
-class has no application answers — only a crafted image makes one — and
-which is never cached, and `DispatchId::VACANT`, which guards a site state
-and which no value answers. Minting stops before either; an exhausted
-counter hands out `NONE`, so that application runs uncached.
+`Heap::class_dispatch_ids`. Three values are reserved, at the low end:
+`DispatchId::NONE`, 0, which a value whose class has no application answers
+— only a crafted image makes one — and which is never cached;
+`DispatchId::VACANT`, 1, which guards a site state and which no value
+answers; and `DispatchId::FORWARDED`, 2, which road step 5's forwarders will
+carry ([object-model.md](object-model.md), "The reserved guard values sit at
+the low end"). The counter mints from 3 and below 2^22; an exhausted counter
+hands out `NONE`, so that application runs uncached.
 
 #### Resolve, then act
 
@@ -1094,9 +1095,9 @@ way:
 - A method: a hit carries its target's base in the entry, which the miss that
   filled it asked the map for; an uncached decision leaves it `NOT_ASSIGNED`,
   and `push_step` asks the map.
-- A block: `MakeClosure` copies the creating activation's base into
-  `ClosureData`, since both belong to one family, and the block's activation
-  takes it from there — no probe per closure, which `bench_block.ns` would
+- A block: `MakeClosure` copies the creating activation's base into the
+  closure's feedback-base field, since both belong to one family, and the
+  block's activation takes it from there — no probe per closure, which `bench_block.ns` would
   pay.
 - An initializer, a clause, a clause message: the map, per push. The design
   let a `Factory` entry carry the bases of the bodies its instantiation runs,
@@ -1107,7 +1108,7 @@ way:
 - A closure decoded from an image carries `NOT_ASSIGNED`, since a base is
   never serialized, and is given a fresh range of its own `family_size`
   (`InlineCaches::fresh_range`) when it is first activated, written back into
-  its `ClosureData`. Any range of that size is a correct one.
+  its feedback-base field. Any range of that size is a correct one.
 
 #### `site_index`'s rule
 
@@ -1167,9 +1168,10 @@ method's leaf declined stays, as Cog keeps a method whose primitive
 failed. `Factory` instantiates the receiver (`instantiate::decide_factory`),
 re-checking nothing the lookup decided — §3.2's flat metaclass leaves the
 entry reachable only on the receiver's own metaclass, which the guard
-determines — but reading `ClassData.builtin` off the receiver on every
-send, because `Array` needs an `ObjectData::Array`
-payload and no entry carries which kind of instance to build ("Every target is
+determines — but reading the class object's builtin field
+(`Heap::class_builtin`) off the receiver on every send, because `Array`
+needs an object of the indexable format, `String` one of the byte format
+and `Symbol` a refusal, and no entry carries which kind of instance to build ("Every target is
 a function of its key and its site" below). A
 handler target builds the message array per send and calls the handler, and
 nothing is checked ahead of it.
@@ -1179,8 +1181,8 @@ nothing is checked ahead of it.
 That is the property the entries rest on, and a lookup that also reads something
 the key does not cover re-checks it in `act`. The plan audited every read
 `resolve` and its callees make: the only ones the key does not cover are
-`ClassData.builtin`, which `decide_factory` re-reads on every send off the
-receiver rather than trusting an entry, and a primitive's payload check,
+the class object's builtin field, which `decide_factory` re-reads on every
+send off the receiver rather than trusting an entry, and a primitive's payload check,
 which `builtins::execute` re-runs on every send. Whether a method is a
 primitive method is not such a read: it is a property of the method the entry
 records, and `act` reads it off that method on every send. A class object's factory
@@ -1392,32 +1394,31 @@ between two safepoints rather than one instruction
 
 **Built** (2026-09-19, the user's decision), by its
 [plan](../superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md):
-the id a guard reads is in the object header, and a class object's data is
-boxed to pay for it ("The dispatch id" above). Only where
-`Heap::dispatch_id` reads the id changed; the guards, the entries and the
-global cache did not.
+the id a guard reads is in the object header ("The dispatch id" above), since
+road step 3a in the header word's low 22 bits ("The guard in the header
+word" below). Only where `Heap::dispatch_id` reads the id changed; the
+guards, the entries and the global cache did not.
 
 Two variants were built and measured against `393311f`, the last commit
 before 3c that changed a send's path, where the id lived on the class object
-(`ClassData.dispatch_id`, in padding the struct already had) and an
-instance's guard cost two arena loads, a class object's one load and an add:
+(in padding the class object's Rust struct already had) and an instance's
+guard cost two arena loads, a class object's one load and an add:
 
-- **C2, the id in the header.** `Object` gains `dispatch_id`, and grows from
+- **C2, the id in the header.** The arena slot gains the id, and grows from
   56 to 64 bytes in a release build (96 to 104 in a debug one); the
   amplification a crafted image can reach at the graph section goes from
   about 16.9x to about 18.2x, and `bench_block.ns`'s peak working set
   rises 2.6%.
-- **C2+, the id in the header and `ClassData` boxed out of `ObjectData`.**
-  `Object` stays 56 bytes in a release build and falls to 80 in a debug one,
-  the amplification stays about 16.9x in release and falls to about 22.2x in
-  debug, and the working set is level. The design had expected 48 bytes; that
-  expectation predates 3b, after which `ClosureData` became `ObjectData`'s
-  largest payload. Cog's class table is the alternative to a box, and buys
-  nothing here: this id is per application, not per class object.
+- **C2+, the id in the header and a class object's data boxed out of the
+  slot.** The slot stays 56 bytes in a release build and falls to 80 in a
+  debug one, the amplification stays about 16.9x in release and falls to
+  about 22.2x in debug, and the working set is level. Cog's class table is
+  the alternative to a box, and buys nothing here: this id is per
+  application, not per class object.
 
 These sizes and amplification figures are this measurement's record; the
-current ones are in [memory.md](memory.md), "The interim cost, and the one
-question still open".
+current ones are in [memory.md](memory.md), "What an object costs" and
+"The amplification bound of a rejected load".
 
 **Neither variant is faster than `393311f` by the protocol's gate.** C2+'s
 means moved −0.4% to −2.8% in 14 of its 16 source-and-sitting cells, and
@@ -1442,93 +1443,80 @@ interpreter's measurement cannot see:
   ([object-model.md](object-model.md), "Class sides and metaclasses"), so
   every header id comes from the object's class, and the class-side special
   case in the stamping is gone.
-- **Between the two header variants, C2+ is the smaller for the same
-  speed**: C2 costs 8 bytes an object, the amplification and the working set
-  for nothing measured. The open question beside it — whether closure
-  conversion (step 4) would shrink `ClosureData` to 24 bytes or less and take
-  `Object` to 48 — is settled the other way: the conversion rebuilt
-  `ClosureData` and it is still 32 bytes (`types.rs`), because the boxed slice
-  of copied values takes the room the parameter names and the home freed. So
-  `Object` stays 56, which `heap.rs`'s release-build size test pins, and
-  `ClosureData` stays `ObjectData`'s largest payload
-  ([execution.md](execution.md), "Converted representation";
-  [memory.md](memory.md), "The interim cost, and the one question still
-  open").
+- **Between the two header variants, C2+ was the smaller for the same
+  speed**: C2 cost 8 bytes an object, the amplification and the working set
+  for nothing measured. Road step 3a's layout has no slot to pad: every
+  object is a block of words whose header word holds the id beside the
+  format and the hash, and a class object's fields are words of its own
+  block, so neither the box nor its cost remains.
 
-**The costs accepted.** One more indirection on every read of a class's data
-— every level `kth_enclosing_object` walks, the start of a `super` send,
-`metaclass_of`, the miss path, instantiation — measured level on
-`bench_new.ns`, `bench_new2.ns`, `bench_newarg.ns` and `bench_block.ns`; an
-allocation per class object; and a copy that must be restamped wherever a
-class's application changes (`Heap::class_set_application`, the decoder's
-one stamping pass). The planned `become:` will need no restamp: its forwarder
+**The cost accepted.** A copy that must be restamped wherever a class's
+application changes (`Heap::class_set_application`, the decoder's one
+stamping pass). The planned `become:` will need no restamp: its forwarder
 will carry a reserved id and the target will keep its own
 ([object-model.md](object-model.md), "Planned: `become:` through
-forwarders"). A debug build's
-check in `Heap::dispatch_id` catches a stale copy in every test that
-dispatches on one.
+forwarders"). A debug build's check in `Heap::dispatch_id` catches a stale
+copy in every test that dispatches on one.
 
-### Planned: the guard in the header word
+### The guard in the header word
 
-Would change: the guard is read from the object's one header word instead of
-from an `Object` slot, and nothing else about the caches changes. Road step
-3a, the object representation, makes the change on today's arena (decided
-with the user on 2026-10-03). `DispatchId::NONE` becomes 0 and
-`DispatchId::VACANT` 1, with 2 reserved for the forwarder, so a header
-word left zero is never a minted guard ([object-model.md](object-model.md),
-"Planned: the object layout"). The object
-layout ([object-model.md](object-model.md), "Planned: the object layout", road
-step 3) keeps the application id in the header's low 22 bits and the class
-object in a word of its own, precisely so that this guard stays a
-per-application id -- a class-index guard as in Spur and Primordial Soup would
-make every site that sees nested-class instances from two enclosing objects
-polymorphic. Two things follow for the caches. The application cache
+**Built** with road step 3a, the object representation, on today's arena
+(decided with the user on 2026-10-03; [object-model.md](object-model.md),
+"The object layout"): the guard is read from the object's one header word,
+bits 0-21, and nothing else about the caches changed. `DispatchId::NONE` is
+0 and `DispatchId::VACANT` 1, with 2 reserved for the forwarder
+(`FORWARDED`), so a header word left zero is never a minted guard. The
+layout keeps the application id in the header and the class object in a
+word of its own, precisely so that this guard stays a per-application id --
+a class-index guard as in Spur and Primordial Soup would make every site
+that sees nested-class instances from two enclosing objects polymorphic.
+
+Two things follow for the caches. The application cache
 (`Mutator.applications`) is keyed by the mixin's id and the superclass
 application's full-width index rather than by two `Rc::as_ptr` addresses,
-since the mixins and `MixinApplication`s will live in Rust-side tables indexed
-by their ids, and a class object will name its application by that full-width
-index, separate from the 22-bit guard id; with ids that are never reused while
-a key can name them, the cache is free to become weak ([memory.md](memory.md),
-"Weak references"). And a forwarder ([object-model.md](object-model.md),
-"Planned: `become:` through forwarders", road step 5) carries a reserved
+since the mixins and `MixinApplication`s live in the heap's tables indexed by
+their ids (`heap/tables.rs`), and a class object names its application by
+that full-width index, separate from the 22-bit guard id; with ids that are
+never reused while a key can name them, the cache is free to become weak
+([memory.md](memory.md), "Weak references") -- it stays strong until live
+editing reclaims an id ([object-model.md](object-model.md), "An application
+has two ids"). And a forwarder ([object-model.md](object-model.md),
+"Planned: `become:` through forwarders", road step 5) will carry a reserved
 application id that is never a guard, so every send whose guard is the
 receiver's own header misses on a forwarder -- Spur's read barrier on send,
 which needs no check on a hit. A super send and a private lexical send guard
-on the running method's or N's application instead, so they check the
+on the running method's or N's application instead, so they will check the
 receiver's header for the forwarded format before using a hit, as Spur's
 explicit barrier in super sends does (`ensureReceiverUnforwarded`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A forwarded
-receiver is unforwarded in one shared step at the top of each send entry,
-before resolve and act -- `decide_send` (`interpreter/mod.rs`),
-`decide_lexical_send` and `decide_super_send` (`interpreter/sends.rs:26`,
-`:78`), and the caches' `miss` and their hit check for super and private
-lexical sends -- so the receiver `act` gets is the followed one and the two
-lowerings cannot diverge. An immediate's guard comes from a table indexed by
-its tag, and for the constant tag by the constant, since `nil`, `true` and
-`false` share a tag but have three guards. At 22 bits the guard ids can run
-out where today's `u32` counter practically cannot; running out keeps today's
-rule, an application without a guard id running uncached (`NONE`, "The
-dispatch id" above). The guard id serves only as a guard -- in object headers,
-inline- and global-cache entries and recorded guards
-([object-model.md](object-model.md), "Planned: the object layout") -- and
-every identity comparison of applications uses the full-width index instead:
-the application cache's key and value, `behavior:sharesApplicationWith:`
-(`Kernel.ns:116`), and the global cache's `Lexical` key, which keeps never
-recording a `NONE` guard, as step 6 of the lookup order in "3b — The caches"
-says today. So an application without a guard id stays reachable and distinct.
-A guard id is reclaimed once no object header, no inline- or global-cache
-entry and no recorded guard names it; a full-width index once no class object,
-no application-cache key or value and no other application's superclass link
-names it; a mixin id once the `Mixin` itself is dropped -- its table entry
-freed, no declaration, enclosing mixin or code holding it -- and no
-application, no application-cache key or value and no class object's
-applied-clause field names it. The collector can tell all three. A class's
-change of application restamps every instance's header by a heap walk, as
-`Heap::class_set_application` walks the arena today
-(`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
-become reclaimable. The debug build's check in `Heap::dispatch_id`, which
-recomputes an object's id from its class and asserts that the header agrees,
-answers the reserved id for an object of the forwarded format instead of
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A
+forwarded receiver will be unforwarded in one shared step at the top of each
+send entry, before resolve and act -- `decide_send` (`interpreter/mod.rs`),
+`decide_lexical_send` and `decide_super_send` (`interpreter/sends.rs`), and
+the caches' `miss` and their hit check for super and private lexical sends --
+so the receiver `act` gets is the followed one and the two lowerings cannot
+diverge.
+
+An immediate's guard comes from a table indexed by its tag, and for the
+constant tag by the constant, since `nil`, `true` and `false` share a tag but
+have three guards. At 22 bits the guard ids can run out where a `u32`
+counter practically could not; running out keeps the rule of "The dispatch
+id" above, an application without a guard id running uncached (`NONE`). The
+guard id serves only as a guard -- in object headers and inline- and
+global-cache entries, and from road step 5 in recorded guards
+([object-model.md](object-model.md), "Planned with road step 5: what a slot
+access checks") -- and every identity comparison of applications uses the
+full-width index instead: the application cache's key and value,
+`behavior:sharesApplicationWith:` (`Kernel.ns`), class-object equality
+(`builtins/value.rs`), and the global cache's `Lexical` key, which never
+records a `NONE` guard, as step 6 of the lookup order in "3b — The caches"
+says. So an application without a guard id stays reachable and distinct.
+None of the ids is reclaimed yet; their reuse rules are
+[object-model.md](object-model.md), "An application has two ids". A class's
+change of application restamps every instance's header by a heap walk
+(`Heap::class_set_application`) before the old guard id could become
+reclaimable. The debug build's check in `Heap::dispatch_id`, which recomputes
+an object's id from its class and asserts that the header agrees, will
+answer the reserved id for an object of the forwarded format instead of
 reading its class word, which then names the target rather than a class.
 
 ### Considered and rejected
@@ -1618,10 +1606,10 @@ reading its class word, which then names the target rather than a class.
     mixin-relative slot index — the site stays monomorphic when a mixin is
     applied under several superclasses, at a second load per private hit;
     worth measuring against the built guard once a program has that shape
-    (none of the measured sources did). The per-mixin id it needs will arrive
-    with the object layout, which will give mixins and applications ids of their
-    own in place of `Rc` addresses ("Planned: the guard in the header word"
-    above).
+    (none of the measured sources did). The per-mixin id it needs exists
+    since road step 3a, which gave mixins and applications ids of their own
+    in place of `Rc` addresses (`MixinId`, `ApplicationIndex`; "The guard in
+    the header word" above).
   - **A block's `family_size` is its own subtree's**, which bounds every site
     a block can run, computed by one function in compiler and decoder.
     Rejected: the whole family's size on every body (a second pass, and a
@@ -1630,10 +1618,12 @@ reading its class word, which then names the target rather than a class.
     needs a size); blocks pointing at their root (a reference cycle or a
     table, and a load per block send).
   - **A class object stores one dispatch id**, the instances id, and derives
-    the class side's as the next. Rejected: both ids on `ClassData`; the ids
-    only on the application (a further load on every send). Since 3c a guard
-    reads the id from the object header instead, and `ClassData`'s copy is
-    what allocation and restamping read.
+    the class side's as the next. Rejected: both ids on the class object;
+    the ids only on the application (a further load on every send). Since 3c
+    a guard reads the id from the object header instead, and since step 6 a
+    class object's class is its metaclass, so there is one id per
+    application; allocation and restamping read it off the application the
+    class object names.
   - **`vm::run`'s stretch is forced inline**, and `decide_super_send` kept
     out of it: the caches' hit path pushes it past LLVM's inlining
     threshold, where the per-instruction step it replaced made every
@@ -1688,11 +1678,12 @@ reading its class word, which then names the target rather than a class.
     this one): a factory entry is then reachable only on the receiver's own
     metaclass, which the guard — that metaclass's dispatch id —
     determines, and never on a `super` chain or through inheritance. The
-    builtin branch of 3b's pre-lookup factory check goes into the entry's action, since
-    `Array` needs an `ObjectData::Array` payload rather
+    builtin branch of 3b's pre-lookup factory check goes into the entry's
+    action, since `Array` needs an object of the indexable format rather
     than a generic instance. It does **not** leave the reads a key does not
-    cover, as the decision expected it would: `decide_factory` reads
-    `ClassData.builtin` off the receiver on every send, which is what keeps
+    cover, as the decision expected it would: `decide_factory` reads the
+    class object's builtin field off the receiver on every send, which is
+    what keeps
     the entry safe rather than the key covering it ("Every target is a
     function of its key and its site" above). What did leave that list is a
     class object's factory *selector*, which is now the selector the entry is
@@ -1801,7 +1792,7 @@ reading its class word, which then names the target rather than a class.
   decision): the 16-byte variant with an index into side tables measured no
   faster and grows those tables with misses ("Considered, not adopted: a
   16-byte entry" above).
-- **The dispatch id is in the object header, with `ClassData` boxed** (3c,
+- **The dispatch id is in the object header** (3c,
   the user's decision, 2026-09-19): measured against the id on the class
   object and the id in the header alone, in two sittings, and **chosen
   against the rule proposed with the measurement**. That rule — the faster
@@ -1811,10 +1802,8 @@ reading its class word, which then names the target rather than a class.
   chose the header for what the interpreter cannot measure: a JIT tier's
   guard is one compare at a fixed offset instead of two dependent loads, a
   class check and a class-side branch, as in V8, HotSpot, Cog and Primordial
-  Soup; step 6's reified metaclasses would make the stamping uniform, as they
-  since have; and boxing
-  `ClassData` keeps `Object` at 56 bytes where the header alone grows it to
-  64. Accepted: a further indirection on every read of a class's data, an
-  allocation per class object, and restamping wherever a class's application
+  Soup; and step 6's reified metaclasses would make the stamping uniform, as
+  they since have. Accepted: restamping wherever a class's application
   changes ("3c — The dispatch id in the object header" above;
-  [execution.md](execution.md), "What 3c moved").
+  [execution.md](execution.md), "What 3c moved"). Since road step 3a the id
+  is 22 bits of the header word ("The guard in the header word" above).

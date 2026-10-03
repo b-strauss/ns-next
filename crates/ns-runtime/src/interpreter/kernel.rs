@@ -1668,7 +1668,7 @@ mod tests {
                 (BuiltinClass::LargeInteger, Some(BuiltinClass::Integer)),
                 (BuiltinClass::Float, Some(BuiltinClass::Number)),
                 (BuiltinClass::String, Some(BuiltinClass::Value)),
-                (BuiltinClass::Symbol, Some(BuiltinClass::Value)),
+                (BuiltinClass::Symbol, Some(BuiltinClass::String)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
                 (BuiltinClass::Block, Some(BuiltinClass::Object)),

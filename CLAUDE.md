@@ -16,7 +16,11 @@ Rust 1.98.0, edition 2021, five crates:
   booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of 32-bit
-  handles, an activation stack reified on demand, a mark-compact
+  handles, each slot one object's block of words -- header word, class word,
+  fields, in road step 3's layout (`heap/header.rs`, `heap/object.rs`; the
+  seam's value types in `heap/records.rs`, the per-heap tables of mixins,
+  applications and compiled code in `heap/tables.rs`) --
+  an activation stack reified on demand into frame objects, a mark-compact
   collector run only at run-loop safepoints; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
@@ -99,9 +103,14 @@ process: validate every id, tag, count and length before it indexes, allocates
 or slices; bound any recursion the input controls; never add a pre-allocation
 not bounded by `bounded_count`. `image::load` verifies structure and reconciles
 mixins before any decoded code runs (`image-format.md`, "Verification"). The
-transient peak of a rejected load is about 16.0x the graph section's bytes in a
-release build, 23.1x with the integers and floats it allocates (debug 20.0x and
-28.9x; `memory.md` has the breakdown and what is not counted). The guarantee
+decoder sizes every record from its own bytes in a first pass and allocates
+nothing before it (`image-format.md`, "Two passes"), then fills each
+placeholder in place, so no record is built beside its placeholder. The
+transient peak of a rejected load is about 12.0x of the graph bytes plus ≤4x
+of the symbol section in a release build, and about 16x of the graph bytes
+plus ≤4x of the symbol section in a debug one (`memory.md`, "The
+amplification bound of a rejected load", has the breakdown and what is not
+counted; `decode_value`'s doc comment the derivation). The guarantee
 covers decoding only: `ns-next load` runs the packaged application's code,
 recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
 (`execution.md`, "The depth limit"), and an image that names platform paths
@@ -120,9 +129,11 @@ parameter, or read through `interpreter.enter` while it lives); a reader of
 compiled code alone takes the mixin, which holds no handle (`compiler.md`,
 "Readers of compiled code take the mixin"). A host keeps a value across a run
 only as a `Root`. The debug-only origin guard, move epochs and the stress modes
-catch mistakes; a release build does not. A new field holding a handle or a
-stored `Word` needs its `Trace` impl (`memory.md`, "A handle is arena-relative",
-"The move stress mode").
+catch mistakes; a release build does not. A new Rust-side field holding a
+handle or a stored `Word` needs its `Trace` impl, and a new pointer word in an
+object's block its format's arm in `heap/object.rs`'s `trace_block`
+(`memory.md`, "A handle is arena-relative", "What the collector traces", "The
+move stress mode").
 
 **The brand is the compiler's, and needs no cast.** `World::enter` hands the
 `Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
@@ -133,8 +144,10 @@ reach the `Interpreter`. A stored `Word` carries no brand, so `Heap::load` and
 doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
 
 **A running activation is an `ActivationReference`; only a `FrameReference` is
-ever stored.** An activation's index is reused after its pop; `ClosureData`,
-`Frame` and image records take a `FrameReference` (`Heap::reify`). The run loop
+ever stored.** An activation's index is reused after its pop; a closure's
+captured frame, a frame object's sender and home, and image records take a
+`FrameReference`, the handle of a frame object in the arena (`Heap::reify`;
+there is no frame arena). The run loop
 pops every activation it runs on every exit. **Every instruction that reads or
 writes another frame's registers by reference must answer its depth, never 0,
 in `bytecode::outer_reach_of`, and its eight-byte form in
@@ -166,7 +179,8 @@ at run time, because one mixin's code is shared by every application of it;
 `vm_initializer.rs` pins it (`compiler.md`).
 
 **`outer` walks the *lexical* declaration chain, never the receiver's dynamic
-class** — `current_class`, then `ClassData::declaring_class`. A level a `<:`
+class** — `current_class`, then each class object's declaring-class field
+(`Heap::class_declaring`). A level a `<:`
 clause adds takes its enclosing object and declaring class from the class the
 clause names (`interpreter/nested.rs`, `build_applied_levels`).
 
@@ -192,8 +206,8 @@ whole Rust boundary").
 **A cache records what the lookup decided; it never decides.** An inline-cache
 hit is `act` on the resolution `resolve_*` answered for the same key; an entry
 holds no handle. Anything the key does not cover is read afresh in `act` on
-every send — today `ClassData.builtin`, a primitive's payload check and a
-method's `MethodFastPath`. Add such a read and its per-send re-check goes with
+every send — today the class object's builtin field (`Heap::class_builtin`), a
+primitive's payload check and a method's `MethodFastPath`. Add such a read and its per-send re-check goes with
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
@@ -242,7 +256,7 @@ A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 in the same commit. Nothing under `crates/ns-syntax` should change for runtime work.
 
 Never judge performance from a debug build (the `measuring-performance` skill).
-Only a release build runs the size tests (the `Object` size and
+Only a release build runs the size tests (`an_object_slot_is_one_boxed_block_of_words` and
 `a_signal_fits_in_the_niche_of_its_one_unboxed_error`):
 `cargo nextest run --workspace --release`.
 

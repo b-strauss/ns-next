@@ -36,6 +36,16 @@ impl FeedbackBase {
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The number a closure object stores in its feedback-base word.
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// The base a closure object's feedback-base word names.
+    pub(crate) fn from_raw(raw: u32) -> FeedbackBase {
+        FeedbackBase(raw)
+    }
 }
 
 /// A cache entry's target: a `Resolved` with its defining class replaced by
@@ -1348,7 +1358,7 @@ mod tests {
     fn a_global_cache_keeps_colliding_keys_apart() {
         let mut global = GlobalCache::with_groups(1);
         let selector = Symbol::NEW;
-        let guards: Vec<DispatchId> = (0..3).map(DispatchId::from_counter).collect();
+        let guards: Vec<DispatchId> = (3..6).map(DispatchId::from_counter).collect();
         let chain_of = |global: &mut GlobalCache, guard: DispatchId, rule: CacheRule| match global
             .get(guard, selector, rule)
         {
@@ -1415,9 +1425,9 @@ mod tests {
     fn a_global_cache_keys_a_lexical_entry_by_its_lexical_application_too() {
         let mut global = GlobalCache::with_groups(2);
         let selector = Symbol::NEW;
-        let guard = DispatchId::from_counter(0);
+        let guard = DispatchId::from_counter(3);
         let (first_lexical, second_lexical) =
-            (DispatchId::from_counter(1), DispatchId::from_counter(2));
+            (DispatchId::from_counter(4), DispatchId::from_counter(5));
         global.insert(
             guard,
             selector,
@@ -1456,9 +1466,9 @@ mod tests {
         let mut cache = GlobalCache::with_groups(1);
         let selector = Symbol::NEW;
         let (first, second, third) = (
-            DispatchId::from_counter(0),
-            DispatchId::from_counter(1),
-            DispatchId::from_counter(2),
+            DispatchId::from_counter(3),
+            DispatchId::from_counter(4),
+            DispatchId::from_counter(5),
         );
         let target_for = |chain| Target::Factory { chain };
         cache.insert(
@@ -1504,7 +1514,7 @@ mod tests {
             kind: AccessorKind::Getter,
             chain: Chain::Public,
         };
-        let guard = DispatchId::from_counter;
+        let guard = |number: u32| DispatchId::from_counter(DispatchId::FIRST_MINTED + number);
         caches.advance(index, guard(0), slot(0), false);
         assert_eq!(
             caches.state_of(&caches.sites[index]),

@@ -31,7 +31,7 @@ use crate::Symbol;
 
 // `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
 // visible only inside this crate; re-exporting it through `interpreter`
-// (a `pub mod`) is what gives `types.rs`'s `pub` field on `ClosureData` a
+// (a `pub mod`) is what gives `heap::NewClosure`'s `pub` field a
 // fully public path to it, which a `pub` field's type must have.
 pub use inline_cache::FeedbackBase;
 // The inline caches' test view (`Interpreter::call_site_states`) and sizes
@@ -297,12 +297,16 @@ pub struct Mutator<'gc> {
     /// object; false only during the kernel phase, before `Class` is filled
     /// (`Mutator::give_existing_class_objects_metaclasses`).
     pub(crate) metaclasses_ready: bool,
-    /// (mixin identity, superclass application identity) -> behaviour.
-    /// Keyed on the superclass's *application*, never on a superclass class
-    /// object: a nested superclass has one class object per enclosing
-    /// instance, so a class-object key would never hit and every instance
-    /// would get its own behaviour.
-    pub(crate) applications: IdentityMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    /// (the mixin's id, the superclass application's full-width index) ->
+    /// behaviour. Keyed on the superclass's *application*, never on a
+    /// superclass class object: a nested superclass has one class object per
+    /// enclosing instance, so a class-object key would never hit and every
+    /// instance would get its own behaviour. Strong until live editing, as
+    /// the heap's tables are.
+    pub(crate) applications: IdentityMap<
+        (crate::heap::MixinId, Option<crate::heap::ApplicationIndex>),
+        Rc<crate::mixin::MixinApplication>,
+    >,
     /// class mixin identity -> the metaclass mixin `metaclass_of` synthesized
     /// for a class that declares no class side of its own. §6.3 makes the
     /// metaclass mixin "the class side, together with the primary factory
@@ -342,9 +346,10 @@ pub struct Mutator<'gc> {
     /// when it is given back, so it holds no handle a move would have to
     /// find.
     pub(crate) argument_buffer: Vec<Value<'gc>>,
-    /// The next dispatch id `apply_mixin` mints. Past the last id below
-    /// `DispatchId::VACANT` it stops minting and applications get `NONE`,
-    /// which is never cached: slower, never wrong.
+    /// The next dispatch id `apply_mixin` mints. It starts at
+    /// `DispatchId::FIRST_MINTED` and mints below `DispatchId::LIMIT` (22
+    /// bits, the header word's guard field); once exhausted applications get
+    /// `NONE`, which is never cached: slower, never wrong.
     pub(crate) next_dispatch_id: u32,
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
@@ -762,9 +767,11 @@ impl<'gc> Mutator<'gc> {
     /// calls it once, in the first entry the world makes.
     pub(crate) fn bootstrap_builtin_classes(&mut self) {
         self.builtin_classes = build_builtin_classes(self);
+        let activation = self.builtin_class(BuiltinClass::Activation);
+        self.heap.set_activation_class(activation);
         self.refresh_immediate_dispatch_ids();
         let class = self.builtin_class(BuiltinClass::VmMirror);
-        let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        let mirror = self.heap.allocate_instance(class, 0);
         self.vm_mirror = Some(Value::object(mirror));
     }
 
@@ -794,22 +801,19 @@ impl<'gc> Mutator<'gc> {
     /// The next dispatch id, or `DispatchIds::NONE` once the counter is
     /// exhausted: an application built after that point is simply never
     /// cached, which is slower but never wrong, so running out is not an
-    /// error. Stopping strictly before `DispatchId::VACANT` and
-    /// `DispatchId::NONE` -- rather than at them -- is what keeps
-    /// `DispatchId::from_counter`'s assertion from ever firing on a minted
-    /// id.
+    /// error. The counter starts at `DispatchId::FIRST_MINTED`, above the
+    /// reserved guards, and stops below `DispatchId::LIMIT`, which is what
+    /// keeps `DispatchId::from_counter`'s assertion from ever firing on a
+    /// minted id.
     ///
     /// One id per application: a class object's class is its metaclass, an
     /// application of its own, so no second, class-side id goes with it.
     pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
         let first = self.next_dispatch_id;
-        let Some(after) = first.checked_add(1) else {
-            return crate::mixin::DispatchIds::NONE;
-        };
-        if after > u32::MAX - 1 {
+        if first >= crate::mixin::DispatchId::LIMIT {
             return crate::mixin::DispatchIds::NONE;
         }
-        self.next_dispatch_id = after;
+        self.next_dispatch_id = first + 1;
         crate::mixin::DispatchIds {
             instances: crate::mixin::DispatchId::from_counter(first),
         }
@@ -818,13 +822,10 @@ impl<'gc> Mutator<'gc> {
     /// After `image::load`: never hand out an identity hash a loaded object
     /// already carries (`docs/design/image-format.md`, "Sections").
     ///
-    /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
-    /// `image::decode` refuses an image carrying `u32::MAX` outright
-    /// (`DecodeError::IdentityHashExhausted`), because there is no counter
-    /// value past it. That refusal is what keeps `Heap::advance_identity_hash_past`'s
-    /// `max.saturating_add(1)` in range; the counter's own saturation is what
-    /// keeps the *next* hash in range when the image's maximum is one below
-    /// the ceiling.
+    /// `max < IDENTITY_HASH_LIMIT` is the caller's guarantee, and an
+    /// enforced one: `image::decode` refuses a hash the header word cannot
+    /// hold (`DecodeError::IdentityHashTooWide`). Past the widest hash the
+    /// counter wraps to 1 (`Heap::advance_identity_hash_past`).
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
         self.heap.advance_identity_hash_past(max);
     }
@@ -1437,21 +1438,9 @@ impl<'gc> Mutator<'gc> {
         self.builtin_class(kind)
     }
 
-    fn new_instance_object(
-        &mut self,
-        class: ClassReference<'gc>,
-        data: ObjectData<'gc>,
-    ) -> ObjectReference<'gc> {
-        self.heap.allocate_object(class, data)
-    }
-
     pub fn new_array(&mut self, elements: Vec<Value<'gc>>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Array);
-        let words = elements
-            .into_iter()
-            .map(|element| self.heap.store(element))
-            .collect();
-        self.new_instance_object(class, ObjectData::Array(words))
+        self.heap.allocate_array(class, &elements)
     }
 
     pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
@@ -1463,7 +1452,7 @@ impl<'gc> Mutator<'gc> {
         code_points: crate::CodePoints,
     ) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::String);
-        self.new_instance_object(class, ObjectData::String(code_points))
+        self.heap.allocate_string(class, code_points)
     }
 
     /// The one way an `f64` becomes a `Value`, so that every float has one
@@ -1475,7 +1464,7 @@ impl<'gc> Mutator<'gc> {
             Value::small_float(value)
         } else {
             let class = self.builtin_class(BuiltinClass::Float);
-            Value::object(self.new_instance_object(class, ObjectData::Float(value)))
+            Value::object(self.heap.allocate_float(class, value))
         }
     }
 
@@ -1490,7 +1479,7 @@ impl<'gc> Mutator<'gc> {
             Some(small) => Value::small_integer(small),
             None => {
                 let class = self.builtin_class(BuiltinClass::LargeInteger);
-                Value::object(self.new_instance_object(class, ObjectData::LargeInteger(integer)))
+                Value::object(self.heap.allocate_large_integer(class, integer))
             }
         }
     }
@@ -1502,23 +1491,45 @@ impl<'gc> Mutator<'gc> {
             return Value::object(object);
         }
         let class = self.builtin_class(BuiltinClass::Symbol);
-        let object = self.new_instance_object(class, ObjectData::Symbol(symbol));
+        let object = self.heap.allocate_symbol(class, symbol);
         self.heap.record_canonical_symbol(symbol, object);
         Value::object(object)
     }
 
-    pub fn new_closure(&mut self, closure: ClosureData<'gc>) -> ObjectReference<'gc> {
+    pub fn new_closure(&mut self, closure: crate::heap::NewClosure<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Block);
-        self.new_instance_object(class, ObjectData::Closure(closure))
+        self.heap.allocate_closure(class, closure)
     }
 
-    /// An instance of the kernel-private `Activation` class over `frame`,
-    /// which the caller has already reified (`Heap::reify`): an object keeps
-    /// a `FrameReference`, never an `ActivationReference`, since only a
-    /// reified frame survives its activation's pop.
+    /// A closure running `code`, whose copied values are the registers
+    /// `copied` names in the window at `register_base`, read straight into
+    /// its block (`Heap::allocate_closure_from_registers`): `MakeClosure`'s.
+    pub(crate) fn new_closure_from_registers(
+        &mut self,
+        code: &Rc<crate::bytecode::CompiledCode>,
+        captured_frame: FrameReference<'gc>,
+        feedback_base: FeedbackBase,
+        register_base: crate::heap::RegisterBase,
+        copied: &[u16],
+    ) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Block);
+        self.heap.allocate_closure_from_registers(
+            class,
+            code,
+            captured_frame,
+            feedback_base,
+            register_base,
+            copied,
+        )
+    }
+
+    /// The activation object of `frame`, which the caller has already
+    /// reified (`Heap::reify`): the frame object itself, an instance of the
+    /// kernel-private `Activation` class. It is a frame, never a running
+    /// activation's stack entry, since only a reified frame survives its
+    /// activation's pop.
     pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Activation);
-        self.new_instance_object(class, ObjectData::Activation(frame))
+        self.heap.frame_object(frame)
     }
 
     /// The `platform` object (`docs/design/core-library.md`, "The
@@ -1549,16 +1560,21 @@ impl<'gc> Mutator<'gc> {
             .heap
             .class_application(class)
             .expect("internal: a kernel class has an application");
-        let mut fields = vec![Word::NIL; application.slot_count];
+        let instance = self.heap.allocate_instance(class, application.slot_count);
         let mut level = Some(application);
         while let Some(current) = level {
             for (position, slot) in current.mixin.slots.iter().enumerate() {
-                fields[current.own_slot_base + position] =
-                    self.heap.store(slot_value(slot.name.as_str()));
+                let value = slot_value(slot.name.as_str());
+                if !self
+                    .heap
+                    .instance_set_field(instance, current.own_slot_base + position, value)
+                {
+                    unreachable!("internal: a kernel class's slots lie inside its layout");
+                }
             }
             level = current.superclass.clone();
         }
-        self.new_instance_object(class, ObjectData::Instance(fields))
+        instance
     }
 
     /// The slot `name` that the kernel class `kind` declares, read from
@@ -1634,13 +1650,13 @@ impl<'gc> Mutator<'gc> {
         declaring_class: Option<ClassReference<'gc>>,
         superclass: Option<ClassReference<'gc>>,
     ) -> ClassReference<'gc> {
-        let class = self.allocate_class_object(ClassData::new(
+        let class = self.allocate_class_object(crate::heap::NewClass {
             application,
             enclosing,
             declaring_class,
             superclass,
-            None,
-        ));
+            builtin: None,
+        });
         if self.metaclasses_ready {
             self.attach_metaclass(class);
         }
@@ -1658,9 +1674,16 @@ impl<'gc> Mutator<'gc> {
         superclass: Option<ClassReference<'gc>>,
         clause: crate::mixin::AppliedClause,
     ) -> ClassReference<'gc> {
-        let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
-        data.applied_clause = Some(Box::new(clause));
-        let class = self.allocate_class_object(data);
+        let class = self.allocate_class_object(crate::heap::NewClass {
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            builtin: None,
+        });
+        if !self.heap.class_set_applied_clause(class, clause) {
+            unreachable!("internal: a level is a class object");
+        }
         if self.metaclasses_ready {
             self.attach_metaclass(class);
         }
@@ -1673,10 +1696,9 @@ impl<'gc> Mutator<'gc> {
     /// `give_existing_class_objects_metaclasses` replaces it once `Class`
     /// is filled. A metaclass is allocated here too, and `attach_metaclass`
     /// makes it an instance of `Metaclass`.
-    fn allocate_class_object(&mut self, data: ClassData<'gc>) -> ClassReference<'gc> {
+    fn allocate_class_object(&mut self, data: crate::heap::NewClass<'gc>) -> ClassReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
-        self.heap
-            .allocate_object(class, ObjectData::Class(Box::new(data)))
+        self.heap.allocate_class(class, data)
     }
 
     pub fn apply_mixin(
@@ -1685,8 +1707,8 @@ impl<'gc> Mutator<'gc> {
         superclass: Option<&Rc<crate::mixin::MixinApplication>>,
     ) -> Rc<crate::mixin::MixinApplication> {
         let key = (
-            crate::mixin::mixin_key(mixin),
-            superclass.map_or(0, crate::mixin::application_key),
+            self.heap.mixin_id(mixin),
+            superclass.map(|application| application.index()),
         );
         if let Some(existing) = self.applications.get(&key) {
             return existing.clone();
@@ -1808,18 +1830,21 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
-        let application = Rc::new(crate::mixin::MixinApplication {
-            mixin: mixin.clone(),
-            superclass: superclass.cloned(),
-            inherits_value,
-            first_mutable_slot,
-            instantiation_refusal,
-            slot_count: next,
-            nested_slot,
-            declared_slots,
-            own_slot_base: inherited,
-            dispatch_ids,
-        });
+        let application = self
+            .heap
+            .register_application(crate::mixin::MixinApplication {
+                index: crate::heap::ApplicationIndex::UNREGISTERED,
+                mixin: mixin.clone(),
+                superclass: superclass.cloned(),
+                inherits_value,
+                first_mutable_slot,
+                instantiation_refusal,
+                slot_count: next,
+                nested_slot,
+                declared_slots,
+                own_slot_base: inherited,
+                dispatch_ids,
+            });
         self.applications.insert(key, application.clone());
         application
     }
@@ -1921,18 +1946,6 @@ pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> N
 /// clause names -- `Boolean` above `True` and `False` -- before any code
 /// runs.
 fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<'gc>> {
-    // NOTE: deliberately *not* `use BuiltinClass::*;` here --
-    // `BuiltinClass::Object` and `crate::types::Object`
-    // (the object-model struct, brought into scope by `use crate::types::*;`
-    // above) share the bare name `Object`. A glob-import of the enum's
-    // variants shadows the struct, so any bare `Object { .. }` literal
-    // elsewhere in this function would silently try to build a
-    // `BuiltinClass::Object` unit variant with named fields instead of a
-    // `types::Object` struct literal -- a compile error the type checker
-    // catches, but only because the fields don't match; a differently-shaped
-    // `Object` struct could have made this shadow compile into the wrong
-    // construction entirely. Referring to every variant through its
-    // `BuiltinClass::` qualifier avoids the collision.
     // A builtin's behaviour is native, so its mixin's method table holds its
     // primitives and nothing else (`builtin_mixin`): the application gives
     // the builtin the same shape every other class object has, and -- for
@@ -1953,15 +1966,15 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
             continue;
         }
         let application = mutator.apply_mixin(&builtin_mixin(kind), Some(&object_application));
-        classes.push(mutator.heap.allocate_object(
+        classes.push(mutator.heap.allocate_class(
             class_of_class,
-            ObjectData::Class(Box::new(ClassData::new(
+            crate::heap::NewClass {
                 application,
-                None,
-                None,
-                Some(class_of_class),
-                Some(kind),
-            ))),
+                enclosing: None,
+                declaring_class: None,
+                superclass: Some(class_of_class),
+                builtin: Some(kind),
+            },
         ));
     }
     classes
@@ -1988,20 +2001,20 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
 /// object every `BuiltinClass` shares as its own `.class`, which is what
-/// lets `Object.class` stay non-optional. The construction itself lives in
+/// lets an object's class word stay non-optional. The construction itself lives in
 /// `Heap::allocate_self_referential_class`; under the arena it is ordinary
 /// safe Rust, because the slot's index is known before the slot is filled.
 fn build_self_referential_object_class<'gc>(
     heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassReference<'gc> {
-    heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
+    heap.allocate_self_referential_class(crate::heap::NewClass {
         application,
-        None,
-        None,
-        None,
-        Some(BuiltinClass::Object),
-    ))))
+        enclosing: None,
+        declaring_class: None,
+        superclass: None,
+        builtin: Some(BuiltinClass::Object),
+    })
 }
 
 #[cfg(test)]
@@ -2408,46 +2421,38 @@ mod tests {
         assert_eq!(std::mem::size_of::<crate::dispatch::Lookup>(), 24);
     }
 
-    /// Minting stops strictly before `DispatchId::VACANT`, never landing on
-    /// it or on `NONE`: both are reserved meanings (`Heap::dispatch_id` never
-    /// answers `VACANT`, and `NONE` means "not cached"), so a minted id must
-    /// never equal either.
+    /// The counter starts above the reserved guards: with it at
+    /// `FIRST_MINTED`, the first mint answers `FIRST_MINTED` and the next the
+    /// id after it.
     #[test]
-    fn minting_never_reaches_vacant_and_answers_none_once_exhausted() {
+    fn the_first_mint_follows_the_reserved_guards() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            // One id below the ceiling: the last mintable id is MAX - 2,
-            // immediately below `VACANT` (MAX - 1).
-            mutator.next_dispatch_id = u32::MAX - 2;
-            let last = mutator.mint_dispatch_ids();
+            mutator.next_dispatch_id = crate::mixin::DispatchId::FIRST_MINTED;
             assert_eq!(
-                last.instances,
-                crate::mixin::DispatchId::from_counter(u32::MAX - 2)
+                mutator.mint_dispatch_ids().instances,
+                crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::FIRST_MINTED)
             );
-            assert_ne!(last.instances, crate::mixin::DispatchId::VACANT);
-            assert_ne!(last.instances, crate::mixin::DispatchId::NONE);
-
-            let exhausted = mutator.mint_dispatch_ids();
-            assert_eq!(exhausted, crate::mixin::DispatchIds::NONE);
+            assert_eq!(
+                mutator.mint_dispatch_ids().instances,
+                crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::FIRST_MINTED + 1)
+            );
         });
     }
 
-    /// Every application gets an id of its own, and one only: minting
-    /// advances the counter by one, so a handful of mints answer
-    /// consecutive, distinct ids.
+    /// Minting stops below the header word's 22-bit guard field and answers
+    /// `NONE` from then on, so that application runs uncached.
     #[test]
-    fn every_mint_answers_the_next_single_id() {
+    fn minting_stops_below_twenty_two_bits_and_answers_none_once_exhausted() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let start = mutator.next_dispatch_id;
-            for offset in 0..5 {
-                let minted = mutator.mint_dispatch_ids();
-                assert_eq!(
-                    minted.instances,
-                    crate::mixin::DispatchId::from_counter(start + offset)
-                );
-            }
-            assert_eq!(mutator.next_dispatch_id, start + 5);
+            mutator.next_dispatch_id = crate::mixin::DispatchId::LIMIT - 1;
+            assert_eq!(
+                mutator.mint_dispatch_ids().instances,
+                crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::LIMIT - 1)
+            );
+            assert_eq!(mutator.mint_dispatch_ids(), crate::mixin::DispatchIds::NONE);
+            assert_eq!(mutator.mint_dispatch_ids(), crate::mixin::DispatchIds::NONE);
         });
     }
 

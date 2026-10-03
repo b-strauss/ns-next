@@ -57,7 +57,7 @@ fn string_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
         panic!("expected a string object")
     };
     heap.str_value(object)
-        .unwrap_or_else(|| panic!("expected ObjectData::String"))
+        .unwrap_or_else(|| panic!("expected a String"))
 }
 
 fn module(body: &str) -> String {

@@ -117,7 +117,7 @@ road step 5).
    remembered, and execution continues from the divorced frame, which needs a
    divorced frame put back on the stack ([execution.md](execution.md), "How
    this meets the liveness requirements"; [object-model.md](object-model.md),
-   "Planned: the object layout"). That is the same move as forcing a frame out
+   "The object layout"). That is the same move as forcing a frame out
    of JIT-optimized form before debugging it, one level down, so the
    requirement is met by the existing principle rather than in tension with
    it. **Resume only at statement boundaries**, which is what keeps

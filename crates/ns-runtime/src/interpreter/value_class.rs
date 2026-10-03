@@ -4,7 +4,7 @@
 //! SOMns decides a value class's conditions
 //! (`InstantiationNode.signalExceptionsIfFaultFoundElseReturnClassObject`).
 //! Unlike SOMns, the verdict is only *recorded* here, on the class object
-//! (`ClassData::value_class_refusal`); `interpreter::instantiate`'s
+//! (`Mutator::record_value_class_refusal`); `interpreter::instantiate`'s
 //! `decide_instantiation` is what refuses, where an instance would come into
 //! being. `docs/design/object-model.md`, "A value object's four conditions",
 //! explains why: the specification's own §2.3 example creates a class whose
@@ -27,11 +27,11 @@ pub(crate) fn check_value_class<'gc>(
     mutator: &Mutator<'gc>,
     enclosing: ObjectReference<'gc>,
     superclass: ClassReference<'gc>,
-) -> Option<ValueClassRefusal> {
+) -> Option<ValueClassRefusal<'gc>> {
     if !super::instantiate::is_a_value(mutator, enclosing) {
         return Some(ValueClassRefusal::NonValueEnclosingObject {
             level: None,
-            described: mutator.heap().describe(Value::object(enclosing)),
+            offender: enclosing,
         });
     }
     // Every level's enclosing object, not only the class's own: an
@@ -53,7 +53,7 @@ pub(crate) fn check_value_class<'gc>(
                 None => None,
                 Some(ValueClassRefusal::NonValueEnclosingObject {
                     level: refused_level,
-                    described,
+                    offender,
                 }) => {
                     // A refusal naming no level is about the stop class's
                     // own enclosing object, so it names the stop class; one
@@ -64,7 +64,7 @@ pub(crate) fn check_value_class<'gc>(
                         .map(|application| application.mixin.name);
                     Some(ValueClassRefusal::NonValueEnclosingObject {
                         level: refused_level.or(level_name),
-                        described,
+                        offender,
                     })
                 }
             };
@@ -76,11 +76,31 @@ pub(crate) fn check_value_class<'gc>(
                     .map(|application| application.mixin.name);
                 return Some(ValueClassRefusal::NonValueEnclosingObject {
                     level: level_name,
-                    described: heap.describe(Value::object(level_enclosing)),
+                    offender: level_enclosing,
                 });
             }
         }
         level = heap.class_superclass(class);
     }
     None
+}
+
+impl<'gc> Mutator<'gc> {
+    /// Records `refusal` on `class` as heap data: an `Array` of the
+    /// offending object and the level's name as a Symbol, or nil for the
+    /// class's own enclosing object (`Heap::class_value_refusal` reads it
+    /// back). Heap data rather than a rendered text, so the collector keeps
+    /// the offender and the message describes it when `new` refuses.
+    /// Answers whether the write happened: `false` when `class` is no class
+    /// object.
+    pub fn record_value_class_refusal(
+        &mut self,
+        class: ClassReference<'gc>,
+        refusal: ValueClassRefusal<'gc>,
+    ) -> bool {
+        let ValueClassRefusal::NonValueEnclosingObject { level, offender } = refusal;
+        let level = level.map_or(Value::nil(), |name| self.new_symbol(name));
+        let record = self.new_array(vec![Value::object(offender), level]);
+        self.heap.class_set_value_refusal(class, record)
+    }
 }

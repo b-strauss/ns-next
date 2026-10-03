@@ -3,7 +3,7 @@
 //! `docs/design/image-format.md`. Layout: header, symbol table, code
 //! table, mixin table (one tree per module, in module order), module section
 //! (per module: `SourceOrigin`, optional source text, root section), then the
-//! platform paths, object table, frame table, roots, tag-named hashes.
+//! platform paths, object table (frames included), roots, tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
@@ -184,7 +184,7 @@ fn write_image<'gc>(
     // A frame married to a running activation keeps its registers and
     // `program_counter` on the activation stack, and the format has no record
     // for the stack, so encoding one would write a frame with empty registers
-    // and succeed. `Heap::frame_snapshot` debug-asserts against that per frame;
+    // and succeed. `Heap::frame_record` debug-asserts against that per frame;
     // this is the check a release build keeps.
     if heap.activation_depth() != 0 {
         return Err(

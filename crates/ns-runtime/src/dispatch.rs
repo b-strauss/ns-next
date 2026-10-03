@@ -71,7 +71,7 @@ pub fn nested_access(mixin: &Mixin) -> ast::AccessModifier {
 /// So depth 0 is `self`, and depth k > 0 is reached by walking k levels of
 /// the *declaration* chain out from `defining_class`, taking each level's
 /// own enclosing object -- §3.3's "the object that received the message
-/// that created the class object". `ClassData::declaring_class` is that
+/// that created the class object". `Heap::class_declaring` is that
 /// chain; the receiver's class chain is not, for the same reason the seed
 /// is not.
 ///
@@ -409,19 +409,37 @@ mod tests {
     use indoc::formatdoc;
     use std::collections::HashMap;
 
-    /// A placeholder `ClassReference` whose own `.class` field points back to
-    /// itself. `Object.class` is non-optional (`ClassReference`, not
-    /// `Option<ClassReference>`), so constructing *any* `Object` requires
-    /// already having a `ClassReference` in hand for its `class` field -- and
-    /// these test classes are never linked into a real bootstrapped class
-    /// hierarchy, so there is no other object to point at. None of these
-    /// tests (nor `walk`/`lookup_*`) ever read a class object's own
-    /// `.class` field -- `walk` only reads `.data` -- so any
-    /// non-panicking placeholder is sufficient; a self-referential one
-    /// is the simplest to build. The construction itself lives in
-    /// `Heap::allocate_self_referential_class`.
+    /// A placeholder `ClassReference` whose own class is itself. Every
+    /// object has a class, so constructing *any* object requires already
+    /// having a `ClassReference` in hand for it -- and these test classes
+    /// are never linked into a real bootstrapped class hierarchy, so there
+    /// is no other object to point at. None of these tests (nor
+    /// `walk`/`lookup_*`) ever read a class object's own class -- `walk`
+    /// only reads its application and superclass -- so any non-panicking
+    /// placeholder is sufficient; a self-referential class with an empty
+    /// application is the simplest to build. The construction itself lives
+    /// in `Heap::allocate_self_referential_class`.
     fn dummy_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
-        heap.allocate_self_referential_class(ObjectData::Instance(vec![]))
+        let application = heap.register_application(MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
+            mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy"))),
+            superclass: None,
+            inherits_value: false,
+            first_mutable_slot: None,
+            instantiation_refusal: None,
+            nested_slot: crate::hash::IdentityMap::default(),
+            declared_slots: Vec::new(),
+            slot_count: 0,
+            own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
+        });
+        heap.allocate_self_referential_class(crate::heap::NewClass {
+            application,
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: None,
+        })
     }
 
     fn class_with_method<'gc>(
@@ -462,7 +480,8 @@ mod tests {
         let super_application = superclass
             .as_ref()
             .and_then(|superclass_class| heap.class_application(*superclass_class));
-        let application = Rc::new(MixinApplication {
+        let application = heap.register_application(MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: Rc::new(crate::mixin::Mixin {
                 methods,
                 ..crate::mixin::Mixin::empty(Symbol::intern(name))
@@ -478,15 +497,15 @@ mod tests {
             dispatch_ids: crate::mixin::DispatchIds::NONE,
         });
         let class_of_class = dummy_class(heap);
-        heap.allocate_object(
+        heap.allocate_class(
             class_of_class,
-            ObjectData::Class(Box::new(ClassData::new(
+            crate::heap::NewClass {
                 application,
-                None,
-                None,
+                enclosing: None,
+                declaring_class: None,
                 superclass,
-                None,
-            ))),
+                builtin: None,
+            },
         )
     }
 

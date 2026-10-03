@@ -248,7 +248,9 @@ pub(crate) fn after_clause<'gc>(
         Some(superclass),
     );
     if let Some(refusal) = value_class_refusal {
-        mutator.heap.class_set_value_refusal(class, refusal);
+        if !mutator.record_value_class_refusal(class, refusal) {
+            unreachable!("internal: a nested class is a class object");
+        }
     }
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
@@ -394,7 +396,7 @@ pub(crate) fn build_applied_levels<'gc>(
 /// know the declaration (an internal inconsistency) or because its payload
 /// is not an `Instance` at all, which a user class inheriting `Array`'s
 /// representation really is:
-/// `decide_factory` gives those an `ObjectData::Array` payload with no
+/// `decide_factory` gives those an `ObjectShape::Array` payload with no
 /// fields to cache into. Handing back the handle, not just the index,
 /// means every caller downstream already holds proof that `receiver` is an
 /// object instead of re-deriving it from `receiver` a second time --
@@ -552,7 +554,7 @@ fn cyclic_definition_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'g
 
 /// A receiver with no hidden slot to cache the nested class in. Reachable
 /// from a real program: a class inheriting `Array`'s payload representation
-/// gets an `ObjectData::Array` instance, which has no fields -- the same
+/// gets an `ObjectShape::Array` instance, which has no fields -- the same
 /// known gap that already makes an
 /// ordinary slot declared on such a class unwritable. Refusing here is what
 /// keeps §6's "subsequent calls on r always return the same class object"

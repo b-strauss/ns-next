@@ -294,20 +294,14 @@ fn compare_node<'gc>(
             if mutator.heap().is_class(left) && mutator.heap().is_class(right) {
                 return Some(Pair::Classes(left, right));
             }
-            if let Some(symbol) = mutator.heap().symbol_value(left) {
-                return Some(Pair::Decided(text::symbol_equals(
-                    mutator.heap(),
-                    left,
-                    symbol,
-                    Some(second),
-                )));
+            if mutator.heap().is_symbol(left) {
+                return Some(Pair::Decided(text::symbol_equals(left, Some(second))));
             }
-            if let Some(integer) = mutator.heap().large_integer(left) {
-                return Some(Pair::Decided(numbers::large_integer_equals(
-                    mutator.heap(),
-                    &integer,
-                    Some(second),
-                )));
+            let heap = mutator.heap();
+            if let Some(equal) = heap.with_large_integer(left, |negative, digits| {
+                numbers::large_integer_equals(heap, (negative, digits), Some(second))
+            }) {
+                return Some(Pair::Decided(equal));
             }
             if let Some(number) = mutator.heap().float_value(Value::object(left)) {
                 return Some(Pair::Decided(numbers::float_equals(
@@ -366,8 +360,11 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
             if let Some(symbol) = mutator.heap().symbol_value(object) {
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
             }
-            if let Some(integer) = mutator.heap().large_integer(object) {
-                return Some(Node::Leaf(numbers::large_integer_hash(&integer)));
+            if let Some(hash) = mutator
+                .heap()
+                .with_large_integer(object, numbers::large_integer_hash)
+            {
+                return Some(Node::Leaf(hash));
             }
             if let Some(number) = mutator.heap().float_value(Value::object(object)) {
                 return Some(Node::Leaf(numbers::float_hash(number)));
@@ -520,11 +517,11 @@ fn classes_can_be_equal<'gc>(
         return false;
     }
     match (
-        mutator.heap().class_application(first),
-        mutator.heap().class_application(second),
+        mutator.heap().class_application_index(first),
+        mutator.heap().class_application_index(second),
     ) {
         (Some(first_application), Some(second_application)) => {
-            Rc::ptr_eq(&first_application, &second_application)
+            first_application == second_application
         }
         _ => false,
     }

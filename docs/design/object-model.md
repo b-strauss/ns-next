@@ -1,12 +1,17 @@
 # Object model — values, objects, mixins, classes
 
-> **Status:** built, a value as one tagged word included; the rest of the
-> road to a high-performance VM -- the object layout and `become:` among
-> its steps -- is planned ("Planned: the road to a high-performance VM").
+> **Status:** built, a value as one tagged word and the object layout on
+> today's arena included (road step 3a, "The object layout"); the rest of
+> the road to a high-performance VM -- the object space, `become:` and the
+> JIT tiers among its steps -- is planned ("Planned: the road to a
+> high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
 > and write of one), `heap/value.rs` (`Value`, `ValueKind`, `Word`, the
-> `SmallInteger` bounds and the arithmetic on tagged words), `types.rs`
-> (`Object`, `ObjectData`),
+> `SmallInteger` bounds and the arithmetic on tagged words),
+> `heap/header.rs` (the header word, `Format`), `heap/object.rs` (the block
+> of words an object is, the fixed fields of a class object, a closure and
+> a frame, tracing by format), `heap/records.rs` (the seam's value types),
+> `heap/tables.rs` (the per-heap tables of mixins, applications and code),
 > `mixin.rs`, `interpreter/instantiate.rs`, `interpreter/nested.rs` (the
 > nested-class accessor and `build_applied_levels`, §6.2's levels),
 > `interpreter/kernel.rs` (the builtin classes, filled from `Kernel.ns`),
@@ -22,11 +27,8 @@ ValueKind  = Nil | Boolean(bool) | SmallInteger(i64) | SmallFloat(f64) | Object(
 Word       = the bare word a heap object stores, 8 bytes in every build
 ObjectReference = a 32-bit index into the `Heap`'s object arena; ClassReference is an alias
 
-Object { class: ClassReference, identity_hash: u32, dispatch_id: DispatchId, data: ObjectData }
-
-ObjectData = Instance(Vec<Word>) | String(CodePoints) | Symbol(Symbol)
-           | Array(Vec<Word>) | Closure(ClosureData) | Class(Box<ClassData>)
-           | Activation(FrameReference) | LargeInteger(ArbitraryInteger) | Float(f64)
+an object = one arena slot, a Box<[u64]>:
+            [header word][class word][field 1][field 2] ...   ("The object layout")
 ```
 
 **A value is one tagged word, Spur's.** Its low three bits say what the
@@ -82,13 +84,14 @@ through the accessors (`value.as_small_integer() == Some(3)`).
 
 **Each number has one representation.** A `SmallInteger` is every integer
 from `SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`, -2^60 to 2^60 - 1; any
-other is an object of the kernel class `LargeInteger`, whose
-`ArbitraryInteger` payload holds a sign and 64-bit digits and no handle.
+other is an object of the kernel class `LargeInteger`, of the 64-bit-indexed
+format: its words are the magnitude's digits, its sign is the header's
+negative bit, and it holds no handle.
 `Mutator::new_integer` decides which ([core-library.md](core-library.md),
 "Large integers"). A finite float in the `SmallFloat64` range is immediate;
 every other float -- NaN, the infinities, denormals and magnitudes outside
 that range -- is a boxed `Float`, an instance of the builtin `Float` whose
-`ObjectData::Float` payload holds the `f64` and no handle, and
+one 64-bit-indexed word holds the `f64`'s bits and no handle, and
 `Mutator::new_float` decides which by Spur's range test. Soup boxes every
 float, which costs an allocation per floating-point result; Spur's split
 keeps the common range immediate. Both are §5.1.1's binary float; the
@@ -125,9 +128,10 @@ id and its move epoch in full, and every accessor compares both
 convention"). The Rust-side `Value` does too: in a debug build it is the word
 plus both numbers, 16 bytes, zero for an immediate, and in a release build it
 is the bare word. What is exactly eight bytes in both builds is a `Word`, what
-a heap object stores -- a field (`Instance`), an element (`Array`), a register
-(the activation stack's and a reified frame's) and a copied closure value --
-so that the layout is the same in both. Only `Heap::load` and `Heap::store`
+a heap object stores -- its class word, a field, an element of an `Array`, a
+register (the activation stack's and a reified frame's), a copied closure
+value and every fixed field of a class object, a closure and a frame -- so
+that the layout is the same in both. Only `Heap::load` and `Heap::store`
 convert: a load gives the word the heap's current id and epoch, and a store
 checks, in a debug build, that the value carries both before it becomes a
 word, so a stale handle is caught where it is stored
@@ -135,24 +139,24 @@ word, so a stale handle is caught where it is stored
 field. Both are crate-private, since a word carries no brand
 ([memory.md](memory.md), "The brand"). A stored word cannot go stale the way a
 Rust-side handle can, because every collection and every stress move rewrites
-it in place, through the `Trace` impls' `Tracer::word`
-([memory.md](memory.md), "What the collector traces"). What still holds a
-Rust-side value or handle -- a stack entry's receiver, a continuation's state,
-`ClassData.enclosing`, a host's `Root` -- keeps its brand and its `Trace`.
+it in place, through `Tracer::word`, which the collector hands every word an
+object's format says is a pointer ([memory.md](memory.md), "What the
+collector traces"). What still holds a Rust-side value or handle -- a stack
+entry's receiver, a continuation's state, a host's `Root` -- keeps its brand
+and its `Trace`.
 Under generations (road step 4) a scavenge walks only the young objects and
 the remembered ones, so an old object whose store missed the barrier would
 keep a stale young word; that is what `NS_NEXT_STRESS_SCAVENGE`, with the
 vacated survivor space and the vacated eden region made no-access, will catch
 ([memory.md](memory.md), "Planned: generations").
 
-A `String`'s `CodePoints` payload holds its code points in one of two widths
-and no handle ([core-library.md](core-library.md), "Strings are code points
-in two widths").
+A `String`'s words hold its code points in one of two widths and no handle
+([core-library.md](core-library.md), "Strings are code points in two
+widths"; "Strings have two widths" below).
 
-`dispatch_id` is the id an inline cache guards the object's sends on, a copy
-stamped from its application's ids, and a class object's data is boxed to keep `Object` at 56
-bytes in a release build with it ([dispatch.md](dispatch.md), "The dispatch
-id").
+The guard in an object's header word is the id an inline cache guards the
+object's sends on, a copy stamped from its application's ids
+([dispatch.md](dispatch.md), "The dispatch id").
 
 **A symbol is a heap object, and a canonical one**: each `Heap` keeps a
 canonical table, `Vec<Option<ObjectReference>>` indexed by the number inside a
@@ -165,17 +169,20 @@ means nothing against another heap. It is weak: the collector clears an entry
 whose symbol nothing else holds ([memory.md](memory.md), "Weak references").
 This is what every reference does -- Primordial Soup's weak `symbolTable`
 (`KernelForPrimordialSoup.ns`), SOMns's `Symbols.symbolFor`, Squeak's symbol
-table -- and it keeps a symbol an indexable object for a kernel where `Symbol`
-is a subclass of `String`, as the references declare it; `Kernel.ns` still puts
-`Symbol` directly under `Value`, beside `String` rather than below it, which the
-object layout changes ("Planned: the object layout" below). Rejected: a symbol
+table -- and it keeps a symbol an indexable object, so that `Symbol` is a
+subclass of `String` in `Kernel.ns`, as the references declare it: a symbol's
+words are a string's, in the same two widths, and only its class tells it
+from one ("Strings have two widths" below). The symbol a symbol object is,
+`Heap::symbol_value`, is the table's inverse, kept beside it per heap and
+keyed by the object's index, so the object stores nothing but its code points
+and no lookup reads them. Rejected: a symbol
 as an immediate, a tag of its own, which no reference does and which every
 string primitive, and later the Newspeak kernel, would have to accept as a
 non-object. An image carries a symbol as a record; the decoder enters each one
 into the loading heap's table and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
-**An `ObjectReference` is an index, not a pointer.** Every `Object` lives in one
+**An `ObjectReference` is an index, not a pointer.** Every object lives in one
 `Heap`'s arena and is reached only through a `Heap` accessor; the index is
 private to the `heap` module -- `crates/ns-runtime/src/heap.rs` and its
 submodules, `heap/value.rs` among them, which puts it into a word and takes it
@@ -184,9 +191,11 @@ therefore `Copy` and a handle has no destructor. What that representation buys,
 how the collector reclaims a slot once nothing reaches it, and why a handle
 means nothing against a different `Heap` are in [memory.md](memory.md).
 
-**The identity hash is drawn from a monotonic counter the first time `hash`
-asks for one**, never derived from an address and never from the arena index,
-and 0 means "not yet assigned" (`Heap::object_ensure_identity_hash`). An address- or
+**The identity hash is drawn from a counter the first time `hash` asks for
+one**, never derived from an address and never from the arena index, and 0
+means "not yet assigned" (`Heap::object_ensure_identity_hash`); it is 22 bits
+of the header word, and the counter wraps within them ("The identity hash is
+22 bits wide" below). An address- or
 index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
@@ -207,23 +216,25 @@ graph section, precisely because nothing about a record would otherwise carry
 one; see [image-format.md](image-format.md), "Identity hashes are preserved
 verbatim".
 
-`ClosureData { code, captured_frame: FrameReference, copied, feedback_base }`
-captures its defining frame, and derives its home activation for non-local
-return from it; `copied` holds what closure conversion handed it -- a copied
-variable's value or an enclosing body's indirection vector
-([execution.md](execution.md), "Closure conversion"). `code` is an `Rc` shared
-with the `MakeClosure` instruction that made the closure, and its parameter
-count is the body's; the payload itself is inline in the closure
-object, never behind an `Rc` of its own, because a handle lives only where the
-tracer can rewrite it in place ([memory.md](memory.md), "What the collector
-traces") and an `Rc` shared by several holders is not such a place. So a block's
+**A closure is an object of the closure format**: its code id, its captured
+frame and its feedback base in three fixed fields, then its copied values
+("The object layout" below). It captures its defining frame, and derives its
+home activation for non-local return from it; the copied values are what
+closure conversion handed it -- a copied variable's value or an enclosing
+body's indirection vector ([execution.md](execution.md), "Closure
+conversion"). The code id names, in the heap's table of compiled code, the
+body shared with the `MakeClosure` instruction that made the closure, and its
+parameter count is the body's; everything is inline in the closure object,
+never behind an `Rc` of its own, because a handle lives only where the tracer
+can rewrite it in place ([memory.md](memory.md), "What the collector traces")
+and an `Rc` shared by several holders is not such a place. So a block's
 activation (`FrameKind::Closure`), a native `whileTrue:` or `do:` loop's state
 and a decided block step name the closure object, and reach its body and its
 captured frame through it. **The home is a `FrameReference`, not an
 `ObjectReference`** — it names the lexically enclosing *method* or initializer
 activation, which is what a non-local return aims at, and a frame records it
-(`Frame.home`); the enclosing *object* is the tempting misreading, since both
-are handles.
+(its home field); the enclosing *object* is the tempting misreading, since
+both are handles.
 
 **Never `{:?}` a `Value`.** `ObjectReference`'s hand-written `Debug` prints its arena
 index only, so this cannot recurse -- but it renders Rust internals such as
@@ -279,34 +290,42 @@ struct Mixin {                    // one per declaration, shared for its lifetim
 }
 
 struct MixinApplication {         // (mixin, super application) -> behaviour
+    index: ApplicationIndex,      // its row in the heap's table of applications
     mixin: Rc<Mixin>,
     superclass: Option<Rc<MixinApplication>>,
     own_slot_base: usize,         // where this level's own slots start
     slot_count: usize,            // inherited slots included
 }
 
-struct ClassData {                // one per enclosing instance, per level
-    application: Rc<MixinApplication>,
-    enclosing: Option<ObjectReference>,
-    declaring_class: Option<ClassReference>,    // the declaration chain `outer` walks
-    superclass: Option<ClassReference>,         // parallel to the application chain
-    builtin: Option<BuiltinClass>,
-    this_class: Option<ClassReference>,         // a metaclass's class; its own metaclass is its header class
-    applied_clause: Option<Box<AppliedClause>>, // the `<:` clause that added this level
-}
+a class object                    // one per enclosing instance, per level;
+                                  // an object of the class format, eight fields:
+    0 enclosing                   // object or nil
+    1 declaring class             // the declaration chain `outer` walks
+    2 superclass                  // parallel to the application chain
+    3 this class                  // a metaclass's class; its own metaclass is its header class
+    4 builtin                     // SmallInteger position in BuiltinClass::ALL, or nil
+    5 value-class refusal         // nil, or an Array of the offender and the level's Symbol
+    6 applied clause              // the `<:` clause that added this level, packed, or nil
+    7 application                 // SmallInteger ApplicationIndex
 ```
 
-**The application cache is keyed by (mixin identity, superclass *application*
-identity), never by the superclass class object.** If the superclass is itself a
-nested class, its class object is per-instance, so a class-object key would never
-hit: every instance would mint its own application, which is wrong per §6.2 and
-would leave every call site megamorphic because no two instances would ever share
-behaviour.
+The layout and its reasons are "The object layout" below; `heap/object.rs`'s
+`class_field` names the fields, and every read and write goes through the
+`class_*` accessors of `heap.rs`.
+
+**The application cache is keyed by (the mixin's id, the superclass
+*application*'s full-width index), never by the superclass class object.** If
+the superclass is itself a nested class, its class object is per-instance, so a
+class-object key would never hit: every instance would mint its own
+application, which is wrong per §6.2 and would leave every call site
+megamorphic because no two instances would ever share behaviour. Both ids are
+the heap's ("An application has two ids" below).
 
 **Identity-keyed tables hash with `hash::IdentityMap`.** A mixin's `methods`, an
-application's `nested_slot` and the interpreter's `applications` and
-`metaclass_mixins` are keyed by an identity the runtime assigned — an interned
-symbol's index, a mixin's or application's address — which no input chooses, so
+application's `nested_slot`, the interpreter's `applications` and
+`metaclass_mixins` and the heap's address maps of mixins and code are keyed by
+an identity the runtime assigned — an interned symbol's index, a mixin's id or
+address, an application's index — which no input chooses, so
 SipHash's resistance to chosen keys buys nothing there. They hash with one
 multiply per word and a rotation that brings the mixed high bits down to the
 bucket index (the FxHash scheme rustc's own tables use).
@@ -319,7 +338,7 @@ bucket index (the FxHash scheme rustc's own tables use).
 - The **application chain** carries code and layout, and is shared.
 
 `own_slot_base`, `slot_count` and method lookup live on `MixinApplication`
-rather than on `ClassData`, because a superclass contributes slots and can
+rather than on the class object, because a superclass contributes slots and can
 differ between instances of the same enclosing class.
 
 **A slot is reached through its accessors, which are method-table entries.**
@@ -444,7 +463,7 @@ kernel's.
   2026-09-22, as both references declare them; the conditionals and logic
   are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
   "`True` and `False` are quick methods"), `Number` with `Integer` and
-  `Float`, `String`, `Symbol` and `UndefinedObject` (§5.1.3 names
+  `Float`, `String` with `Symbol` below it, and `UndefinedObject` (§5.1.3 names
   `nil`'s class so); the platform and its members, `PlatformFactory.ns`'s classes
   but `Stopwatch`, are values too ([core-library.md](core-library.md), "The
   platform"). `Number` holds only `to:do:` and `to:by:do:`; it is the
@@ -634,9 +653,13 @@ for a level above `C`).
   by `interpreter/value_class.rs`'s `check_value_class`, which
   `interpreter/nested.rs`'s `after_clause` calls after `apply_mixin` answers
   the application, and only for an application that inherits `Value`; the
-  verdict is recorded on the class object (`ClassData::value_class_refusal`, a
-  `ValueClassRefusal`), and `decide_instantiation` refuses an instance of a
-  class that carries one, beside the refusals it makes from
+  verdict is recorded on the class object (its value-class refusal field,
+  written by `Mutator::record_value_class_refusal` from a
+  `ValueClassRefusal`: an `Array` of the offending enclosing object and the
+  name of the level at fault, "The object layout" below), and
+  `decide_instantiation` refuses an instance of a class that carries one,
+  rendering the offender with `Heap::describe` only then, beside the
+  refusals it makes from
   `instantiation_refusal`. A class that does not inherit `Value` pays one flag
   test at creation, and a value class one more test per instantiation. The
   class's own enclosing object is checked first, then the walk climbs the new
@@ -648,7 +671,7 @@ for a level above `C`).
   induction. If it does carry one, the walk does not trust it: a refused class
   still exists, since the refusal is recorded rather than raised, so the new
   class inherits the fault instead — a `NonValueEnclosingObject` with the
-  `described` text taken from that level's own verdict, naming the level that
+  offender taken from that level's own verdict, naming the level that
   verdict names, or the level the walk stopped at when it names none
   (`goldens/library/value/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
   So a fault inherited over several levels still names the level whose
@@ -671,8 +694,8 @@ for a level above `C`).
   builtins with at most `<: Value`, so its enclosing objects hold by
   construction, and `load_root_class` does not call the check.
 
-  A decoded class object starts with no verdict — `ClassData::new` defaults
-  `value_class_refusal` to `None`, the wire carries none, and a legitimate
+  A decoded class object starts with no verdict — its refusal field is
+  `nil`, the wire carries none, and a legitimate
   snapshot can hold a class that was created carrying one — so
   `image::decode::rebuild_applications` recomputes it for every decoded
   class whose application inherits `Value`, which has an enclosing object and
@@ -1027,11 +1050,13 @@ own activation, which answers `{superclass. mixin…}` when there are clauses
 (`nested::superclass_clause_expression`), so one activation fixes every class
 the levels are built from, with the bindings and the cyclic-creation marker the
 superclass clause already had. Each level is an ordinary class object
-(`Mutator::new_applied_level`) whose `ClassData::applied_clause` names the
-applying declaration and the clause's position in it — boxed, so a class
-object grows by one word — rather than carrying a copy, because two clauses of
-one declaration can be identical and the image names a level's clause by row
-and position.
+(`Mutator::new_applied_level`) whose applied-clause field names the
+applying declaration's mixin id and the clause's position in it, packed into
+one `SmallInteger` with the builtin the clause names ("The object layout"
+below), rather than carrying a copy, because two clauses of one declaration
+can be identical and the image names a level's clause by row and position.
+A superclass clause of more than 2^23 `<:` clauses is a resolve error, since
+the position has 23 bits.
 
 **So lookup, `super`, `outer`, the dispatch ids and the inline caches need
 nothing new.** A level is a class object in the class-object chain and an
@@ -1176,18 +1201,21 @@ refuses every instance that is not one. They carry builtin class tags 20, 21
 and 22 (`BuiltinClass::Behavior`, `Class`, `Metaclass`), the next free
 numbers ([image-format.md](image-format.md)).
 
-**Where a class object's state lives.** In `ClassData`: its application,
-enclosing object, declaring class and superclass, and for a metaclass
-`this_class`, the link back to its class. The three kernel classes carry
-behaviour only, as SOMns's do (`Class = Object ()`, `Metaclass = Class ()()`
-in `prior-art/somns/core-lib/Kernel.ns`, the state in the Java `SClass`) and
-as `KernelForJS.ns`'s do. Primordial Soup instead makes a class object an
-ordinary instance whose first six slots the VM knows by position (`Behavior`
-in `KernelForPrimordialSoup.ns`); taking that shape would move lookup, the
-caches, the collector and the image format onto slot indices and read every
-lookup step out of a `Value` slot, for no conformance gain: §3.2 fixes the
-relations — instance-of, subclass-of, flatness — and says nothing about how a
-class object is stored.
+**Where a class object's state lives.** In the class object's own eight
+fields, which only the VM reads ("The object layout" below): its
+application, enclosing object, declaring class and superclass, and for a
+metaclass `this_class`, the link back to its class. The three kernel classes
+declare no slot for any of it and carry behaviour only, as SOMns's do
+(`Class = Object ()`, `Metaclass = Class ()()` in
+`prior-art/somns/core-lib/Kernel.ns`, the state in the Java `SClass`) and as
+`KernelForJS.ns`'s do. Primordial Soup instead makes a class object an
+ordinary instance whose first six slots `Behavior` declares and the VM knows
+by position (`KernelForPrimordialSoup.ns`). The fields here sit by position
+too, but in a format of their own that no Newspeak declaration names, so no
+slot accessor reaches them, the image carries a class object as a class
+record rather than as an instance, and whether an object is a class is read
+from its header alone. §3.2 fixes the relations — instance-of, subclass-of,
+flatness — and says nothing about how a class object is stored.
 
 **The metaclass mixin is the class side *together with the primary factory
 method*** (§6.3: "The class side, together with the primary factory method,
@@ -1251,13 +1279,14 @@ kernel second"). After the bootstrap the invariant holds without exception;
 pins that every builtin has a metaclass linked back to it and sharing its
 enclosing object.
 
-`Object::class` is not an `Option<ClassReference>`, because the builtin
+An object's class word is never `nil`, because the builtin
 `Object` class exists from the first moment of the bootstrap and serves as
 every provisional header. The image decoder relies on that the same way: it
-allocates every record as a placeholder pointing at the builtin `Object`
-before it reads the record that says what the class really is, and decoding
-a class record overwrites that with the record's metaclass, as it overwrites
-every other placeholder field.
+allocates every record but a frame's as a placeholder of the size its first
+pass read, pointing at the builtin `Object`, before it reads the record that
+says what the class really is, and filling a class record in place
+overwrites that with the record's metaclass, as it overwrites every other
+placeholder field ([image-format.md](image-format.md), "Two passes").
 
 **The primary factory is an entry of the metaclass mixin's method table**,
 under the declared factory's selector (`new` for a declaration that writes
@@ -1457,23 +1486,26 @@ and cheap to carry.
 
 ## Arena allocation and handles
 
-`Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is an
-entry in one `Heap`'s arena and an `ObjectReference` is a 32-bit index into it, private to
-`heap.rs`. The representation, what it measured, the root discipline with
-its lifetime brand, and the mark-compact collector are designed in
-[memory.md](memory.md), "Checked roots and a collector" onward. The layout
-that replaces the arena is "Planned: the object layout" below.
+`Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is a
+slot in one `Heap`'s arena, one block of words ("The object layout" below),
+and an `ObjectReference` is a 32-bit index into it, private to the `heap`
+module. The representation, what it measured, the root discipline with its
+lifetime brand, and the mark-compact collector are designed in
+[memory.md](memory.md), "Checked roots and a collector" onward. The space
+that replaces the arena, with the words in memory the heap owns, is
+[memory.md](memory.md), "Planned: the object space".
 
 Two consequences belong here rather than there, because they are about this
 document's subject.
 
 **An activation is an object too, when something needs it to be.** A running
 activation is an entry on the `Heap`'s activation stack, and it becomes a
-first-class `Frame` — an entry in the same `Heap`'s frame arena, addressed by a
-`FrameReference` with the same privacy as an `ObjectReference` — only when a block captures it.
-So an activation nothing captures costs no allocation and leaves nothing behind,
-and one that is captured is stored the way an object is. See
-[execution.md](execution.md), "Activations".
+first-class frame -- an object of the frame format in the same arena,
+addressed by a `FrameReference` with the same privacy as an
+`ObjectReference` -- only when something reifies it: a block capturing it, or
+the exception machinery naming it. So an activation nothing reifies costs no
+allocation and leaves nothing behind, and one that is reified is stored the
+way every other object is. See [execution.md](execution.md), "Activations".
 
 ## Planned: the road to a high-performance VM
 
@@ -1481,8 +1513,8 @@ Would change: the object representation becomes the one the reference engines
 with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with Primordial Soup
 beside them -- adapted where Newspeak's nesting requires it, and the JIT tiers
 follow on it. Decided with the user on 2026-09-29; the canonical order is
-[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". Two
-`Planned:` sections below and three in [memory.md](memory.md) describe its
+[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". The
+`Planned` sections below and three in [memory.md](memory.md) describe its
 representation steps still to come. The road, each step landing green on its
 own:
 
@@ -1496,8 +1528,9 @@ own:
      eight-byte instructions designed against the one-word value
      ([execution.md](execution.md), "The compact instruction encoding").
 3. **The object space** -- one header word, the class word, the fields
-   inline ("Planned: the object layout" below; [memory.md](memory.md),
-   "Planned: the object space").
+   inline, in two plans: **3a, the representation** on today's arena --
+   built ("The object layout" below) -- and **3b, the space**
+   ([memory.md](memory.md), "Planned: the object space").
 4. **Generations** ([memory.md](memory.md), "Planned: generations").
 5. **`become:` through forwarders** ("Planned: `become:` through forwarders"
    below).
@@ -1511,37 +1544,34 @@ own:
 8. **A baseline JIT**, and
 9. **an optimizing JIT** ([execution.md](execution.md), "Planned: JIT tiers").
 
-## Planned: the object layout
+## The object layout
 
-Would change: an object stops being a slot in an index arena (56 bytes in a
-release build) with
-its variable part in a separate Rust allocation, and becomes a run of words
-in one space -- a header word, a class word, then its fields -- addressed by
-its byte offset. Road step 3; the space, its
-allocation and its collector are [memory.md](memory.md), "Planned: the
-object space". The header word plus class word (option A), frames as heap
-objects and strings in two widths were decided with the user on 2026-09-29;
-the rest is derived. Strings in two widths are built already, on today's
-arena (2026-10-01); what road step 3 changes for them is that they become
-byte- and word-format objects in the space.
-
-Road step 3 is built in two plans (decided with the user on 2026-10-03), as
-the one-word value was built on today's arena first. **3a, the
-representation**: each slot of today's object arena becomes one block of
-words in exactly the layout below, header word first, the handle still an
-arena index; every object kind becomes a format, class objects, closures
-and reified frames become such objects, the frame arena goes, and the
-image's frames become object records. Between 3a and 3b every guard read
-goes through the slot's pointer to its block, an indirection more than
-today's guard read in the slot itself, accepted so that 3a fixes the final
-layout and 3b only changes where the words live. **3b, the space**: the
-arena gives way to the space in `ns-memory`'s reservation, with byte-offset
-handles, bump allocation and sliding compaction ([memory.md](memory.md),
-"Planned: the object space").
+Every object is a run of words -- a header word, a class word, then its
+fields -- in exactly the layout road step 3 settles. The header word plus
+class word (option A), frames as heap objects and strings in two widths were
+decided with the user on 2026-09-29; the rest is derived. Road step 3 is
+built in two plans (decided with the user on 2026-10-03), as the one-word
+value was built on today's arena first. **3a, the representation**, is
+built: each slot of the arena is one `Box<[u64]>` holding the object's
+words, header word first, and the handle is still the arena index; every
+object kind is a format, class objects, closures and reified frames are such
+objects, there is no second arena for frames, and the image's frames are
+object records ([image-format.md](image-format.md), "Frames are object
+records"). Every guard read goes through the slot's pointer to its block, an
+indirection more than a guard kept in the slot itself, accepted so that 3a
+fixes the final layout and 3b only changes where the words live. **3b, the
+space**, is planned: the arena gives way to the space in `ns-memory`'s
+reservation, with byte-offset handles, bump allocation and sliding
+compaction ([memory.md](memory.md), "Planned: the object space"; "Planned
+with road step 3b: handles" below).
 
 ```
 [header word][class word][field 1][field 2] ...     8-byte aligned, at least 16 bytes
 ```
+
+The block's layout is decided in `heap/object.rs`: `Payload` builds each
+kind's words and `Payload::into_block` is the one place a header is derived;
+`heap/header.rs` holds `Header` and `Format`.
 
 **The header word**, after Spur's (`headerForSlots:format:classIndex:`) and
 HotSpot's compact object headers (JEP 450, a product feature from JDK 25 as
@@ -1552,23 +1582,29 @@ the lock bits into one 64-bit word:
 |---|---|
 | 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id"); 0 is `NONE`, 1 `VACANT`, 2 the forwarder's, and the counter mints from 3 |
 | 22-26 | the format |
-| 27-30 | the age, for the generations (road step 4) |
-| 31 | the remembered bit (road step 4) |
+| 27-30 | the age, for the generations (road step 4); 0 until then |
+| 31 | the remembered bit (road step 4); 0 until then |
 | 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`) |
-| 33 | the mark bit |
+| 33 | the mark bit; 0 while the collector keeps its mark bits in a bitmap beside the arena (`heap/mark.rs`) |
 | 34-55 | the identity hash, drawn lazily from the counter; 0 means none yet |
 | 56-63 | the number of words after the header -- the class word and the fields; 255 means the real count is in an overflow word *before* the header |
 
 The word count sits in the top byte, as Spur's does, so the overflow word
 before a large object's header carries 255 in its top byte and the real
-count in its low 56 bits, and a linear walk tells it from a header.
+count in its low 56 bits, and a linear walk tells it from a header. On the
+arena an object of more than 254 words stores 255 and its block's own length
+is its count; the overflow word comes with the space, the first thing that
+walks the words linearly. A debug build checks on every access that the
+header's count matches the block (`check_block`).
 
 **The reserved guard values sit at the low end**, as Primordial Soup's
 reserved class ids do (`kIllegalCid = 0`, `kForwardingCorpseCid = 1`,
 `kFreeListElementCid = 2`, `kFirstLegalCid = 3`,
 `prior-art/primordialsoup/vm/object.h:64-68`), and Spur keeps its own
 puns below 32 (`isFreeObjectClassIndexPun` 0, `isForwardedObjectClassIndexPun`
-8, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2815-2817`). So a
+8, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2815-2817`):
+`DispatchId::NONE` is 0, `VACANT` 1 and `FORWARDED` 2, and the counter mints
+from 3 below 2^22, answering `NONE` once it is exhausted (`mixin.rs`). So a
 header word left zero by a missed initialization carries `NONE`, which is
 never cached, rather than a guard some application was minted, and the
 debug build's recomputation in `Heap::dispatch_id` reports it (decided with
@@ -1578,41 +1614,47 @@ the user on 2026-10-03).
 within them, as Strongtalk's wraps within 20 (`markOop.cpp`), and skips 0.
 Hashes are therefore not unique once the counter has wrapped, which a hash
 need not be; the decoder advances the counter past the largest hash an image
-holds and refuses a hash of 2^22 or more, where it refuses `u32::MAX` today
-([image-format.md](image-format.md), "Identity hashes are preserved
+holds and refuses a hash of 2^22 or more (`IdentityHashTooWide`;
+[image-format.md](image-format.md), "Identity hashes are preserved
 verbatim").
 
 **An application has two ids.** Its *guard id*, 22 bits wide, is the
-inline caches' guard: it stands in object headers, in inline- and
-global-cache entries and in recorded guards (see "What a slot access
-checks" below), and nowhere else. Running out of guard ids keeps today's
-rule: an application without one runs uncached ([dispatch.md](dispatch.md),
-"The dispatch id"). Its *full-width index* into the Rust-side table of
-`MixinApplication`s is what a class object names and what every identity
-comparison of applications uses -- the application cache's key and value,
-`behavior:sharesApplicationWith:` (`Kernel.ns:116`), which class-object
-equality uses, and the global cache's `Lexical` key, which, as today, never
-records a `NONE` guard ([dispatch.md](dispatch.md), "3b — The caches").
-So an application whose guard id is `NONE` stays reachable and distinct
-from every other. Each id has its own reuse rule, and the collector can tell
-both, so reusing either is safe: a guard id is reclaimed once no object
-header, no inline- or global-cache entry and no recorded guard names it; a
-full-width index once no class object, no application-cache key or value
-and no other application's superclass link names it. A mixin id is
-reclaimed once the `Mixin` itself is dropped -- its table entry freed, no
-declaration, enclosing mixin or code holding it -- and no application, no
-application-cache key or value and no class object's applied-clause field
-names it. A class's change of application restamps every instance's header
-by a heap walk, as `Heap::class_set_application` walks the arena today
-(`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
-become reclaimable. Road step 3a mints the three ids and reclaims none:
-nothing drops a mixin before live editing, and the application cache,
-keyed by the ids, stays strong; the reuse rules and a weak cache come with
-the first edit (decided with the user on 2026-10-03;
+inline caches' guard: it stands in object headers and in inline- and
+global-cache entries -- and, from road step 5, in recorded guards (see
+"Planned with road step 5: what a slot access checks" below) -- and nowhere
+else. Running out of guard ids keeps the rule of
+[dispatch.md](dispatch.md), "The dispatch id": an application without one
+runs uncached. Its *full-width index*, an `ApplicationIndex` into the heap's
+table of `MixinApplication`s, is what a class object names and what every
+identity comparison of applications uses -- the application cache's key,
+`behavior:sharesApplicationWith:` (`Kernel.ns`), which class-object equality
+uses, and the global cache's `Lexical` key, which never records a `NONE`
+guard ([dispatch.md](dispatch.md), "3b — The caches"). So an application
+whose guard id is `NONE` stays reachable and distinct from every other.
+
+The tables are `heap/tables.rs`'s, one set per heap because the objects
+naming them are: a `MixinId` for a mixin, an `ApplicationIndex` for an
+application and a `CodeId` for a compiled body, each registered on first
+sight (`Heap::mixin_id`, `register_application`, `code_id`). They are
+append-only. Each id has its own reuse rule, and the collector can tell
+both of an application's, so reusing either will be safe: a guard id is
+reclaimable once no object header, no inline- or global-cache entry and no
+recorded guard names it; a full-width index once no class object, no
+application-cache key or value and no other application's superclass link
+names it. A mixin id is reclaimable once the `Mixin` itself is dropped --
+its table entry freed, no declaration, enclosing mixin or code holding it --
+and no application, no application-cache key or value and no class object's
+applied-clause field names it. A class's change of application restamps
+every instance's header by a heap walk (`Heap::class_set_application`)
+before the old guard id can become reclaimable. None of it is reclaimed:
+nothing drops a mixin before live editing, and the application cache, keyed
+by the ids, stays strong; the reuse rules and a weak cache come with the
+first edit (decided with the user on 2026-10-03;
 [OPEN-WORK.md](../OPEN-WORK.md), "Live editing of mixins").
 
-**The class word** is an ordinary value naming the object's class object.
-An immediate has no header; its class and its guard come from a small table
+**The class word** is an ordinary stored word naming the object's class
+object, written through `Heap::store` and read through `Heap::load` like a
+field. An immediate has no header; its class and its guard come from tables
 indexed by its tag, and for the constant tag by the constant, since `nil`,
 `true` and `false` share a tag but have three classes and three guards --
 as Spur's class table's first page holds the tag classes.
@@ -1635,61 +1677,89 @@ JEP 519 ships. It saves 8 bytes an object and costs
 mechanism. Speed on a hot path went first; the accessors in `heap.rs` keep
 either layout open.
 
-**Formats**, after Spur's five-bit field (`formatOf:`):
+**Formats**, after Spur's five-bit field (`formatOf:`), with the codes
+`Format` gives them:
 
-| Format | Objects |
-|---|---|
-| fixed pointer fields | ordinary instances, class objects |
-| indexable pointers | `Array` |
-| frame | a reified frame: fixed fields, then its registers |
-| closure | fixed fields, then its copied values |
-| byte-indexed | a one-byte string or symbol |
-| 32-bit-indexed | a wide string or symbol |
-| 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
-| forwarded | a forwarder -- `become:`'s ("Planned: `become:` through forwarders") and the scavenger's for a young object it has copied -- whose class word holds the new location |
-| free | a gap the collector leaves, walkable like an object |
+| Code | Format | Objects |
+|---|---|---|
+| 0 | fixed pointer fields | ordinary instances |
+| 1 | indexable pointers | `Array` |
+| 2 | frame | a reified frame: ten fixed fields, then its registers |
+| 3 | closure | three fixed fields, then its copied values |
+| 4 | 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
+| 5 | forwarded | a forwarder -- `become:`'s ("Planned: `become:` through forwarders") and the scavenger's for a young object it has copied -- whose class word holds the new location; none exists before road step 5 |
+| 6 | free | a gap the collector leaves, walkable like an object; none exists before the space (road step 3b) |
+| 7 | class | a class object: eight fixed fields |
+| 8-9 | 32-bit-indexed | a wide string or symbol |
+| 16-23 | byte-indexed | a one-byte string or symbol |
 
 The byte and 32-bit formats carry the number of unused units at the end in
 their low bits, as Spur's do, so an exact length needs no length field. A
-forwarder needs no field of its own: the class word, which every object has
--- a header and a class word are the 16-byte minimum -- takes the target, as
-Spur's forwarders take their first slot.
+code no format uses reads as free, so a corrupt word walks as a gap rather
+than panicking. A forwarder needs no field of its own: the class word, which
+every object has -- a header and a class word are the 16-byte minimum --
+takes the target, as Spur's forwarders take their first slot.
 
-**What becomes a heap object.** A class object keeps in fixed fields
-everything of today's `ClassData` that holds per class object: its enclosing
-object, declaring class, superclass, for a metaclass the class it describes
-(`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads on
-every send), its value-class refusal (`nil`, or a two-element `Array` the
-VM alone reads: the offending enclosing object and the name of the level at
-fault as a `Symbol`, or `nil` for the class's own enclosing object), for a
-level a `<:` clause added the clause that added it (`ClassData.applied_clause`:
-the applying declaration's mixin id, the clause index and the named builtin
-tag packed into one `SmallInteger`, or `nil`, since the `Rc<Mixin>` it holds
-today cannot live in the space), and its application as a `SmallInteger` full-width index into a
-Rust-side table of `MixinApplication`s, separate from the 22-bit guard id in
-instances' headers; the behaviour stays Rust. Eight fields, so a class object
-is 80 bytes with its header and class word.
+**A class object has a format of its own**, where Spur's and Primordial
+Soup's class objects are ordinary pointer objects, because whether an object
+is a class is asked of untrusted objects: the image decoder's verification
+and its lookups ask it of every object a record names
+([image-format.md](image-format.md), "Verification"). With a format of its
+own, `Heap::is_class` reads the object's header alone, rather than following
+its class word to the class and that class's to the metaclass, through
+objects a crafted image may not have made what they claim to be.
+
+**The format decides what the collector traces**: `object.rs`'s
+`trace_block` hands `Tracer::word` the class word and, by the header's
+format alone, every field of the two pointer formats, a class object's
+object fields, a closure's captured frame and copied values, and a frame's
+fixed fields and, once it is no longer married, its registers -- never the
+digits of a `LargeInteger`, a `Float`'s bits or a string's code points,
+which would read as handles ([memory.md](memory.md), "What the collector
+traces").
+
+**Class objects, closures and frames are objects.** A class object keeps in
+eight fixed fields (`object.rs`'s `class_field`) everything that holds per
+class object: its enclosing object, declaring class, superclass, for a
+metaclass the class it describes (`this_class`), its builtin tag (a
+`SmallInteger`, the class's position in `BuiltinClass::ALL`, or `nil`; `act`
+re-reads it on every send, [dispatch.md](dispatch.md), "Primitive methods"),
+its value-class refusal (`nil`, or a two-element `Array` the VM alone reads:
+the offending enclosing object and the name of the level at fault as a
+`Symbol`, or `nil` for the class's own enclosing object), for a level a `<:`
+clause added the clause that added it (the applying declaration's mixin id,
+the clause index and the named builtin tag packed into one `SmallInteger`, or
+`nil`, since an `Rc<Mixin>` cannot live in the words), and its application
+as a `SmallInteger` full-width index, separate from the 22-bit guard id in
+instances' headers; the behaviour stays Rust. A class object is 80 bytes
+with its header and class word. The builtin tag, the applied clause and the
+application are numbers, the other five fields objects or `nil`, and the
+tracer sees only those.
 
 The refusal is held as heap data rather than as an index into a Rust-side
 table of refusals, because class objects are made at run time, one per
 enclosing instance, so a table that only grows would grow with every class
-object a loop makes, live editing or not, and one the collector reclaims
+object a loop makes, live editing or not, and one the collector reclaimed
 would be a weak table of its own. Its message is rendered by
-`Heap::describe` when `new` refuses, no longer at creation, and reads the
-same: the offender is never a value, and what `describe` says of a
-non-value -- "an instance of X", "an Array of n", "a Block", "the class X"
--- does not change while it lives. Holding the offender keeps nothing
-alive: it is the enclosing object of a level of this class object's own
-superclass chain. An image carries no refusal, as today; the decoder
-recomputes it (decided with the user on 2026-10-03).
+`Heap::describe` when `new` refuses, not at creation, and reads the
+same as a message rendered at creation would: the offender is never a value,
+and what `describe` says of a non-value -- "an instance of X", "an Array of
+n", "a Block", "the class X" -- does not change while it lives. Holding the
+offender keeps nothing alive: it is the enclosing object of a level of this
+class object's own superclass chain. An image carries no refusal; the
+decoder recomputes it (decided with the user on 2026-10-03; "A value
+object's four conditions" above).
 
 The applied clause packs the mixin id into bits 0-31, the clause index into
-bits 32-54 and the named builtin tag into bits 55-60, 0 meaning none, which
-fills the `SmallInteger`'s 61 bits. A superclass clause of more than 2^23
-`<:` clauses is therefore refused by the resolver, as an ordinary resolve
-error naming the limit, and an image whose clause index reaches 2^23 by the
-decoder. This is a limit a valid program can reach, against the rule that
-no valid construct is carved out because it is rare
+bits 32-54 and the named builtin's tag plus one into bits 55-60, 0 meaning
+none, which fills the `SmallInteger`'s 61 bits; the 61-bit pattern is
+sign-extended, so a tag that sets bit 60 packs into a negative
+`SmallInteger` (`AppliedClause::pack`, `unpack`, `mixin.rs`). A superclass
+clause of more than 2^23 `<:` clauses is therefore refused by the resolver,
+as an ordinary resolve error naming the limit (`CLAUSE_INDEX_LIMIT`), and an
+image whose clause index reaches 2^23 by the decoder
+(`ClauseIndexTooLarge`). This is a limit a valid program can reach, against
+the rule that no valid construct is carved out because it is rare
 ([README.md](README.md), "Principles"), taken deliberately (decided with
 the user on 2026-10-03): no source near eight million clauses in one
 superclass clause is in prospect, and a second field would cost every class
@@ -1697,106 +1767,124 @@ object eight bytes for it.
 
 The application cache is keyed by the mixin's id and the superclass
 application's full-width index rather than by `Rc` addresses, which lets it
-become weak ([memory.md](memory.md), "Weak references"). A closure keeps
-its code id, captured frame and feedback base in fixed fields and its copied values inline; a code id indexes a Rust-side table
-of compiled code that is append-only per heap, its entries never freed or
-reused, since compiled code is shared by mixins and reclaiming it belongs with
-live editing. Each entry also records the code's owning `MixinMethod`, where
-it has one, so a method frame's code id names its method too -- the
-declaration the encoder writes today (`image/encode.rs`) and `frame_body`
-reads. A reified frame keeps its sender, home, receiver, current class,
-program counter, code id, kind, the kind's operand -- the closure of a block
-frame, or the class of an initializer, superclass-clause, superclass-message
-or mixin-application-message frame, a handle the trace and the barrier see --
-`uncontinuable`, and the index of the activation it is married to, if any
-(today `FrameSlot`'s `live`), in fixed fields and its registers inline, and
-the kernel-private `Activation` objects the exception machinery holds become
-these frame objects themselves; the running activations stay on the activation
-stack until road step 7. A frame object is allocated at `reify` with its
-code's full register count, whatever the code; whether the divorce copies the
-registers into it stays decided per activation from the block's `outer_reach`,
-as today. So no frame object ever grows, and suspension, the debugger and
+become weak ([memory.md](memory.md), "Weak references") when live editing
+needs it to. A closure keeps its code id, captured frame and feedback base in
+three fixed fields (`closure_field`) and its copied values inline; a code id
+indexes the heap's table of compiled code, append-only, its entries never
+freed or reused, since compiled code is shared by mixins and reclaiming it
+belongs with live editing. Each entry also records the code's owning
+`MixinMethod`, where it has one, so a method frame's code id names its
+method too -- the declaration the encoder writes and `frame_body` reads.
+
+**A reified frame** is an object of the frame format whose class is the
+kernel-private `Activation`. Ten fixed fields (`frame_field`) keep its
+sender, home, receiver, current class, program counter, code id (`nil` for a
+top-level frame), kind (the kind's wire tag), the kind's operand -- the
+closure of a block frame, or the class of an initializer, superclass-clause,
+superclass-message or mixin-application-message frame, a handle the trace
+sees -- `uncontinuable`, and the index of the stack entry it is married to,
+`nil` once divorced; its registers follow inline. The `Activation` object
+the exception machinery holds is this frame object itself, so the same
+activation answers the same object every time; the running activations stay
+on the activation stack until road step 7. A frame object is allocated at
+`reify` with its code's full register count, whatever the code; whether the
+divorce copies the registers into it is decided per activation from the
+block's `outer_reach` ([execution.md](execution.md), "Closure conversion").
+So no frame object ever grows, and suspension, the debugger and
 edit-and-continue find room for the registers in every reified frame.
-Edit-and-continue adding locals divorces the affected activation into a newly
-allocated, larger frame object -- allocated old and born remembered by the
-rule in [memory.md](memory.md), "Planned: generations" -- the VM rewriting
-every reference to the old frame by a walk of every root the collector traces
-(`trace.rs`) and every heap object, since `become:` never forwards a frame;
-execution continues from the divorced frame, which needs a divorced frame put
-back on the stack, the piece suspend and resume need too
+Edit-and-continue adding locals will divorce the affected activation into a
+newly allocated, larger frame object -- allocated old and born remembered by
+the rule in [memory.md](memory.md), "Planned: generations" -- the VM
+rewriting every reference to the old frame by a walk of every root the
+collector traces (`trace.rs`) and every heap object, since `become:` never
+forwards a frame; execution continues from the divorced frame, which needs a
+divorced frame put back on the stack, the piece suspend and resume need too
 ([execution.md](execution.md), "How this meets the liveness requirements").
 The cost is a few more words per reified frame, and `bench_block.ns`, which
-reifies a frame per iteration, is the workload that shows it. While a frame is
-married its registers live on the stack and the trace skips the object's
-inline copies. `FrameReference` stays, now the type of a handle to a frame
-object, so an `ActivationReference` is still never stored. The frame arena,
-its second forwarding table and every separate register vector go.
+reifies a frame per iteration, is the workload that shows it. While a frame
+is married its registers live on the stack and the trace skips the object's
+inline copies. `FrameReference` is the type of a handle to a frame object,
+so an `ActivationReference` is still never stored, and a frame has no arena,
+forwarding table or register vector of its own.
 
 **Strings have two widths.** A string holds one byte per code point while
-every code point fits Latin-1, 32 bits per code point otherwise; either way
-the elements are code points, so `size` and `at:` are one access. This is
-built on today's arena, as the `CodePoints` payload
-(`crates/ns-runtime/src/code_points.rs`; [core-library.md](core-library.md),
-"Strings are code points in two widths"); road step 3 makes the two widths
-the byte- and 32-bit-indexed formats below. §5.1.5 makes a string's
-elements "integers representing the encoding of the string in Unicode normal
-form C" and leaves the representation to the implementation. This is Spur's
-`ByteString` and `WideString`; Java's compact strings (JEP 254) and V8 do the
-same with a UTF-16 wide form, and Python (PEP 393) adds a middle width of two
-bytes, which can be added here later behind the same interface. Primordial
-Soup stores UTF-8 bytes and answers a byte from `at:`
+every code point fits Latin-1, 32 bits per code point otherwise -- the
+byte-indexed and 32-bit-indexed formats, eight or two units to a word, least
+significant first, the last word's unused units zero, so that equal texts
+have equal words (`object.rs`'s `Payload::string` and `PackedString`, the one
+writer and the one reader of the layout). Either way the elements are code
+points, so `size` and `at:` are one access, read in place. §5.1.5 makes a
+string's elements "integers representing the encoding of the string in
+Unicode normal form C" and leaves the representation to the implementation.
+This is Spur's `ByteString` and `WideString`; Java's compact strings (JEP
+254) and V8 do the same with a UTF-16 wide form, and Python (PEP 393) adds a
+middle width of two bytes, which can be added here later behind the same
+interface. Primordial Soup stores UTF-8 bytes and answers a byte from `at:`
 (`String_at`, `vm/primitives.cc`), which would change what `size` answers
 for any text beyond ASCII. Source, the transcript and the image are UTF-8,
-converted at the boundary. A grapheme cluster -- one emoji with a skin-tone
-modifier is two code points -- is never an element; counting or iterating
-them is a library protocol above the string, since the segmentation rules
-change with every Unicode version and allow no constant-time indexing.
-Planned with road step 3a:
-`Symbol` becomes a subclass of `String`, as in every reference kernel, and
-`Mutator::new_symbol` stays the only way to make one: instantiating `Symbol`
-is refused, and `String new` answers an empty one-byte string, each pinned by
-a golden. `=` stays class-tight both ways, as today: `'foo' = #foo` and
-`#foo = 'foo'` both answer `false`, so `Symbol` overrides `=` and `hash` and
-`String>>=` answers `false` for a `Symbol` argument, pinned by a golden. Today nothing refuses it --
-`decide_factory` (`interpreter/instantiate.rs`) special-cases only the VM
-mirror's class and `Array`, so `Symbol new` answers an instance with no text,
-and `String new` answers an instance that understands no `size`
-([OPEN-WORK.md](../OPEN-WORK.md)).
+converted at the boundary; `CodePoints` (`code_points.rs`) is the Rust-side
+form a string is copied out to and built from. A grapheme cluster -- one
+emoji with a skin-tone modifier is two code points -- is never an element;
+counting or iterating them is a library protocol above the string, since
+the segmentation rules change with every Unicode version and allow no
+constant-time indexing ([core-library.md](core-library.md), "Strings are
+code points in two widths").
 
-**Handles.** An `ObjectReference` becomes the object's byte offset, 64 bits
-wide, so the space is bounded by its reservation rather than by a handle's
-width. HotSpot's compressed oops store a reference in 32 bits and so cap a
-heap at 32 GB; that saving exists because a Java field of reference type
-holds nothing else. A Newspeak field holds any value -- an integer, a float,
-an object -- so it is a full 64-bit word whatever the handle's width, as in
-Spur. Accessors may lend a string's units or an object's fields as a slice
-instead of copying them out. Every field, element and register accessor
-checks its index against the object's own word count, not only against the
-space's bounds, so no write through one object -- a crafted image's
-by-reference register write included -- can reach the next object's header;
-an out-of-range index that a valid program produces raises an ordinary
-Newspeak error, never a panic.
+`Symbol` is a subclass of `String`, as in every reference kernel: a symbol's
+words are a string's, and only its class tells it from one.
+`Mutator::new_symbol` is the only way to make one: instantiating `Symbol` is
+refused, and `String new` answers an empty one-byte string
+(`goldens/library/string/symbol_new_is_refused.ns`,
+`string_new_answers_an_empty_string.ns`). `=` is class-tight both ways:
+`'foo' = #foo` and `#foo = 'foo'` both answer `false`, since `Symbol>>=` is
+identity and `String>>=` answers `false` for a `Symbol` argument
+(`a_symbol_is_a_string.ns`).
 
-**What a slot access checks.** A slot access that is not guarded by the
-receiver's own header reads or writes a field at an index decided without
-looking at the receiver: the own-slot instructions `InitializeSlot`,
-`InitializeSlotProvisionally`, `LoadOwnSlot` and `ReturnSlotIfFilled`, which
-address `slot_base + own_index` in `self` with no send (`bytecode.rs`,
-`vm.rs`), and a slot accessor acted on through `Chain::Private` or
-`Chain::Super` -- a private lexical send, one to an enclosing object
-included, resolves on the lexical class to a field index
+**What an accessor lends.** A string's units are read in place, and a
+`LargeInteger`'s digits are lent in place to `=`, `hash`, the comparisons and
+the sign tests; arithmetic still copies its operands' digits out
+([core-library.md](core-library.md), "Large integers"). Every field,
+element and register accessor indexes the object's own block, so no access
+through one object -- a crafted image's by-reference register write
+included -- can reach another object's words, and an out-of-range index that
+a valid program produces raises an ordinary Newspeak error, never a panic.
+
+### Planned with road step 3b: handles
+
+Would change: an `ObjectReference` becomes the object's byte offset, 64
+bits wide, so the space is bounded by its reservation rather than by a
+handle's width. HotSpot's compressed oops store a reference in 32 bits and
+so cap a heap at 32 GB; that saving exists because a Java field of reference
+type holds nothing else. A Newspeak field holds any value -- an integer, a
+float, an object -- so it is a full 64-bit word whatever the handle's width,
+as in Spur. With the words in one space, every field, element and register
+accessor checks its index against the object's own word count, not only
+against the space's bounds, so that the guarantee the arena's separate
+blocks give today -- no access through one object reaches the next
+object's header -- still holds.
+
+### Planned with road step 5: what a slot access checks
+
+Would change: a slot access that is not guarded by the receiver's own header
+checks a recorded guard. Such an access reads or writes a field at an index
+decided without looking at the receiver: the own-slot instructions
+`InitializeSlot`, `InitializeSlotProvisionally`, `LoadOwnSlot` and
+`ReturnSlotIfFilled`, which address `slot_base + own_index` in `self` with
+no send (`bytecode.rs`, `vm.rs`), and a slot accessor acted on through
+`Chain::Private` or `Chain::Super` -- a private lexical send, one to an
+enclosing object included, resolves on the lexical class to a field index
 (`resolve_lexical`, `interpreter/resolve.rs`; `decide_slot_accessor`), and
-a super send on the superclass. Each compares the receiver's header guard
-with an expected guard, a *recorded guard*: for the own-slot instructions,
-the one the activation recorded from the receiver's header when it was
-entered -- not the running level's own application, which differs from the
-receiver's on every inherited level; for a private or super slot accessor,
-the one the cache entry recorded when it was filled. One compare, the hot
-path. On a mismatch, or when either guard is `NONE`, a cold path checks,
-through the receiver's class word and the full-width index, that the
-receiver's application inherits the accessing level: if it does -- as after
-an edit that changed only methods and restamped the header -- the access
-proceeds; if not, it raises an ordinary Newspeak error. The reference
+a super send on the superclass. Each will compare the receiver's header
+guard with an expected guard, a *recorded guard*: for the own-slot
+instructions, the one the activation recorded from the receiver's header
+when it was entered -- not the running level's own application, which
+differs from the receiver's on every inherited level; for a private or super
+slot accessor, the one the cache entry recorded when it was filled. One
+compare, the hot path. On a mismatch, or when either guard is `NONE`, a cold
+path checks, through the receiver's class word and the full-width index,
+that the receiver's application inherits the accessing level: if it does --
+as after an edit that changed only methods and restamped the header -- the
+access proceeds; if not, it raises an ordinary Newspeak error. The reference
 lowering, which has no cache, always takes the cold check. So after a
 `self become:` inside an initializer or a lazy slot's initializer, the rest
 of that activation cannot write the old layout into an object of another
@@ -1806,18 +1894,19 @@ guard id's reuse rule ("An application has two ids" above).
 
 The recorded guard and this check come with road step 5, not with road
 step 3: `become:` is the first way a running activation's receiver can
-change shape -- today `Heap::object_replace` fills only the decoder's
+change shape -- today the decoder's in-place fills touch only its own
 placeholders and `Heap::class_set_application` runs only while the kernel
 boots -- so before it there is nothing for them to catch. The recorded
-guard lives in the activation stack's entry alone; a reified frame has no
-field for it. An activation resumed from a frame (road step 7) starts with
-`NONE`, so its first own-slot access takes the cold check, and a cold check
-that passes records the receiver's current header guard, so the accesses
-after it take the hot path again. Reading the guard afresh from the header
-on resume instead would defeat the check: after a `become:` it would read
-the replacing object's own guard, which always matches that object. One cold check per resumed
-activation buys eight bytes in every reified frame, which `bench_block.ns`
-reifies once per iteration (decided with the user on 2026-10-03).
+guard will live in the activation stack's entry alone; a reified frame has
+no field for it. An activation resumed from a frame (road step 7) starts
+with `NONE`, so its first own-slot access takes the cold check, and a cold
+check that passes records the receiver's current header guard, so the
+accesses after it take the hot path again. Reading the guard afresh from the
+header on resume instead would defeat the check: after a `become:` it would
+read the replacing object's own guard, which always matches that object.
+One cold check per resumed activation buys eight bytes in every reified
+frame, which `bench_block.ns` reifies once per iteration (decided with the
+user on 2026-10-03).
 
 ## Planned: `become:` through forwarders
 
@@ -1897,8 +1986,8 @@ error's `Error` or `MessageNotUnderstood` and its `Message` -- and that is
 harmless: `become:` never moves contents between classes, the kernel
 activations holding them are frame objects and refused, a kernel method whose
 receiver has been forwarded to a program object fails the slot-access check
-("What a slot access checks" above) instead of writing kernel-private state
-into it, and shipped code reaches the mirror only lexically, through its class
+("Planned with road step 5: what a slot access checks" above) instead of
+writing kernel-private state into it, and shipped code reaches the mirror only lexically, through its class
 objects' enclosing chain and the roots of `Kernel`, `PlatformFactory` and
 `CollectionsFactory`, each declared `= Object <: Value` and so a value, and
 the mirror itself is unreachable. Every object on a path from shipped code to
@@ -1915,8 +2004,8 @@ which instances admit. A live frame gains locals by being divorced into a
 newly allocated, larger frame object, allocated old and born remembered, with
 a walk of every root the collector traces (`trace.rs`) and every heap object
 by the VM rewriting every reference to the old frame, since `become:` never
-forwards a frame, and execution continuing from the divorced frame ("Planned:
-the object layout" above). Closures keep their old code, as in Smalltalk, and
+forwards a frame, and execution continuing from the divorced frame ("The
+object layout" above). Closures keep their old code, as in Smalltalk, and
 new ones get the new code. Editing a value class migrates its instances the
 same way, inside the VM, which no program can observe, since a value has no
 identity.
@@ -1936,7 +2025,7 @@ remove slots of a class with live instances.
 
 - **Three layers rather than one**, because §6 requires a distinct class object
   per enclosing instance while §6.2 requires behaviour to be shared per mixin.
-  A single `ClassData` cannot do both.
+  A single structure for both cannot do both.
 - **The application cache is keyed by the superclass's application.** Keying by
   the superclass class object was the obvious choice and is wrong; it is recorded
   here because the failure is silent — correct output, no sharing, every call
@@ -1968,9 +2057,10 @@ remove slots of a class with live instances.
   [its plan](../superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md);
   "Class sides and metaclasses" above). A class object is a value exactly
   when its enclosing object is, a metaclass when its class is. A class
-  object's state stays in `ClassData`; the kernel classes carry behaviour
-  only. Metaclasses are built eagerly with their class, and `ClassData`
-  links a metaclass back to its class (`this_class`). The hierarchy is
+  object's state stays in the VM-read fields of the class object; the
+  kernel classes carry behaviour only. Metaclasses are built eagerly with
+  their class, and a metaclass's `this_class` field links it back to its
+  class. The hierarchy is
   `Object` → `Behavior` → {`Class`, `Metaclass`}, none of them below
   `Value`. The protocol is minimal — `name` and `printString` on `Class`
   and `Metaclass` — `Object` declares no accessor for any of the three, and
@@ -2006,36 +2096,41 @@ remove slots of a class with live instances.
   the `LargeInteger` that makes integers unbounded** (decided with the user
   on 2026-09-29; "Values and objects" above; [core-library.md](core-library.md),
   "Large integers"). Spur's tags and the immediate floats in Spur's range
-  are derived. It is built on today's arena, ahead of the object layout,
-  since a 32-bit arena index already fits the word.
-- **An object will be a header word, a class word and its fields** (planned;
-  decided with the user on 2026-09-29; "Planned: the object layout" above).
-  The header's guard is to be the application id, because a class-index
-  guard would make nested classes megamorphic; the class object gets a word
-  of its own rather than a class index packed beside the guard, so that
-  `class` and `outer` stay one load.
+  are derived. It needs no object space: a 32-bit arena index already fits
+  the word.
+- **An object is a header word, a class word and its fields** (decided with
+  the user on 2026-09-29, built on today's arena by road step 3a on
+  2026-10-03; "The object layout" above). The header's guard is the
+  application id, because a class-index guard would make nested classes
+  megamorphic; the class object gets a word of its own rather than a class
+  index packed beside the guard, so that `class` and `outer` stay one load.
+  A class object is a format of its own, so that whether an untrusted
+  object is a class is read from its header alone.
 - **Strings store code points in one of two widths**, Latin-1 or 32
   bits, with UTF-8 only at the boundaries (decided with the user on
-  2026-09-29, built on today's arena on 2026-10-01; "Planned: the object
-  layout" above).
+  2026-09-29, built on today's arena on 2026-10-01, as the byte- and
+  32-bit-indexed formats on 2026-10-03; "The object layout" above).
+  `Symbol` is a subclass of `String`, refused by `new`, and `=` stays
+  class-tight both ways.
 - **A program's own `become:` will refuse value objects** (decided with the
   user on 2026-09-29; "Planned: `become:` through forwarders" above): a value
   is immutable, and forwarding it would change what every holder holds. Editing
   a value class still migrates its instances inside the VM.
-- **Reified frames will become heap objects** in the same space, and the
-  frame arena will go (planned; decided with the user on 2026-09-29).
-  Closures and class objects follow them there, a derived part of the same
-  layout.
+- **Reified frames are heap objects**, of the frame format in the same
+  arena, and there is no frame arena (decided with the user on 2026-09-29,
+  built on 2026-10-03). Closures and class objects are objects of their own
+  formats too, a derived part of the same layout; the kernel's `Activation`
+  object is the frame object itself.
 - **Road step 3 is built as two plans, the representation (3a) on today's
-  arena and then the space (3b)**, and five details of the layout are
-  settled (planned; decided with the user on 2026-10-03; "Planned: the
-  object layout" above): the recorded guard and the slot-access check come
-  with `become:` in road step 5, the guard in the activation stack's entry
+  arena -- built -- and then the space (3b)**, and five details of the
+  layout are settled (decided with the user on 2026-10-03; "The object
+  layout" above): the recorded guard and the slot-access check come with
+  `become:` in road step 5, the guard in the activation stack's entry
   alone and a resumed activation starting with `NONE`; the applied clause
   is one `SmallInteger` of mixin id, clause index and builtin tag, 32, 23
   and 6 bits, the clause count's limit reported as a resolve or decode
   error -- a limit taken knowingly against the rarity rule; the reserved
   guards are `NONE` 0, `VACANT` 1 and the forwarder's 2; a value-class
-  refusal is heap data, not a Rust-side table; and road step 3a mints the
-  ids, keys the application cache by them and reclaims none until live
+  refusal is heap data, not a Rust-side table; and the ids are minted per
+  heap, key the application cache and are reclaimed by nothing until live
   editing.
