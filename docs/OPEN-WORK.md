@@ -759,9 +759,6 @@ Small, deliberately left, none affecting an outcome.
   and a prologue outside every statement range -- not a simple change. The
   cost falls only on a fallback closure's run, as "Fallback blocks" in
   [execution.md](design/execution.md) intends: the common path pays nothing.
-- `image/encode.rs`: `encode_class_tag` scans the root levels twice;
-  `image/decode.rs`'s `build_root_class` maps every error to
-  `NotAClassReference`.
 - `builtins/value.rs`: the hash of a value class object, from its mixin's
   name alone, collides for same-named nested classes under different
   enclosing values. A collision breaks no contract, and folding in the

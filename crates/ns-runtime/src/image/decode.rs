@@ -272,6 +272,16 @@ pub enum DecodeError {
     /// root class -- nothing for the graph's `CLASS_MODULE` tag to name and
     /// no declaration to instantiate.
     NotAClass,
+    /// A module's root section names a builtin for its root class to inherit
+    /// or apply that the loading bootstrap has no application for, so there
+    /// is no behaviour to build the root or its level on. `decode_root_section`
+    /// admits only `Object` and `Value`, which every bootstrap applies, so no
+    /// image reaches this today; it stands so that a change to either side is
+    /// a refusal that says what went wrong rather than a panic.
+    RootBuiltinWithoutApplication {
+        module: u32,
+        builtin: BuiltinClass,
+    },
     /// A selector the image names has no declaration to bind to: a
     /// mixin-table row's code list naming a selector its own method
     /// dictionary lacks, or a `FrameKind::Method` naming a selector its
@@ -576,6 +586,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
             }
+            DecodeError::RootBuiltinWithoutApplication { module, builtin } => write!(
+                f,
+                "the root class of the image's module {module} builds on the builtin {builtin:?},                  which this build has no behaviour for"
+            ),
             DecodeError::UnknownSelector(selector) => write!(
                 f,
                 "the image names method `{selector}`, which the declaration it belongs to does not define"
@@ -2748,26 +2762,25 @@ pub fn build_root_class<'gc>(
         .module_root(module_index)
         .cloned()
         .ok_or(DecodeError::NotAClass)?;
+    let without_application = |builtin| DecodeError::RootBuiltinWithoutApplication {
+        module: u32::try_from(module_index).unwrap_or(u32::MAX),
+        builtin,
+    };
     let builtin = mutator.builtin_class(section.superclass);
-    let superclass = mutator
+    let application = mutator
         .heap
         .class_application(builtin)
-        .map(|application| (builtin, application));
-    let applied: Vec<(usize, Value<'gc>)> = section
-        .levels
-        .iter()
-        .map(|&(index, kind)| (index as usize, Value::object(mutator.builtin_class(kind))))
-        .collect();
-    // `decode_root_section` held every index to the root row's clauses, and a
-    // builtin class is always a class object, so this cannot fail; the
-    // mapping keeps a future change to either from being a panic.
-    let top = crate::interpreter::nested::build_applied_levels(
-        mutator,
-        &root_mixin,
-        superclass,
-        &applied,
-    )
-    .map_err(|_| DecodeError::NotAClassReference)?;
+        .ok_or_else(|| without_application(section.superclass))?;
+    // One level at a time, so a refusal names the builtin its level applies.
+    // `decode_root_section` held every index to the root row's clauses, so
+    // the one thing `build_applied_levels` refuses is a class with no
+    // application.
+    let mut top = Some((builtin, application));
+    for &(index, kind) in &section.levels {
+        let applied = [(index as usize, Value::object(mutator.builtin_class(kind)))];
+        top = crate::interpreter::nested::build_applied_levels(mutator, &root_mixin, top, &applied)
+            .map_err(|_| without_application(kind))?;
+    }
     let (superclass, super_application) = top.unzip();
     let application = mutator.apply_mixin(&root_mixin, super_application.as_ref());
     let root_class = mutator.new_class_object(application, None, None, superclass);

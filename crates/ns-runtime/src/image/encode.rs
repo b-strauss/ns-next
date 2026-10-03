@@ -1352,8 +1352,8 @@ pub struct EncodeContext<'a, 'gc> {
 /// reference of a prebuilt class), `PlatformPath` (5 + path index), `Module`
 /// (6 + module index) or `ModuleLevel` (7 + module index + position) -- the
 /// ways a class object can exist in a loaded world. A metaclass of a class
-/// record is a record itself, so the recursion below is one level deep at
-/// most.
+/// record is a record itself, so a metaclass reference names a prebuilt
+/// class, never another metaclass.
 ///
 /// All but `Record` exist before the graph is decoded: a builtin comes from
 /// the bootstrap, a path-named class from the loading platform, and each
@@ -1373,49 +1373,80 @@ fn encode_class_tag<'gc>(
     if !context.heap.is_class(class) {
         panic!("internal: a class reference does not point at a class object");
     }
-    // Ahead of every other shape, a metaclass's included: the graph never
-    // entered a class a path names, so it has no record to name.
+    let Some(this_class) = context.heap.class_this_class(class) else {
+        match prebuilt_class(class, context) {
+            Some(prebuilt) => write_prebuilt_class(writer, prebuilt),
+            None => {
+                writer.write_u8(CLASS_RECORD);
+                writer.write_u32(context.table.object_id(context.heap, class));
+            }
+        }
+        return;
+    };
+    // A metaclass a path names is written through that path, ahead of its
+    // class's shape: the graph never entered a class a path names, so it has
+    // no record to name.
     if let Some(index) = context.table.platform_path_index(context.heap, class) {
         writer.write_u8(CLASS_PLATFORM_PATH);
         writer.write_u32(index);
         return;
     }
-    if let Some(this_class) = context.heap.class_this_class(class) {
-        if is_prebuilt_class(
-            context.heap,
-            this_class,
-            context.modules,
-            &context.table.platform_paths,
-        ) {
+    match prebuilt_class(this_class, context) {
+        Some(prebuilt) => {
             writer.write_u8(CLASS_METACLASS);
-            encode_class_tag(writer, this_class, context);
-        } else {
+            write_prebuilt_class(writer, prebuilt);
+        }
+        None => {
             writer.write_u8(CLASS_RECORD);
             writer.write_u32(context.table.object_id(context.heap, class));
         }
-        return;
     }
-    let builtin = context.heap.class_builtin(class);
-    match builtin {
-        Some(kind) => {
+}
+
+/// How a class tag names a class the loading world has before the graph is
+/// decoded -- what `decode::read_prebuilt_class` reads back.
+enum PrebuiltClass {
+    PlatformPath(u32),
+    Builtin(BuiltinClass),
+    Module(ModuleClass),
+}
+
+/// `class`, a class rather than a metaclass, as a prebuilt class, or `None`
+/// when the graph carries it as a record. Each lookup runs once: a path
+/// first, since the graph never entered a class a path names, then the
+/// builtin tag, then the module classes.
+fn prebuilt_class<'gc>(
+    class: ClassReference<'gc>,
+    context: &EncodeContext<'_, 'gc>,
+) -> Option<PrebuiltClass> {
+    if let Some(index) = context.table.platform_path_index(context.heap, class) {
+        return Some(PrebuiltClass::PlatformPath(index));
+    }
+    if let Some(kind) = context.heap.class_builtin(class) {
+        return Some(PrebuiltClass::Builtin(kind));
+    }
+    context.modules.find(class).map(PrebuiltClass::Module)
+}
+
+fn write_prebuilt_class(writer: &mut Writer, prebuilt: PrebuiltClass) {
+    match prebuilt {
+        PrebuiltClass::PlatformPath(index) => {
+            writer.write_u8(CLASS_PLATFORM_PATH);
+            writer.write_u32(index);
+        }
+        PrebuiltClass::Builtin(kind) => {
             writer.write_u8(CLASS_BUILTIN);
             writer.write_u8(builtin_class_tag(kind));
         }
-        None => match context.modules.find(class) {
-            Some(ModuleClass::Root(module)) => {
-                writer.write_u8(CLASS_MODULE);
-                writer.write_u32(module);
-            }
-            Some(ModuleClass::Level { module, position }) => {
-                writer.write_u8(CLASS_MODULE_LEVEL);
-                writer.write_u32(module);
-                writer.write_u32(position);
-            }
-            None => {
-                writer.write_u8(CLASS_RECORD);
-                writer.write_u32(context.table.object_id(context.heap, class));
-            }
-        },
+        PrebuiltClass::Module(ModuleClass::Root(module)) => {
+            writer.write_u8(CLASS_MODULE);
+            writer.write_u32(module);
+        }
+        PrebuiltClass::Module(ModuleClass::Level { module, position }) => {
+            writer.write_u8(CLASS_MODULE_LEVEL);
+            writer.write_u32(module);
+            writer.write_u32(position);
+        }
     }
 }
 
