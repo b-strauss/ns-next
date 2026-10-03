@@ -22,12 +22,15 @@ use crate::types::*;
 use crate::Symbol;
 use std::rc::Rc;
 
+mod header;
 pub(crate) mod mark;
 mod object;
 mod records;
 mod tables;
 mod value;
 mod world;
+use header::Format;
+pub(crate) use header::IDENTITY_HASH_LIMIT;
 use object::{ClassData, ClosureData, Frame, FrameSlot, Object, ObjectData};
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
@@ -784,19 +787,26 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Draws the next number from the counter. Saturating, not wrapping and not
-    /// panicking: identity hashes are not required to be unique -- object
-    /// identity is the arena index (`ObjectReference::same`), never the hash --
-    /// so a world that exhausts the counter is better served by handing out a
-    /// shared `u32::MAX` than by aborting the process. Reachable in *one*
-    /// request once `image::load` has set the counter from a file:
-    /// `advance_identity_hash_past` puts it wherever the image's maximum says.
-    /// Never answers 0, which means "not assigned": the counter starts at 1 and
-    /// only moves up.
+    /// Draws the next number from the counter, which wraps from the widest
+    /// hash the header word holds back to 1. Hashes are therefore not
+    /// unique once the counter has wrapped, which a hash need not be:
+    /// object identity is the arena index (`ObjectReference::same`), never
+    /// the hash (`docs/design/object-model.md`, "The identity hash is 22
+    /// bits wide"). Never answers 0, which means "not assigned".
     fn allocate_identity_hash(&mut self) -> u32 {
         let hash = self.next_identity_hash;
-        self.next_identity_hash = self.next_identity_hash.saturating_add(1);
+        self.next_identity_hash = Self::identity_hash_after(hash);
         hash
+    }
+
+    /// The hash the counter draws after `hash`: the next one, or 1 past the
+    /// widest.
+    fn identity_hash_after(hash: u32) -> u32 {
+        if hash + 1 == IDENTITY_HASH_LIMIT {
+            1
+        } else {
+            hash + 1
+        }
     }
 
     /// The number the next identity hash will be, for a caller that must
@@ -808,12 +818,17 @@ impl<'gc> Heap<'gc> {
         self.next_identity_hash
     }
 
-    /// Moves the counter past everything an image brought with it. Never
-    /// moves it backwards -- a lower maximum from a second load would
-    /// otherwise let a fresh allocation collide with a decoded object.
+    /// Moves the counter past everything an image brought with it, so that
+    /// a fresh hash does not repeat a decoded object's until the counter
+    /// wraps -- after which hashes are not unique, which a hash need not be
+    /// (`allocate_identity_hash`). Never moves it backwards: a lower maximum
+    /// from a second load would otherwise repeat hashes the counter has
+    /// already handed out. `max` fits the header word: the decoder refuses
+    /// a wider hash (`DecodeError::IdentityHashTooWide`).
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
+        debug_assert!(max < IDENTITY_HASH_LIMIT);
         if self.next_identity_hash <= max {
-            self.next_identity_hash = max.saturating_add(1);
+            self.next_identity_hash = Self::identity_hash_after(max);
         }
     }
 
@@ -835,12 +850,7 @@ impl<'gc> Heap<'gc> {
         data: ObjectData<'gc>,
     ) -> ObjectReference<'gc> {
         let dispatch_id = self.header_dispatch_id(class);
-        self.push_object(Object {
-            class,
-            identity_hash: 0,
-            dispatch_id,
-            data,
-        })
+        self.push_object(Object::new(class, dispatch_id, 0, data))
     }
 
     /// An instance of `class` with `field_count` fields, every one nil.
@@ -995,12 +1005,7 @@ impl<'gc> Heap<'gc> {
             ObjectData::Class(own) => own.dispatch_id,
             _ => DispatchId::NONE,
         };
-        self.objects.push(Object {
-            class: handle,
-            identity_hash: 0,
-            dispatch_id,
-            data,
-        });
+        self.objects.push(Object::new(handle, dispatch_id, 0, data));
         handle
     }
 
@@ -1072,12 +1077,8 @@ impl<'gc> Heap<'gc> {
                 ObjectData::Activation(frame)
             }
         };
-        self.objects[object.index as usize] = Object {
-            class,
-            identity_hash,
-            dispatch_id: DispatchId::NONE,
-            data,
-        };
+        self.objects[object.index as usize] =
+            Object::new(class, DispatchId::NONE, identity_hash, data);
     }
 
     /// Where every allocation but `allocate_self_referential` enters an
@@ -1367,7 +1368,7 @@ impl<'gc> Heap<'gc> {
     /// stored, so snapshotting a world does not change it.
     pub fn object_identity_hash(&self, object: ObjectReference<'gc>) -> u32 {
         self.check_object_origin(object);
-        self.objects[object.index as usize].identity_hash
+        self.objects[object.index as usize].header.identity_hash()
     }
 
     /// `object`'s identity hash, drawn from the counter the first time anything
@@ -1379,12 +1380,13 @@ impl<'gc> Heap<'gc> {
     /// add and remove allocations the same way (`docs/design/object-model.md`).
     pub fn object_ensure_identity_hash(&mut self, object: ObjectReference<'gc>) -> u32 {
         self.check_object_origin(object);
-        let stored = self.objects[object.index as usize].identity_hash;
+        let stored = self.objects[object.index as usize].header.identity_hash();
         if stored != 0 {
             return stored;
         }
         let hash = self.allocate_identity_hash();
-        self.objects[object.index as usize].identity_hash = hash;
+        let entry = &mut self.objects[object.index as usize];
+        entry.header = entry.header.with_identity_hash(hash);
         hash
     }
 
@@ -1419,9 +1421,9 @@ impl<'gc> Heap<'gc> {
     /// platform path names -- none of them a record, so nothing else could
     /// restore what the image remembered for one -- and `tests/image.rs`'s
     /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating`,
-    /// which forces a live object's hash to one below the ceiling by hand,
-    /// the only way to reach `advance_identity_hash_past`'s overflow guard
-    /// without actually hashing four billion objects first.
+    /// which forces a live object's hash to the widest the header holds by
+    /// hand, the only way to reach `advance_identity_hash_past`'s wrap
+    /// without actually hashing four million objects first.
     ///
     /// Calling this on anything else is a raw, unchecked overwrite of the one
     /// value identity-keyed lookups, `become:` and a loaded image's roots all
@@ -1430,7 +1432,9 @@ impl<'gc> Heap<'gc> {
     /// silently breaks, with nothing anywhere raising an error to say so.
     pub fn object_set_identity_hash(&mut self, object: ObjectReference<'gc>, hash: u32) {
         self.check_object_origin(object);
-        self.objects[object.index as usize].identity_hash = hash;
+        debug_assert!(hash < IDENTITY_HASH_LIMIT);
+        let entry = &mut self.objects[object.index as usize];
+        entry.header = entry.header.with_identity_hash(hash);
     }
 
     pub fn object_class(&self, object: ObjectReference<'gc>) -> ClassReference<'gc> {
@@ -1458,10 +1462,7 @@ impl<'gc> Heap<'gc> {
 
     pub fn is_class(&self, object: ObjectReference<'gc>) -> bool {
         self.check_object_origin(object);
-        matches!(
-            self.objects[object.index as usize].data,
-            ObjectData::Class(_)
-        )
+        self.objects[object.index as usize].header.format() == Format::Class
     }
 
     pub fn array_element_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
@@ -2347,12 +2348,12 @@ impl<'gc> Heap<'gc> {
         self.check_object_origin(object);
         let entry = &self.objects[object.index as usize];
         debug_assert_eq!(
-            entry.dispatch_id,
+            entry.header.guard(),
             self.header_dispatch_id(entry.class),
             "an object's dispatch id went stale: something changed its class's \
              application without restamping it"
         );
-        entry.dispatch_id
+        entry.header.guard()
     }
 
     /// `class`'s ids, or `NONE` when it is not a class object: the key of a
@@ -2386,16 +2387,13 @@ impl<'gc> Heap<'gc> {
     ) -> bool {
         self.check_object_origin(object);
         self.check_object_origin(class);
-        if !matches!(
-            self.objects[class.index as usize].data,
-            ObjectData::Class(_)
-        ) {
+        if !self.is_class(class) {
             return false;
         }
         let dispatch_id = self.header_dispatch_id(class);
         let entry = &mut self.objects[object.index as usize];
         entry.class = class;
-        entry.dispatch_id = dispatch_id;
+        entry.header = entry.header.with_guard(dispatch_id);
         true
     }
 
@@ -2533,7 +2531,8 @@ impl<'gc> Heap<'gc> {
             let entry_class = self.objects[index].class;
             if entry_class.index == class.index {
                 let dispatch_id = self.header_dispatch_id(entry_class);
-                self.objects[index].dispatch_id = dispatch_id;
+                let entry = &mut self.objects[index];
+                entry.header = entry.header.with_guard(dispatch_id);
             }
         }
         true
@@ -2563,9 +2562,10 @@ impl<'gc> Heap<'gc> {
         // header is its metaclass record, whose application may not be
         // installed yet; `stamp_dispatch_ids` restamps every decoded object
         // once all of them are.
-        let header = entry.class;
-        let dispatch_id = self.header_dispatch_id(header);
-        self.objects[class.index as usize].dispatch_id = dispatch_id;
+        let header_class = entry.class;
+        let dispatch_id = self.header_dispatch_id(header_class);
+        let entry = &mut self.objects[class.index as usize];
+        entry.header = entry.header.with_guard(dispatch_id);
         true
     }
 
@@ -2575,9 +2575,10 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn stamp_dispatch_ids(&mut self, objects: &[ObjectReference<'gc>]) {
         for object in objects {
             self.check_object_origin(*object);
-            let entry = &self.objects[object.index as usize];
-            let dispatch_id = self.header_dispatch_id(entry.class);
-            self.objects[object.index as usize].dispatch_id = dispatch_id;
+            let class = self.objects[object.index as usize].class;
+            let dispatch_id = self.header_dispatch_id(class);
+            let entry = &mut self.objects[object.index as usize];
+            entry.header = entry.header.with_guard(dispatch_id);
         }
     }
 
@@ -3912,6 +3913,51 @@ mod tests {
     }
 
     #[test]
+    fn the_identity_hash_counter_wraps_within_twenty_two_bits_and_skips_zero() {
+        let mut heap = Heap::new();
+        heap.next_identity_hash = IDENTITY_HASH_LIMIT - 1;
+        assert_eq!(heap.allocate_identity_hash(), IDENTITY_HASH_LIMIT - 1);
+        assert_eq!(heap.allocate_identity_hash(), 1);
+        assert_eq!(heap.allocate_identity_hash(), 2);
+    }
+
+    #[test]
+    fn advancing_past_the_widest_hash_wraps_the_counter_to_one() {
+        let mut heap = Heap::new();
+        heap.advance_identity_hash_past(IDENTITY_HASH_LIMIT - 1);
+        assert_eq!(heap.allocate_identity_hash(), 1);
+    }
+
+    #[test]
+    fn an_object_header_records_its_format_and_size() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
+        let narrow = heap.allocate_object(
+            class,
+            ObjectData::String(crate::CodePoints::from("abcdefghi")),
+        );
+        let header = heap.objects[narrow.index as usize].header;
+        assert_eq!(header.format(), Format::Bytes);
+        assert_eq!(header.word_count(), 1 + 2, "nine bytes take two words");
+        let wide = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("€uro")));
+        let header = heap.objects[wide.index as usize].header;
+        assert_eq!(header.format(), Format::ThirtyTwoBit);
+        assert_eq!(header.word_count(), 1 + 2);
+        let array = heap.allocate_object(class, ObjectData::Array(vec![Word::NIL; 3]));
+        let header = heap.objects[array.index as usize].header;
+        assert_eq!(header.format(), Format::IndexablePointers);
+        assert_eq!(header.word_count(), 1 + 3);
+        let negative = heap.allocate_object(
+            class,
+            ObjectData::LargeInteger(crate::ArbitraryInteger::from_i128(-(1 << 100))),
+        );
+        let header = heap.objects[negative.index as usize].header;
+        assert_eq!(header.format(), Format::SixtyFourBit);
+        assert!(header.negative());
+        assert_eq!(header.word_count(), 1 + 2);
+    }
+
+    #[test]
     fn a_self_referential_class_is_its_own_class() {
         let mut heap = Heap::new();
         // A filler object first, so `class` does not land at index 0 -- an
@@ -4742,10 +4788,13 @@ mod tests {
     /// input" paragraph and `docs/design/memory.md` compute the decoder's
     /// placeholder-arena amplification from, so a change to `Object` that
     /// moves it fails here rather than leaving that figure silently wrong.
-    /// The header's dispatch id is paid for by boxing `ClassData`, and the
-    /// size stays at 56 rather than 48 because `ClosureData` -- an `Rc`, a
-    /// `Box<[Value]>`, a `FrameReference` and a `FeedbackBase`, 32 bytes --
-    /// is `ObjectData`'s largest payload; the eight-byte value left it at 56.
+    /// The class handle, the eight-byte header word and `ObjectData`, whose
+    /// largest payload is `ClosureData` -- an `Rc`, a `Box<[Value]>`, a
+    /// `FrameReference` and a `FeedbackBase`, 32 bytes; `ClassData` is boxed
+    /// so as not to be. The header word took the place of the separate
+    /// identity hash and dispatch id and left the size at 56. Task 12 of the
+    /// object-representation plan replaces this arena slot with the object's
+    /// words, and this pin with theirs.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {

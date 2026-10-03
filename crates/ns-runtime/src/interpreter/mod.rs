@@ -820,13 +820,10 @@ impl<'gc> Mutator<'gc> {
     /// After `image::load`: never hand out an identity hash a loaded object
     /// already carries (`docs/design/image-format.md`, "Sections").
     ///
-    /// `max < u32::MAX` is the caller's guarantee, and an enforced one:
-    /// `image::decode` refuses an image carrying `u32::MAX` outright
-    /// (`DecodeError::IdentityHashExhausted`), because there is no counter
-    /// value past it. That refusal is what keeps `Heap::advance_identity_hash_past`'s
-    /// `max.saturating_add(1)` in range; the counter's own saturation is what
-    /// keeps the *next* hash in range when the image's maximum is one below
-    /// the ceiling.
+    /// `max < IDENTITY_HASH_LIMIT` is the caller's guarantee, and an
+    /// enforced one: `image::decode` refuses a hash the header word cannot
+    /// hold (`DecodeError::IdentityHashTooWide`). Past the widest hash the
+    /// counter wraps to 1 (`Heap::advance_identity_hash_past`).
     pub(crate) fn advance_identity_hash_past(&mut self, max: u32) {
         self.heap.advance_identity_hash_past(max);
     }

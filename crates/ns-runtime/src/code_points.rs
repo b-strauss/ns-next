@@ -32,6 +32,12 @@ impl CodePoints {
         })
     }
 
+    /// Whether the elements are stored 32 bits each: some code point lies
+    /// past U+00FF. An object header's format records it.
+    pub(crate) fn is_wide(&self) -> bool {
+        matches!(self.0, Representation::Wide(_))
+    }
+
     pub fn size(&self) -> usize {
         match &self.0 {
             Representation::Narrow(bytes) => bytes.len(),

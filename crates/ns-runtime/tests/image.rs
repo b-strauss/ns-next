@@ -5474,36 +5474,32 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
 
 #[test]
 fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter() {
-    // `load` hands the maximum decoded hash to `advance_identity_hash_past`,
-    // which computes `max + 1`: an overflow panic under this workspace's dev
-    // profile, and a wrap to 0 -- so a collision with every loaded object --
-    // in release.
+    // The header word holds 22 bits of identity hash: a wider one would
+    // alias another object's hash, and `advance_identity_hash_past` could
+    // not place the counter past it.
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1, 0);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
-    writer.write_u32(u32::MAX); // identity hash, at the ceiling
+    writer.write_u32(1 << 22); // identity hash, at the ceiling
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("x");
     writer.write_u32(0); // no roots -- otherwise complete, so the hash is what
                          // the decoder rejects, not a truncation
     let bytes = writer.into_bytes();
     let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(error, decode::DecodeError::IdentityHashExhausted);
+    assert_eq!(error, decode::DecodeError::IdentityHashTooWide(1 << 22));
     assert_eq!(
         error.to_string(),
-        "an image object's identity hash is 4294967295, leaving no hash for a loaded world to allocate next"
+        "identity hash 4194304 does not fit the header word's 22 bits"
     );
 }
 
 #[test]
 fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
-    // The step the ceiling check alone does not cover: a maximum of
-    // `u32::MAX - 1` is a legal image, and it leaves the counter at
-    // `u32::MAX` -- where the counter's own `+= 1` would overflow on the
-    // very first hash assigned after the load. Saturating
-    // there costs a shared hash (identity is `Rc` identity, never the
-    // hash) instead of aborting the process.
+    // The widest legal hash leaves the counter at the ceiling, where the
+    // next hash drawn after the load wraps to 1: hashes need not be
+    // unique, since identity is the handle, never the hash.
     let source = indoc! {"
         class X = Object new (
         ) (
@@ -5516,7 +5512,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let instance_object = object(mutator.fetch(&instance));
         mutator
             .heap_mut()
-            .object_set_identity_hash(instance_object, u32::MAX - 1);
+            .object_set_identity_hash(instance_object, (1 << 22) - 1);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -5535,18 +5531,18 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let root_0 = mutator.fetch(&loaded.roots[0]);
         assert_eq!(
             mutator.heap().object_identity_hash(object(root_0)),
-            u32::MAX - 1,
+            (1 << 22) - 1,
             "the image's hash is preserved, not clamped"
         );
         let first = mutator.new_string("a".to_string());
         let second = mutator.new_string("b".to_string());
         let heap = mutator.heap_mut();
-        assert_eq!(heap.object_ensure_identity_hash(first), u32::MAX);
         assert_eq!(
-            heap.object_ensure_identity_hash(second),
-            u32::MAX,
-            "an exhausted counter shares its last hash instead of overflowing"
+            heap.object_ensure_identity_hash(first),
+            1,
+            "the counter wraps past the widest hash, skipping 0"
         );
+        assert_eq!(heap.object_ensure_identity_hash(second), 2);
     });
 }
 
@@ -5730,10 +5726,10 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
     writer.write_u32(1);
     writer.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
     writer.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
-    writer.write_u32(u32::MAX);
+    writer.write_u32(1 << 22);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::IdentityHashExhausted)
+        Err(decode::DecodeError::IdentityHashTooWide(1 << 22))
     );
 }
 

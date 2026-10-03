@@ -8,7 +8,9 @@
 
 use std::rc::Rc;
 
+use crate::heap::header::{Format, Header};
 use crate::heap::{ClassReference, FrameReference, ObjectReference, Word};
+use crate::mixin::DispatchId;
 use crate::trace::{trace_optional_object, trace_words, Trace, Tracer};
 use crate::types::{BuiltinClass, FrameKind, ValueClassRefusal};
 use crate::Symbol;
@@ -16,21 +18,42 @@ use crate::Symbol;
 #[derive(Debug, Clone)]
 pub(in crate::heap) struct Object<'gc> {
     pub(in crate::heap) class: ClassReference<'gc>,
-    /// 0 until something asks for it; then drawn from a monotonic counter
-    /// (`Heap::object_ensure_identity_hash`), so allocation order stays
-    /// unobservable. Never derived from the arena index, which a moving
-    /// collector or `become:` would change (liveness spec's stable-identity
-    /// constraint).
-    pub(in crate::heap) identity_hash: u32,
-    /// The id an inline cache guards this object's sends on
+    /// The guard an inline cache compares, the format, the identity hash and
+    /// the size (`header.rs` gives the layout).
+    ///
+    /// The guard is the id an inline cache guards this object's sends on
     /// (`docs/design/dispatch.md`, "The dispatch id"): its class's instances
     /// id -- a class object's class is its metaclass. A copy, so that a
     /// guard is one load and one compare rather than a walk to the class --
     /// which makes every place a class's application changes responsible for
     /// restamping it (`Heap::class_set_application`,
-    /// `Heap::stamp_dispatch_ids`). Not a handle; a move carries it along.
-    pub(in crate::heap) dispatch_id: crate::mixin::DispatchId,
+    /// `Heap::stamp_dispatch_ids`).
+    ///
+    /// The identity hash is 0 until something asks for it; then drawn from
+    /// a counter (`Heap::object_ensure_identity_hash`), so allocation order
+    /// stays unobservable. Never derived from the arena index, which a
+    /// moving collector or `become:` would change (liveness spec's
+    /// stable-identity constraint). Not a handle; a move carries it along.
+    pub(in crate::heap) header: Header,
     pub(in crate::heap) data: ObjectData<'gc>,
+}
+
+impl<'gc> Object<'gc> {
+    /// An object of `class` holding `data`, guarding on `guard`, with
+    /// `identity_hash` (0: none yet) and the format and size `data` has.
+    pub(in crate::heap) fn new(
+        class: ClassReference<'gc>,
+        guard: DispatchId,
+        identity_hash: u32,
+        data: ObjectData<'gc>,
+    ) -> Object<'gc> {
+        let header = data.header(guard).with_identity_hash(identity_hash);
+        Object {
+            class,
+            header,
+            data,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +84,60 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// 2^129. `Mutator::new_float` is the one way to make one and decides
     /// that, so each float has one representation. Holds no handle.
     Float(f64),
+}
+
+/// The units of a string's element width one word holds.
+const BYTES_PER_WORD: usize = 8;
+const THIRTY_TWO_BIT_UNITS_PER_WORD: usize = 2;
+/// A class object's words after its class word, in the layout road step 3
+/// gives it.
+const CLASS_WORDS: usize = 8;
+/// A closure's words before its copied values: its code, its captured
+/// frame and its feedback base.
+const CLOSURE_FIXED_WORDS: usize = 3;
+
+impl ObjectData<'_> {
+    /// The header an object holding this payload starts with: its format,
+    /// its size as the word layout of road step 3 stores it -- the class
+    /// word plus the payload's words -- and a `LargeInteger`'s sign.
+    fn header(&self, guard: DispatchId) -> Header {
+        let (format, unused, payload_words) = match self {
+            ObjectData::Instance(fields) => (Format::FixedPointers, 0, fields.len()),
+            ObjectData::Array(elements) => (Format::IndexablePointers, 0, elements.len()),
+            ObjectData::String(text) | ObjectData::Symbol(_, text) => {
+                let (format, per_word) = if text.is_wide() {
+                    (Format::ThirtyTwoBit, THIRTY_TWO_BIT_UNITS_PER_WORD)
+                } else {
+                    (Format::Bytes, BYTES_PER_WORD)
+                };
+                let units = text.size();
+                let words = units.div_ceil(per_word);
+                // Below `per_word`, which is at most 8.
+                let unused = u8::try_from(words * per_word - units).unwrap_or(0);
+                (format, unused, words)
+            }
+            ObjectData::Closure(closure) => (
+                Format::Closure,
+                0,
+                CLOSURE_FIXED_WORDS + closure.copied.len(),
+            ),
+            ObjectData::Class(_) => (Format::Class, 0, CLASS_WORDS),
+            // A frame object from the frame's own representation on; one
+            // word, the frame's handle, until then.
+            ObjectData::Activation(_) => (Format::FixedPointers, 0, 1),
+            ObjectData::LargeInteger(integer) => {
+                let header = Header::new(
+                    guard,
+                    Format::SixtyFourBit,
+                    0,
+                    1 + integer.magnitude().len(),
+                );
+                return header.with_negative(integer.is_negative());
+            }
+            ObjectData::Float(_) => (Format::SixtyFourBit, 0, 1),
+        };
+        Header::new(guard, format, unused, 1 + payload_words)
+    }
 }
 
 /// A class object is *identity*; everything a class object can *do* lives
@@ -112,7 +189,7 @@ pub(in crate::heap) struct ClassData<'gc> {
     /// header class (`Heap::class_metaclass`).
     pub(in crate::heap) this_class: Option<ClassReference<'gc>>,
     /// A copy of `application.dispatch_ids.instances`. A cache's guard does
-    /// not read it (it reads `Object::dispatch_id` in the header, through
+    /// not read it (it reads the guard in `Object::header`, through
     /// `Heap::dispatch_id`); this is where allocating an instance of this
     /// class, `Heap::class_dispatch_ids` and restamping
     /// (`Heap::header_dispatch_id`) read the instances id from. Kept equal to
@@ -120,7 +197,7 @@ pub(in crate::heap) struct ClassData<'gc> {
     /// `Heap::class_install_application`, the only ways either changes. A
     /// class object's own id is not this one but its metaclass's, read off
     /// its header like any object's.
-    pub(in crate::heap) dispatch_id: crate::mixin::DispatchId,
+    pub(in crate::heap) dispatch_id: DispatchId,
     /// For a level a mixin application added (`newspeak-spec.pdf` §6.2), the
     /// `<:` clause that added it -- which of the applying declaration's
     /// clauses, and so the factory message that declaration wrote for it and
@@ -255,8 +332,7 @@ impl Trace for Object<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Object {
             class,
-            identity_hash: _,
-            dispatch_id: _,
+            header: _, // not a handle
             data,
         } = self;
         tracer.object(class);

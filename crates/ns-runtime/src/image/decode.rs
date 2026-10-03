@@ -11,7 +11,7 @@ use crate::bytecode::{
     CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
     IntegerOperation, Literal,
 };
-use crate::heap::{FrameRecord, Heap, NewClass, NewClosure, Record};
+use crate::heap::{FrameRecord, Heap, NewClass, NewClosure, Record, IDENTITY_HASH_LIMIT};
 use crate::interpreter::instantiate;
 use crate::types::{
     fits_small_integer, BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference,
@@ -380,15 +380,10 @@ pub enum DecodeError {
     /// its own body is lexically nested in -- the link every
     /// `LoadOuterLocal`/`StoreOuterLocal` bound rests on.
     CapturedFrameMismatch,
-    /// An object's identity hash is `u32::MAX`, so there is no hash a
-    /// loaded world could allocate *next*:
-    /// `Mutator::advance_identity_hash_past` would have to compute
-    /// `u32::MAX + 1` (an overflow panic in this workspace's dev profile,
-    /// and a wrap to 0 -- colliding with the loaded objects it exists to
-    /// avoid -- in release), and even saturating it would only move the
-    /// overflow to the counter's own `+= 1`. Refusing the image
-    /// is the only answer that neither panics nor collides.
-    IdentityHashExhausted,
+    /// An identity hash the header word cannot hold: it is 22 bits wide.
+    /// Refusing the image is the only answer that does not alias the hash
+    /// to another one.
+    IdentityHashTooWide(u32),
     /// A tag-named hash of 0. 0 means "not yet assigned", which the encoder
     /// expresses by leaving the object out; accepting a 0 would give one world
     /// two encodings.
@@ -680,10 +675,9 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a decoded closure's captured frame does not run the body its own body is nested in"
             ),
-            DecodeError::IdentityHashExhausted => write!(
+            DecodeError::IdentityHashTooWide(hash) => write!(
                 f,
-                "an image object's identity hash is {}, leaving no hash for a loaded world to allocate next",
-                u32::MAX
+                "identity hash {hash} does not fit the header word's 22 bits"
             ),
             DecodeError::UnassignedTagNamedHash => write!(
                 f,
@@ -3305,11 +3299,11 @@ pub fn decode_graph_section<'gc>(
             platform_path: class_named_by_path,
         } = decode_object_header(reader, context, &tables)?;
         let identity_hash = reader.read_u32()?;
-        // Checked here, the one place identity hashes are read: `load`
-        // hands the maximum straight to `advance_identity_hash_past`, which
-        // must be able to allocate past it.
-        if identity_hash == u32::MAX {
-            return Err(DecodeError::IdentityHashExhausted);
+        // Checked here, the one place an object record's hash is read: the
+        // header word holds 22 bits, and `load` hands the maximum straight
+        // to `advance_identity_hash_past`.
+        if identity_hash >= IDENTITY_HASH_LIMIT {
+            return Err(DecodeError::IdentityHashTooWide(identity_hash));
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
         let body = reader.read_u8()?;
@@ -3531,8 +3525,8 @@ pub fn decode_tag_named_hashes<'gc>(
         if hash == 0 {
             return Err(DecodeError::UnassignedTagNamedHash);
         }
-        if hash == u32::MAX {
-            return Err(DecodeError::IdentityHashExhausted);
+        if hash >= IDENTITY_HASH_LIMIT {
+            return Err(DecodeError::IdentityHashTooWide(hash));
         }
         if restored.iter().any(|seen| seen.same(target)) {
             return Err(DecodeError::DuplicateTagNamedHash);

@@ -67,11 +67,19 @@ impl DispatchId {
         DispatchId(value)
     }
 
-    /// The id as the header word's low 22 bits hold it.
-    // Read by the header word from the next task on; only tests use it until then.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// The id as the header word's low 22 bits hold it: an object's guard
+    /// lives in its header, so that a cache's check is one load and one
+    /// compare (`heap::header`).
     pub(crate) const fn bits(self) -> u32 {
         self.0
+    }
+
+    /// The id a header word's low 22 bits hold -- the header's reader, and
+    /// nothing else: unlike `from_counter` it accepts the reserved values,
+    /// since a header carries `NONE` until it is stamped.
+    pub(crate) fn from_bits(bits: u32) -> DispatchId {
+        debug_assert!(bits < DispatchId::LIMIT);
+        DispatchId(bits)
     }
 }
 
