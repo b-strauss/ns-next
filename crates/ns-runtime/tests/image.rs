@@ -6918,6 +6918,22 @@ fn inspect_marks_a_module_class_tag_past_the_modules() {
     );
 }
 
+/// No image reaches this refusal today -- the root rule admits only `Object`
+/// and `Value`, which every bootstrap applies -- so its report is pinned
+/// here, where a malformed message would otherwise go unseen.
+#[test]
+fn a_root_builtin_without_an_application_names_its_module_and_builtin() {
+    let error = decode::DecodeError::RootBuiltinWithoutApplication {
+        module: 2,
+        builtin: BuiltinClass::Value,
+    };
+    assert_eq!(
+        error.to_string(),
+        "the root class of the image's module 2 builds on the builtin Value, which this build \
+         has no behaviour for"
+    );
+}
+
 #[test]
 fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();

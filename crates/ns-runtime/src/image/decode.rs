@@ -588,7 +588,8 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::RootBuiltinWithoutApplication { module, builtin } => write!(
                 f,
-                "the root class of the image's module {module} builds on the builtin {builtin:?},                  which this build has no behaviour for"
+                "the root class of the image's module {module} builds on the builtin {builtin:?}, \
+                 which this build has no behaviour for"
             ),
             DecodeError::UnknownSelector(selector) => write!(
                 f,
