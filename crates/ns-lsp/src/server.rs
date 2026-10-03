@@ -8,14 +8,13 @@ use std::error::Error;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument,
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, LogMessage,
     Notification as NotificationKind, PublishDiagnostics,
 };
 use lsp_types::request::{Request as RequestKind, SemanticTokensFullRequest};
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, PublishDiagnosticsParams, Range, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
+    Diagnostic, DiagnosticSeverity, LogMessageParams, MessageType, PublishDiagnosticsParams, Range,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
     TextDocumentSyncKind, Uri,
 };
@@ -79,8 +78,8 @@ pub fn run(connection: Connection) -> ServerResult<()> {
                 let response = answer(&documents, request);
                 connection.sender.send(Message::Response(response))?;
             }
-            Message::Notification(notification) => {
-                if let Some(uri) = apply(&mut documents, notification)? {
+            Message::Notification(notification) => match apply(&mut documents, notification) {
+                Ok(Some(uri)) => {
                     let params = diagnostics_of(&uri, documents.get(uri.as_str()));
                     connection
                         .sender
@@ -89,7 +88,9 @@ pub fn run(connection: Connection) -> ServerResult<()> {
                             params,
                         )))?;
                 }
-            }
+                Ok(None) => {}
+                Err(message) => report_malformed(&connection, message)?,
+            },
             Message::Response(_) => {}
         }
     }
@@ -136,26 +137,16 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
 }
 
 /// Applies a document notification; answers the URI whose diagnostics must be
-/// published, or `None` for a notification that changes nothing, including
-/// one whose params do not match the schema. A notification carries no id to
-/// answer an error to and no client-visible response at all, unlike a
-/// request, so a malformed one is logged to stderr and passed over rather
-/// than ending the server -- the one message lost is better than every
-/// document already open going dark.
+/// published, or `None` for a notification that changes nothing. A
+/// notification whose params do not match the schema is answered as `Err`
+/// with what was wrong, for `report_malformed`, and changes nothing.
 fn apply(
     documents: &mut HashMap<String, Document>,
     notification: Notification,
-) -> ServerResult<Option<Uri>> {
+) -> Result<Option<Uri>, String> {
     match notification.method.as_str() {
         DidOpenTextDocument::METHOD => {
-            let params: DidOpenTextDocumentParams =
-                match serde_json::from_value(notification.params) {
-                    Ok(params) => params,
-                    Err(error) => {
-                        eprintln!("{}: {error}", DidOpenTextDocument::METHOD);
-                        return Ok(None);
-                    }
-                };
+            let params = params_of::<DidOpenTextDocument>(notification)?;
             let uri = params.text_document.uri;
             documents.insert(
                 uri.as_str().to_string(),
@@ -164,14 +155,7 @@ fn apply(
             Ok(Some(uri))
         }
         DidChangeTextDocument::METHOD => {
-            let params: DidChangeTextDocumentParams =
-                match serde_json::from_value(notification.params) {
-                    Ok(params) => params,
-                    Err(error) => {
-                        eprintln!("{}: {error}", DidChangeTextDocument::METHOD);
-                        return Ok(None);
-                    }
-                };
+            let params = params_of::<DidChangeTextDocument>(notification)?;
             let uri = params.text_document.uri;
             // Full synchronisation: the last change carries the whole text.
             let Some(change) = params.content_changes.into_iter().last() else {
@@ -181,20 +165,42 @@ fn apply(
             Ok(Some(uri))
         }
         DidCloseTextDocument::METHOD => {
-            let params: DidCloseTextDocumentParams =
-                match serde_json::from_value(notification.params) {
-                    Ok(params) => params,
-                    Err(error) => {
-                        eprintln!("{}: {error}", DidCloseTextDocument::METHOD);
-                        return Ok(None);
-                    }
-                };
+            let params = params_of::<DidCloseTextDocument>(notification)?;
             let uri = params.text_document.uri;
             documents.remove(uri.as_str());
             Ok(Some(uri))
         }
         _ => Ok(None),
     }
+}
+
+/// A notification's params as the schema of `Kind` has them, or what was
+/// wrong with them.
+fn params_of<Kind: NotificationKind>(notification: Notification) -> Result<Kind::Params, String> {
+    serde_json::from_value(notification.params)
+        .map_err(|error| format!("malformed {} notification: {error}", Kind::METHOD))
+}
+
+/// Reports a malformed notification to stderr and to the client. A
+/// notification has no id and so no response an error could travel in
+/// (LSP's base protocol), so the client hears of it through
+/// `window/logMessage` at type `Error`: it lands in the client's log for the
+/// server, beside the stderr line, without interrupting the user the way
+/// `window/showMessage` would for what is a defect of the client, not of the
+/// user's text. The server passes over the message rather than ending -- the
+/// one message lost is better than every document already open going dark.
+fn report_malformed(connection: &Connection, message: String) -> ServerResult<()> {
+    eprintln!("{message}");
+    connection
+        .sender
+        .send(Message::Notification(Notification::new(
+            LogMessage::METHOD.to_string(),
+            LogMessageParams {
+                typ: MessageType::ERROR,
+                message,
+            },
+        )))?;
+    Ok(())
 }
 
 /// The diagnostics to publish for `uri`: its findings, or none once closed.

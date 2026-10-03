@@ -164,7 +164,7 @@ fn an_editor_session() {
 }
 
 #[test]
-fn a_malformed_notification_is_logged_and_the_server_keeps_serving() {
+fn a_malformed_notification_is_reported_and_the_server_keeps_serving() {
     let (server, client) = Connection::memory();
     let server_thread = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
@@ -179,6 +179,19 @@ fn a_malformed_notification_is_logged_and_the_server_keeps_serving() {
         &client,
         "textDocument/didOpen",
         json!({ "textDocument": "not an object" }),
+    );
+
+    // A notification has no response; the client hears of it as an error in
+    // its log for the server.
+    let Message::Notification(report) = receive(&client) else {
+        panic!("expected a notification");
+    };
+    assert_eq!(report.method, "window/logMessage");
+    assert_eq!(report.params["type"], json!(1), "MessageType::ERROR");
+    let message = report.params["message"].as_str().expect("a message");
+    assert!(
+        message.starts_with("malformed textDocument/didOpen notification: "),
+        "{message}"
     );
 
     // The server must still be alive and answering: a request right after

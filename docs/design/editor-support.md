@@ -133,7 +133,12 @@ Modules:
 **Protocol surface.** `initialize`, `textDocument/didOpen`, `didChange` (full
 text on every change), `didClose`, `publishDiagnostics` (push, supported by
 the platform since 2023.2), `textDocument/semanticTokens/full`, `shutdown`
-and `exit`. Nothing else.
+and `exit`. Nothing else. A request the server does not implement is answered
+`MethodNotFound`. A document notification whose params do not match the
+schema has no response to carry an error, so the server writes it to stderr
+and sends the client a `window/logMessage` of type `Error` -- the client's
+log for the server, not a `window/showMessage` popup, since the defect is the
+client's, not the user's text -- and keeps serving the documents already open.
 
 ### The resolver entry
 
@@ -248,7 +253,9 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
   since every prefix of every corpus module is quadratic in its size;
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
   `initialize`, `didOpen`, the expected `publishDiagnostics`,
-  `semanticTokens/full`, `shutdown`.
+  `semanticTokens/full`, `shutdown`; a malformed notification, reported as a
+  `window/logMessage` error while the next request is still answered; an
+  unknown request, answered `MethodNotFound`.
 
 ## The plugin, `editors/jetbrains/`
 
@@ -484,8 +491,6 @@ and resolves cleanly in a JetBrains IDE today.
 - **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
   errors, so a lexer or parser warning on a module that parses is not shown.
   None exists today.
-- **A malformed notification** is logged to stderr and ignored, so the client
-  sees no error for it.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file.

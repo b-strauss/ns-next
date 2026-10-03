@@ -772,8 +772,7 @@ Small, deliberately left, none affecting an outcome.
   building levels. Removing it is a design point, not a clean-up: the
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
-- Editor: a malformed LSP notification is logged
-  and ignored; the platform-directory mapping exists twice (`build.gradle.kts`'s
+- Editor: the platform-directory mapping exists twice (`build.gradle.kts`'s
   `hostPlatform` and `plugin.xml`). [editor-support.md](design/editor-support.md),
   "Known gaps".
 
