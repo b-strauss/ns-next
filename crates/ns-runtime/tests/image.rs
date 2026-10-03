@@ -6839,15 +6839,22 @@ fn graph_section_start(bytes: &[u8]) -> usize {
         .start
 }
 
-/// Rewrites the first occurrence of `pattern` in the graph section to
+/// Rewrites the one occurrence of `pattern` in the graph section to
 /// `replacement`.
 fn rewrite_in_graph(bytes: &mut [u8], pattern: &[u8], replacement: &[u8]) {
     let start = graph_section_start(bytes);
-    let position = start
-        + bytes[start..]
-            .windows(pattern.len())
-            .position(|window| window == pattern)
-            .expect("the pattern in the graph section");
+    let occurrences: Vec<usize> = bytes[start..]
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, window)| *window == pattern)
+        .map(|(offset, _)| start + offset)
+        .collect();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "the pattern must occur exactly once in the graph section"
+    );
+    let position = occurrences[0];
     bytes[position..position + replacement.len()].copy_from_slice(replacement);
 }
 
