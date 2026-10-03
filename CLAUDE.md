@@ -116,8 +116,9 @@ would let a stale artifact decode into a different, valid program.
 move.** Never hold an `ObjectReference`, `ClassReference`, `FrameReference` or
 `ActivationReference` across the death of its interpreter — the index answers a
 different, valid object in another heap. Reach the real `Heap` (a `&Heap`
-parameter, or read through `interpreter.enter` while it lives, as `disasm` does).
-A host keeps a value across a run only as a `Root`. The debug-only origin guard,
+parameter, or read through `interpreter.enter` while it lives); a reader of
+compiled code alone takes the mixin, which holds no handle (`compiler.md`,
+"Readers of compiled code take the mixin"). A host keeps a value across a run only as a `Root`. The debug-only origin guard,
 move epochs and the stress modes catch mistakes; a release build does not. A new
 field holding a handle or a stored `Word` needs its `Trace` impl (`memory.md`, "A
 handle is arena-relative", "The move stress mode").
