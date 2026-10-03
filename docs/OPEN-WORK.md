@@ -534,7 +534,10 @@ value objects are never copied across an actor boundary (§3.1.1).
   the 64-bit handle alone
   measured 0.9% to 9.9% slower on every source. Whether road steps 3a and 3b
   together are level with `d0e8b08`, road step 3a's base, was not measured:
-  each was measured against its own base in its own sitting.
+  each was measured against its own base in its own sitting. The first
+  candidates to profile: `Heap::set_pointer_word`, still outlined (as on
+  master), and the extra zero test `Value::as_object` and `Value::kind`
+  pay since a handle is a `NonZeroU64`.
   [execution.md](design/execution.md), "What the object space moved",
   "What the object representation moved".
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
@@ -733,6 +736,13 @@ text and `to:by:do:`'s zero step.
   no frame; and the assertion that the largest builtin tag packs into a
   non-negative clause, which holds only while `BuiltinClass::ALL` has fewer
   than 32 entries.
+- `Reservation::prefix` growing back after `protect(ReadWrite)` restores a
+  no-access range (`crates/ns-memory/src/lib.rs`).
+- `pointer_ranges`' test (`heap/object.rs`) has no block shorter than its
+  format expects (the clamp) and no `IndexablePointers` case.
+- The decoder's refusal of a wrongly sized class placeholder (the
+  `DecodeError` at `image/decode.rs`'s `fill_placeholder_class` call): no
+  valid first pass reaches it; the heap-level test pins the contract.
 - `fresh_range` refusing a range past `u32`, and a decoded closure's base
   write-back in isolation (`interpreter/inline_cache.rs`).
 - A `^` aimed at a superclass clause's own activation (needs a crafted image).
