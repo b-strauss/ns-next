@@ -274,6 +274,11 @@ impl Reservation {
     /// the heap's space, read on every access, so this is one comparison
     /// against the end the page map last reported rather than a walk of it.
     /// `end` must be a multiple of 8; 0 lends an empty slice.
+    ///
+    /// Inlined, with `prefix_mut` and `check_prefix`: every object access of
+    /// the heap goes through one of them, and a call there would outweigh the
+    /// comparison it makes.
+    #[inline]
     pub fn prefix(&self, end: usize) -> Option<&[u64]> {
         self.check_prefix(end)?;
         // SAFETY: `check_prefix` found `0..end` inside the committed read-write
@@ -284,12 +289,14 @@ impl Reservation {
     }
 
     /// As `prefix`, mutably.
+    #[inline]
     pub fn prefix_mut(&mut self, end: usize) -> Option<&mut [u64]> {
         self.check_prefix(end)?;
         // SAFETY: as for `prefix`, and `&mut self` makes the slice unique.
         Some(unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), end / 8) })
     }
 
+    #[inline]
     fn check_prefix(&self, end: usize) -> Option<()> {
         (end.is_multiple_of(8) && end <= self.accessible_prefix && end <= isize::MAX as usize)
             .then_some(())

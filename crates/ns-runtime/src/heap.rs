@@ -1901,14 +1901,16 @@ impl<'gc> Heap<'gc> {
     ///
     /// Inlined, and the block found once for both the format check and the
     /// words: every field, slot, closure and class-field access runs it.
-    #[inline]
+    /// Always inlined: once the space made `block` larger, LLVM outlined it,
+    /// and the call alone measured 5-8% of a benchmark's samples.
+    #[inline(always)]
     fn pointer_words(&self, object: ObjectReference<'gc>, format: Format) -> Option<&[u64]> {
         let block = self.block(object);
         (Header(block[HEADER]).format() == format).then(|| &block[FIELDS..])
     }
 
-    /// `pointer_words`, for a write.
-    #[inline]
+    /// `pointer_words`, for a write; always inlined for the same reason.
+    #[inline(always)]
     fn pointer_words_mut(
         &mut self,
         object: ObjectReference<'gc>,
@@ -1923,7 +1925,10 @@ impl<'gc> Heap<'gc> {
 
     /// The pointer word at `index` of a word-format object of `format`;
     /// `None` for any other object or past its words.
-    #[inline]
+    ///
+    /// Always inlined: every instance-field read and the class's builtin
+    /// field a send re-reads on each cache hit come through here.
+    #[inline(always)]
     fn pointer_word(
         &self,
         object: ObjectReference<'gc>,
