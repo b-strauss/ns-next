@@ -55,10 +55,10 @@ project, verified by
 benchmarks").
 
 Read `docs/design/README.md` first — it maps the living design documents and says
-how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology;
-its "Where the next session starts" names the next piece of work.
-`docs/OPEN-WORK.md` lists everything still to be done: remove an item when work
-closes it, add one when a review, measurement or design leaves something open.
+how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology.
+`docs/OPEN-WORK.md`'s "Next" names the next piece of work, and the rest of it
+lists everything still to be done: remove an item when work closes it, add one
+when a review, measurement or design leaves something open.
 
 ## Invariants that are easy to break
 

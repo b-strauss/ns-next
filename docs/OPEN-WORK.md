@@ -19,10 +19,29 @@ old space; a copying scavenger with age-based tenuring; a remembered bit and
 set behind the store accessors; large objects allocated old; and a load
 that tenures before the decoder allocates ([memory.md](design/memory.md),
 "Planned: generations"; [image-format.md](design/image-format.md),
-"Planned: the image under generations"). Its design is in those sections;
-it has no implementation plan yet, so the next session writes one.
-Everything before it on the road is built, road step 3b, the object space,
-included.
+"Planned: the image under generations"), with the mark-compact of the
+object space as the old space's collector. Its design is in those sections;
+it has no implementation plan yet, so the next session starts by writing
+one. Everything before it on the road is built: road step 2's eight-byte
+value, the compact instruction encoding, road step 3a, the object
+representation, and road step 3b, the object space
+([memory.md](design/memory.md), "The object space"), which put every
+object -- a header word, a class word and its fields -- in one space in
+`ns-memory`'s reservation, named by a 64-bit byte offset. Each has its
+entry in [PROGRESS.md](PROGRESS.md); the whole road is below.
+
+**Measuring.** The protocol is [execution.md](design/execution.md)'s "What
+removing the re-entries moved"; every compared binary, the current tree
+included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
+"Working in this repository"). Four of the eight measurement sources are
+goldens under `goldens/tool/bench/`; the other four -- `bench_new.ns`,
+`bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
+and must be written out from [execution.md](design/execution.md), "What
+spec-conformant lookup moved", never reconstructed from a prose
+description: a reconstruction runs and prints the right answer while
+measuring something else. The Are We Fast Yet benchmarks are in the tree
+and measured as [execution.md](design/execution.md), "The Are We Fast Yet
+benchmarks", describes.
 
 ## The road to a high-performance VM
 

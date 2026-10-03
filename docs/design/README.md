@@ -396,10 +396,11 @@ observe there is no answer to record that would not be invented.
 - **`CLAUDE.md`** — the invariants that are easy to break, each of which has
   already produced a real defect. Load-bearing for anyone working in the
   repository; the reasoning behind each one is in these documents.
-- **`docs/PROGRESS.md`** — milestone chronology: what was completed and when,
-  and, under "Where the next session starts", the next piece of work. These
-  documents describe the design; that one records the milestones.
-- **`docs/OPEN-WORK.md`** — everything still to be done: planned features,
+- **`docs/PROGRESS.md`** — milestone chronology: what was completed and
+  when. These documents describe the design; that one records the
+  milestones.
+- **`docs/OPEN-WORK.md`** — under "Next", the next piece of work; then
+  everything still to be done: planned features,
   specification deviations, open design questions, unexplained measurements
   and known gaps, each with where it is explained.
 - **`docs/superpowers/plans/`** — implementation plans, dated. A plan is an
