@@ -9,9 +9,9 @@
 use std::rc::Rc;
 
 use crate::heap::header::{Format, Header};
-use crate::heap::{ClassReference, FrameReference, ObjectReference, Word};
+use crate::heap::{ClassReference, ObjectReference, Word};
 use crate::mixin::DispatchId;
-use crate::trace::{trace_optional_object, trace_words, Trace, Tracer};
+use crate::trace::{trace_optional_object, Trace, Tracer};
 use crate::types::{BuiltinClass, ValueClassRefusal};
 
 #[derive(Debug, Clone)]
@@ -67,7 +67,8 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// tells those two apart, as Spur's does; `Bytes` and `ThirtyTwoBit`, a
     /// String's or a Symbol's code points packed little-endian, eight or two
     /// to a word (`PackedString`), the class's builtin again telling the
-    /// two apart; `Frame`, a reified activation (`ObjectData::frame`).
+    /// two apart; `Frame`, a reified activation (`ObjectData::frame`);
+    /// `Closure`, a block closure (`ObjectData::closure`).
     ///
     /// `format`, `unused` and `negative` are what `Object::new` derives the
     /// header from; once built, readers ask the header. Build one through
@@ -86,7 +87,6 @@ pub(in crate::heap) enum ObjectData<'gc> {
         negative: bool,
         words: Box<[u64]>,
     },
-    Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
     /// "The dispatch id").
@@ -116,6 +116,15 @@ impl ObjectData<'_> {
                 .into_iter()
                 .chain(std::iter::repeat_n(Word::NIL, register_count)),
         )
+    }
+
+    /// A block closure's payload: `fields`, the fixed fields `closure_field`
+    /// names, then `copied`, each a stored word.
+    pub(in crate::heap) fn closure(
+        fields: [Word; closure_field::COUNT],
+        copied: impl IntoIterator<Item = Word>,
+    ) -> Self {
+        Self::pointers(Format::Closure, fields.into_iter().chain(copied))
     }
 
     fn pointers(format: Format, words: impl IntoIterator<Item = Word>) -> Self {
@@ -284,9 +293,6 @@ const THIRTY_TWO_BIT_UNITS_PER_WORD: usize = 2;
 /// A class object's words after its class word, in the layout road step 3
 /// gives it.
 const CLASS_WORDS: usize = 8;
-/// A closure's words before its copied values: its code, its captured
-/// frame and its feedback base.
-const CLOSURE_FIXED_WORDS: usize = 3;
 
 impl ObjectData<'_> {
     /// The header an object holding this payload starts with: its format,
@@ -303,11 +309,6 @@ impl ObjectData<'_> {
                 let header = Header::new(guard, *format, *unused, 1 + words.len());
                 return header.with_negative(*negative);
             }
-            ObjectData::Closure(closure) => (
-                Format::Closure,
-                0,
-                CLOSURE_FIXED_WORDS + closure.copied.len(),
-            ),
             ObjectData::Class(_) => (Format::Class, 0, CLASS_WORDS),
         };
         Header::new(guard, format, unused, 1 + payload_words)
@@ -426,40 +427,6 @@ impl<'gc> ClassData<'gc> {
     }
 }
 
-/// A block closure. Its compiled body is an `Rc` it shares with the
-/// `MakeClosure` instruction that made it -- the same for every closure one
-/// instruction makes -- and the frame it captured is its own. Stored inline
-/// in the closure object, never behind an `Rc`
-/// of its own: a handle lives only where the tracer can rewrite it in place
-/// (`docs/design/memory.md`, "What the collector traces"), so everything
-/// else that needs a closure -- an activation's `FrameKind`, a native
-/// loop's state, a decided `Step` -- names the closure object instead.
-///
-/// 32 bytes in a release build, which is what keeps an `Object` at 56 --
-/// this is `ObjectData`'s largest payload, and `heap.rs`'s
-/// `an_object_is_the_size_the_amplification_figure_assumes` pins the
-/// figure `CLAUDE.md`'s amplification paragraph is computed from.
-#[derive(Debug, Clone)]
-pub(in crate::heap) struct ClosureData<'gc> {
-    pub(in crate::heap) code: Rc<crate::bytecode::CompiledCode>,
-    /// The activation the closure was created in, reified. A closure keeps
-    /// it whatever it captured: `enclosingActivation` and the debugger's
-    /// "[] in Foo bar" are read off it (`docs/design/execution.md`, "The
-    /// closure keeps its defining activation").
-    pub(in crate::heap) captured_frame: FrameReference<'gc>,
-    /// What the closure was handed when it was created: a copied variable's
-    /// value, or an enclosing body's indirection vector. Its registers are
-    /// `code.argument_count + position`. `Box<[_]>`, not a `Vec`, because
-    /// `ClosureData` is `ObjectData`'s largest payload and an `Object` is
-    /// pinned at 56 bytes in a release build (`heap.rs`).
-    pub(in crate::heap) copied: Box<[Word]>,
-    /// The start of its family's range in the heap's cache table, copied from
-    /// the activation that created it, since a block belongs to its method's
-    /// family. Never serialized: a decoded closure carries `NOT_ASSIGNED`
-    /// and is given a fresh range when it is first activated.
-    pub(in crate::heap) feedback_base: crate::interpreter::FeedbackBase,
-}
-
 impl Trace for Object<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Object {
@@ -493,11 +460,22 @@ impl Trace for ObjectData<'_> {
                     };
                     trace_word_bits(&mut words[..traced], tracer);
                 }
+                // A closure's code id and feedback base are numbers; its
+                // captured frame and its copied values are the pointers.
+                Format::Closure => {
+                    let fixed = closure_field::COUNT.min(words.len());
+                    let (head, copied) = words.split_at_mut(fixed);
+                    if let Some(frame) =
+                        head.get_mut(closure_field::CAPTURED_FRAME..=closure_field::CAPTURED_FRAME)
+                    {
+                        trace_word_bits(frame, tracer);
+                    }
+                    trace_word_bits(copied, tracer);
+                }
                 // Only a pointer format's words are stored `Word`s; a
                 // number's digits would read as handles.
                 _ => {}
             },
-            ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
         }
     }
@@ -509,19 +487,6 @@ fn trace_word_bits<T: Tracer>(words: &mut [u64], tracer: &mut T) {
         let mut word = Word::from_bits(*bits);
         tracer.word(&mut word);
         *bits = word.bits();
-    }
-}
-
-impl Trace for ClosureData<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let ClosureData {
-            code: _,
-            captured_frame,
-            copied,
-            feedback_base: _, // not a handle
-        } = self;
-        tracer.frame(captured_frame);
-        trace_words(copied, tracer);
     }
 }
 
@@ -546,6 +511,30 @@ impl Trace for ClassData<'_> {
         trace_optional_object(superclass, tracer);
         trace_optional_object(this_class, tracer);
     }
+}
+
+/// The fixed fields of a closure object, the words before its copied values
+/// (`docs/design/object-model.md`): each a stored `Word`, written through
+/// `Heap::store` and read through `Heap::load` like an instance's.
+pub(in crate::heap) mod closure_field {
+    /// A `SmallInteger`, the `CodeId` of the block's compiled body.
+    pub(in crate::heap) const CODE_ID: usize = 0;
+    /// The frame object of the activation the closure was created in. A
+    /// closure keeps it whatever it captured: `enclosingActivation` and the
+    /// debugger's "[] in Foo bar" are read off it (`docs/design/execution.md`,
+    /// "The closure keeps its defining activation").
+    pub(in crate::heap) const CAPTURED_FRAME: usize = 1;
+    /// A `SmallInteger`, the raw start of the closure's family's range in the
+    /// heap's cache table, copied from the activation that created it, since
+    /// a block belongs to its method's family. Never serialized: a decoded
+    /// closure carries `NOT_ASSIGNED` and is given a fresh range when it is
+    /// first activated.
+    pub(in crate::heap) const FEEDBACK_BASE: usize = 2;
+    /// How many fixed fields there are: copied value `index` is word
+    /// `COUNT + index`. What the closure was handed when it was created is a
+    /// copied variable's value or an enclosing body's indirection vector; its
+    /// registers are `code.argument_count + position`.
+    pub(in crate::heap) const COUNT: usize = 3;
 }
 
 /// The fixed fields of a frame object, the words before its registers

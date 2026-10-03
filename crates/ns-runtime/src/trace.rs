@@ -45,12 +45,6 @@ fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     }
 }
 
-pub(crate) fn trace_words<T: Tracer>(words: &mut [Word], tracer: &mut T) {
-    for word in words {
-        tracer.word(word);
-    }
-}
-
 pub(crate) fn trace_optional_object<T: Tracer>(
     handle: &mut Option<ObjectReference<'_>>,
     tracer: &mut T,

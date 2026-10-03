@@ -31,7 +31,7 @@ mod value;
 mod world;
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header};
-use object::{frame_field, ClassData, ClosureData, Object, ObjectData, PackedString};
+use object::{closure_field, frame_field, ClassData, Object, ObjectData, PackedString};
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
@@ -212,7 +212,7 @@ impl std::fmt::Debug for FrameReference<'_> {
 /// stack. Where a `FrameReference` names a reified activation that may be
 /// stored anywhere, an `ActivationReference` is valid only until its entry is
 /// popped -- the next activation at that depth reuses the index. That is why
-/// nothing stores one: `ClosureData`, a frame object and every image record take a
+/// nothing stores one: a closure object, a frame object and every image record take a
 /// `FrameReference`, which `Heap::reify` answers for a live activation. See
 /// `docs/design/execution.md`, "Activations", "Representation".
 ///
@@ -947,12 +947,12 @@ impl<'gc> Heap<'gc> {
         closure: NewClosure<'gc>,
     ) -> ObjectReference<'gc> {
         let data = self.closure_payload(closure);
-        self.allocate_object(class, ObjectData::Closure(data))
+        self.allocate_object(class, data)
     }
 
     /// A closure's payload from its record, each copied value stored as a
     /// word.
-    fn closure_payload(&self, closure: NewClosure<'gc>) -> ClosureData<'gc> {
+    fn closure_payload(&mut self, closure: NewClosure<'gc>) -> ObjectData<'gc> {
         let NewClosure {
             code,
             captured_frame,
@@ -960,12 +960,12 @@ impl<'gc> Heap<'gc> {
             feedback_base,
         } = closure;
         self.check_frame_origin(captured_frame);
-        ClosureData {
-            code,
-            captured_frame,
-            copied: copied.into_iter().map(|value| self.store(value)).collect(),
-            feedback_base,
-        }
+        let mut fields = [Word::NIL; closure_field::COUNT];
+        fields[closure_field::CODE_ID] = count_word(self.code_id(&code).index());
+        fields[closure_field::CAPTURED_FRAME] =
+            self.store(Value::object(self.frame_object(captured_frame)));
+        fields[closure_field::FEEDBACK_BASE] = count_word(feedback_base.raw() as usize);
+        ObjectData::closure(fields, copied.into_iter().map(|value| self.store(value)))
     }
 
     /// A class object (`NewClass` says what it holds) whose header class is
@@ -1076,7 +1076,7 @@ impl<'gc> Heap<'gc> {
             Record::Array(elements) => {
                 ObjectData::array(elements.into_iter().map(|value| self.store(value)))
             }
-            Record::Closure(closure) => ObjectData::Closure(self.closure_payload(closure)),
+            Record::Closure(closure) => self.closure_payload(closure),
             Record::Class(class) => ObjectData::Class(Box::new(Self::class_payload(class))),
             // The frame object is the activation object: it takes the
             // record's identity hash, and the placeholder stays as it is,
@@ -1605,6 +1605,7 @@ impl<'gc> Heap<'gc> {
                 Format::FixedPointers => ObjectShape::Instance,
                 Format::IndexablePointers => ObjectShape::Array,
                 Format::Frame => ObjectShape::Activation,
+                Format::Closure => ObjectShape::Closure,
                 Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
                     ObjectShape::Symbol
                 }
@@ -1612,7 +1613,6 @@ impl<'gc> Heap<'gc> {
                 _ if self.is_boxed_float(object) => ObjectShape::Float,
                 _ => ObjectShape::LargeInteger,
             },
-            ObjectData::Closure(_) => ObjectShape::Closure,
             ObjectData::Class(_) => ObjectShape::Class,
         }
     }
@@ -1951,22 +1951,43 @@ impl<'gc> Heap<'gc> {
         self.canonical_symbols[index] = Some(object);
     }
 
-    /// Closure `object`'s payload, borrowed, or `None` when `object` is not a
-    /// closure. Private, like every borrow of the arena: the accessors
-    /// below each copy one thing out of it, so that none of their callers
-    /// holds a borrow of the heap.
-    fn closure(&self, object: ObjectReference<'gc>) -> Option<&ClosureData<'gc>> {
+    /// Closure `object`'s words -- its fixed fields, then its copied values --
+    /// or `None` when `object` is not a closure. Private, like every borrow
+    /// of the arena: the accessors below each copy one thing out of it, so
+    /// that none of their callers holds a borrow of the heap.
+    fn closure_words(&self, object: ObjectReference<'gc>) -> Option<&[u64]> {
         self.check_object_origin(object);
-        match &self.objects[object.index as usize].data {
-            ObjectData::Closure(closure) => Some(closure),
+        let entry = &self.objects[object.index as usize];
+        match &entry.data {
+            ObjectData::Words { words, .. }
+                if entry.header.format() == Format::Closure
+                    && words.len() >= closure_field::COUNT =>
+            {
+                Some(words)
+            }
             _ => None,
         }
+    }
+
+    /// A closure's fixed field holding a count or an index, as one.
+    fn closure_count_field(&self, words: &[u64], field: usize) -> Option<usize> {
+        self.load(Word::from_bits(words[field]))
+            .as_small_integer()
+            .and_then(|count| usize::try_from(count).ok())
+    }
+
+    /// The body closure `object` runs, or `None` when `object` is not a
+    /// closure or its code id names no entry of the table.
+    fn closure_body(&self, object: ObjectReference<'gc>) -> Option<Rc<CompiledCode>> {
+        let words = self.closure_words(object)?;
+        let id = CodeId::from_index(self.closure_count_field(words, closure_field::CODE_ID)?)?;
+        self.code(id)
     }
 
     /// Whether `object` is a closure -- what a control-flow step asks of a
     /// value before activating it as a block.
     pub fn is_closure(&self, object: ObjectReference<'gc>) -> bool {
-        self.closure(object).is_some()
+        self.closure_words(object).is_some()
     }
 
     /// How many parameters closure `object` declares, or `None` when `object`
@@ -1974,8 +1995,8 @@ impl<'gc> Heap<'gc> {
     /// of the closure's own: one source, so the arity a call is checked
     /// against and the arity the register file is sized from cannot disagree.
     pub fn closure_parameter_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
-        self.closure(object)
-            .map(|closure| closure.code.argument_count as usize)
+        self.closure_body(object)
+            .map(|code| code.argument_count as usize)
     }
 
     /// Closure `object`'s compiled body, or `None` when `object` is not a
@@ -1985,7 +2006,7 @@ impl<'gc> Heap<'gc> {
         &self,
         object: ObjectReference<'gc>,
     ) -> Option<std::rc::Rc<crate::bytecode::CompiledCode>> {
-        self.closure(object).map(|closure| closure.code.clone())
+        self.closure_body(object)
     }
 
     /// What activating closure `object` needs, read in one borrow: its body,
@@ -2002,13 +2023,16 @@ impl<'gc> Heap<'gc> {
         FrameReference<'gc>,
         FeedbackBase,
     )> {
-        self.closure(object).map(|closure| {
-            (
-                closure.code.clone(),
-                closure.captured_frame,
-                closure.feedback_base,
-            )
-        })
+        let words = self.closure_words(object)?;
+        let code = self.closure_body(object)?;
+        let captured_frame = self
+            .load(Word::from_bits(words[closure_field::CAPTURED_FRAME]))
+            .as_object()
+            .and_then(|frame| self.object_frame(frame))?;
+        let feedback_base = FeedbackBase::from_raw(
+            u32::try_from(self.closure_count_field(words, closure_field::FEEDBACK_BASE)?).ok()?,
+        );
+        Some((code, captured_frame, feedback_base))
     }
 
     /// Writes closure `object`'s copied values into `activation`'s registers,
@@ -2032,12 +2056,14 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         self.check_object_origin(object);
         let Heap { objects, stack, .. } = self;
-        let ObjectData::Closure(closure) = &objects[object.index as usize].data else {
+        let entry = &objects[object.index as usize];
+        let ObjectData::Words { words, .. } = &entry.data else {
             return;
         };
-        if closure.copied.is_empty() {
+        if entry.header.format() != Format::Closure || words.len() <= closure_field::COUNT {
             return;
         }
+        let copied = &words[closure_field::COUNT..];
         let entry = &stack.entries[activation.index as usize];
         let first = entry.base as usize + entry.argument_count as usize;
         // The activation's own window, so a list longer than its register
@@ -2047,22 +2073,12 @@ impl<'gc> Heap<'gc> {
             .entries
             .get(activation.index as usize + 1)
             .map_or(stack.values.len(), |above| above.base as usize);
-        for (position, value) in closure.copied.iter().enumerate() {
+        for (position, bits) in copied.iter().enumerate() {
             let slot = first + position;
             if slot >= end {
                 break;
             }
-            stack.values[slot] = *value;
-        }
-    }
-
-    /// Closure `object`'s payload, to write; `None` when `object` is not a
-    /// closure.
-    fn closure_mut(&mut self, object: ObjectReference<'gc>) -> Option<&mut ClosureData<'gc>> {
-        self.check_object_origin(object);
-        match &mut self.objects[object.index as usize].data {
-            ObjectData::Closure(closure) => Some(closure),
-            _ => None,
+            stack.values[slot] = Word::from_bits(*bits);
         }
     }
 
@@ -2077,8 +2093,13 @@ impl<'gc> Heap<'gc> {
         object: ObjectReference<'gc>,
         feedback_base: FeedbackBase,
     ) {
-        if let Some(closure) = self.closure_mut(object) {
-            closure.feedback_base = feedback_base;
+        self.check_object_origin(object);
+        let entry = &mut self.objects[object.index as usize];
+        if let ObjectData::Words { words, .. } = &mut entry.data {
+            if entry.header.format() == Format::Closure && words.len() >= closure_field::COUNT {
+                words[closure_field::FEEDBACK_BASE] =
+                    count_word(feedback_base.raw() as usize).bits();
+            }
         }
     }
 
@@ -2092,19 +2113,25 @@ impl<'gc> Heap<'gc> {
         &self,
         object: ObjectReference<'gc>,
     ) -> Option<FrameReference<'gc>> {
-        self.closure(object).map(|closure| closure.captured_frame)
+        let words = self.closure_words(object)?;
+        self.load(Word::from_bits(words[closure_field::CAPTURED_FRAME]))
+            .as_object()
+            .and_then(|frame| self.object_frame(frame))
     }
 
     /// Closure `object`'s copied values, in order, or `None` when `object`
     /// is not a closure.
     pub fn closure_copied_values(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
-        self.closure(object)
-            .map(|closure| closure.copied.iter().map(|word| self.load(*word)).collect())
+        self.closure_words(object).map(|words| {
+            words[closure_field::COUNT..]
+                .iter()
+                .map(|bits| self.load(Word::from_bits(*bits)))
+                .collect()
+        })
     }
 
     /// A closure's home: the activation a `^` in its body returns from.
-    /// Derived rather than stored, so that `ClosureData` stays 32 bytes --
-    /// the captured frame itself when it is a method's, an initializer's or a
+    /// Derived rather than stored: the captured frame itself when it is a method's, an initializer's or a
     /// clause's, its own `home` when it is a block's.
     ///
     /// A closure frame the runtime reified always carries a `home`
@@ -2115,7 +2142,7 @@ impl<'gc> Heap<'gc> {
     /// to an activation, so a `^` aimed at it is the `cannotReturn` error
     /// `raise_return` already raises for a dead home.
     pub fn closure_home(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
-        let captured = self.closure(object)?.captured_frame;
+        let captured = self.closure_captured_frame(object)?;
         if !self.frame_runs_a_closure(captured) {
             return Some(captured);
         }
@@ -2171,7 +2198,9 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Words { .. } if entry.header.format() == Format::Frame => {
                         "an Activation".to_string()
                     }
-                    ObjectData::Closure(_) => "a Block".to_string(),
+                    ObjectData::Words { .. } if entry.header.format() == Format::Closure => {
+                        "a Block".to_string()
+                    }
                     ObjectData::Class(_) => {
                         format!("the class {}", self.class_display_name(object))
                     }
@@ -3983,23 +4012,18 @@ impl<'gc> Heap<'gc> {
                     // A number's digits are no `Value`s, and a reified
                     // frame's fields and registers are exempt, as the
                     // stack's are.
-                    if matches!(format, Format::FixedPointers | Format::IndexablePointers) {
-                        for field in words.iter_mut() {
-                            let mut word = [Word::from_bits(*field)];
-                            replace(&mut word);
-                            *field = word[0].bits();
-                        }
+                    // A closure's code id, captured frame and feedback base
+                    // are exempt too: only its copied values can hold one.
+                    let first_rewritable = match format {
+                        Format::FixedPointers | Format::IndexablePointers => 0,
+                        Format::Closure => closure_field::COUNT.min(words.len()),
+                        _ => words.len(),
+                    };
+                    for field in &mut words[first_rewritable..] {
+                        let mut word = [Word::from_bits(*field)];
+                        replace(&mut word);
+                        *field = word[0].bits();
                     }
-                }
-                ObjectData::Closure(closure) => {
-                    let ClosureData {
-                        code: _,
-                        // A frame's registers are exempt, as the stack's are.
-                        captured_frame: _,
-                        copied,
-                        feedback_base: _,
-                    } = closure;
-                    replace(copied);
                 }
                 // Every handle a class object holds -- its enclosing object,
                 // its declaring class, its superclass, itself -- is an
@@ -4775,6 +4799,35 @@ mod tests {
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(8));
     }
 
+    /// What a closure answers is what it was built with: a conversion of its
+    /// representation keeps the code, the captured frame, the feedback base
+    /// and the copied values.
+    #[test]
+    fn a_closure_keeps_its_code_frame_feedback_base_and_copied_values_in_its_words() {
+        let mut heap = frame_heap();
+        let class = heap.allocate_self_referential(ObjectData::instance([]));
+        let frame = heap.allocate_placeholder_frame();
+        let code = trivial_code();
+        let object = heap.allocate_closure(
+            class,
+            NewClosure {
+                code: code.clone(),
+                captured_frame: frame,
+                copied: vec![Value::small_integer(5)],
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            },
+        );
+        let (body, captured, base) = heap.closure_activation(object).expect("a closure");
+        assert!(std::rc::Rc::ptr_eq(&body, &code));
+        assert!(captured.same(frame));
+        assert_eq!(base, FeedbackBase::NOT_ASSIGNED);
+        assert_eq!(
+            heap.closure_copied_values(object)
+                .map(|values| values.len()),
+            Some(1)
+        );
+    }
+
     /// A block's copied values land in the registers between its parameters
     /// and its temporaries, which is where its compiled code addresses them
     /// (`docs/design/execution.md`, "Converted representation"). A list
@@ -4786,17 +4839,14 @@ mod tests {
         let mut heap = frame_heap();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let captured_frame = top_level_frame(&mut heap, 0);
-        let closure = heap.allocate_object(
+        let closure = heap.allocate_closure(
             class,
-            ObjectData::Closure(ClosureData {
+            NewClosure {
                 code: trivial_code(),
                 captured_frame,
-                copied: Box::new([
-                    heap.store(Value::small_integer(7)),
-                    heap.store(Value::small_integer(8)),
-                ]),
+                copied: vec![Value::small_integer(7), Value::small_integer(8)],
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
-            }),
+            },
         );
 
         let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
@@ -5018,9 +5068,9 @@ mod tests {
             class: ClassReference<'gc>,
             captured_frame: FrameReference<'gc>,
         ) -> ObjectReference<'gc> {
-            heap.allocate_object(
+            heap.allocate_closure(
                 class,
-                ObjectData::Closure(ClosureData {
+                NewClosure {
                     code: std::rc::Rc::new(crate::bytecode::CompiledCode::new(
                         crate::bytecode::CodeKind::Block,
                         vec![crate::bytecode::Instruction::ImplicitReturn { register: 0 }],
@@ -5031,9 +5081,9 @@ mod tests {
                         ns_syntax::Span::new(0, 0),
                     )),
                     captured_frame,
-                    copied: Box::new([]),
+                    copied: vec![],
                     feedback_base: FeedbackBase::NOT_ASSIGNED,
-                }),
+                },
             )
         }
         let class = heap.allocate_self_referential(ObjectData::instance([]));
@@ -5110,14 +5160,14 @@ mod tests {
             None,
         );
         top_level_frame(&mut heap, 0);
-        let closure = heap.allocate_object(
+        let closure = heap.allocate_closure(
             class,
-            ObjectData::Closure(ClosureData {
+            NewClosure {
                 code: trivial_code(),
                 captured_frame: frame,
-                copied: Box::new([heap.store(Value::object(string))]),
+                copied: vec![Value::object(string)],
                 feedback_base: FeedbackBase::NOT_ASSIGNED,
-            }),
+            },
         );
         let before = [
             heap.object_identity_key(class),
@@ -5324,16 +5374,16 @@ mod tests {
     /// moves it fails here rather than leaving that figure silently wrong.
     /// A frame object is one of these, its fields and registers boxed words.
     /// The class handle, the eight-byte header word and `ObjectData`, whose
-    /// largest payload is `ClosureData` -- an `Rc`, a `Box<[Value]>`, a
-    /// `FrameReference` and a `FeedbackBase`, 32 bytes; `ClassData` is boxed
-    /// so as not to be. The header word took the place of the separate
-    /// identity hash and dispatch id and left the size at 56. Task 12 of the
-    /// object-representation plan replaces this arena slot with the object's
-    /// words, and this pin with theirs.
+    /// largest payload is the words variant -- a format, two small fields and
+    /// a `Box<[u64]>`; `ClassData` is boxed so as not to be. A closure is one
+    /// of these too, its code id, captured frame and feedback base words
+    /// before its copied values. Task 12 of the object-representation plan
+    /// replaces this arena slot with the object's words, and this pin with
+    /// theirs.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
-        assert_eq!(std::mem::size_of::<Object>(), 56);
+        assert_eq!(std::mem::size_of::<Object>(), 40);
     }
 
     /// Liveness is reachability from the roots, and the roots are what the

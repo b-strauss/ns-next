@@ -36,6 +36,16 @@ impl FeedbackBase {
     pub(crate) fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// The number a closure object stores in its feedback-base word.
+    pub(crate) fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// The base a closure object's feedback-base word names.
+    pub(crate) fn from_raw(raw: u32) -> FeedbackBase {
+        FeedbackBase(raw)
+    }
 }
 
 /// A cache entry's target: a `Resolved` with its defining class replaced by
