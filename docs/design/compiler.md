@@ -1196,7 +1196,7 @@ mixins and no `Heap`. `ns-next disasm` takes the root declaration from
 lowering exactly as `load_module` compiles it, but applied to nothing -- or
 from `LoadedModule::declaration` for an artifact. None of them holds a
 handle, so none can read one through a heap that did not mint it
-([memory.md](memory.md), "A handle is arena-relative").
+([memory.md](memory.md), "A handle is space-relative").
 
 ## Decisions
 

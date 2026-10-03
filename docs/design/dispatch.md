@@ -886,8 +886,8 @@ the application the class object's application field names
 at allocation from the object's class's instances id — an instance's from its
 class, a class object's from its metaclass — and restamped by
 `Heap::object_set_class` when `Mutator::attach_metaclass` changes a header, so
-`Heap::dispatch_id(value)` answers an object's from its header word -- the
-arena slot's pointer to its block, then the header -- and a guard is that
+`Heap::dispatch_id(value)` answers an object's from its header word -- read
+from the object space at the handle's offset -- and a guard is that
 read and one compare, for instances and class objects alike. It is where V8
 (the map), HotSpot (the klass pointer), Cog (the class index) and Primordial
 Soup (the class id) keep their answer. For an immediate -- `nil`, a boolean, a
@@ -897,7 +897,7 @@ which the bootstrap fills from the builtin classes; a boxed `Float` or a
 `LargeInteger` is an object and carries its own.
 
 The header holds a copy, so every place a class's application changes must
-restamp: `Heap::class_set_application` walks the arena and restamps every
+restamp: `Heap::class_set_application` walks the space and restamps every
 live instance of the class along with the class object itself. The decoder
 does not use that path, since a walk per class record would be quadratic in
 a count the image controls: `rebuild_applications` installs each class
@@ -1460,7 +1460,8 @@ copy in every test that dispatches on one.
 
 ### The guard in the header word
 
-**Built** with road step 3a, the object representation, on today's arena
+**Built** with road step 3a, the object representation, on the arena of the
+time, and read in one load from the object space since road step 3b
 (decided with the user on 2026-10-03; [object-model.md](object-model.md),
 "The object layout"): the guard is read from the object's one header word,
 bits 0-21, and nothing else about the caches changed. `DispatchId::NONE` is

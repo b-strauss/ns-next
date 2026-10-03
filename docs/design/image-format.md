@@ -369,7 +369,8 @@ Literals:
   register ceiling loads first. It raises its error when it runs
   ([compiler.md](compiler.md), "Compilation cannot fail").
 
-**A count past its field refuses the image, never aborts it.** A count a
+**A count past its field refuses the image, never aborts it, except the
+count of heap objects.** A count a
 program decides is written through a checked narrowing that answers an
 error, `image encoding cannot write a <what> of <n>: it does not fit the
 image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
@@ -378,9 +379,12 @@ arity (`encode::u16_field`), all of which a valid program can pass
 ([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a
 string's, a symbol's, a value list's and a `LargeInteger`'s digit count
 (`encode::u32_length`). Every other count goes through the asserting
-`encode::u32_field`, because no program can pass it: object ids, a
-frame's among them, and counts are bounded by the heap's 32-bit handles, declaration, statement
-and instruction counts by source, whose `Span` offsets are 32-bit --
+`encode::u32_field`, because no program is meant to pass it: object ids, a
+frame's among them, and counts of heap objects, which only the heap's
+memory bounds since a handle became a 64-bit offset, so a write past about
+four billion objects aborts rather than refusing
+([OPEN-WORK.md](../OPEN-WORK.md)); declaration, statement and instruction
+counts by source, whose `Span` offsets are 32-bit --
 `ns_syntax::lex`, which `parse` goes through, refuses a source of more than
 `u32::MAX` bytes with a parse diagnostic before lexing it -- and the symbol
 table's count by the two together.
@@ -547,11 +551,12 @@ one of its levels, or a class a platform path names — is named by class tag 4,
 is one level deep. The encoder refuses a class record whose class object has no
 metaclass rather than write a header the decoder could not pair. A metaclass
 record is a record like any other, sized and allocated as one placeholder, and
-the smallest record there is: 9 bytes for a class object of 96, about 10.7x,
-which with the decoder's own tables sets the bound a rejected load reaches,
-about 12.0x of the graph section's bytes in a release build and 16x in a
-debug one ([memory.md](memory.md), "The amplification bound of a rejected
-load"); a tag-named metaclass is no record at all and allocates nothing.
+the smallest record there is: 9 bytes for a class object of 80, about 8.9x,
+which with the decoder's own tables sets the bound a rejected load reaches
+in a release build, about 10.7x of the graph section's bytes; in a debug
+one the root list sets it, at 16x ([memory.md](memory.md), "The
+amplification bound of a rejected load"); a tag-named metaclass is no
+record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
@@ -1481,23 +1486,19 @@ and mutation and truncation tests for the module section, the module class
 and hash tags, `FLAG_START` and the retired tags and flag
 (`crates/ns-runtime/tests/image.rs`).
 
-## Planned: the image under the object space and generations
+## Planned: the image under generations
 
-Would change: the decoder builds its objects in the object space of road
-step 3b ([memory.md](memory.md), "Planned: the object space") and, from road
-step 4, allocates them old. The wire format stays id-based, as it is under
-road step 3a's layout, whose records, two passes and refusals are built
-("Frames are object records" and "Two passes" above): nothing on the wire
+The decoder builds its objects in the object space ([memory.md](memory.md),
+"The object space"): each placeholder is a run of words the first pass
+sized, bumped off the space's top and filled in place. The wire format is
+id-based, and road step 3b changed nothing on it: nothing on the wire
 becomes an address or an offset, so an artifact stays independent of word
 size and layout, as Primordial Soup's snapshots are
 (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image, which is
 old space's bytes relocated on load, is the model this does not take.
 
-- **Road step 3b changes only where the decoder's objects live**: the first
-  pass's sizes, the placeholders and the in-place fills stay as they are.
-  The amplification figures ([memory.md](memory.md), "The amplification
-  bound of a rejected load") are recomputed once a placeholder is a run of
-  words in the space rather than a boxed block behind a 16-byte slot.
+Would change: from road step 4 the decoder allocates its objects old.
+
 - **Every load tenures before the decoder allocates.** Under generations
   ([memory.md](memory.md), "Planned: generations") the decoder allocates
   everything old, and every load runs `Interpreter::bootstrap()` first

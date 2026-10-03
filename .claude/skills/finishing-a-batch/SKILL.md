@@ -55,9 +55,9 @@ Create a todo for each item.
 3. **Open work.** Remove from `docs/OPEN-WORK.md` every item the batch closed;
    add every item a review, measurement or design discussion left open, with a
    pointer to where it is explained.
-4. **Progress.** Update `docs/PROGRESS.md`: the milestone's entry, and "Where
-   the next session starts", which must agree with the milestone table and
-   with `docs/OPEN-WORK.md`.
+4. **Progress.** Update `docs/PROGRESS.md`: the milestone's entry and the
+   milestone table; and `docs/OPEN-WORK.md`'s "Next", which must agree with
+   the table.
 5. **Fresh-session check**, concretely:
    - every new module or file that cuts across a subsystem appears in
      `docs/design/README.md`'s map and in the status block of each document
@@ -73,7 +73,7 @@ Create a todo for each item.
 
 - **Trusting the task reviews for step 5.** Each looked at one diff; none
   followed the reader's entry path (`docs/design/README.md`, then
-  `docs/PROGRESS.md`), which is where the gaps are.
+  `docs/OPEN-WORK.md`'s "Next"), which is where the gaps are.
 - **Running `verifyPlugin` for a batch that never touched the plugin.** It
   downloads several IDEs for nothing.
 - **Leaving an open item only in a PROGRESS.md entry.** It belongs in

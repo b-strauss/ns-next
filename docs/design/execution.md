@@ -62,7 +62,7 @@ reference lowering") is the differential oracle that replaced it.
 A Newspeak-level activation is never represented only by Rust locals or the Rust
 call stack. A running activation is an entry on one **activation stack** that the
 `Heap` owns. A first-class frame -- an object of the frame format in the
-`Heap`'s arena, an instance of the kernel-private `Activation`
+`Heap`'s object space, an instance of the kernel-private `Activation`
 ([object-model.md](object-model.md), "The object layout") -- exists for it only
 once something must hold it past the call that runs it: a block being
 created, the exception machinery asking for its `Activation` object, an
@@ -170,7 +170,7 @@ pub struct ActivationReference {
   handle is a compile error rather than a convention. A tagged `FrameReference` would
   have touched only `heap.rs`, but it would put a branch on every register
   access and leave "a stack handle was stored" to a debug-build assertion — the
-  silent failure class the arena's private index was built to exclude.
+  silent failure class the handles' private field was built to exclude.
 - **An `ActivationReference` is 4 bytes in a release build.** In a debug build it
   carries `origin`, like every handle, and a `generation` drawn from a counter at
   each push and recorded on the entry. A handle read after its entry was popped
@@ -433,7 +433,7 @@ flag is set the stretch writes its frame back to `FrameRegisters` and leaves
 its entry (`Leave::Safepoint`), and `run` calls `Interpreter::safepoint`
 (`interpreter/safepoint.rs`), out of line, which is where a collection runs
 ([memory.md](memory.md), "Where a collection can happen"), and enters again.
-A collection is requested by an allocation past an arena's limit, and the
+A collection is requested by an allocation past the space's limit, and the
 debug-build move, cache and collection stress modes set the flag at every
 safepoint their schedule picks.
 That is sound because of what `run` carries across the safepoint, which the
@@ -445,7 +445,7 @@ handle; its `program_counter`; its `FeedbackBase`, a number; and its
 touch — and the run's floor, a stack depth. Every value the loop works on is
 read from a register or an operand when an instruction needs it and written
 back before the next, so at a safepoint every handle is in a register on the
-stack, in a stack entry or the continuation it owns, in an arena record or in
+stack, in a stack entry or the continuation it owns, in a heap object or in
 a root, where the tracer rewrites it. The reusable argument buffer, which a
 send fills and empties within one instruction, is empty at every safepoint.
 
@@ -1014,8 +1014,9 @@ separated ranges, by 3.6% (List) to 30.5% (`bench_block.ns`); Havlak is 6.2%
 faster, inside its range, and the four slower ones that are not separated
 (Bounce, DeltaBlue, Mandelbrot, `bench_new2.ns`) move by 1.0% to 9.1%. This is
 the interim cost the design expected ([object-model.md](object-model.md), "The object
-layout"): every guard and class read goes through the slot's pointer to its
-block until road step 3b puts the objects in the space.
+layout"): every guard and class read went through the slot's pointer to its
+block until road step 3b put the objects in the space ("What the object
+space moved" below).
 
 **Measured, profiled, measured again.** A first measurement of the branch at
 `3cdbd5e`, by the same protocol, showed DeltaBlue +42.0%, `bench_block.ns`
@@ -1041,11 +1042,11 @@ frame block and per closure block on every `MakeClosure` (Sieve's `at:` and
 exclusive time grew by 9,420 samples in `bench_block.ns` (66% of its added
 samples) and 5,622 in Sieve (57%), where the frame and the closure had been
 inline in the arena vectors. That is the per-object allocation road step 3b's
-bump allocation in the space replaces. The profile also found the temporary
+bump allocation in the space replaced. The profile also found the temporary
 list of copied values every closure built and freed, which `e664c77` removed;
 and about 5,800 (`bench_block.ns`) and 3,900 (Sieve) samples in the new
 out-of-line accessors (`pointer_words`, `frame_payload`, `register_code`),
-the format check through the block's pointer that the same step removes.
+the format check through the block's pointer that the same step removed.
 
 What the measurement does not cover: one machine and one operating system;
 data layout, which `-C metadata` does not vary; for the `bench` figures, what
@@ -1054,6 +1055,159 @@ trace per side from one debug-info build each, so layout effects of a few
 percent are not excluded, and which could not split code inlined into
 `vm::run`; and the decode amplification, which is computed, not measured
 ([memory.md](memory.md), "The amplification bound of a rejected load").
+
+### What the object space moved
+
+Measured on 2026-10-03 on the same machine (Windows 11, Intel Core Ultra 9
+285K), in two sittings: the tree the branch `feature/object-space` started
+from, `d3e9f6f` ("before", the arena of road step 3a), against the branch
+at three points -- `e187399`, after handles became 64-bit offsets, still on
+the arena; `a51ed31`, with the objects in the space and every allocation
+written in place; and `5d1b903`, `a51ed31` plus the inlining fix below, the
+branch's head. Three pinned release builds of each tree (`-C
+metadata=alpha`, `beta`, `gamma`, with `-C target-feature=+crt-static -C
+llvm-args=-align-all-functions=6`), built in throwaway worktrees, each
+checked to print `ok` for all sixteen programs and the expected output for
+the eight microbenchmark sources; three rounds, the binaries' order rotated
+from round to round; in each round every binary ran `bench --iterations 3
+-- <Name>` for CD, Havlak, Mandelbrot, NBody and DeltaBlue, `--iterations
+10` for the other eleven, and `bench --iterations 30` for the eight
+microbenchmark sources. Each figure is the median of a tree's nine values,
+with their range; "separated" says the two ranges do not overlap.
+
+The second sitting, the branch's head against the tree it started from:
+
+| Source | Before, ms | Range | After, ms | Range | Change | Separated |
+|---|---|---|---|---|---|---|
+| Bounce | 1.11 | 1.08–1.12 | 1.11 | 1.09–1.12 | +0.1% | no |
+| CD | 4,597 | 4,562–4,630 | 4,380 | 4,361–4,545 | **−4.7%** | yes |
+| DeltaBlue | 773 | 768–791 | 744 | 739–755 | **−3.8%** | yes |
+| DeltaBlueTon80 | 7.50 | 7.44–7.60 | 7.68 | 7.59–7.77 | +2.4% | no |
+| Havlak | 4,064 | 3,982–4,261 | 3,889 | 3,864–3,927 | **−4.3%** | yes |
+| Json | 11.48 | 11.03–11.73 | 11.38 | 11.13–11.47 | −0.9% | no |
+| List | 1.01 | 1.00–1.05 | 1.03 | 1.03–1.05 | +2.2% | no |
+| Mandelbrot | 3,323 | 3,297–3,337 | 3,405 | 3,376–3,446 | **+2.5%** | yes |
+| NBody | 2,468 | 2,449–2,479 | 2,504 | 2,479–2,818 | **+1.5%** | yes |
+| Permute | 2.58 | 2.51–2.62 | 2.50 | 2.49–2.54 | −3.1% | no |
+| Queens | 2.14 | 2.07–2.27 | 2.14 | 2.10–2.21 | −0.2% | no |
+| Richards | 84.72 | 84.14–88.02 | 84.41 | 83.16–85.80 | −0.4% | no |
+| RichardsTon80 | 5.18 | 5.13–5.66 | 4.97 | 4.89–5.18 | −4.0% | no |
+| Sieve | 1.49 | 1.47–1.50 | 1.36 | 1.35–1.36 | **−8.7%** | yes |
+| Storage | 1.86 | 1.84–1.93 | 1.89 | 1.85–1.90 | +1.7% | no |
+| Towers | 3.97 | 3.94–4.20 | 3.64 | 3.58–3.75 | **−8.4%** | yes |
+| `bench_block.ns` | 13.45 | 13.34–13.61 | 10.47 | 10.39–10.57 | **−22.1%** | yes |
+| `bench_loop.ns` | 2.44 | 2.42–2.47 | 2.49 | 2.48–2.50 | **+1.9%** | yes |
+| `bench_megamorphic.ns` | 5.45 | 5.39–5.49 | 5.35 | 5.29–6.74 | −1.8% | no |
+| `bench_send.ns` | 3.65 | 3.62–3.70 | 3.63 | 3.59–3.72 | −0.4% | no |
+| `bench_do.ns` | 4.45 | 4.38–4.55 | 4.12 | 4.05–4.15 | **−7.4%** | yes |
+| `bench_new.ns` | 3.52 | 3.46–3.58 | 3.06 | 3.03–3.07 | **−13.1%** | yes |
+| `bench_new2.ns` | 4.43 | 4.38–4.56 | 4.04 | 4.02–4.08 | **−8.9%** | yes |
+| `bench_newarg.ns` | 6.47 | 6.41–6.59 | 5.84 | 5.76–5.99 | **−9.8%** | yes |
+
+NBody's ranges print as sharing 2,479 ms; unrounded they are separated by
+0.34 ms, the before maximum 2,478.76 ms and the after minimum 2,479.10 ms,
+below the table's precision.
+
+**Seventeen of the twenty-four sources are faster, ten of them with
+separated ranges**, by 3.8% (DeltaBlue) to 22.1% (`bench_block.ns`); three
+are slower with separated ranges -- Mandelbrot by 2.5%, `bench_loop.ns` by
+1.9% and NBody by 1.5% -- and the other eleven move by −4.0% to +2.4% inside
+their ranges. The gains are where road step 3a's profile put its costs
+("What the object representation moved"): the allocating sources --
+`bench_block.ns`, which reifies a frame and makes a closure every iteration,
+`bench_do.ns` and the three instantiation benchmarks, Sieve, Towers and CD --
+no longer make a call into the system allocator per object or drop one per
+dead object, and a guard or a field is one load from the space's base rather
+than two through a slot's pointer. The three slower programs were not
+profiled, so what slows them is not known ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**The first sitting** measured what each half of the branch did, against the
+same base, before the inlining fix:
+
+| Source | Before, ms | Range | Handle, ms | Range | Space, ms | Range | Handle vs before | Space vs before |
+|---|---|---|---|---|---|---|---|---|
+| Bounce | 1.10 | 1.09–1.18 | 1.15 | 1.14–1.16 | 1.12 | 1.11–1.14 | +4.2% | +2.3% |
+| CD | 4,588 | 4,489–4,635 | 4,785 | 4,677–4,873 | 4,493 | 4,438–4,626 | **+4.3%** | −2.1% |
+| DeltaBlue | 770 | 751–800 | 792 | 780–831 | 769 | 753–772 | +2.8% | −0.2% |
+| DeltaBlueTon80 | 7.51 | 7.34–7.60 | 7.81 | 7.70–7.95 | 7.91 | 7.75–8.08 | **+4.0%** | **+5.3%** |
+| Havlak | 4,014 | 3,857–4,050 | 4,175 | 4,012–4,476 | 3,967 | 3,862–4,149 | +4.0% | −1.2% |
+| Json | 11.45 | 11.09–11.66 | 11.78 | 11.62–12.03 | 11.61 | 11.46–11.66 | +2.9% | +1.4% |
+| List | 1.01 | 0.99–1.06 | 1.04 | 1.03–1.07 | 1.08 | 1.06–1.08 | +2.6% | **+6.1%** |
+| Mandelbrot | 3,310 | 3,259–3,367 | 3,340 | 3,283–3,391 | 3,402 | 3,358–3,422 | +0.9% | +2.8% |
+| NBody | 2,471 | 2,418–2,506 | 2,553 | 2,521–2,590 | 2,506 | 2,480–2,530 | **+3.3%** | +1.4% |
+| Permute | 2.53 | 2.51–2.62 | 2.62 | 2.56–2.68 | 2.53 | 2.46–2.56 | +3.5% | −0.2% |
+| Queens | 2.11 | 2.08–2.23 | 2.21 | 2.13–2.29 | 2.15 | 2.10–2.20 | +4.5% | +2.1% |
+| Richards | 84.69 | 82.77–85.37 | 87.09 | 85.61–89.83 | 87.99 | 87.68–89.27 | **+2.8%** | **+3.9%** |
+| RichardsTon80 | 5.18 | 5.15–5.31 | 5.38 | 5.35–5.47 | 5.03 | 4.95–5.14 | **+4.0%** | **−2.9%** |
+| Sieve | 1.48 | 1.48–1.54 | 1.53 | 1.50–1.56 | 1.36 | 1.36–1.38 | +3.1% | **−8.1%** |
+| Storage | 1.86 | 1.83–1.96 | 1.98 | 1.95–2.14 | 1.88 | 1.86–1.91 | +6.6% | +1.1% |
+| Towers | 4.00 | 3.89–4.18 | 4.08 | 3.98–4.26 | 3.66 | 3.62–3.74 | +1.8% | **−8.5%** |
+| `bench_block.ns` | 13.47 | 13.35–13.83 | 13.71 | 13.61–14.19 | 10.56 | 10.40–10.68 | +1.8% | **−21.6%** |
+| `bench_loop.ns` | 2.43 | 2.42–2.48 | 2.67 | 2.66–2.71 | 2.53 | 2.51–2.57 | **+9.9%** | **+4.0%** |
+| `bench_megamorphic.ns` | 5.45 | 5.36–5.52 | 5.66 | 5.62–5.71 | 5.39 | 5.38–5.43 | **+3.8%** | −1.2% |
+| `bench_send.ns` | 3.64 | 3.59–3.70 | 3.81 | 3.77–3.89 | 3.69 | 3.63–4.48 | **+4.5%** | +1.2% |
+| `bench_do.ns` | 4.40 | 4.37–4.61 | 4.54 | 4.45–4.76 | 4.18 | 4.15–4.35 | +3.3% | **−5.0%** |
+| `bench_new.ns` | 3.48 | 3.44–3.57 | 3.63 | 3.61–3.73 | 3.30 | 3.27–3.31 | **+4.3%** | **−5.3%** |
+| `bench_new2.ns` | 4.43 | 4.34–5.37 | 4.69 | 4.63–4.72 | 4.36 | 4.32–4.39 | +5.7% | −1.8% |
+| `bench_newarg.ns` | 6.52 | 6.42–6.75 | 6.82 | 6.75–6.94 | 6.00 | 5.96–6.14 | +4.5% | **−8.0%** |
+
+Bold marks a change whose ranges are separated from the base's.
+**The 64-bit handle alone made every source slower**, by 0.9% (Mandelbrot) to
+9.9% (`bench_loop.ns`), nine of them with separated ranges: every handle a
+Rust structure holds doubled from 4 bytes to 8, and every resolution a send
+returns, `Resolved`, grew from 16 bytes to 24 in a release build
+(`a_resolution_stays_the_size_the_hot_path_was_measured_at`,
+`interpreter/resolve.rs`); how the cost divides among them was not
+measured. The space at `a51ed31` won the allocating sources back and more,
+but left four sources slower with separated ranges -- List by 6.1%,
+DeltaBlueTon80 by 5.3%, `bench_loop.ns` by 4.0% and Richards by 3.9%.
+
+**Profiled between the sittings.** An `xperf` profile (0.1221 ms sampling,
+one debug-info build per tree, one trace per program) of List,
+DeltaBlueTon80 and `bench_loop.ns` found `Heap::pointer_words` an outlined
+function at `a51ed31`, holding 5.3% (List), 8.2% (DeltaBlueTon80) and 5.7%
+(`bench_loop.ns`, plus 2.8% in `pointer_words_mut`) of the process's
+samples, where at the base it was inlined into its callers. The space had
+made `Heap::block` larger -- through `Space::words`, `Reservation::prefix`
+and `block_range` -- and `#[inline]` no longer sufficed. `5d1b903` marks
+`pointer_words`, `pointer_words_mut` and `pointer_word` `#[inline(always)]`
+and `Reservation::prefix`, `prefix_mut` and `check_prefix` `#[inline]`;
+`dumpbin /disasm` of a debug-info build shows none of them as a function of
+its own. The second sitting above measured the branch with it: of the four,
+`bench_loop.ns` stays slower by 1.9%, separated; List, DeltaBlueTon80 and
+Richards no longer separate from the base.
+
+**Memory.** Peak working set (`PROCESS_MEMORY_COUNTERS.PeakWorkingSetSize`
+through `GetProcessMemoryInfo` on the still-open handle, as in
+[memory.md](memory.md), "The interim cost, and the one question still
+open"), release, one build a side:
+
+| Command | Before | After |
+|---|---|---|
+| `bench --iterations 10` `bench_loop.ns` | 6.7 MB | 6.7 MB |
+| `bench --iterations 10` `bench_send.ns` | 6.7 MB | 6.7 MB |
+| `bench --iterations 10` `bench_block.ns` | 7.5 MB | 7.3 MB |
+| `bench --iterations 1 -- Havlak` | 41.9 MB | 30.2 MB |
+| `bench --iterations 1 -- CD` | 18.3 MB | 16.3 MB |
+| `bench --iterations 1 -- Json` | 16.8 MB | 16.3 MB |
+
+Havlak, whose live set is the largest of these, peaks 28% lower, which is
+consistent with an object no longer carrying a 16-byte slot and the Rust
+allocator's own overhead beside its words; that was not decomposed. `memory.md`'s older table measured `bench_loop.ns` at
+4.6-4.8 MB on an older base; the base here measures 6.7 MB the same way, so
+compare within this table only. Under `--collector-statistics` and `bench
+--iterations 10`, `bench_loop.ns` and `bench_send.ns` make no collection on
+either tree -- the 512 KiB floor keeps them out of the collector -- and
+`bench_block.ns` makes 229 collections, 12.0 ms of pause in all and 0.095
+ms at the longest, against 410, 17.1 ms and 0.158 ms before.
+
+What the measurement does not cover: one machine and one operating system;
+data layout, which `-C metadata` does not vary; for the `bench` figures,
+what each timed `main:args:` does once per application; why Mandelbrot,
+NBody and `bench_loop.ns` are slower, since none of the three was profiled
+after the fix; the profile, one trace per side from one debug-info build
+each; the working set of one build a side, measured once; and the commit
+charge, which the working set does not show.
 
 ### What a send costs, and where it goes
 
@@ -1583,7 +1737,7 @@ plain builds varies nothing when the builds are byte-identical, as they are
 on the machine these measurements ran on ("What the value conditions cost"
 below): build the extra ones with `-C metadata=<word>` added to `RUSTFLAGS`.
 That varies code layout only. The runtime's data layout (which symbol ids,
-arena indices and dispatch ids a program's objects receive) is not varied by
+object offsets and dispatch ids a program's objects receive) is not varied by
 it, so a difference that follows from data layout survives every such pool.
 
 Medians in ms from the first sitting, each group's mean, and the change of
@@ -4336,7 +4490,7 @@ and each has its own cause:
   collection cut the object arena to 144 slots, which the next cycle grew
   back to the floor through five reallocations, each a copy and fresh
   pages. The base did the same with 114 slots and six reallocations, which
-  happened to fault less. `compact_arena` now measures against the limit
+  happened to fault less. Compaction now measures against the limit
   (`collection_limit`, which `reset_collection_limits` shares): a buffer
   within twice the limit is kept, one past it is cut back to the limit
   (`c5b1f2b`) -- the old rule wherever the live set is above half the
@@ -6168,7 +6322,7 @@ is emitted and read back through a decoded view, and only an instruction with
 no eight-byte form keeps its `Instruction`, in the body's `wide` table. The
 encoding came after the eight-byte value ([object-model.md](object-model.md),
 "Values and objects"), and before the object space ([memory.md](memory.md),
-"Planned: the object space"), so that it was designed against the value the
+"The object space"), so that it was designed against the value the
 loop actually moves -- one tagged word -- and the interpreter stays the first
 tier in front of the JIT, as Cog's does. What it moved is "What the compact
 instruction encoding moved" above.

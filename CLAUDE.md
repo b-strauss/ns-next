@@ -15,13 +15,16 @@ Rust 1.98.0, edition 2021, five crates:
   (`core-library/Kernel.ns`, `PlatformFactory.ns`, `CollectionsFactory.ns`,
   booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
-  from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of 32-bit
-  handles, each slot one object's block of words -- header word, class word,
-  fields, in road step 3's layout (`heap/header.rs`, `heap/object.rs`; the
-  seam's value types in `heap/records.rs`, the per-heap tables of mixins,
-  applications and compiled code in `heap/tables.rs`) --
-  an activation stack reified on demand into frame objects, a mark-compact
-  collector run only at run-loop safepoints; `heap/value.rs`, a value as one
+  from `num-bigint` and `num-integer`), the heap (`heap.rs`, one object space
+  of variably sized objects in `ns-memory`'s reservation (`heap/space.rs`),
+  each object its words -- header word, class word, fields, in road step 3's
+  layout (`heap/header.rs`, `heap/object.rs`; the seam's value types in
+  `heap/records.rs`, the per-heap tables of mixins, applications and compiled
+  code in `heap/tables.rs`) -- named by handles that are 64-bit byte
+  offsets; an activation stack reified on demand into frame objects; a
+  mark-and-slide collector, the mark bit in the header and the forwarding
+  through a live-word bitmap (`heap/compaction.rs`), run only at run-loop
+  safepoints; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
   `heap/world.rs` and reached only through `Interpreter::enter`) and the image
@@ -38,7 +41,8 @@ Rust 1.98.0, edition 2021, five crates:
   (`docs/design/editor-support.md`).
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
   POSIX). The only crate with `unsafe`; `ns-runtime` and `ns-lsp` forbid it.
-  Nothing uses it yet (`docs/design/memory.md`, "The memory layer").
+  The heap's object space is its user (`docs/design/memory.md`, "The memory
+  layer", "The object space").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
@@ -51,10 +55,10 @@ project, verified by
 benchmarks").
 
 Read `docs/design/README.md` first — it maps the living design documents and says
-how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology;
-its "Where the next session starts" names the next piece of work.
-`docs/OPEN-WORK.md` lists everything still to be done: remove an item when work
-closes it, add one when a review, measurement or design leaves something open.
+how much of each aspect exists. `docs/PROGRESS.md` is the milestone chronology.
+`docs/OPEN-WORK.md`'s "Next" names the next piece of work, and the rest of it
+lists everything still to be done: remove an item when work closes it, add one
+when a review, measurement or design leaves something open.
 
 ## Invariants that are easy to break
 
@@ -106,7 +110,7 @@ mixins before any decoded code runs (`image-format.md`, "Verification"). The
 decoder sizes every record from its own bytes in a first pass and allocates
 nothing before it (`image-format.md`, "Two passes"), then fills each
 placeholder in place, so no record is built beside its placeholder. The
-transient peak of a rejected load is about 12.0x of the graph bytes plus ≤4x
+transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one (`memory.md`, "The
 amplification bound of a rejected load", has the breakdown and what is not
@@ -122,18 +126,20 @@ tag takes the next free number, a removed one retires its number. Renumbering
 would let a stale artifact decode into a different, valid program.
 
 **A handle means nothing against a `Heap` that did not mint it, nor across a
-move.** Never hold an `ObjectReference`, `ClassReference`, `FrameReference` or
-`ActivationReference` across the death of its interpreter — the index answers a
-different, valid object in another heap. Reach the real `Heap` (a `&Heap`
+move.** An `ObjectReference`, `ClassReference` or `FrameReference` is a 64-bit
+byte offset into its heap's object space, an `ActivationReference` an index
+into its activation stack. Never hold one across the death of its
+interpreter — the offset or index answers a different, valid object in
+another heap. Reach the real `Heap` (a `&Heap`
 parameter, or read through `interpreter.enter` while it lives); a reader of
 compiled code alone takes the mixin, which holds no handle (`compiler.md`,
 "Readers of compiled code take the mixin"). A host keeps a value across a run
 only as a `Root`. The debug-only origin guard, move epochs and the stress modes
 catch mistakes; a release build does not. A new Rust-side field holding a
 handle or a stored `Word` needs its `Trace` impl, and a new pointer word in an
-object's block its format's arm in `heap/object.rs`'s `trace_block`
-(`memory.md`, "A handle is arena-relative", "What the collector traces", "The
-move stress mode").
+object its format's arm in `heap/object.rs`'s `pointer_ranges`, which marking
+and forwarding both read (`memory.md`, "A handle is space-relative", "What
+the collector traces", "The move stress mode").
 
 **The brand is the compiler's, and needs no cast.** `World::enter` hands the
 `Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
@@ -146,8 +152,8 @@ doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
 **A running activation is an `ActivationReference`; only a `FrameReference` is
 ever stored.** An activation's index is reused after its pop; a closure's
 captured frame, a frame object's sender and home, and image records take a
-`FrameReference`, the handle of a frame object in the arena (`Heap::reify`;
-there is no frame arena). The run loop
+`FrameReference`, the handle of a frame object in the object space
+(`Heap::reify`; there is no separate store for frames). The run loop
 pops every activation it runs on every exit. **Every instruction that reads or
 writes another frame's registers by reference must answer its depth, never 0,
 in `bytecode::outer_reach_of`, and its eight-byte form in
@@ -256,7 +262,8 @@ A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 in the same commit. Nothing under `crates/ns-syntax` should change for runtime work.
 
 Never judge performance from a debug build (the `measuring-performance` skill).
-Only a release build runs the size tests (`an_object_slot_is_one_boxed_block_of_words` and
+Only a release build runs the size tests (`a_handle_and_an_optional_handle_are_one_word`,
+`a_resolution_stays_the_size_the_hot_path_was_measured_at` and
 `a_signal_fits_in_the_niche_of_its_one_unboxed_error`):
 `cargo nextest run --workspace --release`.
 

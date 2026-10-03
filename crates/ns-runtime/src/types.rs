@@ -539,8 +539,8 @@ mod tests {
     /// needs the type shapes to compile and hold together, and no test in
     /// this file ever reads through the self-reference. The construction
     /// itself lives in `Heap::allocate_self_referential_class`, which is
-    /// ordinary safe Rust under the arena: the slot's index is known before
-    /// the slot is filled.
+    /// ordinary safe Rust in a space of offsets: the object is allocated
+    /// before its class word is written with its own offset.
     fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
         let application = empty_application(heap, "Object");
         heap.allocate_self_referential_class(crate::heap::NewClass {

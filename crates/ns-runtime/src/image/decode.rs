@@ -2474,29 +2474,31 @@ fn decode_optional_class<'gc>(
 /// (`decode_graph_section` refuses before allocating when the first pass
 /// would allocate more than eight words a byte), is the largest of the
 /// ratios below; a byte belongs to one record and one value, so they do not
-/// add. An arena slot is a 16-byte boxed slice and a word 8 bytes in both
-/// builds; a handle is 4 bytes in a release build and 12 in a debug one, a
-/// `Value` 8 and 16.
+/// add. A placeholder is its allocation in the object space and nothing
+/// else: its header word, its class word and its fields, 8 bytes a word in
+/// both builds, and an overflow word before the header past 254 words
+/// after it, which no record this small reaches. A handle is 8 bytes in a
+/// release build and 16 in a debug one, a `Value` 8 and 16.
 ///
 /// - Per record, its object against its smallest record. A metaclass
 ///   record is the smallest record there is, 9 bytes (a two-byte builtin
 ///   header, the hash's 4, the body tag, a two-byte builtin class tag),
-///   and becomes a class object of 10 words: 16 + 80 = 96 bytes, 10.7x. A
-///   class record is at least 19 bytes for the same 96, 5.1x; a frame
-///   record at least 21 (the two-byte header, the hash, the body tag, a
-///   `TopLevel` kind, the program counter's 4, four one-byte flags and
-///   fields and the register count's 4) for 12 words, 16 + 96 = 112 bytes,
-///   5.3x; an instance, array, string or symbol record at least 11 for 32
-///   bytes, 2.9x; a closure record at least 17 for 56, 3.3x.
+///   and becomes a class object of 10 words, 80 bytes, 8.9x. A class
+///   record is at least 19 bytes for the same 80, 4.2x; a frame record at
+///   least 21 (the two-byte header, the hash, the body tag, a `TopLevel`
+///   kind, the program counter's 4, four one-byte flags and fields and the
+///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
+///   string or symbol record at least 11 for 2 words, 16 bytes, 1.5x; a
+///   closure record at least 17 for 5 words, 40 bytes, 2.4x.
 /// - The decoder's own tables, per record: the placeholder table (a handle,
-///   4 or 12 bytes), the first pass's sizes (8 bytes, freed once the
+///   8 or 16 bytes), the first pass's sizes (8 bytes, freed once the
 ///   placeholders exist) and, in the second pass, a metaclass record's
 ///   pending index (8), a class record's pending entry (16), a frame
-///   record's handle and body offset (4 or 12, and 8). A graph of metaclass
-///   records then holds 96 + 4 + 8 = 108 bytes for 9, **12.0x** in a
-///   release build, and 96 + 12 + 8 = 116, **12.9x** in a debug one; every
-///   other record stays below (a frame record 128 or 140 for 21, 6.1x or
-///   6.7x).
+///   record's handle and body offset (8 or 16, and 8). A graph of metaclass
+///   records then holds 80 + 8 + 8 = 96 bytes for 9, **10.7x** in a
+///   release build, and 80 + 16 + 8 = 104, **11.6x** in a debug one; every
+///   other record stays below (a class record 104 or 112 for 19, 5.5x or
+///   5.9x; a frame record 120 or 136 for 21, 5.7x or 6.5x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
 ///   an 8-byte word, 8x, which a record of many values approaches from
@@ -2506,23 +2508,25 @@ fn decode_optional_class<'gc>(
 ///   UTF-8 byte of the symbol section.
 /// - Per allocating value, its word and its object together: an `i64`
 ///   beyond 61 bits is 9 bytes (tag, `i64`) for a word and a `LargeInteger`
-///   of one digit, 8 + 16 + 24 = 48 bytes, 5.3x; a float outside the
-///   immediate range the same 48 for its 9 bytes, 5.3x; a
-///   `VALUE_LARGE_INTEGER` at least 14 bytes (tag, sign, count, one digit)
-///   for the same 48, 3.4x, each further digit 8 bytes for 8. Its digits
-///   are read into a `Vec` first, which lives until its object is made: one
-///   value at a time, 8 bytes a digit more, 4.0x for a one-digit value.
+///   of one digit, 8 + 24 = 32 bytes, 3.6x; a float outside the immediate
+///   range the same 32 for its 9 bytes, 3.6x; a `VALUE_LARGE_INTEGER` at
+///   least 14 bytes (tag, sign, count, one digit) for the same 32, 2.3x,
+///   each further digit 8 bytes for 8. Its digits are held in a `Vec` or a
+///   boxed slice first, which lives until its object is made -- the
+///   `i64`'s one digit too: one value at a time, 8 bytes a digit more, 4.4x
+///   for the `i64` and 2.9x for a one-digit `VALUE_LARGE_INTEGER`.
 /// - The root list, read after every record into `Value`s (`reserve_for`
 ///   caps its reservation at the bytes left): 8 bytes a one-byte root in a
 ///   release build, 8x, and 16 in a debug one, **16x**.
-/// - A class or metaclass record's fields, laid out beside the placeholder
-///   before they are copied into it (`Heap::fill_placeholder_class`): 80
-///   bytes, one record at a time, a constant.
 ///
-/// So the peak is about **12.0x** in a release build (a graph of
+/// So the peak is about **10.7x** in a release build (a graph of
 /// metaclass records) and **16x** in a debug one (a graph that is all root
-/// list), plus at most 4x of the symbol section, not counting each
-/// allocation's own overhead in the allocator.
+/// list), plus at most 4x of the symbol section. Not counted: each Rust
+/// allocation's own overhead in the allocator; a decoder table's `Vec`
+/// doubling as it grows, which holds both buffers for a moment; and the
+/// object space's commit growth, which commits at least double what it had
+/// committed, so the space may have up to about twice what the
+/// placeholders occupy committed, though not touched.
 fn decode_value<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
@@ -2532,11 +2536,12 @@ fn decode_value<'gc>(
         VALUE_NIL => Ok(Value::nil()),
         VALUE_FALSE => Ok(Value::boolean(false)),
         VALUE_TRUE => Ok(Value::boolean(true)),
-        // An `i64` beyond 61 bits allocates its `LargeInteger`: 5.3x of its
-        // 9 bytes with the word that holds it (above).
+        // An `i64` beyond 61 bits allocates its `LargeInteger`: 4.4x of its
+        // 9 bytes with the word that holds it and its transient digit
+        // (above).
         VALUE_SMALL_INTEGER => Ok(integer_value(context.mutator, reader.read_i64()?)),
         // A float outside the immediate range allocates its boxed `Float`:
-        // 5.3x of its 9 bytes with the word that holds it (above).
+        // 3.6x of its 9 bytes with the word that holds it (above).
         VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
         VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
         VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),
@@ -3019,9 +3024,9 @@ fn rebuild_applications<'gc>(
     pending: Vec<PendingClass>,
     pending_metaclasses: &[usize],
 ) -> Result<(), DecodeError> {
-    // Class-object arena index -> position in `pending`, for the "is my
+    // Class-object identity key -> position in `pending`, for the "is my
     // superclass still waiting for its own application?" question each step
-    // asks. Keyed by index because a superclass arrives as a `ClassReference`
+    // asks. Keyed by identity because a superclass arrives as a `ClassReference`
     // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (index, pending_class) in pending.iter().enumerate() {
@@ -3931,7 +3936,12 @@ pub fn decode_graph_section<'gc>(
         };
         let heap = &mut context.mutator.heap;
         if let Some(record) = record {
-            heap.fill_placeholder_class(*object, class, identity_hash, record);
+            // A placeholder the first pass sized for some other record is
+            // refused, as a string's of the wrong size is: the space cannot
+            // resize it.
+            if !heap.fill_placeholder_class(*object, class, identity_hash, record) {
+                return Err(DecodeError::UnexpectedEndOfFile);
+            }
         }
         if let Some(applied) = applied_clause {
             if !heap.class_set_applied_clause(*object, applied) {

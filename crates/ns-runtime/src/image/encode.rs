@@ -164,9 +164,10 @@ pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: Value<'gc>) -> bool 
 /// A `usize` count or index narrowed to the wire's `u32` field, refusing to
 /// truncate: a length prefix that does not describe the payload that
 /// follows would make the image self-inconsistent, which no reader could
-/// detect. Only for a count no program can push past `u32::MAX`: an id or
-/// count of heap objects, frames among them, which the 32-bit handles bound;
-/// one of declarations, statements or instructions, which source bounds (a
+/// detect. Only for a count no program is meant to push past `u32::MAX`: an
+/// id or count of heap objects, frames among them, which only the heap's
+/// memory bounds, so a write past it aborts rather than refusing; one of
+/// declarations, statements or instructions, which source bounds (a
 /// `Span` offset is a `u32`); the symbol table's, which the two bound
 /// together; and a frame's program counter, an instruction index. Past it
 /// is an invariant an image write must not violate, so it aborts loudly. A

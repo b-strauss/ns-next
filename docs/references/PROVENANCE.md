@@ -204,9 +204,10 @@ management and its `become:` (`dispatch.md`, `memory.md`, `object-model.md`).
 
 - **Nova** — `prior-art/nova/`, from <https://github.com/trynova/nova>. A JavaScript
   engine in Rust, and the one entry here that is not about Newspeak at all. It is the
-  model `docs/design/memory.md` names for the arena of typed handles, which ns-next now
-  has, and the comparison it weighs its root discipline against. Rust is the whole
-  reason it is the comparison rather than V8: the borrow checker is available as an
+  model `docs/design/memory.md` names for its typed handles, which ns-next first
+  had as an arena of indices and now has as offsets into its object space, and
+  the comparison it weighs its root discipline against. Rust is the whole reason
+  it is the comparison rather than V8: the borrow checker is available as an
   enforcement mechanism, and a C++ engine's conventions do not carry over to a
   solution built on one. MPL-2.0, the most restrictive license of the ten. The parts
   the design documents cite:

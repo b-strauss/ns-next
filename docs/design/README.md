@@ -78,12 +78,12 @@ guarantee it gives up or the complexity it adds.
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
 | Lexer, parser, AST | [frontend.md](frontend.md) | Built: the syntax is the specification's grammar (§4.2 to §8.1), strictly, read as a PEG over tokens, every rule pinned by a parser test and every accepted form by a golden; where the specification contradicts itself its prose decides, and one deviation is recorded (a modifier needs no whitespace after it) | A pattern literal lowered to the `Pattern` send §5.1.9 defines, not to **nil** ([frontend.md](frontend.md), "What is parsed and dropped"); chains (`:\|`) and object literals, both marked *Unimplemented* in the specification |
-| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built, §6.2's mixin application included: each `<:` clause adds an ordinary class level, so lookup, `super`, `outer` and the caches need nothing new. §3.2's class hierarchy is reified: every class object's class is its metaclass, over `Class`, and every metaclass's class is `Metaclass`. All four of §3.1.1's value conditions are enforced, refused where an instance is made, and a module's root may name only `Object` or `Value`, or write `Object <: Value`. §6.3.2's simultaneous slots, through pull futures: a clause's slots initialize simultaneously, so well-founded mutual recursion between them resolves ("Simultaneous slots"). A value is one tagged word, Spur's: a handle, a 61-bit `SmallInteger`, a `SmallFloat64` or `nil`, `true` and `false`, every other number a `LargeInteger` or a boxed `Float`; a heap object stores bare eight-byte words, and a store checks the value it stores ("Values and objects"). Every object is a header word, a class word and its fields in one block of words, its kind a format -- class objects, closures and reified frames included -- on the arena, the handle still its index (road step 3a, "The object layout"); `Symbol` is a subclass of `String` | The object space, the blocks in one VM-owned space with byte-offset handles (road step 3b, [memory.md](memory.md), "Planned: the object space"); `become:` through forwarders ("Planned: `become:` through forwarders") |
+| Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built, §6.2's mixin application included: each `<:` clause adds an ordinary class level, so lookup, `super`, `outer` and the caches need nothing new. §3.2's class hierarchy is reified: every class object's class is its metaclass, over `Class`, and every metaclass's class is `Metaclass`. All four of §3.1.1's value conditions are enforced, refused where an instance is made, and a module's root may name only `Object` or `Value`, or write `Object <: Value`. §6.3.2's simultaneous slots, through pull futures: a clause's slots initialize simultaneously, so well-founded mutual recursion between them resolves ("Simultaneous slots"). A value is one tagged word, Spur's: a handle, a 61-bit `SmallInteger`, a `SmallFloat64` or `nil`, `true` and `false`, every other number a `LargeInteger` or a boxed `Float`; a heap object stores bare eight-byte words, and a store checks the value it stores ("Values and objects"). Every object is a header word, a class word and its fields, its kind a format -- class objects, closures and reified frames included (road step 3a, "The object layout") -- in one VM-owned object space, a handle the object's 64-bit byte offset (road step 3b, "Handles into the object space"); `Symbol` is a subclass of `String` | `become:` through forwarders ("Planned: `become:` through forwarders") |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since M4's step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c), read from the header word's low 22 bits since road step 3a ("The guard in the header word"); M4's step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | Open: whether the class side gets a scope of its own ("Open: the class side's scope"); guarding a private lexical site on the mixin rather than its application, once a program has one to measure |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop runs over the frame's state in locals, one entry per stretch between two safepoints, and polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers; a body is stored and run as eight-byte instructions with side tables, read back as `Instruction`s through a decoded view, each send kind joining its own send path ("The compact instruction encoding") | The JIT tiers, after the representation steps of the road -- an execution model for compiled code, a baseline JIT and an optimizing one ("Planned: JIT tiers") |
-| Object lifetime, identity, collection | [memory.md](memory.md) | Built — the arena, each slot one block of words (road step 3a), frames objects in it, the activation stack, the safepoint, tracing by format, host roots, the stress modes, the lifetime brand and a mark-compact collector; a slot is reclaimed once nothing reaches it; the memory layer, `crates/ns-memory`, which nothing uses yet ("The memory layer") | The object space, the objects in one VM-owned space with byte-offset handles (road step 3b, "Planned: the object space"); generations ("Planned: generations"); inline allocation ("Planned: inline allocation") |
-| Serialization: the packaged application | [image-format.md](image-format.md) | Built: one artifact, an application packaged just before `main:args:`, carrying every module of a project; frames are object records, and the decoder sizes every record from its own bytes before it allocates any ("Two passes") | The image under the object space and generations ("Planned: the image under the object space and generations"); suspend and resume ("Planned: suspend and resume") |
+| Object lifetime, identity, collection | [memory.md](memory.md) | Built — the memory layer, `crates/ns-memory` ("The memory layer"), and in it the object space: every object end to end in one reservation, byte-offset handles, bump allocation (road step 3b, "The object space"); frames objects in it, the activation stack, the safepoint, tracing by format, host roots, the stress modes, the lifetime brand and a mark-compact collector that marks in the header and slides the survivors down through a live-word bitmap; an object is reclaimed once nothing reaches it | Generations ("Planned: generations"); inline allocation ("Planned: inline allocation") |
+| Serialization: the packaged application | [image-format.md](image-format.md) | Built: one artifact, an application packaged just before `main:args:`, carrying every module of a project; frames are object records, and the decoder sizes every record from its own bytes before it allocates any ("Two passes") | The image under generations ("Planned: the image under generations"); suspend and resume ("Planned: suspend and resume") |
 | Builtins and the platform | [core-library.md](core-library.md) | **Partial:** `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is Newspeak in `crates/ns-runtime/core-library/Kernel.ns` -- a forwarder to one of the mirror's `MIRROR` rows, which are the leaves, or a quick method or ordinary method that reaches no leaf, as all of `True`'s, `False`'s and the nil protocol's are. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them, and `Behavior` over `Class` and `Metaclass` — and `Value` derives `=`, `==` and `hash` from an instance's state. Every class object's class is its own metaclass, its class side applied to `Class`, and every metaclass's class is `Metaclass`; a class object is a value when its enclosing object is. `Object` carries §3.2's accessors for the predefined classes, so a bare `String` is a send answered without an activation. §8.6's exceptions are Newspeak over kernel-private activation objects: `Exception`, `Error`, `MessageNotUnderstood`, `Halt` and `Message`, reached through `platform kernel`, with ANSI's `on:do:`, `ensure:`, `ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`; every VM error and every message nothing understands is signalled, and the depth limit keeps a reserve for signalling its own. The platform is an instance of the nested `Platform` of the shipped module `crates/ns-runtime/core-library/PlatformFactory.ns`, whose root is booted with the mirror and the kernel instance from the table of shipped modules (`interpreter/core_library.rs`) and never handed out (the factory pattern); its transcript, `collections`, `kernel` and `time` members are lazy slots, its module's classes are handed out by class accessors, and an image names all of them by their platform paths. `collections` is the facet of a second shipped module, `CollectionsFactory.ns`, whose root `PlatformFactory`'s builds once through the mirror's `moduleNamed:`; its `List`, `Map` and `Set` are Newspeak. A `String` is its code points, one byte or four each ("Strings are code points in two widths"), and a NaN equals a NaN. Integers are unbounded, as §5.1.1 requires: one that does not fit a `SmallInteger`'s 61 bits is a `LargeInteger`, a kernel subclass of `Integer` whose arithmetic (`crates/ns-runtime/src/arbitrary_integer/`) is adapted from `num-bigint` and `num-integer` ("Large integers") | real bodies for `whileTrue:`, `whileFalse:` and `do:` before the baseline JIT (road step 8); settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
 | Editor support: the language server and the JetBrains plugin | [editor-support.md](editor-support.md) | Built — highlighting and errors as you type in every commercial JetBrains IDE from 2026.1.4; the server bundled for Windows x64 | formatting, navigation, more platforms |
@@ -115,20 +115,21 @@ editors/
 ```
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
-object arena, each slot one object's block of words -- header word, class
-word, fields -- and the activation stack every running activation lives on;
-an activation becomes a frame object in the arena only when something
-reifies it. `ObjectReference`, `ClassReference` and `FrameReference` are
-opaque 32-bit handles into the arena, and `ActivationReference` into the
-stack; each one's
-inner index is private to the `heap` module (`heap.rs` and its submodules,
-`heap/value.rs` among them, which puts an object's index into a value's word),
-so every read and write goes through a `Heap` accessor because the compiler
-refuses anything else. That seam exists so the store behind a handle can be
-replaced by changing one file rather than every caller; replacing
-`Rc<RefCell<_>>` with the arena is the evidence that it works, since no call
-site outside `heap.rs` and `types.rs` changed for either the object or the frame
-conversion. The handle types are not hidden, on purpose: the two activation
+object space (`heap/space.rs`), every object end to end in one reservation of
+`ns-memory` -- header word, class word, fields -- and the activation stack
+every running activation lives on; an activation becomes a frame object in
+the space only when something reifies it. `ObjectReference`,
+`ClassReference` and `FrameReference` are opaque handles, each an object's
+64-bit byte offset in the space, and `ActivationReference` an index into the
+stack; each one's inner field is private to the `heap` module (`heap.rs` and
+its submodules, `heap/value.rs` among them, which puts an object's offset into
+a value's word), so every read and write goes through a `Heap` accessor
+because the compiler refuses anything else. That seam exists so the store
+behind a handle can be replaced by changing one module rather than every
+caller; replacing `Rc<RefCell<_>>` with an arena, and the arena with the
+object space, is the evidence that it works, since the first changed no call
+site outside `heap.rs` and `types.rs`, and the second one call site outside
+the `heap` module, the image decoder's. The handle types are not hidden, on purpose: the two activation
 handles are distinct types in every signature — a closure, a frame and an image
 record take only a `FrameReference` — so storing an `ActivationReference` in
 anything that outlives its call is a compile error. And every movable handle
@@ -137,7 +138,7 @@ carries the brand of the entry that minted it, a lifetime obtainable only inside
 — the crate forbids `unsafe` code — so a handle held across a safepoint, or kept
 by a host outside an entry, is a compile error too. Start at
 [memory.md](memory.md) for what the heap guarantees — a mark-compact collector
-reclaims a slot once nothing reaches it, only at a safepoint of the run loop —
+reclaims an object once nothing reaches it, only at a safepoint of the run loop —
 and at [execution.md](execution.md), "Activations", for the stack.
 
 `ns-syntax` does not depend on `ns-runtime`. Nothing under `crates/ns-syntax`
@@ -395,10 +396,11 @@ observe there is no answer to record that would not be invented.
 - **`CLAUDE.md`** — the invariants that are easy to break, each of which has
   already produced a real defect. Load-bearing for anyone working in the
   repository; the reasoning behind each one is in these documents.
-- **`docs/PROGRESS.md`** — milestone chronology: what was completed and when,
-  and, under "Where the next session starts", the next piece of work. These
-  documents describe the design; that one records the milestones.
-- **`docs/OPEN-WORK.md`** — everything still to be done: planned features,
+- **`docs/PROGRESS.md`** — milestone chronology: what was completed and
+  when. These documents describe the design; that one records the
+  milestones.
+- **`docs/OPEN-WORK.md`** — under "Next", the next piece of work; then
+  everything still to be done: planned features,
   specification deviations, open design questions, unexplained measurements
   and known gaps, each with where it is explained.
 - **`docs/superpowers/plans/`** — implementation plans, dated. A plan is an

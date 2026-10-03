@@ -2,7 +2,10 @@
 
 Milestone chronology: what was completed and when. **How the system is designed,
 and how much of each aspect exists, is in `docs/design/` — start at its
-[README](design/README.md).** This file is the schedule, not the design.
+[README](design/README.md).** This file is the schedule, not the design. What
+comes next, and everything still to be done, is in [OPEN-WORK.md](OPEN-WORK.md),
+"Next" and below. The sections after the table record the milestones, oldest
+first.
 
 | Milestone | Status | Completed | Plan |
 |---|---|---|---|
@@ -10,44 +13,26 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 | M1 — Runtime | Complete | 2026-09-04 | [runtime](superpowers/plans/2026-09-04-1351-ns-next-runtime.md) |
 | M2 — Bytecode + VM | Complete | 2026-09-05 | [bytecode-vm](superpowers/plans/2026-09-04-2353-ns-next-bytecode-vm.md) |
 | M3 — Nested classes + source-free images | Complete | 2026-09-07 | [nesting/mixins/source-free-images](superpowers/plans/2026-09-06-1720-ns-next-nesting-mixins-source-free-images.md) |
+| Artifact inspection and the stateless binary, finishing M3's image work | Complete | 2026-09-08 | [artifact-inspection-and-stateless-binary](superpowers/plans/2026-09-08-0044-ns-next-artifact-inspection-and-stateless-binary.md) |
 | M4 — Representation: arena, checked roots, stack activations, a moving collector | Complete | 2026-09-20 | [heap-seam](superpowers/plans/2026-09-08-2034-ns-next-heap-seam.md), [object-and-frame-arena](superpowers/plans/2026-09-09-1952-ns-next-object-and-frame-arena.md), [activation-stack](superpowers/plans/2026-09-10-2145-ns-next-activation-stack.md), [retire-tree-walker](superpowers/plans/2026-09-11-1848-ns-next-retire-tree-walker.md), [clean-up-with-one-engine](superpowers/plans/2026-09-11-2315-ns-next-clean-up-with-one-engine.md), [reference-lowering](superpowers/plans/2026-09-12-1157-ns-next-reference-lowering.md), [tag-named-identity-hashes](superpowers/plans/2026-09-12-1604-ns-next-tag-named-identity-hashes.md), [trampoline](superpowers/plans/2026-09-12-1619-ns-next-trampoline.md), [no-reentry](superpowers/plans/2026-09-13-0149-ns-next-no-reentry.md), [checked-roots-2b](superpowers/plans/2026-09-13-1748-ns-next-checked-roots-2b.md), [lifetime-brand-2c](superpowers/plans/2026-09-13-2348-ns-next-lifetime-brand-2c.md), [spec-conformant-lookup](superpowers/plans/2026-09-15-0108-ns-next-spec-conformant-lookup.md), [primitive-method-entries-3a](superpowers/plans/2026-09-15-2345-ns-next-primitive-method-entries-3a.md), [inline-caches-3b](superpowers/plans/2026-09-16-0950-ns-next-inline-caches-3b.md), [flat-metaclasses-factory-and-cache-refinements](superpowers/plans/2026-09-18-0211-ns-next-flat-metaclasses-factory-and-cache-refinements.md), [goldens](superpowers/plans/2026-09-18-1355-ns-next-goldens.md), [dispatch-id-place-3c](superpowers/plans/2026-09-18-2215-ns-next-dispatch-id-place-3c.md), [specification-gaps](superpowers/plans/2026-09-19-0300-ns-next-specification-gaps.md), [remove-assign](superpowers/plans/2026-09-19-2125-ns-next-remove-assign.md), [closure-conversion](superpowers/plans/2026-09-19-2344-ns-next-closure-conversion.md), [moving-collector](superpowers/plans/2026-09-20-1746-ns-next-moving-collector.md) |
-| M5–M6 — JIT | Not started | — | — |
-
-## Where the next session starts
-
-**Next: road step 3b, the object space**
-([memory.md](design/memory.md), "Planned: the object space";
-[object-model.md](design/object-model.md), "Planned with road step 3b:
-handles"): the arena of boxed blocks gives way to one space of variably
-sized objects in `ns-memory`'s reservation, with byte-offset handles, bump
-allocation and sliding compaction; the layout of an object's words does not
-change. Its design was decided with the user on 2026-09-29 and 2026-10-03;
-it has no implementation plan yet, so the session starts by writing one.
-Everything before it on the road is built: road step 2's eight-byte value
-("The eight-byte value" below), the compact instruction encoding ("The
-compact instruction encoding" below) and road step 3a, the object
-representation ("The object representation" below;
-[object-model.md](design/object-model.md), "The object layout"), which made
-every object a header word, a class word and its fields in one block of
-words per arena slot. The whole road, decided with the user on 2026-09-29,
-is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
-
-**Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
-each item with where it is explained. The sections below record the
-milestones, oldest first.
-
-**Measuring.** The protocol is [execution.md](design/execution.md)'s "What
-removing the re-entries moved"; every compared binary, the current tree
-included, is built with the same explicit `RUSTFLAGS` (`CLAUDE.md`,
-"Working in this repository"). Four of the eight measurement sources are
-goldens under `goldens/tool/bench/`; the other four -- `bench_new.ns`,
-`bench_new2.ns`, `bench_newarg.ns` and `bench_do.ns` -- are not in the tree
-and must be written out from [execution.md](design/execution.md), "What
-spec-conformant lookup moved", never reconstructed from a prose
-description: a reconstruction runs and prints the right answer while
-measuring something else. The Are We Fast Yet benchmarks are in the tree
-and measured as [execution.md](design/execution.md), "The Are We Fast Yet
-benchmarks", describes.
+| The core library in Newspeak: leaf inlining, the core library over a VM mirror, `Top`, `Value` and the value semantics, mixin application, the value conditions, the predefined classes as accessors on `Object`, `True` and `False`, `UndefinedObject`, double-quoted strings, the reserved words, the platform and its transcript and namespace as values, `Behavior`, `Class` and `Metaclass`, exceptions | Complete | 2026-09-25 | [leaf-inlining](superpowers/plans/2026-09-21-2107-ns-next-leaf-inlining.md), [kernel-over-vm-mirror](superpowers/plans/2026-09-22-0107-ns-next-kernel-over-vm-mirror.md), [value-and-top](superpowers/plans/2026-09-22-2112-ns-next-value-and-top.md), [mixin-application](superpowers/plans/2026-09-23-0936-ns-next-mixin-application.md), [value-conditions](superpowers/plans/2026-09-23-2252-ns-next-value-conditions.md), [object-class-accessors](superpowers/plans/2026-09-24-2058-ns-next-object-class-accessors.md), [boolean-quick-methods](superpowers/plans/2026-09-24-2320-ns-next-boolean-quick-methods.md), [class-behavior-metaclass](superpowers/plans/2026-09-25-1331-ns-next-class-behavior-metaclass.md), [exceptions](superpowers/plans/2026-09-25-2244-ns-next-exceptions.md) |
+| Editor support: the language server and the JetBrains plugin | Complete | 2026-09-26 | [editor-support-language-server](superpowers/plans/2026-09-26-0030-editor-support-language-server.md), [editor-support-jetbrains-plugin](superpowers/plans/2026-09-26-0031-editor-support-jetbrains-plugin.md) |
+| The platform and collections modules, the transcript, the test harness, the unreserved words as names, the specification's grammar and compile-time errors, `main:args:`'s arguments, simultaneous slots, the loop over locals | Complete | 2026-09-28 | [platform-module](superpowers/plans/2026-09-26-1950-ns-next-platform-module.md), [collections-module](superpowers/plans/2026-09-28-0102-ns-next-collections-module.md), [simultaneous-slots](superpowers/plans/2026-09-28-1152-ns-next-simultaneous-slots.md), [loop-over-locals](superpowers/plans/2026-09-28-1808-ns-next-loop-over-locals.md), [decision-sink](superpowers/plans/2026-09-28-2106-ns-next-decision-sink.md) (tried and halted) |
+| Road step 1 — the memory layer | Complete | 2026-09-29 | [memory-layer](superpowers/plans/2026-09-29-0327-ns-next-memory-layer.md) |
+| Road step 2, first plan — large integers | Complete | 2026-09-29 | [large-integers](superpowers/plans/2026-09-29-0911-ns-next-large-integers.md) |
+| One artifact, packaged before `main:args:`; the root rule a resolve error | Complete | 2026-09-30 | [packaged-artifact](superpowers/plans/2026-09-29-2341-ns-next-packaged-artifact.md) |
+| Before road step 2's second plan — the Are We Fast Yet benchmarks, stages 1 to 3, and the baseline over all sixteen programs | Complete | 2026-10-02 | [are-we-fast-yet-stage-1](superpowers/plans/2026-09-30-1353-ns-next-are-we-fast-yet-stage-1.md), [are-we-fast-yet-stage-2](superpowers/plans/2026-09-30-2156-ns-next-are-we-fast-yet-stage-2.md), [are-we-fast-yet-stage-3](superpowers/plans/2026-10-01-1855-ns-next-are-we-fast-yet-stage-3.md) |
+| Road step 2, second plan — the eight-byte value | Complete | 2026-10-02 | [eight-byte-value](superpowers/plans/2026-10-02-1310-ns-next-eight-byte-value.md) |
+| After road step 2 — the compact instruction encoding | Complete | 2026-10-02 | [compact-instruction-encoding](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md) |
+| Road step 3a — the object representation | Complete | 2026-10-03 | [object-representation](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md) |
+| Road step 3b — the object space | Complete | 2026-10-03 | [object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md) |
+| Road step 4 — generations | Not started | — | — |
+| Road step 5 — `become:` through forwarders | Not started | — | — |
+| Road step 6 — inline allocation in the interpreter | Not started | — | — |
+| Road step 7 — an execution model for compiled code | Not started | — | — |
+| Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
+| Road step 8 (M5) — a baseline JIT | Not started | — | — |
+| Road step 9 (M6) — an optimizing JIT | Not started | — | — |
 
 ## Notes
 
@@ -4086,8 +4071,9 @@ the user on 2026-09-29 and 2026-10-03 and built in thirteen stages, each
 green. Every object in the arena is one `Box<[u64]>` in road step 3's final
 layout: a header word -- the dispatch guard in bits 0-21, the format, a
 `LargeInteger`'s negative bit, a 22-bit identity hash and the word count --
-then the class word, then the fields. The handle is still the arena index,
-and the space in `ns-memory`'s reservation is road step 3b.
+then the class word, then the fields. The handle stayed the arena index
+until road step 3b put the objects in the space ("The object space"
+below).
 
 - `c66bb94` -- the reserved guard values are the three lowest ids (`NONE`
   0, `VACANT` 1, `FORWARDED` 2), and minting stops below 2^22.
@@ -4146,3 +4132,67 @@ What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): lending a
 the recorded guard and the slot-access check, with road step 5; the ids'
 reclamation and a weak application cache, with live editing; and the task
 reviews' minor findings under "Missing tests" and "Code quality follow-ups".
+
+## The object space (2026-10-03)
+
+Plan: [ns-next-object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md);
+[memory.md](design/memory.md), "The object space".
+
+Road step 3b ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM"), the second of road step 3's two plans, designed with
+the user on 2026-09-29 and 2026-10-03 and built in six stages, each green.
+The arena of boxed blocks gives way to one object space in `ns-memory`'s
+reservation, the memory layer's first user: every object lies end to end in
+it, its header word, class word and fields as road step 3a laid them out,
+an overflow word before the header past 254 words; a handle is the 64-bit
+byte offset of the header; allocation bumps the top and writes the object in
+place; and the collector marks in the header and slides the survivors down,
+forwarding every handle through a live-word bitmap. Three decisions were
+taken with the user while planning: the live-word bitmap with a prefix count
+per 64 words as the forwarding table; no debug no-access protection of
+vacated pages until generated code dereferences addresses; and running out
+of memory aborts, as a failed `Vec` push does.
+
+- `c22b93c3` -- the memory layer lends its committed read-write prefix in
+  O(1) (`Reservation::prefix`), the end of the prefix kept as a field.
+- `bc006499` -- marking sets the header's mark bit, and marking and
+  forwarding read an object's pointer words through one enumeration,
+  `pointer_ranges`; the mark-bit side table goes.
+- `e1873990` -- a handle is a 64-bit byte offset, a `NonZeroU64`, still
+  backed by arena slots; `Resolved` grows from 16 to 24 bytes in a release
+  build.
+- `d65b2a0a` -- the object space (`heap/space.rs`): a 64 GiB reservation,
+  a 256 KiB first commit that at least doubles as it grows, a bump of the
+  top, the overflow word and the walk, built and tested on its own.
+- `e4fd5286` -- objects live in the space; a collection slides the
+  survivors down through a live-word bitmap (`heap/compaction.rs`) and
+  gives back committed memory past twice its next limit; the trigger
+  counts bytes, with a 512 KiB floor; the move stress mode shifts every
+  object by a distance that varies with the epoch.
+- `a51ed31c` -- every allocation writes its object in place in the space,
+  and the per-object Rust allocations go; the decoder refuses a class
+  record whose placeholder has another size, where it rebuilt the object.
+- `5d1b903f` -- the object access path inlines again: `pointer_words`,
+  `pointer_words_mut` and `pointer_word` are `#[inline(always)]`, after a
+  profile found `pointer_words` outlined and holding 5.3% to 8.2% of three
+  programs' samples.
+- `cd82cd3c` and the documentation commit after it -- the decoder's
+  amplification bound recomputed for the space: a rejected load's transient
+  peak is about 10.7x of the graph section's bytes in a release build and
+  16x in a debug one, plus at most 4x of the symbol section's
+  ([memory.md](design/memory.md), "The amplification bound of a rejected
+  load"), where it was 12.0x and 16x; the documentation describes the built
+  state and records the measurement.
+
+Measured against `d3e9f6f`, the tree the branch started from, seventeen of
+the twenty-four sources are faster, ten with separated ranges, by 3.8% to
+22.1% (`bench_block.ns`); Mandelbrot, `bench_loop.ns` and NBody are 1.5% to
+2.5% slower, separated; Havlak's peak working set falls from 41.9 MB to
+30.2 MB ([execution.md](design/execution.md), "What the object space
+moved").
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a
+Newspeak-level out-of-memory error; the debug no-access protection of
+vacated pages, for road step 8's generated code; the encoder's 32-bit
+object ids, which abort past about four billion objects; and the three
+slower programs, not profiled.
