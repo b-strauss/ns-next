@@ -29,9 +29,11 @@ pub struct Analysis {
     pub classified: Vec<Classified>,
 }
 
-/// The errors `ns-next run` would refuse `text` for before running it -- the
-/// lexer's, else the parser's, else the resolver's -- and, when it parses,
-/// every name the resolver can place. Never panics: see `guarded`.
+/// Every error `ns-next run` would refuse `text` for before running it --
+/// the lexer's, the parser's and the resolver's, together -- and every name
+/// the resolver can place. A source with errors is analysed as recovered,
+/// so the colours survive while a file is typed. Never panics: see
+/// `guarded`.
 pub fn analyze(text: &str) -> Analysis {
     guarded(text, analyze_unguarded)
 }
@@ -65,40 +67,21 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
 }
 
 fn analyze_unguarded(text: &str) -> Analysis {
-    // The lexer runs on its own first because `ns_syntax::parse` refuses a
-    // token stream with lexer errors before parsing, and because the
-    // classification needs the tokens themselves. `lex` also refuses a
-    // source longer than a span can address before lexing it.
-    let tokens = match ns_syntax::lex(text) {
-        Ok(tokens) => tokens,
-        Err(lexer_diagnostics) => {
-            return Analysis {
-                findings: lexer_diagnostics.into_iter().map(Finding::from).collect(),
-                classified: Vec::new(),
-            }
-        }
-    };
-    let module = match ns_syntax::parse(text) {
-        Ok(module) => module,
-        Err(diagnostics) => {
-            return Analysis {
-                findings: diagnostics.into_iter().map(Finding::from).collect(),
-                classified: Vec::new(),
-            }
-        }
-    };
-    let resolution = ns_runtime::resolve_for_editor(module);
-    let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
+    let parsed = ns_syntax::parse_for_editor(text);
+    // The resolver runs on a recovered module too. None of its errors can
+    // come from the recovery, which never invents a declaration
+    // (`docs/design/frontend.md`, "Recovery").
+    let resolution = ns_runtime::resolve_for_editor(parsed.module);
+    let classified =
+        semantic_tokens::classify(&resolution.module, &resolution.bindings, &parsed.tokens);
+    let mut findings: Vec<Finding> = parsed.diagnostics.into_iter().map(Finding::from).collect();
+    findings.extend(resolution.errors.into_iter().map(|error| Finding {
+        span: error.span,
+        message: error.message,
+        severity: Severity::Error,
+    }));
     Analysis {
-        findings: resolution
-            .errors
-            .into_iter()
-            .map(|error| Finding {
-                span: error.span,
-                message: error.message,
-                severity: Severity::Error,
-            })
-            .collect(),
+        findings,
         classified,
     }
 }
@@ -129,12 +112,32 @@ mod tests {
             class Module = Object new () ( public broken = ( ^'unterminated ) ) : ()
         "};
         let analysis = analyze(text);
-        assert_eq!(analysis.findings.len(), 1);
+        // The lexer's findings come first; the parser's follow, since the
+        // string runs to the end of the file.
         assert_eq!(analysis.findings[0].message, "unterminated string literal");
         assert_eq!(
             analysis.findings[0].span.start as usize,
             text.find("'unterminated").expect("the literal")
         );
+    }
+
+    /// A syntax error no longer takes the semantic colours with it.
+    #[test]
+    fn a_syntax_error_keeps_the_names_classified() {
+        let text = indoc::indoc! {"
+            class Module = () (
+                broken = (
+                    ^1
+                echo: argument = ( ^argument )
+            ) : ()
+        "};
+        let analysis = analyze(text);
+        assert!(!analysis.findings.is_empty());
+        let parameter_use = text.rfind("argument").expect("the use") as u32;
+        assert!(analysis
+            .classified
+            .iter()
+            .any(|classified| classified.span.start == parameter_use));
     }
 
     #[test]
