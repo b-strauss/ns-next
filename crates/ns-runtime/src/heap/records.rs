@@ -11,7 +11,6 @@ use crate::heap::{ClassReference, FrameReference, ObjectReference, Value};
 use crate::interpreter::FeedbackBase;
 use crate::mixin::MixinApplication;
 use crate::types::{BuiltinClass, FrameKind};
-use crate::{CodePoints, Symbol};
 
 /// Which kind of payload an object carries (`Heap::object_shape`): what
 /// the encoder and the graph walk branch on before they read the payload
@@ -58,19 +57,14 @@ pub struct NewClosure<'gc> {
     pub feedback_base: FeedbackBase,
 }
 
-/// What a placeholder object becomes (`Heap::fill_placeholder`): the image
-/// decoder allocates every record of its object table first, so that a
-/// reference may point forward, and fills each from the wire afterwards. A
-/// `LargeInteger` and a boxed `Float` are never records -- the image writes
-/// them as values -- so there is no variant for either. A frame record fills
-/// its placeholder through `Heap::fill_frame` instead.
-pub enum Record<'gc> {
-    Instance(Vec<Value<'gc>>),
-    String(CodePoints),
-    Symbol(Symbol),
-    Array(Vec<Value<'gc>>),
-    Closure(NewClosure<'gc>),
-    Class(NewClass<'gc>),
+/// The format a placeholder filled in place takes (`Heap::shape_placeholder`):
+/// an instance's or an `Array`'s. The image decoder allocates every record of
+/// its object table first, at the size its first pass read, so that a
+/// reference may point forward, and fills each in place afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaceholderFormat {
+    Instance,
+    Array,
 }
 
 /// A reified frame's contents as values (`Heap::frame_record`,

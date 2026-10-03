@@ -35,7 +35,7 @@ use object::{
     class_field, closure_field, frame_field, trace_block, PackedString, Payload, CLASS, FIELDS,
     HEADER,
 };
-pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
+pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
 pub(crate) use value::is_small_float_bits;
@@ -1106,7 +1106,8 @@ impl<'gc> Heap<'gc> {
     }
 
     /// An object for `image::decode::decode_graph_section` to fill later
-    /// (`fill_placeholder`): an instance of `class` with `field_count` nil
+    /// in place (`shape_placeholder` and the other `fill_placeholder_*`
+    /// fills): an instance of `class` with `field_count` nil
     /// fields, the size the first pass read off the record, safe to hold and
     /// never observed before it is filled.
     pub(crate) fn allocate_placeholder(
@@ -1120,45 +1121,157 @@ impl<'gc> Heap<'gc> {
         )
     }
 
-    /// Replaces the entirety of a placeholder object's contents in one
-    /// write: `class`, `identity_hash` and the payload `record` names.
+    /// Fills a placeholder in place as a class object of `class` (its
+    /// metaclass, or `Metaclass` for a metaclass record) with
+    /// `identity_hash`, holding what `record` says. A class object is a
+    /// fixed handful of fields, laid out by `class_payload` and copied into
+    /// the placeholder the first pass sized for them.
     /// `image::decode::decode_graph_section`'s second pass is the only
-    /// caller, and it only ever calls this on a handle its first pass
-    /// placeholder-allocated and nothing else has observed yet -- before
-    /// `check_class_references` and `verify_graph` run, both of which assume
-    /// every object is already filled in. Call this on any handle something
-    /// else already holds and it silently replaces that object's
-    /// already-verified invariants with unverified ones: no error, and no
-    /// way for verification to notice, because verification has already
-    /// finished.
+    /// caller, and it only ever calls this, and the other `fill_placeholder_*`
+    /// fills below, on a handle its first pass placeholder-allocated and
+    /// nothing else has observed yet -- before `check_class_references` and
+    /// `verify_graph` run, both of which assume every object is already
+    /// filled in. Call one on any handle something else already holds and it
+    /// silently replaces that object's already-verified invariants with
+    /// unverified ones: no error, and no way for verification to notice,
+    /// because verification has already finished.
     ///
     /// The object carries `NONE` in its header until `stamp_dispatch_ids`
     /// runs -- `class` may itself be a still-placeholder record with no
     /// application yet -- and must not be dispatched on before then.
-    pub(crate) fn fill_placeholder(
+    pub(crate) fn fill_placeholder_class(
         &mut self,
         object: ObjectReference<'gc>,
         class: ClassReference<'gc>,
         identity_hash: u32,
-        record: Record<'gc>,
+        record: NewClass<'gc>,
+    ) {
+        self.check_object_origin(object);
+        let mut data = self.class_payload(record);
+        let placeholder = self.fields_mut(object);
+        if placeholder.len() == data.fields_mut().len() {
+            placeholder.copy_from_slice(data.fields_mut());
+            self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
+        } else {
+            // A placeholder of another size is not what the first pass
+            // sized for a class record; the record is built beside it.
+            let class_word = self.store(Value::object(class));
+            self.objects[object.index as usize] =
+                data.into_block(class_word, DispatchId::NONE, identity_hash);
+        }
+    }
+
+    /// Begins filling a placeholder in place, as an instance or an `Array`
+    /// of `class` (`format`) with `identity_hash`: its header becomes the one
+    /// `Payload::into_block` writes for an object of that format and size,
+    /// guarding on `NONE` until `stamp_dispatch_ids` runs, and its class word
+    /// names `class`. Its fields stay nil until `fill_placeholder_field`
+    /// writes them. The image decoder's second pass fills a record this way
+    /// rather than building a block beside the placeholder the first pass
+    /// sized, so a record costs its placeholder and nothing more while it is
+    /// read (`image::decode::decode_value` has the figures). The same
+    /// caveats as `fill_placeholder_class`'s apply.
+    pub(crate) fn shape_placeholder(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        format: PlaceholderFormat,
+    ) {
+        let format = match format {
+            PlaceholderFormat::Instance => Format::FixedPointers,
+            PlaceholderFormat::Array => Format::IndexablePointers,
+        };
+        self.rewrite_placeholder_header(object, class, identity_hash, format, 0);
+    }
+
+    /// Stores `value` into field `index` of a placeholder being filled in
+    /// place (`shape_placeholder`, `fill_placeholder_closure`, or a frame's
+    /// registers after its fixed fields, `fill_frame_register`); `false` past
+    /// its fields, which the first pass sized, so the caller refuses rather
+    /// than indexes.
+    pub(crate) fn fill_placeholder_field(
+        &mut self,
+        object: ObjectReference<'gc>,
+        index: usize,
+        value: Value<'gc>,
+    ) -> bool {
+        let word = self.store(value);
+        match self.fields_mut(object).get_mut(index) {
+            Some(slot) => {
+                *slot = word.bits();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Fills a placeholder in place as a String or a Symbol of `class` with
+    /// `identity_hash` holding `text`, packed into its words exactly as
+    /// `Payload::string` packs the `CodePoints` of `text`: one byte a unit
+    /// while every code point fits Latin-1, 32 bits otherwise. `false`, and
+    /// nothing written, when the placeholder is not the size the first pass
+    /// read for that text (`record_size::string_fields`).
+    pub(crate) fn fill_placeholder_string(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        text: &str,
+    ) -> bool {
+        self.check_object_origin(object);
+        let Some((format, unused)) = object::pack_string(text, self.fields_mut(object)) else {
+            return false;
+        };
+        self.rewrite_placeholder_header(object, class, identity_hash, format, unused);
+        true
+    }
+
+    /// Begins filling a placeholder in place as a closure of `class` with
+    /// `identity_hash`, running `code` and capturing `captured_frame`: its
+    /// header, class word and the fixed fields `Payload::closure` writes,
+    /// with a feedback base not yet assigned, as every decoded closure's is.
+    /// Its copied values follow through `fill_placeholder_field`, from
+    /// `record_size::CLOSURE_FIXED_FIELDS` on.
+    pub(crate) fn fill_placeholder_closure(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        code: &Rc<CompiledCode>,
+        captured_frame: FrameReference<'gc>,
+    ) {
+        self.check_frame_origin(captured_frame);
+        let code_word = count_word(self.code_id(code).index());
+        let frame_word = self.store(Value::object(self.frame_object(captured_frame)));
+        let base_word = count_word(FeedbackBase::NOT_ASSIGNED.raw() as usize);
+        self.rewrite_placeholder_header(object, class, identity_hash, Format::Closure, 0);
+        let fields = self.fields_mut(object);
+        fields[closure_field::CODE_ID] = code_word.bits();
+        fields[closure_field::CAPTURED_FRAME] = frame_word.bits();
+        fields[closure_field::FEEDBACK_BASE] = base_word.bits();
+    }
+
+    /// A placeholder's header and class word, rewritten as
+    /// `Payload::into_block` writes them for an object of `format` with
+    /// `unused` units left in its last word, at the placeholder's own size.
+    fn rewrite_placeholder_header(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        format: Format,
+        unused: u8,
     ) {
         self.check_object_origin(object);
         self.check_object_origin(class);
-        let data = match record {
-            Record::Instance(fields) => {
-                Payload::instance(fields.into_iter().map(|value| self.store(value)))
-            }
-            Record::String(text) => Payload::string(&text),
-            Record::Symbol(symbol) => Payload::string(&crate::CodePoints::from(symbol.as_str())),
-            Record::Array(elements) => {
-                Payload::array(elements.into_iter().map(|value| self.store(value)))
-            }
-            Record::Closure(closure) => self.closure_payload(closure),
-            Record::Class(class) => self.class_payload(class),
-        };
         let class_word = self.store(Value::object(class));
-        self.objects[object.index as usize] =
-            data.into_block(class_word, DispatchId::NONE, identity_hash);
+        let block = self.block_mut(object);
+        let header = Header::new(DispatchId::NONE, format, unused, block.len() - CLASS)
+            .with_negative(false)
+            .with_identity_hash(identity_hash);
+        block[HEADER] = header.0;
+        block[CLASS] = class_word.bits();
     }
 
     /// Where every allocation but `allocate_self_referential` enters an
@@ -1273,6 +1386,22 @@ impl<'gc> Heap<'gc> {
         registers: &[Value<'gc>],
         register_count: usize,
     ) -> Payload {
+        let words = self.frame_fixed_words(fields);
+        debug_assert!(registers.len() <= register_count);
+        let mut data = Payload::frame(words, register_count);
+        for (slot, register) in data.fields_mut()[frame_field::COUNT..]
+            .iter_mut()
+            .zip(registers)
+        {
+            *slot = self.store(*register).bits();
+        }
+        data
+    }
+
+    /// A frame object's fixed fields, `frame_field`'s, stored: the one place
+    /// they are laid out, for a new frame (`frame_payload`) and for a
+    /// placeholder filled in place (`fill_frame_fields`).
+    fn frame_fixed_words(&self, fields: FrameFields<'gc>) -> [Word; frame_field::COUNT] {
         let FrameFields {
             sender,
             home,
@@ -1317,15 +1446,7 @@ impl<'gc> Heap<'gc> {
         words[frame_field::KIND] = count_word(usize::from(tag));
         words[frame_field::KIND_OPERAND] = object_word(operand);
         words[frame_field::UNCONTINUABLE] = Value::boolean(uncontinuable).word();
-        debug_assert!(registers.len() <= register_count);
-        let mut data = Payload::frame(words, register_count);
-        for (slot, register) in data.fields_mut()[frame_field::COUNT..]
-            .iter_mut()
-            .zip(registers)
-        {
-            *slot = self.store(*register).bits();
-        }
-        data
+        words
     }
 
     /// A frame for `image::decode::decode_graph_section` to fill later
@@ -3197,20 +3318,17 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Replaces the entirety of a frame's contents with `record`, the frame
-    /// equivalent of `fill_placeholder`: the frame object is rebuilt in its
-    /// own slot, with the record's arguments and temporaries as its
+    /// Replaces the entirety of a frame's contents with `record`: the frame
+    /// object is rebuilt in its own slot, with the record's arguments and temporaries as its
     /// registers, keeping its class, its guard and its identity hash. Its
     /// code is found from the record's kind (`kind_code`), so the record's
     /// split between arguments and temporaries is not kept: a frame's
     /// arguments are its code's (`image::decode::verify_graph` holds the
     /// register count to it).
     ///
-    /// `image::decode::decode_graph_section` fills each frame record's
-    /// placeholder, allocated at the size its first pass read, before
-    /// `verify_graph` runs,
-    /// which assumes every frame is already filled in; `tests/image.rs`
-    /// forges a decoded frame through it. Call this on any handle something
+    /// `tests/image.rs` forges a decoded frame through it; the image decoder
+    /// fills a frame record's placeholder in place instead
+    /// (`fill_frame_fields`), to the same block. Call this on any handle something
     /// else already holds and it silently replaces that frame's
     /// already-verified `program_counter`/register-file shape with an
     /// unverified one: no error, and no way for `verify_graph` to notice,
@@ -3251,6 +3369,68 @@ impl<'gc> Heap<'gc> {
         let class_word = self.store(Value::object(class));
         self.objects[frame.index as usize] =
             data.into_block(class_word, header.guard(), header.identity_hash());
+    }
+
+    /// Fills a frame placeholder's fixed fields in place from `record`,
+    /// whose registers must be empty: the register file the first pass sized
+    /// stays where it is, nil, for `fill_frame_register` to write register
+    /// by register. The frame keeps its class, its guard and its identity
+    /// hash, as with `fill_frame`, and ends identical to what `fill_frame`
+    /// builds from the same record with those registers. The image decoder's
+    /// second pass is the only caller; `fill_frame`'s caveats apply.
+    pub(crate) fn fill_frame_fields(
+        &mut self,
+        frame: FrameReference<'gc>,
+        record: FrameRecord<'gc>,
+    ) {
+        self.check_frame_origin(frame);
+        let FrameRecord {
+            receiver,
+            arguments,
+            temporaries,
+            program_counter,
+            sender,
+            home,
+            current_class,
+            kind,
+            uncontinuable,
+        } = record;
+        debug_assert!(
+            arguments.is_empty() && temporaries.is_empty(),
+            "`fill_frame_register` writes a placeholder's registers"
+        );
+        let code = self.kind_code(&kind);
+        let code = self.frame_code_id(&kind, code.as_ref());
+        let words = self.frame_fixed_words(FrameFields {
+            sender,
+            home,
+            receiver,
+            current_class,
+            program_counter,
+            code,
+            kind,
+            uncontinuable,
+        });
+        let object = self.frame_object(frame);
+        for (slot, word) in self.fields_mut(object).iter_mut().zip(words) {
+            *slot = word.bits();
+        }
+    }
+
+    /// Stores `value` into register `index` of a frame placeholder whose
+    /// fixed fields `fill_frame_fields` wrote; `false` past the register file
+    /// the first pass sized.
+    pub(crate) fn fill_frame_register(
+        &mut self,
+        frame: FrameReference<'gc>,
+        index: usize,
+        value: Value<'gc>,
+    ) -> bool {
+        let object = self.frame_object(frame);
+        match index.checked_add(frame_field::COUNT) {
+            Some(field) => self.fill_placeholder_field(object, field, value),
+            None => false,
+        }
     }
 
     // ---------- The activation stack ----------
@@ -4904,6 +5084,135 @@ mod tests {
         assert!(heap.frame_sender(frame).is_none());
         heap.frame_set_local(frame, 1, Value::small_integer(8));
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(8));
+    }
+
+    /// The image decoder fills each record's placeholder in place, so that a
+    /// record costs its placeholder and nothing beside it; the block it
+    /// leaves must be exactly the one the normal construction builds --
+    /// header (format, size, unused units, guard, identity hash) and words.
+    #[test]
+    fn an_instance_or_array_filled_in_place_is_the_block_a_payload_builds() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Thing");
+        let values = [Value::small_integer(7), Value::nil(), Value::object(class)];
+        for format in [PlaceholderFormat::Instance, PlaceholderFormat::Array] {
+            let placeholder = heap.allocate_placeholder(class, values.len());
+            heap.shape_placeholder(placeholder, class, 42, format);
+            for (index, value) in values.iter().enumerate() {
+                assert!(heap.fill_placeholder_field(placeholder, index, *value));
+            }
+            assert!(
+                !heap.fill_placeholder_field(placeholder, values.len(), Value::nil()),
+                "a field past the placeholder is refused"
+            );
+            let words: Vec<Word> = values.iter().map(|value| heap.store(*value)).collect();
+            let payload = match format {
+                PlaceholderFormat::Instance => Payload::instance(words),
+                PlaceholderFormat::Array => Payload::array(words),
+            };
+            let expected =
+                payload.into_block(heap.store(Value::object(class)), DispatchId::NONE, 42);
+            assert_eq!(heap.block(placeholder), &expected[..]);
+        }
+    }
+
+    /// Strings and symbols: packed in place into a placeholder of the size
+    /// `record_size::string_fields` gives, in the width `CodePoints` picks,
+    /// with the same unused units -- narrow, Latin-1 and wide, at and either
+    /// side of a word's boundary.
+    #[test]
+    fn a_string_filled_in_place_is_the_block_a_payload_builds() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "String");
+        for text in [
+            "",
+            "abc",
+            "abcdefgh",
+            "abcdefghi",
+            "caf\u{e9} \u{ff}",
+            "\u{3a9}",
+            "a\u{20ac}bc",
+            "wide \u{1f600} text",
+        ] {
+            let placeholder = heap.allocate_placeholder(class, record_size::string_fields(text));
+            assert!(heap.fill_placeholder_string(placeholder, class, 9, text));
+            let expected = Payload::string(&crate::CodePoints::from(text)).into_block(
+                heap.store(Value::object(class)),
+                DispatchId::NONE,
+                9,
+            );
+            assert_eq!(heap.block(placeholder), &expected[..], "{text:?}");
+            let wrong_size = heap.allocate_placeholder(class, record_size::string_fields(text) + 1);
+            assert!(!heap.fill_placeholder_string(wrong_size, class, 9, text));
+        }
+    }
+
+    /// A closure filled in place: its fixed fields and its copied values.
+    #[test]
+    fn a_closure_filled_in_place_is_the_block_a_payload_builds() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Block");
+        let frame = heap.allocate_placeholder_frame(0);
+        let code = trivial_code();
+        let placeholder = heap.allocate_placeholder(class, record_size::CLOSURE_FIXED_FIELDS + 2);
+        heap.fill_placeholder_closure(placeholder, class, 5, &code, frame);
+        for (index, value) in [Value::small_integer(1), Value::object(class)]
+            .into_iter()
+            .enumerate()
+        {
+            assert!(heap.fill_placeholder_field(
+                placeholder,
+                record_size::CLOSURE_FIXED_FIELDS + index,
+                value
+            ));
+        }
+        let payload = heap.closure_payload(NewClosure {
+            code,
+            captured_frame: frame,
+            copied: vec![Value::small_integer(1), Value::object(class)],
+            feedback_base: FeedbackBase::NOT_ASSIGNED,
+        });
+        let expected = payload.into_block(heap.store(Value::object(class)), DispatchId::NONE, 5);
+        assert_eq!(heap.block(placeholder), &expected[..]);
+    }
+
+    /// A frame filled in place -- its fixed fields, then register by
+    /// register -- is the frame `fill_frame` builds from the whole record.
+    #[test]
+    fn a_frame_filled_in_place_is_the_frame_fill_frame_builds() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Thing");
+        let sender = heap.allocate_placeholder_frame(0);
+        let registers = [Value::small_integer(3), Value::nil(), Value::object(class)];
+        let record = |registers| FrameRecord {
+            receiver: Value::small_integer(11),
+            arguments: registers,
+            temporaries: Vec::new(),
+            program_counter: 2,
+            sender: Some(sender),
+            home: None,
+            current_class: Some(class),
+            kind: FrameKind::TopLevel,
+            uncontinuable: true,
+        };
+        let rebuilt = heap.allocate_placeholder_frame(registers.len());
+        let filled = heap.allocate_placeholder_frame(registers.len());
+        for frame in [rebuilt, filled] {
+            heap.object_set_identity_hash(heap.frame_object(frame), 17);
+        }
+        heap.fill_frame(rebuilt, record(registers.to_vec()));
+        heap.fill_frame_fields(filled, record(Vec::<Value>::new()));
+        for (index, value) in registers.iter().enumerate() {
+            assert!(heap.fill_frame_register(filled, index, *value));
+        }
+        assert!(
+            !heap.fill_frame_register(filled, registers.len(), Value::nil()),
+            "a register past the placeholder's file is refused"
+        );
+        assert_eq!(
+            heap.block(heap.frame_object(filled)),
+            heap.block(heap.frame_object(rebuilt))
+        );
     }
 
     /// What a closure answers is what it was built with: a conversion of its

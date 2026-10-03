@@ -69,7 +69,7 @@ pub use code_points::CodePoints;
 pub use heap::{
     ActivationHeader, ActivationReference, ApplicationIndex, ClassReference, CodeId,
     CollectorStatistics, FrameRecord, FrameReference, Heap, HeapStatistics, MixinId, NewClass,
-    NewClosure, ObjectReference, ObjectShape, Record, RegisterBase, Root,
+    NewClosure, ObjectReference, ObjectShape, RegisterBase, Root,
 };
 pub use interpreter::core_library::MANIFEST_SOURCE;
 pub use interpreter::{

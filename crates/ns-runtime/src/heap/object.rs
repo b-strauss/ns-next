@@ -286,6 +286,35 @@ pub(in crate::heap) fn string_field_count(text: &str) -> usize {
     })
 }
 
+/// Packs `text` into `words` as `Payload::string` lays out the
+/// `CodePoints` of `text`, without converting it: unit `index` is byte
+/// `index % 8` of word `index / 8`, or half `index % 2` of word `index / 2`,
+/// the last word's unused units zero. Answers the format and the unused
+/// units, or `None`, writing nothing, when `words` is not the length
+/// `string_field_count` gives `text`.
+pub(in crate::heap) fn pack_string(text: &str, words: &mut [u64]) -> Option<(Format, u8)> {
+    if words.len() != string_field_count(text) {
+        return None;
+    }
+    let wide = text.chars().any(|character| u32::from(character) > 0xFF);
+    let (format, per_word) = if wide {
+        (Format::ThirtyTwoBit, THIRTY_TWO_BIT_UNITS_PER_WORD)
+    } else {
+        (Format::Bytes, BYTES_PER_WORD)
+    };
+    let bits_per_unit = u64::BITS as usize / per_word;
+    words.fill(0);
+    let mut units = 0;
+    for (index, character) in text.chars().enumerate() {
+        words[index / per_word] |=
+            u64::from(u32::from(character)) << ((index % per_word) * bits_per_unit);
+        units += 1;
+    }
+    // Below `per_word`, which is at most 8.
+    let unused = u8::try_from(words.len() * per_word - units).unwrap_or(0);
+    Some((format, unused))
+}
+
 /// How many units one word of a string of `format` holds; `None` for a
 /// format no string has.
 fn units_per_word(format: Format) -> Option<usize> {

@@ -12,7 +12,7 @@ use crate::bytecode::{
     IntegerOperation, Literal,
 };
 use crate::heap::{
-    record_size, FrameRecord, Heap, NewClass, NewClosure, Record, IDENTITY_HASH_LIMIT,
+    record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
 };
 use crate::interpreter::instantiate;
 use crate::types::{
@@ -844,16 +844,13 @@ impl<'a> Reader<'a> {
         String::from_utf8(self.read_bytes()?).map_err(|_| DecodeError::InvalidUtf8)
     }
 
-    /// A String record's text, validated as UTF-8 where it lies and
-    /// converted straight from the buffer: no intermediate `Vec` or
-    /// `String`, so a record costs at most the 4 heap bytes per wire byte
-    /// of a wide string (`docs/design/memory.md`, the decode
-    /// amplification).
-    pub fn read_code_points(&mut self) -> Result<crate::CodePoints, DecodeError> {
+    /// A String record's text, validated as UTF-8 where it lies and lent
+    /// out of the buffer: nothing is allocated for it, so the decoder packs
+    /// it straight into the placeholder the first pass sized
+    /// (`Heap::fill_placeholder_string`).
+    pub(crate) fn read_text(&mut self) -> Result<&'a str, DecodeError> {
         let length = self.read_u32()? as usize;
-        let bytes = self.read_raw(length)?;
-        let text = std::str::from_utf8(bytes).map_err(|_| DecodeError::InvalidUtf8)?;
-        Ok(crate::CodePoints::from(text))
+        std::str::from_utf8(self.read_raw(length)?).map_err(|_| DecodeError::InvalidUtf8)
     }
 }
 
@@ -2466,48 +2463,65 @@ fn decode_optional_class<'gc>(
 /// One value off the wire. Three kinds allocate an object of their own --
 /// an `i64` beyond 61 bits, a float outside the immediate range and a
 /// `LargeInteger` -- and that is the one thing the second pass allocates
-/// beyond the placeholders the first pass sized.
+/// beyond the placeholders the first pass sized: every record is filled
+/// into its placeholder in place, each value stored as it is read, a string
+/// packed straight from the buffer (`Heap::shape_placeholder`,
+/// `fill_placeholder_string`, `fill_placeholder_closure`,
+/// `fill_frame_fields`), so no record is ever built beside its placeholder.
 ///
-/// The peak of a rejected load, against the bytes that describe the graph
+/// The transient peak of a rejected load, against the bytes of the graph
+/// section and, for symbols' text, the symbol section
 /// (`decode_graph_section` refuses before allocating when the first pass
-/// would allocate more words than those bytes), is the largest of these
-/// ratios, the same in a release and a debug build, since an arena slot is
-/// a 16-byte boxed slice and a block's words are 8 bytes in both:
+/// would allocate more than eight words a byte), is the largest of the
+/// ratios below; a byte belongs to one record and one value, so they do not
+/// add. An arena slot is a 16-byte boxed slice and a word 8 bytes in both
+/// builds; a handle is 4 bytes in a release build and 12 in a debug one, a
+/// `Value` 8 and 16.
 ///
 /// - Per record, its object against its smallest record. A metaclass
 ///   record is the smallest record there is, 9 bytes (a two-byte builtin
 ///   header, the hash's 4, the body tag, a two-byte builtin class tag),
-///   and becomes a class object of 10 words: 16 + 80 = 96 bytes, 10.7x,
-///   the worst case. A class record is at least 19 bytes for the same 96,
-///   5.1x; a frame record at least 21 (the two-byte header, the hash, the
-///   body tag, a `TopLevel` kind, the program counter's 4, four one-byte
-///   flags and fields and the register count's 4) for 12 words, 16 + 96 =
-///   112 bytes, 5.3x; an instance, array, string or symbol record at least
-///   11 for 32 bytes, 2.9x; a closure record at least 17 for 56, 3.3x.
+///   and becomes a class object of 10 words: 16 + 80 = 96 bytes, 10.7x. A
+///   class record is at least 19 bytes for the same 96, 5.1x; a frame
+///   record at least 21 (the two-byte header, the hash, the body tag, a
+///   `TopLevel` kind, the program counter's 4, four one-byte flags and
+///   fields and the register count's 4) for 12 words, 16 + 96 = 112 bytes,
+///   5.3x; an instance, array, string or symbol record at least 11 for 32
+///   bytes, 2.9x; a closure record at least 17 for 56, 3.3x.
+/// - The decoder's own tables, per record: the placeholder table (a handle,
+///   4 or 12 bytes), the first pass's sizes (8 bytes, freed once the
+///   placeholders exist) and, in the second pass, a metaclass record's
+///   pending index (8), a class record's pending entry (16), a frame
+///   record's handle and body offset (4 or 12, and 8). A graph of metaclass
+///   records then holds 96 + 4 + 8 = 108 bytes for 9, **12.0x** in a
+///   release build, and 96 + 12 + 8 = 116, **12.9x** in a debug one; every
+///   other record stays below (a frame record 128 or 140 for 21, 6.1x or
+///   6.7x).
 /// - Per value, the word it occupies against the bytes that encode it: a
 ///   one-byte `VALUE_NIL` field, element, copied value or register becomes
-///   an 8-byte word, 8x, which every record of many values approaches from
-///   below. A string's UTF-8 byte widened to the 32-bit form costs at most
-///   4 bytes, 4x. A symbol record names a symbol-table entry instead, whose
-///   text the first pass lets one record allocate, at most 4 bytes per
+///   an 8-byte word, 8x, which a record of many values approaches from
+///   below. A string's UTF-8 byte packed in the 32-bit form costs at most 4
+///   bytes, 4x. A symbol record names a symbol-table entry instead, whose
+///   text the first pass lets one record allocate: at most 4 bytes per
 ///   UTF-8 byte of the symbol section.
-/// - Per allocating value, its word and its object together against its
-///   bytes: an `i64` beyond 61 bits is 9 bytes (tag, `i64`) for a word and
-///   a `LargeInteger` of one digit, 8 + 16 + 24 = 48 bytes, 5.3x; a float
-///   outside the immediate range the same 48 for its 9 bytes, 5.3x; a
+/// - Per allocating value, its word and its object together: an `i64`
+///   beyond 61 bits is 9 bytes (tag, `i64`) for a word and a `LargeInteger`
+///   of one digit, 8 + 16 + 24 = 48 bytes, 5.3x; a float outside the
+///   immediate range the same 48 for its 9 bytes, 5.3x; a
 ///   `VALUE_LARGE_INTEGER` at least 14 bytes (tag, sign, count, one digit)
-///   for the same 48, 3.4x, each further digit 8 bytes for 8.
+///   for the same 48, 3.4x, each further digit 8 bytes for 8. Its digits
+///   are read into a `Vec` first, which lives until its object is made: one
+///   value at a time, 8 bytes a digit more, 4.0x for a one-digit value.
+/// - The root list, read after every record into `Value`s (`reserve_for`
+///   caps its reservation at the bytes left): 8 bytes a one-byte root in a
+///   release build, 8x, and 16 in a debug one, **16x**.
+/// - A class or metaclass record's fields, laid out beside the placeholder
+///   before they are copied into it (`Heap::fill_placeholder_class`): 80
+///   bytes, one record at a time, a constant.
 ///
-/// A byte belongs to one record and one value, so the ratios do not add:
-/// the bound is about 10.7x, in both builds. Not counted in it, and
-/// proportional to the input as well: the decoder's own table of
-/// placeholders (4 bytes a record in a release build, 12 in a debug one)
-/// and the first pass's sizes (8 bytes a record, dropped once the
-/// placeholders exist), which bring a graph of metaclass records to 12.0x
-/// and 12.9x; and, for one record at a time,
-/// the values the second pass reads before it fills the record and the
-/// block it fills it with, which exists for a moment beside the placeholder
-/// it replaces.
+/// So the peak is about **12.0x** in a release build (a graph of
+/// metaclass records) and **16x** in a debug one (a graph that is all root
+/// list), not counting each allocation's own overhead in the allocator.
 fn decode_value<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
@@ -2602,11 +2616,16 @@ fn decode_frame_reference<'gc>(
     }
 }
 
+/// A closure record, filled into `object`, its placeholder, in place: its
+/// header and fixed fields, then each copied value as it is read.
 fn decode_closure_record<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
-) -> Result<NewClosure<'gc>, DecodeError> {
+    object: ObjectReference<'gc>,
+    class: ClassReference<'gc>,
+    identity_hash: u32,
+) -> Result<(), DecodeError> {
     let code_id = reader.read_u32()?;
     let code = context
         .codes
@@ -2624,18 +2643,51 @@ fn decode_closure_record<'gc>(
             copied_count: code.copied_count,
         });
     }
-    let mut copied = reserve_for(count, reader);
-    for _ in 0..count {
-        copied.push(decode_value(reader, context, tables)?);
-    }
-    Ok(NewClosure {
-        code,
+    // Its feedback base is never on the wire: a decoded closure is given a
+    // fresh range of its family's size when it is first activated
+    // (`Mutator::push_step`).
+    context.mutator.heap.fill_placeholder_closure(
+        object,
+        class,
+        identity_hash,
+        &code,
         captured_frame,
-        copied,
-        // Never on the wire: a decoded closure is given a fresh range of its
-        // family's size when it is first activated (`Mutator::push_step`).
-        feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
-    })
+    );
+    decode_fields_into(
+        reader,
+        context,
+        tables,
+        object,
+        record_size::CLOSURE_FIXED_FIELDS,
+        count,
+    )
+}
+
+/// `count` values off the wire, each stored into `object`'s field
+/// `first + index` as it is read: a placeholder the first pass sized for
+/// exactly these values, so nothing is collected beside it. A field past
+/// the placeholder -- which the first pass, reading the same bytes, rules
+/// out -- is refused rather than indexed.
+fn decode_fields_into<'gc>(
+    reader: &mut Reader,
+    context: &mut DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
+    object: ObjectReference<'gc>,
+    first: usize,
+    count: usize,
+) -> Result<(), DecodeError> {
+    for index in 0..count {
+        let value = decode_value(reader, context, tables)?;
+        let field = first.saturating_add(index);
+        if !context
+            .mutator
+            .heap
+            .fill_placeholder_field(object, field, value)
+        {
+            return Err(DecodeError::UnexpectedEndOfFile);
+        }
+    }
+    Ok(())
 }
 
 /// Re-resolves a `FrameKind::Method` against the decoded class's method
@@ -2669,16 +2721,18 @@ fn method_declaration<'gc>(
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
-/// An `OBJECT_FRAME` body (`opcodes::OBJECT_FRAME` gives the layout). Its
-/// registers arrive as one list: a frame's arguments are its code's, so the
-/// record's split is not kept (`Heap::fill_frame`), and `verify_graph`
-/// holds the count to the body.
+/// An `OBJECT_FRAME` body (`opcodes::OBJECT_FRAME` gives the layout), filled
+/// into `frame`, its placeholder, in place: the fixed fields, then each
+/// register as it is read. Its registers arrive as one list: a frame's
+/// arguments are its code's, so the record carries no split, and
+/// `verify_graph` holds the count to the body.
 fn decode_frame<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<FrameRecord<'gc>, DecodeError> {
+    frame: FrameReference<'gc>,
+) -> Result<(), DecodeError> {
     // A method is named by selector, resolved once the current class that
     // declares it has been read, below: until then the kind is the
     // selector (`Err`), every other kind already itself (`Ok`).
@@ -2711,7 +2765,6 @@ fn decode_frame<'gc>(
     let sender = decode_frame_reference(reader, context, tables)?;
     let home = decode_frame_reference(reader, context, tables)?;
     let current_class = decode_optional_class(reader, context, tables)?;
-    let registers = decode_values(reader, context, tables)?;
     let kind = match kind {
         Ok(kind) => kind,
         Err(selector) => FrameKind::Method(method_declaration(
@@ -2720,17 +2773,32 @@ fn decode_frame<'gc>(
             selector,
         )?),
     };
-    Ok(FrameRecord {
-        receiver,
-        arguments: registers,
-        temporaries: Vec::new(),
-        program_counter,
-        sender,
-        home,
-        current_class,
-        kind,
-        uncontinuable,
-    })
+    context.mutator.heap.fill_frame_fields(
+        frame,
+        FrameRecord {
+            receiver,
+            arguments: Vec::new(),
+            temporaries: Vec::new(),
+            program_counter,
+            sender,
+            home,
+            current_class,
+            kind,
+            uncontinuable,
+        },
+    );
+    let count = reader.read_u32()? as usize;
+    for index in 0..count {
+        let value = decode_value(reader, context, tables)?;
+        if !context
+            .mutator
+            .heap
+            .fill_frame_register(frame, index, value)
+        {
+            return Err(DecodeError::UnexpectedEndOfFile);
+        }
+    }
+    Ok(())
 }
 
 /// A floor under the smallest object record the wire admits: a class tag of
@@ -3049,7 +3117,7 @@ fn rebuild_applications<'gc>(
     // §3.1.1's enclosing-object condition is decided when the class object
     // is created (`interpreter::value_class`), never reconstructed from the
     // wire -- a decoded record starts with no verdict
-    // (`Heap::fill_placeholder` gives it none). A legitimate snapshot can hold a class that was
+    // (`Heap::fill_placeholder_class` gives it none). A legitimate snapshot can hold a class that was
     // created carrying one (or one built of decoded pieces would carry,
     // `Counter`-over-`Holder`-style), so it is recomputed here, exactly as
     // `after_clause` decides it for a class created from source -- never for
@@ -3488,9 +3556,7 @@ impl Sizing<'_, '_, '_> {
         let (fields, frame) = match reader.read_u8()? {
             OBJECT_INSTANCE | OBJECT_ARRAY => (self.values(reader)?, false),
             OBJECT_STRING => {
-                let length = reader.read_u32()? as usize;
-                let text = std::str::from_utf8(reader.read_raw(length)?)
-                    .map_err(|_| DecodeError::InvalidUtf8)?;
+                let text = reader.read_text()?;
                 (record_size::string_fields(text), false)
             }
             OBJECT_SYMBOL => {
@@ -3708,9 +3774,21 @@ pub fn decode_graph_section<'gc>(
         // metaclass record, each written once the record is filled.
         let mut applied_clause = None;
         let mut this_class = None;
+        // `class` may name a record later in this same table -- decoding
+        // fills records in table order, not dependency order -- so that
+        // class may not have an application yet. The record's header id is
+        // `NONE`, which matches no cache entry; `stamp_dispatch_ids`, right
+        // after `rebuild_applications` gives every class one, replaces it
+        // with the real id.
+        //
+        // Every record but a class object's is filled in place: its values
+        // are stored into the placeholder the first pass sized as they are
+        // read, so nothing beside it is built (`decode_value` has the
+        // figures).
+        let mut decoded_symbol = None;
         let record = match body {
             OBJECT_INSTANCE => {
-                let fields = decode_values(reader, context, &tables)?;
+                let count = reader.read_u32()? as usize;
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
                 if class_named_by_path {
@@ -3719,33 +3797,79 @@ pub fn decode_graph_section<'gc>(
                         .heap
                         .class_application(class)
                         .map_or(0, |application| application.slot_count);
-                    if fields.len() != expected {
+                    if count != expected {
                         return Err(DecodeError::PlatformInstanceFieldCount {
                             expected,
-                            found: fields.len(),
+                            found: count,
                         });
                     }
                 }
+                context.mutator.heap.shape_placeholder(
+                    *object,
+                    class,
+                    identity_hash,
+                    PlaceholderFormat::Instance,
+                );
+                decode_fields_into(reader, context, &tables, *object, 0, count)?;
                 // Held to what the encoder writes; that its computation is
                 // a closure is checked below, once the record it names has
                 // been read.
                 if future_header {
+                    let fields = context
+                        .mutator
+                        .heap
+                        .instance_fields(*object)
+                        .unwrap_or_default();
                     let computation =
                         crate::interpreter::future::decoded_future_computation(&fields)
                             .ok_or(DecodeError::FutureRecord)?;
                     pending_futures.push(computation);
                 }
-                Record::Instance(fields)
+                None
             }
             OBJECT_STRING => {
                 if class.same(symbol_class) {
                     return Err(DecodeError::StringOfSymbolClass);
                 }
-                Record::String(reader.read_code_points()?)
+                let text = reader.read_text()?;
+                if !context.mutator.heap.fill_placeholder_string(
+                    *object,
+                    class,
+                    identity_hash,
+                    text,
+                ) {
+                    return Err(DecodeError::UnexpectedEndOfFile);
+                }
+                None
             }
-            OBJECT_SYMBOL => Record::Symbol(decode_symbol(reader, symbols)?),
-            OBJECT_ARRAY => Record::Array(decode_values(reader, context, &tables)?),
-            OBJECT_CLOSURE => Record::Closure(decode_closure_record(reader, context, &tables)?),
+            OBJECT_SYMBOL => {
+                let symbol = decode_symbol(reader, symbols)?;
+                if !context.mutator.heap.fill_placeholder_string(
+                    *object,
+                    class,
+                    identity_hash,
+                    symbol.as_str(),
+                ) {
+                    return Err(DecodeError::UnexpectedEndOfFile);
+                }
+                decoded_symbol = Some(symbol);
+                None
+            }
+            OBJECT_ARRAY => {
+                let count = reader.read_u32()? as usize;
+                context.mutator.heap.shape_placeholder(
+                    *object,
+                    class,
+                    identity_hash,
+                    PlaceholderFormat::Array,
+                );
+                decode_fields_into(reader, context, &tables, *object, 0, count)?;
+                None
+            }
+            OBJECT_CLOSURE => {
+                decode_closure_record(reader, context, &tables, *object, class, identity_hash)?;
+                None
+            }
             OBJECT_CLASS => {
                 let (class_record, applied, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
@@ -3760,7 +3884,7 @@ pub fn decode_graph_section<'gc>(
                 // metaclass record, which `pair_metaclasses` holds to it
                 // once every record is read.
                 applied_clause = applied;
-                Record::Class(class_record)
+                Some(class_record)
             }
             OBJECT_METACLASS => {
                 // §3.2: every metaclass is an instance of `Metaclass`.
@@ -3770,7 +3894,7 @@ pub fn decode_graph_section<'gc>(
                 this_class = Some(decode_class_tag(reader, context, &tables)?);
                 let class_class = context.mutator.builtin_class(BuiltinClass::Class);
                 pending_metaclasses.push(index);
-                Record::Class(NewClass {
+                Some(NewClass {
                     application: placeholder_application.clone(),
                     enclosing: None,
                     declaring_class: None,
@@ -3785,18 +3909,10 @@ pub fn decode_graph_section<'gc>(
                 })
             }
         };
-        let decoded_symbol = match &record {
-            Record::Symbol(symbol) => Some(*symbol),
-            _ => None,
-        };
-        // `class` may name a record later in this same table -- decoding
-        // fills records in table order, not dependency order -- so that
-        // class may not have an application yet. The record's header id is
-        // `NONE`, which matches no cache entry; `stamp_dispatch_ids`, right
-        // after `rebuild_applications` gives every class one, replaces it
-        // with the real id.
         let heap = &mut context.mutator.heap;
-        heap.fill_placeholder(*object, class, identity_hash, record);
+        if let Some(record) = record {
+            heap.fill_placeholder_class(*object, class, identity_hash, record);
+        }
         if let Some(applied) = applied_clause {
             if !heap.class_set_applied_clause(*object, applied) {
                 unreachable!("internal: a class record fills a class object");
@@ -3855,8 +3971,7 @@ pub fn decode_graph_section<'gc>(
             buffer: reader.buffer,
             position: body,
         };
-        let decoded = decode_frame(&mut body_reader, context, &tables, symbols)?;
-        context.mutator.heap.fill_frame(*frame, decoded);
+        decode_frame(&mut body_reader, context, &tables, symbols, *frame)?;
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
