@@ -606,7 +606,8 @@ wrongly. The recovery's known limits are in [OPEN-WORK.md](../OPEN-WORK.md),
 `crates/ns-syntax/tests/recovery.rs` holds one test per typical in-progress
 edit -- half a method, a statement after `^`, an unclosed block, a nested
 class missing its `)`, an unclosed slot section, `| a <Foo |`, half a
-keyword message, and the cases above -- each asserting that the members
-after the error survive, with their names and spans, most of them also how
-many diagnostics the fault gives; `parser::declaration`'s unit tests pin the
-depth guards.
+keyword message -- each asserting that the members after the error
+survive, with their names and spans, most of them also how many
+diagnostics the fault gives. Each case left as it is, above, is pinned
+there too, with the methods and the diagnostics it gives;
+`parser::declaration`'s unit tests pin the depth guards.

@@ -756,3 +756,53 @@ fn a_slot_initializer_without_its_dot_ends_at_the_initializer() {
     assert_eq!(slots.len(), 1, "{messages:?}");
     assert_eq!(slots[0].span.text(source), "a = 1");
 }
+
+/// Left as it is: an unfinished body whose next line is a valid expression
+/// is read as that expression. `bar = ( 2 )` is a comparison, so `bar` is
+/// no method, and the missing `)` is reported at `baz`, which survives.
+#[test]
+fn an_unfinished_body_before_a_valid_expression_reads_it_as_one() {
+    let source = indoc! {"
+        class Module = () (
+            first = (
+                x foo.
+                bar = ( 2 )
+            baz = ( ^3 )
+        ) : (
+            make = ( ^self new )
+        )
+    "};
+    let (module, messages) = recovered(source);
+    let root = &module.root_class;
+    assert_eq!(
+        method_names(&root.instance_side),
+        ["first", "baz"],
+        "{messages:?}"
+    );
+    let class_side = root.class_side.as_ref().expect("the class side survives");
+    assert_eq!(method_names(class_side), ["make"]);
+    assert_eq!(
+        messages,
+        ["expected `)` to end the method body, found Identifier"]
+    );
+}
+
+/// Left as it is: half a keyword pattern above a method is a valid method
+/// whose parameter is the next method's name, `foo: bar`.
+#[test]
+fn half_a_keyword_pattern_above_a_method_is_a_keyword_method() {
+    let source = indoc! {"
+        class Module = () (
+            foo:
+            bar = ( ^2 )
+        ) : (
+            make = ( ^self new )
+        )
+    "};
+    let (module, messages) = recovered(source);
+    let root = &module.root_class;
+    assert_eq!(method_names(&root.instance_side), ["foo:"], "{messages:?}");
+    let class_side = root.class_side.as_ref().expect("the class side survives");
+    assert_eq!(method_names(class_side), ["make"]);
+    assert!(messages.is_empty(), "{messages:?}");
+}

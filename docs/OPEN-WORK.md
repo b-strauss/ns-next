@@ -739,6 +739,9 @@ text and `to:by:do:`'s zero step.
 - **Editor recovery: one token can be described two ways at one span**,
   "found the start of the next member" by a diagnostic under a re-parse's
   bound and "found Bar" (the token's kind) by another. Noted 2026-10-04.
+- **Editor parse: `the_editor_parse_agrees_with_parse`**
+  (`crates/ns-lsp/tests/corpus.rs`) assumes `parse` accepts no module with
+  a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
 
 ## Missing tests
 
