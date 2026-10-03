@@ -749,9 +749,6 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by
-  `read_local` indexing `arguments`, which it no longer does (it reads the flat
-  register window); the check is still needed.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is

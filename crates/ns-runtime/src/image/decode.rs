@@ -305,10 +305,12 @@ pub enum DecodeError {
         expected: &'static str,
     },
     /// A method's -- or the instance initializer's -- compiled body takes a
-    /// different number of arguments than its own declaration does. The frame's
-    /// `arguments` come from the send (or the factory), its `temporaries` from
-    /// the body's `argument_count`; a disagreement leaves `read_local` indexing
-    /// `temporaries` past its end.
+    /// different number of arguments than its own declaration does. A send
+    /// (or a factory) is checked against the declaration, and its arguments
+    /// open the activation's register window, followed by the body's
+    /// `register_count - argument_count` temporaries; a disagreement leaves
+    /// the window shorter than the registers the body addresses, so a read
+    /// runs past its end, or longer, so every temporary is shifted.
     CodeArityMismatch {
         what: String,
         parameters: usize,
@@ -1290,7 +1292,7 @@ fn check_code_arity(
 // Decoding is byte-safe: every id, tag and length is checked as it is read. It
 // does not make the result *coherent*. The VM indexes
 // `code.slot(program_counter)` directly, and
-// `locals::read_local`/`write_local` index a frame's `arguments`/`temporaries`
+// `locals::read_local`/`write_local` index the activation's register window
 // directly, so a jump target, a register operand or an arity that decoded
 // cleanly can still panic the process the first time the body runs. Everything
 // below is a bounded, linear pass over the flat, topologically ordered table --
