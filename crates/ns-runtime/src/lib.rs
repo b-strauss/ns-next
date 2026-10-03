@@ -67,8 +67,9 @@ macro_rules! for_each_lowering {
 }
 pub use code_points::CodePoints;
 pub use heap::{
-    ActivationHeader, ActivationReference, ClassReference, CollectorStatistics, FrameReference,
-    Heap, HeapStatistics, ObjectReference, RegisterBase, Root,
+    ActivationHeader, ActivationReference, ApplicationIndex, ClassReference, CodeId,
+    CollectorStatistics, FrameReference, Heap, HeapStatistics, MixinId, ObjectReference,
+    RegisterBase, Root,
 };
 pub use interpreter::core_library::MANIFEST_SOURCE;
 pub use interpreter::{

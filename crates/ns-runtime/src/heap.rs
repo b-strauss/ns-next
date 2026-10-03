@@ -15,14 +15,19 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::bytecode::CompiledCode;
 use crate::interpreter::FeedbackBase;
-use crate::mixin::{DispatchId, DispatchIds};
+use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
+use std::rc::Rc;
 
 pub(crate) mod mark;
+mod tables;
 mod value;
 mod world;
+pub use tables::{ApplicationIndex, CodeId, MixinId};
+pub(crate) use tables::{CodeEntry, Tables};
 pub(crate) use value::is_small_float_bits;
 use value::{at_rest, branded};
 pub use value::{
@@ -457,6 +462,9 @@ pub struct Heap<'gc> {
     /// `Value::immediate_index`: an immediate has no class field to read one from.
     /// Set once by the bootstrap; `NONE` before it.
     immediate_dispatch_ids: [DispatchId; 5],
+    /// The mixins, applications and compiled bodies objects of this heap
+    /// name by index (`tables.rs`).
+    tables: Tables,
     /// This heap's distinct id, stamped onto every handle it mints. Debug
     /// builds only; see `next_heap_id`. No accessor exists for it: nothing
     /// outside a `cfg`-guarded position may name a field that does not
@@ -772,6 +780,7 @@ impl<'gc> Heap<'gc> {
             total_pause: std::time::Duration::ZERO,
             longest_pause: std::time::Duration::ZERO,
             immediate_dispatch_ids: [DispatchId::NONE; 5],
+            tables: Tables::default(),
             #[cfg(debug_assertions)]
             heap_id: next_heap_id(),
             #[cfg(debug_assertions)]
@@ -1782,6 +1791,87 @@ impl<'gc> Heap<'gc> {
     // Each answers `None` for a handle whose data is not a class, rather
     // than panicking: a class reference decoded from an image is untrusted
     // until verified, and the verifier is a caller of these.
+
+    // ---------- The Rust-side tables ----------
+
+    pub(crate) fn mixin_id(&mut self, mixin: &Rc<Mixin>) -> MixinId {
+        let key = crate::mixin::mixin_key(mixin);
+        if let Some(id) = self.tables.mixin_ids.get(&key) {
+            return *id;
+        }
+        let id = MixinId::from_index(self.tables.mixins.len())
+            .expect("more than u32::MAX mixins in one heap");
+        self.tables.mixins.push(mixin.clone());
+        self.tables.mixin_ids.insert(key, id);
+        id
+    }
+
+    pub fn mixin(&self, id: MixinId) -> Option<Rc<Mixin>> {
+        self.tables.mixins.get(id.index()).cloned()
+    }
+
+    /// Enters `application` into the table, stamped with its index, and
+    /// answers the shared handle every class object of it will name.
+    pub(crate) fn register_application(
+        &mut self,
+        mut application: MixinApplication,
+    ) -> Rc<MixinApplication> {
+        let index = ApplicationIndex::from_index(self.tables.applications.len())
+            .expect("more than u32::MAX applications in one heap");
+        application.index = index;
+        let application = Rc::new(application);
+        self.tables.applications.push(application.clone());
+        application
+    }
+
+    pub fn application(&self, index: ApplicationIndex) -> Option<Rc<MixinApplication>> {
+        self.tables.applications.get(index.index()).cloned()
+    }
+
+    pub fn code_id(&mut self, code: &Rc<CompiledCode>) -> CodeId {
+        self.register_code(code, None)
+    }
+
+    pub fn code_id_of_method(&mut self, method: &Rc<MixinMethod>) -> CodeId {
+        self.register_code(&method.code, Some(method))
+    }
+
+    fn register_code(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        method: Option<&Rc<MixinMethod>>,
+    ) -> CodeId {
+        let key = Rc::as_ptr(code) as usize;
+        if let Some(id) = self.tables.code_ids.get(&key).copied() {
+            let entry = &mut self.tables.codes[id.index()];
+            if entry.method.is_none() {
+                entry.method = method.cloned();
+            }
+            return id;
+        }
+        let id = CodeId::from_index(self.tables.codes.len())
+            .expect("more than u32::MAX compiled bodies in one heap");
+        self.tables.codes.push(CodeEntry {
+            code: code.clone(),
+            method: method.cloned(),
+        });
+        self.tables.code_ids.insert(key, id);
+        id
+    }
+
+    pub fn code(&self, id: CodeId) -> Option<Rc<CompiledCode>> {
+        self.tables
+            .codes
+            .get(id.index())
+            .map(|entry| entry.code.clone())
+    }
+
+    pub fn code_method(&self, id: CodeId) -> Option<Rc<MixinMethod>> {
+        self.tables
+            .codes
+            .get(id.index())
+            .and_then(|entry| entry.method.clone())
+    }
 
     /// One accessor for the behaviour half of a class object, so a
     /// construction site that needs a superclass's application never has to
@@ -3641,6 +3731,7 @@ mod tests {
     /// `types.rs`'s test module.
     fn named_class<'gc>(heap: &mut Heap<'gc>, name: &str) -> ClassReference<'gc> {
         let application = std::rc::Rc::new(crate::mixin::MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
@@ -4288,6 +4379,59 @@ mod tests {
             panic!("a root keeps its object")
         };
         heap.array_set_element(array, 0, Value::object(stale));
+    }
+
+    #[test]
+    fn a_mixin_keeps_one_id_and_two_mixins_never_share_one() {
+        let mut heap = Heap::new();
+        let first = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern("First")));
+        let second = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Second")));
+        let first_id = heap.mixin_id(&first);
+        assert_eq!(heap.mixin_id(&first), first_id);
+        assert_ne!(heap.mixin_id(&second), first_id);
+        assert!(std::rc::Rc::ptr_eq(
+            &heap.mixin(first_id).expect("registered"),
+            &first
+        ));
+    }
+
+    #[test]
+    fn an_application_answers_its_own_index_and_the_heap_answers_it_back() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let object = mutator.builtin_class(crate::BuiltinClass::Object);
+            let application = mutator.heap().class_application(object).expect("a class");
+            let back = mutator
+                .heap()
+                .application(application.index())
+                .expect("registered");
+            assert!(std::rc::Rc::ptr_eq(&back, &application));
+        });
+    }
+
+    #[test]
+    fn compiled_code_keeps_one_id_and_records_its_method() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let object = mutator.builtin_class(crate::BuiltinClass::Object);
+            let application = mutator.heap().class_application(object).expect("a class");
+            let method = application
+                .mixin
+                .compiled_methods()
+                .next()
+                .expect("Object has a method")
+                .clone();
+            let id = mutator.heap_mut().code_id_of_method(&method);
+            assert_eq!(mutator.heap_mut().code_id(&method.code), id);
+            assert!(std::rc::Rc::ptr_eq(
+                &mutator.heap().code(id).expect("registered"),
+                &method.code
+            ));
+            assert!(std::rc::Rc::ptr_eq(
+                &mutator.heap().code_method(id).expect("a method"),
+                &method
+            ));
+        });
     }
 
     /// A class object whose data is not a class -- only a crafted image makes

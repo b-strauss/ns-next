@@ -297,12 +297,16 @@ pub struct Mutator<'gc> {
     /// object; false only during the kernel phase, before `Class` is filled
     /// (`Mutator::give_existing_class_objects_metaclasses`).
     pub(crate) metaclasses_ready: bool,
-    /// (mixin identity, superclass application identity) -> behaviour.
-    /// Keyed on the superclass's *application*, never on a superclass class
-    /// object: a nested superclass has one class object per enclosing
-    /// instance, so a class-object key would never hit and every instance
-    /// would get its own behaviour.
-    pub(crate) applications: IdentityMap<(usize, usize), Rc<crate::mixin::MixinApplication>>,
+    /// (the mixin's id, the superclass application's full-width index) ->
+    /// behaviour. Keyed on the superclass's *application*, never on a
+    /// superclass class object: a nested superclass has one class object per
+    /// enclosing instance, so a class-object key would never hit and every
+    /// instance would get its own behaviour. Strong until live editing, as
+    /// the heap's tables are.
+    pub(crate) applications: IdentityMap<
+        (crate::heap::MixinId, Option<crate::heap::ApplicationIndex>),
+        Rc<crate::mixin::MixinApplication>,
+    >,
     /// class mixin identity -> the metaclass mixin `metaclass_of` synthesized
     /// for a class that declares no class side of its own. §6.3 makes the
     /// metaclass mixin "the class side, together with the primary factory
@@ -1683,8 +1687,8 @@ impl<'gc> Mutator<'gc> {
         superclass: Option<&Rc<crate::mixin::MixinApplication>>,
     ) -> Rc<crate::mixin::MixinApplication> {
         let key = (
-            crate::mixin::mixin_key(mixin),
-            superclass.map_or(0, crate::mixin::application_key),
+            self.heap.mixin_id(mixin),
+            superclass.map(|application| application.index()),
         );
         if let Some(existing) = self.applications.get(&key) {
             return existing.clone();
@@ -1806,18 +1810,21 @@ impl<'gc> Mutator<'gc> {
         // -- so a value's state is not a prefix of its fields.
         let declared_slots = crate::mixin::declared_slots_of(superclass, inherited, &mixin.slots);
         let dispatch_ids = self.mint_dispatch_ids();
-        let application = Rc::new(crate::mixin::MixinApplication {
-            mixin: mixin.clone(),
-            superclass: superclass.cloned(),
-            inherits_value,
-            first_mutable_slot,
-            instantiation_refusal,
-            slot_count: next,
-            nested_slot,
-            declared_slots,
-            own_slot_base: inherited,
-            dispatch_ids,
-        });
+        let application = self
+            .heap
+            .register_application(crate::mixin::MixinApplication {
+                index: crate::heap::ApplicationIndex::UNREGISTERED,
+                mixin: mixin.clone(),
+                superclass: superclass.cloned(),
+                inherits_value,
+                first_mutable_slot,
+                instantiation_refusal,
+                slot_count: next,
+                nested_slot,
+                declared_slots,
+                own_slot_base: inherited,
+                dispatch_ids,
+            });
         self.applications.insert(key, application.clone());
         application
     }

@@ -463,6 +463,7 @@ mod tests {
             .as_ref()
             .and_then(|superclass_class| heap.class_application(*superclass_class));
         let application = Rc::new(MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: Rc::new(crate::mixin::Mixin {
                 methods,
                 ..crate::mixin::Mixin::empty(Symbol::intern(name))

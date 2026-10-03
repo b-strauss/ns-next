@@ -746,6 +746,11 @@ pub enum InstantiationRefusal {
 
 #[derive(Debug)]
 pub struct MixinApplication {
+    /// Its index in its heap's table, the full-width identity every class
+    /// object of it names and every identity comparison of applications uses
+    /// (`docs/design/object-model.md`, "An application has two ids"); set by
+    /// `Heap::register_application`.
+    pub(crate) index: crate::heap::ApplicationIndex,
     pub mixin: Rc<Mixin>,
     pub superclass: Option<Rc<MixinApplication>>,
     /// §3.1.1: whether this application's superclass chain reaches `Value`,
@@ -871,6 +876,13 @@ pub fn declared_slots_of(
     declared
 }
 
+impl MixinApplication {
+    /// Its index in its heap's table (`Heap::application` answers it back).
+    pub fn index(&self) -> crate::heap::ApplicationIndex {
+        self.index
+    }
+}
+
 /// Unlinks the superclass list in a loop rather than through the stack.
 ///
 /// An application chain is as long as the class chain it mirrors, and once
@@ -904,10 +916,6 @@ impl Drop for MixinApplication {
 
 pub fn mixin_key(mixin: &Rc<Mixin>) -> usize {
     Rc::as_ptr(mixin) as *const () as usize
-}
-
-pub fn application_key(application: &Rc<MixinApplication>) -> usize {
-    Rc::as_ptr(application) as *const () as usize
 }
 
 /// `mixin`, then every nested declaration (recursively), then its class

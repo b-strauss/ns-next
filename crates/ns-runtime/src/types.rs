@@ -739,6 +739,7 @@ mod tests {
     /// an interpreter's entry because only `World` builds a heap.
     fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
         Rc::new(crate::mixin::MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
             inherits_value: false,
