@@ -93,10 +93,11 @@ The rules:
    body and never runs past it. `| a <Foo |` no longer swallows the rest of
    the class.
 5. **No invented declarations.** A declaration whose name is missing is
-   left out rather than given an empty name: a parameter, a block
-   parameter, a lazy slot, a nested class, the receiver of a superclass or
-   `<:` clause (the clause is left out with it). A missing factory pattern
-   is `None`; a missing cascade message is left out. The one exception is a
+   left out rather than given an empty name: a block parameter, a lazy
+   slot, a nested class, a superclass or `<:` clause whose receiver (or
+   `outer` name) is missing. A message pattern missing its selector or a
+   parameter is left out whole — a method with it, and a factory pattern
+   becomes `None`. A missing cascade message is left out. The one exception is a
    root class with no name: it stays, with an empty name, because without
    it there is no module, and as no class's member it collides with
    nothing. Placeholder nodes exist only for expressions (`Literal::Nil`).
@@ -135,14 +136,16 @@ UTF-16 character positions through the existing line index.
 
 | Range | From — to | `collapsedText` | `kind` |
 |---|---|---|---|
-| Class body (instance side) | the first `(` after `=` to the instance side's `)`, header and member groups together | `(…)` | `region` |
-| Class side | `(` to `)` after `:` | `(…)` | `region` |
-| Method body | `(` to `)` | `(…)` | `region` |
-| Closure | `[` to `]` | `[…]`, or `[:x :y \| …]` with parameters | `region` |
-| Slot section | `\|` to `\|` (or `\|\|`) | `\|…\|` | `region` |
-| Comment | `(*` to `*)` | its first line, then `…*)` | `comment` |
+| Class body (instance side) | the first `(` after `=` to the instance side's `)`, header and member groups together | `(…)` | none |
+| Class side | `(` to `)` after `:` | `(…)` | none |
+| Method body | `(` to `)` | `(…)` | none |
+| Closure | `[` to `]` | `[…]`, or `[:x :y \| …]` with parameters | none |
+| Slot section — a class header's, or a body's temporaries | `\|` to `\|` (or `\|\|`) | `\|…\|` | none |
+| Comment | `(*` to `*)` | `(* ` and its first non-blank line, then ` …*)` | `comment` |
 
-Multi-line parenthesised expressions and tuples do not fold. Nothing is
+LSP's `region` kind names `#region` markers, which Newspeak has not, so a
+code fold carries no kind. Multi-line parenthesised expressions and tuples
+do not fold. Nothing is
 collapsed by the server; whether a range starts collapsed is the platform's
 decision from `kind` and the IDE's folding settings.
 
@@ -162,8 +165,11 @@ description and change notes name folding. The Kotlin lexer does not change.
   - one recovery test per typical in-progress edit — half a method
     (`foo = (` unfinished), a statement after `^`, an unclosed block, a
     nested class missing its `)`, an unclosed slot section, `| a <Foo |`,
-    half a keyword pattern — each asserting that the members *after* the
-    error survive, with their names and spans;
+    half a keyword message — each asserting that the members *after* the
+    error survive, with their names and spans (after a nested class missing
+    its `)` they survive as that class's members: nothing but indentation
+    could say otherwise). Half a keyword pattern, `foo:` above `bar = (…)`,
+    is a valid method `foo: bar` and is left as it is;
   - the depth guards — a long setter chain and deeply nested pattern
     literals answer diagnostics, not an overflow.
 - `ns-lsp`, over `corpus/modules`, `goldens/` and `Kernel.ns`:
