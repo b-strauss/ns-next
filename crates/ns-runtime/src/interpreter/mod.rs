@@ -1501,6 +1501,28 @@ impl<'gc> Mutator<'gc> {
         self.heap.allocate_closure(class, closure)
     }
 
+    /// A closure running `code`, whose copied values are the registers
+    /// `copied` names in the window at `register_base`, read straight into
+    /// its block (`Heap::allocate_closure_from_registers`): `MakeClosure`'s.
+    pub(crate) fn new_closure_from_registers(
+        &mut self,
+        code: &Rc<crate::bytecode::CompiledCode>,
+        captured_frame: FrameReference<'gc>,
+        feedback_base: FeedbackBase,
+        register_base: crate::heap::RegisterBase,
+        copied: &[u16],
+    ) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::Block);
+        self.heap.allocate_closure_from_registers(
+            class,
+            code,
+            captured_frame,
+            feedback_base,
+            register_base,
+            copied,
+        )
+    }
+
     /// The activation object of `frame`, which the caller has already
     /// reified (`Heap::reify`): the frame object itself, an instance of the
     /// kernel-private `Activation` class. It is a frame, never a running

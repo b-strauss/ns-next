@@ -16,6 +16,7 @@
 //! most of `interpreter/locals.rs`.
 
 use crate::bytecode::CompiledCode;
+use crate::hash::IdentityMap;
 use crate::interpreter::FeedbackBase;
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
@@ -449,6 +450,15 @@ pub struct Heap<'gc> {
     /// forwarded by `compact` like everything else that survives
     /// (`docs/design/memory.md`, "Weak references").
     canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
+    /// The inverse of `canonical_symbols`: each canonical symbol object's
+    /// arena index, and the symbol it is. Every Symbol object is canonical
+    /// (`Mutator::new_symbol` and the image decoder are the only makers, and
+    /// both record what they make), so `symbol_value` is one probe here
+    /// rather than a search of the interner by the object's text. Keyed by
+    /// index, so it holds no handle: `record_canonical_symbol` inserts,
+    /// `prune_canonical_symbols` removes, and `forward_everything` rebuilds
+    /// it from the forwarded table after every move and every compaction.
+    symbol_of: IdentityMap<u32, Symbol>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
@@ -834,6 +844,7 @@ impl<'gc> Heap<'gc> {
             objects: Vec::new(),
             activation_class: None,
             canonical_symbols: Vec::new(),
+            symbol_of: IdentityMap::default(),
             host_roots: std::cell::RefCell::new(HostRoots {
                 slots: Vec::new(),
                 sweep_at: MIN_ROOT_SWEEP,
@@ -998,6 +1009,30 @@ impl<'gc> Heap<'gc> {
         self.allocate_object(class, data)
     }
 
+    /// A block closure of `class` running `code`, whose copied values are
+    /// the registers `copied` names in the window at `register_base`: what
+    /// `MakeClosure` builds. Each value goes from its register into the
+    /// block as it is built, with no list of them in between, which would
+    /// be one more allocation and free per closure made.
+    pub(crate) fn allocate_closure_from_registers(
+        &mut self,
+        class: ClassReference<'gc>,
+        code: &Rc<CompiledCode>,
+        captured_frame: FrameReference<'gc>,
+        feedback_base: FeedbackBase,
+        register_base: RegisterBase,
+        copied: &[u16],
+    ) -> ObjectReference<'gc> {
+        let fields = self.closure_fixed_words(code, captured_frame, feedback_base);
+        let data = Payload::closure(
+            fields,
+            copied
+                .iter()
+                .map(|register| self.store(self.register(register_base, *register))),
+        );
+        self.allocate_object(class, data)
+    }
+
     /// A closure's payload from its record, each copied value stored as a
     /// word.
     fn closure_payload(&mut self, closure: NewClosure<'gc>) -> Payload {
@@ -1007,13 +1042,25 @@ impl<'gc> Heap<'gc> {
             copied,
             feedback_base,
         } = closure;
+        let fields = self.closure_fixed_words(&code, captured_frame, feedback_base);
+        Payload::closure(fields, copied.into_iter().map(|value| self.store(value)))
+    }
+
+    /// A closure's fixed fields, `closure_field`'s, stored: the one place
+    /// they are laid out.
+    fn closure_fixed_words(
+        &mut self,
+        code: &Rc<CompiledCode>,
+        captured_frame: FrameReference<'gc>,
+        feedback_base: FeedbackBase,
+    ) -> [Word; closure_field::COUNT] {
         self.check_frame_origin(captured_frame);
         let mut fields = [Word::NIL; closure_field::COUNT];
-        fields[closure_field::CODE_ID] = count_word(self.code_id(&code).index());
+        fields[closure_field::CODE_ID] = count_word(self.code_id(code).index());
         fields[closure_field::CAPTURED_FRAME] =
             self.store(Value::object(self.frame_object(captured_frame)));
         fields[closure_field::FEEDBACK_BASE] = count_word(feedback_base.raw() as usize);
-        Payload::closure(fields, copied.into_iter().map(|value| self.store(value)))
+        fields
     }
 
     /// A class object (`NewClass` says what it holds) whose header class is
@@ -1700,17 +1747,20 @@ impl<'gc> Heap<'gc> {
     }
 
     /// `object`'s fields: its words after the header and the class word.
+    #[inline]
     fn fields(&self, object: ObjectReference<'gc>) -> &[u64] {
         &self.block(object)[FIELDS..]
     }
 
     /// `fields`, for a write.
+    #[inline]
     fn fields_mut(&mut self, object: ObjectReference<'gc>) -> &mut [u64] {
         &mut self.block_mut(object)[FIELDS..]
     }
 
     /// The class `block`'s class word names. Only `Payload::into_block`
     /// writes one, from a class handle, so it always names an object.
+    #[inline]
     fn block_class(&self, block: &[u64]) -> ClassReference<'gc> {
         match self.load(Word::from_bits(block[CLASS])).as_object() {
             Some(class) => class,
@@ -1790,6 +1840,7 @@ impl<'gc> Heap<'gc> {
         self.set_header(object, header.with_identity_hash(hash));
     }
 
+    #[inline]
     pub fn object_class(&self, object: ObjectReference<'gc>) -> ClassReference<'gc> {
         self.block_class(self.block(object))
     }
@@ -1820,24 +1871,32 @@ impl<'gc> Heap<'gc> {
     /// The words of a word-format object of `format`: the one lender of a
     /// pointer payload, private to the heap, so that every public accessor
     /// copies out (`docs/design/memory.md`, "The seam").
+    ///
+    /// Inlined, and the block found once for both the format check and the
+    /// words: every field, slot, closure and class-field access runs it.
+    #[inline]
     fn pointer_words(&self, object: ObjectReference<'gc>, format: Format) -> Option<&[u64]> {
-        (self.header(object).format() == format).then(|| self.fields(object))
+        let block = self.block(object);
+        (Header(block[HEADER]).format() == format).then(|| &block[FIELDS..])
     }
 
     /// `pointer_words`, for a write.
+    #[inline]
     fn pointer_words_mut(
         &mut self,
         object: ObjectReference<'gc>,
         format: Format,
     ) -> Option<&mut [u64]> {
-        if self.header(object).format() != format {
+        let block = self.block_mut(object);
+        if Header(block[HEADER]).format() != format {
             return None;
         }
-        Some(self.fields_mut(object))
+        Some(&mut block[FIELDS..])
     }
 
     /// The pointer word at `index` of a word-format object of `format`;
     /// `None` for any other object or past its words.
+    #[inline]
     fn pointer_word(
         &self,
         object: ObjectReference<'gc>,
@@ -2101,15 +2160,13 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The interned symbol a Symbol object stands for; `None` for any other
-    /// object, a String of the same text included. The object holds only
-    /// its text, so this finds the symbol again by it -- never interning:
-    /// `Mutator::new_symbol` and the image decoder intern a text before
-    /// they allocate its object.
+    /// object, a String of the same text included. Agrees with `is_symbol`,
+    /// because every Symbol object is canonical and so recorded in
+    /// `symbol_of`; it reads neither the object's text nor its class.
+    #[inline]
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
-        if !self.is_symbol(object) {
-            return None;
-        }
-        Symbol::lookup(&self.str_value(object)?)
+        self.check_object_origin(object);
+        self.symbol_of.get(&object.index).copied()
     }
 
     /// The one object `symbol` already is in this heap, if anything has
@@ -2129,7 +2186,10 @@ impl<'gc> Heap<'gc> {
         if self.canonical_symbols.len() <= index {
             self.canonical_symbols.resize(index + 1, None);
         }
-        self.canonical_symbols[index] = Some(object);
+        if let Some(previous) = self.canonical_symbols[index].replace(object) {
+            self.symbol_of.remove(&previous.index);
+        }
+        self.symbol_of.insert(object.index, symbol);
     }
 
     /// Closure `object`'s words -- its fixed fields, then its copied values --
@@ -4115,6 +4175,17 @@ impl<'gc> Heap<'gc> {
         for object in self.canonical_symbols.iter_mut().flatten() {
             forwarder.object(object);
         }
+        // Its inverse is keyed by the indices just rewritten, so it is
+        // rebuilt from the forwarded table rather than forwarded: once per
+        // move, in the number of live symbols. `prune_canonical_symbols`
+        // already removed every symbol it cleared, so each one left still
+        // has its entry.
+        let symbols: Vec<Symbol> = self.symbol_of.drain().map(|(_, symbol)| symbol).collect();
+        for symbol in symbols {
+            if let Some(object) = self.canonical_symbols[symbol.index()] {
+                self.symbol_of.insert(object.index, symbol);
+            }
+        }
         let roots = self.host_roots.get_mut();
         roots.sweep();
         for slot in &roots.slots {
@@ -4304,6 +4375,7 @@ impl<'gc> Heap<'gc> {
         for slot in &mut self.canonical_symbols {
             if let Some(object) = slot {
                 if !marker.objects.is_set(object.index) {
+                    self.symbol_of.remove(&object.index);
                     *slot = None;
                 }
             }
@@ -4330,8 +4402,9 @@ impl<'gc> Heap<'gc> {
         marker
     }
 
-    /// Marks from the heap's own roots and `roots`, compacts, and forwards
-    /// `roots`, for the heap's own tests. A real collection goes through
+    /// Marks from the heap's own roots and `roots`, prunes the canonical
+    /// symbol table, compacts, and forwards `roots`, for the heap's own
+    /// tests. A real collection goes through
     /// `World`.
     #[cfg(test)]
     fn collect_for_test(&mut self, roots: &mut [&mut Value<'gc>]) {
@@ -4341,6 +4414,7 @@ impl<'gc> Heap<'gc> {
             marker.value(root);
         }
         self.drain_marking(&mut marker);
+        self.prune_canonical_symbols(&marker);
         let mut forwarder = self.compact(marker);
         for root in roots.iter_mut() {
             forwarder.value(root);
@@ -4801,7 +4875,7 @@ mod tests {
         let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
         let string_class = named_class(&mut heap, "String");
         let symbol = Symbol::intern("at:put:");
-        let object = heap.allocate_symbol(symbol_class, symbol);
+        let object = canonical_symbol_for_test(&mut heap, symbol_class, symbol);
         assert_eq!(heap.symbol_value(object), Some(symbol));
         assert!(heap.is_string(object));
         assert_eq!(heap.str_value(object).as_deref(), Some("at:put:"));
@@ -4812,6 +4886,75 @@ mod tests {
             heap.describe(Value::object(string)),
             "the String \"at:put:\""
         );
+    }
+
+    /// Allocates `symbol`'s object and records it as canonical, as
+    /// `Mutator::new_symbol` does: a bare heap has no mutator.
+    fn canonical_symbol_for_test<'gc>(
+        heap: &mut Heap<'gc>,
+        class: ClassReference<'gc>,
+        symbol: Symbol,
+    ) -> ObjectReference<'gc> {
+        let object = heap.allocate_symbol(class, symbol);
+        heap.record_canonical_symbol(symbol, object);
+        object
+    }
+
+    /// `symbol_value` is a probe of the canonical table's inverse, keyed by
+    /// arena index, so it must follow a symbol across every compaction and
+    /// every move, and forget one the collector pruned.
+    #[test]
+    fn a_symbol_answers_its_symbol_across_collections_and_moves_and_a_pruned_one_leaves_no_entry() {
+        let mut heap = Heap::new();
+        let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
+        let string_class = named_class(&mut heap, "String");
+        // Garbage below the symbols, so that compaction moves them.
+        heap.allocate_string(string_class, crate::CodePoints::from("garbage"));
+        let kept_symbol = Symbol::intern("kept:symbol:");
+        let pruned_symbol = Symbol::intern("pruned:symbol:");
+        let mut kept = Value::object(canonical_symbol_for_test(
+            &mut heap,
+            symbol_class,
+            kept_symbol,
+        ));
+        canonical_symbol_for_test(&mut heap, symbol_class, pruned_symbol);
+        let mut string = Value::object(
+            heap.allocate_string(string_class, crate::CodePoints::from("kept:symbol:")),
+        );
+        let index_before = kept.as_object().map(|object| object.index);
+        heap.collect_for_test(&mut [&mut kept, &mut string]);
+        let object = kept.as_object().expect("a root keeps its object");
+        assert_ne!(
+            Some(object.index),
+            index_before,
+            "the collection moved the symbol"
+        );
+        assert_eq!(heap.symbol_value(object), Some(kept_symbol));
+        assert_eq!(heap.canonical_symbol(pruned_symbol).map(|_| ()), None);
+        let live = heap.canonical_symbols.iter().flatten().count();
+        assert_eq!(heap.symbol_of.len(), live);
+        assert_eq!(live, 1);
+        let string = string.as_object().expect("a root keeps its object");
+        assert_eq!(heap.symbol_value(string), None);
+        #[cfg(debug_assertions)]
+        {
+            let roots = [
+                heap.stash(Value::object(object)),
+                heap.stash(Value::object(string)),
+            ];
+            move_bare_heap(&mut heap);
+            let object = heap
+                .fetch(&roots[0])
+                .as_object()
+                .expect("a root keeps its object");
+            let string = heap
+                .fetch(&roots[1])
+                .as_object()
+                .expect("a root keeps its object");
+            assert_eq!(heap.symbol_value(object), Some(kept_symbol));
+            assert_eq!(heap.symbol_value(string), None);
+            assert_eq!(heap.symbol_of.len(), 1);
+        }
     }
 
     #[test]

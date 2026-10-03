@@ -277,12 +277,19 @@ pub(crate) fn execute_symbol<'gc>(
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let object = receiver.as_object()?;
-    let symbol = mutator.heap.symbol_value(object)?;
     match primitive {
-        SymbolPrimitive::AsString => Some(Ok(Value::object(
-            mutator.new_string(symbol.as_str().to_string()),
-        ))),
+        SymbolPrimitive::AsString => {
+            let symbol = mutator.heap.symbol_value(object)?;
+            Some(Ok(Value::object(
+                mutator.new_string(symbol.as_str().to_string()),
+            )))
+        }
+        // Identity, a symbol being canonical (§5.1.6): it asks only whether
+        // the receiver is one, never which.
         SymbolPrimitive::Equal => {
+            if !mutator.heap.is_symbol(object) {
+                return None;
+            }
             let equal = symbol_equals(object, arguments.first().copied());
             crate::interpreter::future::declines_for_a_future(
                 mutator,
@@ -293,9 +300,15 @@ pub(crate) fn execute_symbol<'gc>(
             )
             .map(|answer| Ok(Value::boolean(answer)))
         }
-        SymbolPrimitive::Hash => Some(Ok(Value::small_integer(symbol_hash(symbol)))),
-        SymbolPrimitive::PrintString => Some(Ok(Value::object(
-            mutator.new_string(format!("#{}", symbol.as_str())),
-        ))),
+        SymbolPrimitive::Hash => {
+            let symbol = mutator.heap.symbol_value(object)?;
+            Some(Ok(Value::small_integer(symbol_hash(symbol))))
+        }
+        SymbolPrimitive::PrintString => {
+            let symbol = mutator.heap.symbol_value(object)?;
+            Some(Ok(Value::object(
+                mutator.new_string(format!("#{}", symbol.as_str())),
+            )))
+        }
     }
 }
