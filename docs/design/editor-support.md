@@ -185,11 +185,13 @@ excluded when the selector's tokens are found.
   like any other; the server looks the selector up among the declarations of
   the class `depth` levels out — slot, nested class or method — and colours it
   accordingly. The resolver finds that depth over both sides of a class
-  together; the server looks only at the side the send reaches there: the
-  instance side when the body holding the send, or the nested class holding
-  it, is declared on the instance side, the class side (with the primary
-  factory) when on the class side. A name declared as a slot on one side and a
-  method on the other is so coloured by the declaration the send reaches. A
+  together; the server looks only at the side the send reaches there. At
+  depth 0 that is the instance side from an instance-side body and the class
+  side (with the primary factory) from a class-side method; further out it is
+  always an instance side, since a class side holds methods only and every
+  nested class is declared on an instance side. A name declared as a slot on
+  one side and a method on the other is so coloured by the declaration the
+  send reaches. A
   name that class only inherits cannot be placed statically and
   is coloured `method`, which is what it is: a send. A write, `name:: value`,
   is coloured over the whole `name::` token, the colons with the name.
@@ -240,7 +242,9 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
   and without `readonly`, nested class, declared method, inherited send,
   a receiver inside a keyword message's span, a lazy slot in both
   modifier orders and both forms, a name a slot on one side of a class and a
-  method on the other), each expected category asserted
+  method on the other, read from either side, from a nested class and from a
+  superclass clause, and the primary factory as a class-side member only),
+  each expected category asserted
   directly rather than through an `insta` snapshot, so every expectation is
   stated and reviewed rather than accepted;
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and

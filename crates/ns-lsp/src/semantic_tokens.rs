@@ -111,13 +111,14 @@ pub fn encode(classified: &[Classified], text: &str, line_index: &LineIndex) -> 
 /// What one class declares, each side apart, under the full selector. The
 /// resolver searches both sides together (`own_member_names` in
 /// `crates/ns-runtime/src/resolver/classes.rs`) and records only the depth a
-/// send binds at. The object the send reaches at that depth is an instance
-/// when the body holding the send -- or, further out, the nested class
-/// holding it -- is declared on the instance side, and the class object when
-/// it is declared on the class side; a name both sides declare with
-/// different kinds is coloured by the side reached. A name one side declares
-/// twice is a resolver error; the first declaration wins here, so the colour
-/// is stable while the error is shown.
+/// send binds at. At depth 0 the send reaches the object the body holding it
+/// runs on: an instance from an instance-side body, the class object from a
+/// class-side method. Further out it reaches an enclosing object, an instance:
+/// a class side holds methods only (the parser's G3), so every nested class
+/// is declared on an instance side. A name both sides declare with different
+/// kinds is coloured by the side reached. A name one side declares twice is a
+/// resolver error; the first declaration wins here, so the colour is stable
+/// while the error is shown.
 struct ClassMembers {
     instance_side: SideMembers,
     class_side: SideMembers,
@@ -254,7 +255,7 @@ impl Classifier<'_> {
 
     /// `enclosing` is the chain around this declaration, innermost first --
     /// the resolver's `class_chain` without this class's own level, each
-    /// level the side the declaration nested in it is declared on.
+    /// level the side the class nested in it is declared on.
     fn class(&mut self, declaration: &ast::ClassDeclaration, enclosing: &[&SideMembers]) {
         let own = ClassMembers::of(declaration);
         let mut chain: Vec<&SideMembers> = vec![&own.instance_side];
@@ -355,18 +356,16 @@ impl Classifier<'_> {
                 self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             }
         }
-        let sides = std::iter::once((&declaration.instance_side, &chain)).chain(
-            declaration
-                .class_side
-                .iter()
-                .map(|side| (side, &class_side_chain)),
-        );
-        for (body, side_chain) in sides.clone() {
+        let mut sides = vec![(&declaration.instance_side, &chain)];
+        if let Some(class_side) = &declaration.class_side {
+            sides.push((class_side, &class_side_chain));
+        }
+        for &(body, side_chain) in &sides {
             for method in &body.methods {
                 self.method(method, side_chain);
             }
         }
-        for (body, side_chain) in sides {
+        for &(body, side_chain) in &sides {
             for nested in &body.nested_classes {
                 self.class(nested, side_chain);
             }
@@ -1118,6 +1117,109 @@ mod tests {
         assert_eq!(classified_at(2), Some((Property, false)), "instance side");
         assert_eq!(classified_at(3), Some((Method, true)), "the method");
         assert_eq!(classified_at(4), Some((Method, false)), "class side");
+    }
+
+    /// Each occurrence of `needle` in `text` -- a clean module -- with what it
+    /// was classified as, in order.
+    fn classified_occurrences(text: &str, needle: &str) -> Vec<Option<(TokenCategory, bool)>> {
+        let analysis = crate::analysis::analyze(text);
+        assert!(
+            analysis.findings.is_empty(),
+            "the module is clean: {:?}",
+            analysis
+                .findings
+                .iter()
+                .map(|finding| &finding.message)
+                .collect::<Vec<_>>()
+        );
+        text.match_indices(needle)
+            .map(|(start, _)| {
+                analysis
+                    .classified
+                    .iter()
+                    .find(|classified| classified.span.start == start as u32)
+                    .map(|classified| (classified.category, classified.declaration))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_enclosing_level_is_always_an_instance_side() {
+        // A class side holds methods only (the parser's G3), so every nested
+        // class is declared on an instance side, and its enclosing object is
+        // an instance. `size` in `Inner`'s class-side method binds at depth 1,
+        // `Shapes`, and reaches its instance side's slot, not its class
+        // side's method.
+        let text = indoc::indoc! {"
+            class Shapes = Object new (
+              | size = 1. |
+            ) (
+              class Inner = Object new () () : (
+                public peek = ( ^size )
+              )
+            ) : (
+              public size = ( ^2 )
+            )
+        "};
+        assert_eq!(
+            classified_occurrences(text, "size"),
+            vec![
+                Some((Property, true)),
+                Some((Property, false)),
+                Some((Method, true))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_superclass_clause_receiver_reaches_the_enclosing_instance_side() {
+        // §6.1 evaluates the clause as if in an instance method of the
+        // enclosing class; the resolver binds `Base` at depth 0 of that
+        // chain, `Shapes`, whose instance side declares it as a nested class
+        // and whose class side as a method.
+        let text = indoc::indoc! {"
+            class Shapes = Object new () (
+              class Base = Object new () ()
+              class Inner = Base new () ()
+            ) : (
+              public Base = ( ^nil )
+            )
+        "};
+        assert_eq!(
+            classified_occurrences(text, "Base"),
+            vec![
+                Some((Class, true)),
+                Some((Class, false)),
+                Some((Method, true))
+            ]
+        );
+    }
+
+    #[test]
+    fn the_factory_is_a_member_of_the_class_side_only() {
+        // §6.3: the primary factory `new` is a member of the class side. The
+        // resolver binds both `new` sends at depth 0, `Shapes`; from the
+        // instance side the send reaches the instance's slot `new`, from the
+        // class side the factory, a method.
+        let text = indoc::indoc! {"
+            class Shapes = Object new (
+              | new = 1. |
+            ) (
+              public read = ( ^new )
+            ) : (
+              public make = ( ^new )
+            )
+        "};
+        let occurrences = classified_occurrences(text, "new");
+        assert_eq!(
+            occurrences[1..],
+            [
+                Some((Property, true)),
+                Some((Property, false)),
+                Some((Method, false))
+            ],
+            "after the module root's own clause"
+        );
     }
 
     #[test]

@@ -82,8 +82,11 @@ tasks.withType<PrepareSandboxTask>().configureEach {
 /**
  * The directory under `bin/` for the platform this build runs on -- only its
  * server is bundled for now -- from the mapping `ServerBinaryLocator` finds the
- * server through at run time, looked up the same way: the system by what
- * `os.name` starts with, the architecture by `os.arch` in lower case. A host
+ * server through at run time, looked up by the rule that file's header
+ * states -- the system by what `os.name` starts with, the architecture by
+ * `os.arch` in lower case -- which `platformDirectory` follows too; this
+ * script's code cannot be called from a test, so the stated rule is what
+ * keeps the two lookups one. A host
  * the mapping does not name fails the build when a sandbox is prepared rather
  * than bundling the server under a directory the plugin would never look in.
  */

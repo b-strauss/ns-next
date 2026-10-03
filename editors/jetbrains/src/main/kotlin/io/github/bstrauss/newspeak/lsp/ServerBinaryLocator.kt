@@ -65,7 +65,10 @@ private fun isWindows(operatingSystemName: String): Boolean = operatingSystemNam
 /**
  * `platform-directories.properties`, beside this class: the mapping
  * `build.gradle.kts` reads too, so the directory the build bundles the server
- * under is the one this lookup finds it in.
+ * under is the one this lookup finds it in. The lookup rule is the one that
+ * file's header states (a `system.` key matches the start of `os.name`, an
+ * `architecture.` key the lower-cased `os.arch`); `hostPlatform` in the build
+ * script follows it too, since a test cannot call build-script code.
  */
 private object PlatformDirectories {
     private val properties = Properties().apply {
