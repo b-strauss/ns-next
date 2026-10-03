@@ -47,16 +47,21 @@ impl<'a> Parser<'a> {
         match self.peek() {
             TokenKind::LeftParenthesis => {
                 self.bump();
+                let before = self.position;
                 let expression = self.parse_expression();
                 if !self.eat(TokenKind::RightParenthesis) {
-                    let token = self.current();
-                    self.push_error(
-                        token.span,
-                        &format!(
-                            "expected `)` to close the parenthesis, found {}",
-                            self.found(token)
-                        ),
-                    );
+                    // An expression that consumed nothing has reported its
+                    // token already: one diagnostic for one fault.
+                    if self.position != before {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!(
+                                "expected `)` to close the parenthesis, found {}",
+                                self.found(token)
+                            ),
+                        );
+                    }
                     // A parenthesis holds one expression and no `.`: a `.`
                     // means it was never closed, so the skip stops there and
                     // leaves an enclosing body's `)` alone.
@@ -343,15 +348,18 @@ impl<'a> Parser<'a> {
             .unwrap_or(self.current());
         let mut parameters = Vec::new();
         // `blockParameters → blockParameter+ vbar`, `blockParameter → colon
-        // slotDecl` (§5.1.8).
+        // slotDecl` (§5.1.8). A parameter without its name is left out, and
+        // the `|` is still the parameters' end, not a temporaries section.
+        let mut has_parameters = false;
         while self.at(TokenKind::Colon) {
             self.bump();
-            parameters.push(self.declared_identifier("name a block parameter"));
+            has_parameters = true;
+            parameters.extend(self.declared_identifier("name a block parameter"));
             // `[:x <T> :y <T> | ...]` — block parameters carry the same
             // declaration-position `<Type>` annotations as method parameters.
             self.skip_type_annotation();
         }
-        if !parameters.is_empty() {
+        if has_parameters {
             self.expect(TokenKind::Bar);
         }
         let body = self.parse_code_body();
@@ -373,18 +381,23 @@ impl<'a> Parser<'a> {
         let left_brace = self.bump(); // {
         let mut elements = Vec::new();
         while !self.at(TokenKind::RightBrace) && !self.at_body_close() {
+            let before = self.position;
             elements.push(self.parse_expression());
             if self.eat(TokenKind::Dot) || self.at(TokenKind::RightBrace) {
                 continue;
             }
-            let token = self.current();
-            self.push_error(
-                token.span,
-                &format!(
-                    "expected `.` between a tuple's elements, found {}",
-                    self.found(token)
-                ),
-            );
+            // An element that consumed nothing has reported its token
+            // already: one diagnostic for one fault.
+            if self.position != before {
+                let token = self.current();
+                self.push_error(
+                    token.span,
+                    &format!(
+                        "expected `.` between a tuple's elements, found {}",
+                        self.found(token)
+                    ),
+                );
+            }
             // The skip stops at the tuple's own `}`, which closes no group it
             // skipped, and at an enclosing body's close: the tuple keeps the
             // elements after the junk and never takes its owner's bracket.
@@ -497,7 +510,7 @@ impl<'a> Parser<'a> {
         } = *boxed;
         let mut rest = Vec::new();
         while self.eat(TokenKind::Semicolon) {
-            rest.push(self.parse_cascade_message());
+            rest.extend(self.parse_cascade_message());
         }
         let last = rest
             .last()
@@ -655,37 +668,38 @@ impl<'a> Parser<'a> {
     }
 
     /// `cascadeMsg → semicolon (keywordMsg | binaryMsg | unarySelector)`,
-    /// the cursor after the `;`.
-    fn parse_cascade_message(&mut self) -> MessageSend {
+    /// the cursor after the `;`. `None` when no message is there: a cascade
+    /// message the source does not have is left out.
+    fn parse_cascade_message(&mut self) -> Option<MessageSend> {
         let start = self.current().span;
         self.eat_eventual_send_operator(|parser| {
             parser.at(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
         });
         if self.at(TokenKind::Keyword) {
             let (selector, arguments, end) = self.parse_keyword_parts(start);
-            return MessageSend {
+            return Some(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
                 span: start.merge(end),
-            };
+            });
         }
         if self.at_binary_operator() {
             let (operator, argument) = self.parse_binary_operator_and_argument();
-            return MessageSend {
+            return Some(MessageSend {
                 selector: Selector::Binary(operator),
                 span: start.merge(expression_span(&argument)),
                 arguments: vec![argument],
-            };
+            });
         }
         if self.at_name() {
             let selector_token = self.bump();
             let selector_name = self.text(selector_token).to_string();
             self.refuse_reserved_word(&selector_name, selector_token.span, "be a message selector");
-            return MessageSend {
+            return Some(MessageSend {
                 selector: Selector::Unary(selector_name),
                 arguments: Vec::new(),
                 span: selector_token.span,
-            };
+            });
         }
         let token = self.current();
         if token.kind == TokenKind::SetterKeyword {
@@ -693,11 +707,7 @@ impl<'a> Parser<'a> {
         } else {
             self.push_error(token.span, "expected a message after `;`");
         }
-        MessageSend {
-            selector: Selector::Unary(String::new()),
-            arguments: Vec::new(),
-            span: token.span,
-        }
+        None
     }
 
     /// Whether a message -- unary, binary or keyword, or `<-:` before one --

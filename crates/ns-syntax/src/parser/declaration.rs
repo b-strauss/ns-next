@@ -163,13 +163,45 @@ impl<'a> Parser<'a> {
             if self.member_starts_at(position)
                 && self
                     .speculative_member_end(position)
-                    .is_some_and(|end| first_error < end)
+                    .is_some_and(|end| first_error < end && !self.inside_block_or_tuple(end))
             {
                 return Some(position);
             }
             position += 1;
         }
         None
+    }
+
+    /// Whether the member ending at `end` stands inside a block or a tuple:
+    /// the first closing bracket after it that closes no group opened after
+    /// it is a `]` or a `}`. No member stands there -- `| each = ( ^each )`
+    /// in `[:each | each = ( ^each ) ]` is the block's content -- while a
+    /// `)` there is the owner's, a method body's or a class side's.
+    fn inside_block_or_tuple(&self, end: u32) -> bool {
+        let mut expected_closers: Vec<TokenKind> = Vec::new();
+        for token in self
+            .tokens
+            .iter()
+            .skip_while(|token| token.span.start < end)
+        {
+            match token.kind {
+                TokenKind::EndOfInput => return false,
+                TokenKind::LeftParenthesis => expected_closers.push(TokenKind::RightParenthesis),
+                TokenKind::LeftBracket => expected_closers.push(TokenKind::RightBracket),
+                TokenKind::LeftBrace => expected_closers.push(TokenKind::RightBrace),
+                TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    match expected_closers
+                        .iter()
+                        .rposition(|expected| *expected == token.kind)
+                    {
+                        Some(index) => expected_closers.truncate(index),
+                        None => return token.kind != TokenKind::RightParenthesis,
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Where a member parsed from `position` ends, if it parses cleanly: see
@@ -306,7 +338,10 @@ impl<'a> Parser<'a> {
         ) && super::is_name(self.peek2())
     }
 
-    pub(crate) fn parse_message_pattern(&mut self) -> MessagePattern {
+    /// A message pattern, or `None` when its selector or a parameter is
+    /// missing: a pattern without one is left out whole, after its tokens
+    /// are consumed as a whole one's would be.
+    pub(crate) fn parse_message_pattern(&mut self) -> Option<MessagePattern> {
         // Declarations may carry `<Type>` annotations after each parameter name,
         // and a `^<Type>` return annotation before the `=`; Milestone 1 discards
         // them via `skip_type_annotation` / `skip_return_type_annotation`.
@@ -314,16 +349,17 @@ impl<'a> Parser<'a> {
             let selector = self.identifier_from_bump();
             let parameter = self.declared_identifier("name a parameter");
             self.skip_type_annotation();
-            MessagePattern::Binary {
+            parameter.map(|parameter| MessagePattern::Binary {
                 selector,
                 parameter,
-            }
+            })
         } else {
             match self.peek() {
                 // `keywordMsgPattern → (keyword slotDecl)+` (§6.3.4): a setter
                 // keyword `name::` is not a keyword.
                 TokenKind::Keyword => {
                     let mut parts = Vec::new();
+                    let mut missing = false;
                     while self.at(TokenKind::Keyword) {
                         let keyword = self.bump();
                         let key = Identifier {
@@ -332,9 +368,12 @@ impl<'a> Parser<'a> {
                         };
                         let parameter = self.declared_identifier("name a parameter");
                         self.skip_type_annotation();
-                        parts.push((key, parameter));
+                        match parameter {
+                            Some(parameter) => parts.push((key, parameter)),
+                            None => missing = true,
+                        }
                     }
-                    MessagePattern::Keyword { parts }
+                    (!missing).then_some(MessagePattern::Keyword { parts })
                 }
                 _ => {
                     let selector = self.declared_identifier("be a message selector");
@@ -343,7 +382,7 @@ impl<'a> Parser<'a> {
                     // selector itself. Dropped in Milestone 1.
                     self.skip_type_arguments();
                     self.skip_type_annotation();
-                    MessagePattern::Unary { selector }
+                    selector.map(|selector| MessagePattern::Unary { selector })
                 }
             }
         };
@@ -393,7 +432,9 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_method_declaration(&mut self) -> MethodDeclaration {
+    /// A method, parsed whole; `None` when its pattern is missing a name,
+    /// so no method the source does not name is declared.
+    pub(crate) fn parse_method_declaration(&mut self) -> Option<MethodDeclaration> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
         let pattern = self.parse_message_pattern();
@@ -402,7 +443,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_code_body();
         let close = self.close_method_body();
         let end = close.map_or_else(|| self.previous_span(), |token| token.span);
-        MethodDeclaration {
+        pattern.map(|pattern| MethodDeclaration {
             access,
             pattern,
             body,
@@ -411,7 +452,7 @@ impl<'a> Parser<'a> {
                 close: close.map(|token| token.span),
             }),
             span: start.merge(end),
-        }
+        })
     }
 
     /// A method body's `)`. When it is missing and a member starts here, the
@@ -493,7 +534,9 @@ impl<'a> Parser<'a> {
                 self.eat(TokenKind::Dot);
                 continue;
             }
-            let name = self.declared_identifier("name a slot or a temporary");
+            // A name stands here (`at_name` above).
+            let name = self.identifier();
+            self.refuse_reserved_word(&name.name, name.span, "name a slot or a temporary");
             // `slotName <Type>` — the annotation is dropped in Milestone 1.
             self.skip_type_annotation();
             let (mutability, initializer) = match self.peek() {
@@ -510,7 +553,17 @@ impl<'a> Parser<'a> {
                 }
                 _ => (SlotMutability::MutableBare, None),
             };
-            let end = self.current().span;
+            // A slot ends at its `.`, or a bare one at what follows it: the
+            // section's close or the next slot. Anything else is an error,
+            // and the slot then ends at its own last token, never at an
+            // unrelated one after it -- an owner's `)` among them.
+            let end = if self.at(TokenKind::Dot)
+                || (initializer.is_none() && (self.at(close) || self.at_name()))
+            {
+                self.current().span
+            } else {
+                self.previous_span()
+            };
             // §6.3.2: "The trailing dot is mandatory after an initializer
             // and optional after an uninitialized slot".
             if !self.eat(TokenKind::Dot) && initializer.is_some() {
@@ -666,7 +719,15 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
         self.expect(TokenKind::Class);
-        let name = self.declared_identifier("name a class");
+        // The root class is kept without a name: without it there is no
+        // module. A nested one always has its name (`at_nested_class`).
+        let name = self.declared_identifier("name a class").unwrap_or_else(|| {
+            let offset = self.current().span.start;
+            Identifier {
+                name: String::new(),
+                span: crate::span::Span::new(offset, offset),
+            }
+        });
         // A generic class's type parameters, dropped: §6's
         // `typeParameterDecl`, `class Map <[K, V]> ...`, and the canonical
         // grammar's `class List[E] ...` (`NewspeakGrammar.ns:465`).
@@ -681,13 +742,13 @@ impl<'a> Parser<'a> {
         let factory = if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
             None
         } else {
-            Some(self.parse_message_pattern())
+            self.parse_message_pattern()
         };
         self.expect(TokenKind::Equals);
         let superclass = if self.at(TokenKind::LeftParenthesis) {
             None
         } else {
-            Some(self.parse_superclass_clause())
+            self.parse_superclass_clause()
         };
         // §6.2's mixin application, `class C = S someMessage <: M otherMessage`:
         //
@@ -703,14 +764,18 @@ impl<'a> Parser<'a> {
         // only follow an explicit superclass clause, which is why it is parsed
         // here and not where an implicit `Object` superclass is assumed.
         let mut mixin_applications = Vec::new();
+        // Whether a `<:` was written, a clause left out for its missing name
+        // included: the `.` that ends the application is its, not an error.
+        let mut applies_mixin = false;
         while self.eat(TokenKind::MixinOperator) {
-            mixin_applications.push(self.parse_superclass_clause());
+            applies_mixin = true;
+            mixin_applications.extend(self.parse_superclass_clause());
         }
         // `(dot | classBody)`: a mixin application may end at a `.` instead of
         // carrying a body. It then declares no slots, no methods, no nested
         // classes, no class side and no class comment — the applied mixin
         // supplies all of its behaviour.
-        if !mixin_applications.is_empty() && self.at(TokenKind::Dot) {
+        if applies_mixin && self.at(TokenKind::Dot) {
             let dot = self.bump();
             let span = start.merge(dot.span);
             return ClassDeclaration {
@@ -827,8 +892,9 @@ impl<'a> Parser<'a> {
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
     /// name and at most one message to it (`Object new`, `superclass
-    /// subclassMixin: m`).
-    pub(crate) fn parse_superclass_clause(&mut self) -> SuperclassClause {
+    /// subclassMixin: m`). `None` when the receiver or the `outer` name is
+    /// missing: the clause is left out rather than naming nothing.
+    pub(crate) fn parse_superclass_clause(&mut self) -> Option<SuperclassClause> {
         let start = self.current().span;
         let prefix = match self.peek() {
             TokenKind::Identifier => match self.text(self.current()) {
@@ -843,7 +909,7 @@ impl<'a> Parser<'a> {
                 "outer" => {
                     self.bump();
                     Some(SuperclassPrefix::Outer(
-                        self.declared_identifier("name an enclosing class"),
+                        self.declared_identifier("name an enclosing class")?,
                     ))
                 }
                 _ => None,
@@ -853,7 +919,7 @@ impl<'a> Parser<'a> {
         // §6.1's `inheritanceClause → [inheritancePrefix] unarySelector
         // [message]`: the receiver is a unary selector, an identifier, never
         // a literal or a reserved word.
-        let receiver = self.declared_identifier("name a superclass");
+        let receiver = self.declared_identifier("name a superclass")?;
         // `Collection[E] new` — type arguments on the superclass receiver.
         self.skip_type_arguments();
         let mut messages = Vec::new();
@@ -862,12 +928,12 @@ impl<'a> Parser<'a> {
             .last()
             .map(|module| module.span)
             .unwrap_or(receiver.span);
-        SuperclassClause {
+        Some(SuperclassClause {
             prefix,
             receiver,
             messages,
             span: start.merge(end),
-        }
+        })
     }
 
     /// The clause's `[message]` (§6.1's `inheritanceClause → [inheritancePrefix]
@@ -1050,15 +1116,15 @@ impl<'a> Parser<'a> {
                 // full before the next, so `private lazy = ( ^1 )`, which is
                 // no lazy slot, is a method named `lazy`.
                 _ if self.at_lazy_slot() => {
-                    lazy_slots.push(self.parse_lazy_slot_declaration());
+                    lazy_slots.extend(self.parse_lazy_slot_declaration());
                 }
                 _ if self.looks_like_method() => {
-                    methods.push(self.parse_method_declaration());
+                    methods.extend(self.parse_method_declaration());
                 }
                 // Neither matched in full: a declaration that starts as a lazy
                 // slot is reported as one, so its error names what is missing.
                 _ if self.at_lazy_slot_prefix() => {
-                    lazy_slots.push(self.parse_lazy_slot_declaration());
+                    lazy_slots.extend(self.parse_lazy_slot_declaration());
                 }
                 _ => {
                     let token = self.current();
@@ -1102,7 +1168,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 _ if self.looks_like_method() => {
-                    methods.push(self.parse_method_declaration());
+                    methods.extend(self.parse_method_declaration());
                 }
                 _ => {
                     let token = self.current();
@@ -1230,8 +1296,9 @@ impl<'a> Parser<'a> {
 
     /// Parse a lazy slot declaration (§6.3.3), in either order of `lazy` and
     /// the access modifier. The caller has checked that the declaration
-    /// starts as one (`at_lazy_slot_prefix`).
-    fn parse_lazy_slot_declaration(&mut self) -> SlotDeclaration {
+    /// starts as one (`at_lazy_slot_prefix`). `None` when its name is
+    /// missing: the slot is left out, after its initializer is parsed.
+    fn parse_lazy_slot_declaration(&mut self) -> Option<SlotDeclaration> {
         let start = self.current().span;
         let access = self.lazy_slot_modifiers().flatten();
         let name = self.declared_identifier("name a slot or a temporary");
@@ -1250,7 +1317,7 @@ impl<'a> Parser<'a> {
                 "expected `.` after a lazy slot's initializer (§6.3.3)",
             );
         }
-        SlotDeclaration {
+        name.map(|name| SlotDeclaration {
             access,
             name,
             mutability,
@@ -1258,7 +1325,7 @@ impl<'a> Parser<'a> {
             lazy: true,
             simultaneous: false,
             span: start.merge(end),
-        }
+        })
     }
 
     /// Whether a member of a class side starts at the cursor -- a nested
@@ -1375,7 +1442,7 @@ fn string_lexeme_body(raw: &str) -> String {
 
 #[cfg(test)]
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_method_declaration_for_test(&mut self) -> MethodDeclaration {
+    pub(crate) fn parse_method_declaration_for_test(&mut self) -> Option<MethodDeclaration> {
         self.parse_method_declaration()
     }
 
@@ -1944,7 +2011,9 @@ mod method_tests {
     fn method(source: &str) -> MethodDeclaration {
         let tokens = crate::lex(source).unwrap();
         let mut parser = Parser::new(source, tokens);
-        let method = parser.parse_method_declaration_for_test();
+        let method = parser
+            .parse_method_declaration_for_test()
+            .expect("a method");
         assert!(
             parser.diagnostics_is_empty(),
             "{:?}",

@@ -446,6 +446,8 @@ fn an_unclosed_slot_section_stops_at_the_header_close() {
         .map(|slot| slot.name.name.as_str())
         .collect();
     assert_eq!(slot_names, ["first", "second"], "{messages:?}");
+    // The last slot ends at its own name, not at the header's `)`.
+    assert_eq!(body.slots[1].span.text(source), "second");
     assert_eq!(
         body.slot_delimiters.and_then(|delimiters| delimiters.close),
         None
@@ -468,6 +470,19 @@ fn a_half_typed_annotation_does_not_swallow_the_class() {
     let body = &module.root_class.instance_side;
     assert_eq!(body.slots.len(), 1, "{messages:?}");
     assert_eq!(method_names(body), ["run"], "{messages:?}");
+    // `|` is a type operator too (`<E | X>`), so the annotation takes the
+    // bar and stops only at the header's `)`: the section is left unclosed,
+    // and each of the two is reported.
+    assert_eq!(
+        messages,
+        [
+            "unterminated `<...>` type annotation",
+            "expected Bar, found RightParenthesis",
+        ]
+    );
+    let delimiters = body.slot_delimiters.expect("the section's open bar");
+    assert_eq!(delimiters.close, None);
+    assert_eq!(body.slots[0].span.text(source), "first <Foo |");
 }
 
 #[test]
@@ -505,4 +520,151 @@ fn a_slot_section_of_a_modifier_alone_keeps_its_close() {
         "{messages:?}"
     );
     assert_eq!(method_names(body), ["run"]);
+}
+
+/// A declaration whose name is missing is left out, so the resolver never
+/// sees two empty names to call duplicates.
+#[test]
+fn a_missing_name_declares_nothing() {
+    let source = indoc! {"
+        class Module () (
+            class Inner = outer () ()
+            first = ( ^[: | 1] )
+            second = ( ^self foo; )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let root = &module.root_class;
+    assert_eq!(root.factory, None, "{messages:?}");
+    assert_eq!(root.instance_side.nested_classes[0].superclass, None);
+    assert_eq!(method_names(&root.instance_side), ["first", "second"]);
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Block(block)) =
+        &root.instance_side.methods[0].body.statements[0]
+    else {
+        panic!("a returned block");
+    };
+    assert!(block.parameters.is_empty());
+    let ns_syntax::ast::Statement::Return(cascade) =
+        &root.instance_side.methods[1].body.statements[0]
+    else {
+        panic!("a returned cascade");
+    };
+    if let ns_syntax::ast::Expression::Cascade(cascade) = cascade {
+        assert!(cascade.rest.is_empty());
+    }
+}
+
+/// The root class is the one declaration kept without a name: without it
+/// there is no module, and no class holds it as a member.
+#[test]
+fn a_root_class_without_a_name_is_kept() {
+    let source = indoc! {"
+        class = () (
+            run = ( ^1 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    assert_eq!(module.root_class.name.name, "", "{messages:?}");
+    assert_eq!(method_names(&module.root_class.instance_side), ["run"]);
+}
+
+/// A member written inside a block is the block's content: the `|` that
+/// ends the block's parameters starts no binary method `|`, and the
+/// statement holding it stays whole.
+#[test]
+fn a_member_inside_a_block_is_none() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^items detect: [:each | each = ( ^each ) ] )
+            second = ( ^2 )
+        ) : (
+            make = ( ^self new )
+        )
+    "};
+    let (module, messages) = recovered(source);
+    let root = &module.root_class;
+    assert_eq!(
+        method_names(&root.instance_side),
+        ["first", "second"],
+        "{messages:?}"
+    );
+    assert_eq!(
+        root.instance_side.methods[0].span.text(source),
+        "first = ( ^items detect: [:each | each = ( ^each ) ] )"
+    );
+    assert_eq!(
+        method_names(root.class_side.as_ref().expect("a class side")),
+        ["make"]
+    );
+    assert_eq!(messages, ["expected an expression, found Caret"]);
+}
+
+/// An element that consumed nothing has its one diagnostic; the missing
+/// `.` after it is not a second.
+#[test]
+fn an_empty_tuple_element_is_one_error() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^{ = } )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
+    assert_eq!(messages, ["expected an expression, found Equals"]);
+}
+
+/// A parenthesis holding junk after its expression skips the junk and
+/// takes its own `)`: the statement after it goes on, whole.
+#[test]
+fn junk_in_a_parenthesis_is_skipped_to_its_close() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^( 1 2 ) + 3 )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
+    assert_eq!(
+        messages,
+        ["expected `)` to close the parenthesis, found Number"]
+    );
+    let statements = &body.methods[0].body.statements;
+    assert_eq!(statements.len(), 1);
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Send(send)) = &statements[0]
+    else {
+        panic!("a returned send");
+    };
+    assert_eq!(
+        send.message.selector,
+        ns_syntax::ast::Selector::Binary("+".to_string())
+    );
+    assert!(matches!(
+        send.receiver,
+        ns_syntax::ast::Expression::Literal(ns_syntax::ast::Literal::Integer { .. })
+    ));
+}
+
+/// A `<:` clause without its receiver is left out, and the `.` after it
+/// still ends the application: one error, and the member after it stays.
+#[test]
+fn a_mixin_clause_without_a_name_keeps_its_dot() {
+    let source = indoc! {"
+        class Module = () (
+            class Inner = Object <: .
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(class_names(body), ["Inner"], "{messages:?}");
+    assert!(body.nested_classes[0].mixin_applications.is_empty());
+    assert_eq!(method_names(body), ["second"]);
+    assert_eq!(
+        messages,
+        ["expected a name to name a superclass, found Dot"]
+    );
 }

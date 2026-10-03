@@ -172,22 +172,21 @@ impl<'a> Parser<'a> {
     }
 
     /// `identifier`, refused if it is a reserved word (`refuse_reserved_word`)
-    /// or no name at all -- then nothing is consumed, and the name is empty.
-    fn declared_identifier(&mut self, role: &str) -> Identifier {
+    /// or no name at all -- then nothing is consumed and there is none: a
+    /// declaration without its name is left out, never given an empty one
+    /// the resolver would call a duplicate.
+    fn declared_identifier(&mut self, role: &str) -> Option<Identifier> {
         if !self.at_name() {
             let token = self.current();
             self.push_error(
                 token.span,
                 &format!("expected a name to {role}, found {}", self.found(token)),
             );
-            return Identifier {
-                name: String::new(),
-                span: token.span,
-            };
+            return None;
         }
         let identifier = self.identifier();
         self.refuse_reserved_word(&identifier.name, identifier.span, role);
-        identifier
+        Some(identifier)
     }
 
     fn push_error(&mut self, span: crate::span::Span, message: &str) {
