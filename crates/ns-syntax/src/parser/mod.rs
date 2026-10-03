@@ -285,18 +285,20 @@ impl<'a> Parser<'a> {
     /// Milestone 1 has no AST type node, so — consistent with the
     /// `<T>`-as-`Literal::Pattern` stance in expression position
     /// (`parser::expression::parse_pattern_literal`) — the annotation is parsed and
-    /// dropped here. Balanced `<`/`[` pairs are consumed until the matching
-    /// `>`; the `<:` bound operator is one token, so it is not a nesting open.
-    /// The scan never runs past a declaration boundary
-    /// (`= ::= ) .` at depth 0) or `EndOfInput`: on a malformed / unterminated
-    /// `<...>` it pushes a diagnostic and returns without panicking. Every
-    /// branch consumes a token or returns, so the loop always terminates.
+    /// dropped here. Nested `<`, `[`, `{` and `(` groups are consumed until
+    /// the `>` that closes the annotation, each closer matching the group it
+    /// closes; the `<:` bound operator is one token, so it is not a nesting
+    /// open. The scan never runs past a declaration boundary (`=`, `::=`, a
+    /// closer the annotation did not open) or `EndOfInput`: on a malformed /
+    /// unterminated `<...>` it pushes a diagnostic and returns without
+    /// panicking. Every branch consumes a token or returns, so the loop
+    /// always terminates.
     fn skip_type_annotation(&mut self) {
         if !self.at(TokenKind::LessThan) {
             return;
         }
         let open = self.bump(); // `<`
-        let mut depth: u32 = 1;
+        let mut expected_closers = vec![TokenKind::GreaterThan];
         loop {
             match self.peek() {
                 TokenKind::EndOfInput => {
@@ -304,24 +306,39 @@ impl<'a> Parser<'a> {
                     return;
                 }
                 TokenKind::LessThan => {
-                    depth += 1;
+                    expected_closers.push(TokenKind::GreaterThan);
                     self.bump();
                 }
                 // The bound operator `<:` inside a type body (`<Foo <: Bar>`)
                 // lexes as one token, so it never opens a nesting level; it
                 // falls through to the default arm below and is discarded with
                 // the rest of the annotation.
-                TokenKind::LeftBracket | TokenKind::LeftBrace | TokenKind::LeftParenthesis => {
-                    depth += 1;
+                TokenKind::LeftBracket => {
+                    expected_closers.push(TokenKind::RightBracket);
                     self.bump();
                 }
-                TokenKind::GreaterThan
+                TokenKind::LeftBrace => {
+                    expected_closers.push(TokenKind::RightBrace);
+                    self.bump();
+                }
+                TokenKind::LeftParenthesis => {
+                    expected_closers.push(TokenKind::RightParenthesis);
+                    self.bump();
+                }
+                kind @ (TokenKind::GreaterThan
                 | TokenKind::RightBracket
                 | TokenKind::RightBrace
-                | TokenKind::RightParenthesis => {
+                | TokenKind::RightParenthesis) => {
+                    // A closer the annotation did not open belongs to the
+                    // declaration around it: `| a <Foo |` then `)` must leave
+                    // the header's `)` to the header.
+                    if expected_closers.last() != Some(&kind) {
+                        self.push_error(open.span, "unterminated `<...>` type annotation");
+                        return;
+                    }
                     self.bump();
-                    depth -= 1;
-                    if depth == 0 {
+                    expected_closers.pop();
+                    if expected_closers.is_empty() {
                         return;
                     }
                 }
@@ -329,8 +346,8 @@ impl<'a> Parser<'a> {
                 // an annotation — bail rather than eat the declaration. `.` is a legal
                 // tuple-type separator (`<{String. Namespace}>`) and `(` `)`
                 // wrap arrow-type groups (`<[:(E | X) :E | X def]>`), so those
-                // are not boundaries; a malformed `<...>` instead runs to
-                // `EndOfInput`.
+                // are not boundaries; a malformed `<...>` instead runs to a
+                // closer it did not open or to `EndOfInput`.
                 TokenKind::Equals | TokenKind::ColonColonEquals => {
                     self.push_error(open.span, "unterminated `<...>` type annotation");
                     return;

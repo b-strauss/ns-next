@@ -471,7 +471,7 @@ impl<'a> Parser<'a> {
             return (Vec::new(), None);
         };
         let mut slots = Vec::new();
-        while !self.at(close) && !self.at(TokenKind::EndOfInput) {
+        while !self.at_slot_section_end(close) {
             let start = self.current().span;
             // `slotDef → [accessModifier] slotDecl ...` (§6.3.2), a PEG: an
             // access modifier's word is taken as the modifier whenever it
@@ -480,10 +480,17 @@ impl<'a> Parser<'a> {
             // `| public public |` declares a public slot named `public`.
             let access = self.parse_access_modifier();
             if !self.at_name() {
-                // recovery: skip to next '.' or close
-                let token = self.bump();
+                let token = self.current();
                 self.push_error(token.span, "expected a slot name");
-                self.recover_to_dot(close);
+                // The section's close stays for `expect` below, and an
+                // owner's bracket for its owner; a token the skip refuses
+                // that is neither is taken, so the loop always moves on.
+                let before = self.position;
+                self.skip_balanced(&[TokenKind::Dot, close]);
+                if self.position == before && !self.at_slot_section_end(close) {
+                    self.bump();
+                }
+                self.eat(TokenKind::Dot);
                 continue;
             }
             let name = self.declared_identifier("name a slot or a temporary");
@@ -532,11 +539,18 @@ impl<'a> Parser<'a> {
         )
     }
 
-    fn recover_to_dot(&mut self, close: TokenKind) {
-        while !self.at(TokenKind::Dot) && !self.at(close) && !self.at(TokenKind::EndOfInput) {
-            self.bump();
-        }
-        self.eat(TokenKind::Dot);
+    /// What ends a slot section's loop: its closing bar, or a closing
+    /// bracket, which no slot declaration holds at its top level -- the
+    /// section was never closed, and the bracket is its owner's.
+    fn at_slot_section_end(&self, close: TokenKind) -> bool {
+        self.at(close)
+            || matches!(
+                self.peek(),
+                TokenKind::RightParenthesis
+                    | TokenKind::RightBracket
+                    | TokenKind::RightBrace
+                    | TokenKind::EndOfInput
+            )
     }
 
     fn identifier_from_bump(&mut self) -> Identifier {
@@ -1292,7 +1306,7 @@ impl<'a> Parser<'a> {
 
     /// Whether the cursor is at what ends a code body: its `)` or `]`, or
     /// the end of input.
-    fn at_body_close(&self) -> bool {
+    pub(super) fn at_body_close(&self) -> bool {
         matches!(
             self.peek(),
             TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::EndOfInput

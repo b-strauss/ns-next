@@ -218,24 +218,31 @@ fn a_comparison_that_reads_as_a_member_is_not_one() {
 }
 
 /// `x = (1 + )` fails as a member itself, so it is none: no method `x` is
-/// invented. (The parenthesis it leaves open still takes the method's `)`,
-/// as it did before statements recovered.)
+/// invented, and the members after it stay.
 #[test]
 fn a_comparison_that_fails_as_a_member_invents_none() {
     let source = indoc! {"
         class Module = () (
             first = ( x = (1 + ). ^x )
             second = ( ^2 )
-        ) : ()
+        ) : (
+            make = ( ^self new )
+        )
     "};
     let (module, messages) = recovered(source);
-    let names = method_names(&module.root_class.instance_side);
+    let root = &module.root_class;
     assert_eq!(
-        names.first().map(String::as_str),
-        Some("first"),
+        method_names(&root.instance_side),
+        ["first", "second"],
         "{messages:?}"
     );
-    assert!(!names.contains(&"x".to_string()), "{names:?}");
+    assert_eq!(
+        method_names(root.class_side.as_ref().expect("a class side")),
+        ["make"],
+        "{messages:?}"
+    );
+    assert_eq!(root.instance_side.methods[0].body.statements.len(), 2);
+    assert_eq!(messages.len(), 1, "{messages:?}");
 }
 
 /// An ambiguous source: `+ second = ( ^2 )` and `at: second = ( ^2 )` are
@@ -351,4 +358,151 @@ fn a_nested_class_missing_its_close_keeps_the_members_after_it() {
         inner.instance_side.methods[1].span.text(source),
         "outside = ( ^2 )"
     );
+}
+
+#[test]
+fn an_unclosed_block_ends_at_the_method_close() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^[:each | each
+            )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
+    assert!(body.methods[0]
+        .body_delimiters
+        .and_then(|delimiters| delimiters.close)
+        .is_some());
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Block(block)) =
+        &body.methods[0].body.statements[0]
+    else {
+        panic!("a returned block");
+    };
+    assert_eq!(
+        block.delimiters.and_then(|delimiters| delimiters.close),
+        None
+    );
+    assert!(
+        block.span.text(source).ends_with("each"),
+        "{}",
+        block.span.text(source)
+    );
+}
+
+#[test]
+fn an_unclosed_parenthesis_stops_at_the_end_of_its_statement() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( | x | x:: (1 + 2. ^x )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
+    assert_eq!(body.methods[0].body.statements.len(), 2);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+}
+
+#[test]
+fn a_tuple_with_junk_keeps_its_elements_and_its_close() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^{ 1. 2 3. 4 } )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::DynamicArray {
+        elements,
+        span,
+    }) = &body.methods[0].body.statements[0]
+    else {
+        panic!("a returned tuple");
+    };
+    assert_eq!(elements.len(), 3);
+    assert_eq!(span.text(source), "{ 1. 2 3. 4 }");
+}
+
+#[test]
+fn an_unclosed_slot_section_stops_at_the_header_close() {
+    let source = indoc! {"
+        class Module = (
+            | first second
+        ) (
+            run = ( ^first )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    let slot_names: Vec<&str> = body
+        .slots
+        .iter()
+        .map(|slot| slot.name.name.as_str())
+        .collect();
+    assert_eq!(slot_names, ["first", "second"], "{messages:?}");
+    assert_eq!(
+        body.slot_delimiters.and_then(|delimiters| delimiters.close),
+        None
+    );
+    assert_eq!(method_names(body), ["run"]);
+}
+
+/// A type annotation's scan ends at a bracket the annotation did not open,
+/// rather than taking it and the rest of the class with it.
+#[test]
+fn a_half_typed_annotation_does_not_swallow_the_class() {
+    let source = indoc! {"
+        class Module = (
+            | first <Foo |
+        ) (
+            run = ( ^first )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(body.slots.len(), 1, "{messages:?}");
+    assert_eq!(method_names(body), ["run"], "{messages:?}");
+}
+
+#[test]
+fn half_a_keyword_message_stays_inside_its_statement() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^self at: )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
+    assert_eq!(messages.len(), 1, "{messages:?}");
+}
+
+/// `| public |` declares no slot; the access modifier takes `public`, and
+/// the section's closing bar must stay the close.
+#[test]
+fn a_slot_section_of_a_modifier_alone_keeps_its_close() {
+    let source = indoc! {"
+        class Module = (
+            | public |
+        ) (
+            run = ( ^1 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let body = &module.root_class.instance_side;
+    assert!(body.slots.is_empty());
+    assert!(
+        body.slot_delimiters
+            .and_then(|delimiters| delimiters.close)
+            .is_some(),
+        "{messages:?}"
+    );
+    assert_eq!(method_names(body), ["run"]);
 }

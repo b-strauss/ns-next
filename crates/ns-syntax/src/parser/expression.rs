@@ -48,7 +48,21 @@ impl<'a> Parser<'a> {
             TokenKind::LeftParenthesis => {
                 self.bump();
                 let expression = self.parse_expression();
-                self.expect(TokenKind::RightParenthesis);
+                if !self.eat(TokenKind::RightParenthesis) {
+                    let token = self.current();
+                    self.push_error(
+                        token.span,
+                        &format!(
+                            "expected `)` to close the parenthesis, found {}",
+                            self.found(token)
+                        ),
+                    );
+                    // A parenthesis holds one expression and no `.`: a `.`
+                    // means it was never closed, so the skip stops there and
+                    // leaves an enclosing body's `)` alone.
+                    self.skip_balanced(&[TokenKind::Dot]);
+                    self.eat(TokenKind::RightParenthesis);
+                }
                 expression
             }
             TokenKind::LeftBracket => self.parse_block(),
@@ -342,9 +356,8 @@ impl<'a> Parser<'a> {
         }
         let body = self.parse_code_body();
         let right_bracket = self.expect(TokenKind::RightBracket);
-        let span = left_bracket
-            .span
-            .merge(right_bracket.unwrap_or(self.current()).span);
+        let end = right_bracket.map_or_else(|| self.previous_span(), |token| token.span);
+        let span = left_bracket.span.merge(end);
         Expression::Block(Box::new(BlockExpression {
             parameters,
             body,
@@ -359,16 +372,31 @@ impl<'a> Parser<'a> {
     fn parse_dynamic_array(&mut self) -> Expression {
         let left_brace = self.bump(); // {
         let mut elements = Vec::new();
-        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfInput) {
+        while !self.at(TokenKind::RightBrace) && !self.at_body_close() {
             elements.push(self.parse_expression());
-            if !self.eat(TokenKind::Dot) {
+            if self.eat(TokenKind::Dot) || self.at(TokenKind::RightBrace) {
+                continue;
+            }
+            let token = self.current();
+            self.push_error(
+                token.span,
+                &format!(
+                    "expected `.` between a tuple's elements, found {}",
+                    self.found(token)
+                ),
+            );
+            // The skip stops at the tuple's own `}`, which closes no group it
+            // skipped, and at an enclosing body's close: the tuple keeps the
+            // elements after the junk and never takes its owner's bracket.
+            if !self.skip_balanced(&[TokenKind::Dot]) || !self.eat(TokenKind::Dot) {
                 break;
             }
         }
-        let right_brace = self.expect(TokenKind::RightBrace).unwrap_or(self.current());
+        let right_brace = self.expect(TokenKind::RightBrace);
+        let end = right_brace.map_or_else(|| self.previous_span(), |token| token.span);
         Expression::DynamicArray {
             elements,
-            span: left_brace.span.merge(right_brace.span),
+            span: left_brace.span.merge(end),
         }
     }
 }
