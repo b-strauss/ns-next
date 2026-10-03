@@ -23,8 +23,8 @@ per slot of today's arena; class objects, closures and reified frames
 become such objects and the frame arena goes. Road step 3 is built in two
 plans, this one and then 3b, the space in `ns-memory`'s reservation with
 byte-offset handles. The design, its five open details included, was
-completed with the user on 2026-10-03; no implementation plan exists for
-it yet.
+completed with the user on 2026-10-03; its implementation plan is
+[2026-10-03-1338-ns-next-object-representation.md](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md).
 Everything before it on the road is built: road step 2's eight-byte value
 ("The eight-byte value" below), and after it the compact instruction
 encoding ("The compact instruction encoding" below;

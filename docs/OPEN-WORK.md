@@ -18,8 +18,9 @@ below): every object a header word, a class word and its fields, still in
 today's arena, one block of words per slot; class objects, closures and
 reified frames become such objects and the frame arena goes
 ([object-model.md](design/object-model.md), "Planned: the object layout").
-Its design was completed with the user on 2026-10-03; no implementation
-plan exists for it yet. Road step 3b, the object space in `ns-memory`'s
+Its design was completed with the user on 2026-10-03, and its
+implementation plan is
+[2026-10-03-1338-ns-next-object-representation.md](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md). Road step 3b, the object space in `ns-memory`'s
 reservation, follows it.
 Everything before it on the road is built, the compact instruction
 encoding included.
