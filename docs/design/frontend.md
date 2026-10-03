@@ -530,9 +530,15 @@ them.
    the member starts at the statement's first token there is no statement,
    and the body ends there. A statement without an error is never looked at
    again, and the speculative parses run under the depth guard (rule 7).
-2. **Statements.** After an error in a statement -- one after `^` included
-   -- the rest of it is skipped, balanced, to its `.`, a stray `}` with it,
-   and the body goes on with the next statement rather than ending. What
+   The speculative parses, the re-parses and the scans for a member start
+   share one budget, `RECOVERY_WORK_PER_TOKEN` (256) tokens per token of
+   the source, since a speculative member can hold another and the work
+   otherwise grows exponentially with the nesting of half-typed members.
+   Once it is spent no statement is looked at again: the file folds worse,
+   never wrongly, and the work stays linear in the source.
+2. **Statements.** After an error in a statement the rest of it is
+   skipped, balanced, to its `.`, a stray `}` with it, and the body goes on
+   with the next statement rather than ending. What
    follows a return is skipped to the body's close with one diagnostic,
    unless a member starts there: then the body was never closed, which its
    method reports. An expression that consumed nothing has reported its

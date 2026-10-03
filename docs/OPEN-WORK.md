@@ -725,14 +725,19 @@ text and `to:by:do:`'s zero step.
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
   branch.
-- **Editor recovery: past the depth guard every other method is dropped.**
-  After about 75 consecutive unclosed methods the speculative member parses
-  reach `MAX_DEPTH`, and from there every other method is lost; nothing is
-  invented. [frontend.md](design/frontend.md), "Recovery". Noted 2026-10-04.
-- **Editor recovery: the member-start scan of an erroneous statement is
-  quadratic** in the statement's length (`member_holding_error` parses a
-  member speculatively at each position up to the first error); a clean
-  statement is never scanned. Noted 2026-10-04.
+- **Editor recovery: a long run of consecutive unclosed methods loses
+  methods.** Each method's statement parses the rest of the run
+  speculatively, so the run costs work cubic in its length and spends the
+  recovery's budget (`RECOVERY_WORK_PER_TOKEN`). Measured in a file of
+  nothing else: a run of 26 keeps every method, one diagnostic each; from
+  27 on methods are lost -- 20 of 27, 6 of 50, 3 of 128 -- and from 129 on,
+  where the speculative parses reach `MAX_DEPTH`, only the first survives.
+  A lost method stays inside the body before it; nothing is invented.
+  [frontend.md](design/frontend.md), "Recovery". Noted 2026-10-04.
+- **Editor recovery: the work budget is the whole parse's.** Once input
+  such as half-typed members nested deep has spent it, no later statement
+  of the file is looked at again (rule 1), so the members after an
+  unclosed body there stay inside it. Noted 2026-10-04.
 - **Editor recovery: `class Module () (` gives two diagnostics for its one
   missing `=`** -- a missing message selector, then the missing `=`. Noted
   2026-10-04.
@@ -745,6 +750,9 @@ text and `to:by:do:`'s zero step.
 
 ## Missing tests
 
+- `ns_syntax::parse_for_editor`'s answer to a source too long for a span --
+  an empty module and the one `source_too_long` diagnostic -- has no test,
+  since it needs a source past 4 GiB.
 - Road step 3a's (noted 2026-10-03): the application cache's key in its
   three cases (a root, two superclasses, sharing); the resolver's push of
   the clause-count error, of which only the pure function is tested; a

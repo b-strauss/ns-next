@@ -135,7 +135,9 @@ impl<'a> Parser<'a> {
         let bound = self.tokens[member_start];
         self.tokens[member_start].kind = TokenKind::EndOfInput;
         self.bounds.push(bound.span);
+        self.recovering += 1;
         let expression = self.parse_expression();
+        self.recovering -= 1;
         self.bounds.pop();
         // A negative literal split in two before the bound moves it on.
         let index = (member_start..self.tokens.len()).find(|index| {
@@ -154,12 +156,18 @@ impl<'a> Parser<'a> {
     /// without an error of its own through its `)`, or, its body clean, up to
     /// where an unclosed body ends. An ordinary comparison such as `size =
     /// (limit + 1)` reads as a member too, so one that ends before the error,
-    /// or fails itself, is no member the statement swallowed.
+    /// or fails itself, is no member the statement swallowed. `None` too once
+    /// the recovery's work is spent (`RECOVERY_WORK_PER_TOKEN`): the
+    /// statement then stays as it was parsed.
     fn member_holding_error(&mut self, first: usize, first_error: u32) -> Option<usize> {
         let mut position = first;
         while self.tokens.get(position).is_some_and(|token| {
             token.span.start <= first_error && token.kind != TokenKind::EndOfInput
         }) {
+            if self.recovery_work_left == 0 {
+                return None;
+            }
+            self.recovery_work_left -= 1;
             if self.member_starts_at(position)
                 && self.speculative_member_end(position).is_some_and(|end| {
                     first_error < end && !self.inside_block_or_tuple(first, position, end)
@@ -180,51 +188,16 @@ impl<'a> Parser<'a> {
     /// opened leaves the question open; a closer that closes nothing the
     /// statement or the scan opened is the owner's, and a `)` there -- a
     /// method body's or a class side's -- leaves the member one.
-    fn inside_block_or_tuple(&self, first: usize, position: usize, end: u32) -> bool {
-        let mut expected_closers: Vec<TokenKind> = Vec::new();
-        for token in &self.tokens[first..position] {
-            if let Some(closer) = closer_of(token.kind) {
-                expected_closers.push(closer);
-            } else if let Some(index) = expected_closers
-                .iter()
-                .rposition(|expected| *expected == token.kind)
-            {
-                expected_closers.truncate(index);
-            }
-        }
-        // How many of the open groups the statement opened before the member.
-        let mut opened_before = expected_closers.len();
-        for token in self
-            .tokens
-            .iter()
-            .skip_while(|token| token.span.start < end)
-        {
-            if token.kind == TokenKind::EndOfInput {
-                return false;
-            }
-            if let Some(closer) = closer_of(token.kind) {
-                expected_closers.push(closer);
-                continue;
-            }
-            if !matches!(
-                token.kind,
-                TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace
-            ) {
-                continue;
-            }
-            let Some(index) = expected_closers
-                .iter()
-                .rposition(|expected| *expected == token.kind)
-            else {
-                return token.kind != TokenKind::RightParenthesis;
-            };
-            if index < opened_before && token.kind != TokenKind::RightParenthesis {
-                return true;
-            }
-            expected_closers.truncate(index);
-            opened_before = opened_before.min(index);
-        }
-        false
+    fn inside_block_or_tuple(&mut self, first: usize, position: usize, end: u32) -> bool {
+        let after = self.tokens.partition_point(|token| token.span.start < end);
+        let (inside, walked) =
+            block_or_tuple_around(&self.tokens[first..position], &self.tokens[after..]);
+        // The walk is the recovery's work too: without its charge a run of
+        // members found again and again walks the source each time.
+        self.recovery_work_left = self
+            .recovery_work_left
+            .saturating_sub(position - first + walked);
+        inside
     }
 
     /// Where a member parsed from `position` ends, if it parses cleanly: see
@@ -235,12 +208,14 @@ impl<'a> Parser<'a> {
         let checkpoint = self.checkpoint();
         // Each speculative member can hold another: the depth guard bounds
         // the chain a run of half-typed members makes.
+        self.recovering += 1;
         let end = if self.enter() {
             self.clean_member_end()
         } else {
             None
         };
         self.leave();
+        self.recovering -= 1;
         self.restore(checkpoint);
         self.position = cursor;
         end
@@ -256,7 +231,7 @@ impl<'a> Parser<'a> {
         if self.at_lazy_slot() {
             let _ = self.parse_lazy_slot_declaration();
             self.eat(TokenKind::Dot);
-            return Some(self.previous_span().end);
+            return (self.diagnostics.len() == diagnostics).then(|| self.previous_span().end);
         }
         if !self.looks_like_method() {
             return None;
@@ -1459,6 +1434,51 @@ impl<'a> Parser<'a> {
         self.skip_where_clause();
         Some(())
     }
+}
+
+/// `inside_block_or_tuple`'s walk over the statement's tokens `before` the
+/// member and those `after` it, answering how many of `after` it read.
+fn block_or_tuple_around(before: &[Token], after: &[Token]) -> (bool, usize) {
+    let mut expected_closers: Vec<TokenKind> = Vec::new();
+    for token in before {
+        if let Some(closer) = closer_of(token.kind) {
+            expected_closers.push(closer);
+        } else if let Some(index) = expected_closers
+            .iter()
+            .rposition(|expected| *expected == token.kind)
+        {
+            expected_closers.truncate(index);
+        }
+    }
+    // How many of the open groups the statement opened before the member.
+    let mut opened_before = expected_closers.len();
+    for (walked, token) in after.iter().enumerate() {
+        if token.kind == TokenKind::EndOfInput {
+            return (false, walked + 1);
+        }
+        if let Some(closer) = closer_of(token.kind) {
+            expected_closers.push(closer);
+            continue;
+        }
+        if !matches!(
+            token.kind,
+            TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace
+        ) {
+            continue;
+        }
+        let Some(index) = expected_closers
+            .iter()
+            .rposition(|expected| *expected == token.kind)
+        else {
+            return (token.kind != TokenKind::RightParenthesis, walked + 1);
+        };
+        if index < opened_before && token.kind != TokenKind::RightParenthesis {
+            return (true, walked + 1);
+        }
+        expected_closers.truncate(index);
+        opened_before = opened_before.min(index);
+    }
+    (false, after.len())
 }
 
 /// The bracket that closes a group `kind` opens, if it opens one.

@@ -61,8 +61,12 @@ fn a_clean_source_parses_as_parse_parses_it() {
 #[test]
 fn every_lexer_error_still_answers_a_module() {
     for broken in ["^#", "^#(1)", "^\u{00a7}", "^x := 1"] {
-        let source =
-            format!("class Module = () (\n    first = ( {broken} )\n    second = ( ^2 )\n) : ()\n");
+        let source = formatdoc! {"
+            class Module = () (
+                first = ( {broken} )
+                second = ( ^2 )
+            ) : ()
+        "};
         let (module, messages) = recovered(&source);
         assert!(!messages.is_empty(), "{broken}");
         assert!(
@@ -71,7 +75,10 @@ fn every_lexer_error_still_answers_a_module() {
         );
     }
     for unterminated in ["^'open", "(* open"] {
-        let source = format!("class Module = () (\n    first = ( {unterminated}\n");
+        let source = formatdoc! {"
+            class Module = () (
+                first = ( {unterminated}
+        "};
         let (_, messages) = recovered(&source);
         assert!(!messages.is_empty(), "{unterminated}");
     }
@@ -740,6 +747,79 @@ fn a_lazy_slot_without_its_dot_ends_at_its_initializer() {
     let slots = &module.root_class.instance_side.slots;
     assert_eq!(slots.len(), 1, "{messages:?}");
     assert_eq!(slots[0].span.text(source), "lazy x = 1");
+}
+
+/// A lazy slot after an unclosed body is a member the body swallowed only
+/// when it parses without an error of its own, as a method or a nested
+/// class must. The `.` ending it is the error of the unclosed parenthesis
+/// either way: the clean slot is declared, the one whose type annotation is
+/// not closed stays in the statement that swallowed it, and the method after
+/// either survives.
+#[test]
+fn a_lazy_slot_after_an_unclosed_body_is_a_member_only_when_clean() {
+    let clean = indoc! {"
+        class Module = () (
+            first = ( (1
+            lazy cache = 1 + 2.
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(clean);
+    let instance_side = &module.root_class.instance_side;
+    assert_eq!(
+        method_names(instance_side),
+        ["first", "second"],
+        "{messages:?}"
+    );
+    assert_eq!(instance_side.slots.len(), 1, "{messages:?}");
+    assert_eq!(
+        instance_side.slots[0].span.text(clean),
+        "lazy cache = 1 + 2."
+    );
+
+    let broken = indoc! {"
+        class Module = () (
+            first = ( (1
+            lazy cache <Cache = 1 + 2.
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(broken);
+    let instance_side = &module.root_class.instance_side;
+    assert_eq!(
+        method_names(instance_side),
+        ["first", "second"],
+        "{messages:?}"
+    );
+    assert!(instance_side.slots.is_empty(), "{messages:?}");
+}
+
+/// Half-typed members nested twenty deep, each in a block of the one
+/// around it. Every speculative member parse holds the next, and the
+/// re-parse of a statement repeats the work of those nested in it, so
+/// without the recovery's work budget the parse grows exponentially with
+/// the depth -- in a release build 0.6 s at depth 12 and 90 s at 16 -- and
+/// this test would not finish. With it the parse is linear in the source,
+/// and the method around the nest survives.
+#[test]
+fn deeply_nested_lookalike_members_parse_in_bounded_time() {
+    let depth = 20;
+    let source = formatdoc! {"
+        class Module = () (
+            run = ( {opened}^{closed} )
+            after = ( ^2 )
+        ) : ()
+        ",
+        opened = "x = ( [ ".repeat(depth),
+        closed = " ] )".repeat(depth),
+    };
+    let (module, messages) = recovered(&source);
+    assert!(!messages.is_empty());
+    assert_eq!(
+        method_names(&module.root_class.instance_side),
+        ["run", "after"],
+        "{messages:?}"
+    );
 }
 
 /// A slot whose initializer lacks its `.` before the header's `)` ends at

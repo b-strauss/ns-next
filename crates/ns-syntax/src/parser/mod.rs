@@ -16,6 +16,19 @@ use crate::token::{Token, TokenKind};
 /// roughly 250 frames.
 const MAX_DEPTH: u32 = 128;
 
+/// How many tokens rule 1's recovery (`docs/design/frontend.md`,
+/// "Recovery") may parse or scan per token of the source. Each speculative
+/// member parse can hold another, and the re-parse of a statement repeats
+/// the work of the statements nested in it, so without a bound the work
+/// grows exponentially with the nesting of half-typed members: 186 bytes
+/// nested twelve deep took 0.6 s. Spent, the recovery stops looking for a
+/// member a statement swallowed, and a file folds worse, never wrongly; the
+/// work stays linear in the source. A run of consecutive unclosed methods
+/// costs work cubic in its length: in a file of nothing else, 256 keeps a
+/// run of 26 whole, and an exhausted budget costs a 12,500-token file
+/// under 0.1 s.
+const RECOVERY_WORK_PER_TOKEN: usize = 256;
+
 pub struct Parser<'a> {
     source: &'a str,
     tokens: Vec<Token>,
@@ -28,10 +41,21 @@ pub struct Parser<'a> {
     /// (`parse_statement`), innermost last: a diagnostic there names the
     /// member, not an end of input the source does not have.
     bounds: Vec<crate::span::Span>,
+    /// How many more tokens rule 1's recovery may parse
+    /// ([`RECOVERY_WORK_PER_TOKEN`]): spent by every token bumped while
+    /// `recovering` and every token `member_holding_error` and
+    /// `inside_block_or_tuple` scan. Never refilled, so the whole parse is
+    /// bounded, not each statement.
+    recovery_work_left: usize,
+    /// How many speculative member parses and recovering re-parses are
+    /// running, nested. Raised and lowered around one call each, so it is
+    /// zero between statements.
+    recovering: u32,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str, tokens: Vec<Token>) -> Parser<'a> {
+        let recovery_work_left = tokens.len().saturating_mul(RECOVERY_WORK_PER_TOKEN);
         Parser {
             source,
             tokens,
@@ -39,6 +63,8 @@ impl<'a> Parser<'a> {
             diagnostics: Vec::new(),
             depth: 0,
             bounds: Vec::new(),
+            recovery_work_left,
+            recovering: 0,
         }
     }
 
@@ -82,6 +108,9 @@ impl<'a> Parser<'a> {
         let token = self.current();
         if self.position < self.tokens.len() - 1 && token.kind != TokenKind::EndOfInput {
             self.position += 1;
+            if self.recovering > 0 {
+                self.recovery_work_left = self.recovery_work_left.saturating_sub(1);
+            }
         }
         token
     }

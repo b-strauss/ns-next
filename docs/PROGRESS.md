@@ -4236,5 +4236,5 @@ tokens, the comments' spans and every diagnostic.
 
 The plugin needed no code: the platform's `LspFoldingBuilder` serves every
 language, which `runIde` confirmed by hand. What the branch leaves open --
-four known limits of the recovery -- is in [OPEN-WORK.md](OPEN-WORK.md),
-"Known defects and gaps".
+four known limits of the recovery and an assumption of the agreement test
+-- is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects and gaps".
