@@ -496,6 +496,12 @@ value objects are never copied across an actor boundary (§3.1.1).
   this residual was not isolated. The object representation (road step 3a)
   removed the frame arena, and the object space (road step 3b) will remove
   the per-object frees, so the collector is measured afresh after each.
+- **Road step 3a left the sources slower by up to 30.5% against `d0e8b08`**
+  (nineteen of twenty-four separated, from 3.6% to 30.5%), most of it the
+  per-object allocation of frame and closure blocks that road step 3b removes.
+  3b is measured against the same baseline, and what it does not recover is
+  investigated then. [execution.md](design/execution.md), "What the object
+  representation moved".
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
   Hypothesis (a), the seeded symbol, is refuted; (b), the extra `Value`-level
   class object, and (c), hardware counters, are to run.

@@ -4126,7 +4126,15 @@ and the space in `ns-memory`'s reservation is road step 3b.
   the graph section's bytes in a release build and 16x in a debug one, plus
   at most 4x of the symbol section's ([memory.md](design/memory.md), "The
   amplification bound of a rejected load"), where it was 23.1x and 28.9x.
+- `e664c77` -- a symbol object's `Symbol` is one probe of a per-heap inverse
+  map kept in step with the canonical symbol table, where it rebuilt the
+  text and looked it up in the interner on every call; a closure is built
+  without a temporary list of its copied values.
 - This commit -- the documentation describes the built state.
+
+Measured against `d0e8b08`, nineteen of the twenty-four sources are slower
+with separated ranges, by 3.6% to 30.5% ([execution.md](design/execution.md),
+"What the object representation moved").
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): lending a
 `LargeInteger`'s digits to its arithmetic; `reserve_for`'s cap in elements;

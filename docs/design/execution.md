@@ -965,6 +965,96 @@ encoding saves, which is counted in "The compact instruction encoding"
 ("The forms compared"), not measured as a working set; and code
 that runs wide forms, which no measured program reaches.
 
+### What the object representation moved
+
+Measured on 2026-10-03 on the same machine (Windows 11, Intel Core Ultra 9
+285K): the tree the branch `feature/object-representation` started from,
+`d0e8b08`, against the branch at `e664c77`, in one sitting. Three pinned
+release builds of each tree (`-C metadata=alpha`, `beta`, `gamma`, with `-C
+target-feature=+crt-static -C llvm-args=-align-all-functions=6`), each checked
+to print `ok` for all sixteen programs and the expected output for the eight
+microbenchmark sources; three rounds, the six binaries' order rotated from
+round to round; in each round every binary ran `bench --iterations 3 --
+<Name>` for CD, Havlak, Mandelbrot, NBody and DeltaBlue, `--iterations 10`
+for the other eleven, and `bench --iterations 30` for the eight
+microbenchmark sources. Each figure is the median of a tree's nine values,
+with their range; "separated" says the two ranges do not overlap. The three
+builds of a tree lie within 9.2% of each other on every source (one
+`bench_new2.ns` value before the branch the widest).
+
+| Source | Before, ms | Range | After, ms | Range | Change | Separated |
+|---|---|---|---|---|---|---|
+| Bounce | 1.07 | 1.04–1.12 | 1.13 | 1.10–1.23 | +5.2% | no |
+| CD | 4,078 | 4,037–4,122 | 4,583 | 4,562–4,629 | **+12.4%** | yes |
+| DeltaBlue | 736 | 723–764 | 781 | 760–801 | +6.1% | no |
+| DeltaBlueTon80 | 6.86 | 6.80–7.25 | 7.52 | 7.42–7.83 | **+9.6%** | yes |
+| Havlak | 4,344 | 4,177–4,431 | 4,076 | 3,966–4,285 | −6.2% | no |
+| Json | 10.28 | 10.21–10.54 | 11.72 | 11.50–11.98 | **+14.0%** | yes |
+| List | 0.990 | 0.978–0.999 | 1.02 | 1.00–1.06 | **+3.6%** | yes |
+| Mandelbrot | 3,264 | 3,230–3,319 | 3,296 | 3,274–3,335 | +1.0% | no |
+| NBody | 2,345 | 2,312–2,368 | 2,454 | 2,413–2,471 | **+4.6%** | yes |
+| Permute | 2.38 | 2.31–2.46 | 2.56 | 2.50–2.61 | **+7.6%** | yes |
+| Queens | 2.02 | 1.99–2.06 | 2.15 | 2.09–2.22 | **+6.6%** | yes |
+| Richards | 77.23 | 75.02–78.59 | 84.41 | 83.10–86.53 | **+9.3%** | yes |
+| RichardsTon80 | 4.52 | 4.44–4.59 | 5.13 | 4.98–5.30 | **+13.4%** | yes |
+| Sieve | 1.25 | 1.24–1.27 | 1.59 | 1.58–1.62 | **+27.5%** | yes |
+| Storage | 1.59 | 1.57–1.67 | 1.91 | 1.87–2.11 | **+20.1%** | yes |
+| Towers | 3.60 | 3.57–3.65 | 3.98 | 3.90–4.19 | **+10.6%** | yes |
+| `bench_block.ns` | 10.30 | 10.22–10.45 | 13.44 | 13.24–13.65 | **+30.5%** | yes |
+| `bench_loop.ns` | 2.18 | 2.15–2.22 | 2.43 | 2.41–2.45 | **+11.7%** | yes |
+| `bench_megamorphic.ns` | 5.08 | 5.04–5.14 | 5.41 | 5.38–5.48 | **+6.5%** | yes |
+| `bench_send.ns` | 3.38 | 3.31–3.46 | 3.63 | 3.58–3.66 | **+7.6%** | yes |
+| `bench_do.ns` | 3.90 | 3.88–4.07 | 4.45 | 4.36–4.54 | **+14.3%** | yes |
+| `bench_new.ns` | 3.28 | 3.24–3.29 | 3.48 | 3.45–3.57 | **+6.2%** | yes |
+| `bench_new2.ns` | 4.11 | 4.08–5.09 | 4.48 | 4.45–4.57 | +9.1% | no |
+| `bench_newarg.ns` | 5.84 | 5.75–5.89 | 6.48 | 6.43–6.58 | **+10.8%** | yes |
+
+**Twenty-three of the twenty-four sources are slower**, nineteen of them with
+separated ranges, by 3.6% (List) to 30.5% (`bench_block.ns`); Havlak is 6.2%
+faster, inside its range, and the four slower ones that are not separated
+(Bounce, DeltaBlue, Mandelbrot, `bench_new2.ns`) move by 1.0% to 9.1%. This is
+the interim cost the design expected ([object-model.md](object-model.md), "The object
+layout"): every guard and class read goes through the slot's pointer to its
+block until road step 3b puts the objects in the space.
+
+**Measured, profiled, measured again.** A first measurement of the branch at
+`3cdbd5e`, by the same protocol, showed DeltaBlue +42.0%, `bench_block.ns`
++41.2% and Sieve +38.5%. An `xperf` profile of the three (one trace per
+program per tree, 0.1221 ms sampling, one debug-info build each) reproduced
+the regressions (DeltaBlue +42.7%, `bench_block.ns` +40.4%, Sieve +31.2%) and
+the sample totals moved alike: DeltaBlue 44,390 to 63,076 samples,
+`bench_block.ns` 35,116 to 49,313, Sieve 32,439 to 42,297. About 14,500 of
+DeltaBlue's 18,686 added samples (78%) were in `Heap::symbol_value`: a
+Symbol's primitives (`hash`, `=`, `asString`, `printString`, and the hash of
+any object a table hashes) re-derived the interned symbol from the packed
+text, unpacking the words into a buffer, converting the code points to a
+UTF-8 `String`, hashing it and probing the interner, on every call; the
+symbol-keyed lookups of `Strength of: #required` made one per constraint.
+A per-heap inverse map from a symbol object's index to its `Symbol`, kept in
+step with the canonical symbol table ([memory.md](memory.md), "Weak
+references"), made it one map probe (`e664c77`), which took DeltaBlue from
++42.0% to +6.1%.
+
+What the profile found in `bench_block.ns` and Sieve is a heap allocation per
+frame block and per closure block on every `MakeClosure` (Sieve's `at:` and
+`at:put:` build an `ifFail:` closure per element): the Windows heap's own
+exclusive time grew by 9,420 samples in `bench_block.ns` (66% of its added
+samples) and 5,622 in Sieve (57%), where the frame and the closure had been
+inline in the arena vectors. That is the per-object allocation road step 3b's
+bump allocation in the space replaces. The profile also found the temporary
+list of copied values every closure built and freed, which `e664c77` removed;
+and about 5,800 (`bench_block.ns`) and 3,900 (Sieve) samples in the new
+out-of-line accessors (`pointer_words`, `frame_payload`, `register_code`),
+the format check through the block's pointer that the same step removes.
+
+What the measurement does not cover: one machine and one operating system;
+data layout, which `-C metadata` does not vary; for the `bench` figures, what
+each timed `main:args:` does once per application; the profile, which is one
+trace per side from one debug-info build each, so layout effects of a few
+percent are not excluded, and which could not split code inlined into
+`vm::run`; and the decode amplification, which is computed, not measured
+([memory.md](memory.md), "The amplification bound of a rejected load").
+
 ### What a send costs, and where it goes
 
 Milestone 4's design rests on a decomposition rather than on the aggregate. The

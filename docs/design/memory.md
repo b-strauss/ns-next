@@ -1302,7 +1302,9 @@ In a release build this gives the safepoint's slow path its first real work.
 program ever made would outlive the process, since a selector literal makes
 one. It is not a root for marking; after marking and before compaction, an
 entry whose object is unmarked becomes `None`, and the rest are forwarded like
-everything else.
+everything else. The table has an inverse map, from a symbol object's index to
+its `Symbol` (`Heap::symbol_of`), pruned with the table and rebuilt after every
+compaction and move.
 Nova has exactly this pair: `shift_strong_u32_index` answers an index,
 `shift_weak_u32_index` answers an `Option`.
 
@@ -1849,7 +1851,8 @@ Road step 4.
   full collection, since a young symbol can die in either. At a scavenge a
   young entry whose symbol was not copied becomes `None`, a copied one is
   rewritten to its new location, and an old entry is left alone; the table
-  is not a strong root.
+  is not a strong root. The inverse map from a symbol object's index to its
+  `Symbol` is kept in step the same way.
 - **A fifth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
   safepoint, which is what finds a store that missed the barrier. So that a
   stale young word into eden faults as well as one into a survivor space, a
