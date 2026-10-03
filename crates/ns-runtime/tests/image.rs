@@ -6828,6 +6828,96 @@ fn an_image_of_two_modules_restores_both_and_the_graph_reaching_them() {
     );
 }
 
+/// Where the graph section starts, as `inspect` attributes it.
+fn graph_section_start(bytes: &[u8]) -> usize {
+    image::inspect::inspect(bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|section| section.name == "graph")
+        .expect("a graph section")
+        .start
+}
+
+/// Rewrites the first occurrence of `pattern` in the graph section to
+/// `replacement`.
+fn rewrite_in_graph(bytes: &mut [u8], pattern: &[u8], replacement: &[u8]) {
+    let start = graph_section_start(bytes);
+    let position = start
+        + bytes[start..]
+            .windows(pattern.len())
+            .position(|window| window == pattern)
+            .expect("the pattern in the graph section");
+    bytes[position..position + replacement.len()].copy_from_slice(replacement);
+}
+
+/// `inspect` reports on the files that fail to load too, so a class tag
+/// naming a module past the module section, or a level past the ones a root
+/// section rebuilds, is shown marked as such rather than refused or printed
+/// as if it named one.
+#[test]
+fn inspect_marks_a_module_class_tag_past_the_modules() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("held:"),
+            std::slice::from_ref(&second),
+        ),
+        "held:",
+    );
+    let mut bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let mut held_second = vec![VALUE_CLASS_TAG, CLASS_MODULE];
+    held_second.extend(1u32.to_le_bytes());
+    let mut held_seventh = vec![VALUE_CLASS_TAG, CLASS_MODULE];
+    held_seventh.extend(7u32.to_le_bytes());
+    rewrite_in_graph(&mut bytes, &held_second, &held_seventh);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("class <module 7: out of range>")),
+        "the module past the section is marked: {:?}",
+        report.graph_objects
+    );
+
+    let source = indoc! {"
+        class Root = Object new <: Value () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let mut bytes = interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let level = mutator
+            .heap()
+            .class_superclass(root_class)
+            .expect("the root's level");
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            platform,
+            &[Value::object(level)],
+        )
+        .expect("snapshot")
+    });
+    let mut level_zero = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
+    level_zero.extend(0u32.to_le_bytes());
+    level_zero.extend(0u32.to_le_bytes());
+    let mut level_three = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
+    level_three.extend(0u32.to_le_bytes());
+    level_three.extend(3u32.to_le_bytes());
+    rewrite_in_graph(&mut bytes, &level_zero, &level_three);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_roots,
+        vec!["class <module 0 level 3: out of range>".to_string()]
+    );
+}
+
 #[test]
 fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();

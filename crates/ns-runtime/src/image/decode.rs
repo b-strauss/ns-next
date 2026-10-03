@@ -525,8 +525,8 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::MixinTableNotATree { row } => write!(
                 f,
-                "the image's mixin table is not a declaration tree: row {row} is reached out of \
-                 declaration order, twice, or not at all"
+                "the image's mixin table is not a sequence of declaration trees: row {row} is \
+                 named as a nested declaration or class side out of declaration order, or twice"
             ),
             DecodeError::ModuleCountMismatch { declared, trees } => write!(
                 f,

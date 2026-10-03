@@ -777,13 +777,6 @@ Small, deliberately left, none affecting an outcome.
   and ignored; the platform-directory mapping exists twice (`build.gradle.kts`'s
   `hostPlatform` and `plugin.xml`). [editor-support.md](design/editor-support.md),
   "Known gaps".
-- The packaged artifact left: `image/decode.rs`'s `MixinTableNotATree`
-  message says a row is reached "or not at all", where a surplus row now
-  starts another tree; `inspect` prints a `<module N>` past the modules
-  without marking it; `bench` prints a generic "instantiation failed" after
-  the real report; `crates/ns-cli/tests/common/mod.rs`'s
-  message for a stray golden directory carries a run of spaces from a lost
-  line continuation.
 
 ## Goldens and documentation
 
