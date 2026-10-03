@@ -552,6 +552,15 @@ impl CompiledCode {
         )
     }
 
+    /// Whether the `NS_NEXT_STRESS_WIDE` stress mode is on, which makes
+    /// every instruction of a body built by the compiler take a wide form.
+    /// The one reading of that variable, for the tests whose expectation of
+    /// a form depends on it.
+    #[doc(hidden)]
+    pub fn every_instruction_is_wide() -> bool {
+        crate::interpreter::safepoint::stress_wide_from_env()
+    }
+
     pub(crate) fn body(&self) -> &EncodedBody {
         &self.body
     }

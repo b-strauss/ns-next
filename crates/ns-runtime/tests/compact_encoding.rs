@@ -109,14 +109,6 @@ fn run_and_compile(source: &str) -> (i64, Rc<CompiledCode>) {
     (integer, code)
 }
 
-/// Whether `NS_NEXT_STRESS_WIDE` puts every instruction in a wide form, as
-/// `CodeBuilder::new` reads it: then the first entry of a table is wide too.
-fn every_instruction_wide() -> bool {
-    cfg!(debug_assertions)
-        && std::env::var_os("NS_NEXT_STRESS_WIDE")
-            .is_some_and(|value| !value.is_empty() && value != "0")
-}
-
 /// The first of a table's entries, at `first`, takes the eight-byte form
 /// (unless the stress mode makes every instruction wide), and the
 /// 65,537th, at `last`, the wide form; `is_entry` says each index holds
@@ -135,7 +127,10 @@ fn assert_forms(
         is_entry(&code.instruction(last)),
         "the last entry is at {last}"
     );
-    assert_eq!(code.is_wide(first), every_instruction_wide());
+    assert_eq!(
+        code.is_wide(first),
+        CompiledCode::every_instruction_is_wide()
+    );
     assert!(code.is_wide(last), "the 65,537th entry takes the wide form");
 }
 
