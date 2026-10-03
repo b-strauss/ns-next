@@ -741,8 +741,12 @@ pub(crate) fn execute_large_integer<'gc>(
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
         LargeIntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),
         LargeIntegerPrimitive::GreaterOrEqual => Some(compare(">=", Ordering::is_ge)),
-        // Answered in place above, before the copy.
-        LargeIntegerPrimitive::Equal | LargeIntegerPrimitive::Hash => None,
+        // Answered in place above, before the copy: a fall-through here
+        // would decline the leaf silently to `Object`'s `=` and `hash`.
+        LargeIntegerPrimitive::Equal | LargeIntegerPrimitive::Hash => unreachable!(
+            "`=` and `hash` on a LargeInteger are answered by the early return \
+             before its digits are copied"
+        ),
         LargeIntegerPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string(receiver_integer.to_decimal_string()),
         ))),

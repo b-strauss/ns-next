@@ -2521,7 +2521,8 @@ fn decode_optional_class<'gc>(
 ///
 /// So the peak is about **12.0x** in a release build (a graph of
 /// metaclass records) and **16x** in a debug one (a graph that is all root
-/// list), not counting each allocation's own overhead in the allocator.
+/// list), plus at most 4x of the symbol section, not counting each
+/// allocation's own overhead in the allocator.
 fn decode_value<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
@@ -4006,8 +4007,8 @@ pub fn decode_graph_section<'gc>(
 /// back onto the object the bootstrap -- or `build_root_class`, or a
 /// platform path's sends -- built, and answers the largest one, which `load`
 /// advances the counter past together with the graph's own maximum. A 0, a
-/// repeated object and `u32::MAX` are refused, each for the reason its
-/// `DecodeError` gives.
+/// repeated object and a hash of 2^22 or more (`IDENTITY_HASH_LIMIT`) are
+/// refused, each for the reason its `DecodeError` gives.
 pub fn decode_tag_named_hashes<'gc>(
     mutator: &mut Mutator<'gc>,
     reader: &mut Reader,
@@ -4235,7 +4236,7 @@ fn decode_applied_clause(
 /// captured by one (`verify_closure` refuses that) -- so there is nothing to
 /// reconcile.
 fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
-    // `fill_frame` found it from the frame's kind, as a reified frame's is
+    // `fill_frame_fields` found it from the frame's kind, as a reified frame's is
     // its activation's: a method's own, a closure's, and for a
     // class-carrying kind the field of the class's mixin its body lives
     // in -- each clause activation's own, never the instance initializer,

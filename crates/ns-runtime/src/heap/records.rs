@@ -68,7 +68,7 @@ pub enum PlaceholderFormat {
 }
 
 /// A reified frame's contents as values (`Heap::frame_record`,
-/// `Heap::fill_frame`): what the image encoder writes for a frame and the
+/// `Heap::fill_frame_fields`): what the image encoder writes for a frame and the
 /// decoder reads back. Only a dead frame has one: a married frame's
 /// registers and program counter live on the activation stack.
 pub struct FrameRecord<'gc> {

@@ -8768,10 +8768,11 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
             .heap()
             .closure_home(object(mutator.fetch(&closure)))
             .expect("expected a closure");
-        let mut forged = mutator.heap().frame_record(home);
-        assert!(forged.uncontinuable, "`mk` had returned");
-        forged.uncontinuable = false;
-        mutator.heap_mut().fill_frame(home, forged);
+        assert!(
+            mutator.heap().frame_is_uncontinuable(home),
+            "`mk` had returned"
+        );
+        mutator.heap_mut().frame_set_uncontinuable(home, false);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);

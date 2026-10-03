@@ -2421,8 +2421,9 @@ mod tests {
         assert_eq!(std::mem::size_of::<crate::dispatch::Lookup>(), 24);
     }
 
-    /// The counter starts above the reserved guards, so the first mint after
-    /// `FIRST_MINTED` answers it and the next answers the one after.
+    /// The counter starts above the reserved guards: with it at
+    /// `FIRST_MINTED`, the first mint answers `FIRST_MINTED` and the next the
+    /// id after it.
     #[test]
     fn the_first_mint_follows_the_reserved_guards() {
         let mut interpreter = Interpreter::bootstrap();

@@ -1196,12 +1196,18 @@ impl<'gc> Heap<'gc> {
         self.check_object_origin(object);
         let mut data = self.class_payload(record);
         let placeholder = self.fields_mut(object);
+        debug_assert_eq!(
+            placeholder.len(),
+            data.fields_mut().len(),
+            "the first pass sizes every class and metaclass record at the class object's size"
+        );
         if placeholder.len() == data.fields_mut().len() {
             placeholder.copy_from_slice(data.fields_mut());
             self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
         } else {
-            // A placeholder of another size is not what the first pass
-            // sized for a class record; the record is built beside it.
+            // Cannot happen: a valid sizing pass never sizes a class record
+            // otherwise. Kept so that a size the first pass got wrong is a
+            // wrong object, never a panic on untrusted input.
             let class_word = self.store(Value::object(class));
             self.objects[object.index as usize] =
                 data.into_block(class_word, DispatchId::NONE, identity_hash);
@@ -1380,7 +1386,8 @@ impl<'gc> Heap<'gc> {
     // object. `reify` builds a real activation's frame;
     // `image::decode::decode_graph_section` allocates a placeholder of the
     // size its first pass read (`allocate_placeholder_frame`) and fills it
-    // wholesale once the class objects are rebuilt (`fill_frame`).
+    // in place once the class objects are rebuilt (`fill_frame_fields`,
+    // `fill_frame_register`).
 
     /// Records the class every frame object is an instance of: the
     /// kernel-private `Activation`. The bootstrap records it where it builds
@@ -1402,8 +1409,8 @@ impl<'gc> Heap<'gc> {
     /// system ties the two fields together, so a new constructor added
     /// later would record a return target that disagrees with the frame's
     /// own closure silently rather than fail loudly. Checked here, once,
-    /// rather than at every constructor. Not checked in `fill_frame`: the
-    /// decoder fills a placeholder through that path with fields read off
+    /// rather than at every constructor. Not checked in `fill_frame_fields`:
+    /// the decoder fills a placeholder through that path with fields read off
     /// the wire, and nothing reactivates a decoded frame, so it need not
     /// satisfy this.
     fn allocate_frame(
@@ -1497,7 +1504,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A frame for `image::decode::decode_graph_section` to fill later
-    /// (`fill_frame`): a top-level activation with `register_count` nil
+    /// (`fill_frame_fields`): a top-level activation with `register_count` nil
     /// registers, the size the first pass read off the record, safe to hold
     /// and never observed before it is filled.
     pub(crate) fn allocate_placeholder_frame(
@@ -2166,7 +2173,14 @@ impl<'gc> Heap<'gc> {
     #[inline]
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
-        self.symbol_of.get(&object.index).copied()
+        let answer = self.symbol_of.get(&object.index).copied();
+        debug_assert_eq!(
+            answer.is_some(),
+            self.is_symbol(object),
+            "`symbol_of` must record exactly the Symbol objects, or a symbol \
+             answers its text as a String's and a String answers a symbol"
+        );
+        answer
     }
 
     /// The one object `symbol` already is in this heap, if anything has
@@ -2366,7 +2380,7 @@ impl<'gc> Heap<'gc> {
     ///
     /// A closure frame the runtime reified always carries a `home`
     /// (`allocate_frame` asserts it), so the fallback below is reached only
-    /// by a *decoded* closure frame, which `fill_frame` fills straight
+    /// by a *decoded* closure frame, which `fill_frame_fields` fills straight
     /// from the wire. Answering the captured frame for one is what keeps an
     /// untrusted image from panicking here: a decoded frame is never married
     /// to an activation, so a `^` aimed at it is the `cannotReturn` error
@@ -2484,12 +2498,6 @@ impl<'gc> Heap<'gc> {
         self.host_roots.borrow().slots.len()
     }
 
-    // ---------- Class accessors ----------
-    //
-    // Each answers `None` for a handle whose data is not a class, rather
-    // than panicking: a class reference decoded from an image is untrusted
-    // until verified, and the verifier is a caller of these.
-
     // ---------- The Rust-side tables ----------
 
     pub(crate) fn mixin_id(&mut self, mixin: &Rc<Mixin>) -> MixinId {
@@ -2570,6 +2578,12 @@ impl<'gc> Heap<'gc> {
             .get(id.index())
             .and_then(|entry| entry.method.clone())
     }
+
+    // ---------- Class accessors ----------
+    //
+    // Each answers `None` for a handle whose data is not a class, rather
+    // than panicking: a class reference decoded from an image is untrusted
+    // until verified, and the verifier is a caller of these.
 
     /// Field `field` of class object `class` (`object.rs`'s `class_field`
     /// gives the layout); `None` for a handle that is no class object.
@@ -3378,66 +3392,36 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Replaces the entirety of a frame's contents with `record`: the frame
-    /// object is rebuilt in its own slot, with the record's arguments and temporaries as its
-    /// registers, keeping its class, its guard and its identity hash. Its
-    /// code is found from the record's kind (`kind_code`), so the record's
-    /// split between arguments and temporaries is not kept: a frame's
-    /// arguments are its code's (`image::decode::verify_graph` holds the
-    /// register count to it).
-    ///
-    /// `tests/image.rs` forges a decoded frame through it; the image decoder
-    /// fills a frame record's placeholder in place instead
-    /// (`fill_frame_fields`), to the same block. Call this on any handle something
-    /// else already holds and it silently replaces that frame's
-    /// already-verified `program_counter`/register-file shape with an
-    /// unverified one: no error, and no way for `verify_graph` to notice,
-    /// because it has already finished.
-    pub fn fill_frame(&mut self, frame: FrameReference<'gc>, record: FrameRecord<'gc>) {
-        self.check_frame_origin(frame);
-        let FrameRecord {
-            receiver,
-            mut arguments,
-            temporaries,
-            program_counter,
-            sender,
-            home,
-            current_class,
-            kind,
-            uncontinuable,
-        } = record;
-        let code = self.kind_code(&kind);
-        let code = self.frame_code_id(&kind, code.as_ref());
-        arguments.extend(temporaries);
-        let register_count = arguments.len();
-        let data = self.frame_payload(
-            FrameFields {
-                sender,
-                home,
-                receiver,
-                current_class,
-                program_counter,
-                code,
-                kind,
-                uncontinuable,
-            },
-            &arguments,
-            register_count,
+    /// Test and format level: `tests/image.rs` forges a decoded frame's
+    /// `uncontinuable` flag through it, as a hand-edited file could. Writes
+    /// the one field in place; the runtime sets the flag only when the
+    /// divorce leaves a frame behind, and the image decoder in
+    /// `fill_frame_fields`.
+    #[doc(hidden)]
+    pub fn frame_set_uncontinuable(&mut self, frame: FrameReference<'gc>, uncontinuable: bool) {
+        debug_assert!(
+            self.frame_activation(frame).is_none(),
+            "a married frame is continuable until its activation returns"
         );
-        let object = self.frame_object(frame);
-        let (class, header) = (self.object_class(object), self.header(object));
-        let class_word = self.store(Value::object(class));
-        self.objects[frame.index as usize] =
-            data.into_block(class_word, header.guard(), header.identity_hash());
+        self.frame_words_mut(frame)[frame_field::UNCONTINUABLE] =
+            Value::boolean(uncontinuable).word().bits();
     }
 
     /// Fills a frame placeholder's fixed fields in place from `record`,
     /// whose registers must be empty: the register file the first pass sized
     /// stays where it is, nil, for `fill_frame_register` to write register
     /// by register. The frame keeps its class, its guard and its identity
-    /// hash, as with `fill_frame`, and ends identical to what `fill_frame`
-    /// builds from the same record with those registers. The image decoder's
-    /// second pass is the only caller; `fill_frame`'s caveats apply.
+    /// hash, and ends identical to a frame `allocate_frame` builds from the
+    /// same fields and registers. Its code is found from the record's kind
+    /// (`kind_code`), so the record's split between arguments and
+    /// temporaries is not kept: a frame's arguments are its code's
+    /// (`image::decode::verify_graph` holds the register count to it).
+    ///
+    /// The image decoder's second pass is the only caller. Call this on a
+    /// handle something else already holds and it silently replaces that
+    /// frame's already-verified `program_counter` with an unverified one: no
+    /// error, and no way for `verify_graph` to notice, because it has
+    /// already finished.
     pub(crate) fn fill_frame_fields(
         &mut self,
         frame: FrameReference<'gc>,
@@ -5320,31 +5304,39 @@ mod tests {
     }
 
     /// A frame filled in place -- its fixed fields, then register by
-    /// register -- is the frame `fill_frame` builds from the whole record.
+    /// register -- is the frame `allocate_frame` builds from the same fields
+    /// and registers.
     #[test]
-    fn a_frame_filled_in_place_is_the_frame_fill_frame_builds() {
+    fn a_frame_filled_in_place_is_the_frame_allocate_frame_builds() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Thing");
         let sender = heap.allocate_placeholder_frame(0);
         let registers = [Value::small_integer(3), Value::nil(), Value::object(class)];
-        let record = |registers| FrameRecord {
-            receiver: Value::small_integer(11),
-            arguments: registers,
-            temporaries: Vec::new(),
-            program_counter: 2,
-            sender: Some(sender),
-            home: None,
-            current_class: Some(class),
-            kind: FrameKind::TopLevel,
-            uncontinuable: true,
-        };
-        let rebuilt = heap.allocate_placeholder_frame(registers.len());
+        let built = heap.allocate_returned_top_level_frame(
+            Value::small_integer(11),
+            &registers,
+            Some(sender),
+            Some(class),
+        );
+        heap.frame_set_program_counter(built, 2);
         let filled = heap.allocate_placeholder_frame(registers.len());
-        for frame in [rebuilt, filled] {
+        for frame in [built, filled] {
             heap.object_set_identity_hash(heap.frame_object(frame), 17);
         }
-        heap.fill_frame(rebuilt, record(registers.to_vec()));
-        heap.fill_frame_fields(filled, record(Vec::<Value>::new()));
+        heap.fill_frame_fields(
+            filled,
+            FrameRecord {
+                receiver: Value::small_integer(11),
+                arguments: Vec::new(),
+                temporaries: Vec::new(),
+                program_counter: 2,
+                sender: Some(sender),
+                home: None,
+                current_class: Some(class),
+                kind: FrameKind::TopLevel,
+                uncontinuable: true,
+            },
+        );
         for (index, value) in registers.iter().enumerate() {
             assert!(heap.fill_frame_register(filled, index, *value));
         }
@@ -5354,7 +5346,7 @@ mod tests {
         );
         assert_eq!(
             heap.block(heap.frame_object(filled)),
-            heap.block(heap.frame_object(rebuilt))
+            heap.block(heap.frame_object(built))
         );
     }
 
