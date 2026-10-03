@@ -825,13 +825,16 @@ mod tests {
 
     /// Every resolution the hot path returns stays small: 3a measured a
     /// 64-byte decision on the return path at 5.5-22.4% (`execution.md`,
-    /// "What primitives as method-table entries moved"). 16 bytes in a
-    /// release build, below `Lookup`'s 24: a `Slot` carries the accessor's
-    /// kind rather than the whole `SlotAccessor`, and the variant tag fits
-    /// in the bytes every variant leaves spare beside its 8-byte field.
+    /// "What primitives as method-table entries moved"). 24 bytes in a
+    /// release build, `Lookup`'s size: a `Slot` carries the accessor's kind
+    /// rather than the whole `SlotAccessor`, but `Method`, `NestedClass` and
+    /// `Primitive` each hold an 8-byte field beside an 8-byte handle, so
+    /// their chain and the variant tag take a third word. It was 16 while a
+    /// handle was 4 bytes and the two fitted in the bytes it left spare; the
+    /// 8-byte `ClassReference` grew it.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
     fn a_resolution_stays_the_size_the_hot_path_was_measured_at() {
-        assert_eq!(std::mem::size_of::<Resolved>(), 16);
+        assert_eq!(std::mem::size_of::<Resolved>(), 24);
     }
 }

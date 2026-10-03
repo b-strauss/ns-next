@@ -26,7 +26,7 @@ pub(crate) trait Tracer {
     fn object(&mut self, handle: &mut ObjectReference<'_>);
     /// A frame, which every tracer treats as the frame object it names.
     fn frame(&mut self, handle: &mut FrameReference<'_>);
-    /// A stored word: rewritten by its index, since it carries no epoch.
+    /// A stored word: rewritten by its offset, since it carries no epoch.
     fn word(&mut self, word: &mut Word);
     fn value(&mut self, value: &mut Value<'_>) {
         if let Some(mut object) = value.as_object() {

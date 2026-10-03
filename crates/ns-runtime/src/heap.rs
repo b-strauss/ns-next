@@ -21,6 +21,7 @@ use crate::interpreter::FeedbackBase;
 use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod};
 use crate::types::*;
 use crate::Symbol;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 
 mod header;
@@ -69,7 +70,7 @@ pub(crate) mod record_size {
 /// Hands every `Heap` a distinct id, so a handle can name the heap that
 /// allocated it. Debug builds only -- the id and the field on each handle
 /// both compile out of a release build, where a handle is exactly its
-/// 32-bit index.
+/// 64-bit offset.
 #[cfg(debug_assertions)]
 fn next_heap_id() -> u32 {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -82,11 +83,15 @@ fn next_heap_id() -> u32 {
 /// contravariant in its argument and covariant in its result -- so the
 /// compiler can neither shorten nor extend it, and a handle minted in one
 /// entry has a type no other entry can name. Zero-sized: a release handle
-/// is still exactly its 32-bit index.
+/// is still exactly its 64-bit offset.
 type Brand<'gc> = std::marker::PhantomData<fn(&'gc ()) -> &'gc ()>;
 
-/// An opaque handle to an object: an index into `Heap.objects`. The inner
-/// index is private to this module, and only `heap.rs` reaches it -- that
+/// An opaque handle to an object: the byte offset of the object's header --
+/// until the object space stands behind it, of the arena slot it names,
+/// `16 * (slot + 1)` (`offset_of_slot`). A multiple of 8, so that the value
+/// word holding it carries the object tag, and never 0, so that an optional
+/// handle is one word too. The inner offset is private to this module, and
+/// only `heap.rs` reaches it -- that
 /// privacy is what made replacing `Rc<RefCell<Object>>` with this a change
 /// to one file rather than to every caller. See `docs/design/memory.md`,
 /// "The seam".
@@ -99,7 +104,7 @@ type Brand<'gc> = std::marker::PhantomData<fn(&'gc ()) -> &'gc ()>;
 /// the slot -- so two live objects never share an index.
 #[derive(Clone, Copy)]
 pub struct ObjectReference<'gc> {
-    index: u32,
+    offset: NonZeroU64,
     /// The heap that allocated this handle. Debug builds only: it exists to
     /// turn reading a handle through the wrong heap -- which answers a
     /// different, valid object rather than failing -- into a panic at the
@@ -140,19 +145,19 @@ impl<'gc> ObjectReference<'gc> {
             "stale handle: comparing handles minted in move epochs {} and {}",
             self.epoch, other.epoch
         );
-        self.index == other.index
+        self.offset == other.offset
     }
 }
 
-/// Prints the arena index and nothing else. Under `Rc` this impl was
+/// Prints the byte offset and nothing else. Under `Rc` this impl was
 /// hand-written to stop `Debug` recursing through the bootstrap `Object`
-/// class, which is its own `.class`; an index has nothing to descend into,
+/// class, which is its own `.class`; an offset has nothing to descend into,
 /// so the recursion hazard is gone by construction. It still renders Rust
 /// internals, which is why `CLAUDE.md`'s "Never `{:?}` a `Value`" rule
 /// stands: `Heap::describe` is what a Newspeak-facing message needs.
 impl std::fmt::Debug for ObjectReference<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ObjectReference(#{})", self.index)
+        write!(f, "ObjectReference(@{})", self.offset)
     }
 }
 
@@ -161,10 +166,11 @@ impl std::fmt::Debug for ObjectReference<'_> {
 /// handle type.
 pub type ClassReference<'gc> = ObjectReference<'gc>;
 
-/// An opaque handle to a *reified* activation: the index of its frame
-/// object in `Heap.objects` (`Heap::frame_object`), kept a type of its own
-/// so that only a frame object is ever read as a frame. The inner index is
-/// private to this module. See `docs/design/memory.md`, "The seam".
+/// An opaque handle to a *reified* activation: the byte offset of its frame
+/// object's header -- until the object space stands behind it, of the arena
+/// slot it names, `16 * (slot + 1)` (`Heap::frame_object`) -- kept a type of
+/// its own so that only a frame object is ever read as a frame. The inner
+/// offset is private to this module. See `docs/design/memory.md`, "The seam".
 ///
 /// A running activation is named by an `ActivationReference` instead; a
 /// `FrameReference` exists for one only once something must hold it past the
@@ -179,7 +185,7 @@ pub type ClassReference<'gc> = ObjectReference<'gc>;
 /// the slot -- so two frames never share an index.
 #[derive(Clone, Copy)]
 pub struct FrameReference<'gc> {
-    index: u32,
+    offset: NonZeroU64,
     /// The heap that allocated this handle. Debug builds only: it exists to
     /// turn reading a handle through the wrong heap -- which answers a
     /// different, valid object rather than failing -- into a panic at the
@@ -216,18 +222,18 @@ impl<'gc> FrameReference<'gc> {
             "stale handle: comparing handles minted in move epochs {} and {}",
             self.epoch, other.epoch
         );
-        self.index == other.index
+        self.offset == other.offset
     }
 }
 
-/// Prints the arena index and nothing else. A derived `Debug` over a
+/// Prints the byte offset and nothing else. A derived `Debug` over a
 /// frame's contents would walk the sender chain, which has no acyclic
 /// guarantee to lean on (a closure's `home` can itself be captured); an
-/// index has nothing to descend into at all, so the hazard is gone by
+/// offset has nothing to descend into at all, so the hazard is gone by
 /// construction rather than by discipline, and printing one cannot panic.
 impl std::fmt::Debug for FrameReference<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "FrameReference(#{})", self.index)
+        write!(f, "FrameReference(@{})", self.offset)
     }
 }
 
@@ -451,14 +457,14 @@ pub struct Heap<'gc> {
     /// (`docs/design/memory.md`, "Weak references").
     canonical_symbols: Vec<Option<ObjectReference<'gc>>>,
     /// The inverse of `canonical_symbols`: each canonical symbol object's
-    /// arena index, and the symbol it is. Every Symbol object is canonical
+    /// offset, and the symbol it is. Every Symbol object is canonical
     /// (`Mutator::new_symbol` and the image decoder are the only makers, and
     /// both record what they make), so `symbol_value` is one probe here
     /// rather than a search of the interner by the object's text. Keyed by
-    /// index, so it holds no handle: `record_canonical_symbol` inserts,
+    /// offset, so it holds no handle: `record_canonical_symbol` inserts,
     /// `prune_canonical_symbols` removes, and `forward_everything` rebuilds
     /// it from the forwarded table after every move and every compaction.
-    symbol_of: IdentityMap<u32, Symbol>,
+    symbol_of: IdentityMap<u64, Symbol>,
     /// Every `Root` a host holds. A `RefCell` so that `stash` and `fetch`
     /// take `&self`, which lets a host stash an argument inside the call that
     /// sends it.
@@ -541,22 +547,37 @@ impl std::fmt::Debug for Heap<'_> {
     }
 }
 
-/// How a move maps an old slot index to its new one. Two answer it: the
+/// The offset that names arena slot `slot`: past the first sixteen bytes,
+/// so that it is never 0 and an all-zero word never names a live object,
+/// and a multiple of 8, so that the value word holding it carries the
+/// object tag. The object space replaces it with the header's real offset.
+fn offset_of_slot(slot: usize) -> NonZeroU64 {
+    let slot = u64::try_from(slot).expect("internal: an arena slot fits 64 bits");
+    NonZeroU64::new(16 * (slot + 1)).expect("internal: a slot's offset is never zero")
+}
+
+/// The arena slot `offset` names, the inverse of `offset_of_slot`. The
+/// object space replaces it with reading the header at the offset itself.
+fn slot_of(offset: NonZeroU64) -> usize {
+    (offset.get() / 16 - 1) as usize
+}
+
+/// How a move maps an old object offset to its new one. Two answer it: the
 /// stress mode's `Rotation`, which keeps every slot, and the collector's
 /// `ForwardingTable`, which keeps only the live ones. A type parameter
 /// rather than an enum or a trait object, because `apply` runs once per
 /// handle in the whole heap and a monomorphized call leaves neither a
 /// branch nor an indirection there.
 pub(crate) trait Relocation {
-    fn apply(&self, index: u32) -> u32;
+    fn apply(&self, offset: NonZeroU64) -> NonZeroU64;
 }
 
 /// A rotation of the arena: slot `i` moves to `(i + shift) % length`.
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy)]
 struct Rotation {
-    shift: u32,
-    length: u32,
+    shift: usize,
+    length: usize,
 }
 
 #[cfg(debug_assertions)]
@@ -568,12 +589,10 @@ impl Rotation {
     /// object: the permutation checks the forwarding, the epoch the
     /// completeness. An arena of one slot or none cannot move anything.
     fn new(length: usize, epoch: u32) -> Rotation {
-        let length =
-            u32::try_from(length).expect("internal: an arena is addressed by 32-bit indices");
         let shift = if length < 2 {
             0
         } else {
-            1 + epoch % (length - 1)
+            1 + epoch as usize % (length - 1)
         };
         Rotation { shift, length }
     }
@@ -581,11 +600,11 @@ impl Rotation {
 
 #[cfg(debug_assertions)]
 impl Relocation for Rotation {
-    fn apply(&self, index: u32) -> u32 {
+    fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
         if self.length == 0 {
-            return index;
+            return offset;
         }
-        ((u64::from(index) + u64::from(self.shift)) % u64::from(self.length)) as u32
+        offset_of_slot((slot_of(offset) + self.shift) % self.length)
     }
 }
 
@@ -598,18 +617,18 @@ pub(crate) struct ForwardingTable {
     table: Vec<u32>,
 }
 
-/// No live slot can map here: an arena is addressed by 32-bit indices and
-/// `next_object_index` refuses to mint `u32::MAX` of them.
+/// No live slot can map here: `compact_arena` refuses an arena of
+/// `u32::MAX` slots or more.
 const DEAD: u32 = u32::MAX;
 
 impl Relocation for ForwardingTable {
-    fn apply(&self, index: u32) -> u32 {
-        let destination = self.table[index as usize];
+    fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
+        let destination = self.table[slot_of(offset)];
         debug_assert_ne!(
             destination, DEAD,
             "a handle to a collected slot survived marking: a root the tracer does not know about"
         );
-        destination
+        offset_of_slot(destination as usize)
     }
 }
 
@@ -629,7 +648,9 @@ fn compact_arena<T>(
     for (source, destination_of_source) in table.iter_mut().enumerate() {
         if take_mark(&mut slots[source]) {
             *destination_of_source = u32::try_from(destination)
-                .expect("internal: an arena is addressed by 32-bit indices");
+                .ok()
+                .filter(|slot| *slot != DEAD)
+                .expect("internal: a forwarding table holds fewer than u32::MAX slots");
             if destination != source {
                 slots.swap(destination, source);
             }
@@ -711,7 +732,7 @@ impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
             );
             handle.epoch = self.to_epoch;
         }
-        handle.index = self.objects.apply(handle.index);
+        handle.offset = self.objects.apply(handle.offset);
     }
 
     /// A frame is its frame object, so it moves as the object does.
@@ -729,14 +750,14 @@ impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
             );
             handle.epoch = self.to_epoch;
         }
-        handle.index = self.objects.apply(handle.index);
+        handle.offset = self.objects.apply(handle.offset);
     }
 
     /// A stored word carries no origin or epoch to check: `Heap::store`
     /// checked it when it was written, and every move rewrites it here.
     fn word(&mut self, word: &mut Word) {
-        if let Some(index) = word.object_index() {
-            *word = Word::with_object_index(self.objects.apply(index));
+        if let Some(offset) = word.object_offset() {
+            *word = Word::with_object_offset(self.objects.apply(offset));
         }
     }
 }
@@ -873,7 +894,7 @@ impl<'gc> Heap<'gc> {
     /// Draws the next number from the counter, which wraps from the widest
     /// hash the header word holds back to 1. Hashes are therefore not
     /// unique once the counter has wrapped, which a hash need not be:
-    /// object identity is the arena index (`ObjectReference::same`), never
+    /// object identity is the handle's offset (`ObjectReference::same`), never
     /// the hash (`docs/design/object-model.md`, "The identity hash is 22
     /// bits wide"). Never answers 0, which means "not assigned".
     fn allocate_identity_hash(&mut self) -> u32 {
@@ -1149,8 +1170,8 @@ impl<'gc> Heap<'gc> {
         dispatch_id: DispatchId,
         data: Payload,
     ) -> ObjectReference<'gc> {
-        let index = self.next_object_index();
-        let handle = self.object_handle(index);
+        let offset = self.next_object_offset();
+        let handle = self.object_handle(offset);
         let class_word = self.store(Value::object(handle));
         self.objects
             .push(data.into_block(class_word, dispatch_id, 0));
@@ -1214,7 +1235,7 @@ impl<'gc> Heap<'gc> {
             // otherwise. Kept so that a size the first pass got wrong is a
             // wrong object, never a panic on untrusted input.
             let class_word = self.store(Value::object(class));
-            self.objects[object.index as usize] =
+            self.objects[slot_of(object.offset)] =
                 data.into_block(class_word, DispatchId::NONE, identity_hash);
         }
     }
@@ -1333,34 +1354,31 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Where every allocation but `allocate_self_referential` enters an
-    /// object into the arena; that one pushes directly
-    /// instead, because it needs the index before the object exists to name
-    /// itself as its own `class`, but it enforces the same ceiling by
-    /// calling `next_object_index` itself. The ceiling is the
-    /// representation's, not an implementation limit: a handle is 32 bits
-    /// by design (`docs/design/memory.md`), so a heap holding more than
-    /// `u32::MAX` objects cannot be addressed at all, and failing loudly at
-    /// the allocation beats handing out an index that wrapped.
+    /// object into the arena; that one pushes directly instead, because it
+    /// needs the offset before the object exists to name itself as its own
+    /// `class`, and asks `next_object_offset` for it. A 64-bit handle has
+    /// no ceiling an arena could reach, so neither checks one.
     fn push_object(&mut self, block: Box<[u64]>) -> ObjectReference<'gc> {
-        let index = self.next_object_index();
+        let offset = self.next_object_offset();
         self.objects.push(block);
         if self.objects.len() >= self.next_object_collection {
             self.request_collection();
         }
-        self.object_handle(index)
+        self.object_handle(offset)
     }
 
-    fn next_object_index(&self) -> u32 {
-        u32::try_from(self.objects.len()).expect("more than u32::MAX objects allocated in one heap")
+    /// The offset the next object pushed onto the arena will have.
+    fn next_object_offset(&self) -> NonZeroU64 {
+        offset_of_slot(self.objects.len())
     }
 
     /// The one place an `ObjectReference` is built, so the `cfg` on `origin`
     /// appears once rather than at every allocation. A struct-expression field
     /// may carry a `cfg` attribute, which is what makes the release build see a
-    /// plain 4-byte handle.
-    fn object_handle(&self, index: u32) -> ObjectReference<'gc> {
+    /// plain 8-byte handle.
+    fn object_handle(&self, offset: NonZeroU64) -> ObjectReference<'gc> {
         ObjectReference {
-            index,
+            offset,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
@@ -1369,11 +1387,11 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The `FrameReference` for the frame object at `index`; only a frame
-    /// object's index is ever passed.
-    fn frame_handle(&self, index: u32) -> FrameReference<'gc> {
+    /// The `FrameReference` for the frame object at `offset`; only a frame
+    /// object's offset is ever passed.
+    fn frame_handle(&self, offset: NonZeroU64) -> FrameReference<'gc> {
         FrameReference {
-            index,
+            offset,
             #[cfg(debug_assertions)]
             origin: self.heap_id,
             #[cfg(debug_assertions)]
@@ -1434,7 +1452,7 @@ impl<'gc> Heap<'gc> {
             .expect("internal: the bootstrap records the Activation class before anything reifies");
         let data = self.frame_payload(fields, registers, register_count);
         let object = self.allocate_object(class, data);
-        self.frame_handle(object.index)
+        self.frame_handle(object.offset)
     }
 
     /// A frame object's payload: `fields` stored, `registers` stored after
@@ -1576,7 +1594,7 @@ impl<'gc> Heap<'gc> {
     /// `home` fields store.
     pub fn frame_object(&self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
         self.check_frame_origin(frame);
-        self.object_handle(frame.index)
+        self.object_handle(frame.offset)
     }
 
     /// The frame `object` is, or `None` when it is no frame object. `None`
@@ -1584,7 +1602,7 @@ impl<'gc> Heap<'gc> {
     /// by a program answers a failure instead of aborting.
     pub fn object_frame(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
         self.check_object_origin(object);
-        (self.header(object).format() == Format::Frame).then(|| self.frame_handle(object.index))
+        (self.header(object).format() == Format::Frame).then(|| self.frame_handle(object.offset))
     }
 
     // ---------- Handle-origin checks ----------
@@ -1733,7 +1751,7 @@ impl<'gc> Heap<'gc> {
     #[inline(always)]
     fn block(&self, object: ObjectReference<'gc>) -> &[u64] {
         self.check_object_origin(object);
-        let block = &self.objects[object.index as usize];
+        let block = &self.objects[slot_of(object.offset)];
         check_block(block);
         block
     }
@@ -1742,7 +1760,7 @@ impl<'gc> Heap<'gc> {
     #[inline(always)]
     fn block_mut(&mut self, object: ObjectReference<'gc>) -> &mut [u64] {
         self.check_object_origin(object);
-        let block = &mut self.objects[object.index as usize];
+        let block = &mut self.objects[slot_of(object.offset)];
         check_block(block);
         block
     }
@@ -1815,20 +1833,23 @@ impl<'gc> Heap<'gc> {
     ///
     /// It lives on `Heap` rather than on `ObjectReference` so that the origin
     /// check applies to it like it does to every accessor. Two handles from
-    /// different heaps carry the same index and so produce the same key, which
-    /// collides silently in a caller's map; requiring the `Heap` that minted
-    /// the handle is what turns that into a panic, and it is the compiler that
-    /// requires it, since there is no way to reach the index without one.
+    /// different heaps can carry the same offset and so produce the same key,
+    /// which collides silently in a caller's map; requiring the `Heap` that
+    /// minted the handle is what turns that into a panic, and it is the
+    /// compiler that requires it, since there is no way to reach the offset
+    /// without one.
     ///
-    /// This is the only way a handle's index leaves this module -- a frame's
-    /// key is its frame object's -- so anything that changes what a handle
-    /// encodes -- widening it to carry a heap tag, say -- has to check its
-    /// callers even though the field itself is private. They all treat the
-    /// result as an opaque key, which is what keeps that a check rather than
-    /// a rewrite.
+    /// The key is the handle's byte offset, and nothing may do arithmetic on
+    /// it: it says nothing about the object but which one it is. This is the
+    /// only way a handle's offset leaves this module -- a frame's key is its
+    /// frame object's -- so anything that changes what a handle encodes --
+    /// widening it to carry a heap tag, say -- has to check its callers even
+    /// though the field itself is private. They all treat the result as an
+    /// opaque key, which is what keeps that a check rather than a rewrite.
     pub(crate) fn object_identity_key(&self, object: ObjectReference<'gc>) -> usize {
         self.check_object_origin(object);
-        object.index as usize
+        usize::try_from(object.offset.get())
+            .expect("internal: an object's offset fits the target's address width")
     }
 
     /// Overwrites `object`'s identity hash. Two legitimate callers:
@@ -2178,7 +2199,7 @@ impl<'gc> Heap<'gc> {
     #[inline]
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
-        let answer = self.symbol_of.get(&object.index).copied();
+        let answer = self.symbol_of.get(&object.offset.get()).copied();
         debug_assert_eq!(
             answer.is_some(),
             self.is_symbol(object),
@@ -2206,9 +2227,9 @@ impl<'gc> Heap<'gc> {
             self.canonical_symbols.resize(index + 1, None);
         }
         if let Some(previous) = self.canonical_symbols[index].replace(object) {
-            self.symbol_of.remove(&previous.index);
+            self.symbol_of.remove(&previous.offset.get());
         }
-        self.symbol_of.insert(object.index, symbol);
+        self.symbol_of.insert(object.offset.get(), symbol);
     }
 
     /// Closure `object`'s words -- its fixed fields, then its copied values --
@@ -2307,7 +2328,7 @@ impl<'gc> Heap<'gc> {
         self.check_activation(activation);
         self.check_object_origin(object);
         let Heap { objects, stack, .. } = self;
-        let block = &objects[object.index as usize];
+        let block = &objects[slot_of(object.offset)];
         check_block(block);
         let words = &block[FIELDS..];
         if Header(block[HEADER]).format() != Format::Closure || words.len() <= closure_field::COUNT
@@ -3579,7 +3600,7 @@ impl<'gc> Heap<'gc> {
         if let Some(frame) = entry.reified {
             self.check_frame_origin(frame);
             let Heap { objects, stack, .. } = self;
-            let block = &mut objects[frame.index as usize];
+            let block = &mut objects[slot_of(frame.offset)];
             check_block(block);
             let words = &mut block[FIELDS..];
             if entry.retains_registers {
@@ -4084,7 +4105,7 @@ impl<'gc> Heap<'gc> {
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);
         let objects = Rotation::new(self.objects.len(), to_epoch);
-        self.objects.rotate_right(objects.shift as usize);
+        self.objects.rotate_right(objects.shift);
         self.epoch = to_epoch;
         let mut forwarder = Forwarder {
             heap_id: self.heap_id,
@@ -4182,7 +4203,7 @@ impl<'gc> Heap<'gc> {
         let symbols: Vec<Symbol> = self.symbol_of.drain().map(|(_, symbol)| symbol).collect();
         for symbol in symbols {
             if let Some(object) = self.canonical_symbols[symbol.index()] {
-                self.symbol_of.insert(object.index, symbol);
+                self.symbol_of.insert(object.offset.get(), symbol);
             }
         }
         let roots = self.host_roots.get_mut();
@@ -4250,11 +4271,11 @@ impl<'gc> Heap<'gc> {
         state_index: usize,
         resolved: i64,
     ) -> usize {
-        // First pass: every resolved future's arena index and its value.
+        // First pass: every resolved future's offset and its value.
         // Words, not values: the replacement copies a stored word into
         // another field, so it needs no check and no epoch.
-        let mut values: std::collections::HashMap<u32, Word> = std::collections::HashMap::new();
-        for (index, block) in self.objects.iter().enumerate() {
+        let mut values: std::collections::HashMap<u64, Word> = std::collections::HashMap::new();
+        for (slot, block) in self.objects.iter().enumerate() {
             if !self.block_class(block).same(future_class)
                 || Header(block[HEADER]).format() != Format::FixedPointers
             {
@@ -4275,9 +4296,7 @@ impl<'gc> Heap<'gc> {
                     .as_object()
                     .is_some_and(|target| self.object_class(target).same(future_class));
                 if state == resolved && !value_is_a_future {
-                    let index = u32::try_from(index)
-                        .expect("internal: an arena index fits the handle's u32");
-                    values.insert(index, value);
+                    values.insert(offset_of_slot(slot).get(), value);
                 }
             }
         }
@@ -4288,8 +4307,8 @@ impl<'gc> Heap<'gc> {
         let mut replaced = 0;
         let mut replace = |fields: &mut [Word]| {
             for field in fields {
-                if let Some(index) = field.object_index() {
-                    if let Some(value) = values.get(&index) {
+                if let Some(offset) = field.object_offset() {
+                    if let Some(value) = values.get(&offset.get()) {
                         *field = *value;
                         replaced += 1;
                     }
@@ -4380,8 +4399,8 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn prune_canonical_symbols(&mut self) {
         for slot in &mut self.canonical_symbols {
             if let Some(object) = slot {
-                if !Header(self.objects[object.index as usize][HEADER]).marked() {
-                    self.symbol_of.remove(&object.index);
+                if !Header(self.objects[slot_of(object.offset)][HEADER]).marked() {
+                    self.symbol_of.remove(&object.offset.get());
                     *slot = None;
                 }
             }
@@ -4396,18 +4415,19 @@ impl<'gc> Heap<'gc> {
     /// cycle. A married frame's registers are its entry's, already pushed
     /// with the stack, so `pointer_ranges` leaves them out.
     pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
-        while let Some(index) = marker.next() {
-            let block = &mut self.objects[index as usize];
+        while let Some(offset) = marker.next() {
+            let slot = slot_of(offset);
+            let block = &mut self.objects[slot];
             let header = Header(block[HEADER]);
             if header.marked() {
                 continue;
             }
             block[HEADER] = header.with_marked(true).0;
-            let block = &self.objects[index as usize];
+            let block = &self.objects[slot];
             for range in pointer_ranges(block) {
                 for bits in &block[range] {
-                    if let Some(target) = Word::from_bits(*bits).object_index() {
-                        if !Header(self.objects[target as usize][HEADER]).marked() {
+                    if let Some(target) = Word::from_bits(*bits).object_offset() {
+                        if !Header(self.objects[slot_of(target)][HEADER]).marked() {
                             marker.push(target);
                         }
                     }
@@ -4566,6 +4586,22 @@ mod tests {
         );
     }
 
+    /// A handle is a byte offset: a multiple of 8, so that the value word holding
+    /// it has the object tag, and at least 16, so that an all-zero word -- a
+    /// missed initialization -- never names a live object.
+    #[test]
+    fn an_object_word_is_a_byte_offset_past_the_first_sixteen_bytes() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(Payload::instance([]));
+        let object = heap.allocate_instance(class, 1);
+        for handle in [class, object] {
+            let word = heap.store(Value::object(handle)).bits();
+            assert_eq!(word & 0b111, 0, "an object word carries the object tag");
+            assert!(word >= 16);
+            assert_eq!(heap.object_identity_key(handle) as u64, word);
+        }
+    }
+
     /// Why `identity_key` lives on `Heap`. A key computed from a handle
     /// alone could carry no origin check, so two objects from different
     /// arenas would produce the same key and collide in a caller's map --
@@ -4662,8 +4698,8 @@ mod tests {
     #[test]
     fn a_self_referential_class_is_its_own_class() {
         let mut heap = Heap::new();
-        // A filler object first, so `class` does not land at index 0 -- an
-        // implementation that always answered `ObjectReference { index: 0 }`
+        // A filler object first, so `class` does not land in the first slot
+        // -- an implementation that always answered the first slot's handle
         // would otherwise still pass this test.
         heap.allocate_self_referential(Payload::instance([]));
         let class = heap.allocate_self_referential(Payload::instance([]));
@@ -4924,7 +4960,7 @@ mod tests {
     }
 
     /// `symbol_value` is a probe of the canonical table's inverse, keyed by
-    /// arena index, so it must follow a symbol across every compaction and
+    /// offset, so it must follow a symbol across every compaction and
     /// every move, and forget one the collector pruned.
     #[test]
     fn a_symbol_answers_its_symbol_across_collections_and_moves_and_a_pruned_one_leaves_no_entry() {
@@ -4944,12 +4980,12 @@ mod tests {
         let mut string = Value::object(
             heap.allocate_string(string_class, crate::CodePoints::from("kept:symbol:")),
         );
-        let index_before = kept.as_object().map(|object| object.index);
+        let offset_before = kept.as_object().map(|object| object.offset);
         heap.collect_for_test(&mut [&mut kept, &mut string]);
         let object = kept.as_object().expect("a root keeps its object");
         assert_ne!(
-            Some(object.index),
-            index_before,
+            Some(object.offset),
+            offset_before,
             "the collection moved the symbol"
         );
         assert_eq!(heap.symbol_value(object), Some(kept_symbol));
@@ -4998,7 +5034,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = named_class(&mut heap, "Point");
         let object = heap.allocate_instance(class, 2);
-        let block = &heap.objects[object.index as usize];
+        let block = &heap.objects[slot_of(object.offset)];
         assert_eq!(block.len(), 4);
         assert_eq!(Header(block[0]).format(), Format::FixedPointers);
         assert_eq!(Header(block[0]).word_count(), 3);
@@ -5007,7 +5043,7 @@ mod tests {
 
     /// A `LargeInteger`'s digits are no stored words, and only its format
     /// says so: a digit shaped like an object word -- the low three bits
-    /// clear, the index of a live object -- must come through a collection
+    /// clear, the offset of a live object -- must come through a collection
     /// and a move as it went in, not forwarded as though it named one.
     #[test]
     fn a_digit_shaped_like_an_object_word_is_never_forwarded() {
@@ -5015,14 +5051,14 @@ mod tests {
         let class = named_class(&mut heap, "LargeInteger");
         heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
         let filler = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("live")));
-        let shaped = Word::with_object_index(filler.index).bits();
+        let shaped = Word::with_object_offset(filler.offset).bits();
         assert_eq!(shaped & 0b111, 0, "the digit reads as an object word");
         let integer = crate::ArbitraryInteger::from_sign_and_digits(false, &[shaped, shaped]);
         let object = heap.allocate_large_integer(class, integer.clone());
         let filler_root = heap.stash(Value::object(filler));
         let root = heap.stash(Value::object(object));
-        let index_of = |heap: &Heap<'_>, root: &Root| match heap.fetch(root).as_object() {
-            Some(object) => object.index,
+        let offset_of = |heap: &Heap<'_>, root: &Root| match heap.fetch(root).as_object() {
+            Some(object) => object.offset,
             None => panic!("the root no longer holds an object"),
         };
         let digits = |heap: &Heap<'_>| {
@@ -5033,18 +5069,18 @@ mod tests {
         // The dead string before them goes, so the object the digit names
         // slides down: forwarding the digit would rewrite it.
         heap.collect_for_test(&mut []);
-        assert_ne!(index_of(&heap, &filler_root), filler.index);
+        assert_ne!(offset_of(&heap, &filler_root), filler.offset);
         assert_eq!(digits(&heap), Some(vec![shaped, shaped]));
 
         #[cfg(debug_assertions)]
         {
-            let before = index_of(&heap, &filler_root);
+            let before = offset_of(&heap, &filler_root);
             assert!(
-                (filler.index as usize) < heap.objects.len(),
+                slot_of(filler.offset) < heap.objects.len(),
                 "the digit still names a slot in range"
             );
             move_bare_heap(&mut heap);
-            assert_ne!(index_of(&heap, &filler_root), before);
+            assert_ne!(offset_of(&heap, &filler_root), before);
             assert_eq!(digits(&heap), Some(vec![shaped, shaped]));
         }
         let Some(object) = heap.fetch(&root).as_object() else {
@@ -5972,6 +6008,18 @@ mod tests {
         assert!(slots.is_empty());
     }
 
+    /// A handle is one word, and the offset's niche keeps an optional handle
+    /// one word too: `Option<ClassReference>` sits in every stack entry and in
+    /// `Step`, whose size the hot path was measured at.
+    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
+    #[test]
+    fn a_handle_and_an_optional_handle_are_one_word() {
+        assert_eq!(std::mem::size_of::<ObjectReference<'static>>(), 8);
+        assert_eq!(std::mem::size_of::<Option<ObjectReference<'static>>>(), 8);
+        assert_eq!(std::mem::size_of::<FrameReference<'static>>(), 8);
+        assert_eq!(std::mem::size_of::<Option<FrameReference<'static>>>(), 8);
+    }
+
     /// Marks from the heap's own roots, answers whether each of `objects` was
     /// reached, and clears every mark again, so that the test can go on to
     /// collect: a mark left set would make the next marking skip that object's
@@ -6145,8 +6193,8 @@ mod tests {
         assert_ne!(
             heap.object_frame(retained_root.as_object().expect("an object"))
                 .expect("a frame")
-                .index,
-            retained_frame.index,
+                .offset,
+            retained_frame.offset,
             "the collection moved the frame"
         );
 
@@ -6191,11 +6239,11 @@ mod tests {
         top_level_frame(&mut heap, 2);
         let activation = heap.push_activation(header(), &[Value::small_integer(7)], 1);
         let frame = heap.reify(activation);
-        let before = frame.index;
+        let before = frame.offset;
         let root = heap.stash(Value::object(heap.frame_object(frame)));
         move_bare_heap(&mut heap);
         let frame = frame_at_root(&heap, &root);
-        assert_ne!(frame.index, before, "the move gave the frame a new index");
+        assert_ne!(frame.offset, before, "the move gave the frame a new offset");
         assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(7));
         heap.frame_set_local(frame, 1, Value::small_integer(9));
         assert_eq!(

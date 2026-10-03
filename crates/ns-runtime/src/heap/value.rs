@@ -5,6 +5,7 @@
 //! `heap` because a handle's fields are private to `heap`.
 
 use super::{Brand, ObjectReference};
+use std::num::NonZeroU64;
 
 /// The bounds of a `SmallInteger`: 61 bits, what the tagged word leaves
 /// (`docs/design/object-model.md`, "Values and objects"). Every integer
@@ -35,7 +36,8 @@ pub(crate) const fn is_small_float_bits(bits: u64) -> bool {
 
 /// One tagged word, Spur's: the low three bits say what the rest is
 /// (`docs/design/object-model.md`, "Values and objects"). An object is its
-/// arena index shifted past the tag; a `SmallInteger` its 61 bits over
+/// byte offset, a multiple of 8, so its low three bits are the object tag;
+/// a `SmallInteger` its 61 bits over
 /// `0b001`; `nil`, `false` and `true` the payloads 0, 1 and 2 over `0b010`;
 /// a `SmallFloat` Spur's rotated float over `0b100`. Tags `0b011`, `0b101`,
 /// `0b110` and `0b111` are never made, so bit 0 alone tells a
@@ -77,15 +79,17 @@ pub struct Word(u64);
 impl Word {
     pub(crate) const NIL: Word = Word(NIL_WORD);
 
-    /// The arena index of the object this word names, for the collector.
-    pub(super) fn object_index(self) -> Option<u32> {
-        // An object's word is its 32-bit index shifted past the tag, so the
-        // shift back loses nothing.
-        (self.0 & TAG_MASK == OBJECT_TAG).then_some((self.0 >> TAG_BITS) as u32)
+    /// The offset of the object this word names, for the collector. An
+    /// object's word is its offset itself, which is never 0, so the zero
+    /// word -- never stored -- answers `None` like an immediate.
+    pub(super) fn object_offset(self) -> Option<NonZeroU64> {
+        (self.0 & TAG_MASK == OBJECT_TAG)
+            .then(|| NonZeroU64::new(self.0))
+            .flatten()
     }
 
-    pub(super) fn with_object_index(index: u32) -> Word {
-        Word(u64::from(index) << TAG_BITS)
+    pub(super) fn with_object_offset(offset: NonZeroU64) -> Word {
+        Word(offset.get())
     }
 
     /// The word a pointer field of a word-format object holds, back from
@@ -212,7 +216,7 @@ impl<'gc> Value<'gc> {
 
     pub const fn object(object: ObjectReference<'gc>) -> Value<'gc> {
         Value {
-            word: (object.index as u64) << TAG_BITS,
+            word: object.offset.get(),
             #[cfg(debug_assertions)]
             origin: object.origin,
             #[cfg(debug_assertions)]
@@ -268,7 +272,10 @@ impl<'gc> Value<'gc> {
 
     pub fn kind(self) -> ValueKind<'gc> {
         match self.word & TAG_MASK {
-            OBJECT_TAG => ValueKind::Object(self.reference()),
+            OBJECT_TAG => match self.reference() {
+                Some(object) => ValueKind::Object(object),
+                None => unreachable!("internal: a stored object word is never zero"),
+            },
             SMALL_INTEGER_TAG => ValueKind::SmallInteger(self.small_integer_payload()),
             CONSTANT_TAG => match self.word {
                 NIL_WORD => ValueKind::Nil,
@@ -305,7 +312,9 @@ impl<'gc> Value<'gc> {
     }
 
     pub fn as_object(self) -> Option<ObjectReference<'gc>> {
-        (self.word & TAG_MASK == OBJECT_TAG).then(|| self.reference())
+        (self.word & TAG_MASK == OBJECT_TAG)
+            .then(|| self.reference())
+            .flatten()
     }
 
     /// Where `Heap::immediate_dispatch_ids` keeps an immediate's id: `nil`,
@@ -397,17 +406,17 @@ impl<'gc> Value<'gc> {
         self.word.cast_signed() >> TAG_BITS
     }
 
-    fn reference(self) -> ObjectReference<'gc> {
-        ObjectReference {
-            // An object's word is its 32-bit index shifted past the tag, so
-            // the shift back loses nothing.
-            index: (self.word >> TAG_BITS) as u32,
+    /// The handle an object word is: the word is the offset itself.
+    /// `None` only for the zero word, which no constructor makes.
+    fn reference(self) -> Option<ObjectReference<'gc>> {
+        Some(ObjectReference {
+            offset: NonZeroU64::new(self.word)?,
             #[cfg(debug_assertions)]
             origin: self.origin,
             #[cfg(debug_assertions)]
             epoch: self.epoch,
             brand: self.brand,
-        }
+        })
     }
 }
 

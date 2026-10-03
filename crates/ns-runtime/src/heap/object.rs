@@ -24,7 +24,7 @@ use crate::trace::Tracer;
 ///
 /// Its identity hash is 0 until something asks for it; then drawn from a
 /// counter (`Heap::object_ensure_identity_hash`), so allocation order stays
-/// unobservable. Never derived from the arena index, which a moving
+/// unobservable. Never derived from the object's offset, which a moving
 /// collector or `become:` would change (liveness spec's stable-identity
 /// constraint). Not a handle; a move carries it along.
 pub(in crate::heap) const HEADER: usize = 0;

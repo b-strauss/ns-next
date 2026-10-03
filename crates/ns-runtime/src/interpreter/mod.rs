@@ -2382,7 +2382,7 @@ mod tests {
     /// not only on the path it serves (`StepArguments::ControlFlow`'s comment).
     /// This is the size the hot path was measured at, in a release build: a
     /// debug build's handles carry an origin and a move epoch besides their
-    /// index, so it measures something else. The measurement protocol runs
+    /// offset, so it measures something else. The measurement protocol runs
     /// this with `--release`. The eight-byte value left it at 56.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
     #[test]
@@ -2394,12 +2394,14 @@ mod tests {
     /// decision is noticed by the ordinary suite and not only by the release
     /// run the measurement protocol makes. It only notices growth: the
     /// release figure is the one the hot path was measured at, and a debug
-    /// handle carries its origin and move epoch besides its index, which is
-    /// what puts this above it. The eight-byte value left it at 64.
+    /// handle carries its origin and move epoch besides its offset, which is
+    /// what puts this above it. The eight-byte value left it at 64; the
+    /// 8-byte handle offset, 16 bytes with the origin and epoch, raised it
+    /// to 72 while the release figure stayed at 56.
     #[cfg(all(target_pointer_width = "64", debug_assertions))]
     #[test]
     fn a_decision_stays_the_size_it_has_in_a_debug_build() {
-        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 64);
+        assert_eq!(std::mem::size_of::<Result<Step, Signal>>(), 72);
     }
 
     /// Every lookup hands its answer to `resolve` as a `Lookup`, which
@@ -2408,17 +2410,18 @@ mod tests {
     /// (`docs/design/execution.md`, "What primitives as method-table entries
     /// moved"); pinned here so that growing a `Lookup` variant fails this
     /// test instead of quietly widening that path.
-    /// Unlike `Result<Step, Signal>` above, this one does not grow in a debug
-    /// build: `SlotAccessor`'s own 12 bytes plus the absolute field index it
-    /// carries already need a 24-byte slot once alignment rounds it up, and a
-    /// debug `ClassReference`'s wider handle (12 bytes against a release
-    /// build's 4, for the origin and move epoch that catch a stale or
-    /// cross-heap read) only brings `Method`'s payload up to that same total,
-    /// not past it.
+    /// 24 bytes in a release build: `SlotAccessor`'s own 12 bytes plus the
+    /// absolute field index it carries need a 24-byte slot once alignment
+    /// rounds it up, and `Method`'s `Rc` beside an 8-byte `ClassReference`
+    /// fills the same 16 bytes of payload. A debug build's handle is 16
+    /// bytes (the offset, then the origin and move epoch that catch a stale
+    /// or cross-heap read), which puts `Method` at 32; it was 24 there too
+    /// while the offset was a 4-byte index.
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn a_lookup_stays_the_size_the_hot_path_was_measured_at() {
-        assert_eq!(std::mem::size_of::<crate::dispatch::Lookup>(), 24);
+        let expected = if cfg!(debug_assertions) { 32 } else { 24 };
+        assert_eq!(std::mem::size_of::<crate::dispatch::Lookup>(), expected);
     }
 
     /// The counter starts above the reserved guards: with it at

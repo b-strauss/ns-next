@@ -3019,9 +3019,9 @@ fn rebuild_applications<'gc>(
     pending: Vec<PendingClass>,
     pending_metaclasses: &[usize],
 ) -> Result<(), DecodeError> {
-    // Class-object arena index -> position in `pending`, for the "is my
+    // Class-object identity key -> position in `pending`, for the "is my
     // superclass still waiting for its own application?" question each step
-    // asks. Keyed by index because a superclass arrives as a `ClassReference`
+    // asks. Keyed by identity because a superclass arrives as a `ClassReference`
     // handle, not as the id it was written with.
     let mut position: HashMap<usize, usize> = HashMap::with_capacity(pending.len());
     for (index, pending_class) in pending.iter().enumerate() {
