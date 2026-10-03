@@ -34,7 +34,7 @@ Rust 1.98.0, edition 2021, five crates:
   `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
   JSON project file of several modules (`project.rs`, `program.rs`).
 - `crates/ns-lsp` — the `ns-next-lsp` binary: a language server for `.ns` files
-  (diagnostics, semantic tokens) and `dump-tokens`, which the JetBrains plugin's
+  (diagnostics, semantic tokens, fold ranges) and `dump-tokens`, which the JetBrains plugin's
   lexer is checked against. It never starts the VM; its server dependencies
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime`,
   and `serde_json` is shared by `ns-lsp` and `ns-cli` (the project file is JSON)
