@@ -2,18 +2,19 @@
 
 > **Status:** **Built:** the language server (`crates/ns-lsp/`, and
 > `resolve_for_editor` in `crates/ns-runtime/src/resolver/mod.rs`) and the
-> JetBrains plugin (`editors/jetbrains/`) both exist: highlighting and errors
-> as you type, in every commercial JetBrains IDE from 2026.1.4. Formatting,
-> navigation and further platforms are planned ("Planned later").
+> JetBrains plugin (`editors/jetbrains/`) both exist: highlighting, errors
+> as you type and code folding, in every commercial JetBrains IDE from
+> 2026.1.4, kept while a file has syntax errors. Formatting, navigation and
+> further platforms are planned ("Planned later").
 
-Editing `.ns` files in a JetBrains IDE today means editing plain text. This
-document describes the editor support that replaces it: syntax highlighting as
-you type, and the errors `ns-next` would report before running a module, shown
-in the editor at the place they occur.
+Without a plugin, editing `.ns` files in a JetBrains IDE means editing plain
+text. This document describes the editor support that replaces it: syntax
+highlighting as you type, the errors `ns-next` would report before running a
+module, shown in the editor at the place they occur, and code folding.
 
 ## Scope
 
-**In scope.** Two capabilities, in every commercial JetBrains IDE:
+**In scope.** Three capabilities, in every commercial JetBrains IDE:
 
 1. **Highlighting** — keywords, strings, symbols, numbers, comments,
    selectors, and, once the server has analysed the file, what the resolver
@@ -21,6 +22,9 @@ in the editor at the place they occur.
    method, `self` / `super` / `outer`.
 2. **Errors as you type** — every lexer, parser and resolver diagnostic, with
    the message `ns-next` itself produces.
+3. **Folding** — comments, class bodies, class sides, method bodies, closures
+   and slot sections collapse and expand, from fold ranges the server
+   computes from the AST ("Folding").
 
 **Target IDEs.** Every commercial JetBrains IDE that carries JetBrains' own
 LSP API: IntelliJ IDEA, WebStorm, PhpStorm, PyCharm, DataSpell, RubyMine,
@@ -37,8 +41,11 @@ structure view), completion and formatting. Each is described under
 ## Architecture
 
 ```
-crates/ns-lsp/          binary `ns-next-lsp`: diagnostics and semantic tokens
-                        over LSP, and `dump-tokens` for the lexer comparison
+crates/ns-lsp/          binary `ns-next-lsp`: diagnostics, semantic tokens and
+                        fold ranges over LSP, and `dump-tokens` for the lexer
+                        comparison
+crates/ns-syntax/       + an editor entry, `parse_for_editor`: a module for
+                        every source, recovered, with its comments' spans
 crates/ns-runtime/      + a resolver entry answering bindings and errors together
 editors/jetbrains/      Gradle project: file type, Kotlin lexer, highlighter,
                         LSP client, settings
@@ -57,7 +64,7 @@ Colour comes in two layers:
    slot, a nested class — its colour wins.
 
 Errors travel separately, pushed by the server as `publishDiagnostics` after
-every change.
+every change. The IDE asks for fold ranges, as it asks for semantic tokens.
 
 ### Why a Kotlin lexer, when the rest avoids a second implementation
 
@@ -120,23 +127,31 @@ Modules:
   URI's string form, not by `lsp_types::Uri` itself: `Uri` wraps a
   `fluent_uri::Uri<String>` that caches parsed components behind a `Cell`, so
   clippy's `mutable_key_type` refuses it as a map key even though its
-  `Hash`/`Eq` only ever read the string. A `semanticTokens/full` request for a
-  URI the server never opened, or has since closed, answers an empty token
-  set rather than an error.
+  `Hash`/`Eq` only ever read the string. A `semanticTokens/full` or
+  `foldingRange` request for a URI the server never opened, or has since
+  closed, answers an empty set rather than an error.
 - `documents.rs` — the open text per URI with its version, and a line index
   converting a `Span`'s byte offsets to LSP positions in UTF-16 code units,
   the one encoding every LSP client must accept.
-- `analysis.rs` — `lex`, `parse` and the resolver entry below, run once per
-  document version and cached.
+- `analysis.rs` — run once per document version and cached:
+  `ns_syntax::parse_for_editor`, then the resolver entry below on its module
+  whether or not it was recovered, then the classification over the editor
+  parse's tokens and the folds over its module and comment spans. Its
+  findings are every diagnostic together -- the lexer's, then the parser's,
+  then the resolver's -- so a lexer error does not hide a parser error after
+  it.
 - `semantic_tokens.rs` — classification and the LSP encoding.
+- `folding.rs` — the fold ranges and their LSP encoding ("Folding").
 
 **Protocol surface.** `initialize`, `textDocument/didOpen`, `didChange` (full
 text on every change), `didClose`, `publishDiagnostics` (push, supported by
-the platform since 2023.2), `textDocument/semanticTokens/full`, `shutdown`
-and `exit`. Nothing else. A request the server does not implement is answered
-`MethodNotFound`. A document notification whose params do not match the
-schema has no response to carry an error, so the server writes it to stderr
-and sends the client a `window/logMessage` of type `Error` -- the client's
+the platform since 2023.2), `textDocument/semanticTokens/full`,
+`textDocument/foldingRange` (the `foldingRangeProvider` capability,
+announced as `true`), `shutdown` and `exit`. Nothing else. A request the
+server does not implement is answered `MethodNotFound`. A document
+notification whose params do not match the schema has no response to carry
+an error, so the server writes it to stderr and sends the client a
+`window/logMessage` of type `Error` -- the client's
 log for the server, not a `window/showMessage` popup, since the defect is the
 client's, not the user's text -- and keeps serving the documents already open.
 
@@ -146,10 +161,14 @@ client's, not the user's text -- and keeps serving the documents already open.
 both. The server needs both at once, so that a file with one resolver error
 still gets semantic tokens everywhere else. `ns_runtime::resolve_for_editor`
 answers both together as an `EditorResolution` (module, bindings, errors);
-`resolve` remains the entry everything that compiles uses. `resolve_for_editor`
-never records `Binding::MirrorSend` — it goes through the same walk as
-`resolve`, never through `resolve_kernel` — so the VM mirror's capability
-invariant (`CLAUDE.md`, "The VM mirror is a capability") is not touched, and
+`resolve` remains the entry everything that compiles uses.
+`resolve_for_editor` runs on a recovered module as on any other: recovery
+declares nothing the source does not name ([frontend.md](frontend.md),
+"Recovery"), so it causes no duplicate or clashing member, and an unbound
+name is a send in Newspeak, not an error. `resolve_for_editor` never records
+`Binding::MirrorSend` — it goes through the same walk as `resolve`, never
+through `resolve_kernel` — so the VM mirror's capability invariant
+(`CLAUDE.md`, "The VM mirror is a capability") is not touched, and
 `Kernel.ns`, opened in the editor, shows its `vmMirror` sends as ordinary
 sends.
 
@@ -216,9 +235,56 @@ excluded when the selector's tokens are found.
   applying declaration's own binding names, never a lookup through the
   enclosing chain.
 
-While a file does not parse there is no AST and so no semantic tokens: the
-colours fall back to the lexer's until it parses again. A fault-tolerant parser
-("Planned later") would change that.
+A file with syntax errors is analysed as recovered ([frontend.md](frontend.md),
+"Recovery"), so its colours, its resolver errors and its folds survive the
+errors a file passes through while it is typed. A construct recovery cannot
+place -- an unfinished body whose next line is a valid expression, which is
+read as that expression -- folds worse there, never wrongly.
+
+### Folding
+
+`folding.rs` computes a document's fold ranges once per version, with the
+analysis, from the AST and the comment spans `parse_for_editor` answers
+beside it; `textDocument/foldingRange` answers them from the cache. A code
+fold runs from the opening token to the closing one inclusive, read off the
+AST's `Delimiters` ([frontend.md](frontend.md), "AST"), so a fold names what
+it folds:
+
+| Range | From — to | Collapsed text | `kind` |
+|---|---|---|---|
+| Class body (instance side) | the header's `(` to the instance side's last `)`, header and members together | `(…)` | none |
+| Class side | the `(` after `:` to its `)` | `(…)` | none |
+| Method body | `(` to `)` | `(…)` | none |
+| Closure | `[` to `]` | `[…]`, or `[:x :y \| …]` with its parameters | none |
+| Slot section -- a class header's, or a body's temporaries | `\|` to `\|`, or `\|\|` to `\|\|` | `\|…\|` | none |
+| Comment | `(*` to `*)`, an unterminated one to the end of the file | `(* `, the first non-blank line cut to 60 characters, ` …*)`; `(*…*)` for a blank one | `comment` |
+
+- **Only a range over more than one line** is answered: a fold on one line
+  hides nothing.
+- **A construct recovery closed without its closing token** folds to where
+  its node ends, the last token recovery gave it; a slot section without its
+  closing bar, to its last slot.
+- **A code fold carries no kind.** LSP's kinds are `comment`, `imports` and
+  `region`, and `region` names `#region` markers, which Newspeak has not.
+  The server collapses nothing: whether a range starts collapsed is the
+  platform's decision, from the kind and the IDE's folding settings.
+- A parenthesized expression and a tuple do not fold.
+- Positions are a line and a UTF-16 character at each end, through the line
+  index; the ranges are ordered by start, an enclosing one before those
+  inside it.
+
+**The plugin needs no code for it.** The platform registers its
+`LspFoldingBuilder` for every language (`lang.foldingBuilder language=""` in
+`intellij.platform.lsp.impl.xml`), and `LspCustomization`'s default
+`foldingRangeCustomizer` is `LspFoldingRangeSupport`, in 2026.1.4 as in
+2026.2.3, so the server's ranges reach a `.ns` file as they are. Checked by
+hand under `runIde` (2026-10-04): fold markers on comments, class bodies,
+class sides, methods, closures and slot sections; a folded method shows
+`(…)`; and typing an unclosed `foo = (` inside a class keeps the folds of
+the methods after it. Were the platform ever to need folding enabled for a
+language with a parser definition of its own, as semantic tokens do
+(`shouldAskServerForSemanticTokens`, below), it would go into
+`NewspeakLspClientDescriptor`'s `lspCustomization`.
 
 ### Robustness
 
@@ -237,7 +303,13 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 - positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
   (surrogate pairs), at line ends and at the end of the file;
 - diagnostics — one `indoc!` module each with a lexer, a parser and a resolver
-  error, checking range and message;
+  error, checking range and message; a lexer error's findings come first, the
+  parser's after them, and a syntax error keeps the names around it
+  classified;
+- folding — a class body and a class side, a method with its temporaries and
+  a closure, a comment folded to its first line, an unterminated comment to
+  the end of the file, single-line constructs answering no range, the folds
+  after a half-typed method, and a fold's UTF-16 encoding on CRLF lines;
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
   a receiver inside a keyword message's span, a lazy slot in both
@@ -250,16 +322,26 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and
   `Kernel.ns`, the same bindings and errors as `resolve`, so the two cannot
   drift;
+- the editor parse — over that same set, every module `parse` accepts gets
+  the same module from `parse_for_editor`, and no diagnostic, so the editor
+  never reads a clean file differently from `ns-next run`;
 - robustness — no analysis over that same set produces an "internal error",
-  nor over truncations of each file at token boundaries, which is what a file
-  looks like while it is being typed: every token boundary of every golden and
-  of the kernel, and 64 evenly spaced token boundaries of each corpus module,
-  since every prefix of every corpus module is quadratic in its size;
+  through the parse, the resolver, the classification and the folding alike,
+  nor over truncations of each file, which is what a file looks like while it
+  is being typed: at every token boundary of every golden and of the kernel
+  and in the middle of each of their tokens -- a string, a comment or a
+  keyword half typed -- and at the end and in the middle of 64 evenly spaced
+  tokens of each corpus module, since every prefix of every corpus module is
+  quadratic in its size;
+- no empty name — on the token-boundary truncations, no declaration in the
+  recovered module has an empty name but the root class's, which recovery
+  keeps ([frontend.md](frontend.md), "Recovery");
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
-  `initialize`, `didOpen`, the expected `publishDiagnostics`,
-  `semanticTokens/full`, `shutdown`; a malformed notification, reported as a
-  `window/logMessage` error while the next request is still answered; an
-  unknown request, answered `MethodNotFound`.
+  `initialize` and its announced capabilities, `foldingRangeProvider`
+  included, `didOpen`, the expected `publishDiagnostics`,
+  `semanticTokens/full`, `textDocument/foldingRange`, `shutdown`; a malformed
+  notification, reported as a `window/logMessage` error while the next
+  request is still answered; an unknown request, answered `MethodNotFound`.
 
 ## The plugin, `editors/jetbrains/`
 
@@ -337,7 +419,8 @@ Components:
   `bundledModule("intellij.spellchecker")` supplies, since the module has no
   plugin descriptor of its own to depend on at compile time.
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
-  project.
+  project. Folding needs nothing of its own: the platform's `LspFoldingBuilder`
+  asks the server ("Folding").
 - **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
   default, typed or chosen with a file picker, and a "Restart server" action.
   Stored at application level: the path is specific to a machine, so it does
@@ -395,8 +478,9 @@ plugin's code.
   the tests use the debug build.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand. It has
   been tried end to end: the server starts from `plugins_runIde/`, the
-  semantic colours land over the lexer's, and a resolver error
-  (`^outer Missing foo`) is underlined with ns-next's message.
+  semantic colours land over the lexer's, a resolver error
+  (`^outer Missing foo`) is underlined with ns-next's message, and the folds
+  are there, through a syntax error too ("Folding").
 - `editors/jetbrains/build/` and `.gradle/` are ignored.
 
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,
@@ -499,11 +583,9 @@ and resolves cleanly in a JetBrains IDE today.
 - **The IDE path has no automated test.** It was checked by hand under
   `runIde` (see "Build and packaging"); nothing but that check covers the
   platform handing `NewspeakLspIntegrationProvider` its descriptor
-  (`PluginAware`) or the sandbox layout `runIde` starts from. The sandbox
+  (`PluginAware`), the sandbox layout `runIde` starts from, or the
+  platform's `LspFoldingBuilder` reaching a `.ns` file. The sandbox
   also disables the ultimate marker plugin for `runIde`, not only for tests.
-- **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
-  errors, so a lexer or parser warning on a module that parses is not shown.
-  None exists today.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file.
@@ -514,16 +596,15 @@ and resolves cleanly in a JetBrains IDE today.
   2023.3; once the server announces it, the IDE's Reformat Code uses it with no
   change to the plugin. A platform-native formatter (`FormattingModelBuilder`)
   would need a PSI tree, which is the second parser this design avoids. The
-  work is in Rust: the AST drops comments today, and a formatter must keep
-  each one where it was, so `ns-syntax` would have to hand out comments with
-  their spans, as tokens or as trivia attached to neighbouring tokens. The
-  formatter would be one module that an `ns-next fmt` command shares, so the
+  work is in Rust. A formatter must keep each comment where it was; the
+  comments' spans exist (`parse_for_editor`'s `comments`, beside the AST),
+  and what remains is attaching each to the nodes around it, and the
+  formatter itself: one module that an `ns-next fmt` command shares, so the
   editor, the command line and any later formatting gate use one formatter.
   It would not touch a file with a syntax error.
 - **Navigation.** Go to definition, find usages and the structure view need an
-  AST for a file that does not parse, while it is typed: a fault-tolerant
-  parser in `ns-syntax`, then `definition`, `references` and `documentSymbol`
-  in the server. The same parser would keep semantic tokens alive through a
-  syntax error.
+  AST for a file that does not parse, while it is typed; the fault-tolerant
+  parse exists ([frontend.md](frontend.md), "Recovery"). What remains is
+  `definition`, `references` and `documentSymbol` in the server.
 - **More platforms.** A CI build producing the other five binaries into
   `bin/<os>-<arch>/`. The repository has no CI yet.

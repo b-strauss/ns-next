@@ -26,6 +26,7 @@ first.
 | After road step 2 — the compact instruction encoding | Complete | 2026-10-02 | [compact-instruction-encoding](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md) |
 | Road step 3a — the object representation | Complete | 2026-10-03 | [object-representation](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md) |
 | Road step 3b — the object space | Complete | 2026-10-03 | [object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md) |
+| Editor support: code folding and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md) |
 | Road step 4 — generations | Not started | — | — |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
@@ -4196,3 +4197,44 @@ Newspeak-level out-of-memory error; the debug no-access protection of
 vacated pages, for road step 8's generated code; the encoder's 32-bit
 object ids, which abort past about four billion objects; and the three
 slower programs, not profiled.
+
+## Code folding and the fault-tolerant editor parse (2026-10-04)
+
+Plan: [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md);
+[editor-support.md](design/editor-support.md), "Folding", and
+[frontend.md](design/frontend.md), "Recovery".
+
+Code folding in the JetBrains plugin -- comments, class bodies, class sides,
+method bodies, closures and slot sections -- from fold ranges the language
+server computes from the AST, and, to keep them while a file is typed, a
+parse that answers a module for every source. One parser serves both
+entries: `parse` still refuses any error, so nothing compiled sees a
+recovered module, and `parse_for_editor` answers the recovered module, the
+tokens, the comments' spans and every diagnostic.
+
+- `e5d965a3` -- the AST records the brackets an editor folds between,
+  `Delimiters` on five fields.
+- `908ca63a` -- `ns-syntax` answers comment spans and a module for every
+  source, `parse_for_editor`.
+- `97453a0b` -- setter chains and nested pattern literals are depth-guarded.
+- `ac6e3dec`, `d46acee2` -- a method body, a statement or a class side with
+  an error no longer takes the class with it: an erroneous statement is
+  parsed again, bounded at the member start that holds its first error.
+- `f3af1209` -- an unclosed bracket, slot section or type annotation stops
+  before its owner's close.
+- `d3fac02c`, `ea5a3eac` -- recovery leaves a declaration without a name
+  out instead of naming it empty; a member inside a block, or inside a
+  parenthesis in one, is the block's content.
+- `ed7c887f` -- the language server analyses a file with syntax errors as
+  recovered: colours and resolver errors survive, and the findings are the
+  lexer's, the parser's and the resolver's together.
+- `5ece94c2` -- the server announces `foldingRangeProvider` and answers
+  `textDocument/foldingRange`.
+- The documentation commit after it -- the plugin's description, and the
+  design moved into [editor-support.md](design/editor-support.md) and
+  [frontend.md](design/frontend.md).
+
+The plugin needed no code: the platform's `LspFoldingBuilder` serves every
+language, which `runIde` confirmed by hand. What the branch leaves open --
+four known limits of the recovery -- is in [OPEN-WORK.md](OPEN-WORK.md),
+"Known defects and gaps".

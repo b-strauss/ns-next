@@ -9,7 +9,7 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-03 when they were written.
+Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-04 when they were written.
 
 ## Next
 
@@ -412,10 +412,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 ## Planned: editor support
 
 - **Formatting**, through `textDocument/formatting`, which needs comments
-  kept in `ns-syntax`'s AST as tokens or trivia, and an `ns-next fmt` command.
-- **Navigation** — go to definition, find usages, structure view — which
-  needs a fault-tolerant parser in `ns-syntax`; that would also keep semantic
-  tokens alive through syntax errors.
+  attached to AST nodes -- their spans are kept, beside the AST
+  (`parse_for_editor`) -- and an `ns-next fmt` command.
+- **Navigation** — go to definition, find usages, structure view —
+  `definition`, `references` and `documentSymbol` in the server, on the
+  fault-tolerant parse that exists ([frontend.md](design/frontend.md),
+  "Recovery").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -723,6 +725,20 @@ text and `to:by:do:`'s zero step.
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
   branch.
+- **Editor recovery: past the depth guard every other method is dropped.**
+  After about 75 consecutive unclosed methods the speculative member parses
+  reach `MAX_DEPTH`, and from there every other method is lost; nothing is
+  invented. [frontend.md](design/frontend.md), "Recovery". Noted 2026-10-04.
+- **Editor recovery: the member-start scan of an erroneous statement is
+  quadratic** in the statement's length (`member_holding_error` parses a
+  member speculatively at each position up to the first error); a clean
+  statement is never scanned. Noted 2026-10-04.
+- **Editor recovery: `class Module () (` gives two diagnostics for its one
+  missing `=`** -- a missing message selector, then the missing `=`. Noted
+  2026-10-04.
+- **Editor recovery: one token can be described two ways at one span**,
+  "found the start of the next member" by a diagnostic under a re-parse's
+  bound and "found Bar" (the token's kind) by another. Noted 2026-10-04.
 
 ## Missing tests
 
