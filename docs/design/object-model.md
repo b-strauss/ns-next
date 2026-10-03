@@ -175,7 +175,7 @@ subclass of `String` in `Kernel.ns`, as the references declare it: a symbol's
 words are a string's, in the same two widths, and only its class tells it
 from one ("Strings have two widths" below). The symbol a symbol object is,
 `Heap::symbol_value`, is the table's inverse, kept beside it per heap and
-keyed by the object's index, so the object stores nothing but its code points
+keyed by the object's byte offset, so the object stores nothing but its code points
 and no lookup reads them. Rejected: a symbol
 as an immediate, a tag of its own, which no reference does and which every
 string primitive, and later the Newspeak kernel, would have to accept as a

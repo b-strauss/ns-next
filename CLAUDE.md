@@ -262,7 +262,8 @@ A change to `crates/ns-syntax/src/lexer.rs` is mirrored in
 in the same commit. Nothing under `crates/ns-syntax` should change for runtime work.
 
 Never judge performance from a debug build (the `measuring-performance` skill).
-Only a release build runs the size tests (`a_handle_and_an_optional_handle_are_one_word` and
+Only a release build runs the size tests (`a_handle_and_an_optional_handle_are_one_word`,
+`a_resolution_stays_the_size_the_hot_path_was_measured_at` and
 `a_signal_fits_in_the_niche_of_its_one_unboxed_error`):
 `cargo nextest run --workspace --release`.
 

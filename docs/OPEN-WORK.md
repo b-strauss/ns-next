@@ -530,7 +530,8 @@ value objects are never copied across an actor boundary (§3.1.1).
   object space**, each with separated ranges against the tree road step 3b
   started from, `d3e9f6f`, while seventeen of the twenty-four sources got
   faster. None of the three was profiled after the inlining fix that
-  recovered List, DeltaBlueTon80 and Richards; the 64-bit handle alone
+  left List, DeltaBlueTon80 and Richards no longer separated from the base;
+  the 64-bit handle alone
   measured 0.9% to 9.9% slower on every source. Whether road steps 3a and 3b
   together are level with `d0e8b08`, road step 3a's base, was not measured:
   each was measured against its own base in its own sitting.
@@ -753,7 +754,8 @@ text and `to:by:do:`'s zero step.
   against run; several `ns-runtime` integration test files
   (`tests/value_conditions.rs`, `tests/image.rs`, others) run under one
   lowering only.
-- **The release-only size tests** (`an_object_slot_is_one_boxed_block_of_words`,
+- **The release-only size tests** (`a_handle_and_an_optional_handle_are_one_word`,
+  `a_resolution_stays_the_size_the_hot_path_was_measured_at`,
   `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under

@@ -1104,6 +1104,10 @@ The second sitting, the branch's head against the tree it started from:
 | `bench_new2.ns` | 4.43 | 4.38–4.56 | 4.04 | 4.02–4.08 | **−8.9%** | yes |
 | `bench_newarg.ns` | 6.47 | 6.41–6.59 | 5.84 | 5.76–5.99 | **−9.8%** | yes |
 
+NBody's ranges print as sharing 2,479 ms; unrounded they are separated by
+0.34 ms, the before maximum 2,478.76 ms and the after minimum 2,479.10 ms,
+below the table's precision.
+
 **Seventeen of the twenty-four sources are faster, ten of them with
 separated ranges**, by 3.8% (DeltaBlue) to 22.1% (`bench_block.ns`); three
 are slower with separated ranges -- Mandelbrot by 2.5%, `bench_loop.ns` by

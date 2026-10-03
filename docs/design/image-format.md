@@ -369,7 +369,8 @@ Literals:
   register ceiling loads first. It raises its error when it runs
   ([compiler.md](compiler.md), "Compilation cannot fail").
 
-**A count past its field refuses the image, never aborts it.** A count a
+**A count past its field refuses the image, never aborts it, except the
+count of heap objects.** A count a
 program decides is written through a checked narrowing that answers an
 error, `image encoding cannot write a <what> of <n>: it does not fit the
 image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
