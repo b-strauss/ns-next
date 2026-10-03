@@ -37,7 +37,9 @@ pub(in crate::heap) struct Object<'gc> {
 pub(in crate::heap) enum ObjectData<'gc> {
     Instance(Vec<Word>),
     String(crate::CodePoints),
-    Symbol(Symbol),
+    /// The interned id and the same text as code points, so that a Symbol,
+    /// a String, answers every String accessor.
+    Symbol(Symbol, crate::CodePoints),
     Array(Vec<Word>),
     Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
@@ -267,7 +269,7 @@ impl Trace for ObjectData<'_> {
         match self {
             ObjectData::Instance(words) | ObjectData::Array(words) => trace_words(words, tracer),
             ObjectData::String(_)
-            | ObjectData::Symbol(_)
+            | ObjectData::Symbol(..)
             | ObjectData::LargeInteger(_)
             | ObjectData::Float(_) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),

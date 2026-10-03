@@ -861,9 +861,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
            sent from. Json's escapes send it. *)
         public with: code = ( ^vmMirror stringClass: self with: code ifFail: [nil] )
     )
-    (* An interned name: a literal such as `#at:put:` is one, and two
-       Symbols of the same text are one object. *)
-    public class Symbol = Value new () (
+    (* A canonical String: one object per text (§5.1.6), made only by a
+       literal such as `#at:put:` or by `asSymbol`, never by `new`. It
+       understands what a String does; `,` and `copyFrom:to:` answer a
+       String. *)
+    public class Symbol = String new () (
         (* A String of the Symbol's text. *)
         public asString = ( ^vmMirror symbolAsString: self ifFail: [^super asString] )
         (* Whether `other` is the same Symbol; a String never is. *)

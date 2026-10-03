@@ -506,6 +506,20 @@ impl<'gc> Mutator<'gc> {
             Some(BuiltinClass::Array) => Ok(Step::Value(Value::object(
                 self.heap.allocate_array(class, &[]),
             ))),
+            // A Symbol is canonical, one object per text (§5.1.6), made only
+            // by a literal or `asSymbol`; `new` would mint a second one.
+            Some(BuiltinClass::Symbol) => Err(Signal::Error(NewspeakError {
+                selector: Symbol::NEW,
+                receiver: Value::object(class),
+                message:
+                    "cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol"
+                        .to_string(),
+            })),
+            // A flat String payload, as `Array`'s above: a slotless instance
+            // would answer none of `size`, `at:` or `,`.
+            Some(BuiltinClass::String) => Ok(Step::Value(Value::object(
+                self.new_string_from_code_points(crate::CodePoints::from("")),
+            ))),
             _ => self.decide_instantiation(class, arguments.to_vec()),
         }
     }

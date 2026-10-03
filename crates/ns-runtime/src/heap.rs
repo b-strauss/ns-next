@@ -881,7 +881,10 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         symbol: Symbol,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(class, ObjectData::Symbol(symbol))
+        self.allocate_object(
+            class,
+            ObjectData::Symbol(symbol, crate::CodePoints::from(symbol.as_str())),
+        )
     }
 
     /// A `LargeInteger` object of `class` holding `integer`.
@@ -1053,7 +1056,9 @@ impl<'gc> Heap<'gc> {
                 ObjectData::Instance(fields.into_iter().map(|value| self.store(value)).collect())
             }
             Record::String(text) => ObjectData::String(text),
-            Record::Symbol(symbol) => ObjectData::Symbol(symbol),
+            Record::Symbol(symbol) => {
+                ObjectData::Symbol(symbol, crate::CodePoints::from(symbol.as_str()))
+            }
             Record::Array(elements) => ObjectData::Array(
                 elements
                     .into_iter()
@@ -1441,7 +1446,7 @@ impl<'gc> Heap<'gc> {
         match &self.objects[object.index as usize].data {
             ObjectData::Instance(_) => ObjectShape::Instance,
             ObjectData::String(_) => ObjectShape::String,
-            ObjectData::Symbol(_) => ObjectShape::Symbol,
+            ObjectData::Symbol(..) => ObjectShape::Symbol,
             ObjectData::Array(_) => ObjectShape::Array,
             ObjectData::Closure(_) => ObjectShape::Closure,
             ObjectData::Class(_) => ObjectShape::Class,
@@ -1570,7 +1575,9 @@ impl<'gc> Heap<'gc> {
     fn code_points(&self, object: ObjectReference<'gc>) -> Option<&crate::CodePoints> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
-            ObjectData::String(code_points) => Some(code_points),
+            ObjectData::String(code_points) | ObjectData::Symbol(_, code_points) => {
+                Some(code_points)
+            }
             _ => None,
         }
     }
@@ -1687,7 +1694,7 @@ impl<'gc> Heap<'gc> {
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
-            ObjectData::Symbol(symbol) => Some(*symbol),
+            ObjectData::Symbol(symbol, _) => Some(*symbol),
             _ => None,
         }
     }
@@ -1923,7 +1930,7 @@ impl<'gc> Heap<'gc> {
                     ObjectData::LargeInteger(integer) => integer.to_decimal_string(),
                     // As an immediate float describes, for the same reason.
                     ObjectData::Float(float) => float.to_string(),
-                    ObjectData::Symbol(symbol) => format!("the Symbol #{symbol}"),
+                    ObjectData::Symbol(symbol, _) => format!("the Symbol #{symbol}"),
                     ObjectData::Array(items) => format!("an Array of {}", items.len()),
                     ObjectData::Closure(_) => "a Block".to_string(),
                     ObjectData::Activation(_) => "an Activation".to_string(),
@@ -3617,7 +3624,7 @@ impl<'gc> Heap<'gc> {
                 }
                 // No `Value` field at all.
                 ObjectData::String(_)
-                | ObjectData::Symbol(_)
+                | ObjectData::Symbol(..)
                 | ObjectData::LargeInteger(_)
                 | ObjectData::Float(_) => {}
                 // Every handle a class object holds -- its enclosing object,
