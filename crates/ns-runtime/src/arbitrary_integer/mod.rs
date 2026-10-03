@@ -71,6 +71,12 @@ impl ArbitraryInteger {
         }
     }
 
+    /// The integer of sign `negative` and the magnitude `digits`, least
+    /// significant first, as `from_parts` canonicalises it.
+    pub fn from_sign_and_digits(negative: bool, digits: &[u64]) -> ArbitraryInteger {
+        ArbitraryInteger::from_parts(negative, digits.to_vec())
+    }
+
     /// The integer `value` truncates to, toward zero, exactly; `None` for a
     /// NaN or an infinity. Primordial Soup's `Float>>asInteger`
     /// (`LargeInteger::FromDouble`).
@@ -393,13 +399,24 @@ impl ArbitraryInteger {
 
 impl Ord for ArbitraryInteger {
     fn cmp(&self, other: &ArbitraryInteger) -> Ordering {
-        match (self.negative, other.negative) {
-            (false, true) => Ordering::Greater,
-            (true, false) => Ordering::Less,
-            (false, false) => compare_magnitudes(&self.magnitude, &other.magnitude),
-            // Between two negatives, the larger magnitude is the smaller.
-            (true, true) => compare_magnitudes(&other.magnitude, &self.magnitude),
-        }
+        compare_signed(
+            (self.negative, &self.magnitude),
+            (other.negative, &other.magnitude),
+        )
+    }
+}
+
+/// The order of two integers each given as a sign and a canonical
+/// magnitude, least significant digit first -- `Ord`'s rule, for a caller
+/// that holds the digits without an `ArbitraryInteger` around them (a
+/// `LargeInteger` the heap lends in place).
+pub(crate) fn compare_signed(first: (bool, &[u64]), second: (bool, &[u64])) -> Ordering {
+    match (first.0, second.0) {
+        (false, true) => Ordering::Greater,
+        (true, false) => Ordering::Less,
+        (false, false) => compare_magnitudes(first.1, second.1),
+        // Between two negatives, the larger magnitude is the smaller.
+        (true, true) => compare_magnitudes(second.1, first.1),
     }
 }
 

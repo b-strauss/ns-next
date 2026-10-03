@@ -297,12 +297,11 @@ fn compare_node<'gc>(
             if mutator.heap().symbol_value(left).is_some() {
                 return Some(Pair::Decided(text::symbol_equals(left, Some(second))));
             }
-            if let Some(integer) = mutator.heap().large_integer(left) {
-                return Some(Pair::Decided(numbers::large_integer_equals(
-                    mutator.heap(),
-                    &integer,
-                    Some(second),
-                )));
+            let heap = mutator.heap();
+            if let Some(equal) = heap.with_large_integer(left, |negative, digits| {
+                numbers::large_integer_equals(heap, (negative, digits), Some(second))
+            }) {
+                return Some(Pair::Decided(equal));
             }
             if let Some(number) = mutator.heap().float_value(Value::object(left)) {
                 return Some(Pair::Decided(numbers::float_equals(
@@ -361,8 +360,11 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
             if let Some(symbol) = mutator.heap().symbol_value(object) {
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
             }
-            if let Some(integer) = mutator.heap().large_integer(object) {
-                return Some(Node::Leaf(numbers::large_integer_hash(&integer)));
+            if let Some(hash) = mutator
+                .heap()
+                .with_large_integer(object, numbers::large_integer_hash)
+            {
+                return Some(Node::Leaf(hash));
             }
             if let Some(number) = mutator.heap().float_value(Value::object(object)) {
                 return Some(Node::Leaf(numbers::float_hash(number)));

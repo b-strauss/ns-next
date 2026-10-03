@@ -25,9 +25,8 @@ pub(crate) fn integer_argument<'gc>(
     if let Some(number) = argument.as_small_integer() {
         return Some(IntegerArgument::Small(number));
     }
-    let integer = heap.large_integer(argument.as_object()?)?;
-    Some(IntegerArgument::Large {
-        negative: integer.is_negative(),
+    heap.with_large_integer(argument.as_object()?, |negative, _| {
+        IntegerArgument::Large { negative }
     })
 }
 

@@ -58,12 +58,33 @@ impl<'gc> Object<'gc> {
 
 #[derive(Debug, Clone)]
 pub(in crate::heap) enum ObjectData<'gc> {
-    Instance(Vec<Word>),
+    /// An object whose payload is plain words, read by its header's format
+    /// (`docs/design/memory.md`): `FixedPointers`, an instance's fields;
+    /// `IndexablePointers`, an `Array`'s elements -- both as the bits of a
+    /// stored `Word`, so only `Heap::store` writes one and only `Heap::load`
+    /// reads one; `SixtyFourBit`, a `LargeInteger`'s magnitude, least
+    /// significant digit first, its sign the header's negative bit, or a
+    /// boxed `Float`'s one word of `f64::to_bits` -- the class's builtin
+    /// tells those two apart, as Spur's does.
+    ///
+    /// `format` and `negative` are what `Object::new` derives the header
+    /// from; once built, readers ask the header. Build one through
+    /// `ObjectData::instance`, `array`, `large_integer` or `float`, the one
+    /// place each kind's layout is decided.
+    ///
+    /// A `LargeInteger` never holds a value a `SmallInteger` does, and a
+    /// boxed `Float` never one inside the immediate range:
+    /// `Mutator::new_integer` and `Mutator::new_float` are the one way to
+    /// make either and decide it, so each number has one representation.
+    Words {
+        format: Format,
+        negative: bool,
+        words: Box<[u64]>,
+    },
     String(crate::CodePoints),
     /// The interned id and the same text as code points, so that a Symbol,
     /// a String, answers every String accessor.
     Symbol(Symbol, crate::CodePoints),
-    Array(Vec<Word>),
     Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
@@ -74,16 +95,44 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// machinery walks and unwinds to. It stores the `FrameReference`, never
     /// an `ActivationReference`, since only a reified frame outlives its pop.
     Activation(FrameReference<'gc>),
-    /// An instance of `LargeInteger`: §5.1.1's integer that does not fit a
-    /// `SmallInteger`'s 61 bits. It never holds a value that does --
-    /// `Mutator::new_integer` is the one way to make one and decides that --
-    /// so each integer has one representation. Holds no handle.
-    LargeInteger(crate::ArbitraryInteger),
-    /// An instance of `Float` whose value lies outside the immediate range:
-    /// NaN, the infinities, denormals and magnitudes outside about 2^-127 to
-    /// 2^129. `Mutator::new_float` is the one way to make one and decides
-    /// that, so each float has one representation. Holds no handle.
-    Float(f64),
+}
+
+impl ObjectData<'_> {
+    /// An instance's payload: `fields`, each a stored word.
+    pub(in crate::heap) fn instance(fields: impl IntoIterator<Item = Word>) -> Self {
+        Self::pointers(Format::FixedPointers, fields)
+    }
+
+    /// An `Array`'s payload: `elements`, each a stored word.
+    pub(in crate::heap) fn array(elements: impl IntoIterator<Item = Word>) -> Self {
+        Self::pointers(Format::IndexablePointers, elements)
+    }
+
+    fn pointers(format: Format, words: impl IntoIterator<Item = Word>) -> Self {
+        ObjectData::Words {
+            format,
+            negative: false,
+            words: words.into_iter().map(Word::bits).collect(),
+        }
+    }
+
+    /// A `LargeInteger`'s payload: its magnitude's digits and its sign.
+    pub(in crate::heap) fn large_integer(integer: &crate::ArbitraryInteger) -> Self {
+        ObjectData::Words {
+            format: Format::SixtyFourBit,
+            negative: integer.is_negative(),
+            words: integer.magnitude().into(),
+        }
+    }
+
+    /// A boxed `Float`'s payload: one word of its bits.
+    pub(in crate::heap) fn float(value: f64) -> Self {
+        ObjectData::Words {
+            format: Format::SixtyFourBit,
+            negative: false,
+            words: Box::new([value.to_bits()]),
+        }
+    }
 }
 
 /// The units of a string's element width one word holds.
@@ -102,8 +151,14 @@ impl ObjectData<'_> {
     /// word plus the payload's words -- and a `LargeInteger`'s sign.
     fn header(&self, guard: DispatchId) -> Header {
         let (format, unused, payload_words) = match self {
-            ObjectData::Instance(fields) => (Format::FixedPointers, 0, fields.len()),
-            ObjectData::Array(elements) => (Format::IndexablePointers, 0, elements.len()),
+            ObjectData::Words {
+                format,
+                negative,
+                words,
+            } => {
+                let header = Header::new(guard, *format, 0, 1 + words.len());
+                return header.with_negative(*negative);
+            }
             ObjectData::String(text) | ObjectData::Symbol(_, text) => {
                 let (format, per_word) = if text.is_wide() {
                     (Format::ThirtyTwoBit, THIRTY_TWO_BIT_UNITS_PER_WORD)
@@ -125,16 +180,6 @@ impl ObjectData<'_> {
             // A frame object from the frame's own representation on; one
             // word, the frame's handle, until then.
             ObjectData::Activation(_) => (Format::FixedPointers, 0, 1),
-            ObjectData::LargeInteger(integer) => {
-                let header = Header::new(
-                    guard,
-                    Format::SixtyFourBit,
-                    0,
-                    1 + integer.magnitude().len(),
-                );
-                return header.with_negative(integer.is_negative());
-            }
-            ObjectData::Float(_) => (Format::SixtyFourBit, 0, 1),
         };
         Header::new(guard, format, unused, 1 + payload_words)
     }
@@ -343,15 +388,27 @@ impl Trace for Object<'_> {
 impl Trace for ObjectData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            ObjectData::Instance(words) | ObjectData::Array(words) => trace_words(words, tracer),
-            ObjectData::String(_)
-            | ObjectData::Symbol(..)
-            | ObjectData::LargeInteger(_)
-            | ObjectData::Float(_) => {}
+            ObjectData::Words { format, words, .. } => {
+                // Only a pointer format's words are stored `Word`s; a number's
+                // digits would read as handles.
+                if matches!(format, Format::FixedPointers | Format::IndexablePointers) {
+                    trace_word_bits(words, tracer);
+                }
+            }
+            ObjectData::String(_) | ObjectData::Symbol(..) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
             ObjectData::Activation(frame) => tracer.frame(frame),
         }
+    }
+}
+
+/// Traces pointer fields kept as the bits of a stored `Word`.
+fn trace_word_bits<T: Tracer>(words: &mut [u64], tracer: &mut T) {
+    for bits in words {
+        let mut word = Word::from_bits(*bits);
+        tracer.word(&mut word);
+        *bits = word.bits();
     }
 }
 

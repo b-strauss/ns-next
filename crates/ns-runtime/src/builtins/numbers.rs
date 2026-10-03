@@ -275,6 +275,36 @@ fn integer_operand<'gc>(heap: &Heap<'gc>, value: Option<Value<'gc>>) -> Option<A
     }
 }
 
+/// A `SmallInteger` as a sign and a canonical magnitude, lent to `read`
+/// from the stack, so that it compares with a `LargeInteger`'s digits read
+/// in place.
+fn with_small_integer_parts<T>(integer: i64, read: impl FnOnce((bool, &[u64])) -> T) -> T {
+    let digit = [integer.unsigned_abs()];
+    // Zero's canonical magnitude is empty.
+    let digits: &[u64] = if integer == 0 { &[] } else { &digit };
+    read((integer < 0, digits))
+}
+
+/// The order of `receiver` -- a sign and a canonical magnitude -- against
+/// an integer argument of either representation, reading a `LargeInteger`
+/// argument in place; `None` for anything else, which a comparison then
+/// tries as a `Float`.
+fn integer_ordering<'gc>(
+    heap: &Heap<'gc>,
+    receiver: (bool, &[u64]),
+    value: Option<Value<'gc>>,
+) -> Option<Ordering> {
+    match value?.kind() {
+        ValueKind::SmallInteger(integer) => Some(with_small_integer_parts(integer, |argument| {
+            crate::arbitrary_integer::compare_signed(receiver, argument)
+        })),
+        ValueKind::Object(object) => heap.with_large_integer(object, |negative, digits| {
+            crate::arbitrary_integer::compare_signed(receiver, (negative, digits))
+        }),
+        _ => None,
+    }
+}
+
 /// A `Float` argument, which an integer's arithmetic and ordering take by
 /// converting the receiver to a double (this module's note).
 fn float_operand<'gc>(heap: &Heap<'gc>, value: Option<Value<'gc>>) -> Option<f64> {
@@ -365,10 +395,10 @@ pub(crate) fn execute_integer<'gc>(
         .and_then(|argument| receiver.small_integer_order(*argument))
     {
         Some(order) => Ok(Value::boolean(operation(order))),
-        None => match large_argument() {
-            Some(argument) => Ok(Value::boolean(operation(
-                ArbitraryInteger::from_i64(receiver_integer).cmp(&argument),
-            ))),
+        None => match with_small_integer_parts(receiver_integer, |receiver_parts| {
+            integer_ordering(&mutator.heap, receiver_parts, arguments.first().copied())
+        }) {
+            Some(order) => Ok(Value::boolean(operation(order))),
             None => match float_operand(&mutator.heap, arguments.first().copied()) {
                 Some(argument) => Ok(Value::boolean(
                     (receiver_integer as f64)
@@ -544,22 +574,27 @@ pub(crate) fn execute_integer<'gc>(
 /// the sign and magnitude's content hash, folded to 32 bits as
 /// `content_hash` folds every content hash, which `builtins::value`'s sum
 /// over a value's slots relies on to stay inside an `i64`.
-pub(crate) fn large_integer_hash(integer: &ArbitraryInteger) -> i64 {
-    crate::hash::content_hash((integer.is_negative(), integer.magnitude()))
+pub(crate) fn large_integer_hash(negative: bool, digits: &[u64]) -> i64 {
+    crate::hash::content_hash((negative, digits))
 }
 
 /// `LargeInteger>>=`'s rule: only a `LargeInteger` of the same value is
 /// equal. A `SmallInteger` never is, because `new_integer` never makes a
 /// `LargeInteger` of a value that fits.
+///
+/// Both read in place: each integer's magnitude is canonical, so equal
+/// signs and digits are equal values.
 pub(crate) fn large_integer_equals<'gc>(
     heap: &Heap<'gc>,
-    receiver: &ArbitraryInteger,
+    receiver: (bool, &[u64]),
     argument: Option<Value<'gc>>,
 ) -> bool {
     argument
         .and_then(|value| value.as_object())
-        .and_then(|object| heap.large_integer(object))
-        .is_some_and(|other| other == *receiver)
+        .and_then(|object| {
+            heap.with_large_integer(object, |negative, digits| (negative, digits) == receiver)
+        })
+        .unwrap_or(false)
 }
 
 pub(crate) fn execute_large_integer<'gc>(
@@ -571,6 +606,55 @@ pub(crate) fn execute_large_integer<'gc>(
     // The payload, never the class: a user subclass's instance, or a
     // `LargeInteger new`, is no number and declines to `Object`'s methods.
     let object = receiver.as_object()?;
+    // `=`, `hash` and an ordering against an integer only read the digits,
+    // so they read them in place; the rest copy them into the
+    // `ArbitraryInteger` the arithmetic takes.
+    let argument_value = arguments.first().copied();
+    match primitive {
+        LargeIntegerPrimitive::Hash => {
+            return mutator
+                .heap
+                .with_large_integer(object, large_integer_hash)
+                .map(|hash| Ok(Value::small_integer(hash)));
+        }
+        LargeIntegerPrimitive::Equal => {
+            let equal = mutator
+                .heap
+                .with_large_integer(object, |negative, digits| {
+                    large_integer_equals(&mutator.heap, (negative, digits), argument_value)
+                })?;
+            return crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::LargeInteger(primitive),
+                equal,
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::boolean(answer)));
+        }
+        LargeIntegerPrimitive::Less
+        | LargeIntegerPrimitive::Greater
+        | LargeIntegerPrimitive::LessOrEqual
+        | LargeIntegerPrimitive::GreaterOrEqual => {
+            let order = mutator
+                .heap
+                .with_large_integer(object, |negative, digits| {
+                    integer_ordering(&mutator.heap, (negative, digits), argument_value)
+                })?;
+            if let Some(order) = order {
+                let operation: fn(Ordering) -> bool = match primitive {
+                    LargeIntegerPrimitive::Less => Ordering::is_lt,
+                    LargeIntegerPrimitive::Greater => Ordering::is_gt,
+                    LargeIntegerPrimitive::LessOrEqual => Ordering::is_le,
+                    _ => Ordering::is_ge,
+                };
+                return Some(Ok(Value::boolean(operation(order))));
+            }
+            // No integer argument: a `Float` one converts the receiver, and
+            // anything else is the mismatch, both below.
+        }
+        _ => {}
+    }
     let receiver_integer = mutator.heap.large_integer(object)?;
     // Either integer class as the argument, or a `Float` for arithmetic and
     // ordering; anything else is the leaf's type mismatch. As in
@@ -597,17 +681,19 @@ pub(crate) fn execute_large_integer<'gc>(
             },
         }
     };
-    let compare = |operator: &str, operation: fn(Ordering) -> bool| match argument() {
-        Some(argument) => Ok(Value::boolean(operation(receiver_integer.cmp(&argument)))),
-        None => match float_operand(&mutator.heap, arguments.first().copied()) {
-            Some(argument) => Ok(Value::boolean(
-                receiver_integer
-                    .to_f64()
-                    .partial_cmp(&argument)
-                    .is_some_and(operation),
-            )),
-            None => Err(mismatch(operator, Accepted::Number)),
-        },
+    // Reached only when the argument is no integer: an integer one was
+    // ordered in place above.
+    let compare = |operator: &str, operation: fn(Ordering) -> bool| match float_operand(
+        &mutator.heap,
+        arguments.first().copied(),
+    ) {
+        Some(argument) => Ok(Value::boolean(
+            receiver_integer
+                .to_f64()
+                .partial_cmp(&argument)
+                .is_some_and(operation),
+        )),
+        None => Err(mismatch(operator, Accepted::Number)),
     };
     match primitive {
         LargeIntegerPrimitive::Add => Some(
@@ -655,17 +741,8 @@ pub(crate) fn execute_large_integer<'gc>(
         LargeIntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
         LargeIntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),
         LargeIntegerPrimitive::GreaterOrEqual => Some(compare(">=", Ordering::is_ge)),
-        LargeIntegerPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
-            mutator,
-            Primitive::LargeInteger(primitive),
-            large_integer_equals(&mutator.heap, &receiver_integer, arguments.first().copied()),
-            receiver,
-            arguments,
-        )
-        .map(|answer| Ok(Value::boolean(answer))),
-        LargeIntegerPrimitive::Hash => Some(Ok(Value::small_integer(large_integer_hash(
-            &receiver_integer,
-        )))),
+        // Answered in place above, before the copy.
+        LargeIntegerPrimitive::Equal | LargeIntegerPrimitive::Hash => None,
         LargeIntegerPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string(receiver_integer.to_decimal_string()),
         ))),
