@@ -517,11 +517,11 @@ fn classes_can_be_equal<'gc>(
         return false;
     }
     match (
-        mutator.heap().class_application(first),
-        mutator.heap().class_application(second),
+        mutator.heap().class_application_index(first),
+        mutator.heap().class_application_index(second),
     ) {
         (Some(first_application), Some(second_application)) => {
-            Rc::ptr_eq(&first_application, &second_application)
+            first_application == second_application
         }
         _ => false,
     }

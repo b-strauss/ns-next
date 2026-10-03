@@ -3030,10 +3030,9 @@ fn rebuild_applications<'gc>(
             enclosing,
             superclass_class,
         ) {
-            context
-                .mutator
-                .heap
-                .class_set_value_refusal(object, refusal);
+            if !context.mutator.record_value_class_refusal(object, refusal) {
+                unreachable!("internal: a pending class record fills a class object");
+            }
         }
     }
     Ok(())

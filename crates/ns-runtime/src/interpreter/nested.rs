@@ -248,7 +248,9 @@ pub(crate) fn after_clause<'gc>(
         Some(superclass),
     );
     if let Some(refusal) = value_class_refusal {
-        mutator.heap.class_set_value_refusal(class, refusal);
+        if !mutator.record_value_class_refusal(class, refusal) {
+            unreachable!("internal: a nested class is a class object");
+        }
     }
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(

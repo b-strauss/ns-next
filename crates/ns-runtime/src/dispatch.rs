@@ -420,20 +420,21 @@ mod tests {
     /// application is the simplest to build. The construction itself lives
     /// in `Heap::allocate_self_referential_class`.
     fn dummy_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
+        let application = heap.register_application(MixinApplication {
+            index: crate::heap::ApplicationIndex::UNREGISTERED,
+            mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy"))),
+            superclass: None,
+            inherits_value: false,
+            first_mutable_slot: None,
+            instantiation_refusal: None,
+            nested_slot: crate::hash::IdentityMap::default(),
+            declared_slots: Vec::new(),
+            slot_count: 0,
+            own_slot_base: 0,
+            dispatch_ids: crate::mixin::DispatchIds::NONE,
+        });
         heap.allocate_self_referential_class(crate::heap::NewClass {
-            application: Rc::new(MixinApplication {
-                index: crate::heap::ApplicationIndex::UNREGISTERED,
-                mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Dummy"))),
-                superclass: None,
-                inherits_value: false,
-                first_mutable_slot: None,
-                instantiation_refusal: None,
-                nested_slot: crate::hash::IdentityMap::default(),
-                declared_slots: Vec::new(),
-                slot_count: 0,
-                own_slot_base: 0,
-                dispatch_ids: crate::mixin::DispatchIds::NONE,
-            }),
+            application,
             enclosing: None,
             declaring_class: None,
             superclass: None,
@@ -479,7 +480,7 @@ mod tests {
         let super_application = superclass
             .as_ref()
             .and_then(|superclass_class| heap.class_application(*superclass_class));
-        let application = Rc::new(MixinApplication {
+        let application = heap.register_application(MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: Rc::new(crate::mixin::Mixin {
                 methods,

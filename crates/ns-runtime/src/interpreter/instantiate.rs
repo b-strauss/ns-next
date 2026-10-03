@@ -561,7 +561,7 @@ impl<'gc> Mutator<'gc> {
             // §3.1.1's other class-level condition, every enclosing object a
             // value (`interpreter::value_class::check_value_class`) --
             // decided when `class` was created and only recorded then
-            // (`Heap::class_set_value_refusal`); refused here, not there,
+            // (`Mutator::record_value_class_refusal`); refused here, not there,
             // because the specification's own §2.3 example creates such a
             // class and never instantiates it
             // (`docs/design/object-model.md`, "A value object's four
@@ -1407,18 +1407,14 @@ fn value_class_refusal_error<'gc>(
     let Some(refusal) = heap.class_value_refusal(class) else {
         unreachable!("internal: value_class_refusal_error called for a class with no refusal");
     };
-    let message = match refusal {
-        ValueClassRefusal::NonValueEnclosingObject {
-            level: None,
-            described,
-        } => format!(
+    let ValueClassRefusal::NonValueEnclosingObject { level, offender } = refusal;
+    let described = heap.describe(Value::object(offender));
+    let message = match level {
+        None => format!(
             "cannot instantiate {instantiated}: a value class's enclosing objects must be \
              values, and its enclosing object, {described}, is not one"
         ),
-        ValueClassRefusal::NonValueEnclosingObject {
-            level: Some(level),
-            described,
-        } => format!(
+        Some(level) => format!(
             "cannot instantiate {instantiated}: a value class's enclosing objects must be \
              values, and {level}'s enclosing object, {described}, is not one"
         ),

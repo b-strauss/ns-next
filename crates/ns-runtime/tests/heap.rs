@@ -11,7 +11,7 @@ use ns_runtime::ValueKind;
 use ns_runtime::{
     ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
 };
-use ns_runtime::{CodePoints, ObjectShape};
+use ns_runtime::{CodePoints, ObjectShape, ValueClassRefusal};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -547,5 +547,31 @@ fn every_kind_of_object_answers_its_shape() {
             mutator.heap().object_shape(object_class),
             ObjectShape::Class
         );
+    });
+}
+
+#[test]
+fn a_value_class_refusal_keeps_its_offender_and_its_level() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let class = mutator.builtin_class(BuiltinClass::Value);
+        let offender = mutator.heap_mut().allocate_instance(object_class, 0);
+        assert!(mutator.record_value_class_refusal(
+            class,
+            ValueClassRefusal::NonValueEnclosingObject {
+                level: Some(Symbol::intern("Counter")),
+                offender,
+            },
+        ));
+        let Some(ValueClassRefusal::NonValueEnclosingObject {
+            level,
+            offender: kept,
+        }) = mutator.heap().class_value_refusal(class)
+        else {
+            panic!("the refusal was recorded");
+        };
+        assert_eq!(level, Some(Symbol::intern("Counter")));
+        assert!(kept.same(offender));
     });
 }

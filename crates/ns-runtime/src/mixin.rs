@@ -548,13 +548,6 @@ const BUILTIN_TAG_SHIFT: u32 = 55;
 const BUILTIN_TAG_MASK: u64 = 0b11_1111;
 const SIXTY_ONE_BITS: u64 = (1 << 61) - 1;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a class object's field stores the packed clause (Task 11)"
-    )
-)]
 impl AppliedClause {
     /// The three parts as one `SmallInteger`: the 61-bit pattern
     /// sign-extended, so bit 60 makes it negative rather than too large.

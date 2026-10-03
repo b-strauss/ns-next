@@ -31,7 +31,7 @@ mod value;
 mod world;
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header};
-use object::{closure_field, frame_field, ClassData, Object, ObjectData, PackedString};
+use object::{class_field, closure_field, frame_field, Object, ObjectData, PackedString};
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
@@ -133,7 +133,7 @@ impl std::fmt::Debug for ObjectReference<'_> {
     }
 }
 
-/// A class is an `ObjectReference` whose `data` is `ObjectData::Class(_)`. Not
+/// A class is an `ObjectReference` to an object of format `Class`. Not
 /// enforced by the type system: `ClassReference` is an alias, not a distinct
 /// handle type.
 pub type ClassReference<'gc> = ObjectReference<'gc>;
@@ -758,8 +758,13 @@ struct FrameFields<'gc> {
 /// stack index -- is far inside 61 bits; saturating keeps a count past
 /// them from panicking.
 fn count_word(count: usize) -> Word {
+    count_value(count).word()
+}
+
+/// `count_word`'s value, for a field written through `set_pointer_word`.
+fn count_value<'gc>(count: usize) -> Value<'gc> {
     let count = i64::try_from(count).unwrap_or(SMALL_INTEGER_MAX);
-    Value::small_integer(count.min(SMALL_INTEGER_MAX)).word()
+    Value::small_integer(count.min(SMALL_INTEGER_MAX))
 }
 
 impl<'gc> Heap<'gc> {
@@ -867,7 +872,7 @@ impl<'gc> Heap<'gc> {
     fn allocate_object(
         &mut self,
         class: ClassReference<'gc>,
-        data: ObjectData<'gc>,
+        data: ObjectData,
     ) -> ObjectReference<'gc> {
         let dispatch_id = self.header_dispatch_id(class);
         self.push_object(Object::new(class, dispatch_id, 0, data))
@@ -952,7 +957,7 @@ impl<'gc> Heap<'gc> {
 
     /// A closure's payload from its record, each copied value stored as a
     /// word.
-    fn closure_payload(&mut self, closure: NewClosure<'gc>) -> ObjectData<'gc> {
+    fn closure_payload(&mut self, closure: NewClosure<'gc>) -> ObjectData {
         let NewClosure {
             code,
             captured_frame,
@@ -976,14 +981,15 @@ impl<'gc> Heap<'gc> {
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
     ) -> ClassReference<'gc> {
-        let data = Self::class_payload(class);
-        self.allocate_object(metaclass, ObjectData::Class(Box::new(data)))
+        let data = self.class_payload(class);
+        self.allocate_object(metaclass, data)
     }
 
     /// A class object's payload from its record. Every field set after
-    /// creation starts empty: `this_class`, `applied_clause` and the
-    /// value-class verdict each have their setter.
-    fn class_payload(class: NewClass<'gc>) -> ClassData<'gc> {
+    /// creation starts nil: `this_class`, the applied clause and the
+    /// value-class verdict each have their setter. The application is
+    /// named by its index, so it must be the table's own entry.
+    fn class_payload(&self, class: NewClass<'gc>) -> ObjectData {
         let NewClass {
             application,
             enclosing,
@@ -991,7 +997,27 @@ impl<'gc> Heap<'gc> {
             superclass,
             builtin,
         } = class;
-        ClassData::new(application, enclosing, declaring_class, superclass, builtin)
+        debug_assert!(
+            self.tables
+                .applications
+                .get(application.index().index())
+                .is_some_and(|entry| Rc::ptr_eq(entry, &application)),
+            "internal: a class object's application is registered (`Heap::register_application`)"
+        );
+        let optional = |object: Option<ObjectReference<'gc>>| {
+            self.store(object.map_or(Value::nil(), Value::object))
+        };
+        let mut fields = [Word::NIL; class_field::COUNT];
+        fields[class_field::ENCLOSING] = optional(enclosing);
+        fields[class_field::DECLARING_CLASS] = optional(declaring_class);
+        fields[class_field::SUPERCLASS] = optional(superclass);
+        if let Some(builtin) = builtin {
+            // Its discriminant is its position in `BuiltinClass::ALL`, the
+            // order `Mutator::builtin_class` indexes by too.
+            fields[class_field::BUILTIN] = count_word(builtin as usize);
+        }
+        fields[class_field::APPLICATION] = count_word(application.index().index());
+        ObjectData::class(fields)
     }
 
     /// A class object that is genuinely its own `.class`. Under `Rc` this
@@ -1005,26 +1031,31 @@ impl<'gc> Heap<'gc> {
     /// Like every object, it carries no identity hash until one is asked
     /// for.
     pub fn allocate_self_referential_class(&mut self, class: NewClass<'gc>) -> ClassReference<'gc> {
-        let data = Self::class_payload(class);
-        self.allocate_self_referential(ObjectData::Class(Box::new(data)))
+        // It is an instance of itself, so its id is its own instances id.
+        let dispatch_id = class.application.dispatch_ids.instances;
+        let data = self.class_payload(class);
+        self.allocate_self_referential_guarded(dispatch_id, data)
     }
 
-    /// An object whose class is itself, holding `data`. Private: besides
-    /// `allocate_self_referential_class`, the heap's own tests build one that
-    /// is no class object, the shape a crafted image can give a class
-    /// reference.
-    fn allocate_self_referential(&mut self, data: ObjectData<'gc>) -> ObjectReference<'gc> {
+    /// An object whose class is itself, holding `data` that is no class
+    /// object: the shape a crafted image can give a class reference, which
+    /// the heap's own tests build. It guards on `NONE`: being its own
+    /// class, it has no class that could supply an instances id.
+    #[cfg(test)]
+    fn allocate_self_referential(&mut self, data: ObjectData) -> ObjectReference<'gc> {
+        self.allocate_self_referential_guarded(DispatchId::NONE, data)
+    }
+
+    /// An object whose class is itself, holding `data` and guarding on
+    /// `dispatch_id`: its own class is not yet in the arena to read, so the
+    /// caller supplies it.
+    fn allocate_self_referential_guarded(
+        &mut self,
+        dispatch_id: DispatchId,
+        data: ObjectData,
+    ) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
-        // Its own class is itself, not yet in the arena to read, so the id
-        // comes from `data` alone: its own instances id when `data` is a
-        // class -- it is an instance of itself -- and `NONE` otherwise: the
-        // object is not a class object and, being its own class, has no
-        // class that could supply an instances id.
-        let dispatch_id = match &data {
-            ObjectData::Class(own) => own.dispatch_id,
-            _ => DispatchId::NONE,
-        };
         self.objects.push(Object::new(handle, dispatch_id, 0, data));
         handle
     }
@@ -1077,7 +1108,7 @@ impl<'gc> Heap<'gc> {
                 ObjectData::array(elements.into_iter().map(|value| self.store(value)))
             }
             Record::Closure(closure) => self.closure_payload(closure),
-            Record::Class(class) => ObjectData::Class(Box::new(Self::class_payload(class))),
+            Record::Class(class) => self.class_payload(class),
             // The frame object is the activation object: it takes the
             // record's identity hash, and the placeholder stays as it is,
             // for the decoder to alias to it (`alias_placeholders`).
@@ -1202,7 +1233,7 @@ impl<'gc> Heap<'gc> {
         fields: FrameFields<'gc>,
         registers: &[Value<'gc>],
         register_count: usize,
-    ) -> ObjectData<'gc> {
+    ) -> ObjectData {
         let FrameFields {
             sender,
             home,
@@ -1249,10 +1280,9 @@ impl<'gc> Heap<'gc> {
         words[frame_field::UNCONTINUABLE] = Value::boolean(uncontinuable).word();
         debug_assert!(registers.len() <= register_count);
         let mut data = ObjectData::frame(words, register_count);
-        if let ObjectData::Words { words, .. } = &mut data {
-            for (slot, register) in words[frame_field::COUNT..].iter_mut().zip(registers) {
-                *slot = self.store(*register).bits();
-            }
+        let ObjectData::Words { words, .. } = &mut data;
+        for (slot, register) in words[frame_field::COUNT..].iter_mut().zip(registers) {
+            *slot = self.store(*register).bits();
         }
         data
     }
@@ -1606,6 +1636,7 @@ impl<'gc> Heap<'gc> {
                 Format::IndexablePointers => ObjectShape::Array,
                 Format::Frame => ObjectShape::Activation,
                 Format::Closure => ObjectShape::Closure,
+                Format::Class => ObjectShape::Class,
                 Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
                     ObjectShape::Symbol
                 }
@@ -1613,7 +1644,6 @@ impl<'gc> Heap<'gc> {
                 _ if self.is_boxed_float(object) => ObjectShape::Float,
                 _ => ObjectShape::LargeInteger,
             },
-            ObjectData::Class(_) => ObjectShape::Class,
         }
     }
 
@@ -1768,10 +1798,8 @@ impl<'gc> Heap<'gc> {
     fn packed_string(&self, object: ObjectReference<'gc>) -> Option<PackedString<'_>> {
         self.check_object_origin(object);
         let entry = &self.objects[object.index as usize];
-        match &entry.data {
-            ObjectData::Words { words, .. } => PackedString::new(entry.header, words),
-            _ => None,
-        }
+        let ObjectData::Words { words, .. } = &entry.data;
+        PackedString::new(entry.header, words)
     }
 
     /// A String's code points, copied out; `None` for any other object.
@@ -2057,9 +2085,7 @@ impl<'gc> Heap<'gc> {
         self.check_object_origin(object);
         let Heap { objects, stack, .. } = self;
         let entry = &objects[object.index as usize];
-        let ObjectData::Words { words, .. } = &entry.data else {
-            return;
-        };
+        let ObjectData::Words { words, .. } = &entry.data;
         if entry.header.format() != Format::Closure || words.len() <= closure_field::COUNT {
             return;
         }
@@ -2095,11 +2121,9 @@ impl<'gc> Heap<'gc> {
     ) {
         self.check_object_origin(object);
         let entry = &mut self.objects[object.index as usize];
-        if let ObjectData::Words { words, .. } = &mut entry.data {
-            if entry.header.format() == Format::Closure && words.len() >= closure_field::COUNT {
-                words[closure_field::FEEDBACK_BASE] =
-                    count_word(feedback_base.raw() as usize).bits();
-            }
+        let ObjectData::Words { words, .. } = &mut entry.data;
+        if entry.header.format() == Format::Closure && words.len() >= closure_field::COUNT {
+            words[closure_field::FEEDBACK_BASE] = count_word(feedback_base.raw() as usize).bits();
         }
     }
 
@@ -2201,22 +2225,20 @@ impl<'gc> Heap<'gc> {
                     ObjectData::Words { .. } if entry.header.format() == Format::Closure => {
                         "a Block".to_string()
                     }
-                    ObjectData::Class(_) => {
+                    ObjectData::Words { .. } if entry.header.format() == Format::Class => {
                         format!("the class {}", self.class_display_name(object))
                     }
                     ObjectData::Words { .. } => {
-                        let class = &self.objects[object.index as usize].class;
-                        match &self.objects[class.index as usize].data {
-                            ObjectData::Class(data) => {
-                                format!("an instance of {}", data.application.mixin.name)
+                        match self.class_application_entry(entry.class) {
+                            Some(application) => {
+                                format!("an instance of {}", application.mixin.name)
                             }
-                            // `ClassReference`'s doc: every
-                            // `Object::class` is an `ObjectReference` whose own
-                            // `data` is `ObjectData::Class`, by convention
-                            // rather than by the type system. This arm exists
-                            // only so the match is total, not because a
-                            // conforming object can reach it.
-                            _ => "an object".to_string(),
+                            // `ClassReference`'s doc: every `Object::class`
+                            // is a class object by convention rather than by
+                            // the type system. This arm exists only so the
+                            // match is total, not because a conforming
+                            // object can reach it.
+                            None => "an object".to_string(),
                         }
                     }
                 }
@@ -2355,6 +2377,63 @@ impl<'gc> Heap<'gc> {
             .and_then(|entry| entry.method.clone())
     }
 
+    /// Field `field` of class object `class` (`object.rs`'s `class_field`
+    /// gives the layout); `None` for a handle that is no class object.
+    fn class_field(&self, class: ClassReference<'gc>, field: usize) -> Option<Value<'gc>> {
+        self.pointer_word(class, Format::Class, field)
+    }
+
+    /// A class object's field that holds an object or nil, as an `Option`;
+    /// `None` too for a handle that is no class object.
+    fn class_object_field(
+        &self,
+        class: ClassReference<'gc>,
+        field: usize,
+    ) -> Option<ObjectReference<'gc>> {
+        self.class_field(class, field)?.as_object()
+    }
+
+    /// Writes field `field` of class object `class`, answering whether the
+    /// write happened: `false` when `class` is no class object.
+    fn set_class_field(
+        &mut self,
+        class: ClassReference<'gc>,
+        field: usize,
+        value: Value<'gc>,
+    ) -> bool {
+        self.set_pointer_word(class, Format::Class, field, value)
+    }
+
+    /// The table entry `class`'s application field names, borrowed rather
+    /// than cloned: the readers every send, slot write and allocation asks
+    /// go through this, and a refcount bump each time is what they avoid.
+    /// `None` for a handle that is no class object.
+    fn class_application_entry(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<&Rc<crate::mixin::MixinApplication>> {
+        let index = self
+            .class_field(class, class_field::APPLICATION)?
+            .as_small_integer()?;
+        self.tables.applications.get(usize::try_from(index).ok()?)
+    }
+
+    /// The applying declaration, the clause's position in it and the
+    /// builtin it named, unpacked from `class`'s applied-clause field and
+    /// borrowed from the mixin table; `None` for a class object no mixin
+    /// application added and for a handle that is no class object.
+    fn class_applied_parts(
+        &self,
+        class: ClassReference<'gc>,
+    ) -> Option<(&Rc<Mixin>, usize, Option<BuiltinClass>)> {
+        let packed = self
+            .class_field(class, class_field::APPLIED_CLAUSE)?
+            .as_small_integer()?;
+        let (mixin, index, named_builtin) = crate::mixin::AppliedClause::unpack(packed)?;
+        let declaration = self.tables.mixins.get(mixin.index())?;
+        Some((declaration, index, named_builtin))
+    }
+
     /// One accessor for the behaviour half of a class object, so a
     /// construction site that needs a superclass's application never has to
     /// re-derive the borrow-and-match itself.
@@ -2362,11 +2441,17 @@ impl<'gc> Heap<'gc> {
         &self,
         class: ClassReference<'gc>,
     ) -> Option<std::rc::Rc<crate::mixin::MixinApplication>> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => Some(data.application.clone()),
-            _ => None,
-        }
+        self.class_application_entry(class).cloned()
+    }
+
+    /// The index of `class`'s application in the table: the identity of
+    /// its behaviour, which two class objects share exactly when they share
+    /// their application. `None` for a handle that is no class object.
+    pub fn class_application_index(&self, class: ClassReference<'gc>) -> Option<ApplicationIndex> {
+        let index = self
+            .class_field(class, class_field::APPLICATION)?
+            .as_small_integer()?;
+        ApplicationIndex::from_index(usize::try_from(index).ok()?)
     }
 
     /// Where `class`'s own slots start in an instance's fields
@@ -2375,11 +2460,8 @@ impl<'gc> Heap<'gc> {
     /// application's `Rc`, because every `InitializeSlot` and
     /// `ReturnSlotIfFilled` asks it (`Heap::activation_slot_base`).
     pub fn class_own_slot_base(&self, class: ClassReference<'gc>) -> Option<usize> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => Some(data.application.own_slot_base),
-            _ => None,
-        }
+        self.class_application_entry(class)
+            .map(|application| application.own_slot_base)
     }
 
     /// §3.1.1's "its class inherits from class `Value`", read off the
@@ -2388,11 +2470,8 @@ impl<'gc> Heap<'gc> {
     /// `class_application` would pay a refcount bump per slot for one
     /// `bool`. That bump is what this accessor exists to avoid.
     pub fn class_inherits_value(&self, class: ClassReference<'gc>) -> bool {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.application.inherits_value,
-            _ => false,
-        }
+        self.class_application_entry(class)
+            .is_some_and(|application| application.inherits_value)
     }
 
     /// Runs `read` over the field indices of the slots `class` and its
@@ -2409,46 +2488,28 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         read: impl FnOnce(&[usize]) -> T,
     ) -> Option<T> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => Some(read(&data.application.declared_slots)),
-            _ => None,
-        }
+        self.class_application_entry(class)
+            .map(|application| read(&application.declared_slots))
     }
 
     /// Whether `class`'s application applies a mixin compiled from shipped
     /// core-library source (`Mixin.shipped`); `false` for an object that is
     /// not a class object. Read without cloning the application's `Rc`.
     pub fn class_is_shipped(&self, class: ClassReference<'gc>) -> bool {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.application.mixin.shipped,
-            _ => false,
-        }
+        self.class_application_entry(class)
+            .is_some_and(|application| application.mixin.shipped)
     }
 
     pub fn class_enclosing(&self, class: ClassReference<'gc>) -> Option<ObjectReference<'gc>> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.enclosing,
-            _ => None,
-        }
+        self.class_object_field(class, class_field::ENCLOSING)
     }
 
     pub fn class_declaring(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.declaring_class,
-            _ => None,
-        }
+        self.class_object_field(class, class_field::DECLARING_CLASS)
     }
 
     pub fn class_superclass(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.superclass,
-            _ => None,
-        }
+        self.class_object_field(class, class_field::SUPERCLASS)
     }
 
     /// Whether `class` is a level a mixin application added: exactly when
@@ -2456,30 +2517,18 @@ impl<'gc> Heap<'gc> {
     /// instantiation walk asks this of every superclass it climbs to, so an
     /// ordinary level costs one test of an object the walk reads anyway.
     pub fn class_is_applied_level(&self, class: ClassReference<'gc>) -> bool {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data
-                .applied_clause
-                .as_ref()
-                .is_some_and(|applied| applied.clause().is_some()),
-            _ => false,
-        }
+        self.class_applied_parts(class)
+            .is_some_and(|(declaration, index, _)| index < declaration.mixin_applications.len())
     }
 
     /// The `<:` clause a level a mixin application added was built for
-    /// (`ClassData::applied_clause`); `None` for any other class object.
+    /// (`class_field::APPLIED_CLAUSE`); `None` for any other class object.
     pub fn class_applied_clause(
         &self,
         class: ClassReference<'gc>,
     ) -> Option<crate::mixin::MixinApplicationClause> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data
-                .applied_clause
-                .as_ref()
-                .and_then(|applied| applied.clause().cloned()),
-            _ => None,
-        }
+        let (declaration, index, _) = self.class_applied_parts(class)?;
+        declaration.mixin_applications.get(index).cloned()
     }
 
     /// Which `<:` clause added `class` -- the applying declaration and the
@@ -2489,48 +2538,54 @@ impl<'gc> Heap<'gc> {
         &self,
         class: ClassReference<'gc>,
     ) -> Option<crate::mixin::AppliedClause> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.applied_clause.as_deref().cloned(),
-            _ => None,
-        }
+        let (declaration, index, named_builtin) = self.class_applied_parts(class)?;
+        Some(crate::mixin::AppliedClause {
+            declaration: declaration.clone(),
+            index,
+            named_builtin,
+        })
     }
 
     /// Whether `class` carries a recorded `ValueClassRefusal`, without
-    /// copying it: `decide_instantiation` asks this on every instantiation
+    /// reading it: `decide_instantiation` asks this on every instantiation
     /// of a value class, and only the cold error path reads the refusal
     /// itself (`class_value_refusal`).
     pub fn class_has_value_refusal(&self, class: ClassReference<'gc>) -> bool {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.value_class_refusal.is_some(),
-            _ => false,
-        }
+        self.class_object_field(class, class_field::VALUE_CLASS_REFUSAL)
+            .is_some()
     }
 
     /// §3.1.1's enclosing-object condition on a value class, decided when
     /// `class` was created and read here by `decide_instantiation`'s cold
     /// error path and by `check_value_class`'s walk --
     /// `ValueClassRefusal`'s doc comment says why creation and refusal are
-    /// two different moments. `None` for a class that is no value and for a
-    /// value class whose enclosing objects are all values.
+    /// two different moments. `None` for a class that is no value, for a
+    /// value class whose enclosing objects are all values, and for a field
+    /// not shaped as `Mutator::record_value_class_refusal` writes it.
     pub fn class_value_refusal(
         &self,
         class: ClassReference<'gc>,
-    ) -> Option<crate::types::ValueClassRefusal> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.value_class_refusal.clone(),
-            _ => None,
-        }
+    ) -> Option<crate::types::ValueClassRefusal<'gc>> {
+        let record = self.class_object_field(class, class_field::VALUE_CLASS_REFUSAL)?;
+        let offender = self.array_element(record, 0)?.as_object()?;
+        let level = match self.array_element(record, 1)?.as_object() {
+            Some(name) => Some(self.symbol_value(name)?),
+            None => None,
+        };
+        Some(crate::types::ValueClassRefusal::NonValueEnclosingObject { level, offender })
     }
 
+    /// The core-library class `class` is, read afresh on every send by an
+    /// inline cache's `act` (`docs/design/dispatch.md`, "3b -- The
+    /// caches"); `None` for a user-defined class and for a handle that is
+    /// no class object.
     pub fn class_builtin(&self, class: ClassReference<'gc>) -> Option<BuiltinClass> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.builtin,
-            _ => None,
-        }
+        let position = self
+            .class_field(class, class_field::BUILTIN)?
+            .as_small_integer()?;
+        BuiltinClass::ALL
+            .get(usize::try_from(position).ok()?)
+            .copied()
     }
 
     /// A lookup level's superclass, or `None` when `class` is not a class
@@ -2540,11 +2595,8 @@ impl<'gc> Heap<'gc> {
         &self,
         class: ClassReference<'gc>,
     ) -> Option<Option<ClassReference<'gc>>> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => Some(data.superclass),
-            _ => None,
-        }
+        self.class_field(class, class_field::SUPERCLASS)
+            .map(Value::as_object)
     }
 
     /// `class`'s metaclass: its header class, when that class's
@@ -2554,25 +2606,19 @@ impl<'gc> Heap<'gc> {
     /// for a class object of the kernel phase before the bootstrap gave it
     /// its metaclass (`Mutator::give_existing_class_objects_metaclasses`).
     pub fn class_metaclass(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        self.check_object_origin(class);
-        let entry = &self.objects[class.index as usize];
-        if !matches!(entry.data, ObjectData::Class(_)) {
+        if !self.is_class(class) {
             return None;
         }
-        let header = entry.class;
+        let header = self.objects[class.index as usize].class;
         self.class_this_class(header)
             .filter(|this_class| this_class.same(class))
             .map(|_| header)
     }
 
-    /// A metaclass's class (`ClassData::this_class`); `None` for a class
+    /// A metaclass's class (`class_field::THIS_CLASS`); `None` for a class
     /// object that is no metaclass and for a handle that is no class object.
     pub fn class_this_class(&self, class: ClassReference<'gc>) -> Option<ClassReference<'gc>> {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => data.this_class,
-            _ => None,
-        }
+        self.class_object_field(class, class_field::THIS_CLASS)
     }
 
     /// The name a class object is shown by: its mixin's for a class, and
@@ -2582,7 +2628,7 @@ impl<'gc> Heap<'gc> {
     pub fn class_display_name(&self, class: ClassReference<'gc>) -> String {
         match self.class_this_class(class) {
             Some(this_class) => format!("{} class", self.class_display_name(this_class)),
-            None => self.class_application(class).map_or_else(
+            None => self.class_application_entry(class).map_or_else(
                 || "a class".to_string(),
                 |application| application.mixin.name.to_string(),
             ),
@@ -2593,13 +2639,13 @@ impl<'gc> Heap<'gc> {
     /// instances id, a class object's included -- its class is its
     /// metaclass, so its id is that metaclass's instances id -- and `NONE`
     /// when the class is not a class object, which only a crafted image
-    /// makes.
+    /// makes. Read off the application every allocation of an instance
+    /// asks, without cloning its `Rc`.
     fn header_dispatch_id(&self, class: ClassReference<'gc>) -> DispatchId {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(class_data) => class_data.dispatch_id,
-            _ => DispatchId::NONE,
-        }
+        self.class_application_entry(class)
+            .map_or(DispatchId::NONE, |application| {
+                application.dispatch_ids.instances
+            })
     }
 
     /// The dispatch id an inline cache guards `value`'s send on
@@ -2625,13 +2671,8 @@ impl<'gc> Heap<'gc> {
     /// `class`'s ids, or `NONE` when it is not a class object: the key of a
     /// `super` send and of a private lexical send.
     pub fn class_dispatch_ids(&self, class: ClassReference<'gc>) -> DispatchIds {
-        self.check_object_origin(class);
-        match &self.objects[class.index as usize].data {
-            ObjectData::Class(data) => DispatchIds {
-                instances: data.dispatch_id,
-            },
-            _ => DispatchIds::NONE,
-        }
+        self.class_application_entry(class)
+            .map_or(DispatchIds::NONE, |application| application.dispatch_ids)
     }
 
     pub(crate) fn set_immediate_dispatch_ids(&mut self, ids: [DispatchId; 5]) {
@@ -2663,7 +2704,7 @@ impl<'gc> Heap<'gc> {
         true
     }
 
-    /// Links a metaclass to its class (`ClassData::this_class`). Answers
+    /// Links a metaclass to its class (`class_field::THIS_CLASS`). Answers
     /// whether the write happened, like the other class setters;
     /// `Mutator::attach_metaclass` is the one caller, on a metaclass it has
     /// just built.
@@ -2672,12 +2713,7 @@ impl<'gc> Heap<'gc> {
         metaclass: ClassReference<'gc>,
         class: ClassReference<'gc>,
     ) -> bool {
-        self.check_object_origin(metaclass);
-        if let ObjectData::Class(data) = &mut self.objects[metaclass.index as usize].data {
-            data.this_class = Some(class);
-            return true;
-        }
-        false
+        self.set_class_field(metaclass, class_field::THIS_CLASS, Value::object(class))
     }
 
     /// Relinks `class`'s superclass pointer. Answers whether the write
@@ -2696,12 +2732,7 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         superclass: ClassReference<'gc>,
     ) -> bool {
-        self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.superclass = Some(superclass);
-            return true;
-        }
-        false
+        self.set_class_field(class, class_field::SUPERCLASS, Value::object(superclass))
     }
 
     /// Unlinks `class`'s superclass pointer, answering whether the write
@@ -2709,12 +2740,7 @@ impl<'gc> Heap<'gc> {
     /// is the one caller: it states that the kernel's `Object` has no
     /// superclass rather than rely on the placeholder already having none.
     pub fn class_clear_superclass(&mut self, class: ClassReference<'gc>) -> bool {
-        self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.superclass = None;
-            return true;
-        }
-        false
+        self.set_class_field(class, class_field::SUPERCLASS, Value::nil())
     }
 
     /// Sets `class`'s enclosing object and declaring class. The bootstrap's
@@ -2728,50 +2754,61 @@ impl<'gc> Heap<'gc> {
         enclosing: Option<ObjectReference<'gc>>,
         declaring_class: Option<ClassReference<'gc>>,
     ) -> bool {
-        self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.enclosing = enclosing;
-            data.declaring_class = declaring_class;
-            return true;
-        }
-        false
+        self.set_class_field(
+            class,
+            class_field::ENCLOSING,
+            enclosing.map_or(Value::nil(), Value::object),
+        ) && self.set_class_field(
+            class,
+            class_field::DECLARING_CLASS,
+            declaring_class.map_or(Value::nil(), Value::object),
+        )
     }
 
-    /// Records `class`'s verdict on §3.1.1's enclosing-object condition.
-    /// Two callers: `interpreter::nested::after_clause`, right after it
-    /// creates a class object built from source, and
-    /// `image::decode::rebuild_applications`, which recomputes the verdict
-    /// for a decoded one rather than trusting it from the wire. Answers
-    /// whether the write happened, like the other class setters.
-    pub fn class_set_value_refusal(
+    /// Records `class`'s verdict on §3.1.1's enclosing-object condition:
+    /// `refusal` is the `Array` `Mutator::record_value_class_refusal` makes,
+    /// the one caller. Answers whether the write happened, like the other
+    /// class setters.
+    pub(crate) fn class_set_value_refusal(
         &mut self,
         class: ClassReference<'gc>,
-        refusal: crate::types::ValueClassRefusal,
+        refusal: ObjectReference<'gc>,
     ) -> bool {
-        self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.value_class_refusal = Some(refusal);
-            return true;
-        }
-        false
+        self.set_class_field(
+            class,
+            class_field::VALUE_CLASS_REFUSAL,
+            Value::object(refusal),
+        )
     }
 
     /// Records the `<:` clause that added `class` (`newspeak-spec.pdf`
     /// §6.2), right after the level is created: by
     /// `Mutator::new_applied_level` for a level built from source, and by
-    /// the image decoder for a decoded one. Answers whether the write
+    /// the image decoder for a decoded one. The field packs the declaration
+    /// by its `MixinId`, which this registers. The clause's index is below
+    /// `CLAUSE_INDEX_LIMIT`: the resolver refuses a declaration of more
+    /// clauses, and the decoder an index past it. Answers whether the write
     /// happened, like the other class setters.
     pub(crate) fn class_set_applied_clause(
         &mut self,
         class: ClassReference<'gc>,
         clause: crate::mixin::AppliedClause,
     ) -> bool {
-        self.check_object_origin(class);
-        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
-            data.applied_clause = Some(Box::new(clause));
-            return true;
+        if !self.is_class(class) {
+            return false;
         }
-        false
+        let crate::mixin::AppliedClause {
+            declaration,
+            index,
+            named_builtin,
+        } = clause;
+        let mixin = self.mixin_id(&declaration);
+        let packed = crate::mixin::AppliedClause::pack(mixin, index, named_builtin);
+        self.set_class_field(
+            class,
+            class_field::APPLIED_CLAUSE,
+            Value::small_integer(packed),
+        )
     }
 
     /// Gives `class` a new application and moves every live object of that
@@ -2810,25 +2847,35 @@ impl<'gc> Heap<'gc> {
     /// decoded class record -- walking the arena on every one of those would
     /// be quadratic in a count the image controls -- and stamps every
     /// decoded object once afterwards, with `stamp_dispatch_ids`.
+    ///
+    /// The class object names `application` by its index, so it must be
+    /// the table's own entry (`register_application`).
     pub(crate) fn class_install_application(
         &mut self,
         class: ClassReference<'gc>,
         application: std::rc::Rc<crate::mixin::MixinApplication>,
     ) -> bool {
-        self.check_object_origin(class);
-        let entry = &mut self.objects[class.index as usize];
-        let ObjectData::Class(data) = &mut entry.data else {
+        debug_assert!(
+            self.tables
+                .applications
+                .get(application.index().index())
+                .is_some_and(|entry| Rc::ptr_eq(entry, &application)),
+            "internal: a class object's application is registered (`Heap::register_application`)"
+        );
+        if !self.set_class_field(
+            class,
+            class_field::APPLICATION,
+            count_value(application.index().index()),
+        ) {
             return false;
-        };
-        data.dispatch_id = application.dispatch_ids.instances;
-        data.application = application;
+        }
         // Its own id is its header class's, which a new application of its
         // own changes only when it is its own class -- the self-referential
         // builtin `Object` of the kernel phase. A decoded class record's
         // header is its metaclass record, whose application may not be
         // installed yet; `stamp_dispatch_ids` restamps every decoded object
         // once all of them are.
-        let header_class = entry.class;
+        let header_class = self.objects[class.index as usize].class;
         let dispatch_id = self.header_dispatch_id(header_class);
         let entry = &mut self.objects[class.index as usize];
         entry.header = entry.header.with_guard(dispatch_id);
@@ -2882,19 +2929,15 @@ impl<'gc> Heap<'gc> {
     /// public accessor copies out (`docs/design/memory.md`, "The seam").
     fn frame_words(&self, frame: FrameReference<'gc>) -> &[u64] {
         self.check_frame_origin(frame);
-        match &self.objects[frame.index as usize].data {
-            ObjectData::Words { words, .. } => words,
-            _ => unreachable!("internal: a frame handle names a frame object"),
-        }
+        let ObjectData::Words { words, .. } = &self.objects[frame.index as usize].data;
+        words
     }
 
     /// `frame_words`, for a write.
     fn frame_words_mut(&mut self, frame: FrameReference<'gc>) -> &mut [u64] {
         self.check_frame_origin(frame);
-        match &mut self.objects[frame.index as usize].data {
-            ObjectData::Words { words, .. } => words,
-            _ => unreachable!("internal: a frame handle names a frame object"),
-        }
+        let ObjectData::Words { words, .. } = &mut self.objects[frame.index as usize].data;
+        words
     }
 
     /// The fixed field `field` of `frame`, as a value.
@@ -3305,9 +3348,7 @@ impl<'gc> Heap<'gc> {
         if let Some(frame) = entry.reified {
             self.check_frame_origin(frame);
             let Heap { objects, stack, .. } = self;
-            let ObjectData::Words { words, .. } = &mut objects[frame.index as usize].data else {
-                unreachable!("internal: a frame handle names a frame object")
-            };
+            let ObjectData::Words { words, .. } = &mut objects[frame.index as usize].data;
             if entry.retains_registers {
                 for (register, word) in words[frame_field::COUNT..]
                     .iter_mut()
@@ -3963,9 +4004,7 @@ impl<'gc> Heap<'gc> {
             if !object.class.same(future_class) {
                 continue;
             }
-            let ObjectData::Words { words: fields, .. } = &object.data else {
-                continue;
-            };
+            let ObjectData::Words { words: fields, .. } = &object.data;
             if object.header.format() != Format::FixedPointers {
                 continue;
             }
@@ -4007,30 +4046,25 @@ impl<'gc> Heap<'gc> {
         for object in &mut self.objects {
             // `object.class` is a class object, never a future.
             let format = object.header.format();
-            match &mut object.data {
-                ObjectData::Words { words, .. } => {
-                    // A number's digits are no `Value`s, and a reified
-                    // frame's fields and registers are exempt, as the
-                    // stack's are.
-                    // A closure's code id, captured frame and feedback base
-                    // are exempt too: only its copied values can hold one.
-                    let first_rewritable = match format {
-                        Format::FixedPointers | Format::IndexablePointers => 0,
-                        Format::Closure => closure_field::COUNT.min(words.len()),
-                        _ => words.len(),
-                    };
-                    for field in &mut words[first_rewritable..] {
-                        let mut word = [Word::from_bits(*field)];
-                        replace(&mut word);
-                        *field = word[0].bits();
-                    }
-                }
-                // Every handle a class object holds -- its enclosing object,
-                // its declaring class, its superclass, itself -- is an
-                // `ObjectReference`, not a `Value`: no future can stand in
-                // one, since a message to a future is answered by its value,
-                // so a nested class's enclosing object is never the future.
-                ObjectData::Class(_) => {}
+            let ObjectData::Words { words, .. } = &mut object.data;
+            // A number's digits are no `Value`s, and a reified frame's
+            // fields and registers are exempt, as the stack's are. A
+            // closure's code id, captured frame and feedback base are
+            // exempt too: only its copied values can hold one. So is every
+            // field of a class object: its enclosing object, declaring
+            // class, superclass and metaclass link are objects no future
+            // can stand in for, since a message to a future is answered by
+            // its value, and its value-class refusal is the runtime's own
+            // record.
+            let first_rewritable = match format {
+                Format::FixedPointers | Format::IndexablePointers => 0,
+                Format::Closure => closure_field::COUNT.min(words.len()),
+                _ => words.len(),
+            };
+            for field in &mut words[first_rewritable..] {
+                let mut word = [Word::from_bits(*field)];
+                replace(&mut word);
+                *field = word[0].bits();
             }
         }
         replaced
@@ -4484,7 +4518,7 @@ mod tests {
         name: &str,
         builtin: Option<BuiltinClass>,
     ) -> ClassReference<'gc> {
-        let application = std::rc::Rc::new(crate::mixin::MixinApplication {
+        let application = heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
@@ -4504,6 +4538,25 @@ mod tests {
             superclass: None,
             builtin,
         })
+    }
+
+    #[test]
+    fn a_class_objects_applied_clause_round_trips_through_its_field() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Level");
+        let declaration = std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern("Applying")));
+        assert!(heap.class_set_applied_clause(
+            class,
+            crate::mixin::AppliedClause {
+                declaration: declaration.clone(),
+                index: 3,
+                named_builtin: Some(BuiltinClass::Array),
+            },
+        ));
+        let origin = heap.class_applied_origin(class).expect("an applied level");
+        assert!(std::rc::Rc::ptr_eq(&origin.declaration, &declaration));
+        assert_eq!(origin.index, 3);
+        assert_eq!(origin.named_builtin, Some(BuiltinClass::Array));
     }
 
     #[test]
@@ -4623,7 +4676,7 @@ mod tests {
     }
 
     /// The fallback arm of that same match: `class` names an `ObjectReference`
-    /// whose own `data` is not `ObjectData::Class`, the shape a class reference
+    /// whose own format is not `Class`, the shape a class reference
     /// decoded from an untrusted image can be in before verification runs.
     /// `describe` must still answer something rather than panic.
     #[test]
@@ -5374,10 +5427,10 @@ mod tests {
     /// moves it fails here rather than leaving that figure silently wrong.
     /// A frame object is one of these, its fields and registers boxed words.
     /// The class handle, the eight-byte header word and `ObjectData`, whose
-    /// largest payload is the words variant -- a format, two small fields and
-    /// a `Box<[u64]>`; `ClassData` is boxed so as not to be. A closure is one
-    /// of these too, its code id, captured frame and feedback base words
-    /// before its copied values. Task 12 of the object-representation plan
+    /// payload is a format, two small fields and a `Box<[u64]>`. A class
+    /// object is one of these too, its eight fields its words; so is a
+    /// closure, its code id, captured frame and feedback base words before
+    /// its copied values. Task 12 of the object-representation plan
     /// replaces this arena slot with the object's words, and this pin with
     /// theirs.
     #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]

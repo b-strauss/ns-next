@@ -33,9 +33,11 @@ pub use crate::heap::{
 /// than raised there: `decide_instantiation` is what refuses, since the
 /// specification's own §2.3 example creates such a class and never
 /// instantiates it (`docs/design/object-model.md`, "A value object's four
-/// conditions"). Holds no handle -- a `Symbol` and a `String`, both already
-/// rendered at creation time -- so it survives a move. An image carries none
-/// of it: every decoded class object starts with none,
+/// conditions"). Recorded as heap data, an `Array` of the offending object
+/// and the level's name (`Mutator::record_value_class_refusal`), so the
+/// collector keeps the offender and moves it like any other field; the
+/// message names it with `Heap::describe` when `new` refuses. An image
+/// carries none of it: every decoded class object starts with none,
 /// and `image::decode::rebuild_applications` recomputes it with the same
 /// `check_value_class`, once every decoded class's real application is
 /// installed, so a legitimate snapshot of a value class created carrying a
@@ -54,18 +56,18 @@ pub use crate::heap::{
 /// refusal of its own -- such a class was checked the same way when it was
 /// created, so everything above it holds by induction. A class that does
 /// carry one is not trusted blindly: the new class inherits the fault
-/// instead, `described` and `level` carried over from that class's own
+/// instead, `offender` and `level` carried over from that class's own
 /// verdict, except that a `level` of `None` -- a fault in the stopping
 /// class's own enclosing object -- becomes `Some(<the stopping class's
 /// name>)`. A fault inherited over several levels thus keeps naming the
 /// level whose enclosing object is at fault.
-#[derive(Debug, Clone)]
-pub enum ValueClassRefusal {
-    /// `level` is `None` for the class's own enclosing object; `described`
-    /// is `Heap::describe` of the offending object, taken at creation.
+#[derive(Debug, Clone, Copy)]
+pub enum ValueClassRefusal<'gc> {
+    /// `level` is `None` for the class's own enclosing object; `offender` is
+    /// the enclosing object that is no value.
     NonValueEnclosingObject {
         level: Option<Symbol>,
-        described: String,
+        offender: ObjectReference<'gc>,
     },
 }
 
@@ -507,12 +509,16 @@ pub struct NewspeakError<'gc> {
 mod tests {
     use super::*;
 
-    /// A root application with no code, no slots and no superclass. Built
-    /// directly rather than through `Mutator::apply_mixin`, so that the
-    /// tests below read only the objects they build themselves; they run in
-    /// an interpreter's entry because only `World` builds a heap.
-    fn empty_application(name: &str) -> Rc<crate::mixin::MixinApplication> {
-        Rc::new(crate::mixin::MixinApplication {
+    /// A root application with no code, no slots and no superclass,
+    /// registered in `heap`. Built directly rather than through
+    /// `Mutator::apply_mixin`, so that the tests below read only the objects
+    /// they build themselves; they run in an interpreter's entry because
+    /// only `World` builds a heap.
+    fn empty_application(
+        heap: &mut crate::Heap<'_>,
+        name: &str,
+    ) -> Rc<crate::mixin::MixinApplication> {
+        heap.register_application(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
             superclass: None,
@@ -536,8 +542,9 @@ mod tests {
     /// ordinary safe Rust under the arena: the slot's index is known before
     /// the slot is filled.
     fn dummy_class<'gc>(heap: &mut crate::Heap<'gc>) -> ClassReference<'gc> {
+        let application = empty_application(heap, "Object");
         heap.allocate_self_referential_class(crate::heap::NewClass {
-            application: empty_application("Object"),
+            application,
             enclosing: None,
             declaring_class: None,
             superclass: None,
