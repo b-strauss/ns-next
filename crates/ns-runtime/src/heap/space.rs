@@ -25,6 +25,13 @@ pub(in crate::heap) const DEFAULT_RESERVATION: usize = 64 << 30;
 #[cfg(not(target_pointer_width = "64"))]
 pub(in crate::heap) const DEFAULT_RESERVATION: usize = 1 << 30;
 
+/// The least a refused reservation falls back to. An address-space limit
+/// (`ulimit -v`, a sandbox) can refuse `DEFAULT_RESERVATION` although a
+/// heap needs far less, and a refusal there aborts every run at bootstrap;
+/// below 1 GiB a program runs out of objects soon enough that aborting at
+/// once is the plainer answer.
+const MINIMUM_RESERVATION: usize = 1 << 30;
+
 /// The first commit, and the least a growth commits.
 const MINIMUM_COMMIT: usize = 256 << 10;
 
@@ -51,7 +58,7 @@ pub(in crate::heap) struct Space {
 
 impl Space {
     pub(in crate::heap) fn new(reservation_bytes: usize) -> Result<Space, MemoryError> {
-        let mut reservation = Reservation::reserve(reservation_bytes)?;
+        let mut reservation = reserve_falling_back(reservation_bytes, Reservation::reserve)?;
         let committed = round_up_to_page(MINIMUM_COMMIT)
             .unwrap_or(MINIMUM_COMMIT)
             .min(reservation.size());
@@ -149,6 +156,26 @@ impl Space {
         if keep < self.committed {
             let _ = self.reservation.decommit(keep..self.committed);
             self.committed = keep;
+        }
+    }
+}
+
+/// Reserves `requested` bytes through `reserve`; when the operating system
+/// refuses, halves the request and tries again, never below
+/// `MINIMUM_RESERVATION` (a request already below it is tried alone). The
+/// last refusal is the answer. Only a refusal is retried: any other error
+/// would recur at every size.
+fn reserve_falling_back<T>(
+    requested: usize,
+    mut reserve: impl FnMut(usize) -> Result<T, MemoryError>,
+) -> Result<T, MemoryError> {
+    let mut bytes = requested;
+    loop {
+        match reserve(bytes) {
+            Err(MemoryError::Refused { .. }) if bytes > MINIMUM_RESERVATION => {
+                bytes = (bytes / 2).max(MINIMUM_RESERVATION);
+            }
+            answer => return answer,
         }
     }
 }
@@ -290,6 +317,64 @@ mod tests {
         for (header, size) in headers.iter().zip(sizes) {
             assert_eq!(block_range(words, *header).len(), 1 + size);
         }
+    }
+
+    const REFUSED: MemoryError = MemoryError::Refused {
+        operation: ns_memory::Operation::Reserve,
+        code: 0,
+    };
+
+    /// Runs the fallback against a reserve that refuses every size above
+    /// `largest_granted`, and answers the sizes tried and the outcome.
+    fn reserve_granting_up_to(
+        requested: usize,
+        largest_granted: usize,
+    ) -> (Vec<usize>, Result<usize, MemoryError>) {
+        let mut tried = Vec::new();
+        let answer = reserve_falling_back(requested, |bytes| {
+            tried.push(bytes);
+            if bytes <= largest_granted {
+                Ok(bytes)
+            } else {
+                Err(REFUSED)
+            }
+        });
+        (tried, answer)
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn a_refused_reservation_halves_down_to_the_floor_and_then_answers_the_refusal() {
+        const GIB: usize = 1 << 30;
+        let (tried, answer) = reserve_granting_up_to(64 * GIB, 0);
+        assert_eq!(
+            tried,
+            [64, 32, 16, 8, 4, 2, 1].map(|gibibytes| gibibytes * GIB)
+        );
+        assert!(matches!(answer, Err(MemoryError::Refused { .. })));
+
+        let (tried, answer) = reserve_granting_up_to(64 * GIB, 8 * GIB);
+        assert_eq!(tried, [64, 32, 16, 8].map(|gibibytes| gibibytes * GIB));
+        assert!(matches!(answer, Ok(bytes) if bytes == 8 * GIB));
+
+        let (tried, _) = reserve_granting_up_to(3 * GIB, 0);
+        assert_eq!(tried, [3 * GIB, 3 * GIB / 2, GIB], "never below the floor");
+    }
+
+    #[test]
+    fn a_request_below_the_floor_is_tried_alone_and_other_errors_are_not_retried() {
+        let (tried, answer) = reserve_granting_up_to(SMALL, 0);
+        assert_eq!(tried, [SMALL]);
+        assert!(matches!(answer, Err(MemoryError::Refused { .. })));
+
+        let mut tried = Vec::new();
+        let answer: Result<usize, MemoryError> =
+            reserve_falling_back(MINIMUM_RESERVATION * 2, |bytes| {
+                tried.push(bytes);
+                Err(MemoryError::InvalidRange)
+            });
+        assert_eq!(tried, [MINIMUM_RESERVATION * 2]);
+        assert!(matches!(answer, Err(MemoryError::InvalidRange)));
     }
 
     #[test]

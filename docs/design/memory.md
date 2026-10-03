@@ -810,9 +810,9 @@ A move (`World::move_everything`: `Heap::move_everything`, then the step
 state's own roots) shifts every object by one distance and rewrites every
 traced handle: a compacting collection that treats everything as live. When
 the objects start at the space's first offset they shift up by
-`8 * (2 + epoch % 31)` bytes, varied by the epoch so that moves do not all
-shift alike, and otherwise back down to the first offset, so no object keeps
-its offset at any move and the space never creeps upward
+`8 * (2 + epoch % 31)` bytes, `epoch` the new move epoch, varied so that
+moves do not all shift alike, and otherwise back down to the first offset,
+so no object keeps its offset at any move and the space never creeps upward
 (`compaction::Shift`). Every `ObjectReference` and
 `FrameReference` carries, in a debug build and beside the origin it already carries,
 the heap's move epoch when it was minted or last forwarded, and every accessor
@@ -1764,7 +1764,10 @@ object's offset up to the top.
 
 - **The reservation and its growth.** A heap reserves 64 GiB on a 64-bit
   target and 1 GiB otherwise (`DEFAULT_RESERVATION`): address space costs
-  nothing until it is committed. The first commit is 256 KiB
+  nothing until it is committed. When the operating system refuses it (an
+  address-space limit, a sandbox), the request is halved and retried down to
+  1 GiB (`MINIMUM_RESERVATION`, `reserve_falling_back`) before the heap
+  aborts. The first commit is 256 KiB
   (`MINIMUM_COMMIT`), and a growth commits at least double what is
   committed and at least what the allocation needs, rounded up to a page,
   never past the reservation (`Space::ensure_committed`), so a run of
@@ -1850,8 +1853,9 @@ object's offset up to the top.
   reset after each collection, with a 512 KiB floor ("The trigger and the
   growth policy").
 - **The move stress mode shifts every object** by `8 * (2 + epoch % 31)`
-  bytes up from the first offset, and back down to it at the next move, so
-  every handle changes at every move ("The move stress mode");
+  bytes, `epoch` the new move epoch, up from the first offset, and back
+  down to it at the next move, so every handle changes at every move ("The
+  move stress mode");
   `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_CACHES` and
   `NS_NEXT_STRESS_WIDE` are unchanged.
 - **Running out of memory aborts the process.** A commit the operating
