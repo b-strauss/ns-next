@@ -9,7 +9,8 @@ use crate::token::{Token, TokenKind};
 
 /// Maximum nesting depth for the recursive parser productions guarded by
 /// [`Parser::enter`] / [`Parser::leave`] (`parse_primary`,
-/// `parse_class_declaration`). The deepest real corpus
+/// `parse_class_declaration`, a chain of setter keywords in `parse_expression`,
+/// `parse_pattern_literal`). The deepest real corpus
 /// program nests in the single digits; 128 is far past any genuine program
 /// and well short of the (uncatchable) debug-build stack-overflow point at
 /// roughly 250 frames.

@@ -211,6 +211,19 @@ impl<'a> Parser<'a> {
     /// variablePattern → "?" id
     /// ```
     fn parse_pattern_literal(&mut self) -> Literal {
+        if !self.enter() {
+            self.leave();
+            let token = self.current();
+            self.push_error(token.span, "pattern nested too deeply");
+            self.skip_to_structural();
+            return Literal::Nil { span: token.span };
+        }
+        let literal = self.parse_pattern_literal_inner();
+        self.leave();
+        literal
+    }
+
+    fn parse_pattern_literal_inner(&mut self) -> Literal {
         let start = self.bump(); // `<`
         if self.at(TokenKind::Keyword) {
             while self.at(TokenKind::Keyword) {
@@ -371,6 +384,13 @@ impl<'a> Parser<'a> {
     /// `x::`, so the name is split off the lexeme here.
     pub(crate) fn parse_expression(&mut self) -> Expression {
         if self.at(TokenKind::SetterKeyword) {
+            if !self.enter() {
+                self.leave();
+                let token = self.current();
+                self.push_error(token.span, "expression nested too deeply");
+                self.skip_to_structural();
+                return Expression::Literal(Literal::Nil { span: token.span });
+            }
             let keyword = self.bump();
             let name = self.text(keyword).trim_end_matches(':');
             let target = Identifier {
@@ -382,6 +402,7 @@ impl<'a> Parser<'a> {
             };
             self.refuse_reserved_word(&target.name, target.span, "be assigned");
             let value = self.parse_expression();
+            self.leave();
             let span = target.span.merge(expression_span(&value));
             return Expression::Assign {
                 target,

@@ -1559,6 +1559,38 @@ mod class_tests {
         assert!(crate::parse(&"(".repeat(10_000)).is_err());
     }
 
+    /// A chain of setter keywords recurses once per keyword; past the
+    /// nesting limit it is a diagnostic, never a stack overflow.
+    #[test]
+    fn a_long_setter_chain_does_not_overflow() {
+        let source = format!(
+            "class Module = () ( run = ( {}1 ) ) : ()",
+            "x:: ".repeat(100_000)
+        );
+        let Err(diagnostics) = crate::parse(&source) else {
+            panic!("a chain past the limit is refused");
+        };
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "expression nested too deeply"));
+    }
+
+    /// Nested pattern literals recurse once per level, past the limit a
+    /// diagnostic as well.
+    #[test]
+    fn deeply_nested_pattern_literals_do_not_overflow() {
+        let source = format!(
+            "class Module = () ( run = ( ^{}1 ) ) : ()",
+            "<a: ".repeat(100_000)
+        );
+        let Err(diagnostics) = crate::parse(&source) else {
+            panic!("nesting past the limit is refused");
+        };
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "pattern nested too deeply"));
+    }
+
     #[test]
     fn deeply_nested_open_brackets_do_not_overflow() {
         assert!(crate::parse(&"[".repeat(10_000)).is_err());
