@@ -46,6 +46,16 @@ skip them, and no rule has to decide which node a comment belongs to. A
 later formatter attaches them to nodes by span; that is not part of this
 work.
 
+**Bracket spans in the AST.** A fold runs from an opening token to its
+closing one, and the AST today records neither for a method body, a class
+side or a slot section. `ast::Delimiters { open: Span, close: Option<Span> }`
+records them: `close` is `None` when recovery found none, and the fold then
+ends where the node ends. It is set on `MethodDeclaration` (the body's
+`( )`), `ClassBody` (the instance side's first `(` and last `)`, the class
+side's `( )`, and the header's slot section `| |`), `CodeBody` (its
+temporaries' `| |`) and `BlockExpression` (`[ ]`). Nothing in the runtime
+reads them.
+
 ## Part 2 — Recovery in the parser
 
 **Principle.** On a source without errors nothing changes: every new rule
@@ -57,8 +67,12 @@ is a valid parse, not a recovery.
 
 - *Balanced skipping* — `(…)`, `[…]` and `{…}` are skipped whole, never to
   the first closing bracket of any kind.
-- *A member start* — `pattern = (` (the existing `looks_like_method`),
-  `class`, an access modifier before either, or a category string.
+- *A member start* — what opens a member of a class side: a method,
+  `pattern = (` (the existing `looks_like_method`); a nested class, `class`
+  and a name (`at_nested_class`); a lazy slot's modifiers and name
+  (`at_lazy_slot_prefix`); each with an access modifier before it. A
+  category string opens no member: ns-next's grammar has categories only at
+  a module's head.
 
 The rules:
 
