@@ -5462,6 +5462,98 @@ mod tests {
         heap.pop_activation(activation);
     }
 
+    /// The divorce after a collection writes into the compacted object: a
+    /// retained activation's registers are found there once it is popped,
+    /// and an unretained one's stay nil. Both frames are moved, by the
+    /// garbage below them.
+    #[test]
+    fn a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained() {
+        let mut heap = frame_heap();
+        top_level_frame(&mut heap, 2);
+        let retained = heap.push_activation(header(), &[Value::small_integer(7)], 1);
+        let retained_frame = heap.reify(retained);
+        heap.retain_registers(retained);
+        heap.activation_set_local(retained, 1, Value::small_integer(8));
+        let unretained = heap.push_activation(header(), &[Value::small_integer(5)], 1);
+        let unretained_frame = heap.reify(unretained);
+        heap.activation_set_local(unretained, 1, Value::small_integer(6));
+        let mut retained_root = Value::object(heap.frame_object(retained_frame));
+        let mut unretained_root = Value::object(heap.frame_object(unretained_frame));
+        heap.collect_for_test(&mut [&mut retained_root, &mut unretained_root]);
+        assert_ne!(
+            heap.object_frame(retained_root.as_object().expect("an object"))
+                .expect("a frame")
+                .index,
+            retained_frame.index,
+            "the collection moved the frame"
+        );
+
+        heap.pop_activation(unretained);
+        heap.pop_activation(retained);
+
+        let retained_frame = heap
+            .object_frame(retained_root.as_object().expect("an object"))
+            .expect("a frame");
+        assert!(heap.frame_activation(retained_frame).is_none());
+        assert_eq!(
+            heap.frame_local(retained_frame, 0).as_small_integer(),
+            Some(7)
+        );
+        assert_eq!(
+            heap.frame_local(retained_frame, 1).as_small_integer(),
+            Some(8)
+        );
+        let unretained_frame = heap
+            .object_frame(unretained_root.as_object().expect("an object"))
+            .expect("a frame");
+        assert!(heap.frame_activation(unretained_frame).is_none());
+        assert!(heap.frame_local(unretained_frame, 0).is_nil());
+        assert!(heap.frame_local(unretained_frame, 1).is_nil());
+    }
+
+    /// The frame whose object `root` holds.
+    #[cfg(debug_assertions)]
+    fn frame_at_root<'gc>(heap: &Heap<'gc>, root: &Root) -> FrameReference<'gc> {
+        heap.object_frame(heap.fetch(root).as_object().expect("an object"))
+            .expect("a frame")
+    }
+
+    /// A move rotates a married frame like any object and leaves its
+    /// marriage alone: found again through a host root, it reads and writes
+    /// the live registers and answers its activation, and the divorce after
+    /// the move copies the retained registers into the moved object.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_married_frame_survives_a_move_and_is_divorced_into_its_moved_object() {
+        let mut heap = frame_heap();
+        top_level_frame(&mut heap, 2);
+        let activation = heap.push_activation(header(), &[Value::small_integer(7)], 1);
+        let frame = heap.reify(activation);
+        let before = frame.index;
+        let root = heap.stash(Value::object(heap.frame_object(frame)));
+        move_bare_heap(&mut heap);
+        let frame = frame_at_root(&heap, &root);
+        assert_ne!(frame.index, before, "the move gave the frame a new index");
+        assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(7));
+        heap.frame_set_local(frame, 1, Value::small_integer(9));
+        assert_eq!(
+            heap.activation_local(activation, 1).as_small_integer(),
+            Some(9),
+            "a write through the moved frame reaches the live register"
+        );
+        assert!(heap
+            .frame_activation(frame)
+            .is_some_and(|live| live.same(activation)));
+
+        heap.retain_registers(activation);
+        heap.pop_activation(activation);
+
+        let frame = frame_at_root(&heap, &root);
+        assert!(heap.frame_activation(frame).is_none());
+        assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(7));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(9));
+    }
+
     /// Two ordinary objects reference each other through their `Instance`
     /// payloads, so the traversal reaches back to the first one through the
     /// second. This is what pins that the traversal terminates on a cycle:
