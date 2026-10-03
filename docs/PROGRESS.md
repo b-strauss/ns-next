@@ -4037,7 +4037,8 @@ measured program reaches.
   `ef96c14`, and this commit) — every patched target, the visit's first
   error and the wide form past each table are pinned; an encoded body's
   tables and sites are private to `bytecode::compact`, read through inlined
-  accessors, with `vm::run` unchanged at 8,525 instructions and 0x3A8;
+  accessors, with `vm::run` unchanged by them (the figures are in
+  [execution.md](design/execution.md));
   two `CompiledCode`s are equal when they mean the same, a float literal
   by its bits; loading decodes each body once; and a source of more than
   `u32::MAX` bytes is refused by `ns_syntax::lex`, which `parse` and
@@ -4062,8 +4063,8 @@ out of its own kind's labelled block, removed it (`9996d38`).
 twenty-four sources are faster, by 1.2% to 5.4%, seven of them with
 separated ranges (CD -4.8%, `bench_megamorphic.ns` -5.4%, `bench_loop.ns`
 -1.9%); List, Permute and `bench_send.ns` move by +0.1% to +0.3%, inside
-their ranges. `vm::run` is 8,525 instructions with a stack frame of 0x3A8
-bytes, against 7,000 and 0x358. The figures are in
+their ranges. `vm::run` was 8,525 instructions with a stack frame of 0x3A8
+bytes at `0155374`, against 7,000 and 0x358; its size now is in
 [execution.md](design/execution.md), "What the compact instruction
 encoding moved".
 
