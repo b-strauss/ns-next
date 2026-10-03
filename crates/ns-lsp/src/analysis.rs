@@ -5,6 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use ns_syntax::{Diagnostic, Severity, Span};
 
+use crate::folding::{self, Fold};
 use crate::semantic_tokens::{self, Classified};
 
 /// One error to show, with the message `ns-next` itself produces.
@@ -27,6 +28,7 @@ impl From<Diagnostic> for Finding {
 pub struct Analysis {
     pub findings: Vec<Finding>,
     pub classified: Vec<Classified>,
+    pub folds: Vec<Fold>,
 }
 
 /// Every error `ns-next run` would refuse `text` for before running it --
@@ -61,20 +63,27 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                     severity: Severity::Error,
                 }],
                 classified: Vec::new(),
+                folds: Vec::new(),
             }
         }
     }
 }
 
 fn analyze_unguarded(text: &str) -> Analysis {
-    let parsed = ns_syntax::parse_for_editor(text);
-    // The resolver runs on a recovered module too. None of its errors can
-    // come from the recovery, which never invents a declaration
-    // (`docs/design/frontend.md`, "Recovery").
-    let resolution = ns_runtime::resolve_for_editor(parsed.module);
-    let classified =
-        semantic_tokens::classify(&resolution.module, &resolution.bindings, &parsed.tokens);
-    let mut findings: Vec<Finding> = parsed.diagnostics.into_iter().map(Finding::from).collect();
+    let ns_syntax::EditorParse {
+        tokens,
+        module,
+        comments,
+        diagnostics,
+    } = ns_syntax::parse_for_editor(text);
+    // The resolver runs on a recovered module too. Recovery adds no
+    // declaration the source does not contain, so it causes no duplicate or
+    // clashing-member error; an unbound name is a send in Newspeak, not an
+    // error (`docs/design/frontend.md`, "Recovery").
+    let resolution = ns_runtime::resolve_for_editor(module);
+    let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
+    let folds = folding::folds(&resolution.module, &comments, text);
+    let mut findings: Vec<Finding> = diagnostics.into_iter().map(Finding::from).collect();
     findings.extend(resolution.errors.into_iter().map(|error| Finding {
         span: error.span,
         message: error.message,
@@ -83,6 +92,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
     Analysis {
         findings,
         classified,
+        folds,
     }
 }
 
