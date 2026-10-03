@@ -277,6 +277,83 @@ mod tests {
     }
 
     #[test]
+    fn a_closure_without_parameters_collapses_to_brackets() {
+        let text = indoc! {"
+            class Module = () (
+                run = ( ^[
+                    1 ] )
+            )
+        "};
+        assert_eq!(
+            lines_of(text),
+            [fold(0, 3, "(…)"), fold(1, 2, "(…)"), fold(1, 2, "[…]")]
+        );
+    }
+
+    #[test]
+    fn a_class_header_slot_section_folds() {
+        let text = indoc! {"
+            class Module = (
+                | first
+                  second |
+            ) () : ()
+        "};
+        assert_eq!(lines_of(text), [fold(0, 3, "(…)"), fold(1, 2, "|…|")]);
+    }
+
+    /// Without its closer a slot section folds to its last slot and a
+    /// closure to its last token, never to the method's `)` after them.
+    #[test]
+    fn an_unclosed_slot_section_and_closure_fold_to_their_last_token() {
+        let slots = indoc! {"
+            class Module = () (
+                run = (
+                    | first
+                      second
+                )
+            )
+        "};
+        assert_eq!(
+            lines_of(slots),
+            [fold(0, 5, "(…)"), fold(1, 4, "(…)"), fold(2, 3, "|…|")]
+        );
+        let closure = indoc! {"
+            class Module = () (
+                run = (
+                    ^[:each |
+                        each
+                )
+            )
+        "};
+        assert_eq!(
+            lines_of(closure),
+            [
+                fold(0, 5, "(…)"),
+                fold(1, 4, "(…)"),
+                fold(2, 3, "[:each | …]")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_comment_is_encoded_with_the_comment_kind() {
+        let text = indoc! {"
+            (* A module
+               with a header. *)
+            class Module = () ()
+        "};
+        let parsed = ns_syntax::parse_for_editor(text);
+        let line_index = crate::documents::LineIndex::new(text);
+        let ranges = encode(
+            &folds(&parsed.module, &parsed.comments, text),
+            text,
+            &line_index,
+        );
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].kind, Some(FoldingRangeKind::Comment));
+    }
+
+    #[test]
     fn a_comment_folds_to_its_first_line() {
         let text = indoc! {"
             (* A module
