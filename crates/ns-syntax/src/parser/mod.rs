@@ -24,6 +24,10 @@ pub struct Parser<'a> {
     /// Current recursion depth across the guarded productions. Incremented by
     /// [`Parser::enter`], decremented by [`Parser::leave`].
     depth: u32,
+    /// The member starts a recovering re-parse reads as the end of input
+    /// (`parse_statement`), innermost last: a diagnostic there names the
+    /// member, not an end of input the source does not have.
+    bounds: Vec<crate::span::Span>,
 }
 
 impl<'a> Parser<'a> {
@@ -34,6 +38,7 @@ impl<'a> Parser<'a> {
             position: 0,
             diagnostics: Vec::new(),
             depth: 0,
+            bounds: Vec::new(),
         }
     }
 
@@ -90,6 +95,15 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// What a diagnostic says it found at `token`.
+    fn found(&self, token: Token) -> String {
+        if token.kind == TokenKind::EndOfInput && self.bounds.contains(&token.span) {
+            "the start of the next member".to_string()
+        } else {
+            format!("{:?}", token.kind)
+        }
+    }
+
     fn eat(&mut self, kind: TokenKind) -> bool {
         if self.at(kind) {
             self.bump();
@@ -115,7 +129,7 @@ impl<'a> Parser<'a> {
             let token = self.current();
             self.diagnostics.push(Diagnostic::error(
                 token.span,
-                format!("expected {kind:?}, found {:?}", token.kind),
+                format!("expected {kind:?}, found {}", self.found(token)),
             ));
             None
         }
@@ -164,7 +178,7 @@ impl<'a> Parser<'a> {
             let token = self.current();
             self.push_error(
                 token.span,
-                &format!("expected a name to {role}, found {:?}", token.kind),
+                &format!("expected a name to {role}, found {}", self.found(token)),
             );
             return Identifier {
                 name: String::new(),

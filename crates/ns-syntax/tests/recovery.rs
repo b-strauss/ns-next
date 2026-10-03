@@ -2,7 +2,7 @@
 //! editor shows while a file is typed. Each test asserts that what follows
 //! the error survives, with its name and span.
 
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use ns_syntax::ast::{ClassBody, MessagePattern, Module};
 
 fn recovered(source: &str) -> (Module, Vec<String>) {
@@ -180,10 +180,85 @@ fn an_unclosed_block_in_an_unclosed_method_keeps_the_members_after_it() {
     assert_eq!(
         messages,
         [
-            "expected RightBracket, found Identifier",
+            "expected RightBracket, found the start of the next member",
             "expected `)` to end the method body, found Identifier",
         ]
     );
+}
+
+/// `name = (expression)` is a comparison as much as a member's start. A
+/// statement whose error lies after such a comparison, or inside one that
+/// is no clean member, swallowed no member: nothing is invented, and the
+/// members after it stay, as without the re-parse.
+#[test]
+fn a_comparison_that_reads_as_a_member_is_not_one() {
+    for statement in [
+        "(count = (limit + 1)) ifTrue: [ foo: ]. ^count",
+        "^items detect: [:each | each size = (limit + 1)] ifNone: [ foo: ]",
+    ] {
+        let source = formatdoc! {"
+            class Module = () (
+                first = ( {statement} )
+                second = ( ^2 )
+            ) : (
+                make = ( ^self new )
+            )
+        "};
+        let (module, messages) = recovered(&source);
+        let root = &module.root_class;
+        assert_eq!(
+            method_names(&root.instance_side),
+            ["first", "second"],
+            "{statement}: {messages:?}"
+        );
+        let class_side = root.class_side.as_ref().expect("a class side");
+        assert_eq!(method_names(class_side), ["make"], "{statement}");
+        assert_eq!(messages.len(), 1, "{statement}: {messages:?}");
+    }
+}
+
+/// `x = (1 + )` fails as a member itself, so it is none: no method `x` is
+/// invented. (The parenthesis it leaves open still takes the method's `)`,
+/// as it did before statements recovered.)
+#[test]
+fn a_comparison_that_fails_as_a_member_invents_none() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( x = (1 + ). ^x )
+            second = ( ^2 )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let names = method_names(&module.root_class.instance_side);
+    assert_eq!(
+        names.first().map(String::as_str),
+        Some("first"),
+        "{messages:?}"
+    );
+    assert!(!names.contains(&"x".to_string()), "{names:?}");
+}
+
+/// An ambiguous source: `+ second = ( ^2 )` and `at: second = ( ^2 )` are
+/// members themselves, a binary and a keyword method, so the half-typed
+/// send's selector starts the member that holds the error and `second`
+/// becomes its parameter.
+#[test]
+fn a_half_typed_send_before_a_member_starts_the_member_with_its_selector() {
+    for (statement, member) in [("^1 +", "+"), ("^dict at:", "at:")] {
+        let source = formatdoc! {"
+            class Module = () (
+                first = ( {statement}
+                second = ( ^2 )
+            ) : ()
+        "};
+        let (module, messages) = recovered(&source);
+        assert_eq!(
+            method_names(&module.root_class.instance_side),
+            ["first", member],
+            "{statement}: {messages:?}"
+        );
+        assert_eq!(messages.len(), 1, "{statement}: {messages:?}");
+    }
 }
 
 /// A bare `= (` has no message pattern, so it starts no method and no

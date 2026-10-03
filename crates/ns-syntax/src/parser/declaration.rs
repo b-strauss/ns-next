@@ -26,7 +26,7 @@ impl<'a> Parser<'a> {
                         let token = self.current();
                         self.push_error(
                             token.span,
-                            &format!("expected an expression, found {:?}", token.kind),
+                            &format!("expected an expression, found {}", self.found(token)),
                         );
                         Expression::Literal(Literal::Nil { span: caret.span })
                     });
@@ -41,8 +41,8 @@ impl<'a> Parser<'a> {
                         self.push_error(
                             token.span,
                             &format!(
-                                "expected the end of the body after a return (§7.2), found {:?}",
-                                token.kind
+                                "expected the end of the body after a return (§7.2), found {}",
+                                self.found(token)
                             ),
                         );
                         self.skip_rest_of_body();
@@ -72,7 +72,10 @@ impl<'a> Parser<'a> {
                         let token = self.current();
                         self.push_error(
                             token.span,
-                            &format!("expected `.` between statements, found {:?}", token.kind),
+                            &format!(
+                                "expected `.` between statements, found {}",
+                                self.found(token)
+                            ),
                         );
                     }
                     self.skip_rest_of_statement();
@@ -92,8 +95,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// A statement's expression. When it reported an error and a member
-    /// starts inside what it consumed, the body was never closed and the
+    /// A statement's expression. When it reported an error inside a member
+    /// that starts in what it consumed, the body was never closed and the
     /// member is the next one in the class: the expression is parsed again
     /// up to that member start, its first diagnostics dropped, so the member
     /// is read as one and the half-typed method keeps the class around it. A
@@ -103,16 +106,21 @@ impl<'a> Parser<'a> {
     fn parse_statement(&mut self) -> Option<Expression> {
         let checkpoint = self.checkpoint();
         let expression = self.parse_expression();
-        let reported_an_error = self.diagnostics[checkpoint.1..]
+        let first_error = self.diagnostics[checkpoint.1..]
             .iter()
-            .any(|diagnostic| diagnostic.severity == crate::diagnostic::Severity::Error);
-        if !reported_an_error {
+            .find(|diagnostic| diagnostic.severity == crate::diagnostic::Severity::Error)
+            .map(|diagnostic| diagnostic.span.start);
+        let Some(first_error) = first_error else {
             return Some(expression);
-        }
+        };
         let reached = self.position;
-        let member_start =
-            (checkpoint.0..reached).find(|position| self.member_starts_at(*position));
-        self.position = reached;
+        let reached_offset = self.current().span.start;
+        let member_start = self.member_holding_error(checkpoint.0, first_error);
+        // Found by its offset: a negative literal the speculative parses
+        // split in two moves the index on.
+        self.position = (reached..self.tokens.len())
+            .find(|index| self.tokens[*index].span.start == reached_offset)
+            .unwrap_or(reached);
         let Some(member_start) = member_start else {
             return Some(expression);
         };
@@ -126,18 +134,90 @@ impl<'a> Parser<'a> {
         // body bounds its own statements the same way, inside this bound.
         let bound = self.tokens[member_start];
         self.tokens[member_start].kind = TokenKind::EndOfInput;
+        self.bounds.push(bound.span);
         let expression = self.parse_expression();
-        self.tokens[member_start] = bound;
-        // A diagnostic at the bound names the token the source has there,
-        // not the end of input the re-parse saw.
-        let seen = format!("found {:?}", TokenKind::EndOfInput);
-        let real = format!("found {:?}", bound.kind);
-        for diagnostic in &mut self.diagnostics[checkpoint.1..] {
-            if diagnostic.span == bound.span {
-                diagnostic.message = diagnostic.message.replace(&seen, &real);
-            }
+        self.bounds.pop();
+        // A negative literal split in two before the bound moves it on.
+        let index = (member_start..self.tokens.len()).find(|index| {
+            self.tokens[*index].span == bound.span
+                && self.tokens[*index].kind == TokenKind::EndOfInput
+        });
+        debug_assert!(index.is_some(), "the bound left the token stream");
+        if let Some(index) = index {
+            self.tokens[index] = bound;
         }
         Some(expression)
+    }
+
+    /// The first position, from `first` up to the statement's first error,
+    /// at which a member starts that holds that error: one that parses
+    /// without an error of its own through its `)`, or, its body clean, up to
+    /// where an unclosed body ends. An ordinary comparison such as `size =
+    /// (limit + 1)` reads as a member too, so one that ends before the error,
+    /// or fails itself, is no member the statement swallowed.
+    fn member_holding_error(&mut self, first: usize, first_error: u32) -> Option<usize> {
+        let mut position = first;
+        while self.tokens.get(position).is_some_and(|token| {
+            token.span.start <= first_error && token.kind != TokenKind::EndOfInput
+        }) {
+            if self.member_starts_at(position)
+                && self
+                    .speculative_member_end(position)
+                    .is_some_and(|end| first_error < end)
+            {
+                return Some(position);
+            }
+            position += 1;
+        }
+        None
+    }
+
+    /// Where a member parsed from `position` ends, if it parses cleanly: see
+    /// `member_holding_error`. Nothing is kept, and the cursor stays.
+    fn speculative_member_end(&mut self, position: usize) -> Option<u32> {
+        let cursor = self.position;
+        self.position = position;
+        let checkpoint = self.checkpoint();
+        // Each speculative member can hold another: the depth guard bounds
+        // the chain a run of half-typed members makes.
+        let end = if self.enter() {
+            self.clean_member_end()
+        } else {
+            None
+        };
+        self.leave();
+        self.restore(checkpoint);
+        self.position = cursor;
+        end
+    }
+
+    /// `speculative_member_end`'s parse, at the member start.
+    fn clean_member_end(&mut self) -> Option<u32> {
+        let diagnostics = self.diagnostics.len();
+        if self.at_nested_class() {
+            let _ = self.parse_class_declaration();
+            return (self.diagnostics.len() == diagnostics).then(|| self.previous_span().end);
+        }
+        if self.at_lazy_slot() {
+            let _ = self.parse_lazy_slot_declaration();
+            self.eat(TokenKind::Dot);
+            return Some(self.previous_span().end);
+        }
+        if !self.looks_like_method() {
+            return None;
+        }
+        let _ = self.parse_access_modifier();
+        let _ = self.parse_message_pattern();
+        self.expect(TokenKind::Equals);
+        self.expect(TokenKind::LeftParenthesis);
+        let _ = self.parse_code_body();
+        if self.diagnostics.len() != diagnostics {
+            return None;
+        }
+        if self.at(TokenKind::RightParenthesis) {
+            return Some(self.bump().span.end);
+        }
+        (self.at(TokenKind::EndOfInput) || self.at_member_start()).then(|| self.previous_span().end)
     }
 
     /// `at_member_start` at another position, the cursor left where it was.
@@ -346,8 +426,8 @@ impl<'a> Parser<'a> {
         self.push_error(
             token.span,
             &format!(
-                "expected `)` to end the method body, found {:?}",
-                token.kind
+                "expected `)` to end the method body, found {}",
+                self.found(token)
             ),
         );
         self.skip_rest_of_body();

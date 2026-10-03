@@ -121,7 +121,7 @@ impl<'a> Parser<'a> {
                 let token = self.current();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
                     token.span,
-                    format!("expected an expression, found {:?}", token.kind),
+                    format!("expected an expression, found {}", self.found(token)),
                 ));
                 Expression::Literal(Literal::Nil { span: token.span })
             }
