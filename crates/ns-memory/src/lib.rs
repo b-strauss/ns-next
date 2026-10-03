@@ -5,6 +5,8 @@
 //! fixed base (docs/design/memory.md, "The memory layer"). This is
 //! the only crate in the workspace with `unsafe` code: every operating-system
 //! call is in `platform`, and everything this crate hands out is safe to use.
+//! The heap reads through `Reservation::prefix`, the committed read-write
+//! range at the base, which is lent in O(1).
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(clippy::undocumented_unsafe_blocks)]
 
@@ -79,11 +81,14 @@ impl std::error::Error for MemoryError {}
 
 /// One contiguous reserved address range and the record of which pages of it
 /// are committed and how they are protected. The base never moves, so a byte
-/// offset from it can serve as a handle.
+/// offset from it can serve as a handle. The heap's access path is
+/// `prefix`: the end of the committed read-write range at the base is kept
+/// as a field, refreshed whenever the page map changes.
 pub struct Reservation {
     base: NonNull<u8>,
     size: usize,
     pages: PageMap,
+    accessible_prefix: usize,
 }
 
 impl Reservation {
@@ -113,6 +118,7 @@ impl Reservation {
             base,
             size,
             pages: PageMap::new(),
+            accessible_prefix: 0,
         })
     }
 
@@ -133,7 +139,7 @@ impl Reservation {
                 code,
             }
         })?;
-        self.pages.set(range, Some(Protection::ReadWrite));
+        self.record(range, Some(Protection::ReadWrite));
         Ok(())
     }
 
@@ -151,7 +157,7 @@ impl Reservation {
                 code,
             });
         }
-        self.pages.set(range, None);
+        self.record(range, None);
         Ok(())
     }
 
@@ -179,7 +185,7 @@ impl Reservation {
                 code,
             });
         }
-        self.pages.set(range, Some(protection));
+        self.record(range, Some(protection));
         Ok(())
     }
 
@@ -254,7 +260,39 @@ impl Reservation {
     /// could have left, and `words` never lends memory the map calls
     /// accessible but the system no longer does.
     fn record_failure(&mut self, range: Range<usize>, conservative: Option<Protection>) {
-        self.pages.set(range, conservative);
+        self.record(range, conservative);
+    }
+
+    /// Every change to the page map goes through here, so the prefix the heap
+    /// reads on every access is never stale.
+    fn record(&mut self, range: Range<usize>, state: Option<Protection>) {
+        self.pages.set(range, state);
+        self.accessible_prefix = self.pages.accessible_prefix();
+    }
+
+    /// The words of `0..end` when every byte of it is committed read-write --
+    /// the heap's space, read on every access, so this is one comparison
+    /// against the end the page map last reported rather than a walk of it.
+    /// `end` must be a multiple of 8; 0 lends an empty slice.
+    pub fn prefix(&self, end: usize) -> Option<&[u64]> {
+        self.check_prefix(end)?;
+        // SAFETY: `check_prefix` found `0..end` inside the committed read-write
+        // prefix, which starts at the page-aligned base, so it is 8-byte
+        // aligned and initialized; `&self` keeps `protect` and `decommit` away
+        // while the slice lives.
+        Some(unsafe { std::slice::from_raw_parts(self.base.as_ptr().cast::<u64>(), end / 8) })
+    }
+
+    /// As `prefix`, mutably.
+    pub fn prefix_mut(&mut self, end: usize) -> Option<&mut [u64]> {
+        self.check_prefix(end)?;
+        // SAFETY: as for `prefix`, and `&mut self` makes the slice unique.
+        Some(unsafe { std::slice::from_raw_parts_mut(self.base.as_ptr().cast::<u64>(), end / 8) })
+    }
+
+    fn check_prefix(&self, end: usize) -> Option<()> {
+        (end.is_multiple_of(8) && end <= self.accessible_prefix && end <= isize::MAX as usize)
+            .then_some(())
     }
 
     /// A non-empty range inside the reservation, on page boundaries.
@@ -286,6 +324,53 @@ impl Drop for Reservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_prefix_is_lent_up_to_the_end_of_the_committed_read_write_range() {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(4 * page).expect("reserve");
+        assert!(reservation.prefix(8).is_none(), "nothing committed yet");
+        assert_eq!(reservation.prefix(0).map(<[u64]>::len), Some(0));
+        reservation.commit(0..2 * page).expect("commit");
+        assert_eq!(
+            reservation.prefix(2 * page).map(<[u64]>::len),
+            Some(2 * page / 8)
+        );
+        assert!(reservation.prefix(2 * page + 8).is_none());
+        assert!(
+            reservation.prefix(12).is_none(),
+            "an end that is no word boundary"
+        );
+        reservation.commit(2 * page..3 * page).expect("commit");
+        assert!(reservation.prefix(3 * page).is_some());
+        reservation
+            .protect(page..2 * page, Protection::NoAccess)
+            .expect("protect");
+        assert!(reservation.prefix(page).is_some());
+        assert!(reservation.prefix(page + 8).is_none());
+        reservation.decommit(0..page).expect("decommit");
+        assert!(reservation.prefix(8).is_none());
+    }
+
+    #[test]
+    fn a_write_through_the_mutable_prefix_reads_back_through_words() {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(page).expect("reserve");
+        reservation.commit(0..page).expect("commit");
+        let prefix = reservation.prefix_mut(16).expect("committed");
+        prefix[1] = 0xABCD;
+        assert_eq!(reservation.words(8..16), Some(&[0xABCD][..]));
+    }
+
+    #[test]
+    fn a_recorded_failure_ends_the_prefix() {
+        let page = Reservation::page_size();
+        let mut reservation = Reservation::reserve(2 * page).expect("reserve");
+        reservation.commit(0..2 * page).expect("commit");
+        reservation.record_failure(page..2 * page, None);
+        assert!(reservation.prefix(page).is_some());
+        assert!(reservation.prefix(page + 8).is_none());
+    }
 
     /// Pins the rule only: a range recorded after a failed call is no longer
     /// lent. It does not provoke an operating-system failure.

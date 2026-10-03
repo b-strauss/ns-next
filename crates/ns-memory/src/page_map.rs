@@ -56,6 +56,16 @@ impl PageMap {
         self.ranges = merged;
     }
 
+    /// The end of the read-write range that starts at byte 0, or 0 when byte 0
+    /// is not committed read-write. Adjacent ranges of one protection are
+    /// merged, so the first range is the whole prefix.
+    pub(crate) fn accessible_prefix(&self) -> usize {
+        match self.ranges.first() {
+            Some((range, Protection::ReadWrite)) if range.start == 0 => range.end,
+            _ => 0,
+        }
+    }
+
     /// Whether every byte of `range` is committed, whatever its protection.
     pub(crate) fn is_committed(&self, range: Range<usize>) -> bool {
         self.covered(range, |_| true)
@@ -137,6 +147,28 @@ mod tests {
         map.set(0..4096, Some(Protection::ReadWrite));
         map.set(4096..8192, Some(Protection::ReadWrite));
         assert!(map.is_accessible(0..8192));
+    }
+
+    #[test]
+    fn the_accessible_prefix_is_the_read_write_range_at_the_base() {
+        let mut map = PageMap::new();
+        assert_eq!(map.accessible_prefix(), 0);
+        map.set(4096..8192, Some(Protection::ReadWrite));
+        assert_eq!(
+            map.accessible_prefix(),
+            0,
+            "a range not at the base is no prefix"
+        );
+        map.set(0..4096, Some(Protection::ReadWrite));
+        assert_eq!(
+            map.accessible_prefix(),
+            8192,
+            "adjacent ranges merge into one prefix"
+        );
+        map.set(4096..8192, Some(Protection::NoAccess));
+        assert_eq!(map.accessible_prefix(), 4096);
+        map.set(0..4096, None);
+        assert_eq!(map.accessible_prefix(), 0);
     }
 
     #[test]
