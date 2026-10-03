@@ -9,21 +9,20 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30, 2026-10-01 and 2026-10-02 when they were written.
+Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-03 when they were written.
 
 ## Next
 
-**Road step 3a, the object representation** ("Step 3, the object space"
-below): every object a header word, a class word and its fields, still in
-today's arena, one block of words per slot; class objects, closures and
-reified frames become such objects and the frame arena goes
-([object-model.md](design/object-model.md), "Planned: the object layout").
-Its design was completed with the user on 2026-10-03, and its
-implementation plan is
-[2026-10-03-1338-ns-next-object-representation.md](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md). Road step 3b, the object space in `ns-memory`'s
-reservation, follows it.
-Everything before it on the road is built, the compact instruction
-encoding included.
+**Road step 3b, the object space** ("Step 3, the object space" below): the
+arena of boxed blocks gives way to one space in `ns-memory`'s reservation,
+with byte-offset handles, bump allocation and sliding compaction over
+variably sized objects; the layout of an object's words, which road step 3a
+built, does not change ([memory.md](design/memory.md), "Planned: the object
+space"; [object-model.md](design/object-model.md), "Planned with road step
+3b: handles"). Its design decisions were taken with the user on 2026-09-29
+and 2026-10-03; it has no implementation plan yet, so the next session
+writes one. Everything before it on the road is built, road step 3a, the
+object representation, included.
 
 ## The road to a high-performance VM
 
@@ -82,22 +81,24 @@ and `prior-art/newspeak-benchmarks`.
   encoding".
 - **Step 3, the object space.** One header word (the application id as the
   cache guard, the identity hash, format, size, GC bits, a `LargeInteger`'s
-  sign) and a class word,
-  the fields inline, variably sized objects in one VM-owned space with
-  byte-offset handles; classes, closures and reified frames become heap
-  objects and the frame arena goes; strings, already in two widths on the
-  arena ([core-library.md](design/core-library.md), "Strings are code
-  points in two widths"), become byte- and word-format objects in the
-  space; `Symbol` under `String`; the application cache keyed by id. [memory.md](design/memory.md),
-  "Planned: the object space"; [object-model.md](design/object-model.md),
-  "Planned: the object layout"; [image-format.md](design/image-format.md),
-  "Planned: the image under the new representation". Built in two plans
-  (decided with the user on 2026-10-03), as road step 2's value was built
-  on today's arena first: **3a, the representation** -- each arena slot one
-  block of words in the final layout, the handle still an arena index, every
-  object kind a format, the frame arena gone, the image's frames object
-  records -- and **3b, the space** -- the arena replaced by `ns-memory`'s
-  reservation, byte-offset handles, bump allocation and sliding compaction.
+  sign) and a class word, the fields inline, variably sized objects in one
+  VM-owned space with byte-offset handles. Built in two plans (decided with
+  the user on 2026-10-03), as road step 2's value was built on today's arena
+  first. **3a, the representation -- built** (2026-10-03,
+  [its plan](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md)):
+  each arena slot one block of words in the final layout, the handle still
+  an arena index; every object kind a format, class objects, closures and
+  reified frames among them, and the frame arena gone; strings and symbols
+  byte- and 32-bit-indexed objects, `Symbol` under `String`; per-heap ids
+  for mixins, applications and code, the application cache keyed by them;
+  the image's frames object records, sized in a first pass before anything
+  is allocated. [object-model.md](design/object-model.md), "The object
+  layout"; [image-format.md](design/image-format.md), "Frames are object
+  records", "Two passes". **3b, the space** -- the arena replaced by
+  `ns-memory`'s reservation, byte-offset handles, bump allocation and
+  sliding compaction. [memory.md](design/memory.md), "Planned: the object
+  space"; [image-format.md](design/image-format.md), "Planned: the image
+  under the object space and generations".
 - **Step 4, generations**: eden and two survivor spaces below the old space,
   a copying scavenger with age-based tenuring, and a remembered bit and set
   behind the store accessors. [memory.md](design/memory.md), "Planned:
@@ -107,7 +108,7 @@ and `prior-art/newspeak-benchmarks`.
   `become:` is the first way a running activation's receiver can change
   shape (decided with the user on 2026-10-03).
   [object-model.md](design/object-model.md), "Planned: `become:` through
-  forwarders", "What a slot access checks".
+  forwarders", "Planned with road step 5: what a slot access checks".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
   closures, boxed floats and `Array new:`, with headroom past the scavenge
   threshold so that collection stays at safepoints.
@@ -213,8 +214,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   "Code families".
 - **Guarding a private lexical site on N's mixin** rather than its
   application — kept open until a program has such a site (a mixin under
-  several superclasses) to measure; the per-mixin id it wants comes with the
-  object representation (step 3a of the road). [dispatch.md](design/dispatch.md),
+  several superclasses) to measure; the per-mixin id it wants, `MixinId`,
+  exists since road step 3a. [dispatch.md](design/dispatch.md),
   "Decisions".
 - **Divide-and-conquer decimal conversion.** `printString` of a
   `LargeInteger` divides by `10^19` once per nineteen digits
@@ -230,17 +231,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `num-bigint` does. Lending the slices instead removes
   an allocation and a copy per recursive step; unmeasured.
   [core-library.md](design/core-library.md), "Large integers".
-- **`Heap::large_integer` copies a `LargeInteger`'s digits out on every
-  leaf send**, for the receiver and for an argument alike
-  (`builtins/numbers.rs`: `execute_large_integer`, `integer_operand`; and
-  `builtins/value.rs`'s derived equality and hash), as every heap accessor
-  copies out ([memory.md](design/memory.md), "The seam"). For `<`, `=`
-  and `hash`, and `printString` of a short integer, the copy (an allocation
-  and a pass over every digit) dominates the cost, since the operation
-  itself reads the digits once. Road step 3a, the object representation,
-  removes it by keeping the digits inline in the object, where a leaf can
-  read them in place.
-  [core-library.md](design/core-library.md), "Large integers".
+- **`LargeInteger` arithmetic copies its operands' digits out.** `=`, `hash`,
+  the comparisons and the sign tests read a `LargeInteger`'s digits in place
+  (`Heap::with_large_integer`), in `builtins/numbers.rs` and the derived
+  equality and hash of `builtins/value.rs`, since road step 3a keeps the
+  digits inline in the object. Arithmetic, `printString` and the other leaves
+  that compute still take each operand through `Heap::large_integer`
+  (`execute_large_integer`, `integer_operand`), an allocation and a pass over
+  every digit before the operation, which for a short integer can dominate
+  it. Lending the operands to `arbitrary_integer/`, which already works on
+  `&[u64]`, would remove the copy; the result is still allocated through
+  `Mutator::new_integer`. Unmeasured. [core-library.md](design/core-library.md),
+  "Large integers"; [memory.md](design/memory.md), "Known rough edges in the
+  seam".
 - **`Object>>==` reads the arena for every two distinct objects.** The
   identity leaf (`builtins/object_class.rs`, `identical`) gives a boxed
   `Float` bit identity, so `==` of two distinct handles asks the heap
@@ -479,20 +482,20 @@ value objects are never copied across an actor boundary (§3.1.1).
   collector added per round; on the four other collecting sources the pause
   *exceeds* the measured difference, on `bench_block.ns` it falls 1.05 ms
   short. What sets `bench_block.ns` apart: 269 collections against 26 to 107
-  at a similar live count, and the only populated frame arena. Three cheap
-  experiments, none run: a fixture whose blocks capture nothing (separates
-  the frame arena from everything else); varying `COLLECTION_FLOOR`
+  at a similar live count, and, when measured, the only populated frame
+  arena. Three cheap experiments, none run: a fixture whose blocks capture nothing (separates
+  the reified frames from everything else); varying `COLLECTION_FLOOR`
   (separates a cost that tracks the collection count from one that tracks
   the pause); and `COLLECTION_FLOOR` raised above the whole allocation, so it
   never collects but still pays the trigger's comparison. Not run either:
-  pre-sizing the arenas with `with_capacity`, and whether the max-over-median
+  pre-sizing the arena with `with_capacity`, and whether the max-over-median
   latency gap persists under the collector. The allocator measurement puts
   16.9% of `bench_block.ns`'s samples in the Windows heap and measures it
   15.6% faster under mimalloc ([memory.md](design/memory.md), "Payloads
   belong to the Rust allocator, and what that costs"), but whether that is
   this residual was not isolated. The object representation (road step 3a)
-  will remove the frame arena and the object space (road step 3b) the
-  per-payload frees, so the collector will be measured afresh after each.
+  removed the frame arena, and the object space (road step 3b) will remove
+  the per-object frees, so the collector is measured afresh after each.
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
   Hypothesis (a), the seeded symbol, is refuted; (b), the extra `Value`-level
   class object, and (c), hardware counters, are to run.
@@ -537,16 +540,6 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Defects that change a correct program's output
 
-- **`Symbol new` and `String new` answer an instance with no text.**
-  `decide_factory` (`interpreter/instantiate.rs`) special-cases only the VM
-  mirror's class and `Array`, so both reach `decide_instantiation` and make a
-  slotless instance of the class: `String new size` does not understand
-  `size`, and `Symbol new == #foo` answers `true`, since a value's `==` is its
-  derived equality, which finds two slotless instances of one class equal. Instantiating
-  `Symbol` should be refused, as `Mutator::new_symbol` is meant to be the only
-  way to make one, and `String new` should answer an empty string; the object
-  representation (road step 3a) settles both, with goldens
-  ([object-model.md](design/object-model.md), "Planned: the object layout").
 - **A started `Stopwatch` carried across a snapshot reads a wrong time in
   another process.** Its clock counts from an origin taken once per process
   (`platform.rs`, `CLOCK_ORIGIN`), where Primordial Soup's primitive reads
@@ -614,58 +607,29 @@ three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
 - **Load does not check that a mixin level sits directly above a class of its
   applying row**; the run-time arity guard turns a crafted mismatch into a
   Newspeak error. [image-format.md](design/image-format.md).
-- **A crafted image can pair a register-less converted frame with a
-  by-reference closure, and an `own_index` bound is unchecked** — wrong but
-  safe output, accepted; it stays safe because every access is bounds-checked
-  per object, today per `Vec` and in the planned object space against the
-  object's own word count ([memory.md](design/memory.md), "Planned: the
-  object space"). The register-less pairing will disappear with road step 3a,
-where every reified frame will carry its full register file on the wire.
-[image-format.md](design/image-format.md).
+- **An `own_index` bound is unchecked** — wrong but safe output, accepted; it
+  stays safe because every access is bounds-checked per object, today per
+  block and in the planned object space against the object's own word count
+  ([memory.md](design/memory.md), "Planned: the object space").
+  [image-format.md](design/image-format.md), "Verification".
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
   (`image/decode.rs`), and the encoder does not refuse deeper nesting.
-- **A list's reservation in the decoder is not counted in the load's
-  peak.** `reserve_for` (`image/decode.rs:1114`) caps a capacity at the
-  bytes remaining, not at the bytes its elements need, so `decode_words`
-  (`image/decode.rs:2478`) reserves up to 8 bytes of `Word` per remaining
-  byte for one instance or array record that claims a huge count -- about
-  8x more on top of the documented placeholder figure, about 24x in a
-  release build in all and up to about 31x (debug about 37x; derived, not
-  measured) with decoded integers beyond 61 bits. The same holds for every
-  other caller whose element is larger in memory than on the wire: a
-  frame's arguments and temporaries (through `decode_words`,
-  `image/decode.rs:2605`), a closure's copied values
-  (`image/decode.rs:2551`), the image's roots (`decode_values`,
-  `image/decode.rs:2463`, 8 bytes of `Value` a byte in a release build and
-  16 in a debug one), a body's instructions (`image/decode.rs:1794`) and an
-  instruction's register operands (`decode_registers`,
-  `image/decode.rs:1823`). The fix belongs in
-  `reserve_for` itself, for every caller at once: a cap in bytes rather
-  than elements, `count.min(reader.remaining() / size_of::<T>())`, so no
-  reservation exceeds the bytes still unread. Capping by an element's
-  minimum wire size instead changes nothing for a `Word` list, since the
-  smallest value is one byte (`VALUE_NIL`). The arenas' `Vec` doubling
-  slack is not counted either.
-  [memory.md](design/memory.md), "The interim cost, and the one question
-  still open".
-- **A `Word` can cross heaps outside the crate without `Heap::store`'s
-  check.** A value's brand can no longer be changed through a `Word`:
-  `Heap::load` and `Heap::store` are `pub(crate)`. But `Word` is public
-  (opaque, but `Copy`), and so are the snapshots that hand one out
-  (`Heap::object_snapshot`, `Heap::frame_snapshot`, `Heap::closure_data`,
-  and the payload fields of `ObjectData`, `Frame` and `ClosureData`) and the
-  allocators that take one (`Heap::allocate_object`,
-  `Heap::allocate_frame`). A host can therefore copy a `Word` out of one
-  heap's snapshot into a record it allocates in another heap; the word then
-  names whatever the other heap holds at that index, and no debug check sees
-  it, since only `store` checks and a stored word carries no origin. Making
-  those snapshot and allocation APIs `pub(crate)`, or having them take and
-  answer `Value`s, which the allocators would store themselves, would close
-  it; nothing outside the crate builds a record from another heap's today.
-  Noted 2026-10-02. [object-model.md](design/object-model.md),
-  "The debug build keeps its exact check"; [memory.md](design/memory.md), "A
-  handle is arena-relative".
+- **A list's reservation in the decoder is capped in elements, not bytes.**
+  `reserve_for` (`image/decode.rs`) caps a capacity at the bytes remaining,
+  not at the bytes its elements need, so a list whose element is larger in
+  memory than on the wire can reserve several times the bytes still unread:
+  the image's roots (`decode_values`, 8 bytes of `Value` a byte in a release
+  build and 16 in a debug one -- the root-list term of the stated bound,
+  [memory.md](design/memory.md), "The amplification bound of a rejected
+  load"), and, before the graph section, a body's instructions and an
+  instruction's register operands (`decode_registers`), which that bound
+  does not count. The graph's records reserve nothing: every record is
+  filled into its placeholder in place. The fix belongs in `reserve_for`
+  itself, for every caller at once: a cap in bytes rather than elements,
+  `count.min(reader.remaining() / size_of::<T>())`, so no reservation
+  exceeds the bytes still unread. The arena's `Vec` doubling slack is not
+  counted either.
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**
   (`heap.rs`), which never shrink; worth revisiting once many heaps live in one
   process.
@@ -701,6 +665,16 @@ where every reified frame will carry its full register file on the wire.
 
 ## Missing tests
 
+- Road step 3a's (noted 2026-10-03): the application cache's key in its
+  three cases (a root, two superclasses, sharing); the resolver's push of
+  the clause-count error, of which only the pure function is tested; a
+  direct pin of `Format::Class` and `Format::Closure` on a class object and
+  a closure; a heap-level test of an odd 32-bit string longer than one
+  unit; a closure's code id and feedback base surviving a move and a
+  collection; a closure record whose captured frame names a record that is
+  no frame; and the assertion that the largest builtin tag packs into a
+  non-negative clause, which holds only while `BuiltinClass::ALL` has fewer
+  than 32 entries.
 - `fresh_range` refusing a range past `u32`, and a decoded closure's base
   write-back in isolation (`interpreter/inline_cache.rs`).
 - A `^` aimed at a superclass clause's own activation (needs a crafted image).
@@ -722,7 +696,7 @@ where every reified frame will carry its full register file on the wire.
   against run; several `ns-runtime` integration test files
   (`tests/value_conditions.rs`, `tests/image.rs`, others) run under one
   lowering only.
-- **The release-only size tests** (`an_object_is_the_size_the_amplification_figure_assumes`,
+- **The release-only size tests** (`an_object_slot_is_one_boxed_block_of_words`,
   `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
@@ -772,6 +746,21 @@ Small, deliberately left, none affecting an outcome.
   building levels. Removing it is a design point, not a clean-up: the
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
+- Leftovers of road step 3a's code reviews, none affecting an outcome
+  (noted 2026-10-03): two doc comments cite `object-model.md`'s retired
+  heading "Planned: the object layout", now "The object layout"
+  (`heap/tables.rs`'s module doc, `mixin.rs` above `CLAUSE_INDEX_LIMIT`);
+  test names that outlived what they name
+  (`class_data_is_reachable_through_object_data` in `types.rs`,
+  `reset_collection_limits_reads_each_arenas_own_length` in `heap.rs`,
+  `an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter`
+  in `tests/image.rs`); stale comments in `image/decode.rs` (`describe` at
+  the refusal's recompute; the eight-words-a-byte check, which no
+  well-formed record approaches, to be called a backstop) and
+  `interpreter/instantiate.rs` ("only the cold error path clones it");
+  `closure_activation` reading the closure twice on the hottest closure
+  path; and `trace_block` returning silently on a block shorter than two
+  words, where a `debug_assert!` would be louder.
 
 ## Goldens and documentation
 

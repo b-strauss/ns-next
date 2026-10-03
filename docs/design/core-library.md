@@ -78,7 +78,9 @@ placeholders first, kernel second" below).
 `Behavior`, `Class` and `Metaclass` are §3.2's reified class hierarchy: every
 class object's class is its own metaclass — its class side applied to
 `Class` — and every metaclass's class is `Metaclass`. They carry behaviour
-only; a class object's state stays in the runtime's `ClassData`, and their
+only; a class object's state stays in fields only the runtime reads (its
+eight fixed fields, [object-model.md](object-model.md), "The object
+layout"), and their
 leaves are in `builtins/behavior.rs`: a class's name
 (`className:ifFail:`), a metaclass's class (`metaclassThisClass:ifFail:`),
 and the three parts of a class object's state `Behavior>>=`'s fallback
@@ -205,20 +207,20 @@ so it does **not** survive a snapshot: the same symbol in a reloaded image
 can hash to another number, and a hash a program recorded in an artifact
 cannot be compared against one computed after the load.
 
-**Strings are code points in two widths.** A `String`'s payload is a
-`CodePoints`
-(`crates/ns-runtime/src/code_points.rs`): one byte per code point while
-every one fits Latin-1, 32 bits per code point otherwise, so `size` and
-`at:` are one access each. It is canonical -- a string whose code points
-all fit Latin-1 is always narrow -- so `=` compares the payloads directly
-and `hash` agrees with it. Every element is a Unicode scalar value, at most
-U+10FFFF and never a surrogate, so UTF-8 stays the encoding at every
-boundary -- source, the transcript, the image -- and the conversion to it is
-total. `hash` is the hash of the UTF-8 text, the value it had when a
-`String`'s payload was a Rust `String`. Built on 2026-10-01 for Json, ahead
-of road step 3, on today's arena. The design and the comparison with the
-reference engines are [object-model.md](object-model.md), "Planned: the
-object layout", "Strings have two widths".
+**Strings are code points in two widths.** A `String` is an object of the
+byte-indexed format while every code point fits Latin-1, one byte per code
+point, and of the 32-bit-indexed format otherwise, 32 bits per code point,
+so `size` and `at:` are one access each, read in place from the object's
+words. It is canonical -- a string whose code points all fit Latin-1 is
+always narrow -- so `=` compares the words directly and `hash` agrees with
+it. Every element is a Unicode scalar value, at most U+10FFFF and never a
+surrogate, so UTF-8 stays the encoding at every boundary -- source, the
+transcript, the image -- and the conversion to it is total; `CodePoints`
+(`crates/ns-runtime/src/code_points.rs`) is the Rust-side form a string is
+built from and copied out to. `hash` is the hash of the UTF-8 text, the value
+it had when a `String`'s payload was a Rust `String`. The design and the
+comparison with the reference engines are [object-model.md](object-model.md),
+"The object layout", "Strings have two widths".
 
 Three leaves read the code points, each Primordial Soup's selector over
 code points rather than its bytes:
@@ -241,10 +243,24 @@ code points rather than its bytes:
 `goldens/library/string/a_string_is_its_code_points` pin them in either width,
 `goldens/library/string/a_string_index_error_is_caught` their errors.
 
-**Planned, with road step 3a:** `Symbol` becomes a subclass of `String`
-sharing both formats, and `=` stays class-tight both ways as today
-(`'foo' = #foo` and `#foo = 'foo'` answer `false`), so `Symbol` overrides
-`=` and `hash`, pinned by a golden.
+**`Symbol` is a subclass of `String`**, as in every reference kernel: a
+symbol's words are a string's, in either width, and only its class tells it
+from one, so a symbol answers `size`, `at:`, `copyFrom:to:` and `,` as a
+`String` of its text does, the last two answering a `String`
+(`goldens/library/string/a_symbol_is_a_string.ns`). `=` stays class-tight
+both ways -- `'foo' = #foo` and `#foo = 'foo'` answer `false` -- since
+`Symbol>>=` is identity, §5.1.6 making equal symbols one object, and
+`String>>=` answers `false` for a `Symbol` argument; `Symbol` overrides
+`hash` with the interner number above. `Mutator::new_symbol` is the only
+way to make one: `Symbol new` is refused ("cannot instantiate Symbol: a
+Symbol is made only by a literal or by asSymbol",
+`goldens/library/string/symbol_new_is_refused.ns`), while a program's own
+subclass of `Symbol` instantiates as an ordinary instance
+(`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods.ns`);
+and `String new` answers the empty string, of the byte format
+(`string_new_answers_an_empty_string.ns`). Both are decided in
+`instantiate::decide_factory`, which reads the class object's builtin tag on
+every send, beside `Array`'s and the VM mirror's class.
 
 Four further rows serve `Value` itself rather than one builtin:
 `value:sameAs:ifFail:` (reported `=`), `valueHash:ifFail:` (`hash`),
@@ -367,8 +383,9 @@ value object's four conditions", has the whole design:
   results as `Value`'s equality method").
 - **A value class's enclosing objects must be values.** Decided once per
   class object, cold, where one is created (`interpreter/value_class.rs`,
-  from `nested::after_clause`), recorded on it (`ClassData::value_class_refusal`)
-  and refused at instantiation, because §2.3's own example creates a value
+  from `nested::after_clause`), recorded on it (its value-class refusal
+  field: the offending object and the level's name, which `Heap::describe`
+  renders only when `new` refuses) and refused at instantiation, because §2.3's own example creates a value
   class whose enclosing object is mutable and never instantiates it (decided
   with the user on 2026-09-24). The enclosing objects of every level of the
   class chain count, not only the class's own, since an inherited method
@@ -932,26 +949,30 @@ shortest digits that read back as the same double, so `9223372036854775808
 asFloat` prints `9223372036854776000`
 (`goldens/library/number/float/as_float_and_as_string_fixed.ns`).
 
-**The payload.** A `LargeInteger`'s object carries
-`ObjectData::LargeInteger(ArbitraryInteger)`: a sign and a magnitude of
-64-bit digits, least significant first, in a `Box<[u64]>` in the Rust heap
-beside the arena. It is canonical -- no zero top digit, and zero never
-negative -- so derived equality is value equality, and it holds no handle,
-so the tracer has nothing to follow in it. The object space (road step 3)
-moves the digits inline, into a 64-bit-indexed object with the sign in the
+**The representation.** A `LargeInteger` is an object of the 64-bit-indexed
+format: its words are the magnitude's 64-bit digits, least significant
+first, inline after the header and the class word, and its sign is the
 header's negative bit, as Primordial Soup's `kNegativeBit`
 (`prior-art/primordialsoup/vm/object.h:48`); one class, not Spur's two
-([object-model.md](object-model.md), "Planned: the object layout"). That is
-why the arithmetic is ns-next's own rather than a crate's: a crate's numbers
-live in its own `Vec` in the Rust heap, which is the payload split the
-object space removes, and every operation would copy between the two. The
+([object-model.md](object-model.md), "The object layout"). It is canonical
+-- no zero top digit, and zero never negative -- so derived equality is
+value equality, and it holds no handle, so the tracer never reads its
+digits, which could look like handles. `=`, `hash`, the comparisons and the
+sign tests read the digits in place (`Heap::with_large_integer`), and
+arithmetic copies both operands out into `ArbitraryInteger`s
+(`Heap::large_integer`) and allocates its result through
+`Mutator::new_integer`; lending the operands to the arithmetic as well is
+open work ([OPEN-WORK.md](../OPEN-WORK.md)). That is why the arithmetic is
+ns-next's own rather than a crate's: a crate's numbers live in its own `Vec`
+in the Rust heap, which is the payload split the object layout removed, and
+every operation would copy between the two. The
 Smalltalk-family engines write it themselves too -- Primordial Soup's
 `vm/large_integer.cc`, about 1,600 lines -- while SOMns delegates to
 `java.math.BigInteger`
 (`prior-art/somns/src/som/primitives/arithmetic/AdditionPrim.java`), which
 lives in the same JVM heap as its other objects; a Rust crate's heap is not
 ours. So `crates/ns-runtime/src/arbitrary_integer/` works on `&[u64]` and
-`&mut [u64]`, which is what the object space lends, and knows nothing of the
+`&mut [u64]`, which is what the heap lends, and knows nothing of the
 heap or of `Value`.
 
 **The algorithms are adapted from `num-bigint` and `num-integer`**, one file
@@ -1883,19 +1904,19 @@ with an argument that is no `Message` fails inside the handler, on
 
 **The VM side.**
 
-- **Activation objects.** `ObjectData::Activation(FrameReference)`, of the
-  private kernel class `Activation`, which no program can name — no accessor
-  on `Object`, and its builtin class tag is refused wherever an image names a
-  class but the header of an activation record, as `Top`'s is everywhere. An
+- **Activation objects.** An activation object is the reified frame object
+  itself, of the frame format and the private kernel class `Activation`
+  ([object-model.md](object-model.md), "The object layout"), which no
+  program can name — no accessor on `Object`, and its builtin class tag is
+  refused wherever an image names a class but the header of a frame record,
+  as `Top`'s is everywhere. An
   activation reads another frame's temporaries and unwinds stacks, so it is a
   capability, and Newspeak hands those out only through mirrors, which the
   reflection step builds on it. The ten leaves (`builtins/activation.rs`, rows
   appended to the end of `MIRROR`): `currentActivation` — the activation of
-  the kernel method making the mirror send, reified, answered as a fresh
-  `Activation` object each time, so the kernel compares two only when both
-  came from one call (`handlerActivation` still the `signalActivation` it was
-  set to) -- two calls answer two objects for one frame, so the coming
-  `ActivationMirror` needs an identity by frame instead; an activation's
+  the kernel method making the mirror send, reified, answered as its frame
+  object, so two calls for one activation answer the same object and the
+  coming `ActivationMirror` has an identity by frame already; an activation's
   `sender` — the stack entry below it, or nil at the bottom or once it has
   returned; the three the `on:do:` marker's registers answer,
   `isActiveHandler` (false for a returned activation or one with no marker),
@@ -1990,8 +2011,9 @@ with an argument that is no `Message` fails inside the handler, on
   signal decides in `defaultAction`, and for an asynchronous message that
   will be breaking the promise (§3.7).
 
-**The image format.** An `Activation` is a record whose body is a frame id
-(`OBJECT_ACTIVATION`, body tag 9), validated as every frame reference is.
+**The image format.** An `Activation` is a frame record (`OBJECT_FRAME`,
+body tag 10), its header `Activation`'s builtin tag
+([image-format.md](image-format.md), "Frames are object records").
 `Activation`, `Exception`, `Error`, `MessageNotUnderstood`, `Message` and
 `Halt` take builtin class tags 23 to 28 (29, `KernelNamespace`'s, is retired:
 the class moved into the shipped platform module, now `PlatformFactory.ns`)
@@ -2042,7 +2064,8 @@ and a search and a `pass` that overrun the reserve ending it with the error
 being signalled; `interpreter::unwind`'s own tests that an unwind target
 survives the reuse of its stack index and that a later signal at the same
 index does not inherit the reserve; and `tests/image.rs` the crafted-image
-refusals for `OBJECT_ACTIVATION` and tag 23. No golden's recorded outcome
+refusals for a frame record under another class, the retired activation
+body tag 9 and tag 23. No golden's recorded outcome
 changed; two golden sources that read the old two-element message with
 `at:` moved to `Message`'s protocol.
 
@@ -2461,8 +2484,8 @@ its class. That needs its own decision when the first such module arrives.
 - **Removed:** `OrderedCollection` in `Kernel.ns` and its `Object` accessor
   (§3.2's accessors are for the classes of the literals and the array
   factories), `BuiltinClass::OrderedCollection` with builtin class tag 10,
-  the `add:` leaf and `Heap::array_push`. Every `ObjectData::Array` is
-  fixed-size once allocated -- nothing grows a payload in place any more
+  the `add:` leaf and `Heap::array_push`. Every `Array` is
+  fixed-size once allocated -- nothing grows an object in place
   ([memory.md](memory.md)).
 - **Goldens:** those that wrote `OrderedCollection new` moved to
   `platform collections List new` with their recorded outcomes unchanged;
@@ -2841,9 +2864,12 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   (decided with the user the same day); divide-and-conquer radix conversion
   is not taken ("Large integers" above).
 - **Strings store code points in one of two widths**, Latin-1 or 32
-  bits (decided with the user on 2026-09-29, built on today's arena on
-  2026-10-01, ahead of road step 3; "Strings are code points in two widths"
-  above; [object-model.md](object-model.md), "Planned: the object layout").
+  bits (decided with the user on 2026-09-29, built on 2026-10-01, the
+  byte- and 32-bit-indexed formats with road step 3a on 2026-10-03;
+  "Strings are code points in two widths" above;
+  [object-model.md](object-model.md), "The object layout"). `Symbol` is a
+  subclass of `String` since road step 3a (decided with the user on
+  2026-09-29).
 - **`List` is used canonically and made fast; `Map` and `Set` are adapted
   from Primordial Soup** (decided with the user on 2026-10-01, built the
   same day; "The collections module (plan 2)" above;
@@ -2869,7 +2895,7 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   default handler resumed it; every VM error becomes a signalled `Error`
   with today's text; the depth limit keeps a reserve of 1,000; one unwinder
   in `interpreter/`, running `ensure:` blocks as trampoline steps and aiming
-  at a `FrameReference`; `Activation` is `ObjectData::Activation`, reachable
+  at a `FrameReference`; `Activation` is the frame object itself, reachable
   only through mirror leaves; `halt` terminates in the CLI; and programs name
   the classes through `platform kernel`. Settled while building it: class
   sides are not inherited, so `handles:` is on `Class` and `signal` and

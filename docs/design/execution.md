@@ -9,10 +9,12 @@
 > unwinder carries every non-local return, exception unwind and termination,
 > running `ensure:` blocks as trampoline steps.
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the frame
-> arena, the `ActivationReference` and `FrameReference` handles, every read and write of an
+> objects, the `ActivationReference` and `FrameReference` handles, every read and write of an
 > activation, the copied values a closure carries and whether a frame keeps its
-> registers), `heap/world.rs` (the step state at rest, and its entry),
-> `types.rs` (`Frame`, `ClosureData`, `Continuation` and the state its variants
+> registers), `heap/object.rs` (the fixed fields of a frame object and a
+> closure, `frame_field` and `closure_field`), `heap/world.rs` (the step state
+> at rest, and its entry),
+> `types.rs` (`FrameKind`, `Continuation` and the state its variants
 > carry), `bytecode/compact.rs` (the eight-byte encoding the loop runs),
 > `vm.rs` (the run loop and its safepoint poll), `interpreter/` (the
 > inline caches, the send decisions, `Step`, every push, the depth limit, the host entry, the
@@ -59,9 +61,12 @@ reference lowering") is the differential oracle that replaced it.
 
 A Newspeak-level activation is never represented only by Rust locals or the Rust
 call stack. A running activation is an entry on one **activation stack** that the
-`Heap` owns. A first-class `Frame` in the `Heap`'s frame arena exists for it only
-once something must hold it past the call that runs it — today, only a block
-being created.
+`Heap` owns. A first-class frame -- an object of the frame format in the
+`Heap`'s arena, an instance of the kernel-private `Activation`
+([object-model.md](object-model.md), "The object layout") -- exists for it only
+once something must hold it past the call that runs it: a block being
+created, the exception machinery asking for its `Activation` object, an
+unwind naming it as its target, or the depth limit's reserve.
 
 ### The model, and the one place ns-next differs from it
 
@@ -108,8 +113,8 @@ struct ActivationStack {
 struct StackEntry {
     receiver: Value,
     current_class: Option<ClassReference>,
-    kind: FrameKind,           // Closure(ObjectReference): the closure object, whose payload
-                               // carries home and captured_frame
+    kind: FrameKind,           // Closure(ObjectReference): the closure object, whose
+                               // captured frame the home is derived from
     base: u32,                 // first register in `values`
     argument_count: u32,
     program_counter: usize,    // no slot base: `InitializeSlot` derives it from
@@ -118,12 +123,16 @@ struct StackEntry {
     then: Continuation,        // what the loop does with its value
     counted: bool,             // whether it counts against the depth limit
     reified: Option<FrameReference>, // set once the activation is married
+    retains_registers: bool,   // whether the divorce copies the registers out
 }
 
-struct FrameSlot {             // one entry of the frame arena
-    frame: Frame,              // types.rs; public fields, and what an image records
-    live: Option<u32>,         // the stack entry this frame is married to
-}
+a frame object                 // heap/object.rs's frame_field; an object of the frame format
+    0 sender  1 home  2 receiver  3 current class   // objects or nil
+    4 program counter  5 code id  6 kind (its wire tag)   // SmallIntegers; code id nil at top level
+    7 the kind's operand       // the closure of a block frame, the class of a class-carrying kind
+    8 uncontinuable            // true once its activation has returned
+    9 married                  // SmallInteger stack entry index, nil once divorced
+    10.. the registers         // the code's whole register file
 
 pub struct ActivationReference {
     index: u32,
@@ -154,9 +163,10 @@ pub struct ActivationReference {
   is addressed by index, so `values` reallocating as it grows moves nothing
   anyone holds.
 - **Two handle types, not one tagged handle.** `ActivationReference` names a live
-  stack entry; `FrameReference` names a reified frame in the arena and is the only
-  activation handle anything *stores*: `ClosureData.captured_frame`,
-  `Frame.home` and every image record take a `FrameReference`, so storing a stack
+  stack entry; `FrameReference` names a frame object and is the only
+  activation handle anything *stores*: a closure's captured frame, a frame's
+  home, `Continuation::Unwind`'s target and the image's frame records take a
+  `FrameReference`, so storing a stack
   handle is a compile error rather than a convention. A tagged `FrameReference` would
   have touched only `heap.rs`, but it would put a branch on every register
   access and leave "a stack handle was stored" to a debug-build assertion — the
@@ -169,13 +179,14 @@ pub struct ActivationReference {
   `Interpreter::run_from_host`, the one host entry, debug-asserts that it leaves
   the stack as deep as it found it, because a leaked entry is otherwise silent:
   a later activation would sit on top of a dead one's registers.
-- **A reified frame is a `FrameSlot`**: the `Frame` itself, and the entry it is
-  married to. `Frame` is declared in `types.rs` with public fields, because the
-  image encoder and decoder build and read whole records; the marriage is kept on
-  the slot instead, so that nothing outside `heap.rs` can read or forge it. While
-  `live` is set, the frame's own `arguments`/`temporaries` are empty and a register read or
-  write through the `FrameReference` (`Heap::frame_local`/`frame_set_local`) reaches the
-  stack slot. That branch exists only on the path from a block to its method's
+- **A reified frame is a frame object**: ten fixed fields, the entry it is
+  married to among them, and its registers inline. Only the heap module reads
+  or writes its words; the image encoder and decoder go through
+  `Heap::frame_record` and the decoder's in-place fills, which never touch the
+  marriage, so nothing outside the heap module can read or forge it. While
+  the married field is set, the frame's own registers stay nil and a register
+  read or write through the `FrameReference`
+  (`Heap::frame_local`/`frame_set_local`) reaches the stack slot. That branch exists only on the path from a block to its method's
   variables — `read_outer_local`/`write_outer_local`, behind the VM's
   `LoadOuterLocal`/`StoreOuterLocal`.
 - **The accessor prefix names the handle.** `activation_*` reads or writes a live
@@ -184,12 +195,17 @@ pub struct ActivationReference {
 
 ### Lifecycle
 
-**Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call creates
-the arena `Frame` — receiver, `kind`, `current_class`, `program_counter`, and `home` when the
-activation is a closure's — marries it to the entry, and records it in
-`entry.reified`; every later call answers the same handle. Its one caller is
-closure creation, the VM's `MakeClosure`, for the new closure's
-`captured_frame`. A closure stores no `home` of its own: `Heap::closure_home`
+**Reify.** `Heap::reify(activation) -> FrameReference` is idempotent: the first call
+allocates the frame object — receiver, `kind` and its operand, `current_class`,
+`program_counter`, the code id, and `home` when the activation is a
+closure's, with room for the activation's whole register file, all nil —
+marries it to the entry, and records it in `entry.reified`; every later call
+answers the same handle. Its callers are closure creation, the VM's
+`MakeClosure`, for the new closure's captured frame; the `currentActivation`
+leaf, whose `Activation` object is the frame object itself, so the same
+activation answers the same object every time; the unwinder, for a target it
+must name across `ensure:` blocks; and the depth limit's reserve. A closure
+stores no `home` of its own: `Heap::closure_home`
 derives it from the captured frame — that frame itself when it is a method's or
 an initializer's, that frame's own `home` when it is a block's ("The closure
 keeps its defining activation"). Every block creation reifies the activation
@@ -201,22 +217,22 @@ and current class from.
 paths included (`vm::run`), and only the top entry can be popped. Popping hands
 back the entry's continuation (`Popped`), which the loop applies to the
 activation's value ("The VM" below). If the entry was reified, its frame is
-**divorced**: its `program_counter` takes the entry's last stored one, `live`
-becomes `None`, `uncontinuable` becomes true and `sender` becomes `None`. Then
-`values` is truncated to the entry's `base`.
+**divorced**: its `program_counter` takes the entry's last stored one, the
+married field becomes nil, `uncontinuable` becomes true and `sender` becomes
+nil. Then `values` is truncated to the entry's `base`.
 
-**The registers are copied into the frame's `arguments`/`temporaries` only when
-the entry asks for it**, `StackEntry.retains_registers`, which
+**The registers are copied into the frame object's registers only when the
+entry asks for it**, `StackEntry.retains_registers`, which
 `Heap::retain_registers` sets and which `MakeClosure` sets when the block it
 creates can reach this frame by reference — `block.outer_reach > 0`
 ("Converted representation"). Under the reference lowering that is every
 activation that creates a closure, so every frame is divorced with its
 registers as it always was; under the optimized lowering it is only an
 activation whose fallback path actually created a closure. A frame divorced
-without its registers answers `nil` for a register read and ignores a write
-(`Heap::frame_local`/`frame_set_local`), which is what a crafted image's
-by-reference closure over a register-less frame sees
-([image-format.md](image-format.md), "Verification"). An entry that was never
+without its registers keeps the nil it was allocated with in each, so a
+register read answers `nil`; the frame object never grows or shrinks, and an
+image carries every register it has ([image-format.md](image-format.md),
+"Verification"). An entry that was never
 reified leaves nothing behind, so storage for activations nothing captured is
 bounded by the deepest the program has been rather than by every activation it
 has ever made.
@@ -226,7 +242,7 @@ stored field, so no call site can forget to pass it on, at a block boundary or
 anywhere else. Nothing reads the sender of a live activation yet, so there is no
 accessor for it; the debugger will add one. A dead frame's `sender` is `None`:
 Smalltalk's semantics for a returned context, and what Primordial Soup does on
-return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`. `Frame.sender`
+return (`zap->set_sender(nil)`) and lazily in `HasLivingFrame`. A frame's sender field
 remains because the image format records one per frame, so only a frame the
 decoder rebuilt can have one set.
 
@@ -241,13 +257,13 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
   `inline_cache::send_lexical` and `send_super`, `sends::decide_lexical_send`,
   `sends::decide_super_send`, `read_local`/`write_local`,
   `read_outer_local`/`write_outer_local`, `raise_return`.
-  `FrameReference` stays for closures, `Frame.home`, the image, and `frame_at_depth`
+  `FrameReference` stays for closures, a frame's home, the image, and `frame_at_depth`
   from depth 1 on: the first hop goes from a closure activation to its
   `captured_frame`, the rest follow `FrameReference` links.
 - **No send or block invocation takes a sender to record.** `Interpreter::send`,
   `decide_send`, `builtins::execute` and the `builtins/` modules have
   no `sender` parameter. It was removed rather than retyped to an `ActivationReference`: its only
-  use was to fill `Frame.sender`, and once a live activation's sender is the
+  use was to fill a frame's sender, and once a live activation's sender is the
   entry below it, nothing read it. No native takes an activation handle at all.
   The one function handed the sending activation is `Mutator::push_step`,
   which reads its reified frame for the depth count's exemption and stores
@@ -258,7 +274,7 @@ outlives a call — a closure, another frame, an image record — holds a `Frame
 - The image encoder only ever runs between sends, when nothing is live:
   its one writer, behind `image::package` and `image::snapshot`, refuses to
   start while any activation is on the stack, and
-  `Heap::frame_snapshot` debug-asserts that no encoded frame is married. The
+  `Heap::frame_record` debug-asserts that no encoded frame is married. The
   decoder builds frames that are never married. The format knows nothing of the
   stack: a frame record describes a reified frame, and nothing else is
   serialized ([image-format.md](image-format.md)).
@@ -276,8 +292,9 @@ The registers — arguments first, then temporaries — are addressed as describ
 [compiler.md](compiler.md). Every activation is pushed with its body's whole
 register file, since the code is read before the push — the initializer's
 included — and a live window never grows: an entry below the top could not
-grow anyway, since its window ends where the next one's begins. A dead frame's
-`temporaries` is a growable `Vec` (`Heap::frame_grow_temporaries`). Adding a local slot to a
+grow anyway, since its window ends where the next one's begins. A frame
+object never grows either: it is allocated with its code's whole register
+file ([object-model.md](object-model.md), "The object layout"). Adding a local slot to a
 running method — growing its register file, initializing the new entries to nil
 and remapping the `program_counter`, the edit-and-continue requirement — therefore means
 taking the activation off the stack first; see "How this meets the liveness
@@ -382,8 +399,8 @@ Four kinds of body run, and each reaches the loop one way:
 1. **Method body** — pushed by `push_step` for a `Step::Method`. A method
    activation catches a `^` that targets it (`Mutator::catches_return`).
 2. **Block body** — pushed by `push_step` for a `Step::Block`, which names the
-   closure object; the activation runs the `code` of that object's
-   `ClosureData`. `value`, the control-flow steps — `whileTrue:`'s and
+   closure object; the activation runs the code that object's code id
+   names. `value`, the control-flow steps — `whileTrue:`'s and
    `whileFalse:`'s leaves and `True`'s and `False`'s `^<parameter> value`
    quick methods — and `do:` answer the block as a step.
 3. **Instance initializer** — `descend_levels`, one per initializing level of
@@ -2607,8 +2624,8 @@ record minima 6 and 18 bytes, a frame-arena entry 136 bytes in release and
 | C2+ | 56 B / 80 B | 16.9x / 22.2x | 4.590 MB | 454.727 MB |
 
 The sizes and amplification figures in this table are the measurement's
-record; the current ones are in [memory.md](memory.md), "The interim cost,
-and the one question still open".
+record; the current ones are in [memory.md](memory.md), "What an object
+costs" and "The amplification bound of a rejected load".
 
 C2 costs `bench_block.ns`, which allocates heavily, 11.9 MB (2.6%) at its
 peak, its 8 bytes an object; C2+ is within 0.03 MB of `393311f`. Boxing
@@ -3539,7 +3556,7 @@ else:
 
 - The climb (`instantiate::climb_levels`) is the ordinary walk, with one test
   per level of whether the superclass is an applied level
-  (`Heap::class_is_applied_level`, a read of `ClassData::applied_clause`). The
+  (`Heap::class_is_applied_level`, a read of the applied-clause field). The
   first applied level hands the rest of the climb to
   `climb_through_applied_levels`, `#[cold]` and `#[inline(never)]`, which
   keeps the applying declaration's index and defers each `<:` clause's
@@ -3553,7 +3570,8 @@ else:
   `superclass_with_applied_levels`.
 - `check_factory_arity`, `clause_message_body` and `argument_list` are
   `#[inline(always)]`, since the cold paths are second callers of each, and
-  `ClassData::applied_clause` is boxed, so a class object grows by one word.
+  the applied clause was boxed, so a class object grew by one word (since road
+  step 3a it is one packed field of eight).
 
 **Measured 2026-09-23, `06fd024` against `6833234`**, the commit before
 mixin application, by the protocol of "What removing the re-entries moved" above:
@@ -5369,13 +5387,12 @@ Edit-and-continue must be able to add a local to a method while an activation
 of it is live, and only the top entry's register window can grow in place. The
 answer is that editing a method takes its affected activations off the stack
 first — reified and divorced while still running, the operation Cog's
-`divorceAllFrames` performs on every stack page before a snapshot — and a
-divorced frame's `temporaries` is a growable `Vec`. Under the planned object
-space a frame object will never grow; the activation will be divorced into a
-newly allocated, larger frame object and the VM will rewrite every reference
-to the old one by a walk of every root the collector traces (`trace.rs`) and
-every heap object, the new frame allocated old and born remembered
-([object-model.md](object-model.md), "Planned: the object layout"). Continuing
+`divorceAllFrames` performs on every stack page before a snapshot. A frame
+object never grows; the activation will be divorced into a newly allocated,
+larger frame object and the VM will rewrite every reference to the old one by
+a walk of every root the collector traces (`trace.rs`) and every heap object,
+the new frame allocated old and born remembered
+([object-model.md](object-model.md), "The object layout"). Continuing
 an activation from its divorced frame needs a way to put the frame back on the
 stack, which does not exist yet; it is the same missing piece as resuming a
 decoded frame ([image-format.md](image-format.md), "Planned: suspend and
@@ -5451,14 +5468,15 @@ created without it, including every closure in an image serialized from a run
 without it, could never be given it back.
 
 What a returned converted frame keeps is its receiver, its program counter, its
-`home` and its `uncontinuable` flag, but no registers: a variable nothing
+`home` and its `uncontinuable` flag, but none of its registers' values -- they
+stay the nil the frame object was allocated with: a variable nothing
 captured is unreachable once its activation returns, and a captured one lives
 in a closure or a vector. So what a surviving block retains is what it captured
-plus that frame record, not the frame's registers. An activation that created a
+plus that frame object, not the values of the frame's registers. An activation that created a
 fallback closure is the exception and keeps them, which is exactly what
 `outer_reach` decides ("Converted representation" below).
 
-The link costs `ClosureData` nothing it did not already hold, and the home is
+The link costs a closure nothing it did not already hold, and the home is
 no longer a field of its own: `Heap::closure_home` derives it from
 `captured_frame` — that frame itself when it is a method's, an initializer's or
 a superclass clause's, and that frame's own `home` when it is a block's. A
@@ -5568,18 +5586,17 @@ as Cog does, which would change recorded outcomes and make inlining observable.
 
 ### Converted representation
 
-**The vector** is an ordinary `ObjectData::Array` of class `Array`, as Cog's
+**The vector** is an ordinary `Array`, of the indexable format, as Cog's
 indirection vector is. No new object kind: the heap, `trace.rs` and the image
 already handle it, and Newspeak code never receives it as a value, since only
 the new instructions touch it. One vector per body that has vector variables,
 not a box per variable — the Smalltalk and Newspeak lineage's choice (Cog,
 Primordial Soup); Strongtalk, V8 and .NET instead keep one context per scope
 holding every captured variable, read or written, and Lua, CPython, Kotlin
-(`Ref.IntRef`/`ObjectRef`), Scala and Groovy box per variable. In today's arena
-a box would be one allocation and one dependent load cheaper for a single
-variable, because an `Array`'s elements sit in a `Vec`; once objects are laid
-out inline by the collector (step 5), both cost one allocation for one variable
-and the vector saves `k − 1` for `k`. A small-vector inline representation was
+(`Ref.IntRef`/`ObjectRef`), Scala and Groovy box per variable. An `Array`'s
+elements sit inline in its block ([object-model.md](object-model.md), "The
+object layout"), so a box and a vector each cost one allocation for one
+variable, and the vector saves `k − 1` for `k`. A small-vector inline representation was
 considered and not built.
 
 **Registers.** A method's or initializer's layout is parameters, temporaries,
@@ -5626,15 +5643,15 @@ arena into the register window — and it stops at the end of the activation's
 own window, so a crafted image whose `copied` list is longer than the register
 file writes nothing above it.
 
-**`ClosureData` is 32 bytes**, so that an `Object` stays at 56 in a
-release build (`heap.rs`'s pinned size, the figure `CLAUDE.md`'s amplification
-paragraph is computed from). It carries `copied: Box<[Word]>` (16 bytes; an
-empty one allocates nothing) in place of two fields that duplicated something
-already held: `parameters`, whose only use was its length, which the block
-code's `argument_count` already is, and which `Heap::closure_parameter_count`
-now reads from there; and `home`, which the captured frame determines
-(`Heap::closure_home`, above). The trace impl names `copied`, which the
-compiler enforces.
+**A closure object is three fixed fields and its copied values**: its code
+id, its captured frame and its feedback base, then the copied values inline
+([object-model.md](object-model.md), "The object layout"), 56 bytes with its
+slot and nothing copied. It holds nothing that duplicates what is already
+held: not the block's parameter names, whose only use was their count, which
+the block code's `argument_count` already is and which
+`Heap::closure_parameter_count` reads from there; and not its `home`, which
+the captured frame determines (`Heap::closure_home`, above). `trace_block`
+traces the captured frame and the copied values, never the two numbers.
 
 **The divorce.** Whether a returning frame keeps its registers is decided per
 activation, at run time. `CompiledCode` carries `outer_reach`, a **depth**, not
@@ -5702,17 +5719,17 @@ Each of those counts sizes its `Vec` through `reserve_for`, which caps the
 capacity at the bytes left in the reader — the per-field pattern the format
 already uses, so a claimed count allocates in proportion to the input rather
 than to a `u16` ([image-format.md](image-format.md), "Verification";
-`bounded_count` is what divides the *remainder* between the graph section's two
-record kinds, which these fields are not).
+`bounded_count` is what bounds the graph section's one record count, which
+these fields are not).
 
 A vector's size and kind are run-time values and are checked at run time
 (above). `disasm` prints the three new instructions and the registers a
 `MakeClosure` copies, through `bytecode::disassemble`, which `inspect` uses
 too; `inspect`'s own structural walk reads a closure record's copied values
 from the same tags as the encoder and decoder. A
-returned converted frame is written with empty `arguments` and `temporaries`,
-which is why `verify_graph` accepts a frame with no registers at all; the frame
-record itself did not change.
+returned converted frame is written with its whole register file, `nil`
+where nothing was copied, and `verify_graph` holds a frame record's register
+count to its body's ([image-format.md](image-format.md), "Verification").
 
 ### Fewer protective copies
 
