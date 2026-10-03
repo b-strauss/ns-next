@@ -68,21 +68,8 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
         && !bytes[4].is_ascii_whitespace()
 }
 
-/// The mixin behind a class object, or the message for the one case where
-/// there is none. Shared by both of `execute`'s branches so each can
-/// read it from its own `class` while that class's interpreter is still
-/// alive, rather than through a `Heap` built after the fact.
-fn root_mixin_of<'gc>(
-    heap: &ns_runtime::Heap<'gc>,
-    class: ns_runtime::ClassReference<'gc>,
-) -> Result<Rc<ns_runtime::Mixin>, String> {
-    heap.class_application(class)
-        .map(|application| application.mixin.clone())
-        .ok_or_else(|| "internal: loaded module did not produce a class object".to_string())
-}
-
-/// `ns-next disasm`: for a `.ns` file, bootstrap and load it, which compiles
-/// the *whole* mixin tree onto its declarations; for a serialized artifact,
+/// `ns-next disasm`: for a `.ns` file, compile it, which compiles the
+/// *whole* mixin tree onto its declarations; for a serialized artifact,
 /// decode it directly, which attaches its own code table's bodies instead of
 /// recompiling anything. Either way, the result is the root mixin, whose tree
 /// carries the code, from which a `--class` path can address any mixin, then
@@ -109,18 +96,9 @@ pub(crate) fn execute(
     // Two ways to reach the root mixin, whose tree carries the code.
     // Compiling from source needs the resolver's bindings; an artifact
     // already carries compiled bodies, so loading it is a decode and nothing
-    // is recompiled. Each arm reads
-    // `root_mixin` out of its own `class` before that arm's interpreter (or
-    // `loaded.interpreter`) goes out of scope, rather than through a fresh
-    // `Heap` afterwards. A `ClassReference` is an index into the arena of the
-    // `Heap` that allocated it and means nothing against any other one, so
-    // a `Heap` built after that interpreter is gone does not answer
-    // `class`'s data: in a debug build the origin guard panics at the read,
-    // and in a release build the index is in range and names whatever
-    // object that heap put there -- a different, perfectly valid object,
-    // disassembled without a word of complaint. Reads through
-    // `interpreter.enter` while that interpreter is still alive, before it goes
-    // out of scope.
+    // is recompiled. Neither reads the mixin off a class object: the code is
+    // all `disasm` prints, so it holds no handle that would tie it to the
+    // heap that minted it.
     let root_mixin = if looks_like_an_artifact(&raw) {
         if lowering.is_some() {
             eprintln!(
@@ -131,27 +109,11 @@ pub(crate) fn execute(
         }
         match ns_runtime::image::load(&raw) {
             Ok(loaded) => {
-                let ns_runtime::image::LoadedImage {
-                    mut interpreter,
-                    modules,
-                    ..
-                } = loaded;
-                let Some(application) = modules.first() else {
+                let Some(application) = loaded.modules.into_iter().next() else {
                     eprintln!("error: {} carries no module", file.display());
                     return ExitCode::FAILURE;
                 };
-                match interpreter.enter(|mutator| {
-                    root_mixin_of(
-                        mutator.heap(),
-                        crate::entry::class_reference(mutator, &application.class),
-                    )
-                }) {
-                    Ok(root_mixin) => root_mixin,
-                    Err(message) => {
-                        eprintln!("error: {message}");
-                        return ExitCode::FAILURE;
-                    }
-                }
+                application.declaration
             }
             Err(error) => {
                 eprintln!("error: {}: {error}", file.display());
@@ -163,20 +125,8 @@ pub(crate) fn execute(
             Ok(loaded) => loaded,
             Err(code) => return code,
         };
-        let (mut interpreter, class) =
-            source::bootstrap(&loaded, lowering.unwrap_or(ns_runtime::Lowering::Optimized));
-        match interpreter.enter(|mutator| {
-            root_mixin_of(
-                mutator.heap(),
-                crate::entry::class_reference(mutator, &class),
-            )
-        }) {
-            Ok(root_mixin) => root_mixin,
-            Err(message) => {
-                eprintln!("error: {message}");
-                return ExitCode::FAILURE;
-            }
-        }
+        ns_runtime::Interpreter::bootstrap_with(lowering.unwrap_or(ns_runtime::Lowering::Optimized))
+            .compile_module(&loaded.resolved)
     };
     let mixin = match resolve_mixin_path(&root_mixin, class_path) {
         Ok(mixin) => mixin,

@@ -410,15 +410,14 @@ fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, 
 /// Collected in `mixin::preorder` order, module after module -- the same
 /// order the mixin table's rows are written in -- so the same module always encodes to the same
 /// bytes.
-pub fn encode_code_table<'gc>(
-    heap: &Heap<'gc>,
+pub fn encode_code_table(
     writer: &mut Writer,
-    module_roots: &[ClassReference<'gc>],
+    module_roots: &[Rc<crate::mixin::Mixin>],
     symbols: &mut symbols::Builder,
 ) -> Result<CodeIds, String> {
     let mut order: Vec<Rc<CompiledCode>> = Vec::new();
     let mut ids = CodeIds::default();
-    let rows = mixins::plan(heap, module_roots)?;
+    let rows = mixins::plan(module_roots)?;
     for row in &rows {
         for method in &row.methods {
             collect_code(&method.code, &mut order, &mut ids);

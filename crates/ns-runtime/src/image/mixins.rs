@@ -27,12 +27,10 @@ use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
-use crate::heap::Heap;
 use crate::mixin::{
     mixin_key, slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
     MixinMethod, MixinSlot,
 };
-use crate::types::ClassReference;
 use crate::Symbol;
 
 use super::decode::{reserve_for, DecodeError, Reader};
@@ -110,19 +108,10 @@ pub struct Row {
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan<'gc>(
-    heap: &Heap<'gc>,
-    module_roots: &[ClassReference<'gc>],
-) -> Result<Vec<Row>, String> {
+pub fn plan(module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
     let mut order = Vec::new();
-    for root_class in module_roots {
-        // Not a class object: no declarations to describe, so it contributes
-        // no rows rather than an error -- `encode_code_table` has always
-        // tolerated this, and the graph section is what actually refuses
-        // such a root.
-        if let Some(application) = heap.class_application(*root_class) {
-            crate::mixin::preorder(&application.mixin, &mut order);
-        }
+    for root in module_roots {
+        crate::mixin::preorder(root, &mut order);
     }
     let ids: HashMap<usize, u32> = order
         .iter()
@@ -241,14 +230,13 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
 /// object graph addresses a class object's mixin by.
-pub fn encode<'gc>(
-    heap: &Heap<'gc>,
+pub fn encode(
     writer: &mut Writer,
-    module_roots: &[ClassReference<'gc>],
+    module_roots: &[Rc<Mixin>],
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {
-    let rows = plan(heap, module_roots)?;
+    let rows = plan(module_roots)?;
     writer.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {
         let mixin = &row.mixin;

@@ -1185,32 +1185,17 @@ answered, reading its source afresh, so its source is protected across it
 as an operand is across a send. The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
-## Follow-up: entry points that reach a class object only to find its mixin
+## Readers of compiled code take the mixin
 
-The compiler itself no longer has such an entry point: it compiles onto a
-`Mixin` while the tree is built, and never sees a class object. The pattern
-remains in two places. `image::encode_code_table` and `image::mixins::plan` each
-take a `ClassReference` parameter, and each one's first move is to walk from it to the
-`Mixin` that backs it — the code they encode lives on that mixin's tree and
-nowhere else. Reaching a class object's `mixin` is a read only `heap.rs` may
-perform, so each also needs a `&Heap` parameter purely to make that one hop.
-Taking the root mixin directly instead would remove the need for a `Heap` there —
-there is nothing else on the class object either of them reads.
-
-`ns-cli`'s `disasm` (`crates/ns-cli/src/commands/disasm.rs`) has the identical
-shape but not the identical fix: it takes no `ClassReference` parameter to narrow,
-since it builds a class object itself
-(from source, or from a loaded artifact) and reaches the mixin through its own
-`root_mixin_of` helper, needing a `Heap` for the same reason. It reads through
-`interpreter.enter` inside the lifetime of the interpreter that built the class
-object, because under the arena it must: a handle is an index meaningful only
-against its own heap, so a stand-in `Heap` reads the wrong object in a release
-build and trips the debug origin guard in a debug one. Its fix is not "take a
-`Mixin` instead of a `ClassReference`" but "stop building a class object at all" — a
-different, and possibly larger, change.
-
-Recorded here as a follow-up rather than undertaken now, because narrowing the
-signatures is a design change to the image module's interface, not a migration.
+Compiled code lives on a module's mixin tree, so what reads only the code
+takes mixins, never a class object. `image::encode_code_table`,
+`image::mixins::plan` and `image::mixins::encode` take the module roots'
+mixins and no `Heap`. `ns-next disasm` takes the root declaration from
+`Interpreter::compile_module` for a source -- compiled with the chosen
+lowering exactly as `load_module` compiles it, but applied to nothing -- or
+from `LoadedModule::declaration` for an artifact. None of them holds a
+handle, so none can read one through a heap that did not mint it
+([memory.md](memory.md), "A handle is arena-relative").
 
 ## Decisions
 

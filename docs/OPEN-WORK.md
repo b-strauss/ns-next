@@ -772,10 +772,6 @@ Small, deliberately left, none affecting an outcome.
   building levels. Removing it is a design point, not a clean-up: the
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
-- `image::encode_code_table` and `image::mixins::plan` take a `ClassReference`
-  and a `&Heap` only to reach a mixin, and `disasm` builds a class object for
-  the same reason. [compiler.md](design/compiler.md), "Follow-up: entry points
-  that reach a class object only to find its mixin".
 - Editor: a name declared on both class sides with different kinds is
   coloured by the first declaration; a malformed LSP notification is logged
   and ignored; the platform-directory mapping exists twice (`build.gradle.kts`'s

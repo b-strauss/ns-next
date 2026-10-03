@@ -745,11 +745,10 @@ impl<'gc> Heap<'gc> {
     /// minted it, and every accessor checks it against `self.heap_id` before
     /// indexing, so reading through the wrong heap panics at the read rather
     /// than answering. That check compiles out of a release build -- there the
-    /// second case is exactly as silent as it sounds, which is why
-    /// `encode_code_table` and `mixins::plan` take a real `&Heap` parameter and
-    /// `ns-cli`'s `disasm` reads through the interpreter that built its class
-    /// object, instead of building one on the spot, and why running the test
-    /// suite in debug is what catches the mistake if it recurs.
+    /// second case is exactly as silent as it sounds, which is why a reader
+    /// after compiled code alone (`image::encode_code_table`, `ns-cli`'s
+    /// `disasm`) takes mixins rather than a class handle, and why running the
+    /// test suite in debug is what catches the mistake if it recurs.
     ///
     /// Private to the heap module: `World` builds the one heap an interpreter
     /// has, and only this module's own tests build a bare one.

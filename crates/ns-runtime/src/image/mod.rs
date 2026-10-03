@@ -55,29 +55,32 @@ fn encode_describing<'gc>(
     heap: &Heap<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
 ) -> Result<Describing, String> {
-    let module_roots: Vec<ClassReference<'gc>> =
-        modules.iter().map(|module| module.class).collect();
-    let module_roots = module_roots.as_slice();
+    // Each module's declarations, which carry its code. A root that is not a
+    // class object has none and contributes no rows rather than an error:
+    // the graph section is what refuses such a root.
+    let module_roots: Vec<std::rc::Rc<crate::mixin::Mixin>> = modules
+        .iter()
+        .filter_map(|module| heap.class_application(module.class))
+        .map(|application| application.mixin.clone())
+        .collect();
     // A root that can never be instantiated could only fail as an artifact,
     // and refusing it here keeps the format from needing a way to say so.
-    for module_root in module_roots {
-        if let Some(application) = heap.class_application(*module_root) {
-            if let Some(defect) = &application.mixin.root_clause_defect {
-                return Err(format!(
-                    "image encoding cannot serialize {}: {}",
-                    application.mixin.name,
-                    defect.describe()
-                ));
-            }
+    for root in &module_roots {
+        if let Some(defect) = &root.root_clause_defect {
+            return Err(format!(
+                "image encoding cannot serialize {}: {}",
+                root.name,
+                defect.describe()
+            ));
         }
     }
     let mut symbols = symbols::Builder::new();
     let mut code = encode::Writer::new();
-    let ids = encode::encode_code_table(heap, &mut code, module_roots, &mut symbols)?;
+    let ids = encode::encode_code_table(&mut code, &module_roots, &mut symbols)?;
     // After the code table, whose ids its rows name; before the graph, whose
     // class objects might name its rows.
     let mut mixin_writer = encode::Writer::new();
-    let mixin_ids = mixins::encode(heap, &mut mixin_writer, module_roots, &mut symbols, &ids)?;
+    let mixin_ids = mixins::encode(&mut mixin_writer, &module_roots, &mut symbols, &ids)?;
     Ok(Describing {
         symbols,
         code,
@@ -232,6 +235,9 @@ pub struct LoadedModule {
     /// The module's root class, rooted for the host that will instantiate
     /// it or snapshot it again.
     pub class: Root,
+    /// The module's root declaration, which carries its code: what a host
+    /// after the code alone reads, with no heap to reach it through.
+    pub declaration: std::rc::Rc<crate::mixin::Mixin>,
     /// Where the module came from. Provenance, not program text -- it is
     /// in every artifact, source or not.
     pub origin: SourceOrigin,
@@ -417,12 +423,21 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let modules = module_roots
         .into_iter()
         .zip(decoded_modules)
-        .map(|(class, decoded)| LoadedModule {
-            class,
-            origin: decoded.origin,
-            source: decoded.source,
+        .enumerate()
+        .map(|(index, (class, decoded))| {
+            // `build_module_classes` refused a module without a tree already.
+            let declaration = mixins
+                .module_root(index)
+                .cloned()
+                .ok_or_else(|| decode::DecodeError::NotAClass.to_string())?;
+            Ok(LoadedModule {
+                class,
+                declaration,
+                origin: decoded.origin,
+                source: decoded.source,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(LoadedImage {
         interpreter,
         modules,

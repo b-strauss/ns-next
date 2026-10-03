@@ -65,19 +65,6 @@ pub(crate) fn load_embedded(name: &str, source: &str) -> LoadedSource {
     }
 }
 
-/// Bootstraps an interpreter that compiles with `lowering` and loads the
-/// module's root class, which compiles every body onto the declaration it
-/// belongs to -- before anything is instantiated, so the root class's
-/// instance initializer runs compiled too.
-pub(crate) fn bootstrap(
-    loaded: &LoadedSource,
-    lowering: ns_runtime::Lowering,
-) -> (ns_runtime::Interpreter, ns_runtime::Root) {
-    let mut interpreter = ns_runtime::Interpreter::bootstrap_with(lowering);
-    let class = interpreter.load_module(&loaded.resolved);
-    (interpreter, class)
-}
-
 pub(crate) fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;

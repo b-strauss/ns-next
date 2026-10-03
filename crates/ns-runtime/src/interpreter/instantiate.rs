@@ -159,6 +159,14 @@ impl Interpreter {
         })
     }
 
+    /// The module's root declaration with every body compiled onto it,
+    /// exactly as `load_module` compiles it, but applied to nothing: no class
+    /// object is built, so a caller after the code alone holds no handle and
+    /// needs no heap to read it.
+    pub fn compile_module(&mut self, resolved: &ResolvedModule) -> Rc<Mixin> {
+        self.enter(|mutator| mutator.compile_root_mixin(resolved))
+    }
+
     /// Instantiates the class `class` holds, from a host: the six numbered
     /// steps in `docs/design/object-model.md`, "Instantiation", decided
     /// (`decide_instantiation`) and then run from the outside
@@ -214,12 +222,7 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let source = if resolved.kernel {
-            ModuleSource::CoreLibrary
-        } else {
-            ModuleSource::User
-        };
-        let mixin = self.build_root_mixin(declaration, &resolved.bindings, source);
+        let mixin = self.compile_root_mixin(resolved);
         // Whatever the spelling, the rule leaves three class shapes to build:
         // over `Object`, over `Value`, or a `Value` level over `Object`.
         // `resolve` refuses every other root, so a defect reaches here only
@@ -298,6 +301,17 @@ impl<'gc> Mutator<'gc> {
         source: ModuleSource,
     ) -> Rc<Mixin> {
         Rc::new(self.mixin_of(declaration, root, bindings, source))
+    }
+
+    /// A module's root mixin, every body compiled, for `load_root_class` and
+    /// `Interpreter::compile_module`.
+    fn compile_root_mixin(&mut self, resolved: &ResolvedModule) -> Rc<Mixin> {
+        let source = if resolved.kernel {
+            ModuleSource::CoreLibrary
+        } else {
+            ModuleSource::User
+        };
+        self.build_root_mixin(&resolved.module.root_class, &resolved.bindings, source)
     }
 
     /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
