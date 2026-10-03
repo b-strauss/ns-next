@@ -30,7 +30,9 @@ use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
+use crate::heap::MixinId;
 use crate::types::Binding;
+use crate::types::BuiltinClass;
 use crate::Symbol;
 
 /// The guard an inline cache compares: a dense number, minted per heap, that
@@ -527,6 +529,57 @@ impl AppliedClause {
     }
 }
 
+/// How many `<:` clauses one superclass clause may apply: the clause index
+/// is 23 bits of the class object's applied-clause `SmallInteger` -- a limit
+/// a valid program can reach, taken knowingly (decided with the user on
+/// 2026-10-03; `docs/design/object-model.md`, "Planned: the object layout").
+pub(crate) const CLAUSE_INDEX_LIMIT: usize = 1 << 23;
+
+const CLAUSE_INDEX_SHIFT: u32 = 32;
+const BUILTIN_TAG_SHIFT: u32 = 55;
+const BUILTIN_TAG_MASK: u64 = 0b11_1111;
+const SIXTY_ONE_BITS: u64 = (1 << 61) - 1;
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "a class object's field stores the packed clause (Task 11)"
+    )
+)]
+impl AppliedClause {
+    /// The three parts as one `SmallInteger`: the 61-bit pattern
+    /// sign-extended, so bit 60 makes it negative rather than too large.
+    pub(crate) fn pack(mixin: MixinId, index: usize, named_builtin: Option<BuiltinClass>) -> i64 {
+        debug_assert!(index < CLAUSE_INDEX_LIMIT);
+        let tag = named_builtin.map_or(0, |builtin| {
+            1 + BuiltinClass::ALL
+                .iter()
+                .position(|candidate| *candidate == builtin)
+                .expect("every builtin is in BuiltinClass::ALL") as u64
+        });
+        let pattern =
+            mixin.index() as u64 | (index as u64) << CLAUSE_INDEX_SHIFT | tag << BUILTIN_TAG_SHIFT;
+        ((pattern << 3) as i64) >> 3
+    }
+
+    /// `None` for a tag that names no builtin, which only a corrupt field
+    /// could hold.
+    pub(crate) fn unpack(packed: i64) -> Option<(MixinId, usize, Option<BuiltinClass>)> {
+        let pattern = packed as u64 & SIXTY_ONE_BITS;
+        let mixin = MixinId::from_index((pattern & u64::from(u32::MAX)) as usize)?;
+        let index = ((pattern >> CLAUSE_INDEX_SHIFT) as usize) & (CLAUSE_INDEX_LIMIT - 1);
+        let tag = (pattern >> BUILTIN_TAG_SHIFT) & BUILTIN_TAG_MASK;
+        let named_builtin = match tag {
+            0 => None,
+            tag => Some(*BuiltinClass::ALL.get(tag as usize - 1)?),
+        };
+        Some((mixin, index, named_builtin))
+    }
+}
+
+const _: () = assert!(BuiltinClass::ALL.len() < BUILTIN_TAG_MASK as usize);
+
 /// `Debug` is derived so `ObjectData::Class` keeps its own derived `Debug`
 /// now that a class object's behaviour lives here. Printing one walks the
 /// whole superclass chain and every method's AST -- as `ClassData`'s own
@@ -951,5 +1004,52 @@ mod dispatch_id_tests {
         assert_eq!(DispatchId::FORWARDED.bits(), 2);
         assert_eq!(DispatchId::FIRST_MINTED, 3);
         assert_eq!(DispatchId::LIMIT, 1 << 22);
+    }
+}
+
+#[cfg(test)]
+mod applied_clause_tests {
+    use super::{AppliedClause, CLAUSE_INDEX_LIMIT};
+    use crate::heap::MixinId;
+    use crate::types::BuiltinClass;
+
+    #[test]
+    fn an_applied_clause_round_trips_through_its_small_integer_at_every_edge() {
+        let largest_tag = *BuiltinClass::ALL.last().expect("builtins exist");
+        let cases = [
+            (0u32, 0usize, None),
+            (u32::MAX, CLAUSE_INDEX_LIMIT - 1, Some(largest_tag)),
+            (7, 1, Some(BuiltinClass::Object)),
+            (u32::MAX, 0, None),
+        ];
+        for (mixin, index, builtin) in cases {
+            let mixin = MixinId::from_index(mixin as usize).expect("fits");
+            let packed = AppliedClause::pack(mixin, index, builtin);
+            assert!(
+                crate::fits_small_integer(packed),
+                "{packed} is not a SmallInteger"
+            );
+            assert_eq!(AppliedClause::unpack(packed), Some((mixin, index, builtin)));
+        }
+    }
+
+    #[test]
+    fn a_negative_pattern_with_bit_sixty_set_is_read_back_through_its_sign_extension() {
+        // The builtins' tags stay below 32, so `pack` never sets bit 60; a
+        // field holding it is corrupt, and `unpack` must still answer by the
+        // 61-bit pattern -- tag 33 names no builtin.
+        let packed = ((33i64 << 55) << 3) >> 3;
+        assert!(packed < 0);
+        assert_eq!(AppliedClause::unpack(packed), None);
+        let largest_tag = *BuiltinClass::ALL.last().expect("builtins exist");
+        let mixin = MixinId::from_index(0).expect("fits");
+        assert!(AppliedClause::pack(mixin, 0, Some(largest_tag)) > 0);
+    }
+
+    #[test]
+    fn an_unpacked_builtin_tag_past_the_builtins_is_refused() {
+        // tag 63 names no builtin: 63 - 1 = 62 >= BuiltinClass::ALL.len()
+        let packed = ((63i64 << 55) << 3) >> 3;
+        assert_eq!(AppliedClause::unpack(packed), None);
     }
 }

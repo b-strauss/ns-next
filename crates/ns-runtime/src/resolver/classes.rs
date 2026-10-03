@@ -130,6 +130,19 @@ pub(super) fn duplicate_member_names(declaration: &ast::ClassDeclaration) -> Vec
     duplicates
 }
 
+/// The resolve error for a superclass clause applying more mixins than a
+/// class object's applied-clause field can number
+/// (`crate::mixin::CLAUSE_INDEX_LIMIT`), or `None`.
+pub(super) fn clause_count_error(count: usize, class_name: &str) -> Option<String> {
+    (count > crate::mixin::CLAUSE_INDEX_LIMIT).then(|| {
+        format!(
+            "class `{class_name}` applies {count} mixins in its superclass clause; \
+             at most {} are allowed",
+            crate::mixin::CLAUSE_INDEX_LIMIT
+        )
+    })
+}
+
 /// The root rule (`docs/design/object-model.md`, "The root rule"): §6.1
 /// evaluates a module root's clauses "as if [each] was a top level
 /// expression", where §3.8 leaves nothing to send to, so the only classes a
@@ -220,5 +233,21 @@ fn selector_name(selector: &ast::Selector) -> &str {
         ast::Selector::Unary(name) | ast::Selector::Binary(name) | ast::Selector::Keyword(name) => {
             name
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clause_count_error;
+
+    #[test]
+    fn a_superclass_clause_of_more_than_two_to_the_twenty_three_clauses_is_refused() {
+        assert!(clause_count_error(crate::mixin::CLAUSE_INDEX_LIMIT, "Wide").is_none());
+        let message =
+            clause_count_error(crate::mixin::CLAUSE_INDEX_LIMIT + 1, "Wide").expect("refused");
+        assert_eq!(
+            message,
+            "class `Wide` applies 8388609 mixins in its superclass clause; at most 8388608 are allowed"
+        );
     }
 }

@@ -231,6 +231,14 @@ pub enum DecodeError {
         row: u32,
         index: u32,
     },
+    /// A class record's or a root's `<:` clause index at or past
+    /// `CLAUSE_INDEX_LIMIT`. The resolver refuses such a source, and a class
+    /// object's applied-clause field cannot number one, so refusing it is the
+    /// only answer that does not truncate it into another clause.
+    ClauseIndexTooLarge {
+        row: u32,
+        index: u32,
+    },
     /// A mixin-table row's `<:` clause passes factory arguments the image has
     /// no compiled body for. `instantiate::clause_message_body` panics on the
     /// invariant when the clause carries none -- the same refusal, for the
@@ -557,6 +565,11 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "the image names mixin application clause {index} of mixin row {row}, which the \
                  row does not declare in that place"
+            ),
+            DecodeError::ClauseIndexTooLarge { row, index } => write!(
+                f,
+                "mixin application clause index {index} of row {row} is past the 2^23 \
+                 clauses a class object can name"
             ),
             DecodeError::MissingMixinApplicationMessage => write!(
                 f,
@@ -2844,6 +2857,9 @@ pub fn decode_root_section(
     let mut next_allowed: u32 = 0;
     for _ in 0..count {
         let index = reader.read_u32()?;
+        if index as usize >= crate::mixin::CLAUSE_INDEX_LIMIT {
+            return Err(DecodeError::ClauseIndexTooLarge { row, index });
+        }
         if index < next_allowed
             || index as usize >= clause_count
             || !levels.is_empty()
@@ -3681,6 +3697,9 @@ fn decode_applied_clause(
         .cloned()
         .ok_or(DecodeError::BadMixinId(row))?;
     let index = reader.read_u32()?;
+    if index as usize >= crate::mixin::CLAUSE_INDEX_LIMIT {
+        return Err(DecodeError::ClauseIndexTooLarge { row, index });
+    }
     if index as usize >= declaration.mixin_applications.len() {
         return Err(DecodeError::BadMixinApplicationClause { row, index });
     }

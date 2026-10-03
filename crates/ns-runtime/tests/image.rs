@@ -10197,7 +10197,7 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let marker = row_named(&fixture, "Marker");
     let applied = row_named(&fixture, "Applied");
-    for (row, index) in [(applied, 1), (marker, 0), (applied, u32::MAX)] {
+    for (row, index) in [(applied, 1), (marker, 0)] {
         let bytes = class_records(2, |writer| {
             applied_level_record(writer, (1, marker), None, (row, index));
             metaclass_record(writer, 0);
@@ -10212,6 +10212,36 @@ fn an_applied_levels_clause_its_row_does_not_declare_is_a_decode_error() {
             format!(
                 "the image names mixin application clause {index} of mixin row {row}, which the \
                  row does not declare in that place"
+            )
+        );
+    }
+}
+
+/// A clause index the applied-clause field cannot number is refused before
+/// it is looked up, so it is never truncated into another clause.
+#[test]
+fn an_applied_levels_clause_index_past_twenty_three_bits_is_refused() {
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let marker = row_named(&fixture, "Marker");
+    let applied = row_named(&fixture, "Applied");
+    for index in [1u32 << 23, u32::MAX] {
+        let bytes = class_records(2, |writer| {
+            applied_level_record(writer, (1, marker), None, (applied, index));
+            metaclass_record(writer, 0);
+        });
+        let error = fixture.decode_error(&bytes);
+        assert_eq!(
+            error,
+            decode::DecodeError::ClauseIndexTooLarge {
+                row: applied,
+                index
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "mixin application clause index {index} of row {applied} is past the 2^23 \
+                 clauses a class object can name"
             )
         );
     }

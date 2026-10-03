@@ -119,6 +119,14 @@ impl Resolver {
                 message: format!("class `{name}` has multiple definitions of `{duplicate}`"),
             });
         }
+        if let Some(message) =
+            classes::clause_count_error(declaration.mixin_applications.len(), &name.to_string())
+        {
+            self.errors.push(ResolveError {
+                span: declaration.name.span,
+                message,
+            });
+        }
         let own_members = classes::own_member_names(declaration);
         let class_chain: Vec<EnclosingClass<'_>> = std::iter::once(EnclosingClass {
             name,
