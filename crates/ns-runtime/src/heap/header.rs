@@ -75,7 +75,7 @@ impl Format {
 
 /// An object's header word (the module's doc gives the layout).
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct Header(u64);
+pub(super) struct Header(pub(super) u64);
 
 impl Header {
     /// A header guarding on `guard`, of `format` with `unused` units unused

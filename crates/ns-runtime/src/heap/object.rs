@@ -1,94 +1,77 @@
-//! What sits behind an `ObjectReference` and a `FrameReference`: the Rust
-//! payload of every object, a reified activation's included. Private to the
-//! heap module -- nothing outside `heap.rs` and its submodules names these
-//! types, so that changing how an object or a frame is represented changes
-//! this module rather than its callers (`docs/design/memory.md`, "The
-//! seam"). Callers build objects through `Heap`'s typed allocations and the
-//! value types of `records.rs`, and read them through its accessors.
+//! What sits behind an `ObjectReference` and a `FrameReference`: the block
+//! of words every object is, a reified activation's included -- word
+//! `HEADER` the header, word `CLASS` the class word, then the fields -- and
+//! how the collector walks one by its format. Private to the heap module --
+//! nothing outside `heap.rs` and its submodules names these, so that
+//! changing how an object or a frame is represented changes this module
+//! rather than its callers (`docs/design/memory.md`, "The seam"). Callers
+//! build objects through `Heap`'s typed allocations and the value types of
+//! `records.rs`, and read them through its accessors.
 
 use crate::heap::header::{Format, Header};
-use crate::heap::{ClassReference, Word};
+use crate::heap::Word;
 use crate::mixin::DispatchId;
-use crate::trace::{Trace, Tracer};
+use crate::trace::Tracer;
 
-#[derive(Debug, Clone)]
-pub(in crate::heap) struct Object<'gc> {
-    pub(in crate::heap) class: ClassReference<'gc>,
-    /// The guard an inline cache compares, the format, the identity hash and
-    /// the size (`header.rs` gives the layout).
-    ///
-    /// The guard is the id an inline cache guards this object's sends on
-    /// (`docs/design/dispatch.md`, "The dispatch id"): its class's instances
-    /// id -- a class object's class is its metaclass. A copy, so that a
-    /// guard is one load and one compare rather than a walk to the class --
-    /// which makes every place a class's application changes responsible for
-    /// restamping it (`Heap::class_set_application`,
-    /// `Heap::stamp_dispatch_ids`).
-    ///
-    /// The identity hash is 0 until something asks for it; then drawn from
-    /// a counter (`Heap::object_ensure_identity_hash`), so allocation order
-    /// stays unobservable. Never derived from the arena index, which a
-    /// moving collector or `become:` would change (liveness spec's
-    /// stable-identity constraint). Not a handle; a move carries it along.
-    pub(in crate::heap) header: Header,
-    pub(in crate::heap) data: ObjectData,
+/// Where a block keeps its header word (`header.rs` gives the layout).
+///
+/// The header's guard is the id an inline cache guards this object's sends
+/// on (`docs/design/dispatch.md`, "The dispatch id"): its class's instances
+/// id -- a class object's class is its metaclass. A copy, so that a guard is
+/// one load and one compare rather than a walk to the class -- which makes
+/// every place a class's application changes responsible for restamping it
+/// (`Heap::class_set_application`, `Heap::stamp_dispatch_ids`).
+///
+/// Its identity hash is 0 until something asks for it; then drawn from a
+/// counter (`Heap::object_ensure_identity_hash`), so allocation order stays
+/// unobservable. Never derived from the arena index, which a moving
+/// collector or `become:` would change (liveness spec's stable-identity
+/// constraint). Not a handle; a move carries it along.
+pub(in crate::heap) const HEADER: usize = 0;
+/// Where a block keeps its class word: a stored `Word` naming the class
+/// object, written through `Heap::store` and read through `Heap::load`.
+pub(in crate::heap) const CLASS: usize = 1;
+/// Where a block's fields start: field `index` is word `FIELDS + index`.
+pub(in crate::heap) const FIELDS: usize = 2;
+
+/// What an object is about to hold, before it has a class: its format, the
+/// units its last word leaves unused, a `LargeInteger`'s sign and its field
+/// words, read by format (`docs/design/memory.md`): `FixedPointers`, an
+/// instance's fields; `IndexablePointers`, an `Array`'s elements -- both as
+/// the bits of a stored `Word`, so only `Heap::store` writes one and only
+/// `Heap::load` reads one; `SixtyFourBit`, a `LargeInteger`'s magnitude,
+/// least significant digit first, its sign the header's negative bit, or a
+/// boxed `Float`'s one word of `f64::to_bits` -- the class's builtin tells
+/// those two apart, as Spur's does; `Bytes` and `ThirtyTwoBit`, a String's
+/// or a Symbol's code points packed little-endian, eight or two to a word
+/// (`PackedString`), the class's builtin again telling the two apart;
+/// `Frame`, a reified activation (`Payload::frame`); `Closure`, a block
+/// closure (`Payload::closure`); `Class`, a class object
+/// (`Payload::class`).
+///
+/// Build one through `Payload::instance`, `array`, `large_integer`, `float`,
+/// `string`, `frame`, `closure` or `class`, the one place each kind's layout
+/// is decided, and turn it into an arena slot with `into_block`, the one
+/// place a header is derived. The words already leave room for the header
+/// and the class word, so that the block is the one allocation an object
+/// costs.
+///
+/// A `LargeInteger` never holds a value a `SmallInteger` does, and a boxed
+/// `Float` never one inside the immediate range: `Mutator::new_integer` and
+/// `Mutator::new_float` are the one way to make either and decide it, so
+/// each number has one representation.
+pub(in crate::heap) struct Payload {
+    format: Format,
+    /// The units the last word leaves unused: 0 unless `format` is `Bytes`
+    /// or `ThirtyTwoBit`.
+    unused: u8,
+    negative: bool,
+    /// The block to be: `FIELDS` words left for the header and the class
+    /// word, then the fields.
+    block: Vec<u64>,
 }
 
-impl<'gc> Object<'gc> {
-    /// An object of `class` holding `data`, guarding on `guard`, with
-    /// `identity_hash` (0: none yet) and the format and size `data` has.
-    pub(in crate::heap) fn new(
-        class: ClassReference<'gc>,
-        guard: DispatchId,
-        identity_hash: u32,
-        data: ObjectData,
-    ) -> Object<'gc> {
-        let header = data.header(guard).with_identity_hash(identity_hash);
-        Object {
-            class,
-            header,
-            data,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(in crate::heap) enum ObjectData {
-    /// An object whose payload is plain words, read by its header's format
-    /// (`docs/design/memory.md`): `FixedPointers`, an instance's fields;
-    /// `IndexablePointers`, an `Array`'s elements -- both as the bits of a
-    /// stored `Word`, so only `Heap::store` writes one and only `Heap::load`
-    /// reads one; `SixtyFourBit`, a `LargeInteger`'s magnitude, least
-    /// significant digit first, its sign the header's negative bit, or a
-    /// boxed `Float`'s one word of `f64::to_bits` -- the class's builtin
-    /// tells those two apart, as Spur's does; `Bytes` and `ThirtyTwoBit`, a
-    /// String's or a Symbol's code points packed little-endian, eight or two
-    /// to a word (`PackedString`), the class's builtin again telling the
-    /// two apart; `Frame`, a reified activation (`ObjectData::frame`);
-    /// `Closure`, a block closure (`ObjectData::closure`); `Class`, a class
-    /// object (`ObjectData::class`).
-    ///
-    /// `format`, `unused` and `negative` are what `Object::new` derives the
-    /// header from; once built, readers ask the header. Build one through
-    /// `ObjectData::instance`, `array`, `large_integer`, `float`, `string`,
-    /// `frame`, `closure` or `class`, the one place each kind's layout is
-    /// decided.
-    ///
-    /// A `LargeInteger` never holds a value a `SmallInteger` does, and a
-    /// boxed `Float` never one inside the immediate range:
-    /// `Mutator::new_integer` and `Mutator::new_float` are the one way to
-    /// make either and decide it, so each number has one representation.
-    Words {
-        format: Format,
-        /// The units the last word leaves unused: 0 unless `format` is
-        /// `Bytes` or `ThirtyTwoBit`.
-        unused: u8,
-        negative: bool,
-        words: Box<[u64]>,
-    },
-}
-
-impl ObjectData {
+impl Payload {
     /// An instance's payload: `fields`, each a stored word.
     pub(in crate::heap) fn instance(fields: impl IntoIterator<Item = Word>) -> Self {
         Self::pointers(Format::FixedPointers, fields)
@@ -128,32 +111,34 @@ impl ObjectData {
     }
 
     fn pointers(format: Format, words: impl IntoIterator<Item = Word>) -> Self {
-        ObjectData::Words {
+        Self::of_words(format, false, words.into_iter().map(Word::bits))
+    }
+
+    fn of_words(format: Format, negative: bool, words: impl IntoIterator<Item = u64>) -> Self {
+        let words = words.into_iter();
+        let mut block = Vec::with_capacity(FIELDS + words.size_hint().0);
+        block.resize(FIELDS, 0);
+        block.extend(words);
+        Payload {
             format,
             unused: 0,
-            negative: false,
-            words: words.into_iter().map(Word::bits).collect(),
+            negative,
+            block,
         }
     }
 
     /// A `LargeInteger`'s payload: its magnitude's digits and its sign.
     pub(in crate::heap) fn large_integer(integer: &crate::ArbitraryInteger) -> Self {
-        ObjectData::Words {
-            format: Format::SixtyFourBit,
-            unused: 0,
-            negative: integer.is_negative(),
-            words: integer.magnitude().into(),
-        }
+        Self::of_words(
+            Format::SixtyFourBit,
+            integer.is_negative(),
+            integer.magnitude().iter().copied(),
+        )
     }
 
     /// A boxed `Float`'s payload: one word of its bits.
     pub(in crate::heap) fn float(value: f64) -> Self {
-        ObjectData::Words {
-            format: Format::SixtyFourBit,
-            unused: 0,
-            negative: false,
-            words: Box::new([value.to_bits()]),
-        }
+        Self::of_words(Format::SixtyFourBit, false, [value.to_bits()])
     }
 
     /// A String's or a Symbol's payload: `text`'s code points, one byte
@@ -163,9 +148,10 @@ impl ObjectData {
     /// `index % 2` of word `index / 2`, least significant first; the last
     /// word's unused units are zero, so that equal texts have equal words.
     pub(in crate::heap) fn string(text: &crate::CodePoints) -> Self {
-        let (format, words): (Format, Box<[u64]>) = match text.as_wide() {
-            None => (
+        let mut payload = match text.as_wide() {
+            None => Self::of_words(
                 Format::Bytes,
+                false,
                 text.as_bytes()
                     .unwrap_or_default()
                     .chunks(BYTES_PER_WORD)
@@ -173,31 +159,117 @@ impl ObjectData {
                         let mut bytes = [0u8; BYTES_PER_WORD];
                         bytes[..chunk.len()].copy_from_slice(chunk);
                         u64::from_le_bytes(bytes)
-                    })
-                    .collect(),
+                    }),
             ),
-            Some(units) => (
+            Some(units) => Self::of_words(
                 Format::ThirtyTwoBit,
-                units
-                    .chunks(THIRTY_TWO_BIT_UNITS_PER_WORD)
-                    .map(|chunk| {
-                        chunk
-                            .iter()
-                            .rev()
-                            .fold(0, |word, unit| (word << 32) | u64::from(*unit))
-                    })
-                    .collect(),
+                false,
+                units.chunks(THIRTY_TWO_BIT_UNITS_PER_WORD).map(|chunk| {
+                    chunk
+                        .iter()
+                        .rev()
+                        .fold(0, |word, unit| (word << 32) | u64::from(*unit))
+                }),
             ),
         };
-        let per_word = units_per_word(format).unwrap_or(1);
+        let per_word = units_per_word(payload.format).unwrap_or(1);
+        let words = payload.block.len() - FIELDS;
         // Below `per_word`, which is at most 8.
-        let unused = u8::try_from(words.len() * per_word - text.size()).unwrap_or(0);
-        ObjectData::Words {
+        payload.unused = u8::try_from(words * per_word - text.size()).unwrap_or(0);
+        payload
+    }
+
+    /// The field words, for a constructor that fills some in once the
+    /// layout is decided.
+    pub(in crate::heap) fn fields_mut(&mut self) -> &mut [u64] {
+        &mut self.block[FIELDS..]
+    }
+
+    /// The arena slot of an object of the class `class` names, holding this
+    /// payload, guarding on `guard`, with `identity_hash` (0: none yet): its
+    /// header -- its format, its size as road step 3's layout stores it, the
+    /// class word plus the fields, and a `LargeInteger`'s sign -- its class
+    /// word, then its fields. The one place a header is derived.
+    pub(in crate::heap) fn into_block(
+        self,
+        class: Word,
+        guard: DispatchId,
+        identity_hash: u32,
+    ) -> Box<[u64]> {
+        let Payload {
             format,
             unused,
-            negative: false,
-            words,
+            negative,
+            mut block,
+        } = self;
+        let header = Header::new(guard, format, unused, block.len() - CLASS)
+            .with_negative(negative)
+            .with_identity_hash(identity_hash);
+        block[HEADER] = header.0;
+        block[CLASS] = class.bits();
+        block.into_boxed_slice()
+    }
+}
+
+/// Hands every word of `block` that holds a stored `Word` to `tracer`,
+/// deciding which by the header's format alone: the class word always;
+/// every field of `FixedPointers` and `IndexablePointers`; a class object's
+/// object fields; a closure's captured frame and copied values; a frame's
+/// fixed fields, and its registers once it is no longer married; nothing of
+/// `SixtyFourBit`, `Bytes` and `ThirtyTwoBit`, whose digits and code points
+/// would read as handles.
+pub(in crate::heap) fn trace_block<T: Tracer>(block: &mut [u64], tracer: &mut T) {
+    let Some(&header) = block.get(HEADER) else {
+        return;
+    };
+    let Some((class, fields)) = block.get_mut(CLASS..).and_then(<[u64]>::split_first_mut) else {
+        return;
+    };
+    trace_word_bits(std::slice::from_mut(class), tracer);
+    match Header(header).format() {
+        Format::FixedPointers | Format::IndexablePointers => trace_word_bits(fields, tracer),
+        // A married frame's registers are its stack entry's, traced with
+        // the stack; its own stay nil until the divorce copies them in, so
+        // they are skipped rather than walked for nothing.
+        Format::Frame => {
+            let married = fields
+                .get(frame_field::MARRIED)
+                .is_some_and(|bits| *bits != Word::NIL.bits());
+            let traced = if married {
+                frame_field::COUNT.min(fields.len())
+            } else {
+                fields.len()
+            };
+            trace_word_bits(&mut fields[..traced], tracer);
         }
+        // A closure's code id and feedback base are numbers; its captured
+        // frame and its copied values are the pointers.
+        Format::Closure => {
+            let fixed = closure_field::COUNT.min(fields.len());
+            let (head, copied) = fields.split_at_mut(fixed);
+            if let Some(frame) =
+                head.get_mut(closure_field::CAPTURED_FRAME..=closure_field::CAPTURED_FRAME)
+            {
+                trace_word_bits(frame, tracer);
+            }
+            trace_word_bits(copied, tracer);
+        }
+        // A class object's builtin, applied clause and application are
+        // numbers; the rest are objects or nil.
+        Format::Class => {
+            for field in class_field::POINTERS {
+                if let Some(word) = fields.get_mut(field..=field) {
+                    trace_word_bits(word, tracer);
+                }
+            }
+        }
+        // Digits and code points, no stored words; and no block in the
+        // arena is forwarded or free.
+        Format::SixtyFourBit
+        | Format::Bytes
+        | Format::ThirtyTwoBit
+        | Format::Forwarded
+        | Format::Free => {}
     }
 }
 
@@ -212,7 +284,7 @@ fn units_per_word(format: Format) -> Option<usize> {
 }
 
 /// A String's or a Symbol's packed units, read in place: the one reader of
-/// the layout `ObjectData::string` decides.
+/// the layout `Payload::string` decides.
 #[derive(Clone, Copy)]
 pub(in crate::heap) struct PackedString<'a> {
     format: Format,
@@ -290,83 +362,6 @@ impl<'a> PackedString<'a> {
 /// The units of a string's element width one word holds.
 const BYTES_PER_WORD: usize = 8;
 const THIRTY_TWO_BIT_UNITS_PER_WORD: usize = 2;
-
-impl ObjectData {
-    /// The header an object holding this payload starts with: its format,
-    /// its size as the word layout of road step 3 stores it -- the class
-    /// word plus the payload's words -- and a `LargeInteger`'s sign.
-    fn header(&self, guard: DispatchId) -> Header {
-        let ObjectData::Words {
-            format,
-            unused,
-            negative,
-            words,
-        } = self;
-        Header::new(guard, *format, *unused, 1 + words.len()).with_negative(*negative)
-    }
-}
-
-impl Trace for Object<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let Object {
-            class,
-            header: _, // not a handle
-            data,
-        } = self;
-        tracer.object(class);
-        data.trace(tracer);
-    }
-}
-
-impl Trace for ObjectData {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        match self {
-            ObjectData::Words { format, words, .. } => match format {
-                Format::FixedPointers | Format::IndexablePointers => {
-                    trace_word_bits(words, tracer);
-                }
-                // A married frame's registers are its stack entry's, traced
-                // with the stack; its own stay nil until the divorce copies
-                // them in, so they are skipped rather than walked for nothing.
-                Format::Frame => {
-                    let married = words
-                        .get(frame_field::MARRIED)
-                        .is_some_and(|bits| *bits != Word::NIL.bits());
-                    let traced = if married {
-                        frame_field::COUNT.min(words.len())
-                    } else {
-                        words.len()
-                    };
-                    trace_word_bits(&mut words[..traced], tracer);
-                }
-                // A closure's code id and feedback base are numbers; its
-                // captured frame and its copied values are the pointers.
-                Format::Closure => {
-                    let fixed = closure_field::COUNT.min(words.len());
-                    let (head, copied) = words.split_at_mut(fixed);
-                    if let Some(frame) =
-                        head.get_mut(closure_field::CAPTURED_FRAME..=closure_field::CAPTURED_FRAME)
-                    {
-                        trace_word_bits(frame, tracer);
-                    }
-                    trace_word_bits(copied, tracer);
-                }
-                // A class object's builtin, applied clause and application
-                // are numbers; the rest are objects or nil.
-                Format::Class => {
-                    for field in class_field::POINTERS {
-                        if let Some(word) = words.get_mut(field..=field) {
-                            trace_word_bits(word, tracer);
-                        }
-                    }
-                }
-                // Only a pointer format's words are stored `Word`s; a
-                // number's digits would read as handles.
-                _ => {}
-            },
-        }
-    }
-}
 
 /// Traces pointer fields kept as the bits of a stored `Word`.
 fn trace_word_bits<T: Tracer>(words: &mut [u64], tracer: &mut T) {

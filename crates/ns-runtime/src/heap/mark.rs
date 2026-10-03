@@ -8,10 +8,10 @@
 use crate::heap::{FrameReference, ObjectReference, Word};
 use crate::trace::Tracer;
 
-/// One bit per slot of the object arena -- 1/448 of the object arena, which is why
-/// the bit is here and not in the object header: `Object` is pinned at 56
-/// bytes by `an_object_is_the_size_the_amplification_figure_assumes`, and
-/// the image format's amplification figures are computed from that number.
+/// One bit per slot of the object arena -- 1/128 of its 16-byte slots
+/// (`an_object_slot_is_one_boxed_block_of_words`), before the blocks
+/// themselves. Not the header's mark bit, which belongs to the collector of
+/// a later road step (`header.rs`).
 pub(crate) struct MarkBits {
     words: Vec<u64>,
     length: usize,

@@ -1979,7 +1979,7 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 
 /// Builds the single, genuinely self-referential `Object`-tagged class
 /// object every `BuiltinClass` shares as its own `.class`, which is what
-/// lets `Object.class` stay non-optional. The construction itself lives in
+/// lets an object's class word stay non-optional. The construction itself lives in
 /// `Heap::allocate_self_referential_class`; under the arena it is ordinary
 /// safe Rust, because the slot's index is known before the slot is filled.
 fn build_self_referential_object_class<'gc>(

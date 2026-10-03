@@ -4,9 +4,10 @@
 //! `Tracer` one `&mut` at a time. Enumerating is this module's; rewriting is
 //! `heap.rs`'s `Forwarder`, since only `heap.rs` can mint a handle.
 //!
-//! The impls for an object's own payload -- a reified frame's included --
-//! live beside those types, in `heap/object.rs`, which nothing outside the
-//! heap may name.
+//! An object -- a reified frame included -- has no impl: it is a block of
+//! words, and `heap/object.rs`'s `trace_block`, which nothing outside the
+//! heap may name, decides which of them hold a stored `Word` by the
+//! header's format.
 //!
 //! Every impl names every field and matches every variant, with no `..` and
 //! no `_`: a field or variant added later fails to compile here until
