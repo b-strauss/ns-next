@@ -118,10 +118,11 @@ move.** Never hold an `ObjectReference`, `ClassReference`, `FrameReference` or
 different, valid object in another heap. Reach the real `Heap` (a `&Heap`
 parameter, or read through `interpreter.enter` while it lives); a reader of
 compiled code alone takes the mixin, which holds no handle (`compiler.md`,
-"Readers of compiled code take the mixin"). A host keeps a value across a run only as a `Root`. The debug-only origin guard,
-move epochs and the stress modes catch mistakes; a release build does not. A new
-field holding a handle or a stored `Word` needs its `Trace` impl (`memory.md`, "A
-handle is arena-relative", "The move stress mode").
+"Readers of compiled code take the mixin"). A host keeps a value across a run
+only as a `Root`. The debug-only origin guard, move epochs and the stress modes
+catch mistakes; a release build does not. A new field holding a handle or a
+stored `Word` needs its `Trace` impl (`memory.md`, "A handle is arena-relative",
+"The move stress mode").
 
 **The brand is the compiler's, and needs no cast.** `World::enter` hands the
 `Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
