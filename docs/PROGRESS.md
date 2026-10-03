@@ -15,13 +15,16 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: road step 3, the object space**
-([memory.md](design/memory.md), "Planned: the object space";
-[object-model.md](design/object-model.md), "Planned: the object layout"):
-one header word and a class word, the fields inline, variably sized objects
-in one VM-owned space with byte-offset handles, in place of the two arenas.
-No implementation plan exists for it yet; one starts from the details
-[OPEN-WORK.md](OPEN-WORK.md)'s road lists under "To settle when planning".
+**Next: road step 3a, the object representation**
+([object-model.md](design/object-model.md), "Planned: the object layout";
+[memory.md](design/memory.md), "Planned: the object space"):
+every object a header word, a class word and its fields, one block of words
+per slot of today's arena; class objects, closures and reified frames
+become such objects and the frame arena goes. Road step 3 is built in two
+plans, this one and then 3b, the space in `ns-memory`'s reservation with
+byte-offset handles. The design, its five open details included, was
+completed with the user on 2026-10-03; no implementation plan exists for
+it yet.
 Everything before it on the road is built: road step 2's eight-byte value
 ("The eight-byte value" below), and after it the compact instruction
 encoding ("The compact instruction encoding" below;

@@ -241,7 +241,7 @@ code points rather than its bytes:
 `goldens/library/string/a_string_is_its_code_points` pin them in either width,
 `goldens/library/string/a_string_index_error_is_caught` their errors.
 
-**Planned, with road step 3:** `Symbol` becomes a subclass of `String`
+**Planned, with road step 3a:** `Symbol` becomes a subclass of `String`
 sharing both formats, and `=` stays class-tight both ways as today
 (`'foo' = #foo` and `#foo = 'foo'` answer `false`), so `Symbol` overrides
 `=` and `hash`, pinned by a golden.

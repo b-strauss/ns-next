@@ -1637,7 +1637,13 @@ Would change: `Heap`'s two arenas of fixed-size slots, `objects` and
 a class word and its fields inline ([object-model.md](object-model.md),
 "Planned: the object layout"), in memory from "The memory layer".
 Road step 3; it follows the eight-byte value (road step 2) and the compact
-instruction encoding.
+instruction encoding. It is built in two plans (decided with the user on
+2026-10-03): road step 3a gives each slot of today's object arena one
+block of words in the final layout, makes reified frames objects of the
+frame format and so removes the frame arena, and traces, marks and
+compacts by format over the one arena with today's index-forwarding table;
+road step 3b replaces the arena with the space below
+([object-model.md](object-model.md), "Planned: the object layout").
 
 - **Allocation is a bump pointer** in the space, as Soup's `Heap::Allocate`
   (`prior-art/primordialsoup/vm/heap.h:373-387`). Objects are 8-byte aligned

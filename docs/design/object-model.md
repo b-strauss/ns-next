@@ -1525,6 +1525,20 @@ the rest is derived. Strings in two widths are built already, on today's
 arena (2026-10-01); what road step 3 changes for them is that they become
 byte- and word-format objects in the space.
 
+Road step 3 is built in two plans (decided with the user on 2026-10-03), as
+the one-word value was built on today's arena first. **3a, the
+representation**: each slot of today's object arena becomes one block of
+words in exactly the layout below, header word first, the handle still an
+arena index; every object kind becomes a format, class objects, closures
+and reified frames become such objects, the frame arena goes, and the
+image's frames become object records. Between 3a and 3b every guard read
+goes through the slot's pointer to its block, an indirection more than
+today's guard read in the slot itself, accepted so that 3a fixes the final
+layout and 3b only changes where the words live. **3b, the space**: the
+arena gives way to the space in `ns-memory`'s reservation, with byte-offset
+handles, bump allocation and sliding compaction ([memory.md](memory.md),
+"Planned: the object space").
+
 ```
 [header word][class word][field 1][field 2] ...     8-byte aligned, at least 16 bytes
 ```
@@ -1536,7 +1550,7 @@ the lock bits into one 64-bit word:
 
 | Bits | Holds |
 |---|---|
-| 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id") |
+| 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id"); 0 is `NONE`, 1 `VACANT`, 2 the forwarder's, and the counter mints from 3 |
 | 22-26 | the format |
 | 27-30 | the age, for the generations (road step 4) |
 | 31 | the remembered bit (road step 4) |
@@ -1548,6 +1562,17 @@ the lock bits into one 64-bit word:
 The word count sits in the top byte, as Spur's does, so the overflow word
 before a large object's header carries 255 in its top byte and the real
 count in its low 56 bits, and a linear walk tells it from a header.
+
+**The reserved guard values sit at the low end**, as Primordial Soup's
+reserved class ids do (`kIllegalCid = 0`, `kForwardingCorpseCid = 1`,
+`kFreeListElementCid = 2`, `kFirstLegalCid = 3`,
+`prior-art/primordialsoup/vm/object.h:64-68`), and Spur keeps its own
+puns below 32 (`isFreeObjectClassIndexPun` 0, `isForwardedObjectClassIndexPun`
+8, `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:2815-2817`). So a
+header word left zero by a missed initialization carries `NONE`, which is
+never cached, rather than a guard some application was minted, and the
+debug build's recomputation in `Heap::dispatch_id` reports it (decided with
+the user on 2026-10-03).
 
 **The identity hash is 22 bits wide**, drawn from a counter that wraps
 within them, as Strongtalk's wraps within 20 (`markOop.cpp`), and skips 0.
@@ -1580,7 +1605,11 @@ application-cache key or value and no class object's applied-clause field
 names it. A class's change of application restamps every instance's header
 by a heap walk, as `Heap::class_set_application` walks the arena today
 (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
-become reclaimable.
+become reclaimable. Road step 3a mints the three ids and reclaims none:
+nothing drops a mixin before live editing, and the application cache,
+keyed by the ids, stays strong; the reuse rules and a weak cache come with
+the first edit (decided with the user on 2026-10-03;
+[OPEN-WORK.md](../OPEN-WORK.md), "Live editing of mixins").
 
 **The class word** is an ordinary value naming the object's class object.
 An immediate has no header; its class and its guard come from a small table
@@ -1630,20 +1659,46 @@ Spur's forwarders take their first slot.
 everything of today's `ClassData` that holds per class object: its enclosing
 object, declaring class, superclass, for a metaclass the class it describes
 (`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads on
-every send), its value-class refusal (a `SmallInteger` index into a Rust-side
-table of refusals, or `nil`, since today's `ValueClassRefusal` holds a Rust
-`String` and a `Symbol`, `types.rs:105-112`), for a level a `<:` clause added
-the clause that added it (`ClassData.applied_clause`: the applying
-declaration's mixin id, the clause index and the named builtin tag packed into
-one `SmallInteger`, or `nil`, since the `Rc<Mixin>` it holds today cannot live
-in the space), and its application as a `SmallInteger` full-width index into a
+every send), its value-class refusal (`nil`, or a two-element `Array` the
+VM alone reads: the offending enclosing object and the name of the level at
+fault as a `Symbol`, or `nil` for the class's own enclosing object), for a
+level a `<:` clause added the clause that added it (`ClassData.applied_clause`:
+the applying declaration's mixin id, the clause index and the named builtin
+tag packed into one `SmallInteger`, or `nil`, since the `Rc<Mixin>` it holds
+today cannot live in the space), and its application as a `SmallInteger` full-width index into a
 Rust-side table of `MixinApplication`s, separate from the 22-bit guard id in
 instances' headers; the behaviour stays Rust. Eight fields, so a class object
-is 80 bytes with its header and class word. The application cache is keyed by
-the mixin's id and the superclass application's full-width index rather than
-by `Rc` addresses, which lets it become weak ([memory.md](memory.md), "Weak
-references"). A closure keeps its code id, captured frame and feedback base in
-fixed fields and its copied values inline; a code id indexes a Rust-side table
+is 80 bytes with its header and class word.
+
+The refusal is held as heap data rather than as an index into a Rust-side
+table of refusals, because class objects are made at run time, one per
+enclosing instance, so a table that only grows would grow with every class
+object a loop makes, live editing or not, and one the collector reclaims
+would be a weak table of its own. Its message is rendered by
+`Heap::describe` when `new` refuses, no longer at creation, and reads the
+same: the offender is never a value, and what `describe` says of a
+non-value -- "an instance of X", "an Array of n", "a Block", "the class X"
+-- does not change while it lives. Holding the offender keeps nothing
+alive: it is the enclosing object of a level of this class object's own
+superclass chain. An image carries no refusal, as today; the decoder
+recomputes it (decided with the user on 2026-10-03).
+
+The applied clause packs the mixin id into bits 0-31, the clause index into
+bits 32-54 and the named builtin tag into bits 55-60, 0 meaning none, which
+fills the `SmallInteger`'s 61 bits. A superclass clause of more than 2^23
+`<:` clauses is therefore refused by the resolver, as an ordinary resolve
+error naming the limit, and an image whose clause index reaches 2^23 by the
+decoder. This is a limit a valid program can reach, against the rule that
+no valid construct is carved out because it is rare
+([README.md](README.md), "Principles"), taken deliberately (decided with
+the user on 2026-10-03): no source near eight million clauses in one
+superclass clause is in prospect, and a second field would cost every class
+object eight bytes for it.
+
+The application cache is keyed by the mixin's id and the superclass
+application's full-width index rather than by `Rc` addresses, which lets it
+become weak ([memory.md](memory.md), "Weak references"). A closure keeps
+its code id, captured frame and feedback base in fixed fields and its copied values inline; a code id indexes a Rust-side table
 of compiled code that is append-only per heap, its entries never freed or
 reused, since compiled code is shared by mixins and reclaiming it belongs with
 live editing. Each entry also records the code's owning `MixinMethod`, where
@@ -1696,7 +1751,7 @@ converted at the boundary. A grapheme cluster -- one emoji with a skin-tone
 modifier is two code points -- is never an element; counting or iterating
 them is a library protocol above the string, since the segmentation rules
 change with every Unicode version and allow no constant-time indexing.
-Planned with road step 3:
+Planned with road step 3a:
 `Symbol` becomes a subclass of `String`, as in every reference kernel, and
 `Mutator::new_symbol` stays the only way to make one: instantiating `Symbol`
 is refused, and `String new` answers an empty one-byte string, each pinned by
@@ -1748,6 +1803,21 @@ of that activation cannot write the old layout into an object of another
 shape, and a receiver forwarded to an object of another class never
 receives a write meant for the class it replaced. Recorded guards join the
 guard id's reuse rule ("An application has two ids" above).
+
+The recorded guard and this check come with road step 5, not with road
+step 3: `become:` is the first way a running activation's receiver can
+change shape -- today `Heap::object_replace` fills only the decoder's
+placeholders and `Heap::class_set_application` runs only while the kernel
+boots -- so before it there is nothing for them to catch. The recorded
+guard lives in the activation stack's entry alone; a reified frame has no
+field for it. An activation resumed from a frame (road step 7) starts with
+`NONE`, so its first own-slot access takes the cold check, and a cold check
+that passes records the receiver's current header guard, so the accesses
+after it take the hot path again. Reading the guard afresh from the header
+on resume instead would defeat the check: after a `become:` it would read
+the replacing object's own guard, which always matches that object. One cold check per resumed
+activation buys eight bytes in every reified frame, which `bench_block.ns`
+reifies once per iteration (decided with the user on 2026-10-03).
 
 ## Planned: `become:` through forwarders
 
@@ -1956,3 +2026,16 @@ remove slots of a class with live instances.
   frame arena will go (planned; decided with the user on 2026-09-29).
   Closures and class objects follow them there, a derived part of the same
   layout.
+- **Road step 3 is built as two plans, the representation (3a) on today's
+  arena and then the space (3b)**, and five details of the layout are
+  settled (planned; decided with the user on 2026-10-03; "Planned: the
+  object layout" above): the recorded guard and the slot-access check come
+  with `become:` in road step 5, the guard in the activation stack's entry
+  alone and a resumed activation starting with `NONE`; the applied clause
+  is one `SmallInteger` of mixin id, clause index and builtin tag, 32, 23
+  and 6 bits, the clause count's limit reported as a resolve or decode
+  error -- a limit taken knowingly against the rarity rule; the reserved
+  guards are `NONE` 0, `VACANT` 1 and the forwarder's 2; a value-class
+  refusal is heap data, not a Rust-side table; and road step 3a mints the
+  ids, keys the application cache by them and reclaims none until live
+  editing.

@@ -1471,7 +1471,12 @@ dispatches on one.
 ### Planned: the guard in the header word
 
 Would change: the guard is read from the object's one header word instead of
-from an `Object` slot, and nothing else about the caches changes. The object
+from an `Object` slot, and nothing else about the caches changes. Road step
+3a, the object representation, makes the change on today's arena (decided
+with the user on 2026-10-03). `DispatchId::NONE` becomes 0 and
+`DispatchId::VACANT` 1, with 2 reserved for the forwarder, so a header
+word left zero is never a minted guard ([object-model.md](object-model.md),
+"Planned: the object layout"). The object
 layout ([object-model.md](object-model.md), "Planned: the object layout", road
 step 3) keeps the application id in the header's low 22 bits and the class
 object in a word of its own, precisely so that this guard stays a

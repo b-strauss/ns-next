@@ -13,12 +13,14 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**Road step 3, the object space** ("Step 3, the object space" below): one
-header word and a class word, the fields inline, variably sized objects in
-one VM-owned space with byte-offset handles
-([memory.md](design/memory.md), "Planned: the object space";
-[object-model.md](design/object-model.md), "Planned: the object layout").
-Its plan starts from the details "To settle when planning" lists for it.
+**Road step 3a, the object representation** ("Step 3, the object space"
+below): every object a header word, a class word and its fields, still in
+today's arena, one block of words per slot; class objects, closures and
+reified frames become such objects and the frame arena goes
+([object-model.md](design/object-model.md), "Planned: the object layout").
+Its design was completed with the user on 2026-10-03; no implementation
+plan exists for it yet. Road step 3b, the object space in `ns-memory`'s
+reservation, follows it.
 Everything before it on the road is built, the compact instruction
 encoding included.
 
@@ -88,14 +90,23 @@ and `prior-art/newspeak-benchmarks`.
   space; `Symbol` under `String`; the application cache keyed by id. [memory.md](design/memory.md),
   "Planned: the object space"; [object-model.md](design/object-model.md),
   "Planned: the object layout"; [image-format.md](design/image-format.md),
-  "Planned: the image under the new representation".
+  "Planned: the image under the new representation". Built in two plans
+  (decided with the user on 2026-10-03), as road step 2's value was built
+  on today's arena first: **3a, the representation** -- each arena slot one
+  block of words in the final layout, the handle still an arena index, every
+  object kind a format, the frame arena gone, the image's frames object
+  records -- and **3b, the space** -- the arena replaced by `ns-memory`'s
+  reservation, byte-offset handles, bump allocation and sliding compaction.
 - **Step 4, generations**: eden and two survivor spaces below the old space,
   a copying scavenger with age-based tenuring, and a remembered bit and set
   behind the store accessors. [memory.md](design/memory.md), "Planned:
   generations".
-- **Step 5, `become:` through forwarders**, after Spur.
+- **Step 5, `become:` through forwarders**, after Spur. It brings the
+  recorded guard of an activation and the slot-access check with it, since
+  `become:` is the first way a running activation's receiver can change
+  shape (decided with the user on 2026-10-03).
   [object-model.md](design/object-model.md), "Planned: `become:` through
-  forwarders".
+  forwarders", "What a slot access checks".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
   closures, boxed floats and `Array new:`, with headroom past the scavenge
   threshold so that collection stays at safepoints.
@@ -114,22 +125,6 @@ and `prior-art/newspeak-benchmarks`.
   deoptimization, Strongtalk's and HotSpot's class.
 
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
-
-**To settle when planning**, details the design leaves to each step's plan,
-to be decided against the code:
-
-- *Road step 3:* where the recorded guard of an activation lives -- a
-  field of the activation stack's entry, and, if a reified frame is to carry
-  it for road step 7's suspend and resume, an eleventh frame-object field
-  (104 bytes rather than the about 96 the decode amplification figure uses
-  in [image-format.md](design/image-format.md)); the bit widths for packing
-  a class object's applied clause -- mixin id, clause index and builtin tag
-  -- into one `SmallInteger`; the three reserved guard values (`NONE`,
-  `VACANT` and the forwarder's) and their numbers; whether the Rust-side
-  table of value-class refusals is append-only or reclaimed under live
-  editing ([object-model.md](design/object-model.md), "Planned: the object
-  layout").
-
 
 ## Planned: performance and representation
 
@@ -218,7 +213,7 @@ to be decided against the code:
 - **Guarding a private lexical site on N's mixin** rather than its
   application — kept open until a program has such a site (a mixin under
   several superclasses) to measure; the per-mixin id it wants comes with the
-  object space (step 3 of the road). [dispatch.md](design/dispatch.md),
+  object representation (step 3a of the road). [dispatch.md](design/dispatch.md),
   "Decisions".
 - **Divide-and-conquer decimal conversion.** `printString` of a
   `LargeInteger` divides by `10^19` once per nineteen digits
@@ -241,9 +236,9 @@ to be decided against the code:
   copies out ([memory.md](design/memory.md), "The seam"). For `<`, `=`
   and `hash`, and `printString` of a short integer, the copy (an allocation
   and a pass over every digit) dominates the cost, since the operation
-  itself reads the digits once. Road step 3, the object space, removes it
-  by keeping the digits inline in the object, where a leaf can read them
-  in place.
+  itself reads the digits once. Road step 3a, the object representation,
+  removes it by keeping the digits inline in the object, where a leaf can
+  read them in place.
   [core-library.md](design/core-library.md), "Large integers".
 - **`Object>>==` reads the arena for every two distinct objects.** The
   identity leaf (`builtins/object_class.rs`, `identical`) gives a boxed
@@ -360,8 +355,12 @@ to be decided against the code:
 - **Live editing of mixins.** A `Mixin` has no interior mutability, so an edit
   re-applies a fresh mixin and existing instances keep the old code, where
   §6.2 requires otherwise: interior mutability or mixin versioning. The
-  application cache grows without bound; it can become weak once the object
-  space keys it by id (step 3 of the road). `Interpreter::invalidate_caches`
+  application cache grows without bound. Road step 3a keys it by id and
+  keeps it strong, and reclaims no mixin id, application index or guard id,
+  since nothing drops a mixin before live editing; the reuse rules of
+  [object-model.md](design/object-model.md), "An application has two ids",
+  and a weak application cache come with the first edit (decided with the
+  user on 2026-10-03). `Interpreter::invalidate_caches`
   exists but nothing but a
   test calls it; scoped invalidation comes with the first mutation.
   `SourceOrigin` has only `File(PathBuf)`; code entered in the debugger wants a
@@ -490,9 +489,9 @@ value objects are never copied across an actor boundary (§3.1.1).
   16.9% of `bench_block.ns`'s samples in the Windows heap and measures it
   15.6% faster under mimalloc ([memory.md](design/memory.md), "Payloads
   belong to the Rust allocator, and what that costs"), but whether that is
-  this residual was not isolated. The object space (step 3 of the road)
-  will remove both the frame arena and the per-payload frees, so its collector
-  will be measured afresh.
+  this residual was not isolated. The object representation (road step 3a)
+  will remove the frame arena and the object space (road step 3b) the
+  per-payload frees, so the collector will be measured afresh after each.
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
   Hypothesis (a), the seeded symbol, is refuted; (b), the extra `Value`-level
   class object, and (c), hardware counters, are to run.
@@ -545,7 +544,7 @@ value objects are never copied across an actor boundary (§3.1.1).
   derived equality, which finds two slotless instances of one class equal. Instantiating
   `Symbol` should be refused, as `Mutator::new_symbol` is meant to be the only
   way to make one, and `String new` should answer an empty string; the object
-  layout (road step 3) settles both, with goldens
+  representation (road step 3a) settles both, with goldens
   ([object-model.md](design/object-model.md), "Planned: the object layout").
 - **A started `Stopwatch` carried across a snapshot reads a wrong time in
   another process.** Its clock counts from an origin taken once per process
@@ -619,7 +618,7 @@ three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
   safe output, accepted; it stays safe because every access is bounds-checked
   per object, today per `Vec` and in the planned object space against the
   object's own word count ([memory.md](design/memory.md), "Planned: the
-  object space"). The register-less pairing will disappear with road step 3,
+  object space"). The register-less pairing will disappear with road step 3a,
 where every reified frame will carry its full register file on the wire.
 [image-format.md](design/image-format.md).
 - **The memory bound under a crafted artifact** is proportional but large,

@@ -1445,7 +1445,8 @@ which is old space's bytes relocated on load, is the model this does not take.
   in the space.
 - **Frames become object records.** A reified frame is an object of the frame
   format ([object-model.md](object-model.md), "Planned: the object layout"), so
-  its record joins the object table under a new object tag. The separate frame
+  its record joins the object table under a new object tag, `OBJECT_FRAME`,
+  the next free number (10), its header's class tag `Activation`'s. The separate frame
   count and frame table go, and a frame id in a closure record or any other
   record becomes an object id. `OBJECT_ACTIVATION` (9), whose body is one
   frame id, retires into the new frame object tag, since a kernel-private
@@ -1501,6 +1502,14 @@ which is old space's bytes relocated on load, is the model this does not take.
   between entries, where only roots hold values, as `Interpreter::collect_now`
   is today, never one inside a step. The decoder's stores are then
   old-to-old and need no barrier.
+- **A class record's clause index** is refused from 2^23 on, the width the
+  applied clause packs it into ([object-model.md](object-model.md),
+  "Planned: the object layout"), with a `DecodeError` of its own.
+- **Road step 3a builds all of this on today's arena** (decided with the
+  user on 2026-10-03): the records, the two passes and the refusals arrive
+  with the representation, each object one block of words; road step 3b
+  changes only where the decoder's blocks live. The amplification figures
+  are measured afresh after each.
 - **Identity hashes** are preserved as they are today, per record and in the
   tag-named table; what changes is their width. The header word holds 22 bits
   ([object-model.md](object-model.md), "Planned: the object layout"), so the
