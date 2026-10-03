@@ -544,14 +544,12 @@ fn a_missing_name_declares_nothing() {
         panic!("a returned block");
     };
     assert!(block.parameters.is_empty());
-    let ns_syntax::ast::Statement::Return(cascade) =
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Cascade(cascade)) =
         &root.instance_side.methods[1].body.statements[0]
     else {
         panic!("a returned cascade");
     };
-    if let ns_syntax::ast::Expression::Cascade(cascade) = cascade {
-        assert!(cascade.rest.is_empty());
-    }
+    assert!(cascade.rest.is_empty());
 }
 
 /// The root class is the one declaration kept without a name: without it
@@ -667,4 +665,94 @@ fn a_mixin_clause_without_a_name_keeps_its_dot() {
         messages,
         ["expected a name to name a superclass, found Dot"]
     );
+}
+
+/// A member in a parenthesis in a block is the block's content as well:
+/// the parenthesis the statement opened is closed after it, and then the
+/// block's `]`.
+#[test]
+fn a_member_inside_a_parenthesis_inside_a_block_is_none() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^items detect: [:each | (each = ( ^each )) ] )
+            second = ( ^2 )
+        ) : (
+            make = ( ^self new )
+        )
+    "};
+    let (module, messages) = recovered(source);
+    let root = &module.root_class;
+    assert_eq!(
+        method_names(&root.instance_side),
+        ["first", "second"],
+        "{messages:?}"
+    );
+    assert_eq!(
+        root.instance_side.methods[0].span.text(source),
+        "first = ( ^items detect: [:each | (each = ( ^each )) ] )"
+    );
+    assert_eq!(
+        method_names(root.class_side.as_ref().expect("a class side")),
+        ["make"]
+    );
+    assert_eq!(messages, ["expected an expression, found Caret"]);
+}
+
+/// A block left open before a member: the next closing bracket after the
+/// member is its owner's `)`, so the member is one.
+#[test]
+fn a_member_after_an_open_block_is_one() {
+    let source = indoc! {"
+        class Module = () (
+            first = ( ^items do: [:each | each foo
+            second = ( ^2 )
+        ) : (
+            make = ( ^self new )
+        )
+    "};
+    let (module, messages) = recovered(source);
+    let root = &module.root_class;
+    assert_eq!(
+        method_names(&root.instance_side),
+        ["first", "second"],
+        "{messages:?}"
+    );
+    assert_eq!(
+        root.instance_side.methods[1].span.text(source),
+        "second = ( ^2 )"
+    );
+    assert_eq!(
+        method_names(root.class_side.as_ref().expect("a class side")),
+        ["make"]
+    );
+}
+
+/// A lazy slot missing its `.` ends at its initializer, not at the `)`
+/// after it.
+#[test]
+fn a_lazy_slot_without_its_dot_ends_at_its_initializer() {
+    let source = indoc! {"
+        class Module = () (
+            lazy x = 1
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let slots = &module.root_class.instance_side.slots;
+    assert_eq!(slots.len(), 1, "{messages:?}");
+    assert_eq!(slots[0].span.text(source), "lazy x = 1");
+}
+
+/// A slot whose initializer lacks its `.` before the header's `)` ends at
+/// the initializer.
+#[test]
+fn a_slot_initializer_without_its_dot_ends_at_the_initializer() {
+    let source = indoc! {"
+        class Module = (
+            | a = 1
+        ) () : ()
+    "};
+    let (module, messages) = recovered(source);
+    let slots = &module.root_class.instance_side.slots;
+    assert_eq!(slots.len(), 1, "{messages:?}");
+    assert_eq!(slots[0].span.text(source), "a = 1");
 }

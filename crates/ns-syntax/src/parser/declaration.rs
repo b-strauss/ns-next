@@ -161,9 +161,9 @@ impl<'a> Parser<'a> {
             token.span.start <= first_error && token.kind != TokenKind::EndOfInput
         }) {
             if self.member_starts_at(position)
-                && self
-                    .speculative_member_end(position)
-                    .is_some_and(|end| first_error < end && !self.inside_block_or_tuple(end))
+                && self.speculative_member_end(position).is_some_and(|end| {
+                    first_error < end && !self.inside_block_or_tuple(first, position, end)
+                })
             {
                 return Some(position);
             }
@@ -172,34 +172,57 @@ impl<'a> Parser<'a> {
         None
     }
 
-    /// Whether the member ending at `end` stands inside a block or a tuple:
-    /// the first closing bracket after it that closes no group opened after
-    /// it is a `]` or a `}`. No member stands there -- `| each = ( ^each )`
-    /// in `[:each | each = ( ^each ) ]` is the block's content -- while a
-    /// `)` there is the owner's, a method body's or a class side's.
-    fn inside_block_or_tuple(&self, end: u32) -> bool {
+    /// Whether the member from `position` to `end` stands inside a block
+    /// or a tuple: a `]` or a `}` after it closes a group left open between
+    /// the statement's `first` token and the member. No member stands there
+    /// -- `| each = ( ^each )` in `[:each | each = ( ^each ) ]` is the
+    /// block's content. A `)` that closes a parenthesis the statement
+    /// opened leaves the question open; a closer that closes nothing the
+    /// statement or the scan opened is the owner's, and a `)` there -- a
+    /// method body's or a class side's -- leaves the member one.
+    fn inside_block_or_tuple(&self, first: usize, position: usize, end: u32) -> bool {
         let mut expected_closers: Vec<TokenKind> = Vec::new();
+        for token in &self.tokens[first..position] {
+            if let Some(closer) = closer_of(token.kind) {
+                expected_closers.push(closer);
+            } else if let Some(index) = expected_closers
+                .iter()
+                .rposition(|expected| *expected == token.kind)
+            {
+                expected_closers.truncate(index);
+            }
+        }
+        // How many of the open groups the statement opened before the member.
+        let mut opened_before = expected_closers.len();
         for token in self
             .tokens
             .iter()
             .skip_while(|token| token.span.start < end)
         {
-            match token.kind {
-                TokenKind::EndOfInput => return false,
-                TokenKind::LeftParenthesis => expected_closers.push(TokenKind::RightParenthesis),
-                TokenKind::LeftBracket => expected_closers.push(TokenKind::RightBracket),
-                TokenKind::LeftBrace => expected_closers.push(TokenKind::RightBrace),
-                TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace => {
-                    match expected_closers
-                        .iter()
-                        .rposition(|expected| *expected == token.kind)
-                    {
-                        Some(index) => expected_closers.truncate(index),
-                        None => return token.kind != TokenKind::RightParenthesis,
-                    }
-                }
-                _ => {}
+            if token.kind == TokenKind::EndOfInput {
+                return false;
             }
+            if let Some(closer) = closer_of(token.kind) {
+                expected_closers.push(closer);
+                continue;
+            }
+            if !matches!(
+                token.kind,
+                TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace
+            ) {
+                continue;
+            }
+            let Some(index) = expected_closers
+                .iter()
+                .rposition(|expected| *expected == token.kind)
+            else {
+                return token.kind != TokenKind::RightParenthesis;
+            };
+            if index < opened_before && token.kind != TokenKind::RightParenthesis {
+                return true;
+            }
+            expected_closers.truncate(index);
+            opened_before = opened_before.min(index);
         }
         false
     }
@@ -1310,7 +1333,12 @@ impl<'a> Parser<'a> {
             SlotMutability::Immutable
         };
         let initializer = Some(self.parse_expression());
-        let end = self.current().span;
+        // Without its `.` the slot ends at its own last token.
+        let end = if self.at(TokenKind::Dot) {
+            self.current().span
+        } else {
+            self.previous_span()
+        };
         if !self.eat(TokenKind::Dot) {
             self.push_error(
                 self.current().span,
@@ -1430,6 +1458,16 @@ impl<'a> Parser<'a> {
         self.skip_return_type_annotation();
         self.skip_where_clause();
         Some(())
+    }
+}
+
+/// The bracket that closes a group `kind` opens, if it opens one.
+fn closer_of(kind: TokenKind) -> Option<TokenKind> {
+    match kind {
+        TokenKind::LeftParenthesis => Some(TokenKind::RightParenthesis),
+        TokenKind::LeftBracket => Some(TokenKind::RightBracket),
+        TokenKind::LeftBrace => Some(TokenKind::RightBrace),
+        _ => None,
     }
 }
 
