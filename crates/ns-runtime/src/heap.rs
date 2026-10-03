@@ -2192,8 +2192,8 @@ impl<'gc> Heap<'gc> {
     /// which installs one application per class record, calls
     /// `class_install_application` instead and stamps once afterwards
     /// (`stamp_dispatch_ids`). Answers whether the write happened, mirroring
-    /// `array_set_element` and `instance_set_field`. Its callers are the bootstrap's
-    /// kernel phase, filling each builtin placeholder once
+    /// `array_set_element` and `instance_set_field`. Its callers are the
+    /// bootstrap's kernel phase, filling each builtin placeholder once
     /// (`interpreter::kernel`), and tests editing an already-live class
     /// (`install_mixin` in `tests/image.rs`, `tests/instantiate.rs`,
     /// `ns-cli`'s `disasm_snapshots.rs`) -- a wrong-shape `class` there is a
