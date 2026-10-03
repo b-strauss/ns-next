@@ -15,8 +15,8 @@ use ns_runtime::image::opcodes::*;
 use ns_runtime::image::{decode, encode, mixins, symbols};
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
-    ArbitraryInteger, BuiltinClass, ClassData, ClassReference, DispatchId, FrameKind, Heap,
-    HostResult, HostSignal, Interpreter, Mixin, MixinApplication, Mutator, ObjectData, Root,
+    ArbitraryInteger, BuiltinClass, ClassReference, DispatchId, FrameKind, Heap, HostResult,
+    HostSignal, Interpreter, Mixin, MixinApplication, Mutator, NewClass, NewClosure, Root,
     SourceOrigin, Symbol, Value, ValueKind, SMALL_INTEGER_MAX, SMALL_INTEGER_MIN,
 };
 use ns_syntax::ast::AccessModifier;
@@ -2606,26 +2606,24 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         let original_0 = mutator.fetch(&original[0]);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let original_code = {
-            let closure_data = heap
-                .closure_data(object(original_0))
-                .expect("expected a closure");
-            let code = &closure_data.code;
-            code.clone()
-        };
-        let closure_data = heap
-            .closure_data(object(decoded_0))
+        let original_code = heap
+            .closure_code(object(original_0))
+            .expect("expected a closure");
+        let code = heap
+            .closure_code(object(decoded_0))
+            .expect("expected a closure");
+        let captured_frame = heap
+            .closure_captured_frame(object(decoded_0))
             .expect("expected a closure");
         let closure_home = heap
             .closure_home(object(decoded_0))
             .expect("expected a closure");
-        let code = &closure_data.code;
-        assert_eq!(**code, *original_code);
+        assert_eq!(*code, *original_code);
         assert!(
-            closure_data.captured_frame.same(closure_home),
+            captured_frame.same(closure_home),
             "captured_frame and home were the same frame"
         );
-        let home = heap.frame_snapshot(closure_home);
+        let home = heap.frame_record(closure_home);
         assert_eq!(home.program_counter, 1);
         let (_, argument_count, temporary_count) = heap.frame_register_shape(closure_home);
         assert_eq!(temporary_count, home.temporaries.len());
@@ -3438,17 +3436,17 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         let class = class_reference(mutator, &class);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let inner = heap
-            .closure_data(object(decoded_0))
+        let inner_captured_frame = heap
+            .closure_captured_frame(object(decoded_0))
             .expect("expected the inner closure");
         let inner_home = heap
             .closure_home(object(decoded_0))
             .expect("expected the inner closure");
         assert!(
-            !inner.captured_frame.same(inner_home),
+            !inner_captured_frame.same(inner_home),
             "the inner closure was captured by the block activation, not by `mk`"
         );
-        let captured = heap.frame_snapshot(inner.captured_frame);
+        let captured = heap.frame_record(inner_captured_frame);
         let FrameKind::Closure(_) = &captured.kind else {
             panic!("the captured frame is a block activation")
         };
@@ -3511,13 +3509,13 @@ fn a_closure_frame_names_the_closure_object_it_runs() {
     interpreter.enter(|mutator| {
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        let inner = heap
-            .closure_data(object(decoded_0))
+        let inner_captured_frame = heap
+            .closure_captured_frame(object(decoded_0))
             .expect("expected the inner closure");
         let inner_home = heap
             .closure_home(object(decoded_0))
             .expect("expected the inner closure");
-        let FrameKind::Closure(outer) = heap.frame_kind(inner.captured_frame) else {
+        let FrameKind::Closure(outer) = heap.frame_kind(inner_captured_frame) else {
             panic!("the captured frame is a block activation")
         };
         assert_eq!(
@@ -3811,10 +3809,10 @@ fn a_closure_record_with_no_copied_values_decodes() {
         &closure_object_with_copied_values(&[]),
         "no copied values",
         |heap, decoded| {
-            let closure_data = heap
-                .closure_data(object(decoded.roots[0]))
+            let copied = heap
+                .closure_copied_values(object(decoded.roots[0]))
                 .expect("expected a closure");
-            assert!(closure_data.copied.is_empty());
+            assert!(copied.is_empty());
             // The arity a call is checked against now has one source.
             assert_eq!(
                 heap.closure_parameter_count(object(decoded.roots[0])),
@@ -5362,9 +5360,8 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
             .expect("expected an instance");
         let captured = mutator
             .heap()
-            .closure_data(object(held))
-            .expect("the slot holds the inner closure")
-            .captured_frame;
+            .closure_captured_frame(object(held))
+            .expect("the slot holds the inner closure");
         assert!(
             matches!(mutator.heap().frame_kind(captured), FrameKind::Closure(_)),
             "the inner closure was captured by the outer block's activation"
@@ -5836,15 +5833,15 @@ fn apply_and_wrap<'gc>(
     superclass: Option<&Rc<MixinApplication>>,
 ) -> ClassReference<'gc> {
     let application = mutator.apply_mixin(mixin, superclass);
-    mutator.heap_mut().allocate_object(
+    mutator.heap_mut().allocate_class(
         class_of_class,
-        ObjectData::Class(Box::new(ClassData::new(
+        NewClass {
             application,
-            None,
-            None,
-            None,
-            None,
-        ))),
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: None,
+        },
     )
 }
 
@@ -6342,7 +6339,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
     });
 }
 
-/// `dispatch::kth_enclosing_object` steps `ClassData::declaring_class`, not
+/// `dispatch::kth_enclosing_object` steps a class's declaring class, not
 /// the reached object's own class, from its second hop on -- so an image
 /// that dropped that field would come back resolving `outer` along the
 /// receiver's *dynamic* chain. `Mid`'s decoy `label` is what such a walk
@@ -8016,15 +8013,15 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     let error = interpreter.enter(|mutator| {
         let application = mutator.apply_mixin(&mixin, None);
         let object_class = mutator.builtin_class(BuiltinClass::Object);
-        let class: ClassReference = mutator.heap_mut().allocate_object(
+        let class: ClassReference = mutator.heap_mut().allocate_class(
             object_class,
-            ObjectData::Class(Box::new(ClassData::new(
+            NewClass {
                 application,
-                None,
-                None,
-                None,
-                None,
-            ))),
+                enclosing: None,
+                declaring_class: None,
+                superclass: None,
+                builtin: None,
+            },
         );
         let platform = mutator.fetch(&platform);
         let Err(error) = snapshot_one(
@@ -8451,7 +8448,7 @@ fn the_debug_variants_source_is_never_parsed() {
 /// frame married to a live activation keeps its registers on the stack, not
 /// in the frame the encoder reads, so a mid-execution snapshot would write
 /// that frame with empty registers and report nothing. The encoder's
-/// `frame_snapshot` debug-asserts against it; this pins the refusal a
+/// `frame_record` debug-asserts against it; this pins the refusal a
 /// release build also makes.
 #[test]
 fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
@@ -8522,16 +8519,12 @@ fn a_frames_sender_survives_a_round_trip() {
                     Some(sender),
                     Some(class),
                 );
-                let block_class = mutator.builtin_class(BuiltinClass::Block);
-                let closure = mutator.heap_mut().allocate_object(
-                    block_class,
-                    ObjectData::Closure(ns_runtime::ClosureData {
-                        code: foo.clone(),
-                        captured_frame: frame,
-                        copied: Box::new([]),
-                        feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
-                    }),
-                );
+                let closure = mutator.new_closure(NewClosure {
+                    code: foo.clone(),
+                    captured_frame: frame,
+                    copied: Vec::new(),
+                    feedback_base: ns_runtime::interpreter::FeedbackBase::NOT_ASSIGNED,
+                });
                 vec![mutator.stash(Value::object(closure))]
             })
         });
@@ -8647,10 +8640,10 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
             .heap()
             .closure_home(object(mutator.fetch(&closure)))
             .expect("expected a closure");
-        let mut forged = mutator.heap().frame_snapshot(home);
+        let mut forged = mutator.heap().frame_record(home);
         assert!(forged.uncontinuable, "`mk` had returned");
         forged.uncontinuable = false;
-        mutator.heap_mut().frame_replace(home, forged);
+        mutator.heap_mut().fill_frame(home, forged);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -9154,9 +9147,8 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
             .expect("expected an instance");
         let captured = mutator
             .heap()
-            .closure_data(object(held))
-            .expect("the slot holds the class side's block")
-            .captured_frame;
+            .closure_captured_frame(object(held))
+            .expect("the slot holds the class side's block");
         let metaclass = mutator
             .heap()
             .frame_current_class(captured)
@@ -11438,7 +11430,7 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
 
 /// §3.1.1's enclosing-object condition on a value class is decided when the
 /// class object is created and only *recorded* on it
-/// (`ClassData::value_class_refusal`, `docs/design/object-model.md`, "A
+/// (`Heap::class_value_refusal`, `docs/design/object-model.md`, "A
 /// value object's four conditions", "Enclosing objects are values");
 /// `decide_instantiation` is what refuses, at instantiation. A decoded class
 /// object starts with no verdict of its own, so a legitimate snapshot

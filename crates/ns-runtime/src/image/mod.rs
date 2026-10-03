@@ -184,7 +184,7 @@ fn write_image<'gc>(
     // A frame married to a running activation keeps its registers and
     // `program_counter` on the activation stack, and the format has no record
     // for the stack, so encoding one would write a frame with empty registers
-    // and succeed. `Heap::frame_snapshot` debug-asserts against that per frame;
+    // and succeed. `Heap::frame_record` debug-asserts against that per frame;
     // this is the check a release build keeps.
     if heap.activation_depth() != 0 {
         return Err(

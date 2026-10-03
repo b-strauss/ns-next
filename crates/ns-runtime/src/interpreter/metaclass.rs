@@ -72,13 +72,13 @@ impl<'gc> Mutator<'gc> {
         let class_class = self.builtin_class(BuiltinClass::Class);
         let class_application = self.heap.class_application(class_class);
         let metaclass_application = self.apply_mixin(&class_side_mixin, class_application.as_ref());
-        let data = ClassData::new(
-            metaclass_application,
-            self.heap.class_enclosing(class),
-            self.heap.class_declaring(class),
-            Some(class_class),
-            None,
-        );
+        let data = crate::heap::NewClass {
+            application: metaclass_application,
+            enclosing: self.heap.class_enclosing(class),
+            declaring_class: self.heap.class_declaring(class),
+            superclass: Some(class_class),
+            builtin: None,
+        };
         let metaclass = self.allocate_class_object(data);
         if !self.heap.class_set_this_class(metaclass, class) {
             unreachable!("internal: a metaclass is a class object");

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ns_runtime::{
-    BuiltinClass, ClassData, FrameKind, HostResult, HostSignal, Interpreter, Mixin,
-    MixinApplication, ObjectData, Root, SourceOrigin, Symbol, Value, ValueKind,
+    BuiltinClass, FrameKind, HostResult, HostSignal, Interpreter, Mixin, MixinApplication,
+    NewClass, Root, SourceOrigin, Symbol, Value, ValueKind,
 };
 use ns_syntax::Span;
 
@@ -107,11 +107,11 @@ fn a_closure_created_in_a_slot_initializer_is_compiled_and_homed_at_the_initiali
         let Some(object) = mutator.fetch(&value).as_object() else {
             panic!("expected a closure object")
         };
-        let closure = mutator
+        let code = mutator
             .heap()
-            .closure_data(object)
+            .closure_code(object)
             .unwrap_or_else(|| panic!("expected a closure"));
-        assert_eq!(closure.code.argument_count, 0);
+        assert_eq!(code.argument_count, 0);
         let home = mutator
             .heap()
             .closure_home(object)
@@ -197,15 +197,15 @@ fn make_class(
         // level's own slots, so `climb_levels` (which walks this field, not
         // the application's) finding no level above this one is exactly
         // right.
-        let class = mutator.heap_mut().allocate_object(
+        let class = mutator.heap_mut().allocate_class(
             class_of_class,
-            ObjectData::Class(Box::new(ClassData::new(
+            NewClass {
                 application,
-                None,
-                None,
-                None,
-                None,
-            ))),
+                enclosing: None,
+                declaring_class: None,
+                superclass: None,
+                builtin: None,
+            },
         );
         mutator.stash(Value::object(class))
     })

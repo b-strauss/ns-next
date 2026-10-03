@@ -11,6 +11,7 @@ use ns_runtime::ValueKind;
 use ns_runtime::{
     ActivationHeader, BuiltinClass, DispatchId, HostResult, HostSignal, Mutator, Root, Symbol,
 };
+use ns_runtime::{CodePoints, ObjectShape};
 
 #[test]
 fn array_accessors_read_and_write_through_the_seam() {
@@ -502,6 +503,40 @@ fn an_object_handle_survives_the_value_word() {
         assert_eq!(
             mutator.heap().describe(value),
             mutator.heap().describe(Value::object(back))
+        );
+    });
+}
+
+#[test]
+fn every_kind_of_object_answers_its_shape() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let instance = mutator.heap_mut().allocate_instance(object_class, 2);
+        assert_eq!(mutator.heap().object_shape(instance), ObjectShape::Instance);
+        assert_eq!(
+            mutator
+                .heap()
+                .instance_fields(instance)
+                .map(|fields| fields.len()),
+            Some(2)
+        );
+        let text = mutator.new_string("abc".to_string());
+        assert_eq!(mutator.heap().object_shape(text), ObjectShape::String);
+        assert_eq!(
+            mutator.heap().string_code_points(text),
+            Some(CodePoints::from("abc"))
+        );
+        let symbol = mutator.new_symbol(Symbol::intern("abc"));
+        assert_eq!(
+            mutator
+                .heap()
+                .object_shape(symbol.as_object().expect("an object")),
+            ObjectShape::Symbol
+        );
+        assert_eq!(
+            mutator.heap().object_shape(object_class),
+            ObjectShape::Class
         );
     });
 }

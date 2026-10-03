@@ -11,12 +11,11 @@ use crate::bytecode::{
     CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
     IntegerOperation, Literal,
 };
-use crate::heap::{Heap, Word};
+use crate::heap::{FrameRecord, Heap, NewClass, NewClosure, Record};
 use crate::interpreter::instantiate;
-use crate::mixin::DispatchId;
 use crate::types::{
-    fits_small_integer, BuiltinClass, ClassReference, ClosureData, Frame, FrameKind,
-    FrameReference, Object, ObjectData, ObjectReference, SourceOrigin, Value,
+    fits_small_integer, BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference,
+    SourceOrigin, Value,
 };
 use crate::Symbol;
 use crate::{ArbitraryInteger, Mutator};
@@ -2510,22 +2509,6 @@ fn decode_values<'gc>(
     Ok(values)
 }
 
-/// `decode_values` for what a heap object stores: each value goes straight
-/// into its word, so a load holds no second list beside the first.
-fn decode_words<'gc>(
-    reader: &mut Reader,
-    context: &mut DecodeContext<'_, 'gc>,
-    tables: &Tables<'_, 'gc>,
-) -> Result<Vec<Word>, DecodeError> {
-    let count = reader.read_u32()? as usize;
-    let mut words = reserve_for(count, reader);
-    for _ in 0..count {
-        let value = decode_value(reader, context, tables)?;
-        words.push(context.mutator.heap.store(value));
-    }
-    Ok(words)
-}
-
 /// An object id off the wire, resolved against the placeholders the first
 /// pass allocated: in range, or `BadObjectId` before anything indexes by it.
 fn decode_object_id<'gc>(
@@ -2567,7 +2550,7 @@ fn decode_closure_record<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
-) -> Result<ClosureData<'gc>, DecodeError> {
+) -> Result<NewClosure<'gc>, DecodeError> {
     let code_id = reader.read_u32()?;
     let code = context
         .codes
@@ -2587,13 +2570,12 @@ fn decode_closure_record<'gc>(
     }
     let mut copied = reserve_for(count, reader);
     for _ in 0..count {
-        let value = decode_value(reader, context, tables)?;
-        copied.push(context.mutator.heap.store(value));
+        copied.push(decode_value(reader, context, tables)?);
     }
-    Ok(ClosureData {
+    Ok(NewClosure {
         code,
         captured_frame,
-        copied: copied.into_boxed_slice(),
+        copied,
         // Never on the wire: a decoded closure is given a fresh range of its
         // family's size when it is first activated (`Mutator::push_step`).
         feedback_base: crate::interpreter::FeedbackBase::NOT_ASSIGNED,
@@ -2636,11 +2618,10 @@ fn decode_frame<'gc>(
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
-) -> Result<Frame<'gc>, DecodeError> {
+) -> Result<FrameRecord<'gc>, DecodeError> {
     let receiver = decode_value(reader, context, tables)?;
-    let receiver = context.mutator.heap.store(receiver);
-    let arguments = decode_words(reader, context, tables)?;
-    let temporaries = decode_words(reader, context, tables)?;
+    let arguments = decode_values(reader, context, tables)?;
+    let temporaries = decode_values(reader, context, tables)?;
     let program_counter = reader.read_u32()? as usize;
     let sender = decode_frame_reference(reader, tables)?;
     let home = decode_frame_reference(reader, tables)?;
@@ -2671,7 +2652,7 @@ fn decode_frame<'gc>(
         }
     };
     let uncontinuable = reader.read_boolean()?;
-    Ok(Frame {
+    Ok(FrameRecord {
         receiver,
         arguments,
         temporaries,
@@ -2685,22 +2666,6 @@ fn decode_frame<'gc>(
         // below), so no compiled `InitializeSlot` ever reads this on a frame
         // that came off the wire.
     })
-}
-
-/// A safe, fully initialized stand-in, overwritten in place by
-/// `decode_graph_section`'s second pass before anything can observe it.
-fn placeholder_frame<'gc>() -> Frame<'gc> {
-    Frame {
-        receiver: Word::NIL,
-        arguments: Vec::new(),
-        temporaries: Vec::new(),
-        program_counter: 0,
-        sender: None,
-        home: None,
-        current_class: None,
-        kind: FrameKind::TopLevel,
-        uncontinuable: false,
-    }
 }
 
 /// A floor under the smallest object record the wire admits: a class tag of
@@ -3024,8 +2989,8 @@ fn rebuild_applications<'gc>(
     )?;
     // §3.1.1's enclosing-object condition is decided when the class object
     // is created (`interpreter::value_class`), never reconstructed from the
-    // wire -- a decoded record starts with no verdict (`ClassData::new`
-    // defaults `None`). A legitimate snapshot can hold a class that was
+    // wire -- a decoded record starts with no verdict
+    // (`Heap::fill_placeholder` gives it none). A legitimate snapshot can hold a class that was
     // created carrying one (or one built of decoded pieces would carry,
     // `Counter`-over-`Holder`-style), so it is recomputed here, exactly as
     // `after_clause` decides it for a class created from source -- never for
@@ -3307,24 +3272,20 @@ pub fn decode_graph_section<'gc>(
     let placeholder_class = context.mutator.builtin_class(BuiltinClass::Object);
     // A real application, standing in until `rebuild_applications` derives
     // each class object's own -- the same technique as the placeholder
-    // object and `placeholder_frame`, and for the same reason: nothing may
-    // observe a half-built record, and a `None` here would need an
-    // `Option` on `ClassData` that no live class object could ever be.
+    // object and frame, and for the same reason: nothing may observe a
+    // half-built record, and a `None` here would need an optional
+    // application on a class object that no live class object could ever
+    // have.
     let placeholder_application = context
         .mutator
         .heap
         .class_application(placeholder_class)
         .ok_or(DecodeError::NotAClass)?;
     let objects: Vec<ObjectReference> = (0..object_count)
-        .map(|_| {
-            context
-                .mutator
-                .heap
-                .allocate_object(placeholder_class, ObjectData::Instance(Vec::new()))
-        })
+        .map(|_| context.mutator.heap.allocate_placeholder(placeholder_class))
         .collect();
     let frames: Vec<FrameReference> = (0..frame_count)
-        .map(|_| context.mutator.heap.allocate_frame(placeholder_frame()))
+        .map(|_| context.mutator.heap.allocate_placeholder_frame())
         .collect();
     let tables = Tables {
         objects: &objects,
@@ -3358,9 +3319,13 @@ pub fn decode_graph_section<'gc>(
         if future_header && body != OBJECT_INSTANCE {
             return Err(DecodeError::FutureRecord);
         }
-        let data = match body {
+        // Set only for a class record a `<:` clause added and for a
+        // metaclass record, each written once the record is filled.
+        let mut applied_clause = None;
+        let mut this_class = None;
+        let record = match body {
             OBJECT_INSTANCE => {
-                let fields = decode_words(reader, context, &tables)?;
+                let fields = decode_values(reader, context, &tables)?;
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
                 if class_named_by_path {
@@ -3380,25 +3345,23 @@ pub fn decode_graph_section<'gc>(
                 // a closure is checked below, once the record it names has
                 // been read.
                 if future_header {
-                    let computation = crate::interpreter::future::decoded_future_computation(
-                        &context.mutator.heap,
-                        &fields,
-                    )
-                    .ok_or(DecodeError::FutureRecord)?;
+                    let computation =
+                        crate::interpreter::future::decoded_future_computation(&fields)
+                            .ok_or(DecodeError::FutureRecord)?;
                     pending_futures.push(computation);
                 }
-                ObjectData::Instance(fields)
+                Record::Instance(fields)
             }
-            OBJECT_STRING => ObjectData::String(reader.read_code_points()?),
-            OBJECT_SYMBOL => ObjectData::Symbol(decode_symbol(reader, symbols)?),
-            OBJECT_ARRAY => ObjectData::Array(decode_words(reader, context, &tables)?),
-            OBJECT_CLOSURE => ObjectData::Closure(decode_closure_record(reader, context, &tables)?),
+            OBJECT_STRING => Record::String(reader.read_code_points()?),
+            OBJECT_SYMBOL => Record::Symbol(decode_symbol(reader, symbols)?),
+            OBJECT_ARRAY => Record::Array(decode_values(reader, context, &tables)?),
+            OBJECT_CLOSURE => Record::Closure(decode_closure_record(reader, context, &tables)?),
             // One frame id, resolved like a closure's captured frame: every
             // frame was placeholder-allocated before this pass, so a forward
             // reference is ordinary and an id past the table is `BadFrameId`.
-            OBJECT_ACTIVATION => ObjectData::Activation(decode_frame_id(reader, &tables)?),
+            OBJECT_ACTIVATION => Record::Activation(decode_frame_id(reader, &tables)?),
             OBJECT_CLASS => {
-                let (data, mixin) =
+                let (class_record, applied, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
                 if metaclass_rows.contains(&crate::mixin::mixin_key(&mixin)) {
                     return Err(DecodeError::ClassRecordAppliesAClassSide);
@@ -3410,25 +3373,24 @@ pub fn decode_graph_section<'gc>(
                 // The header is stored as read: it names the record's
                 // metaclass record, which `pair_metaclasses` holds to it
                 // once every record is read.
-                ObjectData::Class(Box::new(data))
+                applied_clause = applied;
+                Record::Class(class_record)
             }
             OBJECT_METACLASS => {
                 // §3.2: every metaclass is an instance of `Metaclass`.
                 if !class.same(metaclass_class) {
                     return Err(DecodeError::MetaclassPairing);
                 }
-                let this_class = decode_class_tag(reader, context, &tables)?;
+                this_class = Some(decode_class_tag(reader, context, &tables)?);
                 let class_class = context.mutator.builtin_class(BuiltinClass::Class);
-                let mut data = crate::types::ClassData::new(
-                    placeholder_application.clone(),
-                    None,
-                    None,
-                    Some(class_class),
-                    None,
-                );
-                data.this_class = Some(this_class);
                 pending_metaclasses.push(index);
-                ObjectData::Class(Box::new(data))
+                Record::Class(NewClass {
+                    application: placeholder_application.clone(),
+                    enclosing: None,
+                    declaring_class: None,
+                    superclass: Some(class_class),
+                    builtin: None,
+                })
             }
             tag => {
                 return Err(DecodeError::InvalidTag {
@@ -3437,25 +3399,28 @@ pub fn decode_graph_section<'gc>(
                 })
             }
         };
-        let decoded_symbol = match &data {
-            ObjectData::Symbol(symbol) => Some(*symbol),
+        let decoded_symbol = match &record {
+            Record::Symbol(symbol) => Some(*symbol),
             _ => None,
         };
-        context.mutator.heap.object_replace(
-            *object,
-            Object {
-                class,
-                identity_hash,
-                // `class` may name a record later in this same table --
-                // decoding fills records in table order, not dependency
-                // order -- so that class may not have an application yet.
-                // `NONE` matches no cache entry; `stamp_dispatch_ids`, right
-                // after `rebuild_applications` gives every class one,
-                // replaces it with the real id.
-                dispatch_id: DispatchId::NONE,
-                data,
-            },
-        );
+        // `class` may name a record later in this same table -- decoding
+        // fills records in table order, not dependency order -- so that
+        // class may not have an application yet. The record's header id is
+        // `NONE`, which matches no cache entry; `stamp_dispatch_ids`, right
+        // after `rebuild_applications` gives every class one, replaces it
+        // with the real id.
+        let heap = &mut context.mutator.heap;
+        heap.fill_placeholder(*object, class, identity_hash, record);
+        if let Some(applied) = applied_clause {
+            if !heap.class_set_applied_clause(*object, applied) {
+                unreachable!("internal: a class record fills a class object");
+            }
+        }
+        if let Some(this_class) = this_class {
+            if !heap.class_set_this_class(*object, this_class) {
+                unreachable!("internal: a metaclass record fills a class object");
+            }
+        }
         // A heap holds one object per symbol, and so does an image of one:
         // a second record of the same text is refused, not merged
         // (`docs/design/image-format.md`, "Verification"). `load` decodes
@@ -3498,7 +3463,7 @@ pub fn decode_graph_section<'gc>(
     context.mutator.heap.stamp_dispatch_ids(&objects);
     for frame in &frames {
         let decoded = decode_frame(reader, context, &tables, symbols)?;
-        context.mutator.heap.frame_replace(*frame, decoded);
+        context.mutator.heap.fill_frame(*frame, decoded);
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
@@ -3598,12 +3563,21 @@ pub fn decode_tag_named_hashes<'gc>(
 /// before this pass started), so a forward reference and a cycle are both
 /// ordinary; what cannot be settled yet is whether each really is a class
 /// record, which `check_class_references` establishes afterwards.
+/// A class record as `decode_class_record` reads it: the class object to
+/// build, the `<:` clause that added it, if any, set once it is built
+/// (`Heap::class_set_applied_clause`), and the mixin-table row it applies.
+type DecodedClassRecord<'gc> = (
+    NewClass<'gc>,
+    Option<crate::mixin::AppliedClause>,
+    Rc<crate::mixin::Mixin>,
+);
+
 fn decode_class_record<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
-) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {
+) -> Result<DecodedClassRecord<'gc>, DecodeError> {
     let mixin = match reader.read_u8()? {
         MIXIN_ROW => {
             let id = reader.read_u32()?;
@@ -3642,15 +3616,14 @@ fn decode_class_record<'gc>(
     // resolved through the bootstrap, and never an object-table entry. Its
     // metaclass is its header, which `pair_metaclasses` holds to it once
     // every record is read.
-    let mut data = crate::types::ClassData::new(
-        placeholder_application.clone(),
+    let class = NewClass {
+        application: placeholder_application.clone(),
         enclosing,
         declaring_class,
         superclass,
-        None,
-    );
-    data.applied_clause = applied_clause.map(Box::new);
-    Ok((data, mixin))
+        builtin: None,
+    };
+    Ok((class, applied_clause, mixin))
 }
 
 /// A `MIXIN_BUILTIN` class record, after its tag: the builtin whose mixin the
@@ -3662,7 +3635,7 @@ fn decode_builtin_level<'gc>(
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
-) -> Result<(crate::types::ClassData<'gc>, Rc<crate::mixin::Mixin>), DecodeError> {
+) -> Result<DecodedClassRecord<'gc>, DecodeError> {
     let kind = read_program_builtin_class(reader)?;
     let named = context.mutator.builtin_class(kind);
     let heap = &context.mutator.heap;
@@ -3672,15 +3645,14 @@ fn decode_builtin_level<'gc>(
         .ok_or(DecodeError::NotAClass)?;
     let superclass = decode_optional_class(reader, context, tables)?;
     let applied_clause = decode_applied_clause(reader, context, Some(kind))?;
-    let mut data = crate::types::ClassData::new(
-        placeholder_application.clone(),
-        heap.class_enclosing(named),
-        heap.class_declaring(named),
+    let class = NewClass {
+        application: placeholder_application.clone(),
+        enclosing: heap.class_enclosing(named),
+        declaring_class: heap.class_declaring(named),
         superclass,
-        None,
-    );
-    data.applied_clause = Some(Box::new(applied_clause));
-    Ok((data, mixin))
+        builtin: None,
+    };
+    Ok((class, Some(applied_clause), mixin))
 }
 
 /// The clause that added a level: the applying declaration's row id and the
@@ -3844,8 +3816,11 @@ pub fn verify_graph<'gc>(
     // not) -- so this one loop also covers the closure of every closure
     // activation.
     for object in &graph.objects {
-        if let Some(closure) = heap.closure_data(*object) {
-            verify_closure(heap, &closure, table, &parents, &index_of)?;
+        if let (Some(code), Some(captured_frame)) = (
+            heap.closure_code(*object),
+            heap.closure_captured_frame(*object),
+        ) {
+            verify_closure(heap, &code, captured_frame, table, &parents, &index_of)?;
         }
     }
     Ok(())
@@ -3853,12 +3828,12 @@ pub fn verify_graph<'gc>(
 
 fn verify_closure<'gc>(
     heap: &Heap<'gc>,
-    closure: &ClosureData<'gc>,
+    code: &Rc<CompiledCode>,
+    captured_frame: FrameReference<'gc>,
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
 ) -> Result<(), DecodeError> {
-    let code = &closure.code;
     if code.kind != CodeKind::Block {
         return Err(DecodeError::WrongCodeKind { expected: "block" });
     }
@@ -3870,8 +3845,7 @@ fn verify_closure<'gc>(
     // bound the real chain need not respect. Refusing keeps the two walks
     // in step.
     let parent = parents[id].ok_or(DecodeError::CapturedFrameMismatch)?;
-    let running =
-        frame_body(heap, closure.captured_frame).ok_or(DecodeError::CapturedFrameMismatch)?;
+    let running = frame_body(heap, captured_frame).ok_or(DecodeError::CapturedFrameMismatch)?;
     if !Rc::ptr_eq(&running, &table.codes[parent]) {
         return Err(DecodeError::CapturedFrameMismatch);
     }

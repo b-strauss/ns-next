@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{CompactInstruction, CompiledCode, Instruction, IntegerOperation, Literal};
-use crate::heap::{ActivationReference, RegisterBase};
+use crate::heap::{ActivationReference, NewClosure, RegisterBase};
 use crate::interpreter::future::{
     not_a_closure, resolve_for_instruction, value_for_a_value_slot, FutureOutcome, Resolution,
 };
@@ -1518,13 +1518,9 @@ fn make_closure_into(
     }
     let copied_values = copied
         .iter()
-        .map(|register| {
-            mutator
-                .heap
-                .store(mutator.heap.register(register_base, *register))
-        })
+        .map(|register| mutator.heap.register(register_base, *register))
         .collect();
-    let value = Value::object(mutator.new_closure(ClosureData {
+    let value = Value::object(mutator.new_closure(NewClosure {
         code: Rc::clone(block),
         captured_frame,
         copied: copied_values,

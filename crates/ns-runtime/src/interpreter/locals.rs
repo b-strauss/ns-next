@@ -174,9 +174,9 @@ pub(crate) fn load_own_slot<'gc>(
         .unwrap_or(Value::nil())
 }
 
-/// Writes `value` into instance field `index` on `instance`'s
-/// `ObjectData::Instance` fields -- silently skipped when `instance` is not an
-/// object, or is an object with some other `ObjectData` shape, or `index` is
+/// Writes `value` into instance field `index` of `instance`, an
+/// `ObjectShape::Instance` -- silently skipped when `instance` is not an
+/// object, or is an object of some other `ObjectShape`, or `index` is
 /// out of range. `vm::run_stretch`'s `Instruction::InitializeSlot` arm
 /// writes a slot initializer's value through it.
 pub(crate) fn store_instance_field<'gc>(

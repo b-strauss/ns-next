@@ -49,7 +49,7 @@ fn string_contents<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::String")),
+            .unwrap_or_else(|| panic!("expected a String")),
         _ => panic!("expected an object"),
     }
 }

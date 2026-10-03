@@ -4,6 +4,9 @@
 //! `Tracer` one `&mut` at a time. Enumerating is this module's; rewriting is
 //! `heap.rs`'s `Forwarder`, since only `heap.rs` can mint a handle.
 //!
+//! The impls for an object's and a frame's own payload live beside those
+//! types, in `heap/object.rs`, which nothing outside the heap may name.
+//!
 //! Every impl names every field and matches every variant, with no `..` and
 //! no `_`: a field or variant added later fails to compile here until
 //! someone decides whether it holds a handle. That is what keeps the
@@ -40,106 +43,18 @@ fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     }
 }
 
-fn trace_words<T: Tracer>(words: &mut [Word], tracer: &mut T) {
+pub(crate) fn trace_words<T: Tracer>(words: &mut [Word], tracer: &mut T) {
     for word in words {
         tracer.word(word);
     }
 }
 
-fn trace_optional_object<T: Tracer>(handle: &mut Option<ObjectReference<'_>>, tracer: &mut T) {
+pub(crate) fn trace_optional_object<T: Tracer>(
+    handle: &mut Option<ObjectReference<'_>>,
+    tracer: &mut T,
+) {
     if let Some(handle) = handle {
         tracer.object(handle);
-    }
-}
-
-impl Trace for Object<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let Object {
-            class,
-            identity_hash: _,
-            dispatch_id: _,
-            data,
-        } = self;
-        tracer.object(class);
-        data.trace(tracer);
-    }
-}
-
-impl Trace for ObjectData<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        match self {
-            ObjectData::Instance(words) | ObjectData::Array(words) => trace_words(words, tracer),
-            ObjectData::String(_)
-            | ObjectData::Symbol(_)
-            | ObjectData::LargeInteger(_)
-            | ObjectData::Float(_) => {}
-            ObjectData::Closure(closure) => closure.trace(tracer),
-            ObjectData::Class(class) => class.trace(tracer),
-            ObjectData::Activation(frame) => tracer.frame(frame),
-        }
-    }
-}
-
-impl Trace for ClosureData<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let ClosureData {
-            code: _,
-            captured_frame,
-            copied,
-            feedback_base: _, // not a handle
-        } = self;
-        tracer.frame(captured_frame);
-        trace_words(copied, tracer);
-    }
-}
-
-impl Trace for ClassData<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        // `application` holds no handle: a mixin application is behaviour,
-        // shared by every class object built from it.
-        let ClassData {
-            application: _,
-            enclosing,
-            declaring_class,
-            superclass,
-            builtin: _,
-            this_class,
-            dispatch_id: _, // not a handle
-            // A clause and its compiled message: code, which holds no handle.
-            applied_clause: _,
-            value_class_refusal: _, // a Symbol and a String, neither a handle
-        } = self;
-        trace_optional_object(enclosing, tracer);
-        trace_optional_object(declaring_class, tracer);
-        trace_optional_object(superclass, tracer);
-        trace_optional_object(this_class, tracer);
-    }
-}
-
-impl Trace for Frame<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let Frame {
-            receiver,
-            arguments,
-            temporaries,
-            program_counter: _,
-            sender,
-            home,
-            current_class,
-            kind,
-            uncontinuable: _,
-        } = self;
-        tracer.word(receiver);
-        trace_words(arguments, tracer);
-        trace_words(temporaries, tracer);
-        if let Some(sender) = sender {
-            tracer.frame(sender);
-        }
-        if let Some(home) = home {
-            tracer.frame(home);
-        }
-        trace_optional_object(current_class, tracer);
-        kind.trace(tracer);
     }
 }
 

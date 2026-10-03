@@ -27,7 +27,7 @@ fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
+            .unwrap_or_else(|| panic!("expected a String, got {}", heap.describe(value))),
         _ => panic!("expected an object, got {}", heap.describe(value)),
     }
 }
@@ -265,7 +265,7 @@ fn symbol_round_trips_through_as_string_and_as_symbol() {
         ValueKind::Object(object) => match mutator.heap().symbol_value(object) {
             Some(symbol) => assert_eq!(symbol, Symbol::intern("foo:bar:")),
             None => panic!(
-                "expected ObjectData::Symbol, got {}",
+                "expected a Symbol, got {}",
                 mutator.heap().describe(Value::object(object))
             ),
         },

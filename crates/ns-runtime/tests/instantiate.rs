@@ -90,9 +90,10 @@ fn a_slot_initializer_and_a_method_reading_it_round_trip() {
 /// is a resolve error.
 /// Instead `Sub` is parsed with a builtin
 /// `Object` superclass clause (so `load_module` resolves cleanly through the
-/// ordinary pipeline), and its `ClassData.superclass`/`application` are then
-/// relinked directly to the already-loaded `Sup` class -- both `pub` fields
-/// on `ClassData`, exactly as visible to any other crate-external caller.
+/// ordinary pipeline), and its class object's superclass and application
+/// are then relinked to the already-loaded `Sup` class through
+/// `Heap::class_set_superclass` and `class_set_application`, exactly as
+/// visible to any other crate-external caller.
 /// The resolver itself is untouched by this: `b`'s slot initializer
 /// (`|b = a.|`) references `a`, which is *not* a statically known member of
 /// `Sub` (its member-set computation also only looks up the superclass by
@@ -241,7 +242,7 @@ fn a_factory_parameter_is_usable_as_a_send_receiver_in_a_slot_initializer() {
             ValueKind::Object(object) => match mutator.heap().str_value(*object) {
                 Some(string) => assert_eq!(string, "99"),
                 None => panic!(
-                    "expected ObjectData::String(\"99\"), got {}",
+                    "expected the String \"99\", got {}",
                     mutator.heap().describe(result)
                 ),
             },

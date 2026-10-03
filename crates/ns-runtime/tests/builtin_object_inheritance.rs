@@ -24,7 +24,7 @@ fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     match value.kind() {
         ValueKind::Object(object) => heap
             .str_value(object)
-            .unwrap_or_else(|| panic!("expected ObjectData::String, got {}", heap.describe(value))),
+            .unwrap_or_else(|| panic!("expected a String, got {}", heap.describe(value))),
         _ => panic!("expected an object, got {}", heap.describe(value)),
     }
 }

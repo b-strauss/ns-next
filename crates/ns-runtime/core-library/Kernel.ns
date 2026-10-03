@@ -113,7 +113,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
        nor `Metaclass`'s superclass; this is Primordial Soup's hierarchy,
        which keeps what only a real class has on `Class` so that a
        metaclass does not inherit it. A class object's state lives in the
-       runtime (`ClassData`), as SOMns keeps it in `SClass`; these three
+       runtime (heap record), as SOMns keeps it in `SClass`; these three
        carry behaviour only. `Object` declares no accessor for any of them. *)
     public class Behavior = Object new () (
         (* `=` and `==` answer the same: whether `other` is the receiver, or,
@@ -181,7 +181,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public = other = ( ^vmMirror value: self sameAs: other ifFail: [^(self thisClassOf: self) = (self thisClassOf: other)] )
         public == other = ( ^vmMirror value: self sameAs: other ifFail: [^(self thisClassOf: self) = (self thisClassOf: other)] )
         (* Primordial Soup's `Metaclass` keeps its class in a slot of this
-           name; here it is `ClassData`'s, read through a leaf. *)
+           name; here it is the runtime's, read through a leaf. *)
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
         private thisClassOf: subject = ( ^vmMirror metaclassThisClass: subject ifFail: [^nil] )
     )

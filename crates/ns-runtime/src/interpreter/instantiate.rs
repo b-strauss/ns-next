@@ -492,19 +492,19 @@ impl<'gc> Mutator<'gc> {
                 receiver: Value::object(class),
                 message: "the VM mirror's class cannot be instantiated".to_string(),
             })),
-            // `Array`'s representation is `ObjectData::Array`, not
-            // `decide_instantiation`'s `ObjectData::Instance` --
-            // `builtins::collections`' primitives pattern-match on
-            // `ObjectData::Array` directly, so handing it a generic instance
-            // payload would leave every native method on the result silently
-            // unable to find its data (falling straight through to
-            // `doesNotUnderstand:` on the very next send). Built directly
-            // with `new_instance_object`, tagged with `class` itself (the
+            // `Array`'s shape is `ObjectShape::Array`, not
+            // `decide_instantiation`'s `ObjectShape::Instance` --
+            // `builtins::collections`' primitives read the array accessors
+            // directly, so handing it a generic instance payload would leave
+            // every native method on the result silently unable to find its
+            // data (falling straight through to `doesNotUnderstand:` on the
+            // very next send). Built directly with `Heap::allocate_array`,
+            // tagged with `class` itself (the
             // receiver's own class -- *not* `Mutator::new_array`, which
             // unconditionally tags its result `BuiltinClass::Array`, which
             // would be wrong for a user subclass of `Array`).
             Some(BuiltinClass::Array) => Ok(Step::Value(Value::object(
-                self.new_instance_object(class, ObjectData::Array(vec![])),
+                self.heap.allocate_array(class, &[]),
             ))),
             _ => self.decide_instantiation(class, arguments.to_vec()),
         }
@@ -547,7 +547,7 @@ impl<'gc> Mutator<'gc> {
             // §3.1.1's other class-level condition, every enclosing object a
             // value (`interpreter::value_class::check_value_class`) --
             // decided when `class` was created and only recorded then
-            // (`ClassData::value_class_refusal`); refused here, not there,
+            // (`Heap::class_set_value_refusal`); refused here, not there,
             // because the specification's own §2.3 example creates such a
             // class and never instantiates it
             // (`docs/design/object-model.md`, "A value object's four
@@ -567,8 +567,7 @@ impl<'gc> Mutator<'gc> {
         // knows the whole layout, inherited slots included -- summing the
         // chain here again would be a second answer to the same question.
         let slot_count = application.map_or(0, |application| application.slot_count);
-        let instance =
-            self.new_instance_object(class, ObjectData::Instance(vec![Word::NIL; slot_count]));
+        let instance = self.heap.allocate_instance(class, slot_count);
         let state = self.walk_state(Value::object(instance));
         self.climb_levels(state, class, factory_arguments)
     }

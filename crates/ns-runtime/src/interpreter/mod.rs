@@ -31,7 +31,7 @@ use crate::Symbol;
 
 // `inline_cache` is `pub(crate)`, so `FeedbackBase` on its own would be
 // visible only inside this crate; re-exporting it through `interpreter`
-// (a `pub mod`) is what gives `types.rs`'s `pub` field on `ClosureData` a
+// (a `pub mod`) is what gives `heap::NewClosure`'s `pub` field a
 // fully public path to it, which a `pub` field's type must have.
 pub use inline_cache::FeedbackBase;
 // The inline caches' test view (`Interpreter::call_site_states`) and sizes
@@ -769,7 +769,7 @@ impl<'gc> Mutator<'gc> {
         self.builtin_classes = build_builtin_classes(self);
         self.refresh_immediate_dispatch_ids();
         let class = self.builtin_class(BuiltinClass::VmMirror);
-        let mirror = self.new_instance_object(class, ObjectData::Instance(vec![]));
+        let mirror = self.heap.allocate_instance(class, 0);
         self.vm_mirror = Some(Value::object(mirror));
     }
 
@@ -1439,21 +1439,9 @@ impl<'gc> Mutator<'gc> {
         self.builtin_class(kind)
     }
 
-    fn new_instance_object(
-        &mut self,
-        class: ClassReference<'gc>,
-        data: ObjectData<'gc>,
-    ) -> ObjectReference<'gc> {
-        self.heap.allocate_object(class, data)
-    }
-
     pub fn new_array(&mut self, elements: Vec<Value<'gc>>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Array);
-        let words = elements
-            .into_iter()
-            .map(|element| self.heap.store(element))
-            .collect();
-        self.new_instance_object(class, ObjectData::Array(words))
+        self.heap.allocate_array(class, &elements)
     }
 
     pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
@@ -1465,7 +1453,7 @@ impl<'gc> Mutator<'gc> {
         code_points: crate::CodePoints,
     ) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::String);
-        self.new_instance_object(class, ObjectData::String(code_points))
+        self.heap.allocate_string(class, code_points)
     }
 
     /// The one way an `f64` becomes a `Value`, so that every float has one
@@ -1477,7 +1465,7 @@ impl<'gc> Mutator<'gc> {
             Value::small_float(value)
         } else {
             let class = self.builtin_class(BuiltinClass::Float);
-            Value::object(self.new_instance_object(class, ObjectData::Float(value)))
+            Value::object(self.heap.allocate_float(class, value))
         }
     }
 
@@ -1492,7 +1480,7 @@ impl<'gc> Mutator<'gc> {
             Some(small) => Value::small_integer(small),
             None => {
                 let class = self.builtin_class(BuiltinClass::LargeInteger);
-                Value::object(self.new_instance_object(class, ObjectData::LargeInteger(integer)))
+                Value::object(self.heap.allocate_large_integer(class, integer))
             }
         }
     }
@@ -1504,14 +1492,14 @@ impl<'gc> Mutator<'gc> {
             return Value::object(object);
         }
         let class = self.builtin_class(BuiltinClass::Symbol);
-        let object = self.new_instance_object(class, ObjectData::Symbol(symbol));
+        let object = self.heap.allocate_symbol(class, symbol);
         self.heap.record_canonical_symbol(symbol, object);
         Value::object(object)
     }
 
-    pub fn new_closure(&mut self, closure: ClosureData<'gc>) -> ObjectReference<'gc> {
+    pub fn new_closure(&mut self, closure: crate::heap::NewClosure<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Block);
-        self.new_instance_object(class, ObjectData::Closure(closure))
+        self.heap.allocate_closure(class, closure)
     }
 
     /// An instance of the kernel-private `Activation` class over `frame`,
@@ -1520,7 +1508,7 @@ impl<'gc> Mutator<'gc> {
     /// reified frame survives its activation's pop.
     pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Activation);
-        self.new_instance_object(class, ObjectData::Activation(frame))
+        self.heap.allocate_activation(class, frame)
     }
 
     /// The `platform` object (`docs/design/core-library.md`, "The
@@ -1551,16 +1539,21 @@ impl<'gc> Mutator<'gc> {
             .heap
             .class_application(class)
             .expect("internal: a kernel class has an application");
-        let mut fields = vec![Word::NIL; application.slot_count];
+        let instance = self.heap.allocate_instance(class, application.slot_count);
         let mut level = Some(application);
         while let Some(current) = level {
             for (position, slot) in current.mixin.slots.iter().enumerate() {
-                fields[current.own_slot_base + position] =
-                    self.heap.store(slot_value(slot.name.as_str()));
+                let value = slot_value(slot.name.as_str());
+                if !self
+                    .heap
+                    .instance_set_field(instance, current.own_slot_base + position, value)
+                {
+                    unreachable!("internal: a kernel class's slots lie inside its layout");
+                }
             }
             level = current.superclass.clone();
         }
-        self.new_instance_object(class, ObjectData::Instance(fields))
+        instance
     }
 
     /// The slot `name` that the kernel class `kind` declares, read from
@@ -1636,13 +1629,13 @@ impl<'gc> Mutator<'gc> {
         declaring_class: Option<ClassReference<'gc>>,
         superclass: Option<ClassReference<'gc>>,
     ) -> ClassReference<'gc> {
-        let class = self.allocate_class_object(ClassData::new(
+        let class = self.allocate_class_object(crate::heap::NewClass {
             application,
             enclosing,
             declaring_class,
             superclass,
-            None,
-        ));
+            builtin: None,
+        });
         if self.metaclasses_ready {
             self.attach_metaclass(class);
         }
@@ -1660,9 +1653,16 @@ impl<'gc> Mutator<'gc> {
         superclass: Option<ClassReference<'gc>>,
         clause: crate::mixin::AppliedClause,
     ) -> ClassReference<'gc> {
-        let mut data = ClassData::new(application, enclosing, declaring_class, superclass, None);
-        data.applied_clause = Some(Box::new(clause));
-        let class = self.allocate_class_object(data);
+        let class = self.allocate_class_object(crate::heap::NewClass {
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            builtin: None,
+        });
+        if !self.heap.class_set_applied_clause(class, clause) {
+            unreachable!("internal: a level is a class object");
+        }
         if self.metaclasses_ready {
             self.attach_metaclass(class);
         }
@@ -1675,10 +1675,9 @@ impl<'gc> Mutator<'gc> {
     /// `give_existing_class_objects_metaclasses` replaces it once `Class`
     /// is filled. A metaclass is allocated here too, and `attach_metaclass`
     /// makes it an instance of `Metaclass`.
-    fn allocate_class_object(&mut self, data: ClassData<'gc>) -> ClassReference<'gc> {
+    fn allocate_class_object(&mut self, data: crate::heap::NewClass<'gc>) -> ClassReference<'gc> {
         let class = self.builtin_class(BuiltinClass::Object);
-        self.heap
-            .allocate_object(class, ObjectData::Class(Box::new(data)))
+        self.heap.allocate_class(class, data)
     }
 
     pub fn apply_mixin(
@@ -1926,18 +1925,6 @@ pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> N
 /// clause names -- `Boolean` above `True` and `False` -- before any code
 /// runs.
 fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<'gc>> {
-    // NOTE: deliberately *not* `use BuiltinClass::*;` here --
-    // `BuiltinClass::Object` and `crate::types::Object`
-    // (the object-model struct, brought into scope by `use crate::types::*;`
-    // above) share the bare name `Object`. A glob-import of the enum's
-    // variants shadows the struct, so any bare `Object { .. }` literal
-    // elsewhere in this function would silently try to build a
-    // `BuiltinClass::Object` unit variant with named fields instead of a
-    // `types::Object` struct literal -- a compile error the type checker
-    // catches, but only because the fields don't match; a differently-shaped
-    // `Object` struct could have made this shadow compile into the wrong
-    // construction entirely. Referring to every variant through its
-    // `BuiltinClass::` qualifier avoids the collision.
     // A builtin's behaviour is native, so its mixin's method table holds its
     // primitives and nothing else (`builtin_mixin`): the application gives
     // the builtin the same shape every other class object has, and -- for
@@ -1958,15 +1945,15 @@ fn build_builtin_classes<'gc>(mutator: &mut Mutator<'gc>) -> Vec<ClassReference<
             continue;
         }
         let application = mutator.apply_mixin(&builtin_mixin(kind), Some(&object_application));
-        classes.push(mutator.heap.allocate_object(
+        classes.push(mutator.heap.allocate_class(
             class_of_class,
-            ObjectData::Class(Box::new(ClassData::new(
+            crate::heap::NewClass {
                 application,
-                None,
-                None,
-                Some(class_of_class),
-                Some(kind),
-            ))),
+                enclosing: None,
+                declaring_class: None,
+                superclass: Some(class_of_class),
+                builtin: Some(kind),
+            },
         ));
     }
     classes
@@ -2000,13 +1987,13 @@ fn build_self_referential_object_class<'gc>(
     heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
 ) -> ClassReference<'gc> {
-    heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
+    heap.allocate_self_referential_class(crate::heap::NewClass {
         application,
-        None,
-        None,
-        None,
-        Some(BuiltinClass::Object),
-    ))))
+        enclosing: None,
+        declaring_class: None,
+        superclass: None,
+        builtin: Some(BuiltinClass::Object),
+    })
 }
 
 #[cfg(test)]

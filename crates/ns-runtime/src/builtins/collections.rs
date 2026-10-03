@@ -62,7 +62,7 @@ pub(crate) fn not_an_integer<'gc>(
     }
 }
 
-/// `size`. `None` if `receiver` isn't `ObjectData::Array`-backed at all.
+/// `size`. `None` if `receiver` isn't `ObjectShape::Array` at all.
 fn size<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
@@ -246,7 +246,7 @@ pub(crate) fn execute<'gc>(
 /// trampoline steps -- the first here, each next one by
 /// `after_element` when the one before it returns -- so no Rust frame waits
 /// on Newspeak code (`docs/design/execution.md`, "No re-entry from Rust").
-/// `None` when `receiver` has no `ObjectData::Array` payload, so the send
+/// `None` when `receiver` is no `ObjectShape::Array`, so the send
 /// falls through to `doesNotUnderstand:` as every other selector here does.
 fn do_step<'gc>(
     mutator: &Mutator<'gc>,

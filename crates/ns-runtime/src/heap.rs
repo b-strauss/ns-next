@@ -23,9 +23,13 @@ use crate::Symbol;
 use std::rc::Rc;
 
 pub(crate) mod mark;
+mod object;
+mod records;
 mod tables;
 mod value;
 mod world;
+use object::{ClassData, ClosureData, Frame, FrameSlot, Object, ObjectData};
+pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
 pub(crate) use value::is_small_float_bits;
@@ -377,14 +381,6 @@ struct ActivationStack<'gc> {
     counted: usize,
     #[cfg(debug_assertions)]
     next_generation: u32,
-}
-
-/// A reified activation and, while that activation is still running, the
-/// stack entry it is married to. While `live` is set, the frame's own
-/// `arguments`/`temporaries` are empty and its registers are the entry's.
-struct FrameSlot<'gc> {
-    frame: Frame<'gc>,
-    live: Option<u32>,
 }
 
 /// The initial value of `Heap::collection_floor`, and of
@@ -824,13 +820,16 @@ impl<'gc> Heap<'gc> {
     // ---------- Object construction ----------
     //
     // Every construction of an `ObjectReference` in the workspace -- src or
-    // tests -- goes through one of the two methods below, so that replacing
-    // what backs a handle only ever touches this file.
+    // tests -- goes through the typed allocations below, each of which
+    // builds the payload it names here, so that replacing what backs a
+    // handle only ever touches the heap module.
 
-    /// Allocates `data` under `class`. It carries no identity hash until
-    /// something asks for one (`object_ensure_identity_hash`), so allocating draws
-    /// nothing from the counter.
-    pub fn allocate_object(
+    /// Allocates `data` under `class`, through `push_object`, so the
+    /// collection limit applies. It carries no identity hash until
+    /// something asks for one (`object_ensure_identity_hash`), so allocating
+    /// draws nothing from the counter. Private to the heap: callers name the
+    /// kind of object they build (`allocate_instance` and its siblings).
+    fn allocate_object(
         &mut self,
         class: ClassReference<'gc>,
         data: ObjectData<'gc>,
@@ -844,19 +843,144 @@ impl<'gc> Heap<'gc> {
         })
     }
 
-    /// An object that is genuinely its own `.class`. Under `Rc` this needed
-    /// `Rc::new_uninit`, a manual strong-count bump and `Rc::from_raw`,
-    /// because `Object.class` is non-optional and `Rc::new_cyclic` only ever
-    /// offers a `Weak` that fails to upgrade until construction finishes.
-    /// An arena has no such problem: the slot's index is known before the
-    /// slot is filled, so the object can name itself in safe Rust.
+    /// An instance of `class` with `field_count` fields, every one nil.
+    pub fn allocate_instance(
+        &mut self,
+        class: ClassReference<'gc>,
+        field_count: usize,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, ObjectData::Instance(vec![Word::NIL; field_count]))
+    }
+
+    /// An `Array`-shaped object of `class` holding `elements`, in order.
+    pub fn allocate_array(
+        &mut self,
+        class: ClassReference<'gc>,
+        elements: &[Value<'gc>],
+    ) -> ObjectReference<'gc> {
+        let words = elements
+            .iter()
+            .map(|element| self.store(*element))
+            .collect();
+        self.allocate_object(class, ObjectData::Array(words))
+    }
+
+    /// A String of `class` holding `text`.
+    pub fn allocate_string(
+        &mut self,
+        class: ClassReference<'gc>,
+        text: crate::CodePoints,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, ObjectData::String(text))
+    }
+
+    /// A Symbol object of `class` for `symbol`. `Mutator::new_symbol` is the
+    /// one caller, since a heap holds one object per symbol (§5.1.6).
+    pub(crate) fn allocate_symbol(
+        &mut self,
+        class: ClassReference<'gc>,
+        symbol: Symbol,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, ObjectData::Symbol(symbol))
+    }
+
+    /// A `LargeInteger` object of `class` holding `integer`.
+    /// `Mutator::new_integer` is the one caller, and decides that `integer`
+    /// does not fit a `SmallInteger`, so each integer has one
+    /// representation.
+    pub(crate) fn allocate_large_integer(
+        &mut self,
+        class: ClassReference<'gc>,
+        integer: crate::ArbitraryInteger,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, ObjectData::LargeInteger(integer))
+    }
+
+    /// A boxed `Float` of `class` holding `value`. `Mutator::new_float` is
+    /// the one caller, and decides that `value` lies outside the immediate
+    /// range, so each float has one representation.
+    pub(crate) fn allocate_float(
+        &mut self,
+        class: ClassReference<'gc>,
+        value: f64,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, ObjectData::Float(value))
+    }
+
+    /// A block closure of `class` (`NewClosure` says what it holds).
+    pub(crate) fn allocate_closure(
+        &mut self,
+        class: ClassReference<'gc>,
+        closure: NewClosure<'gc>,
+    ) -> ObjectReference<'gc> {
+        let data = self.closure_payload(closure);
+        self.allocate_object(class, ObjectData::Closure(data))
+    }
+
+    /// A closure's payload from its record, each copied value stored as a
+    /// word.
+    fn closure_payload(&self, closure: NewClosure<'gc>) -> ClosureData<'gc> {
+        let NewClosure {
+            code,
+            captured_frame,
+            copied,
+            feedback_base,
+        } = closure;
+        self.check_frame_origin(captured_frame);
+        ClosureData {
+            code,
+            captured_frame,
+            copied: copied.into_iter().map(|value| self.store(value)).collect(),
+            feedback_base,
+        }
+    }
+
+    /// A class object (`NewClass` says what it holds) whose header class is
+    /// `metaclass`. Its own dispatch id is `metaclass`'s instances id, as
+    /// every object's is its class's.
+    pub fn allocate_class(
+        &mut self,
+        metaclass: ClassReference<'gc>,
+        class: NewClass<'gc>,
+    ) -> ClassReference<'gc> {
+        let data = Self::class_payload(class);
+        self.allocate_object(metaclass, ObjectData::Class(Box::new(data)))
+    }
+
+    /// A class object's payload from its record. Every field set after
+    /// creation starts empty: `this_class`, `applied_clause` and the
+    /// value-class verdict each have their setter.
+    fn class_payload(class: NewClass<'gc>) -> ClassData<'gc> {
+        let NewClass {
+            application,
+            enclosing,
+            declaring_class,
+            superclass,
+            builtin,
+        } = class;
+        ClassData::new(application, enclosing, declaring_class, superclass, builtin)
+    }
+
+    /// A class object that is genuinely its own `.class`. Under `Rc` this
+    /// needed `Rc::new_uninit`, a manual strong-count bump and
+    /// `Rc::from_raw`, because `Object.class` is non-optional and
+    /// `Rc::new_cyclic` only ever offers a `Weak` that fails to upgrade until
+    /// construction finishes. An arena has no such problem: the slot's index
+    /// is known before the slot is filled, so the object can name itself in
+    /// safe Rust.
     ///
     /// Like every object, it carries no identity hash until one is asked
     /// for.
-    pub fn allocate_self_referential_class(
-        &mut self,
-        data: ObjectData<'gc>,
-    ) -> ObjectReference<'gc> {
+    pub fn allocate_self_referential_class(&mut self, class: NewClass<'gc>) -> ClassReference<'gc> {
+        let data = Self::class_payload(class);
+        self.allocate_self_referential(ObjectData::Class(Box::new(data)))
+    }
+
+    /// An object whose class is itself, holding `data`. Private: besides
+    /// `allocate_self_referential_class`, the heap's own tests build one that
+    /// is no class object, the shape a crafted image can give a class
+    /// reference.
+    fn allocate_self_referential(&mut self, data: ObjectData<'gc>) -> ObjectReference<'gc> {
         let index = self.next_object_index();
         let handle = self.object_handle(index);
         // Its own class is itself, not yet in the arena to read, so the id
@@ -877,8 +1001,82 @@ impl<'gc> Heap<'gc> {
         handle
     }
 
-    /// Where `allocate_object` enters an object into the arena;
-    /// `allocate_self_referential_class` pushes directly
+    /// An instance of the kernel-private `Activation` class over `frame`,
+    /// which the caller has already reified: an object keeps a
+    /// `FrameReference`, never an `ActivationReference`, since only a
+    /// reified frame survives its activation's pop.
+    pub(crate) fn allocate_activation(
+        &mut self,
+        class: ClassReference<'gc>,
+        frame: FrameReference<'gc>,
+    ) -> ObjectReference<'gc> {
+        self.check_frame_origin(frame);
+        self.allocate_object(class, ObjectData::Activation(frame))
+    }
+
+    /// An object for `image::decode::decode_graph_section`'s first pass to
+    /// fill later (`fill_placeholder`): an instance of `class` with no
+    /// fields, safe to hold and never observed before it is filled.
+    pub(crate) fn allocate_placeholder(
+        &mut self,
+        class: ClassReference<'gc>,
+    ) -> ObjectReference<'gc> {
+        self.allocate_object(class, ObjectData::Instance(Vec::new()))
+    }
+
+    /// Replaces the entirety of a placeholder object's contents in one
+    /// write: `class`, `identity_hash` and the payload `record` names.
+    /// `image::decode::decode_graph_section`'s second pass is the only
+    /// caller, and it only ever calls this on a handle its first pass
+    /// placeholder-allocated and nothing else has observed yet -- before
+    /// `check_class_references` and `verify_graph` run, both of which assume
+    /// every object is already filled in. Call this on any handle something
+    /// else already holds and it silently replaces that object's
+    /// already-verified invariants with unverified ones: no error, and no
+    /// way for verification to notice, because verification has already
+    /// finished.
+    ///
+    /// The object carries `NONE` in its header until `stamp_dispatch_ids`
+    /// runs -- `class` may itself be a still-placeholder record with no
+    /// application yet -- and must not be dispatched on before then.
+    pub(crate) fn fill_placeholder(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        record: Record<'gc>,
+    ) {
+        self.check_object_origin(object);
+        self.check_object_origin(class);
+        let data = match record {
+            Record::Instance(fields) => {
+                ObjectData::Instance(fields.into_iter().map(|value| self.store(value)).collect())
+            }
+            Record::String(text) => ObjectData::String(text),
+            Record::Symbol(symbol) => ObjectData::Symbol(symbol),
+            Record::Array(elements) => ObjectData::Array(
+                elements
+                    .into_iter()
+                    .map(|value| self.store(value))
+                    .collect(),
+            ),
+            Record::Closure(closure) => ObjectData::Closure(self.closure_payload(closure)),
+            Record::Class(class) => ObjectData::Class(Box::new(Self::class_payload(class))),
+            Record::Activation(frame) => {
+                self.check_frame_origin(frame);
+                ObjectData::Activation(frame)
+            }
+        };
+        self.objects[object.index as usize] = Object {
+            class,
+            identity_hash,
+            dispatch_id: DispatchId::NONE,
+            data,
+        };
+    }
+
+    /// Where every allocation but `allocate_self_referential` enters an
+    /// object into the arena; that one pushes directly
     /// instead, because it needs the index before the object exists to name
     /// itself as its own `class`, but it enforces the same ceiling by
     /// calling `next_object_index` itself. The ceiling is the
@@ -928,15 +1126,15 @@ impl<'gc> Heap<'gc> {
     // ---------- Frame construction ----------
     //
     // A frame carries no identity hash -- Newspeak's `identityHash` applies
-    // to objects, not activation records -- so there is only one
-    // constructor, used for both a real activation and the placeholder
-    // `image::decode::decode_graph_section`'s first pass allocates and its
-    // second pass overwrites wholesale via `frame_replace`.
+    // to objects, not activation records. `reify` builds a real activation's
+    // frame; `image::decode::decode_graph_section`'s first pass allocates a
+    // placeholder (`allocate_placeholder_frame`) and its second pass fills
+    // it wholesale (`fill_frame`).
 
-    /// Allocates `frame`. The only constructor of a `FrameReference` in the
-    /// workspace -- `reify`, the image decoder and tests all come through
-    /// here -- so that replacing what backs a handle only ever touches this
-    /// file.
+    /// Allocates `frame`. Every `FrameReference` in the workspace is minted
+    /// here -- `reify`, the placeholder the image decoder fills and the test
+    /// support below all come through it -- so that replacing what backs a
+    /// handle only ever touches the heap module.
     ///
     /// `Frame.home` is what `closure_home` reads back for a closure created
     /// in this frame, and the image records it, so it must be populated
@@ -947,10 +1145,10 @@ impl<'gc> Heap<'gc> {
     /// fields at an existing one -- would record a return target that
     /// disagrees with the frame's own closure silently rather than fail
     /// loudly. Checked here, once, rather than at every constructor. Not
-    /// checked in `frame_replace`: the decoder fills a placeholder through
+    /// checked in `fill_frame`: the decoder fills a placeholder through
     /// that path with fields read off the wire, and nothing reactivates a
     /// decoded frame, so it need not satisfy this.
-    pub fn allocate_frame(&mut self, frame: Frame<'gc>) -> FrameReference<'gc> {
+    fn allocate_frame(&mut self, frame: Frame<'gc>) -> FrameReference<'gc> {
         debug_assert_eq!(
             frame.home.is_some(),
             matches!(frame.kind, FrameKind::Closure(_)),
@@ -962,11 +1160,27 @@ impl<'gc> Heap<'gc> {
         self.frame_handle(index)
     }
 
+    /// A frame for `image::decode::decode_graph_section`'s first pass to
+    /// fill later (`fill_frame`): a top-level activation with no registers,
+    /// safe to hold and never observed before it is filled.
+    pub(crate) fn allocate_placeholder_frame(&mut self) -> FrameReference<'gc> {
+        self.allocate_frame(Frame {
+            receiver: Word::NIL,
+            arguments: Vec::new(),
+            temporaries: Vec::new(),
+            program_counter: 0,
+            sender: None,
+            home: None,
+            current_class: None,
+            kind: FrameKind::TopLevel,
+            uncontinuable: false,
+        })
+    }
+
     /// A returned top-level frame no activation produced, built from values.
     /// Test support, public only for `tests/image.rs`'s `sender` round trip:
     /// the runtime never sets a frame's `sender`, so only a hand-made frame
-    /// carries one into the encoder; `Frame`'s own fields are bare words,
-    /// which only the crate can make.
+    /// carries one into the encoder.
     ///
     /// A handle from another interpreter's heap carries another brand and
     /// does not compile here. A debug build also checks every handle's
@@ -1219,6 +1433,24 @@ impl<'gc> Heap<'gc> {
         self.objects[object.index as usize].class
     }
 
+    /// Which kind of payload `object` carries. The encoder and the graph
+    /// walk branch on it, then read the payload through the accessor for
+    /// that kind.
+    pub fn object_shape(&self, object: ObjectReference<'gc>) -> ObjectShape {
+        self.check_object_origin(object);
+        match &self.objects[object.index as usize].data {
+            ObjectData::Instance(_) => ObjectShape::Instance,
+            ObjectData::String(_) => ObjectShape::String,
+            ObjectData::Symbol(_) => ObjectShape::Symbol,
+            ObjectData::Array(_) => ObjectShape::Array,
+            ObjectData::Closure(_) => ObjectShape::Closure,
+            ObjectData::Class(_) => ObjectShape::Class,
+            ObjectData::Activation(_) => ObjectShape::Activation,
+            ObjectData::LargeInteger(_) => ObjectShape::LargeInteger,
+            ObjectData::Float(_) => ObjectShape::Float,
+        }
+    }
+
     pub fn is_class(&self, object: ObjectReference<'gc>) -> bool {
         self.check_object_origin(object);
         matches!(
@@ -1235,12 +1467,24 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The number of fields in `object`'s `ObjectData::Instance`, mirroring
+    /// The number of fields of an `ObjectShape::Instance`, mirroring
     /// `array_element_count`; `None` for any other shape.
     pub fn instance_field_count(&self, object: ObjectReference<'gc>) -> Option<usize> {
         self.check_object_origin(object);
         match &self.objects[object.index as usize].data {
             ObjectData::Instance(fields) => Some(fields.len()),
+            _ => None,
+        }
+    }
+
+    /// Every field of an `ObjectShape::Instance`, in order, mirroring
+    /// `array_elements`; `None` for any other shape.
+    pub fn instance_fields(&self, object: ObjectReference<'gc>) -> Option<Vec<Value<'gc>>> {
+        self.check_object_origin(object);
+        match &self.objects[object.index as usize].data {
+            ObjectData::Instance(fields) => {
+                Some(fields.iter().map(|word| self.load(*word)).collect())
+            }
             _ => None,
         }
     }
@@ -1282,8 +1526,8 @@ impl<'gc> Heap<'gc> {
         false
     }
 
-    /// The instance field at `index`, or `None` when `object`'s payload is not
-    /// `ObjectData::Instance` or `index` is out of range -- the same
+    /// The instance field at `index`, or `None` when `object` is no
+    /// `ObjectShape::Instance` or `index` is out of range -- the same
     /// total-rather-than-panicking shape as the array accessors above.
     pub fn instance_field(&self, object: ObjectReference<'gc>, index: usize) -> Option<Value<'gc>> {
         self.check_object_origin(object);
@@ -1329,6 +1573,12 @@ impl<'gc> Heap<'gc> {
             ObjectData::String(code_points) => Some(code_points),
             _ => None,
         }
+    }
+
+    /// A String's code points, copied out; `None` for any other object.
+    /// For the image encoder, which writes the whole text.
+    pub fn string_code_points(&self, object: ObjectReference<'gc>) -> Option<crate::CodePoints> {
+        self.code_points(object).cloned()
     }
 
     pub fn is_string(&self, object: ObjectReference<'gc>) -> bool {
@@ -1567,15 +1817,6 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// A copy of closure `object`'s payload -- one `Rc` bump for the body it
-    /// shares with the instruction that made it, and a copy of its copied
-    /// values. For the image verifier and for tests; the encoder reads a closure
-    /// through `object_snapshot`, and the run loop reads what it needs
-    /// through the narrower accessors above.
-    pub fn closure_data(&self, object: ObjectReference<'gc>) -> Option<ClosureData<'gc>> {
-        self.closure(object).cloned()
-    }
-
     /// Closure `object`'s payload, to write; `None` when `object` is not a
     /// closure.
     fn closure_mut(&mut self, object: ObjectReference<'gc>) -> Option<&mut ClosureData<'gc>> {
@@ -1629,7 +1870,7 @@ impl<'gc> Heap<'gc> {
     ///
     /// A closure frame the runtime reified always carries a `home`
     /// (`allocate_frame` asserts it), so the fallback below is reached only
-    /// by a *decoded* closure frame, which `frame_replace` fills straight
+    /// by a *decoded* closure frame, which `fill_frame` fills straight
     /// from the wire. Answering the captured frame for one is what keeps an
     /// untrusted image from panicking here: a decoded frame is never married
     /// to an activation, so a `^` aimed at it is the `cannotReturn` error
@@ -1657,39 +1898,6 @@ impl<'gc> Heap<'gc> {
             ObjectData::Activation(frame) => Some(*frame),
             _ => None,
         }
-    }
-
-    /// The whole of `object`'s record -- `class`, `identity_hash` and `data`
-    /// -- in the one borrow all three live behind.
-    /// `image::encode::encode_object` writes a whole object record and
-    /// `GraphTable::visit_value` walks a whole object's references; both
-    /// need every field, so one accessor beats writing the borrow out twice
-    /// at the two call sites that each need all of it. Not for a hot path:
-    /// it clones `data` in full, which is a real cost for a large `Array`
-    /// or `Instance`, acceptable here because the encoder visits every
-    /// object exactly once regardless.
-    pub fn object_snapshot(&self, object: ObjectReference<'gc>) -> Object<'gc> {
-        self.check_object_origin(object);
-        self.objects[object.index as usize].clone()
-    }
-
-    /// Replaces the entirety of a placeholder object's contents in one
-    /// write. `image::decode::decode_graph_section`'s second pass is the
-    /// only caller, and it only ever calls this on a handle its first pass
-    /// placeholder-allocated and nothing else has observed yet -- before
-    /// `check_class_references` and `verify_graph` run, both of which
-    /// assume every object is already filled in. Call this on any handle
-    /// something else already holds -- after those passes ran, or on an
-    /// object already reachable from `roots` -- and it silently replaces
-    /// that object's already-verified invariants with unverified ones: no
-    /// error, and no way for verification to notice, because verification
-    /// has already finished. The object it installs carries `NONE` in its
-    /// header until `stamp_dispatch_ids` runs -- `filled`'s class may itself
-    /// be a still-placeholder record with no application yet -- and must not
-    /// be dispatched on before then.
-    pub fn object_replace(&mut self, object: ObjectReference<'gc>, filled: Object<'gc>) {
-        self.check_object_origin(object);
-        self.objects[object.index as usize] = filled;
     }
 
     /// Renders a value for a user-facing error message.
@@ -1728,7 +1936,7 @@ impl<'gc> Heap<'gc> {
                             ObjectData::Class(data) => {
                                 format!("an instance of {}", data.application.mixin.name)
                             }
-                            // `types.rs`'s `ClassReference` doc: every
+                            // `ClassReference`'s doc: every
                             // `Object::class` is an `ObjectReference` whose own
                             // `data` is `ObjectData::Class`, by convention
                             // rather than by the type system. This arm exists
@@ -2277,6 +2485,24 @@ impl<'gc> Heap<'gc> {
         false
     }
 
+    /// Records the `<:` clause that added `class` (`newspeak-spec.pdf`
+    /// §6.2), right after the level is created: by
+    /// `Mutator::new_applied_level` for a level built from source, and by
+    /// the image decoder for a decoded one. Answers whether the write
+    /// happened, like the other class setters.
+    pub(crate) fn class_set_applied_clause(
+        &mut self,
+        class: ClassReference<'gc>,
+        clause: crate::mixin::AppliedClause,
+    ) -> bool {
+        self.check_object_origin(class);
+        if let ObjectData::Class(data) = &mut self.objects[class.index as usize].data {
+            data.applied_clause = Some(Box::new(clause));
+            return true;
+        }
+        false
+    }
+
     /// Gives `class` a new application and moves every live object of that
     /// class to its ids -- a walk of the arena, which is why the decoder,
     /// which installs one application per class record, calls
@@ -2490,36 +2716,83 @@ impl<'gc> Heap<'gc> {
         )
     }
 
-    /// The whole of `frame`'s contents, read through one slice index
-    /// rather than several. `image::encode::encode_frame` writes a whole
-    /// frame record and `GraphTable::visit_frame` walks a whole frame's
-    /// references; both need every field. Not for a hot path, for the same
-    /// reason as `object_snapshot`.
+    /// The whole of `frame`'s contents as values. `image::encode::encode_frame`
+    /// writes a whole frame record and `GraphTable::visit_frame` walks a
+    /// whole frame's references; both need every field. Not for a hot path:
+    /// it copies every register out.
     ///
     /// Only for a dead frame, which is also the encoder's precondition: it
     /// only ever runs between sends, when nothing is live, and
     /// `image::snapshot` refuses to start otherwise.
-    pub fn frame_snapshot(&self, frame: FrameReference<'gc>) -> Frame<'gc> {
+    pub fn frame_record(&self, frame: FrameReference<'gc>) -> FrameRecord<'gc> {
         self.check_frame_origin(frame);
         debug_assert!(
             self.frames[frame.index as usize].live.is_none(),
             "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
-        self.frames[frame.index as usize].frame.clone()
+        let stored_frame = &self.frames[frame.index as usize].frame;
+        FrameRecord {
+            receiver: self.load(stored_frame.receiver),
+            arguments: stored_frame
+                .arguments
+                .iter()
+                .map(|word| self.load(*word))
+                .collect(),
+            temporaries: stored_frame
+                .temporaries
+                .iter()
+                .map(|word| self.load(*word))
+                .collect(),
+            program_counter: stored_frame.program_counter,
+            sender: stored_frame.sender,
+            home: stored_frame.home,
+            current_class: stored_frame.current_class,
+            kind: stored_frame.kind.clone(),
+            uncontinuable: stored_frame.uncontinuable,
+        }
     }
 
-    /// The frame equivalent of `object_replace`.
-    /// `image::decode::decode_graph_section`'s second pass is the only caller,
-    /// and it only ever calls this on a handle its first pass
-    /// placeholder-allocated and nothing else has observed yet -- before
-    /// `verify_graph` runs, which assumes every frame is already filled in.
-    /// Call this on any handle something else already holds and it silently
-    /// replaces that frame's already-verified `program_counter`/register-file
-    /// shape with an unverified one: no error, and no way for `verify_graph` to
-    /// notice, because it has already finished.
-    pub fn frame_replace(&mut self, frame: FrameReference<'gc>, filled: Frame<'gc>) {
+    /// Replaces the entirety of a frame's contents with `record`, the frame
+    /// equivalent of `fill_placeholder`.
+    /// `image::decode::decode_graph_section`'s second pass fills each frame
+    /// its first pass placeholder-allocated, before `verify_graph` runs,
+    /// which assumes every frame is already filled in; `tests/image.rs`
+    /// forges a decoded frame through it. Call this on any handle something
+    /// else already holds and it silently replaces that frame's
+    /// already-verified `program_counter`/register-file shape with an
+    /// unverified one: no error, and no way for `verify_graph` to notice,
+    /// because it has already finished.
+    pub fn fill_frame(&mut self, frame: FrameReference<'gc>, record: FrameRecord<'gc>) {
         self.check_frame_origin(frame);
+        let FrameRecord {
+            receiver,
+            arguments,
+            temporaries,
+            program_counter,
+            sender,
+            home,
+            current_class,
+            kind,
+            uncontinuable,
+        } = record;
+        let filled = Frame {
+            receiver: self.store(receiver),
+            arguments: arguments
+                .into_iter()
+                .map(|value| self.store(value))
+                .collect(),
+            temporaries: temporaries
+                .into_iter()
+                .map(|value| self.store(value))
+                .collect(),
+            program_counter,
+            sender,
+            home,
+            current_class,
+            kind,
+            uncontinuable,
+        };
         self.frames[frame.index as usize].frame = filled;
     }
 
@@ -3061,8 +3334,8 @@ impl<'gc> Heap<'gc> {
     /// stack entry points at yet.
     ///
     /// `push_object` and `reify` are its only two callers, not every
-    /// allocation path: `allocate_self_referential_class` and the image
-    /// decoder's direct use of `allocate_frame` compare against no limit at
+    /// allocation path: `allocate_self_referential` and the image
+    /// decoder's `allocate_placeholder_frame` compare against no limit at
     /// all. Harmless -- the bootstrap that calls the former is bounded, the
     /// decoder never polls a safepoint, and the next ordinary allocation
     /// compares against the same limit either way.
@@ -3482,12 +3755,12 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn reading_a_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
-        let class = origin.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = origin.allocate_self_referential(ObjectData::Instance(vec![]));
         let object =
             origin.allocate_object(class, ObjectData::String(crate::CodePoints::from("mine")));
 
         let mut other = Heap::new();
-        let other_class = other.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let other_class = other.allocate_self_referential(ObjectData::Instance(vec![]));
         other.allocate_object(
             other_class,
             ObjectData::String(crate::CodePoints::from("theirs")),
@@ -3513,12 +3786,12 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn comparing_two_handles_from_different_heaps_panics() {
         let mut origin = Heap::new();
-        let class = origin.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = origin.allocate_self_referential(ObjectData::Instance(vec![]));
         let mine =
             origin.allocate_object(class, ObjectData::String(crate::CodePoints::from("mine")));
 
         let mut other = Heap::new();
-        let other_class = other.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let other_class = other.allocate_self_referential(ObjectData::Instance(vec![]));
         let theirs = other.allocate_object(
             other_class,
             ObjectData::String(crate::CodePoints::from("theirs")),
@@ -3551,7 +3824,7 @@ mod tests {
     /// Why `object_identity_key` exists at all, rather than callers keying
     /// on `identity_hash`. Both allocators that fix the hash at 0 --
     /// `allocate_object` (every object nothing has asked for its hash) and
-    /// `allocate_self_referential_class` -- can produce several objects in one
+    /// `allocate_self_referential` -- can produce several objects in one
     /// heap sharing that hash, and a map keyed on it would fold them into
     /// one entry. `image::decode` builds a whole graph out of exactly those
     /// placeholders, so this is the case that would break, not a
@@ -3562,7 +3835,7 @@ mod tests {
     #[test]
     fn identity_keys_separate_objects_that_share_an_identity_hash() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let first = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
         let second = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
 
@@ -3593,12 +3866,12 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn keying_a_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
-        let class = origin.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = origin.allocate_self_referential(ObjectData::Instance(vec![]));
         let mine =
             origin.allocate_object(class, ObjectData::String(crate::CodePoints::from("mine")));
 
         let mut other = Heap::new();
-        let other_class = other.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let other_class = other.allocate_self_referential(ObjectData::Instance(vec![]));
         let theirs = other.allocate_object(
             other_class,
             ObjectData::String(crate::CodePoints::from("theirs")),
@@ -3637,8 +3910,8 @@ mod tests {
         // A filler object first, so `class` does not land at index 0 -- an
         // implementation that always answered `ObjectReference { index: 0 }`
         // would otherwise still pass this test.
-        heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        heap.allocate_self_referential(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         assert!(heap.object_class(class).same(class));
     }
 
@@ -3710,8 +3983,8 @@ mod tests {
         let mut heap = Heap::new();
         // A filler object first, so neither `class` nor `first` lands at
         // index 0 -- see `a_self_referential_class_is_its_own_class`.
-        heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        heap.allocate_self_referential(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let first =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("first")));
         for _ in 0..1000 {
@@ -3743,13 +4016,13 @@ mod tests {
             own_slot_base: 0,
             dispatch_ids: crate::mixin::DispatchIds::NONE,
         });
-        heap.allocate_self_referential_class(ObjectData::Class(Box::new(ClassData::new(
+        heap.allocate_self_referential_class(NewClass {
             application,
-            None,
-            None,
-            None,
-            None,
-        ))))
+            enclosing: None,
+            declaring_class: None,
+            superclass: None,
+            builtin: None,
+        })
     }
 
     /// `describe`'s `ObjectData::Instance` arm is the one non-mechanical
@@ -3937,7 +4210,7 @@ mod tests {
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let captured_frame = heap.allocate_frame(top_level_frame());
         let closure = heap.allocate_object(
             class,
@@ -4114,7 +4387,7 @@ mod tests {
     #[test]
     fn an_identity_hash_is_assigned_on_first_request_not_at_allocation() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let first = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
         let second = heap.allocate_object(class, ObjectData::Instance(Vec::new()));
         assert_eq!(
@@ -4189,7 +4462,7 @@ mod tests {
                 }),
             )
         }
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let block_header = |closure| ActivationHeader {
             receiver: Value::nil(),
             current_class: None,
@@ -4249,7 +4522,7 @@ mod tests {
     #[cfg(debug_assertions)]
     fn a_move_gives_every_slot_a_new_index_and_rewrites_what_names_it() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let string = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("a")));
         let array = heap.allocate_object(
             class,
@@ -4307,18 +4580,23 @@ mod tests {
             .and_then(|element| element.as_object())
             .is_some_and(|element| element.same(string)));
         assert_eq!(heap.str_value(string).as_deref(), Some("a"));
-        let data = heap.closure_data(closure).expect("still a closure");
+        let copied = heap
+            .closure_copied_values(closure)
+            .expect("still a closure");
         assert!(
-            matches!(data.copied[..], [copied] if heap.load(copied).as_object().is_some_and(|copied| copied.same(string))),
+            matches!(copied[..], [copied] if copied.as_object().is_some_and(|copied| copied.same(string))),
             "a copied value is rewritten"
         );
+        let captured_frame = heap
+            .closure_captured_frame(closure)
+            .expect("still a closure");
         assert_ne!(
             frame_before,
-            heap.frame_identity_key(data.captured_frame),
+            heap.frame_identity_key(captured_frame),
             "every frame moved"
         );
         assert!(heap
-            .frame_receiver(data.captured_frame)
+            .frame_receiver(captured_frame)
             .as_object()
             .is_some_and(|receiver| receiver.same(string)));
     }
@@ -4328,7 +4606,7 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn reading_an_object_handle_minted_before_a_move_panics() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let string = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("a")));
         move_bare_heap(&mut heap);
         let _ = heap.str_value(string);
@@ -4352,7 +4630,7 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn comparing_a_stale_handle_with_a_fresh_one_panics() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let root = heap.stash(Value::object(class));
         move_bare_heap(&mut heap);
         let Some(fresh) = heap.fetch(&root).as_object() else {
@@ -4369,7 +4647,7 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn a_stale_handle_is_caught_where_it_is_stored() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let stale =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("stale")));
         let array = heap.allocate_object(class, ObjectData::Array(vec![Word::NIL]));
@@ -4442,7 +4720,7 @@ mod tests {
         interpreter.enter(|mutator| {
             let not_a_class = mutator
                 .heap
-                .allocate_self_referential_class(ObjectData::Instance(vec![]));
+                .allocate_self_referential(ObjectData::Instance(vec![]));
             let instance = mutator
                 .heap
                 .allocate_object(not_a_class, ObjectData::Instance(vec![]));
@@ -4485,7 +4763,7 @@ mod tests {
     #[test]
     fn marking_reaches_what_a_root_reaches_and_nothing_else() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let reachable =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
         let unreachable =
@@ -4505,7 +4783,7 @@ mod tests {
     #[test]
     fn marking_follows_an_edge_out_of_a_reachable_object() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let target =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("target")));
         let holder = heap.allocate_object(
@@ -4542,7 +4820,7 @@ mod tests {
     #[test]
     fn an_activation_object_answers_its_frame() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let frame = heap.allocate_frame(top_level_frame());
         let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
         let other =
@@ -4564,7 +4842,7 @@ mod tests {
     #[test]
     fn marking_reaches_a_frame_through_an_activation_object() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let frame = heap.allocate_frame(top_level_frame());
         let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
         let activation = heap.push_activation(header(), &[Value::object(activation_object)], 1);
@@ -4586,7 +4864,7 @@ mod tests {
     #[test]
     fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let first = heap.allocate_object(class, ObjectData::Instance(vec![Word::NIL]));
         let second = heap.allocate_object(
             class,
@@ -4607,7 +4885,7 @@ mod tests {
     #[test]
     fn collecting_reclaims_what_no_root_reaches() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         let reachable =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
         heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
@@ -4632,7 +4910,7 @@ mod tests {
     #[test]
     fn a_survivor_is_still_itself_after_compaction() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
         let reachable =
             heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
@@ -4675,7 +4953,7 @@ mod tests {
 
         // Six objects and five frames in total -- above the floor once
         // doubled in both arenas, and still a different count in each.
-        let class = heap.allocate_self_referential_class(ObjectData::Instance(vec![]));
+        let class = heap.allocate_self_referential(ObjectData::Instance(vec![]));
         for _ in 0..5 {
             heap.allocate_object(class, ObjectData::Instance(vec![]));
         }
