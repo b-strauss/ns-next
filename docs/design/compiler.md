@@ -930,7 +930,8 @@ oracle means nothing, and `load` and `inspect` decode rather than compile.
 The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs`, converted
 into `ns_runtime::Lowering` and passed to `program::load_program`, which
 `run` and `build` go through for every module of a program, the manifest
-included; `disasm` compiles one source file through `source::bootstrap`,
+included; `disasm` compiles one source file through
+`Interpreter::compile_module` on an interpreter bootstrapped with the switch,
 takes the switch as an `Option` and refuses it for an artifact, which
 carries the code it was built with.
 
