@@ -52,6 +52,78 @@ pub fn parse(source: &str) -> Result<Module, Vec<Diagnostic>> {
     }
 }
 
+/// What [`parse_for_editor`] answers: a module for every source, recovered
+/// where the source has errors, with what an editor reads beside it.
+pub struct EditorParse {
+    /// The lexer's tokens, before the parser splits any.
+    pub tokens: Vec<Token>,
+    pub module: Module,
+    /// Every comment, in source order.
+    pub comments: Vec<Span>,
+    /// The lexer's diagnostics, then the parser's.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Parse `source` for an editor, which shows a file while it is typed: a
+/// lexer error does not stop the parse, and the module is answered even
+/// when the source has errors. Nothing compiles such a module; [`parse`]
+/// is the entry for that.
+pub fn parse_for_editor(source: &str) -> EditorParse {
+    if let Some(diagnostic) = source_too_long(source.len()) {
+        return EditorParse {
+            tokens: Vec::new(),
+            module: empty_module(),
+            comments: Vec::new(),
+            diagnostics: vec![diagnostic],
+        };
+    }
+    let lexed = lexer::Lexer::new(source).run_keeping_comments();
+    let mut parser = parser::Parser::new(source, lexed.tokens.clone());
+    let module = parser.parse_module();
+    let mut diagnostics = lexed.diagnostics;
+    diagnostics.extend(parser.into_diagnostics());
+    EditorParse {
+        tokens: lexed.tokens,
+        module,
+        comments: lexed.comments,
+        diagnostics,
+    }
+}
+
+/// The module of a source too long to lex: a root class with no name and
+/// nothing in it.
+fn empty_module() -> Module {
+    let span = Span::new(0, 0);
+    let body = ast::ClassBody {
+        slots: Vec::new(),
+        initializer_expressions: Vec::new(),
+        methods: Vec::new(),
+        nested_classes: Vec::new(),
+        delimiters: None,
+        slot_delimiters: None,
+        span,
+    };
+    Module {
+        language_id: String::new(),
+        category: String::new(),
+        root_class: ast::ClassDeclaration {
+            access: None,
+            name: ast::Identifier {
+                name: String::new(),
+                span,
+            },
+            factory: None,
+            superclass: None,
+            mixin_applications: Vec::new(),
+            class_comment: None,
+            instance_side: body,
+            class_side: None,
+            span,
+        },
+        span,
+    }
+}
+
 /// The diagnostic refusing a source of `length` bytes when a `Span`, whose
 /// offsets are `u32`, cannot address its end. Lexed, such a source would
 /// wrap its offsets into spans that point at the wrong text, and every count
