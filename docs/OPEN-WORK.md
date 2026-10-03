@@ -24,6 +24,21 @@ and 2026-10-03; it has no implementation plan yet, so the next session
 writes one. Everything before it on the road is built, road step 3a, the
 object representation, included.
 
+What road step 3b's plan retires (road step 3a's final review, 2026-10-03):
+`Heap::fill_placeholder_class`'s fallback, the one remaining place a block
+is rebuilt in its slot rather than written in place (it builds a class
+record beside a placeholder of the wrong size, which a valid first pass
+never produces, and the space cannot resize an object in place); the
+structures keyed by the arena index, which become keyed by the byte offset
+and are rebuilt or forwarded where the index is today --
+`object_identity_key`, the inverse symbol map `symbol_of`, and
+`rebuild_applications`' position map (the frame's `MARRIED` field holds a
+stack index, not an arena index, and is unaffected); and the per-object
+Rust allocations the space replaces, `Payload::into_block` with
+`push_object`, and the decoder's class-payload temporary that
+`fill_placeholder_class` copies from. Nothing in the tree keys on a `Box`'s
+address.
+
 ## The road to a high-performance VM
 
 Decided with the user on 2026-09-29, in this order: nine numbered steps,
@@ -767,6 +782,22 @@ Small, deliberately left, none affecting an outcome.
   `closure_activation` reading the closure twice on the hottest closure
   path; and `trace_block` returning silently on a block shorter than two
   words, where a `debug_assert!` would be louder.
+- Every collection and every move rebuilds the inverse symbol map
+  (`Heap::symbol_of`) through a temporary `Vec` of the live symbols, drained
+  from the map and re-inserted under their forwarded indices (noted
+  2026-10-03). Walking `canonical_symbols` directly would avoid it, but needs
+  a way to make a `Symbol` from its table index, which `Symbol` does not
+  offer; road step 3b rekeys the map by byte offset anyway ("Next").
+- Strings go through `CodePoints` where the packed words could serve
+  directly (noted 2026-10-03): `Heap::string_concatenation`, the `,` leaf,
+  builds three -- each operand unpacked, then the result -- before the
+  result is packed again, and `Heap::str_value`, which every caller that
+  wants a String's or a Symbol's text as UTF-8 goes through, unpacks into
+  `CodePoints` before converting. `,` is on Json's path, which road step 3a's
+  measurement shows 14.0% slower with separated ranges
+  ([execution.md](design/execution.md), "What the object
+  representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
+  from one, would leave out the copies.
 
 ## Goldens and documentation
 

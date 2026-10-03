@@ -4130,7 +4130,12 @@ and the space in `ns-memory`'s reservation is road step 3b.
   map kept in step with the canonical symbol table, where it rebuilt the
   text and looked it up in the interner on every call; a closure is built
   without a temporary list of its copied values.
-- This commit -- the documentation describes the built state.
+- `7c7d7f3`, `04bc394` -- the documentation describes the built state and
+  records the measurement.
+- `52dff65` -- the final review's fixes: `Heap::fill_frame`, the one public
+  way to rebuild a frame object at another size, gives way to a one-field
+  `frame_set_uncontinuable`; `symbol_value` and `fill_placeholder_class`
+  debug-assert what they rely on.
 
 Measured against `d0e8b08`, nineteen of the twenty-four sources are slower
 with separated ranges, by 3.6% to 30.5% ([execution.md](design/execution.md),

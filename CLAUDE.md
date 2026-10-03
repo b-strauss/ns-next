@@ -17,7 +17,9 @@ Rust 1.98.0, edition 2021, five crates:
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of 32-bit
   handles, each slot one object's block of words -- header word, class word,
-  fields, in road step 3's layout (`heap/header.rs`, `heap/object.rs`) --
+  fields, in road step 3's layout (`heap/header.rs`, `heap/object.rs`; the
+  seam's value types in `heap/records.rs`, the per-heap tables of mixins,
+  applications and compiled code in `heap/tables.rs`) --
   an activation stack reified on demand into frame objects, a mark-compact
   collector run only at run-loop safepoints; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
