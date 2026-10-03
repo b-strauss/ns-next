@@ -11,7 +11,9 @@ use crate::bytecode::{
     CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
     IntegerOperation, Literal,
 };
-use crate::heap::{FrameRecord, Heap, NewClass, NewClosure, Record, IDENTITY_HASH_LIMIT};
+use crate::heap::{
+    record_size, FrameRecord, Heap, NewClass, NewClosure, Record, IDENTITY_HASH_LIMIT,
+};
 use crate::interpreter::instantiate;
 use crate::types::{
     fits_small_integer, BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference,
@@ -84,7 +86,10 @@ pub enum DecodeError {
     },
     BadCodeId(u32),
     BadObjectId(u32),
-    BadFrameId(u32),
+    /// A field the format types as a frame reference -- a frame's sender or
+    /// home, a closure's captured frame -- names an object id whose record
+    /// is not a frame record (`OBJECT_FRAME`).
+    NotAFrameReference(u32),
     /// A mixin-table row, or a class object's record, referenced a row id
     /// past the end of the table.
     BadMixinId(u32),
@@ -116,14 +121,12 @@ pub enum DecodeError {
     /// from its class, so a class record applying a class side describes a
     /// second, unpaired metaclass no live world has.
     ClassRecordAppliesAClassSide,
-    /// An activation record (`OBJECT_ACTIVATION`) whose header is not the
-    /// builtin `Activation`, or a record of another kind whose header is.
-    /// Only a reified frame is an activation object, and every frame object
-    /// is an instance of that class and nothing else is, so a
-    /// mismatch describes an object no live world has -- an activation
-    /// answering some other class's methods, or an ordinary object answering
-    /// `Activation`'s, which read other frames and unwind the stack.
-    ActivationHeader,
+    /// A frame record (`OBJECT_FRAME`) whose header is not the builtin
+    /// `Activation`. Every frame object is an instance of that class, so
+    /// this describes an activation answering some other class's methods,
+    /// which no live world has. The other half -- `Activation`'s header on
+    /// another record -- is refused as `Activation` named anywhere else is.
+    FrameRecordUnderAnotherClass,
     /// A record under the builtin `Future` header that is not an unresolved
     /// future's: an instance record of exactly two fields, a closure and the
     /// state 0. The encoder writes a resolved future as its value and a
@@ -488,7 +491,9 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::BadCodeId(id) => write!(f, "code id {id} out of range"),
             DecodeError::BadObjectId(id) => write!(f, "object id {id} out of range"),
-            DecodeError::BadFrameId(id) => write!(f, "frame id {id} out of range"),
+            DecodeError::NotAFrameReference(id) => {
+                write!(f, "object {id} is named as a frame but is not a frame record")
+            }
             DecodeError::BadSymbolId(id) => write!(f, "symbol id {id} out of range"),
             DecodeError::BadMixinId(id) => write!(f, "mixin id {id} out of range"),
             DecodeError::NotAClassReference => write!(
@@ -507,10 +512,9 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a class object in the image applies a class side, which only its metaclass may"
             ),
-            DecodeError::ActivationHeader => write!(
+            DecodeError::FrameRecordUnderAnotherClass => write!(
                 f,
-                "an object in the image is an Activation without an activation's record, \
-                 or an activation's record under another class"
+                "a frame record in the image names a class other than Activation"
             ),
             DecodeError::FutureRecord => write!(
                 f,
@@ -981,7 +985,7 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// frames and unwinds stacks, a capability Newspeak hands out only through
 /// mirrors, so no artifact may name its class either
 /// (`docs/design/core-library.md`, "Exceptions") -- except as the
-/// header of an activation record, which `decode_object_header` reads.
+/// header of a frame record, which `decode_object_header` reads.
 /// `Future`: §6.3.2's pull future is kernel-private as `Activation` is, and
 /// no program names its class -- except as the header of an unresolved
 /// future's record, which `decode_object_header` reads too. `Object`
@@ -2203,7 +2207,7 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
 }
 
 // ---------------------------------------------------------------------------
-// The object table and the frame table.
+// The object table, frames included.
 // ---------------------------------------------------------------------------
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
@@ -2245,17 +2249,17 @@ pub struct DecodedGraph<'gc> {
     /// The largest identity hash of any decoded object -- `load` advances
     /// the interpreter's identity-hash counter past it.
     pub max_identity_hash: u32,
-    /// The two decoded tables themselves, in image order. The roots reach
-    /// most of them, but `verify_graph` must see *every* record -- a frame
-    /// no root reaches can still be some closure's captured frame.
+    /// The decoded table itself, in image order, and its frame records
+    /// among it, in the same order. The roots reach most of them, but
+    /// `verify_graph` must see *every* record -- a frame no root reaches
+    /// can still be some closure's captured frame.
     pub objects: Vec<ObjectReference<'gc>>,
     pub frames: Vec<FrameReference<'gc>>,
 }
 
-/// The two placeholder-allocated tables, indexed by the ids in the stream.
+/// The placeholder-allocated table, indexed by the ids in the stream.
 pub struct Tables<'a, 'gc> {
     pub objects: &'a [ObjectReference<'gc>],
-    pub frames: &'a [FrameReference<'gc>],
 }
 
 /// The inverse of `encode::encode_class_tag`. Tag 2's object may still be a
@@ -2289,11 +2293,11 @@ struct ObjectHeader<'gc> {
 }
 
 /// An object record's header: its class tag, which is `decode_class_tag`'s
-/// except that it also accepts the builtin `Activation` -- the header of an
-/// activation record, the one place an image may name that class -- and the
+/// except that it also accepts the builtin `Activation` -- the header of a
+/// frame record, the one place an image may name that class -- and the
 /// builtin `Future`, the header of an unresolved future's record, for the
 /// same reason. Answers whether it did, so the caller can hold the header
-/// and the body to each other (`DecodeError::ActivationHeader`,
+/// and the body to each other (`DecodeError::FrameRecordUnderAnotherClass`,
 /// `DecodeError::FutureRecord`) once it has read the body, and whether it
 /// named its class by platform path, so the caller can hold an instance's
 /// fields to that class's layout.
@@ -2331,10 +2335,23 @@ fn decode_class_tag_after<'gc>(
     tables: &Tables<'_, 'gc>,
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match tag {
+        CLASS_RECORD => decode_object_id(reader, tables),
+        tag => read_class_tag_outside_the_graph(tag, reader, context),
+    }
+}
+
+/// A class tag after its tag byte, for every tag but `CLASS_RECORD`: the
+/// classes the loading world has before the graph, which the first pass
+/// resolves as the second does, since none of them is a placeholder.
+fn read_class_tag_outside_the_graph<'gc>(
+    tag: u8,
+    reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
+) -> Result<ClassReference<'gc>, DecodeError> {
+    match tag {
         CLASS_BUILTIN => Ok(context
             .mutator
             .builtin_class(read_referenced_builtin_class(reader)?)),
-        CLASS_RECORD => decode_object_id(reader, tables),
         CLASS_MODULE => read_module_class(reader, context.modules),
         CLASS_MODULE_LEVEL => read_module_level(reader, context.modules),
         CLASS_PLATFORM_PATH => {
@@ -2446,6 +2463,51 @@ fn decode_optional_class<'gc>(
     }
 }
 
+/// One value off the wire. Three kinds allocate an object of their own --
+/// an `i64` beyond 61 bits, a float outside the immediate range and a
+/// `LargeInteger` -- and that is the one thing the second pass allocates
+/// beyond the placeholders the first pass sized.
+///
+/// The peak of a rejected load, against the bytes that describe the graph
+/// (`decode_graph_section` refuses before allocating when the first pass
+/// would allocate more words than those bytes), is the largest of these
+/// ratios, the same in a release and a debug build, since an arena slot is
+/// a 16-byte boxed slice and a block's words are 8 bytes in both:
+///
+/// - Per record, its object against its smallest record. A metaclass
+///   record is the smallest record there is, 9 bytes (a two-byte builtin
+///   header, the hash's 4, the body tag, a two-byte builtin class tag),
+///   and becomes a class object of 10 words: 16 + 80 = 96 bytes, 10.7x,
+///   the worst case. A class record is at least 19 bytes for the same 96,
+///   5.1x; a frame record at least 21 (the two-byte header, the hash, the
+///   body tag, a `TopLevel` kind, the program counter's 4, four one-byte
+///   flags and fields and the register count's 4) for 12 words, 16 + 96 =
+///   112 bytes, 5.3x; an instance, array, string or symbol record at least
+///   11 for 32 bytes, 2.9x; a closure record at least 17 for 56, 3.3x.
+/// - Per value, the word it occupies against the bytes that encode it: a
+///   one-byte `VALUE_NIL` field, element, copied value or register becomes
+///   an 8-byte word, 8x, which every record of many values approaches from
+///   below. A string's UTF-8 byte widened to the 32-bit form costs at most
+///   4 bytes, 4x. A symbol record names a symbol-table entry instead, whose
+///   text the first pass lets one record allocate, at most 4 bytes per
+///   UTF-8 byte of the symbol section.
+/// - Per allocating value, its word and its object together against its
+///   bytes: an `i64` beyond 61 bits is 9 bytes (tag, `i64`) for a word and
+///   a `LargeInteger` of one digit, 8 + 16 + 24 = 48 bytes, 5.3x; a float
+///   outside the immediate range the same 48 for its 9 bytes, 5.3x; a
+///   `VALUE_LARGE_INTEGER` at least 14 bytes (tag, sign, count, one digit)
+///   for the same 48, 3.4x, each further digit 8 bytes for 8.
+///
+/// A byte belongs to one record and one value, so the ratios do not add:
+/// the bound is about 10.7x, in both builds. Not counted in it, and
+/// proportional to the input as well: the decoder's own table of
+/// placeholders (4 bytes a record in a release build, 12 in a debug one)
+/// and the first pass's sizes (8 bytes a record, dropped once the
+/// placeholders exist), which bring a graph of metaclass records to 12.0x
+/// and 12.9x; and, for one record at a time,
+/// the values the second pass reads before it fills the record and the
+/// block it fills it with, which exists for a moment beside the placeholder
+/// it replaces.
 fn decode_value<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
@@ -2455,41 +2517,22 @@ fn decode_value<'gc>(
         VALUE_NIL => Ok(Value::nil()),
         VALUE_FALSE => Ok(Value::boolean(false)),
         VALUE_TRUE => Ok(Value::boolean(true)),
-        // An `i64` beyond 61 bits allocates its `LargeInteger`, which adds
-        // to the load's peak as `VALUE_LARGE_INTEGER` does (below), and more
-        // per wire byte: 9 bytes (tag, `i64`) for an `Object` and one digit,
-        // 64/9 = 7.1x in a release build and 80/9 = 8.9x in a debug one, on
-        // top of the placeholders' 16.0x and 20.0x: about 23.1x and 28.9x
-        // in all, the worst case of a rejected load.
+        // An `i64` beyond 61 bits allocates its `LargeInteger`: 5.3x of its
+        // 9 bytes with the word that holds it (above).
         VALUE_SMALL_INTEGER => Ok(integer_value(context.mutator, reader.read_i64()?)),
         // A float outside the immediate range allocates its boxed `Float`:
-        // 9 bytes (tag, `f64`) for an `Object` alone, its payload inline,
-        // 56/9 = 6.2x in a release build and 72/9 = 8.0x in a debug one, on
-        // top of the placeholders: about 22.2x and 28.0x, below
-        // `VALUE_SMALL_INTEGER`'s, which stays the worst case.
+        // 5.3x of its 9 bytes with the word that holds it (above).
         VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
         VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
         VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),
         VALUE_PLATFORM => Ok(context.platform),
         VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
         // Allocating here is sound: the decoder never polls a safepoint, so
-        // nothing moves the placeholders `tables` holds.
-        //
-        // It adds to the load's peak rather than fitting inside it. The
-        // placeholders are allocated first, against every byte left at the
-        // graph section (`decode_graph_section`), and those same bytes can
-        // then be one array record full of these values, each allocating
-        // its `Object` and its digits before a later record fails to read.
-        // A value is at least 14 bytes on the wire (tag, sign, count, one
-        // digit) and costs `size_of::<Object>()` plus 8 bytes a digit. With
-        // an `Object` of 56 bytes in a release build and 72 in a debug one,
-        // that is 64/14 = 4.6x and 80/14 = 5.7x of those bytes, on top of
-        // the placeholders' 9.3x + 6.7x (release) and 12.0x + 8.0x (debug):
-        // about 20.6x and 25.7x in all, below `VALUE_SMALL_INTEGER`'s
-        // worst case (above). It stays proportional to the input
-        // because the digit count is bounded against the bytes left before
-        // anything is allocated for it (`read_large_integer_parts`), and each
-        // further digit costs its own 8 wire bytes.
+        // nothing moves the placeholders `tables` holds. It stays
+        // proportional to the input because the digit count is bounded
+        // against the bytes left before anything is allocated for it
+        // (`read_large_integer_parts`), and each further digit costs its
+        // own 8 wire bytes.
         VALUE_LARGE_INTEGER => {
             let integer = read_large_integer(reader)?;
             Ok(context.mutator.new_integer(integer))
@@ -2525,24 +2568,35 @@ fn decode_object_id<'gc>(
         .ok_or(DecodeError::BadObjectId(id))
 }
 
+/// A frame reference off the wire: an object id, resolved like any other,
+/// whose record must be a frame record. Every frame record's placeholder is
+/// a frame object of its size from the start (`decode_graph_section`), so
+/// whether the id names one is known at once, forward references included.
 fn decode_frame_id<'gc>(
     reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<FrameReference<'gc>, DecodeError> {
     let id = reader.read_u32()?;
-    tables
-        .frames
+    let object = tables
+        .objects
         .get(id as usize)
         .copied()
-        .ok_or(DecodeError::BadFrameId(id))
+        .ok_or(DecodeError::BadObjectId(id))?;
+    context
+        .mutator
+        .heap
+        .object_frame(object)
+        .ok_or(DecodeError::NotAFrameReference(id))
 }
 
 fn decode_frame_reference<'gc>(
     reader: &mut Reader,
+    context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<Option<FrameReference<'gc>>, DecodeError> {
     if reader.read_boolean()? {
-        Ok(Some(decode_frame_id(reader, tables)?))
+        Ok(Some(decode_frame_id(reader, context, tables)?))
     } else {
         Ok(None)
     }
@@ -2559,7 +2613,7 @@ fn decode_closure_record<'gc>(
         .get(code_id as usize)
         .cloned()
         .ok_or(DecodeError::BadCodeId(code_id))?;
-    let captured_frame = decode_frame_id(reader, tables)?;
+    let captured_frame = decode_frame_id(reader, context, tables)?;
     let count = reader.read_u16()? as usize;
     // The one place in the format that can see both halves of a closure's
     // copied values. Checked before any of them is read, so a mismatch is
@@ -2615,37 +2669,35 @@ fn method_declaration<'gc>(
     found.ok_or(DecodeError::UnknownSelector(selector.as_str().to_string()))
 }
 
+/// An `OBJECT_FRAME` body (`opcodes::OBJECT_FRAME` gives the layout). Its
+/// registers arrive as one list: a frame's arguments are its code's, so the
+/// record's split is not kept (`Heap::fill_frame`), and `verify_graph`
+/// holds the count to the body.
 fn decode_frame<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     symbols: &symbols::Table,
 ) -> Result<FrameRecord<'gc>, DecodeError> {
-    let receiver = decode_value(reader, context, tables)?;
-    let arguments = decode_values(reader, context, tables)?;
-    let temporaries = decode_values(reader, context, tables)?;
-    let program_counter = reader.read_u32()? as usize;
-    let sender = decode_frame_reference(reader, tables)?;
-    let home = decode_frame_reference(reader, tables)?;
-    let current_class = decode_optional_class(reader, context, tables)?;
+    // A method is named by selector, resolved once the current class that
+    // declares it has been read, below: until then the kind is the
+    // selector (`Err`), every other kind already itself (`Ok`).
     let kind = match reader.read_u8()? {
-        FRAME_METHOD => FrameKind::Method(method_declaration(
-            context,
-            current_class.as_ref(),
-            decode_symbol(reader, symbols)?,
-        )?),
-        FRAME_TOP_LEVEL => FrameKind::TopLevel,
-        FRAME_INITIALIZER => FrameKind::Initializer(decode_class_tag(reader, context, tables)?),
-        FRAME_SUPERCLASS_CLAUSE => {
-            FrameKind::SuperclassClause(decode_class_tag(reader, context, tables)?)
-        }
-        FRAME_SUPERCLASS_MESSAGE => {
-            FrameKind::SuperclassMessage(decode_class_tag(reader, context, tables)?)
-        }
-        FRAME_MIXIN_APPLICATION_MESSAGE => {
-            FrameKind::MixinApplicationMessage(decode_class_tag(reader, context, tables)?)
-        }
-        FRAME_CLOSURE => FrameKind::Closure(decode_object_id(reader, tables)?),
+        FRAME_METHOD => Err(decode_symbol(reader, symbols)?),
+        FRAME_TOP_LEVEL => Ok(FrameKind::TopLevel),
+        FRAME_INITIALIZER => Ok(FrameKind::Initializer(decode_class_tag(
+            reader, context, tables,
+        )?)),
+        FRAME_SUPERCLASS_CLAUSE => Ok(FrameKind::SuperclassClause(decode_class_tag(
+            reader, context, tables,
+        )?)),
+        FRAME_SUPERCLASS_MESSAGE => Ok(FrameKind::SuperclassMessage(decode_class_tag(
+            reader, context, tables,
+        )?)),
+        FRAME_MIXIN_APPLICATION_MESSAGE => Ok(FrameKind::MixinApplicationMessage(
+            decode_class_tag(reader, context, tables)?,
+        )),
+        FRAME_CLOSURE => Ok(FrameKind::Closure(decode_object_id(reader, tables)?)),
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "frame kind",
@@ -2653,36 +2705,41 @@ fn decode_frame<'gc>(
             })
         }
     };
+    let program_counter = reader.read_u32()? as usize;
     let uncontinuable = reader.read_boolean()?;
+    let receiver = decode_value(reader, context, tables)?;
+    let sender = decode_frame_reference(reader, context, tables)?;
+    let home = decode_frame_reference(reader, context, tables)?;
+    let current_class = decode_optional_class(reader, context, tables)?;
+    let registers = decode_values(reader, context, tables)?;
+    let kind = match kind {
+        Ok(kind) => kind,
+        Err(selector) => FrameKind::Method(method_declaration(
+            context,
+            current_class.as_ref(),
+            selector,
+        )?),
+    };
     Ok(FrameRecord {
         receiver,
-        arguments,
-        temporaries,
+        arguments: registers,
+        temporaries: Vec::new(),
         program_counter,
         sender,
         home,
         current_class,
         kind,
         uncontinuable,
-        // Nothing re-activates a decoded frame (this module's doc comment,
-        // below), so no compiled `InitializeSlot` ever reads this on a frame
-        // that came off the wire.
     })
 }
 
 /// A floor under the smallest object record the wire admits: a class tag of
 /// at least one byte (every live one is followed by at least one more), an
-/// identity hash (4), and a body tag (1). Every body adds at least four more
-/// bytes, so this is a floor, not a typical size; kept at the one-byte tag
-/// the retired `CLASS_USER_ROOT` was, since the load peaks `memory.md`
-/// reports are derived from it and a lower bound stays a sound one.
+/// identity hash (4), and a body tag (1). Every body adds at least two more
+/// bytes, so this is a floor, not a typical size: what `bounded_count`
+/// holds the object count to before the first pass reserves its table of
+/// sizes. A lower bound stays a sound one.
 pub(crate) const MIN_OBJECT_RECORD_BYTES: usize = 6;
-
-/// The smallest frame record the wire admits: a `nil` receiver (1), empty
-/// `arguments` and `temporaries` counts (4 + 4), a `program_counter` (4),
-/// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel` kind
-/// tag (1), and `uncontinuable` (1). Every other frame kind is larger.
-pub(crate) const MIN_FRAME_RECORD_BYTES: usize = 18;
 
 /// The smallest entry of the closing hash table: a tag (1) and a hash (4). A
 /// builtin-class entry carries one more byte.
@@ -3248,56 +3305,352 @@ fn check_class_references<'gc>(
     Ok(())
 }
 
-/// Two-pass decoding: placeholder-allocate every object and every frame,
-/// then fill each in place (so cycles and shared references round-trip
-/// with identity preserved), then decode the roots.
+/// A record as the first pass sized it: the fields of the object it becomes
+/// -- a frame's fixed fields and registers, a class object's fields, a
+/// string's field words -- and whether it is a frame record, whose
+/// placeholder is a frame object from the start (`decode_frame_id`). One
+/// word apiece, the least the table between the two passes can cost.
+#[derive(Clone, Copy)]
+struct PlannedRecord(u64);
+
+impl PlannedRecord {
+    fn new(fields: usize, frame: bool) -> PlannedRecord {
+        PlannedRecord(((fields as u64) << 1) | u64::from(frame))
+    }
+
+    fn fields(self) -> usize {
+        usize::try_from(self.0 >> 1).unwrap_or(usize::MAX)
+    }
+
+    fn frame(self) -> bool {
+        self.0 & 1 == 1
+    }
+}
+
+/// The first pass over the graph section: reads every record's header and
+/// body as the second pass will, storing nothing -- values are parsed and
+/// discarded, object ids are range-checked against the object count, and
+/// the tags that name a class the loading world already has are resolved
+/// as the second pass resolves them -- so that every record's size is known
+/// before anything is allocated. It allocates nothing in the heap.
+struct Sizing<'pass, 'a, 'gc> {
+    context: &'pass DecodeContext<'a, 'gc>,
+    symbols: &'pass symbols::Table,
+    object_count: usize,
+}
+
+impl Sizing<'_, '_, '_> {
+    fn object_id(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        let id = reader.read_u32()?;
+        if id as usize >= self.object_count {
+            return Err(DecodeError::BadObjectId(id));
+        }
+        Ok(())
+    }
+
+    fn class_tag(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        let tag = reader.read_u8()?;
+        self.class_tag_after(tag, reader)
+    }
+
+    fn class_tag_after(&self, tag: u8, reader: &mut Reader) -> Result<(), DecodeError> {
+        match tag {
+            CLASS_RECORD => self.object_id(reader),
+            tag => read_class_tag_outside_the_graph(tag, reader, self.context).map(drop),
+        }
+    }
+
+    fn optional_class(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        if reader.read_boolean()? {
+            self.class_tag(reader)?;
+        }
+        Ok(())
+    }
+
+    /// `decode_object_header`'s reading.
+    fn header(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        let tag = reader.read_u8()?;
+        if tag != CLASS_BUILTIN {
+            return self.class_tag_after(tag, reader);
+        }
+        match read_builtin_class(reader)? {
+            BuiltinClass::Activation | BuiltinClass::Future => Ok(()),
+            kind => referenced_builtin_class(kind).map(drop),
+        }
+    }
+
+    /// `decode_value`'s reading. A `LargeInteger`'s digits are read into a
+    /// transient `Vec`, bounded by the bytes they occupy, and dropped.
+    fn value(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        match reader.read_u8()? {
+            VALUE_NIL | VALUE_FALSE | VALUE_TRUE | VALUE_PLATFORM => Ok(()),
+            VALUE_SMALL_INTEGER => reader.read_i64().map(drop),
+            VALUE_FLOAT => reader.read_f64().map(drop),
+            VALUE_OBJECT_ID => self.object_id(reader),
+            VALUE_CLASS_TAG => self.class_tag(reader),
+            VALUE_PLATFORM_PATH => {
+                read_platform_path(reader, self.context.platform_paths).map(drop)
+            }
+            VALUE_LARGE_INTEGER => read_large_integer(reader).map(drop),
+            tag => Err(DecodeError::InvalidTag { what: "value", tag }),
+        }
+    }
+
+    /// A counted list of values; answers the count, which every value read
+    /// has paid for in bytes.
+    fn values(&self, reader: &mut Reader) -> Result<usize, DecodeError> {
+        let count = reader.read_u32()? as usize;
+        for _ in 0..count {
+            self.value(reader)?;
+        }
+        Ok(count)
+    }
+
+    fn frame_reference(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        if reader.read_boolean()? {
+            self.object_id(reader)?;
+        }
+        Ok(())
+    }
+
+    /// `decode_class_record`'s reading.
+    fn class_record(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+        match reader.read_u8()? {
+            MIXIN_ROW => {
+                let id = reader.read_u32()?;
+                if self.context.mixins.get(id as usize).is_none() {
+                    return Err(DecodeError::BadMixinId(id));
+                }
+                self.optional_class(reader)?;
+                if reader.read_boolean()? {
+                    self.value(reader)?;
+                }
+                self.optional_class(reader)?;
+                if reader.read_boolean()? {
+                    decode_applied_clause(reader, self.context, None)?;
+                }
+                Ok(())
+            }
+            MIXIN_BUILTIN => {
+                let kind = read_program_builtin_class(reader)?;
+                self.optional_class(reader)?;
+                decode_applied_clause(reader, self.context, Some(kind)).map(drop)
+            }
+            tag => Err(DecodeError::InvalidTag {
+                what: "mixin reference",
+                tag,
+            }),
+        }
+    }
+
+    /// `decode_frame`'s reading; answers the register count.
+    fn frame_body(&self, reader: &mut Reader) -> Result<usize, DecodeError> {
+        match reader.read_u8()? {
+            FRAME_METHOD => {
+                decode_symbol(reader, self.symbols)?;
+            }
+            FRAME_TOP_LEVEL => {}
+            FRAME_INITIALIZER
+            | FRAME_SUPERCLASS_CLAUSE
+            | FRAME_SUPERCLASS_MESSAGE
+            | FRAME_MIXIN_APPLICATION_MESSAGE => self.class_tag(reader)?,
+            FRAME_CLOSURE => self.object_id(reader)?,
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "frame kind",
+                    tag,
+                })
+            }
+        }
+        reader.read_u32()?; // the program counter, checked by `verify_graph`
+        reader.read_boolean()?; // uncontinuable
+        self.value(reader)?; // the receiver
+        self.frame_reference(reader)?; // the sender
+        self.frame_reference(reader)?; // the home
+        self.optional_class(reader)?; // the current class
+        self.values(reader)
+    }
+
+    /// One record, sized: what it becomes, and the words of it the size
+    /// check counts -- all of them but a symbol's text, which the symbol
+    /// section bounds instead. A symbol record names a symbol-table entry
+    /// rather than carrying its text, so many short records could name one
+    /// long entry; refusing a second record naming the same entry, or one
+    /// the heap already holds, before allocating keeps each entry's text
+    /// allocated at most once, and bounded by its own encoding there.
+    fn record(
+        &self,
+        reader: &mut Reader,
+        symbols_named: &mut [bool],
+    ) -> Result<(PlannedRecord, usize), DecodeError> {
+        self.header(reader)?;
+        reader.read_u32()?; // the identity hash, checked by the second pass
+        let (fields, frame) = match reader.read_u8()? {
+            OBJECT_INSTANCE | OBJECT_ARRAY => (self.values(reader)?, false),
+            OBJECT_STRING => {
+                let length = reader.read_u32()? as usize;
+                let text = std::str::from_utf8(reader.read_raw(length)?)
+                    .map_err(|_| DecodeError::InvalidUtf8)?;
+                (record_size::string_fields(text), false)
+            }
+            OBJECT_SYMBOL => {
+                let id = reader.read_u32()?;
+                let symbol = self.symbols.get(id)?;
+                let named = symbols_named
+                    .get_mut(id as usize)
+                    .ok_or(DecodeError::BadSymbolId(id))?;
+                if *named || self.context.mutator.heap.canonical_symbol(symbol).is_some() {
+                    return Err(DecodeError::DuplicateSymbol(symbol.as_str().to_string()));
+                }
+                *named = true;
+                let planned =
+                    PlannedRecord::new(record_size::string_fields(symbol.as_str()), false);
+                return Ok((planned, record_size::block_words(0)));
+            }
+            OBJECT_CLOSURE => {
+                let code_id = reader.read_u32()?;
+                let code = self
+                    .context
+                    .codes
+                    .get(code_id as usize)
+                    .ok_or(DecodeError::BadCodeId(code_id))?;
+                self.object_id(reader)?;
+                let count = reader.read_u16()? as usize;
+                // Checked before the values are read, as the second pass
+                // checks it, so a mismatch is reported as itself.
+                if count != code.copied_count as usize {
+                    return Err(DecodeError::CopiedCountMismatch {
+                        copied: count,
+                        copied_count: code.copied_count,
+                    });
+                }
+                for _ in 0..count {
+                    self.value(reader)?;
+                }
+                (record_size::CLOSURE_FIXED_FIELDS + count, false)
+            }
+            OBJECT_CLASS => {
+                self.class_record(reader)?;
+                (record_size::CLASS_FIELDS, false)
+            }
+            OBJECT_METACLASS => {
+                self.class_tag(reader)?;
+                (record_size::CLASS_FIELDS, false)
+            }
+            OBJECT_FRAME => {
+                let registers = self.frame_body(reader)?;
+                (
+                    record_size::FRAME_FIXED_FIELDS.saturating_add(registers),
+                    true,
+                )
+            }
+            tag => {
+                return Err(DecodeError::InvalidTag {
+                    what: "object body",
+                    tag,
+                })
+            }
+        };
+        Ok((
+            PlannedRecord::new(fields, frame),
+            record_size::block_words(fields),
+        ))
+    }
+}
+
+/// The graph section in two passes, so that cycles and shared references
+/// round-trip with identity preserved and nothing is allocated before the
+/// whole table has been sized against the bytes that carry it.
 ///
-/// Class objects need one more step between the two: their records are
-/// filled in like any other, but the `MixinApplication` a class object
-/// carries is derived rather than stored, and deriving it needs the
-/// superclass's -- which may itself be a record that appears later.
-/// `rebuild_applications` closes that gap once every record has been read.
-/// It runs before the frames, whose `FrameKind::Method` resolves a selector
-/// against `current_class`'s method dictionary.
+/// The first pass (`Sizing`) reads every record without storing anything
+/// and learns the size of the object each becomes. Every record is
+/// allocated at that size before the second pass reads the records again
+/// and fills them, so a forward reference names an object that already
+/// exists, and a frame reference can be held to naming a frame record the
+/// moment it is read.
 ///
-/// Every pass is a flat loop over the two tables, and every reference
-/// between records is an id into them, never an inline nested record -- so
-/// no part of this decoder recurses on a depth the image controls.
+/// Class objects need one more step: their records are filled in like any
+/// other, but the `MixinApplication` a class object carries is derived
+/// rather than stored, and deriving it needs the superclass's -- which may
+/// itself be a record that appears later. `rebuild_applications` closes that
+/// gap once every record has been read. The frame records are filled after
+/// it, from where the second pass found them, since a `FRAME_METHOD` frame
+/// resolves its selector against `current_class`'s method dictionary.
+///
+/// Every pass is a flat loop over the table, and every reference between
+/// records is an id into it, never an inline nested record -- so no part of
+/// this decoder recurses on a depth the image controls.
 pub fn decode_graph_section<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     symbols: &symbols::Table,
 ) -> Result<DecodedGraph<'gc>, DecodeError> {
     let object_count = bounded_count(reader.read_u32()? as usize, MIN_OBJECT_RECORD_BYTES, reader)?;
-    let frame_count = bounded_count(reader.read_u32()? as usize, MIN_FRAME_RECORD_BYTES, reader)?;
+    let records_start = reader.position();
+    let mut planned: Vec<PlannedRecord> = Vec::with_capacity(object_count);
+    let mut counted_words: usize = 0;
+    {
+        let sizing = Sizing {
+            context,
+            symbols,
+            object_count,
+        };
+        let mut symbols_named = vec![false; symbols.all().len()];
+        for _ in 0..object_count {
+            let (record, words) = sizing.record(reader, &mut symbols_named)?;
+            planned.push(record);
+            counted_words = counted_words.saturating_add(words);
+        }
+    }
+    // The premise of the load's amplification bound (`decode_value` has the
+    // figures): what the placeholders occupy is proportional to the bytes
+    // that describe them, at most eight words a byte of the section and
+    // what follows it. Every value the first pass read cost a byte, so a
+    // well-formed record stays well inside it; this refuses, before
+    // anything is allocated, whatever a later change to the layout lets
+    // slip past that.
+    let bytes_described = reader.position() - records_start + reader.remaining();
+    if counted_words > bytes_described.saturating_mul(8) {
+        return Err(DecodeError::UnexpectedEndOfFile);
+    }
+    *reader = Reader {
+        buffer: reader.buffer,
+        position: records_start,
+    };
+
     let placeholder_class = context.mutator.builtin_class(BuiltinClass::Object);
     // A real application, standing in until `rebuild_applications` derives
     // each class object's own -- the same technique as the placeholder
-    // object and frame, and for the same reason: nothing may observe a
-    // half-built record, and a `None` here would need an optional
-    // application on a class object that no live class object could ever
-    // have.
+    // objects, and for the same reason: nothing may observe a half-built
+    // record, and a `None` here would need an optional application on a
+    // class object that no live class object could ever have.
     let placeholder_application = context
         .mutator
         .heap
         .class_application(placeholder_class)
         .ok_or(DecodeError::NotAClass)?;
-    let mut objects: Vec<ObjectReference> = (0..object_count)
-        .map(|_| context.mutator.heap.allocate_placeholder(placeholder_class))
-        .collect();
-    let frames: Vec<FrameReference> = (0..frame_count)
-        .map(|_| context.mutator.heap.allocate_placeholder_frame())
-        .collect();
-    let tables = Tables {
-        objects: &objects,
-        frames: &frames,
-    };
+    let mut objects: Vec<ObjectReference> = Vec::with_capacity(object_count);
+    for record in planned {
+        let heap = &mut context.mutator.heap;
+        objects.push(if record.frame() {
+            let registers = record
+                .fields()
+                .saturating_sub(record_size::FRAME_FIXED_FIELDS);
+            let frame = heap.allocate_placeholder_frame(registers);
+            heap.frame_object(frame)
+        } else {
+            heap.allocate_placeholder(placeholder_class, record.fields())
+        });
+    }
+    let tables = Tables { objects: &objects };
     let mut max_identity_hash = 0;
     let mut pending_classes: Vec<PendingClass> = Vec::new();
     let mut pending_metaclasses: Vec<usize> = Vec::new();
     let mut pending_futures: Vec<Value<'gc>> = Vec::new();
-    // Each activation record's placeholder and the frame object it is.
-    let mut activation_aliases: Vec<(ObjectReference<'gc>, ObjectReference<'gc>)> = Vec::new();
+    // Each frame record's frame and where its body starts, for the fill
+    // after `rebuild_applications`.
+    let mut frames: Vec<FrameReference<'gc>> = Vec::new();
+    let mut frame_bodies: Vec<usize> = Vec::new();
     let metaclass_rows = metaclass_rows(context.mixins);
     let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
     let symbol_class = context.mutator.builtin_class(BuiltinClass::Symbol);
@@ -3317,8 +3670,36 @@ pub fn decode_graph_section<'gc>(
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
         let body = reader.read_u8()?;
-        if activation_header != (body == OBJECT_ACTIVATION) {
-            return Err(DecodeError::ActivationHeader);
+        if body == OBJECT_FRAME {
+            if !activation_header {
+                return Err(DecodeError::FrameRecordUnderAnotherClass);
+            }
+            let heap = &mut context.mutator.heap;
+            let frame = heap
+                .object_frame(*object)
+                .ok_or(DecodeError::NotAFrameReference(
+                    u32::try_from(index).unwrap_or(u32::MAX),
+                ))?;
+            heap.object_set_identity_hash(*object, identity_hash);
+            frames.push(frame);
+            frame_bodies.push(reader.position());
+            Sizing {
+                context,
+                symbols,
+                object_count,
+            }
+            .frame_body(reader)?;
+            continue;
+        }
+        // `Activation` names a frame record's class and nothing else's: on
+        // any other record it would make an ordinary object answer
+        // `Activation`'s methods, which read other frames and unwind the
+        // stack. Refused as it is wherever else the graph names it.
+        if activation_header {
+            return Err(DecodeError::InvalidTag {
+                what: "builtin class a program may name",
+                tag: super::encode::builtin_class_tag(BuiltinClass::Activation),
+            });
         }
         if future_header && body != OBJECT_INSTANCE {
             return Err(DecodeError::FutureRecord);
@@ -3365,14 +3746,6 @@ pub fn decode_graph_section<'gc>(
             OBJECT_SYMBOL => Record::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => Record::Array(decode_values(reader, context, &tables)?),
             OBJECT_CLOSURE => Record::Closure(decode_closure_record(reader, context, &tables)?),
-            // One frame id, resolved like a closure's captured frame: every
-            // frame was placeholder-allocated before this pass, so a forward
-            // reference is ordinary and an id past the table is `BadFrameId`.
-            OBJECT_ACTIVATION => {
-                let frame = decode_frame_id(reader, &tables)?;
-                activation_aliases.push((*object, context.mutator.heap.frame_object(frame)));
-                Record::Activation(frame)
-            }
             OBJECT_CLASS => {
                 let (class_record, applied, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
@@ -3436,9 +3809,12 @@ pub fn decode_graph_section<'gc>(
         }
         // A heap holds one object per symbol, and so does an image of one:
         // a second record of the same text is refused, not merged
-        // (`docs/design/image-format.md`, "Verification"). `load` decodes
-        // into a fresh interpreter, where nothing made a symbol before the
-        // graph section, so an entry already here came from this graph.
+        // (`docs/design/image-format.md`, "Verification"). The first pass
+        // refused it before anything was allocated (`Sizing::record`); it
+        // is restated here, beside the class check, as what entering the
+        // canonical table rests on. `load` decodes into a fresh
+        // interpreter, where nothing made a symbol before the graph
+        // section, so an entry already here came from this graph.
         //
         // Checked here too, before the record enters the canonical table
         // below: a symbol record whose class tag is not the builtin
@@ -3458,17 +3834,6 @@ pub fn decode_graph_section<'gc>(
                 .record_canonical_symbol(symbol, *object);
         }
     }
-    // An activation object is its frame's object, so every reference to an
-    // activation record's placeholder -- one read before the record
-    // included -- becomes one to that frame object.
-    context
-        .mutator
-        .heap
-        .alias_placeholders(&activation_aliases, &mut objects);
-    let tables = Tables {
-        objects: &objects,
-        frames: &frames,
-    };
     // Every record is in, so a future's computation is a closure now or
     // never: `future_state` reads an unresolved future with anything else
     // there as malformed.
@@ -3485,26 +3850,13 @@ pub fn decode_graph_section<'gc>(
     }
     rebuild_applications(context, &objects, pending_classes, &pending_metaclasses)?;
     context.mutator.heap.stamp_dispatch_ids(&objects);
-    for frame in &frames {
-        let decoded = decode_frame(reader, context, &tables, symbols)?;
-        let (arguments, temporaries) = (decoded.arguments.len(), decoded.temporaries.len());
-        let heap = &mut context.mutator.heap;
-        heap.fill_frame(*frame, decoded);
-        // A frame keeps no split between its arguments and its temporaries
-        // -- its code's argument count is it -- so a record's own split is
-        // held to that code here, before it is lost. An empty register file
-        // is what a returning activation nothing read by reference used to
-        // leave behind, and is accepted as `verify_graph` accepts it.
-        if let Some(code) = heap.frame_code(*frame) {
-            if arguments + temporaries != 0 && arguments != usize::from(code.argument_count) {
-                return Err(DecodeError::FrameRegisterFile {
-                    arguments,
-                    locals: temporaries,
-                    argument_count: code.argument_count,
-                    register_count: code.register_count,
-                });
-            }
-        }
+    for (frame, body) in frames.iter().zip(frame_bodies) {
+        let mut body_reader = Reader {
+            buffer: reader.buffer,
+            position: body,
+        };
+        let decoded = decode_frame(&mut body_reader, context, &tables, symbols)?;
+        context.mutator.heap.fill_frame(*frame, decoded);
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
@@ -3600,7 +3952,7 @@ pub fn decode_tag_named_hashes<'gc>(
 /// bootstrap's builtin's, exactly what `nested::build_applied_levels` gives a
 /// level it builds, so the record carries only the builtin, the superclass and
 /// the clause. The three references resolve
-/// to identities that already exist (every record was placeholder-allocated
+/// to identities that already exist (every record was allocated at its size
 /// before this pass started), so a forward reference and a cycle are both
 /// ordinary; what cannot be settled yet is whether each really is a class
 /// record, which `check_class_references` establishes afterwards.
@@ -3736,12 +4088,10 @@ fn decode_applied_clause(
 // A register file the body overruns is no longer a memory-safety hole:
 // `Heap::frame_local` answers `Nil` for an index a returned frame lacks and
 // `frame_set_local` ignores the write, which is what keeps a crafted image
-// from aborting the process. It is still refused here, because a frame
-// narrower than its body is not something a run produces. An *empty*
-// register file is, though, and is accepted: closure conversion leaves one
-// behind for every returning activation no by-reference closure can reach
-// ("Converted representation", "The divorce", in
-// `docs/design/execution.md`).
+// from aborting the process. It is still refused here, because every
+// reified frame has exactly its body's register file -- `Heap::reify`
+// allocates the activation's whole window -- and the encoder writes all of
+// it, so a frame of any other size is not something a run produces.
 // ---------------------------------------------------------------------------
 
 /// The compiled body that runs (or ran) in `frame`, or `None` when the
@@ -3767,14 +4117,10 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    that runs in it. A frame's `program_counter` counts instructions (an
 ///    image carries only bytecode), but which body it counts them in is only
 ///    known once the decoded mixins carry their code.
-/// 1. A frame's register file must match the body that runs in it -- at
-///    least as many registers -- or be empty, which is what a returning
-///    activation nothing read by reference used to leave behind. (At least,
-///    not exactly: the liveness spec's reified activations may be wider
-///    than the body currently running in them, so a wider frame is
-///    legitimate and only a narrower one is a crafted image.) Its arguments
-///    are its code's; `decode_graph_section` held the record's own split to
-///    them as it filled the frame.
+/// 1. A frame's register file must be the body's, register for register:
+///    every reified frame has its body's whole register file and the
+///    encoder writes all of it. Its arguments are its code's, so the record
+///    carries no split of its own.
 /// 2. A closure's `captured_frame` must be an activation of the body its
 ///    own body is lexically nested in. Nothing else in the format ties the
 ///    two together, and `verify_code_table`'s outer-local bound -- which
@@ -3805,15 +4151,10 @@ pub fn verify_graph<'gc>(
                 instructions: code.instruction_count(),
             });
         }
-        // An empty register file is what a returning activation that was
-        // never marked used to leave behind: nothing reaches its registers
-        // any more. Every other shape is still held to the body's; its
-        // arguments are, since a frame's are its code's, and the record's
-        // own split was held to them as it was decoded.
-        if register_count != 0 && register_count < code.register_count as usize {
+        if register_count != code.register_count as usize {
             return Err(DecodeError::FrameRegisterFile {
                 arguments: argument_count,
-                locals: register_count - argument_count,
+                locals: register_count.saturating_sub(argument_count),
                 argument_count: code.argument_count,
                 register_count: code.register_count,
             });

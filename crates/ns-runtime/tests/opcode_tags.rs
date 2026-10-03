@@ -198,11 +198,13 @@ fn retired_instruction_tags_are_never_reused() {
 /// A retired object-body tag stays retired, for the same reason a retired
 /// instruction tag does: the closure record's payload changed on both
 /// halves, so tag 4's bytes would otherwise decode into a different,
-/// perfectly valid closure; and the class record's mixin became a tagged
-/// reference, so tag 5's row id would otherwise be read as that tag.
+/// perfectly valid closure; the class record's mixin became a tagged
+/// reference, so tag 5's row id would otherwise be read as that tag; and the
+/// activation record's frame id became an object id once frames joined the
+/// object table, so tag 9's id would otherwise name some other record.
 #[test]
 fn retired_object_body_tags_are_refused() {
-    assert_eq!(RETIRED_OBJECT_BODIES, [4, 5]);
+    assert_eq!(RETIRED_OBJECT_BODIES, [4, 5, 9]);
     assert_eq!(OBJECT_CLOSURE, 6);
     assert_eq!(OBJECT_CLASS, 7);
     let live = [
@@ -213,7 +215,7 @@ fn retired_object_body_tags_are_refused() {
         OBJECT_CLOSURE,
         OBJECT_CLASS,
         OBJECT_METACLASS,
-        OBJECT_ACTIVATION,
+        OBJECT_FRAME,
     ];
     for retired in RETIRED_OBJECT_BODIES {
         assert!(!live.contains(&retired), "tag {retired} is retired");
@@ -245,7 +247,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_CLOSURE, 6);
     assert_eq!(OBJECT_CLASS, 7);
     assert_eq!(OBJECT_METACLASS, 8);
-    assert_eq!(OBJECT_ACTIVATION, 9);
+    assert_eq!(OBJECT_FRAME, 10);
 
     assert_eq!(MIXIN_ROW, 0);
     assert_eq!(MIXIN_BUILTIN, 1);
@@ -340,7 +342,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_CLOSURE,
             OBJECT_CLASS,
             OBJECT_METACLASS,
-            OBJECT_ACTIVATION,
+            OBJECT_FRAME,
         ],
         &[MIXIN_ROW, MIXIN_BUILTIN],
         &LIVE_CLASS_TAGS,

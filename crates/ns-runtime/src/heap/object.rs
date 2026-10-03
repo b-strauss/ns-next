@@ -273,6 +273,19 @@ pub(in crate::heap) fn trace_block<T: Tracer>(block: &mut [u64], tracer: &mut T)
     }
 }
 
+/// How many field words `Payload::string` gives `text`, read without
+/// converting it: one byte a unit while every code point fits Latin-1,
+/// 32 bits a unit otherwise.
+pub(in crate::heap) fn string_field_count(text: &str) -> usize {
+    let units = text.chars().count();
+    let wide = text.chars().any(|character| u32::from(character) > 0xFF);
+    units.div_ceil(if wide {
+        THIRTY_TWO_BIT_UNITS_PER_WORD
+    } else {
+        BYTES_PER_WORD
+    })
+}
+
 /// How many units one word of a string of `format` holds; `None` for a
 /// format no string has.
 fn units_per_word(format: Format) -> Option<usize> {

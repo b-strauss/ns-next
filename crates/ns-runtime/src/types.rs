@@ -257,7 +257,7 @@ pub enum FrameKind<'gc> {
     Closure(ObjectReference<'gc>),
     /// A top-of-chain activation with no method or class of its own.
     /// Nothing that runs a program builds one (an instance initializer is
-    /// `Initializer`); kept for the image format's frame table and a future
+    /// `Initializer`); kept for the image format's frame records and a future
     /// REPL/top-level activation.
     TopLevel,
     /// An instance-initializer activation (Class Instantiation step 2)

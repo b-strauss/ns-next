@@ -174,7 +174,8 @@ pub const RETIRED_LITERALS: [u8; 3] = [6, 7, 8];
 // ---------------------------------------------------------------------------
 // Graph-section tags. Same rule as above: assigned once, never renumbered.
 //
-// These describe the object and frame records, which only an image carries.
+// These describe the object records, frames among them, which only an image
+// carries.
 // They were bare literals in `encode.rs` and again in `decode.rs` until
 // `inspect` grew a third reader over the same bytes -- a structural walk that
 // reports records instead of materializing them. Three hand-kept copies of one
@@ -208,7 +209,7 @@ pub const VALUE_PLATFORM_PATH: u8 = 8;
 pub const VALUE_LARGE_INTEGER: u8 = 9;
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 10.
+/// Next free number: 11.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -225,12 +226,18 @@ pub const OBJECT_CLASS: u8 = 7;
 /// everything else about a metaclass is derived from that class
 /// (`docs/design/object-model.md`, "The image format").
 pub const OBJECT_METACLASS: u8 = 8;
-/// An instance of the kernel-private `Activation` class: one frame id, the
-/// reified activation it stands for. Its header class tag is `Activation`'s
-/// builtin tag, the one place an image may name that class
+/// A reified activation: an instance of the kernel-private `Activation`
+/// class, the object a frame reference names. Its header class tag is
+/// `Activation`'s builtin tag, the one place an image may name that class
 /// (`decode::read_referenced_builtin_class`); any other header on this body,
-/// or that header on any other body, is refused.
-pub const OBJECT_ACTIVATION: u8 = 9;
+/// or that header on any other body, is refused. Its body is the frame's
+/// kind tag (`FRAME_*`) and that kind's payload, a `u32` program counter,
+/// `uncontinuable`, the receiver, the sender and the home (each a presence
+/// flag and an object id), the current class (a presence flag and a class
+/// tag), then a `u32` register count and that many values. The kind comes
+/// first and the register count is on the wire, so the decoder's first pass
+/// sizes the record from its own bytes (`decode::decode_graph_section`).
+pub const OBJECT_FRAME: u8 = 10;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home
@@ -240,8 +247,12 @@ pub const OBJECT_ACTIVATION: u8 = 9;
 /// the number makes those bytes an unknown tag instead. 5 was the class
 /// record while it named its mixin by a bare row id and could not describe
 /// a level a mixin application added; a stale tag-5 record's row id would
-/// otherwise be read as a mixin-reference tag and the next four bytes.
-pub const RETIRED_OBJECT_BODIES: [u8; 2] = [4, 5];
+/// otherwise be read as a mixin-reference tag and the next four bytes. 9
+/// was the activation record while frames had a table of their own: its
+/// body was one frame-table id, which an object id read in its place would
+/// resolve to some other record, so the frame record took a new number
+/// (`OBJECT_FRAME`) rather than this one.
+pub const RETIRED_OBJECT_BODIES: [u8; 3] = [4, 5, 9];
 
 /// How a class record names the mixin its class object applies, which also
 /// decides the rest of the record. Every class the graph creates applies a

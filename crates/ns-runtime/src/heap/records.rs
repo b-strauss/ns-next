@@ -62,7 +62,8 @@ pub struct NewClosure<'gc> {
 /// decoder allocates every record of its object table first, so that a
 /// reference may point forward, and fills each from the wire afterwards. A
 /// `LargeInteger` and a boxed `Float` are never records -- the image writes
-/// them as values -- so there is no variant for either.
+/// them as values -- so there is no variant for either. A frame record fills
+/// its placeholder through `Heap::fill_frame` instead.
 pub enum Record<'gc> {
     Instance(Vec<Value<'gc>>),
     String(CodePoints),
@@ -70,10 +71,6 @@ pub enum Record<'gc> {
     Array(Vec<Value<'gc>>),
     Closure(NewClosure<'gc>),
     Class(NewClass<'gc>),
-    /// An activation object, which is the frame object it names: filling
-    /// one gives that frame object the record's identity hash
-    /// (`Heap::alias_placeholders` says what becomes of the placeholder).
-    Activation(FrameReference<'gc>),
 }
 
 /// A reified frame's contents as values (`Heap::frame_record`,

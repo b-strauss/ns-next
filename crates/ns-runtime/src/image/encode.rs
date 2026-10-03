@@ -165,7 +165,7 @@ pub fn encode_scalar_value<'gc>(writer: &mut Writer, value: Value<'gc>) -> bool 
 /// truncate: a length prefix that does not describe the payload that
 /// follows would make the image self-inconsistent, which no reader could
 /// detect. Only for a count no program can push past `u32::MAX`: an id or
-/// count of heap objects or frames, which the heap's 32-bit handles bound;
+/// count of heap objects, frames among them, which the 32-bit handles bound;
 /// one of declarations, statements or instructions, which source bounds (a
 /// `Span` offset is a `u32`); the symbol table's, which the two bound
 /// together; and a frame's program counter, an instruction index. Past it
@@ -858,19 +858,11 @@ fn encode_literal(
 }
 
 // ---------------------------------------------------------------------------
-// The object table and the frame table (`docs/design/image-format.md`,
-// "Sections").
+// The object table (`docs/design/image-format.md`, "Sections").
 // ---------------------------------------------------------------------------
 
 fn is_same_object<'gc>(first: Value<'gc>, second: Value<'gc>) -> bool {
     matches!((first.as_object(), second.as_object()), (Some(left), Some(right)) if left.same(right))
-}
-
-/// One entry of `GraphTable::build`'s explicit work stack: the traversal
-/// alternates between values and frames, so both live on the same stack.
-enum Pending<'gc> {
-    Value(Value<'gc>),
-    Frame(FrameReference<'gc>),
 }
 
 /// A class object's graph references, in the order its record writes them:
@@ -945,10 +937,10 @@ fn is_class_tag<'gc>(
 /// No source module can name any of the eight -- `Object` declares no
 /// accessor for them -- so only a graph reaching into the kernel can;
 /// writing one would produce an image nothing loads, so the encoder refuses
-/// it instead. The header of an activation object or of an unresolved
-/// future is not such a reference: `GraphTable::visit_value` never walks
-/// it, and the decoder accepts `Activation` and `Future` there and only
-/// there.
+/// it instead. The header of a frame record (`OBJECT_FRAME`) or of an
+/// unresolved future is not such a reference: `GraphTable::visit_value`
+/// never walks it, and the decoder accepts `Activation` and `Future` there
+/// and only there.
 fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
     let (class, suffix) = match heap.class_this_class(object) {
         Some(this_class) => (this_class, " class"),
@@ -1020,16 +1012,14 @@ fn shipped_without_path<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> 
     None
 }
 
-/// Every heap object (instances, strings, symbols, arrays, closures, and
-/// the class objects that are neither builtin nor the module's root) and
-/// every reified frame reachable from the roots, in discovery order. A builtin
+/// Every heap object (instances, strings, symbols, arrays, closures,
+/// reified frames, and the class objects that are neither builtin nor the
+/// module's root) reachable from the roots, in discovery order. A builtin
 /// class, the root class and the `platform` singleton are never entered:
 /// each is named by a tag of its own.
 pub struct GraphTable<'gc> {
     objects: Vec<ObjectReference<'gc>>,
     object_ids: HashMap<usize, u32>,
-    frames: Vec<FrameReference<'gc>>,
-    frame_ids: HashMap<usize, u32>,
     /// The first class the traversal reached that no program may name --
     /// `Top`, the VM mirror's class, `Activation`, `Future`, or the metaclass
     /// of one of them -- which
@@ -1067,26 +1057,15 @@ impl<'gc> GraphTable<'gc> {
         let mut table = GraphTable {
             objects: Vec::new(),
             object_ids: HashMap::new(),
-            frames: Vec::new(),
-            frame_ids: HashMap::new(),
             unnameable: None,
             shipped_without_path: None,
             platform_paths,
             used_paths: Vec::new(),
             used_path_index: HashMap::new(),
         };
-        let mut stack: Vec<Pending> = roots
-            .iter()
-            .rev()
-            .map(|root| Pending::Value(*root))
-            .collect();
-        while let Some(pending) = stack.pop() {
-            match pending {
-                Pending::Value(value) => {
-                    table.visit_value(heap, value, platform, modules, &mut stack)
-                }
-                Pending::Frame(frame) => table.visit_frame(heap, frame, &mut stack),
-            }
+        let mut stack: Vec<Value<'gc>> = roots.iter().rev().copied().collect();
+        while let Some(value) = stack.pop() {
+            table.visit_value(heap, value, platform, modules, &mut stack);
         }
         table
     }
@@ -1097,7 +1076,7 @@ impl<'gc> GraphTable<'gc> {
         value: Value<'gc>,
         platform: Value<'gc>,
         modules: &ModuleClasses<'gc>,
-        stack: &mut Vec<Pending<'gc>>,
+        stack: &mut Vec<Value<'gc>>,
     ) {
         // A resolved future is never entered: every reference to one is
         // written as its value (`encode_value`), so its value is what the
@@ -1151,118 +1130,58 @@ impl<'gc> GraphTable<'gc> {
             // An object's own class is a reference like every other: now
             // that a class object can be a record, reaching one only
             // through whatever values happen to point at it would leave
-            // `encode_class_tag` with an id that was never assigned. An
-            // activation object's is not walked: it is always the builtin
+            // `encode_class_tag` with an id that was never assigned. A
+            // frame object's is not walked: it is always the builtin
             // `Activation`, which its header names by tag and needs no id
             // for, and which `unnameable_class` refuses wherever else the
-            // graph reaches it -- the header of its own instances is the one
+            // graph reaches it -- the header of a frame record is the one
             // place an image may name it. An unresolved future's is not
             // walked either, for the same reason: its header names the
             // kernel-private `Future` by tag.
             let activation = shape == ObjectShape::Activation;
             debug_assert!(
                 !activation || heap.class_builtin(class) == Some(BuiltinClass::Activation),
-                "an activation object's header names the builtin `Activation`"
+                "a frame object's header names the builtin `Activation`"
             );
             let future = heap.class_builtin(class) == Some(BuiltinClass::Future);
             if !activation && !future {
-                stack.push(Pending::Value(Value::object(class)));
+                stack.push(Value::object(class));
             }
             match shape {
                 ObjectShape::Instance => {
-                    let fields = heap.instance_fields(object).unwrap_or_default();
-                    stack.extend(fields.into_iter().map(Pending::Value));
+                    stack.extend(heap.instance_fields(object).unwrap_or_default());
                 }
                 ObjectShape::Array => {
-                    let elements = heap.array_elements(object).unwrap_or_default();
-                    stack.extend(elements.into_iter().map(Pending::Value));
+                    stack.extend(heap.array_elements(object).unwrap_or_default());
                 }
                 ObjectShape::Closure => {
-                    stack.extend(heap.closure_captured_frame(object).map(Pending::Frame));
+                    stack.extend(
+                        heap.closure_captured_frame(object)
+                            .map(|frame| Value::object(heap.frame_object(frame))),
+                    );
                     // A closure's home is not walked: it is derived from
                     // the captured frame on both sides of the wire
                     // (`Heap::closure_home`), so it is never a reference of
                     // its own.
-                    let copied = heap.closure_copied_values(object).unwrap_or_default();
-                    stack.extend(copied.into_iter().map(Pending::Value));
+                    stack.extend(heap.closure_copied_values(object).unwrap_or_default());
                 }
                 ObjectShape::Class => match heap.class_this_class(object) {
                     // A metaclass record writes one reference, its class:
                     // everything else about it is derived from that class.
-                    Some(this_class) => stack.push(Pending::Value(Value::object(this_class))),
+                    Some(this_class) => stack.push(Value::object(this_class)),
                     // A class object's three references; its metaclass is
                     // its header, pushed above like every object's class.
-                    None => stack.extend(
-                        class_references(heap, object)
-                            .map(|reference| Pending::Value(Value::object(reference))),
-                    ),
+                    None => stack.extend(class_references(heap, object).map(Value::object)),
                 },
                 ObjectShape::Activation => {
-                    stack.extend(heap.object_frame(object).map(Pending::Frame));
+                    if let Some(frame) = heap.object_frame(object) {
+                        stack.extend(frame_references(heap, frame));
+                    }
                 }
                 ObjectShape::String
                 | ObjectShape::Symbol
                 | ObjectShape::LargeInteger
                 | ObjectShape::Float => {}
-            }
-        }
-        stack[before..].reverse();
-    }
-
-    fn visit_frame(
-        &mut self,
-        heap: &Heap<'gc>,
-        frame: FrameReference<'gc>,
-        stack: &mut Vec<Pending<'gc>>,
-    ) {
-        let key = heap.frame_identity_key(frame);
-        if self.frame_ids.contains_key(&key) {
-            return;
-        }
-        self.frame_ids
-            .insert(key, u32_field("frame table id", self.frames.len()));
-        self.frames.push(frame);
-        let before = stack.len();
-        {
-            let snapshot = heap.frame_record(frame);
-            stack.push(Pending::Value(snapshot.receiver));
-            stack.extend(
-                snapshot
-                    .arguments
-                    .iter()
-                    .chain(snapshot.temporaries.iter())
-                    .map(|value| Pending::Value(*value)),
-            );
-            stack.extend(
-                snapshot
-                    .sender
-                    .iter()
-                    .chain(snapshot.home.iter())
-                    .copied()
-                    .map(Pending::Frame),
-            );
-            stack.extend(
-                snapshot
-                    .current_class
-                    .iter()
-                    .copied()
-                    .map(|class| Pending::Value(Value::object(class))),
-            );
-            match &snapshot.kind {
-                // The closure object a closure activation runs is a record
-                // of its own, so it needs an id like any other object.
-                FrameKind::Closure(closure) => {
-                    stack.push(Pending::Value(Value::object(*closure)));
-                }
-                // The class-carrying kinds name a class the same way
-                // `current_class` does, so the class needs an id the same way.
-                FrameKind::Initializer(class)
-                | FrameKind::SuperclassClause(class)
-                | FrameKind::SuperclassMessage(class)
-                | FrameKind::MixinApplicationMessage(class) => {
-                    stack.push(Pending::Value(Value::object(*class)));
-                }
-                FrameKind::Method(_) | FrameKind::TopLevel => {}
             }
         }
         stack[before..].reverse();
@@ -1275,11 +1194,9 @@ impl<'gc> GraphTable<'gc> {
             .expect("object was visited by build()")
     }
 
+    /// A frame's id: its frame object's, since a frame is an object record.
     pub fn frame_id(&self, heap: &Heap<'gc>, frame: FrameReference<'gc>) -> u32 {
-        *self
-            .frame_ids
-            .get(&heap.frame_identity_key(frame))
-            .expect("frame was visited by build()")
+        self.object_id(heap, heap.frame_object(frame))
     }
 
     /// Records that the graph names `object` by its platform path, when one
@@ -1335,14 +1252,46 @@ impl<'gc> GraphTable<'gc> {
     pub fn objects(&self) -> &[ObjectReference<'gc>] {
         &self.objects
     }
+}
 
-    pub fn frames(&self) -> &[FrameReference<'gc>] {
-        &self.frames
-    }
+/// A frame's graph references, in the order its record writes them: the
+/// object or class its kind names, the receiver, the sender's and the home's
+/// frame objects, the current class, then the registers (`encode_frame`).
+/// The walk gives each one an id in that order, so the table's order is
+/// the one a record reads in.
+fn frame_references<'gc>(
+    heap: &Heap<'gc>,
+    frame: FrameReference<'gc>,
+) -> impl Iterator<Item = Value<'gc>> {
+    let snapshot = heap.frame_record(frame);
+    let kind_reference = match &snapshot.kind {
+        // The closure object a closure activation runs is a record of its
+        // own, so it needs an id like any other object.
+        FrameKind::Closure(closure) => Some(*closure),
+        // The class-carrying kinds name a class the same way `current_class`
+        // does, so the class needs an id the same way.
+        FrameKind::Initializer(class)
+        | FrameKind::SuperclassClause(class)
+        | FrameKind::SuperclassMessage(class)
+        | FrameKind::MixinApplicationMessage(class) => Some(*class),
+        FrameKind::Method(_) | FrameKind::TopLevel => None,
+    };
+    let frame_objects = [snapshot.sender, snapshot.home]
+        .into_iter()
+        .flatten()
+        .map(|frame| Value::object(heap.frame_object(frame)));
+    let frame_objects: Vec<Value<'gc>> = frame_objects.collect();
+    kind_reference
+        .map(Value::object)
+        .into_iter()
+        .chain(std::iter::once(snapshot.receiver))
+        .chain(frame_objects)
+        .chain(snapshot.current_class.map(Value::object))
+        .chain(snapshot.arguments.into_iter().chain(snapshot.temporaries))
 }
 
 /// Everything the graph encoder resolves a reference against: the object
-/// and frame tables, the `platform` singleton and the module classes (each
+/// table, the `platform` singleton and the module classes (each
 /// named by a tag of its own rather than by an id), the code table's ids,
 /// and the mixin table's row ids -- which is how a class object's record
 /// names the declaration it applies.
@@ -1571,7 +1520,8 @@ fn encode_frame_reference<'gc>(
     }
 }
 
-/// `code_id`, `captured_frame` id, then the copied values, counted.
+/// `code_id`, the captured frame's object id, then the copied values,
+/// counted.
 ///
 /// No parameter names: the arity a call is checked against is the body's
 /// own `argument_count`, so there is no second half to disagree with. No
@@ -1796,14 +1746,12 @@ fn encode_object<'gc>(
                 encode_class_record(writer, object, context)?;
             }
         },
-        // One frame id, never absent: an activation object always reifies
-        // a frame, so the record carries no presence flag.
         ObjectShape::Activation => {
-            writer.write_u8(OBJECT_ACTIVATION);
+            writer.write_u8(OBJECT_FRAME);
             let Some(frame) = heap.object_frame(object) else {
-                unreachable!("internal: an `ObjectShape::Activation` reifies a frame")
+                unreachable!("internal: an `ObjectShape::Activation` is a frame object")
             };
-            writer.write_u32(context.table.frame_id(heap, frame));
+            encode_frame(writer, frame, context, symbols)?;
         }
         // No object record carries one: the graph walk gives a
         // `LargeInteger` no object id (`GraphTable::visit_value`), and
@@ -1820,6 +1768,11 @@ fn encode_object<'gc>(
     Ok(())
 }
 
+/// An `OBJECT_FRAME` body (`opcodes::OBJECT_FRAME` gives the layout). The
+/// kind comes first and the register count is written, so that the
+/// decoder's first pass sizes the record from its own bytes. Every register
+/// the frame object has is written, `nil` where nothing was copied into it:
+/// a frame record's count is its size, like any other record's.
 fn encode_frame<'gc>(
     writer: &mut Writer,
     frame: FrameReference<'gc>,
@@ -1827,21 +1780,6 @@ fn encode_frame<'gc>(
     symbols: &mut symbols::Builder,
 ) -> Result<(), String> {
     let snapshot = context.heap.frame_record(frame);
-    encode_value(writer, snapshot.receiver, context)?;
-    encode_values(writer, &snapshot.arguments, context)?;
-    encode_values(writer, &snapshot.temporaries, context)?;
-    writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
-    // An image's code table holds only compiled bodies, so a frame's
-    // `program_counter` is always an instruction index and the record does not
-    // say so.
-    encode_frame_reference(
-        context.heap,
-        writer,
-        snapshot.sender.as_ref(),
-        context.table,
-    );
-    encode_frame_reference(context.heap, writer, snapshot.home.as_ref(), context.table);
-    encode_optional_class(writer, snapshot.current_class.as_ref(), context);
     match &snapshot.kind {
         FrameKind::Method(method) => {
             writer.write_u8(FRAME_METHOD);
@@ -1869,8 +1807,26 @@ fn encode_frame<'gc>(
             encode_class_tag(writer, *level, context);
         }
     }
+    // An image's code table holds only compiled bodies, so a frame's
+    // `program_counter` is always an instruction index and the record does not
+    // say so.
+    writer.write_u32(u32_field("frame program counter", snapshot.program_counter));
     writer.write_boolean(snapshot.uncontinuable);
-    Ok(())
+    encode_value(writer, snapshot.receiver, context)?;
+    encode_frame_reference(
+        context.heap,
+        writer,
+        snapshot.sender.as_ref(),
+        context.table,
+    );
+    encode_frame_reference(context.heap, writer, snapshot.home.as_ref(), context.table);
+    encode_optional_class(writer, snapshot.current_class.as_ref(), context);
+    let registers: Vec<Value<'gc>> = snapshot
+        .arguments
+        .into_iter()
+        .chain(snapshot.temporaries)
+        .collect();
+    encode_values(writer, &registers, context)
 }
 
 /// The platform paths a graph section uses, in the order its references
@@ -1882,9 +1838,9 @@ pub struct UsedPlatformPaths<'gc> {
     pub objects: Vec<ObjectReference<'gc>>,
 }
 
-/// The object table, the frame table, and the roots. Both counts come
-/// first so the decoder can placeholder-allocate both tables before
-/// filling either (objects and frames reference each other freely).
+/// The object table, frames included, and the roots. The count comes first;
+/// the decoder sizes every record and allocates it before filling any, so
+/// that records may reference each other freely.
 ///
 /// Answers the platform paths the section uses, which the caller writes
 /// ahead of it: an object a path from `platform` reaches
@@ -1949,12 +1905,8 @@ pub fn encode_graph_section<'gc>(
         heap,
     };
     writer.write_u32(u32_field("object table entry count", table.objects().len()));
-    writer.write_u32(u32_field("frame table entry count", table.frames().len()));
     for object in table.objects() {
         encode_object(writer, *object, &context, symbols)?;
-    }
-    for frame in table.frames() {
-        encode_frame(writer, *frame, &context, symbols)?;
     }
     encode_values(writer, roots, &context)?;
     Ok(used)

@@ -46,6 +46,25 @@ pub use value::{
 };
 pub(crate) use world::World;
 
+/// The sizes `image::decode::decode_graph_section`'s first pass gives each
+/// record before it allocates anything, stated beside the payloads they
+/// must agree with: a class object's fields, a closure's and a frame's
+/// fixed fields, a string's field words, and the words a block of so many
+/// fields occupies in all, its header and class word included.
+pub(crate) mod record_size {
+    pub(crate) const CLASS_FIELDS: usize = super::class_field::COUNT;
+    pub(crate) const CLOSURE_FIXED_FIELDS: usize = super::closure_field::COUNT;
+    pub(crate) const FRAME_FIXED_FIELDS: usize = super::frame_field::COUNT;
+
+    pub(crate) fn string_fields(text: &str) -> usize {
+        super::object::string_field_count(text)
+    }
+
+    pub(crate) fn block_words(field_count: usize) -> usize {
+        field_count.saturating_add(super::FIELDS)
+    }
+}
+
 /// Hands every `Heap` a distinct id, so a handle can name the heap that
 /// allocated it. Debug builds only -- the id and the field on each handle
 /// both compile out of a release build, where a handle is exactly its
@@ -1086,22 +1105,23 @@ impl<'gc> Heap<'gc> {
         handle
     }
 
-    /// An object for `image::decode::decode_graph_section`'s first pass to
-    /// fill later (`fill_placeholder`): an instance of `class` with no
-    /// fields, safe to hold and never observed before it is filled.
+    /// An object for `image::decode::decode_graph_section` to fill later
+    /// (`fill_placeholder`): an instance of `class` with `field_count` nil
+    /// fields, the size the first pass read off the record, safe to hold and
+    /// never observed before it is filled.
     pub(crate) fn allocate_placeholder(
         &mut self,
         class: ClassReference<'gc>,
+        field_count: usize,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(class, Payload::instance([]))
+        self.allocate_object(
+            class,
+            Payload::instance(std::iter::repeat_n(Word::NIL, field_count)),
+        )
     }
 
     /// Replaces the entirety of a placeholder object's contents in one
-    /// write: `class`, `identity_hash` and the payload `record` names -- but
-    /// for an activation record, which names a frame object that already
-    /// exists: that frame object takes `identity_hash`, and the decoder
-    /// aliases the placeholder to it once every record is in
-    /// (`alias_placeholders`).
+    /// write: `class`, `identity_hash` and the payload `record` names.
     /// `image::decode::decode_graph_section`'s second pass is the only
     /// caller, and it only ever calls this on a handle its first pass
     /// placeholder-allocated and nothing else has observed yet -- before
@@ -1135,14 +1155,6 @@ impl<'gc> Heap<'gc> {
             }
             Record::Closure(closure) => self.closure_payload(closure),
             Record::Class(class) => self.class_payload(class),
-            // The frame object is the activation object: it takes the
-            // record's identity hash, and the placeholder stays as it is,
-            // for the decoder to alias to it (`alias_placeholders`).
-            Record::Activation(frame) => {
-                let target = self.frame_object(frame);
-                self.object_set_identity_hash(target, identity_hash);
-                return;
-            }
         };
         let class_word = self.store(Value::object(class));
         self.objects[object.index as usize] =
@@ -1206,9 +1218,9 @@ impl<'gc> Heap<'gc> {
     // `object.rs`'s `frame_field` names, then a register file. A frame
     // carries no identity hash until something asks for one, like every
     // object. `reify` builds a real activation's frame;
-    // `image::decode::decode_graph_section`'s first pass allocates a
-    // placeholder (`allocate_placeholder_frame`) and its second pass fills
-    // it wholesale (`fill_frame`).
+    // `image::decode::decode_graph_section` allocates a placeholder of the
+    // size its first pass read (`allocate_placeholder_frame`) and fills it
+    // wholesale once the class objects are rebuilt (`fill_frame`).
 
     /// Records the class every frame object is an instance of: the
     /// kernel-private `Activation`. The bootstrap records it where it builds
@@ -1316,10 +1328,14 @@ impl<'gc> Heap<'gc> {
         data
     }
 
-    /// A frame for `image::decode::decode_graph_section`'s first pass to
-    /// fill later (`fill_frame`): a top-level activation with no registers,
-    /// safe to hold and never observed before it is filled.
-    pub(crate) fn allocate_placeholder_frame(&mut self) -> FrameReference<'gc> {
+    /// A frame for `image::decode::decode_graph_section` to fill later
+    /// (`fill_frame`): a top-level activation with `register_count` nil
+    /// registers, the size the first pass read off the record, safe to hold
+    /// and never observed before it is filled.
+    pub(crate) fn allocate_placeholder_frame(
+        &mut self,
+        register_count: usize,
+    ) -> FrameReference<'gc> {
         self.allocate_frame(
             FrameFields {
                 sender: None,
@@ -1332,7 +1348,7 @@ impl<'gc> Heap<'gc> {
                 uncontinuable: false,
             },
             &[],
-            0,
+            register_count,
         )
     }
 
@@ -1389,48 +1405,6 @@ impl<'gc> Heap<'gc> {
     pub fn object_frame(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
         self.check_object_origin(object);
         (self.header(object).format() == Format::Frame).then(|| self.frame_handle(object.index))
-    }
-
-    /// Rewrites every handle the heap holds to each `(placeholder, target)`
-    /// pair's placeholder into one to its target, and `objects` with them,
-    /// leaving each placeholder unreferenced for the next collection. The
-    /// image decoder's one use: an activation record and the frame record
-    /// it names are two records on the wire but one frame object here, and
-    /// a record read before the activation record may already hold its
-    /// placeholder. Moves nothing, so no handle goes stale.
-    ///
-    /// Sound only where the placeholders are the decoder's own: no step
-    /// state, host root or stack entry can hold one.
-    pub(crate) fn alias_placeholders(
-        &mut self,
-        aliases: &[(ObjectReference<'gc>, ObjectReference<'gc>)],
-        objects: &mut [ObjectReference<'gc>],
-    ) {
-        use crate::trace::Tracer;
-        if aliases.is_empty() {
-            return;
-        }
-        let length = u32::try_from(self.objects.len())
-            .expect("internal: an arena is addressed by 32-bit indices");
-        let mut table: Vec<u32> = (0..length).collect();
-        for (placeholder, target) in aliases {
-            self.check_object_origin(*placeholder);
-            self.check_object_origin(*target);
-            table[placeholder.index as usize] = target.index;
-        }
-        let mut forwarder = Forwarder {
-            #[cfg(debug_assertions)]
-            heap_id: self.heap_id,
-            #[cfg(debug_assertions)]
-            from_epoch: self.epoch,
-            #[cfg(debug_assertions)]
-            to_epoch: self.epoch,
-            objects: ForwardingTable { table },
-        };
-        self.forward_everything(&mut forwarder);
-        for object in objects {
-            forwarder.object(object);
-        }
     }
 
     // ---------- Handle-origin checks ----------
@@ -1663,11 +1637,12 @@ impl<'gc> Heap<'gc> {
     /// the handle is what turns that into a panic, and it is the compiler that
     /// requires it, since there is no way to reach the index without one.
     ///
-    /// This and `frame_identity_key` are the only ways a handle's index
-    /// leaves this module, so anything that changes what a handle encodes --
-    /// widening it to carry a heap tag, say -- has to check their callers
-    /// even though the field itself is private. They all treat the result as
-    /// an opaque key, which is what keeps that a check rather than a rewrite.
+    /// This is the only way a handle's index leaves this module -- a frame's
+    /// key is its frame object's -- so anything that changes what a handle
+    /// encodes -- widening it to carry a heap tag, say -- has to check its
+    /// callers even though the field itself is private. They all treat the
+    /// result as an opaque key, which is what keeps that a check rather than
+    /// a rewrite.
     pub(crate) fn object_identity_key(&self, object: ObjectReference<'gc>) -> usize {
         self.check_object_origin(object);
         object.index as usize
@@ -2952,15 +2927,6 @@ impl<'gc> Heap<'gc> {
     // anything by those fields -- whether a frame is live is
     // `frame_activation`, never `frame_is_uncontinuable`.
 
-    /// An opaque, hashable key unique to `frame`, for code that needs a
-    /// `FrameReference` as a `HashMap` key rather than a comparison --
-    /// `image::encode::GraphTable`'s frame-id map is the only caller. On
-    /// `Heap`, and guarded, for the reason `object_identity_key` gives.
-    pub(crate) fn frame_identity_key(&self, frame: FrameReference<'gc>) -> usize {
-        self.check_frame_origin(frame);
-        frame.index as usize
-    }
-
     /// `frame`'s words: its fixed fields, then its registers. The one lender
     /// of a frame object's payload, private to the heap, so that every
     /// public accessor copies out (`docs/design/memory.md`, "The seam").
@@ -3237,11 +3203,12 @@ impl<'gc> Heap<'gc> {
     /// registers, keeping its class, its guard and its identity hash. Its
     /// code is found from the record's kind (`kind_code`), so the record's
     /// split between arguments and temporaries is not kept: a frame's
-    /// arguments are its code's (`image::decode::decode_graph_section`
-    /// checks the record against them).
+    /// arguments are its code's (`image::decode::verify_graph` holds the
+    /// register count to it).
     ///
-    /// `image::decode::decode_graph_section`'s second pass fills each frame
-    /// its first pass placeholder-allocated, before `verify_graph` runs,
+    /// `image::decode::decode_graph_section` fills each frame record's
+    /// placeholder, allocated at the size its first pass read, before
+    /// `verify_graph` runs,
     /// which assumes every frame is already filled in; `tests/image.rs`
     /// forges a decoded frame through it. Call this on any handle something
     /// else already holds and it silently replaces that frame's
@@ -3934,8 +3901,8 @@ impl<'gc> Heap<'gc> {
     /// Forwards every handle the heap itself holds through `forwarder`:
     /// every arena record, the `Activation` class, every stack entry and
     /// the continuation it owns, every register, every surviving canonical
-    /// symbol table entry, and every host root. Shared by `move_everything`,
-    /// `compact` and `alias_placeholders` -- each builds its own `Forwarder`
+    /// symbol table entry, and every host root. Shared by `move_everything`
+    /// and `compact` -- each builds its own `Forwarder`
     /// first, over its own `Relocation`, and then walks the same roots
     /// through it -- so that a field
     /// either one must reach is named here once, rather than in two copies
@@ -4280,10 +4247,10 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn comparing_two_frame_handles_from_different_heaps_panics() {
         let mut origin = frame_heap();
-        let mine = origin.allocate_placeholder_frame();
+        let mine = origin.allocate_placeholder_frame(0);
 
         let mut other = frame_heap();
-        let theirs = other.allocate_placeholder_frame();
+        let theirs = other.allocate_placeholder_frame(0);
 
         let _ = mine.same(theirs);
     }
@@ -4946,7 +4913,7 @@ mod tests {
     fn a_closure_keeps_its_code_frame_feedback_base_and_copied_values_in_its_words() {
         let mut heap = frame_heap();
         let class = heap.allocate_self_referential(Payload::instance([]));
-        let frame = heap.allocate_placeholder_frame();
+        let frame = heap.allocate_placeholder_frame(0);
         let code = trivial_code();
         let object = heap.allocate_closure(
             class,
@@ -5313,7 +5280,7 @@ mod tests {
             heap.object_identity_key(array),
             heap.object_identity_key(closure),
         ];
-        let frame_before = heap.frame_identity_key(frame);
+        let frame_before = heap.object_identity_key(heap.frame_object(frame));
         let roots = [
             heap.stash(Value::object(class)),
             heap.stash(Value::object(string)),
@@ -5357,7 +5324,7 @@ mod tests {
             .expect("still a closure");
         assert_ne!(
             frame_before,
-            heap.frame_identity_key(captured_frame),
+            heap.object_identity_key(heap.frame_object(captured_frame)),
             "every frame moved"
         );
         assert!(heap

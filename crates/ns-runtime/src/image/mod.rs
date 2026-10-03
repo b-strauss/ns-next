@@ -3,7 +3,7 @@
 //! `docs/design/image-format.md`. Layout: header, symbol table, code
 //! table, mixin table (one tree per module, in module order), module section
 //! (per module: `SourceOrigin`, optional source text, root section), then the
-//! platform paths, object table, frame table, roots, tag-named hashes.
+//! platform paths, object table (frames included), roots, tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
