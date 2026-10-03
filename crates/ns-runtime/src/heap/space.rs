@@ -7,13 +7,6 @@
 //! reads every object through `words`, the slice `[0, top)`, so every
 //! access is bounds-checked against the top and a stale offset reads a
 //! wrong object at worst, never memory outside the objects.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the heap allocates in the space from the next task on"
-    )
-)]
 
 use ns_memory::{MemoryError, Reservation};
 
@@ -28,22 +21,8 @@ pub(in crate::heap) const FIRST_OBJECT: usize = 16;
 /// until it is committed, so this is generous; the heap aborts as running
 /// out of memory once it is used up.
 #[cfg(target_pointer_width = "64")]
-#[cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the tests reserve less; the heap reserves this from the next task on"
-    )
-)]
 pub(in crate::heap) const DEFAULT_RESERVATION: usize = 64 << 30;
 #[cfg(not(target_pointer_width = "64"))]
-#[cfg_attr(
-    test,
-    expect(
-        dead_code,
-        reason = "the tests reserve less; the heap reserves this from the next task on"
-    )
-)]
 pub(in crate::heap) const DEFAULT_RESERVATION: usize = 1 << 30;
 
 /// The first commit, and the least a growth commits.
@@ -182,8 +161,10 @@ fn round_up_to_page(bytes: usize) -> Option<usize> {
 /// The words an object of `word_count` words after its header takes: its
 /// header and those words, and an overflow word when the header's byte
 /// cannot hold the count.
+/// Saturating, so that a count an image's first pass read cannot overflow
+/// before the allocation refuses it.
 pub(in crate::heap) fn allocation_words(word_count: usize) -> usize {
-    1 + word_count + usize::from(word_count >= WORD_COUNT_OVERFLOW)
+    word_count.saturating_add(1 + usize::from(word_count >= WORD_COUNT_OVERFLOW))
 }
 
 /// The overflow word of an object of `word_count` words after its header.
@@ -276,7 +257,9 @@ mod tests {
     #[test]
     fn the_walk_finds_every_object_an_overflow_word_included() {
         let mut space = Space::new(SMALL).expect("reserve");
-        let sizes = [1, 300, 3];
+        // 254 is the widest count the header's byte holds, 255 the first
+        // in an overflow word and the overflow mark itself.
+        let sizes = [1, 300, 3, 254, 255, 256];
         let mut headers = Vec::new();
         for size in sizes {
             let start = space.allocate(allocation_words(size)).expect("room");
@@ -298,6 +281,15 @@ mod tests {
             "the large object's header follows its overflow word"
         );
         assert_eq!(block_range(words, headers[1]).len(), 1 + 300);
+        assert_eq!(
+            headers[4],
+            headers[3] + 1 + 254 + 1,
+            "254 takes no overflow word"
+        );
+        assert_eq!(headers[5], headers[4] + 1 + 255 + 1, "255 takes one");
+        for (header, size) in headers.iter().zip(sizes) {
+            assert_eq!(block_range(words, *header).len(), 1 + size);
+        }
     }
 
     #[test]

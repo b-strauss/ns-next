@@ -51,10 +51,10 @@ pub(in crate::heap) const FIELDS: usize = 2;
 ///
 /// Build one through `Payload::instance`, `array`, `large_integer`, `float`,
 /// `string`, `frame`, `closure` or `class`, the one place each kind's layout
-/// is decided, and turn it into an arena slot with `into_block`, the one
+/// is decided, and turn it into a block with `into_block`, the one
 /// place a header is derived. The words already leave room for the header
-/// and the class word, so that the block is the one allocation an object
-/// costs.
+/// and the class word, so that `Heap::place_block` copies the block into
+/// the space whole.
 ///
 /// A `LargeInteger` never holds a value a `SmallInteger` does, and a boxed
 /// `Float` never one inside the immediate range: `Mutator::new_integer` and
@@ -185,7 +185,7 @@ impl Payload {
         &mut self.block[FIELDS..]
     }
 
-    /// The arena slot of an object of the class `class` names, holding this
+    /// The block of an object of the class `class` names, holding this
     /// payload, guarding on `guard`, with `identity_hash` (0: none yet): its
     /// header -- its format, its size as road step 3's layout stores it, the
     /// class word plus the fields, and a `LargeInteger`'s sign -- its class
@@ -267,8 +267,8 @@ pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>;
                 *range = clamped(FIELDS + field, FIELDS + field + 1);
             }
         }
-        // Digits and code points, no stored words; and no block in the
-        // arena is forwarded or free.
+        // Digits and code points, no stored words; and no object in the
+        // space is forwarded or free.
         Format::SixtyFourBit
         | Format::Bytes
         | Format::ThirtyTwoBit

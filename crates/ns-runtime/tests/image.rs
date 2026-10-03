@@ -1278,6 +1278,61 @@ fn a_large_integer_value_round_trips() {
     }
 }
 
+/// An `Array` past 254 elements is decoded into an object with an overflow
+/// word, and its last element survives the round trip.
+#[test]
+fn an_array_past_two_hundred_and_fifty_four_elements_round_trips() {
+    let source = indoc! {"
+        class X = Object new (
+          | big = self filled. |
+        ) (
+          filled = (
+            | array = Array new: 300. |
+            1 to: 300 do: [:index | array at: index put: index].
+            ^array
+          )
+          public lastText = ( ^(big at: 300) printString )
+          public sizeText = ( ^big size printString )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    for (selector, expected) in [("lastText", "300"), ("sizeText", "300")] {
+        let answer = expect_ok(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern(selector), &[]),
+            selector,
+        );
+        loaded.interpreter.enter(|mutator| {
+            let Some(string) = mutator.fetch(&answer).as_object() else {
+                panic!("{selector}: expected a string")
+            };
+            assert_eq!(
+                mutator.heap().str_value(string).as_deref(),
+                Some(expected),
+                "{selector}"
+            );
+        });
+    }
+}
+
 /// A body past the register ceiling travels as the raising body it compiled
 /// to, `Literal::BodyTooLarge` and all: once loaded it raises the same
 /// error, and its sibling, which never needed the ceiling, still answers.

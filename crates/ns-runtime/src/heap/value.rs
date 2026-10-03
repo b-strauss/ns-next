@@ -630,6 +630,25 @@ mod tests {
         assert_ne!(Value::<'static>::small_float(1.0).word & 0b111, 0);
     }
 
+    /// The zero word is never stored, so it names no object: an object word
+    /// is its offset, which is never 0.
+    #[test]
+    fn the_zero_word_names_no_object() {
+        assert!(super::Word::from_bits(0).object_offset().is_none());
+    }
+
+    /// A value made from the zero word -- a missed initialization -- is
+    /// refused when it is read rather than taken for an object.
+    #[test]
+    #[should_panic(expected = "a stored object word is never zero")]
+    fn the_kind_of_the_zero_word_panics() {
+        #[cfg(debug_assertions)]
+        let value: Value<'static> = Value::from_word(super::Word::from_bits(0), 0, 0);
+        #[cfg(not(debug_assertions))]
+        let value: Value<'static> = Value::from_word(super::Word::from_bits(0));
+        let _ = value.kind();
+    }
+
     #[test]
     fn a_word_is_eight_bytes_in_every_build() {
         assert_eq!(std::mem::size_of::<super::Word>(), 8);

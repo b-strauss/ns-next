@@ -77,7 +77,7 @@ impl World {
         self.mutator.heap.clear_safepoint_request();
     }
 
-    /// Whether an arena has reached its limit since the last collection
+    /// Whether the space has reached its limit since the last collection
     /// (`Interpreter::safepoint`). Separate from `safepoint_requested`,
     /// which a stress mode also holds set for its own reasons.
     #[inline(always)]
@@ -85,6 +85,8 @@ impl World {
         self.mutator.heap.collection_requested()
     }
 
+    /// Sets the collection floor and the next limit to `floor` bytes of
+    /// objects (`Interpreter::set_collection_floor`).
     #[cfg(debug_assertions)]
     pub(crate) fn set_collection_floor(&mut self, floor: usize) {
         self.mutator.heap.set_collection_floor(floor);
@@ -134,7 +136,7 @@ impl World {
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
         self.check_quiescent_state();
-        let mut forwarder: crate::heap::Forwarder<crate::heap::Rotation> =
+        let mut forwarder: crate::heap::Forwarder<crate::heap::compaction::Shift> =
             self.mutator.heap.move_everything();
         self.forward_step_state(&mut forwarder);
     }
@@ -164,7 +166,7 @@ impl World {
         mutator.heap.drain_marking(&mut marker);
     }
 
-    /// One collection: mark everything reachable, compact the arena, and
+    /// One collection: mark everything reachable, compact the space, and
     /// forward what the step state holds beside the heap -- the bootstrap's
     /// builtin classes, the `platform` singleton, the VM mirror and the
     /// kernel -- exactly as a move does.

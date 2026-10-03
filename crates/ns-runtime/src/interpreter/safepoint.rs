@@ -66,7 +66,7 @@ impl Interpreter {
             self.world.collect();
             // Returns without also clearing `safepoint_requested`: `collect`
             // already cleared `collection_requested`, a separate boolean
-            // `reset_collection_limits` sets alongside the new arena limits,
+            // `reset_collection_limits` sets alongside the new limit,
             // so the very next poll takes this same slow path once more,
             // finds no request and no stress pending, and clears
             // `safepoint_requested` there instead. Harmless -- one
@@ -274,8 +274,9 @@ impl Interpreter {
         self.world.move_epoch()
     }
 
-    /// Sets the arena's collection limit directly, so a test can reach the
-    /// trigger without allocating up to `COLLECTION_FLOOR` first.
+    /// Sets the collection floor and the next limit directly, in bytes of
+    /// objects allocated, so a test can reach the trigger without
+    /// allocating up to `COLLECTION_FLOOR` first.
     pub fn set_collection_floor(&mut self, floor: usize) {
         self.world.set_collection_floor(floor);
     }
