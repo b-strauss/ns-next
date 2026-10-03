@@ -1198,7 +1198,7 @@ impl<'gc> GraphTable<'gc> {
                     ),
                 },
                 ObjectShape::Activation => {
-                    stack.extend(heap.activation_object_frame(object).map(Pending::Frame));
+                    stack.extend(heap.object_frame(object).map(Pending::Frame));
                 }
                 ObjectShape::String
                 | ObjectShape::Symbol
@@ -1800,7 +1800,7 @@ fn encode_object<'gc>(
         // a frame, so the record carries no presence flag.
         ObjectShape::Activation => {
             writer.write_u8(OBJECT_ACTIVATION);
-            let Some(frame) = heap.activation_object_frame(object) else {
+            let Some(frame) = heap.object_frame(object) else {
                 unreachable!("internal: an `ObjectShape::Activation` reifies a frame")
             };
             writer.write_u32(context.table.frame_id(heap, frame));

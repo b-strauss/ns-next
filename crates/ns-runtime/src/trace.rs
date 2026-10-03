@@ -4,8 +4,9 @@
 //! `Tracer` one `&mut` at a time. Enumerating is this module's; rewriting is
 //! `heap.rs`'s `Forwarder`, since only `heap.rs` can mint a handle.
 //!
-//! The impls for an object's and a frame's own payload live beside those
-//! types, in `heap/object.rs`, which nothing outside the heap may name.
+//! The impls for an object's own payload -- a reified frame's included --
+//! live beside those types, in `heap/object.rs`, which nothing outside the
+//! heap may name.
 //!
 //! Every impl names every field and matches every variant, with no `..` and
 //! no `_`: a field or variant added later fails to compile here until
@@ -22,6 +23,7 @@ use crate::types::*;
 
 pub(crate) trait Tracer {
     fn object(&mut self, handle: &mut ObjectReference<'_>);
+    /// A frame, which every tracer treats as the frame object it names.
     fn frame(&mut self, handle: &mut FrameReference<'_>);
     /// A stored word: rewritten by its index, since it carries no epoch.
     fn word(&mut self, word: &mut Word);

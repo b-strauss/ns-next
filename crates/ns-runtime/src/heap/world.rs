@@ -126,8 +126,9 @@ impl World {
         self.mutator.caches.statistics()
     }
 
-    /// Moves every object and every reified frame (`Heap::move_everything`)
-    /// and forwards what the step state holds beside the heap: the
+    /// Moves every object, every reified frame among them
+    /// (`Heap::move_everything`), and forwards what the step state holds
+    /// beside the heap: the
     /// bootstrap's builtin classes, the `platform` singleton, the VM
     /// mirror and the kernel.
     #[cfg(debug_assertions)]
@@ -164,7 +165,7 @@ impl World {
         marker
     }
 
-    /// One collection: mark everything reachable, compact both arenas, and
+    /// One collection: mark everything reachable, compact the arena, and
     /// forward what the step state holds beside the heap -- the bootstrap's
     /// builtin classes, the `platform` singleton, the VM mirror and the
     /// kernel -- exactly as a move does.

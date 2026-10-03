@@ -1,5 +1,5 @@
 //! What sits behind an `ObjectReference` and a `FrameReference`: the Rust
-//! payload of every object and of every reified activation. Private to the
+//! payload of every object, a reified activation's included. Private to the
 //! heap module -- nothing outside `heap.rs` and its submodules names these
 //! types, so that changing how an object or a frame is represented changes
 //! this module rather than its callers (`docs/design/memory.md`, "The
@@ -12,7 +12,7 @@ use crate::heap::header::{Format, Header};
 use crate::heap::{ClassReference, FrameReference, ObjectReference, Word};
 use crate::mixin::DispatchId;
 use crate::trace::{trace_optional_object, trace_words, Trace, Tracer};
-use crate::types::{BuiltinClass, FrameKind, ValueClassRefusal};
+use crate::types::{BuiltinClass, ValueClassRefusal};
 
 #[derive(Debug, Clone)]
 pub(in crate::heap) struct Object<'gc> {
@@ -67,7 +67,7 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// tells those two apart, as Spur's does; `Bytes` and `ThirtyTwoBit`, a
     /// String's or a Symbol's code points packed little-endian, eight or two
     /// to a word (`PackedString`), the class's builtin again telling the
-    /// two apart.
+    /// two apart; `Frame`, a reified activation (`ObjectData::frame`).
     ///
     /// `format`, `unused` and `negative` are what `Object::new` derives the
     /// header from; once built, readers ask the header. Build one through
@@ -91,11 +91,6 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
     /// "The dispatch id").
     Class(Box<ClassData<'gc>>),
-    /// An instance of the kernel-private `Activation` class: a reified
-    /// activation, reachable only from `Kernel.ns`, which the exception
-    /// machinery walks and unwinds to. It stores the `FrameReference`, never
-    /// an `ActivationReference`, since only a reified frame outlives its pop.
-    Activation(FrameReference<'gc>),
 }
 
 impl ObjectData<'_> {
@@ -107,6 +102,20 @@ impl ObjectData<'_> {
     /// An `Array`'s payload: `elements`, each a stored word.
     pub(in crate::heap) fn array(elements: impl IntoIterator<Item = Word>) -> Self {
         Self::pointers(Format::IndexablePointers, elements)
+    }
+
+    /// A reified activation's payload: `fields`, the fixed fields
+    /// `frame_field` names, then `register_count` registers, every one nil.
+    pub(in crate::heap) fn frame(
+        fields: [Word; frame_field::COUNT],
+        register_count: usize,
+    ) -> Self {
+        Self::pointers(
+            Format::Frame,
+            fields
+                .into_iter()
+                .chain(std::iter::repeat_n(Word::NIL, register_count)),
+        )
     }
 
     fn pointers(format: Format, words: impl IntoIterator<Item = Word>) -> Self {
@@ -300,9 +309,6 @@ impl ObjectData<'_> {
                 CLOSURE_FIXED_WORDS + closure.copied.len(),
             ),
             ObjectData::Class(_) => (Format::Class, 0, CLASS_WORDS),
-            // A frame object from the frame's own representation on; one
-            // word, the frame's handle, until then.
-            ObjectData::Activation(_) => (Format::FixedPointers, 0, 1),
         };
         Header::new(guard, format, unused, 1 + payload_words)
     }
@@ -454,48 +460,6 @@ pub(in crate::heap) struct ClosureData<'gc> {
     pub(in crate::heap) feedback_base: crate::interpreter::FeedbackBase,
 }
 
-/// A *reified* activation: one a block captured, or one the image decoder
-/// rebuilt. A running activation lives on the `Heap`'s activation stack and
-/// becomes a `Frame` only when `Heap::reify` is asked for one; while it runs,
-/// the frame is married to its stack entry and its registers live there.
-/// See `docs/design/execution.md`, "Activations".
-#[derive(Debug, Clone)]
-pub(in crate::heap) struct Frame<'gc> {
-    pub(in crate::heap) receiver: Word,
-    pub(in crate::heap) arguments: Vec<Word>,
-    /// Indexable by resolver slot index, growable (liveness spec's
-    /// reified-activation constraint).
-    pub(in crate::heap) temporaries: Vec<Word>,
-    /// How far this activation has progressed: an instruction index into
-    /// the `CompiledCode` it runs.
-    pub(in crate::heap) program_counter: usize,
-    /// `None` for every frame the runtime reifies: a live activation's
-    /// sender is the stack entry below it, and a returned activation has
-    /// none. Kept for the image format, which records one per frame.
-    pub(in crate::heap) sender: Option<FrameReference<'gc>>,
-    /// Set only for `FrameKind::Closure` -- the enclosing method or
-    /// initializer activation.
-    pub(in crate::heap) home: Option<FrameReference<'gc>>,
-    /// `None` only for `FrameKind::TopLevel` (`newspeak-spec.pdf` §3.6: a
-    /// top-level activation's current class is `nil`).
-    pub(in crate::heap) current_class: Option<ClassReference<'gc>>,
-    pub(in crate::heap) kind: FrameKind<'gc>,
-    /// Set once this frame's activation has returned (`Heap::pop_activation`
-    /// divorces it). A `^` whose home is such a frame is a `cannotReturn`
-    /// error (`newspeak-spec.pdf` §3.6, §7.2). `raise_return` decides by
-    /// `Heap::frame_activation`, which also covers a decoded frame, dead by
-    /// construction whatever this flag says; the flag itself is what an image
-    /// records.
-    pub(in crate::heap) uncontinuable: bool,
-}
-/// A reified activation and, while that activation is still running, the
-/// stack entry it is married to. While `live` is set, the frame's own
-/// `arguments`/`temporaries` are empty and its registers are the entry's.
-pub(in crate::heap) struct FrameSlot<'gc> {
-    pub(in crate::heap) frame: Frame<'gc>,
-    pub(in crate::heap) live: Option<u32>,
-}
-
 impl Trace for Object<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let Object {
@@ -511,16 +475,30 @@ impl Trace for Object<'_> {
 impl Trace for ObjectData<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
-            ObjectData::Words { format, words, .. } => {
-                // Only a pointer format's words are stored `Word`s; a number's
-                // digits would read as handles.
-                if matches!(format, Format::FixedPointers | Format::IndexablePointers) {
+            ObjectData::Words { format, words, .. } => match format {
+                Format::FixedPointers | Format::IndexablePointers => {
                     trace_word_bits(words, tracer);
                 }
-            }
+                // A married frame's registers are its stack entry's, traced
+                // with the stack; its own stay nil until the divorce copies
+                // them in, so they are skipped rather than walked for nothing.
+                Format::Frame => {
+                    let married = words
+                        .get(frame_field::MARRIED)
+                        .is_some_and(|bits| *bits != Word::NIL.bits());
+                    let traced = if married {
+                        frame_field::COUNT.min(words.len())
+                    } else {
+                        words.len()
+                    };
+                    trace_word_bits(&mut words[..traced], tracer);
+                }
+                // Only a pointer format's words are stored `Word`s; a
+                // number's digits would read as handles.
+                _ => {}
+            },
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
-            ObjectData::Activation(frame) => tracer.frame(frame),
         }
     }
 }
@@ -570,29 +548,35 @@ impl Trace for ClassData<'_> {
     }
 }
 
-impl Trace for Frame<'_> {
-    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
-        let Frame {
-            receiver,
-            arguments,
-            temporaries,
-            program_counter: _,
-            sender,
-            home,
-            current_class,
-            kind,
-            uncontinuable: _,
-        } = self;
-        tracer.word(receiver);
-        trace_words(arguments, tracer);
-        trace_words(temporaries, tracer);
-        if let Some(sender) = sender {
-            tracer.frame(sender);
-        }
-        if let Some(home) = home {
-            tracer.frame(home);
-        }
-        trace_optional_object(current_class, tracer);
-        kind.trace(tracer);
-    }
+/// The fixed fields of a frame object, the words before its registers
+/// (`docs/design/object-model.md`): each a stored `Word`, written through
+/// `Heap::store` and read through `Heap::load` like an instance's.
+pub(in crate::heap) mod frame_field {
+    /// The frame object of the activation this one returns to, or nil: a
+    /// live activation's sender is the stack entry below it, and a returned
+    /// one has none, so only a decoded frame carries one.
+    pub(in crate::heap) const SENDER: usize = 0;
+    /// A closure activation's home frame object; nil for every other kind.
+    pub(in crate::heap) const HOME: usize = 1;
+    pub(in crate::heap) const RECEIVER: usize = 2;
+    /// A class object, or nil for a top-level activation (§3.6).
+    pub(in crate::heap) const CURRENT_CLASS: usize = 3;
+    /// A `SmallInteger`: an instruction index into the frame's code.
+    pub(in crate::heap) const PROGRAM_COUNTER: usize = 4;
+    /// A `SmallInteger`, the `CodeId` of the body that runs in the frame,
+    /// or nil when there is none to name: a top-level frame's.
+    pub(in crate::heap) const CODE_ID: usize = 5;
+    /// A `SmallInteger`, the frame kind's wire tag (`opcodes::FRAME_*`).
+    pub(in crate::heap) const KIND: usize = 6;
+    /// The closure of a closure activation, the class of the four
+    /// class-carrying kinds, nil otherwise.
+    pub(in crate::heap) const KIND_OPERAND: usize = 7;
+    /// `true` once the activation has returned.
+    pub(in crate::heap) const UNCONTINUABLE: usize = 8;
+    /// A `SmallInteger`, the stack entry index of the activation the frame
+    /// is married to, while it runs; nil once it has returned.
+    pub(in crate::heap) const MARRIED: usize = 9;
+    /// How many fixed fields there are: register `index` is word
+    /// `COUNT + index`.
+    pub(in crate::heap) const COUNT: usize = 10;
 }

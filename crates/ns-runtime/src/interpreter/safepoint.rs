@@ -274,7 +274,7 @@ impl Interpreter {
         self.world.move_epoch()
     }
 
-    /// Sets both arenas' collection limits directly, so a test can reach the
+    /// Sets the arena's collection limit directly, so a test can reach the
     /// trigger without allocating up to `COLLECTION_FLOOR` first.
     pub fn set_collection_floor(&mut self, floor: usize) {
         self.world.set_collection_floor(floor);

@@ -70,6 +70,9 @@ pub enum Record<'gc> {
     Array(Vec<Value<'gc>>),
     Closure(NewClosure<'gc>),
     Class(NewClass<'gc>),
+    /// An activation object, which is the frame object it names: filling
+    /// one gives that frame object the record's identity hash
+    /// (`Heap::alias_placeholders` says what becomes of the placeholder).
     Activation(FrameReference<'gc>),
 }
 

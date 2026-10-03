@@ -118,8 +118,8 @@ pub enum DecodeError {
     ClassRecordAppliesAClassSide,
     /// An activation record (`OBJECT_ACTIVATION`) whose header is not the
     /// builtin `Activation`, or a record of another kind whose header is.
-    /// Only `Mutator::new_activation_object` makes an activation object, and
-    /// it gives every one that class and nothing else that class, so a
+    /// Only a reified frame is an activation object, and every frame object
+    /// is an instance of that class and nothing else is, so a
     /// mismatch describes an object no live world has -- an activation
     /// answering some other class's methods, or an ordinary object answering
     /// `Activation`'s, which read other frames and unwind the stack.
@@ -3283,7 +3283,7 @@ pub fn decode_graph_section<'gc>(
         .heap
         .class_application(placeholder_class)
         .ok_or(DecodeError::NotAClass)?;
-    let objects: Vec<ObjectReference> = (0..object_count)
+    let mut objects: Vec<ObjectReference> = (0..object_count)
         .map(|_| context.mutator.heap.allocate_placeholder(placeholder_class))
         .collect();
     let frames: Vec<FrameReference> = (0..frame_count)
@@ -3297,6 +3297,8 @@ pub fn decode_graph_section<'gc>(
     let mut pending_classes: Vec<PendingClass> = Vec::new();
     let mut pending_metaclasses: Vec<usize> = Vec::new();
     let mut pending_futures: Vec<Value<'gc>> = Vec::new();
+    // Each activation record's placeholder and the frame object it is.
+    let mut activation_aliases: Vec<(ObjectReference<'gc>, ObjectReference<'gc>)> = Vec::new();
     let metaclass_rows = metaclass_rows(context.mixins);
     let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
     let symbol_class = context.mutator.builtin_class(BuiltinClass::Symbol);
@@ -3367,7 +3369,11 @@ pub fn decode_graph_section<'gc>(
             // One frame id, resolved like a closure's captured frame: every
             // frame was placeholder-allocated before this pass, so a forward
             // reference is ordinary and an id past the table is `BadFrameId`.
-            OBJECT_ACTIVATION => Record::Activation(decode_frame_id(reader, &tables)?),
+            OBJECT_ACTIVATION => {
+                let frame = decode_frame_id(reader, &tables)?;
+                activation_aliases.push((*object, context.mutator.heap.frame_object(frame)));
+                Record::Activation(frame)
+            }
             OBJECT_CLASS => {
                 let (class_record, applied, mixin) =
                     decode_class_record(reader, context, &tables, &placeholder_application)?;
@@ -3453,6 +3459,17 @@ pub fn decode_graph_section<'gc>(
                 .record_canonical_symbol(symbol, *object);
         }
     }
+    // An activation object is its frame's object, so every reference to an
+    // activation record's placeholder -- one read before the record
+    // included -- becomes one to that frame object.
+    context
+        .mutator
+        .heap
+        .alias_placeholders(&activation_aliases, &mut objects);
+    let tables = Tables {
+        objects: &objects,
+        frames: &frames,
+    };
     // Every record is in, so a future's computation is a closure now or
     // never: `future_state` reads an unresolved future with anything else
     // there as malformed.
@@ -3471,7 +3488,24 @@ pub fn decode_graph_section<'gc>(
     context.mutator.heap.stamp_dispatch_ids(&objects);
     for frame in &frames {
         let decoded = decode_frame(reader, context, &tables, symbols)?;
-        context.mutator.heap.fill_frame(*frame, decoded);
+        let (arguments, temporaries) = (decoded.arguments.len(), decoded.temporaries.len());
+        let heap = &mut context.mutator.heap;
+        heap.fill_frame(*frame, decoded);
+        // A frame keeps no split between its arguments and its temporaries
+        // -- its code's argument count is it -- so a record's own split is
+        // held to that code here, before it is lost. An empty register file
+        // is what a returning activation nothing read by reference used to
+        // leave behind, and is accepted as `verify_graph` accepts it.
+        if let Some(code) = heap.frame_code(*frame) {
+            if arguments + temporaries != 0 && arguments != usize::from(code.argument_count) {
+                return Err(DecodeError::FrameRegisterFile {
+                    arguments,
+                    locals: temporaries,
+                    argument_count: code.argument_count,
+                    register_count: code.register_count,
+                });
+            }
+        }
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
@@ -3718,43 +3752,12 @@ fn decode_applied_clause(
 /// captured by one (`verify_closure` refuses that) -- so there is nothing to
 /// reconcile.
 fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
-    /// The mixin whose code a class-carrying frame kind names. `None` only
-    /// if the decoded value is not a class object -- `decode_class_tag`
-    /// never produces one, but returning `None` keeps a future change to it
-    /// from turning an untrusted image into a panic here.
-    fn frame_mixin<'gc>(
-        heap: &Heap<'gc>,
-        class: crate::types::ClassReference<'gc>,
-    ) -> Option<Rc<crate::mixin::Mixin>> {
-        heap.class_application(class)
-            .map(|application| application.mixin.clone())
-    }
-    match &heap.frame_kind(frame) {
-        FrameKind::Method(method) => Some(method.code.clone()),
-        FrameKind::Initializer(class) => {
-            frame_mixin(heap, *class).and_then(|mixin| mixin.initializer_code.clone())
-        }
-        // Each clause activation resolves against the field its own body
-        // lives in. They share `Initializer`'s frame shape -- a class's code
-        // running on an instance -- but not its body, so resolving them here
-        // as initializers would reconcile a frame against a body that never
-        // ran in it: a legitimate image refused, and a crafted one checked
-        // against the wrong register file.
-        FrameKind::SuperclassClause(class) => {
-            frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_clause_code.clone())
-        }
-        FrameKind::SuperclassMessage(class) => {
-            frame_mixin(heap, *class).and_then(|mixin| mixin.superclass_message_code.clone())
-        }
-        // The level names its clause, and the clause its body: the applying
-        // class's mixin holds one message body per clause, so the class alone
-        // would not say which ran.
-        FrameKind::MixinApplicationMessage(level) => heap
-            .class_applied_clause(*level)
-            .and_then(|clause| clause.message_code),
-        FrameKind::Closure(closure) => heap.closure_code(*closure),
-        FrameKind::TopLevel => None,
-    }
+    // `fill_frame` found it from the frame's kind, as a reified frame's is
+    // its activation's: a method's own, a closure's, and for a
+    // class-carrying kind the field of the class's mixin its body lives
+    // in -- each clause activation's own, never the instance initializer,
+    // which would reconcile a frame against a body that never ran in it.
+    heap.frame_code(frame)
 }
 
 /// Every decoded frame and every decoded closure against the code the
@@ -3765,14 +3768,14 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    that runs in it. A frame's `program_counter` counts instructions (an
 ///    image carries only bytecode), but which body it counts them in is only
 ///    known once the decoded mixins carry their code.
-/// 1. A frame's register file must match the body that runs in it -- the
-///    same `arguments` count, and at least as many registers -- or be empty,
-///    which is what a returning activation nothing reads by reference leaves
-///    behind. (At least, not
-///    exactly: a frame's register file is grown, never shrunk -- the
-///    liveness spec's reified activations may be wider than the body
-///    currently running in them -- so a wider frame is legitimate and only
-///    a narrower one is a crafted image.)
+/// 1. A frame's register file must match the body that runs in it -- at
+///    least as many registers -- or be empty, which is what a returning
+///    activation nothing read by reference used to leave behind. (At least,
+///    not exactly: the liveness spec's reified activations may be wider
+///    than the body currently running in them, so a wider frame is
+///    legitimate and only a narrower one is a crafted image.) Its arguments
+///    are its code's; `decode_graph_section` held the record's own split to
+///    them as it filled the frame.
 /// 2. A closure's `captured_frame` must be an activation of the body its
 ///    own body is lexically nested in. Nothing else in the format ties the
 ///    two together, and `verify_code_table`'s outer-local bound -- which
@@ -3792,7 +3795,7 @@ pub fn verify_graph<'gc>(
         let Some(code) = frame_body(heap, *frame) else {
             continue;
         };
-        let (program_counter, argument_count, temporary_count) = heap.frame_register_shape(*frame);
+        let (program_counter, argument_count, register_count) = heap.frame_register_shape(*frame);
         // The VM stores the index of the instruction it is
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
@@ -3804,16 +3807,14 @@ pub fn verify_graph<'gc>(
             });
         }
         // An empty register file is what a returning activation that was
-        // never marked leaves behind (`Heap::pop_activation`): nothing
-        // reaches its registers any more, so it keeps none. Every other
-        // shape is still held to the body's.
-        if argument_count + temporary_count != 0
-            && (argument_count != code.argument_count as usize
-                || argument_count + temporary_count < code.register_count as usize)
-        {
+        // never marked used to leave behind: nothing reaches its registers
+        // any more. Every other shape is still held to the body's; its
+        // arguments are, since a frame's are its code's, and the record's
+        // own split was held to them as it was decoded.
+        if register_count != 0 && register_count < code.register_count as usize {
             return Err(DecodeError::FrameRegisterFile {
                 arguments: argument_count,
-                locals: temporary_count,
+                locals: register_count - argument_count,
                 argument_count: code.argument_count,
                 register_count: code.register_count,
             });

@@ -1,8 +1,8 @@
 //! The heap seam. Every read and write of an `Object` or an activation goes
 //! through `Heap`, so that replacing what sits behind a handle changes this
-//! file rather than its call sites. Objects and reified frames live in arenas
-//! of typed handles (`ObjectReference`, `FrameReference`); see
-//! `docs/design/memory.md`. A running activation lives on the activation stack,
+//! file rather than its call sites. Objects -- a reified frame among them,
+//! an object of the frame format -- live in one arena of typed handles
+//! (`ObjectReference`, `FrameReference`); see `docs/design/memory.md`. A running activation lives on the activation stack,
 //! also owned here, and is named by an `ActivationReference` that nothing may
 //! store; a frame exists for it only once `reify` creates one. The accessor
 //! prefix says which handle an accessor takes: `activation_*` a live stack
@@ -31,7 +31,7 @@ mod value;
 mod world;
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header};
-use object::{ClassData, ClosureData, Frame, FrameSlot, Object, ObjectData, PackedString};
+use object::{frame_field, ClassData, ClosureData, Object, ObjectData, PackedString};
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
@@ -138,9 +138,10 @@ impl std::fmt::Debug for ObjectReference<'_> {
 /// handle type.
 pub type ClassReference<'gc> = ObjectReference<'gc>;
 
-/// An opaque handle to a *reified* activation: an index into `Heap.frames`.
-/// The inner index is private to this module. See `docs/design/memory.md`,
-/// "The seam".
+/// An opaque handle to a *reified* activation: the index of its frame
+/// object in `Heap.objects` (`Heap::frame_object`), kept a type of its own
+/// so that only a frame object is ever read as a frame. The inner index is
+/// private to this module. See `docs/design/memory.md`, "The seam".
 ///
 /// A running activation is named by an `ActivationReference` instead; a
 /// `FrameReference` exists for one only once something must hold it past the
@@ -211,7 +212,7 @@ impl std::fmt::Debug for FrameReference<'_> {
 /// stack. Where a `FrameReference` names a reified activation that may be
 /// stored anywhere, an `ActivationReference` is valid only until its entry is
 /// popped -- the next activation at that depth reuses the index. That is why
-/// nothing stores one: `ClosureData`, `Frame` and every image record take a
+/// nothing stores one: `ClosureData`, a frame object and every image record take a
 /// `FrameReference`, which `Heap::reify` answers for a live activation. See
 /// `docs/design/execution.md`, "Activations", "Representation".
 ///
@@ -387,8 +388,7 @@ struct ActivationStack<'gc> {
 }
 
 /// The initial value of `Heap::collection_floor`, and of
-/// `next_object_collection` and `next_frame_collection` before anything has
-/// collected (`docs/design/memory.md`, "The trigger and the growth policy").
+/// `next_object_collection` before anything has collected (`docs/design/memory.md`, "The trigger and the growth policy").
 const COLLECTION_FLOOR: usize = 4096;
 
 pub struct Heap<'gc> {
@@ -398,21 +398,22 @@ pub struct Heap<'gc> {
     /// collector and a snapshot (`docs/design/memory.md`) and allocation
     /// order stays unobservable (`docs/design/object-model.md`).
     next_identity_hash: u32,
-    /// Every *reified* activation, addressed by a `FrameReference`'s index: one
-    /// `Heap::reify` created because a block captured it, or one the image
-    /// decoder rebuilt. Nothing is removed except by a collection's
-    /// compaction, which shrinks this back to its live set and rewrites
-    /// every surviving `FrameReference`. An activation that is never
-    /// reified never reaches this arena at all.
-    frames: Vec<FrameSlot<'gc>>,
     /// Every live activation. A stack entry is popped when its activation
-    /// returns, so -- unlike `frames` and `objects` -- this is bounded by
-    /// the deepest the program has been, not by everything it has run.
+    /// returns, so -- unlike `objects` -- this is bounded by the deepest the
+    /// program has been, not by everything it has run.
     stack: ActivationStack<'gc>,
-    /// Every object, addressed by an `ObjectReference`'s index. Nothing is
-    /// removed except by a collection's compaction, for the same reason as
-    /// `frames`.
+    /// Every object, addressed by an `ObjectReference`'s index -- and every
+    /// *reified* activation, as an object of the frame format addressed by
+    /// a `FrameReference`'s: one `Heap::reify` created because a block
+    /// captured it, or one the image decoder rebuilt. An activation that is
+    /// never reified never reaches the arena at all. Nothing is removed
+    /// except by a collection's compaction, which shrinks this back to its
+    /// live set and rewrites every surviving handle.
     objects: Vec<Object<'gc>>,
+    /// The kernel-private `Activation` class, every frame object's class
+    /// (`set_activation_class`). A handle the heap holds, so a collection
+    /// marks it as a root and forwards it.
+    activation_class: Option<ClassReference<'gc>>,
     /// The one object each symbol is, indexed by `Symbol::index` (§5.1.6:
     /// equal symbols are one object; `docs/design/object-model.md`,
     /// "Values and objects"). Filled lazily by `Mutator::new_symbol`, the one
@@ -439,7 +440,6 @@ pub struct Heap<'gc> {
     /// Checked against the length the allocation already has in hand, so the
     /// hot path pays one predictable branch and carries no counter.
     next_object_collection: usize,
-    next_frame_collection: usize,
     /// Whether a limit has been reached since the last collection. Separate
     /// from `safepoint_requested`, which only means "take the slow path" and
     /// which a stress mode holds set for its own reasons.
@@ -476,8 +476,8 @@ pub struct Heap<'gc> {
     epoch: u32,
 }
 
-/// Prints the counter and how many frames, activations, objects and host
-/// roots there are, never their contents. A
+/// Prints the counter and how many activations, objects and host roots
+/// there are, never their contents. A
 /// derived `Debug` would walk every activation and every object ever
 /// allocated, and a method's declaration reachable through a frame's kind
 /// would print a whole AST -- the same hazard `CLAUDE.md`'s
@@ -498,7 +498,6 @@ impl std::fmt::Debug for Heap<'_> {
         };
         f.debug_struct("Heap")
             .field("next_identity_hash", &self.next_identity_hash)
-            .field("frames.len()", &self.frames.len())
             .field("activations", &self.stack.entries.len())
             .field("objects.len()", &self.objects.len())
             .field("canonical_symbols.len()", &self.canonical_symbols.len())
@@ -517,7 +516,7 @@ pub(crate) trait Relocation {
     fn apply(&self, index: u32) -> u32;
 }
 
-/// A rotation of one arena: slot `i` moves to `(i + shift) % length`.
+/// A rotation of the arena: slot `i` moves to `(i + shift) % length`.
 #[cfg(debug_assertions)]
 #[derive(Clone, Copy)]
 struct Rotation {
@@ -638,7 +637,6 @@ pub(crate) struct Forwarder<M: Relocation> {
     #[cfg(debug_assertions)]
     to_epoch: u32,
     objects: M,
-    frames: M,
 }
 
 impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
@@ -659,6 +657,7 @@ impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
         handle.index = self.objects.apply(handle.index);
     }
 
+    /// A frame is its frame object, so it moves as the object does.
     fn frame(&mut self, handle: &mut FrameReference<'_>) {
         #[cfg(debug_assertions)]
         {
@@ -673,7 +672,7 @@ impl<M: Relocation> crate::trace::Tracer for Forwarder<M> {
             );
             handle.epoch = self.to_epoch;
         }
-        handle.index = self.frames.apply(handle.index);
+        handle.index = self.objects.apply(handle.index);
     }
 
     /// A stored word carries no origin or epoch to check: `Heap::store`
@@ -715,38 +714,60 @@ impl crate::trace::Trace for StackEntry<'_> {
     }
 }
 
-/// The arenas' occupancy, read without disturbing them
-/// (`Heap::heap_statistics`): `live_*` is the arena's length, `*_slots` its
-/// capacity -- the gap between them is what a collection can still give
-/// back before either arena grows.
+/// The arena's occupancy, read without disturbing it
+/// (`Heap::heap_statistics`): `live_objects` is the arena's length,
+/// `object_slots` its capacity -- the gap between them is what a collection
+/// can still give back before the arena grows. A reified frame is an object
+/// and counts as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeapStatistics {
     pub live_objects: usize,
     pub object_slots: usize,
-    pub live_frames: usize,
-    pub frame_slots: usize,
 }
 
 /// The collector's counts and pauses, read without disturbing them
 /// (`Heap::collector_statistics`): `collections`, `total_pause` and
 /// `longest_pause` accumulate across every `World::collect` so far;
-/// `live_objects`/`live_frames` are the arenas' occupancy right now, the
-/// same fields `HeapStatistics` reports.
+/// `live_objects` is the arena's occupancy right now, the same field
+/// `HeapStatistics` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollectorStatistics {
     pub collections: usize,
     pub total_pause: std::time::Duration,
     pub longest_pause: std::time::Duration,
     pub live_objects: usize,
-    pub live_frames: usize,
+}
+
+/// A frame object's fixed fields as values and handles, before
+/// `Heap::frame_payload` stores them (`object.rs`'s `frame_field` gives
+/// the layout). Its married field is not here: only `reify` sets it.
+struct FrameFields<'gc> {
+    sender: Option<FrameReference<'gc>>,
+    home: Option<FrameReference<'gc>>,
+    receiver: Value<'gc>,
+    current_class: Option<ClassReference<'gc>>,
+    program_counter: usize,
+    /// The body that runs in the frame; `None` only for a top-level one.
+    code: Option<CodeId>,
+    kind: FrameKind<'gc>,
+    uncontinuable: bool,
+}
+
+/// A count or an index as the `SmallInteger` word a frame field stores.
+/// Every one a frame stores -- a program counter, a code id, a kind tag, a
+/// stack index -- is far inside 61 bits; saturating keeps a count past
+/// them from panicking.
+fn count_word(count: usize) -> Word {
+    let count = i64::try_from(count).unwrap_or(SMALL_INTEGER_MAX);
+    Value::small_integer(count.min(SMALL_INTEGER_MAX)).word()
 }
 
 impl<'gc> Heap<'gc> {
     /// A `Heap` built on the spot -- rather than the one `Interpreter` owns --
     /// is an empty arena: every object and frame accessor indexes directly into
-    /// `self.objects`/`self.frames`, so an `ObjectReference` or
+    /// `self.objects`, so an `ObjectReference` or
     /// `FrameReference` minted by a different `Heap` either falls out of range
-    /// and panics, or -- should the two arenas happen to share a length --
+    /// and panics, or -- should the two heaps' arenas happen to share a length --
     /// names a different object or activation. In a debug build the second case
     /// is refused, not silent: every handle carries the id of the heap that
     /// minted it, and every accessor checks it against `self.heap_id` before
@@ -762,9 +783,9 @@ impl<'gc> Heap<'gc> {
     fn new() -> Heap<'gc> {
         Heap {
             next_identity_hash: 1,
-            frames: Vec::new(),
             stack: ActivationStack::default(),
             objects: Vec::new(),
+            activation_class: None,
             canonical_symbols: Vec::new(),
             host_roots: std::cell::RefCell::new(HostRoots {
                 slots: Vec::new(),
@@ -772,7 +793,6 @@ impl<'gc> Heap<'gc> {
             }),
             safepoint_requested: false,
             next_object_collection: COLLECTION_FLOOR,
-            next_frame_collection: COLLECTION_FLOOR,
             collection_requested: false,
             collection_floor: COLLECTION_FLOOR,
             collections: 0,
@@ -1009,19 +1029,6 @@ impl<'gc> Heap<'gc> {
         handle
     }
 
-    /// An instance of the kernel-private `Activation` class over `frame`,
-    /// which the caller has already reified: an object keeps a
-    /// `FrameReference`, never an `ActivationReference`, since only a
-    /// reified frame survives its activation's pop.
-    pub(crate) fn allocate_activation(
-        &mut self,
-        class: ClassReference<'gc>,
-        frame: FrameReference<'gc>,
-    ) -> ObjectReference<'gc> {
-        self.check_frame_origin(frame);
-        self.allocate_object(class, ObjectData::Activation(frame))
-    }
-
     /// An object for `image::decode::decode_graph_section`'s first pass to
     /// fill later (`fill_placeholder`): an instance of `class` with no
     /// fields, safe to hold and never observed before it is filled.
@@ -1033,7 +1040,11 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Replaces the entirety of a placeholder object's contents in one
-    /// write: `class`, `identity_hash` and the payload `record` names.
+    /// write: `class`, `identity_hash` and the payload `record` names -- but
+    /// for an activation record, which names a frame object that already
+    /// exists: that frame object takes `identity_hash`, and the decoder
+    /// aliases the placeholder to it once every record is in
+    /// (`alias_placeholders`).
     /// `image::decode::decode_graph_section`'s second pass is the only
     /// caller, and it only ever calls this on a handle its first pass
     /// placeholder-allocated and nothing else has observed yet -- before
@@ -1067,9 +1078,13 @@ impl<'gc> Heap<'gc> {
             }
             Record::Closure(closure) => ObjectData::Closure(self.closure_payload(closure)),
             Record::Class(class) => ObjectData::Class(Box::new(Self::class_payload(class))),
+            // The frame object is the activation object: it takes the
+            // record's identity hash, and the placeholder stays as it is,
+            // for the decoder to alias to it (`alias_placeholders`).
             Record::Activation(frame) => {
-                self.check_frame_origin(frame);
-                ObjectData::Activation(frame)
+                let target = self.frame_object(frame);
+                self.object_set_identity_hash(target, identity_hash);
+                return;
             }
         };
         self.objects[object.index as usize] =
@@ -1113,6 +1128,8 @@ impl<'gc> Heap<'gc> {
         }
     }
 
+    /// The `FrameReference` for the frame object at `index`; only a frame
+    /// object's index is ever passed.
     fn frame_handle(&self, index: u32) -> FrameReference<'gc> {
         FrameReference {
             index,
@@ -1126,56 +1143,138 @@ impl<'gc> Heap<'gc> {
 
     // ---------- Frame construction ----------
     //
-    // A frame carries no identity hash -- Newspeak's `identityHash` applies
-    // to objects, not activation records. `reify` builds a real activation's
-    // frame; `image::decode::decode_graph_section`'s first pass allocates a
+    // A reified activation is an object of the frame format and an instance
+    // of the kernel-private `Activation` class: the fixed fields
+    // `object.rs`'s `frame_field` names, then a register file. A frame
+    // carries no identity hash until something asks for one, like every
+    // object. `reify` builds a real activation's frame;
+    // `image::decode::decode_graph_section`'s first pass allocates a
     // placeholder (`allocate_placeholder_frame`) and its second pass fills
     // it wholesale (`fill_frame`).
 
-    /// Allocates `frame`. Every `FrameReference` in the workspace is minted
-    /// here -- `reify`, the placeholder the image decoder fills and the test
-    /// support below all come through it -- so that replacing what backs a
-    /// handle only ever touches the heap module.
+    /// Records the class every frame object is an instance of: the
+    /// kernel-private `Activation`. The bootstrap records it where it builds
+    /// the builtin classes, before anything can reify an activation; a bare
+    /// heap's test records one of its own.
+    pub(crate) fn set_activation_class(&mut self, class: ClassReference<'gc>) {
+        self.check_object_origin(class);
+        self.activation_class = Some(class);
+    }
+
+    /// Allocates a frame object of `fields` holding `registers` and then
+    /// nils up to `register_count`. Every `FrameReference` in the workspace
+    /// is minted here or by `object_frame`, from a frame object's index.
     ///
-    /// `Frame.home` is what `closure_home` reads back for a closure created
-    /// in this frame, and the image records it, so it must be populated
-    /// exactly for a `FrameKind::Closure`
-    /// activation. `reify` upholds that by building `home` from the entry's
-    /// `kind`, but nothing in the type system ties the two fields together,
-    /// so a new constructor added later -- or a mismatched pair of literal
-    /// fields at an existing one -- would record a return target that
-    /// disagrees with the frame's own closure silently rather than fail
-    /// loudly. Checked here, once, rather than at every constructor. Not
-    /// checked in `fill_frame`: the decoder fills a placeholder through
-    /// that path with fields read off the wire, and nothing reactivates a
-    /// decoded frame, so it need not satisfy this.
-    fn allocate_frame(&mut self, frame: Frame<'gc>) -> FrameReference<'gc> {
+    /// `home` is what `closure_home` reads back for a closure created in
+    /// this frame, and the image records it, so it must be populated
+    /// exactly for a `FrameKind::Closure` activation. `reify` upholds that
+    /// by building `home` from the entry's `kind`, but nothing in the type
+    /// system ties the two fields together, so a new constructor added
+    /// later would record a return target that disagrees with the frame's
+    /// own closure silently rather than fail loudly. Checked here, once,
+    /// rather than at every constructor. Not checked in `fill_frame`: the
+    /// decoder fills a placeholder through that path with fields read off
+    /// the wire, and nothing reactivates a decoded frame, so it need not
+    /// satisfy this.
+    fn allocate_frame(
+        &mut self,
+        fields: FrameFields<'gc>,
+        registers: &[Value<'gc>],
+        register_count: usize,
+    ) -> FrameReference<'gc> {
         debug_assert_eq!(
-            frame.home.is_some(),
-            matches!(frame.kind, FrameKind::Closure(_)),
-            "Frame.home must be populated exactly for a closure activation"
+            fields.home.is_some(),
+            matches!(fields.kind, FrameKind::Closure(_)),
+            "a frame's home must be populated exactly for a closure activation"
         );
-        let index = u32::try_from(self.frames.len())
-            .expect("more than u32::MAX activations allocated in one heap");
-        self.frames.push(FrameSlot { frame, live: None });
-        self.frame_handle(index)
+        let class = self
+            .activation_class
+            .expect("internal: the bootstrap records the Activation class before anything reifies");
+        let data = self.frame_payload(fields, registers, register_count);
+        let object = self.allocate_object(class, data);
+        self.frame_handle(object.index)
+    }
+
+    /// A frame object's payload: `fields` stored, `registers` stored after
+    /// them, then nils up to `register_count` registers in all.
+    fn frame_payload(
+        &self,
+        fields: FrameFields<'gc>,
+        registers: &[Value<'gc>],
+        register_count: usize,
+    ) -> ObjectData<'gc> {
+        let FrameFields {
+            sender,
+            home,
+            receiver,
+            current_class,
+            program_counter,
+            code,
+            kind,
+            uncontinuable,
+        } = fields;
+        let frame_word = |frame: Option<FrameReference<'gc>>| match frame {
+            Some(frame) => self.store(Value::object(self.frame_object(frame))),
+            None => Word::NIL,
+        };
+        let object_word = |object: Option<ObjectReference<'gc>>| match object {
+            Some(object) => self.store(Value::object(object)),
+            None => Word::NIL,
+        };
+        use crate::image::opcodes::{
+            FRAME_CLOSURE, FRAME_INITIALIZER, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
+            FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE, FRAME_TOP_LEVEL,
+        };
+        let (tag, operand) = match kind {
+            // The method is the code id's (`code_method`).
+            FrameKind::Method(_) => (FRAME_METHOD, None),
+            FrameKind::Closure(closure) => (FRAME_CLOSURE, Some(closure)),
+            FrameKind::TopLevel => (FRAME_TOP_LEVEL, None),
+            FrameKind::Initializer(class) => (FRAME_INITIALIZER, Some(class)),
+            FrameKind::SuperclassClause(class) => (FRAME_SUPERCLASS_CLAUSE, Some(class)),
+            FrameKind::SuperclassMessage(class) => (FRAME_SUPERCLASS_MESSAGE, Some(class)),
+            FrameKind::MixinApplicationMessage(class) => {
+                (FRAME_MIXIN_APPLICATION_MESSAGE, Some(class))
+            }
+        };
+        let mut words = [Word::NIL; frame_field::COUNT];
+        words[frame_field::SENDER] = frame_word(sender);
+        words[frame_field::HOME] = frame_word(home);
+        words[frame_field::RECEIVER] = self.store(receiver);
+        words[frame_field::CURRENT_CLASS] = object_word(current_class);
+        words[frame_field::PROGRAM_COUNTER] = count_word(program_counter);
+        words[frame_field::CODE_ID] = code.map_or(Word::NIL, |id| count_word(id.index()));
+        words[frame_field::KIND] = count_word(usize::from(tag));
+        words[frame_field::KIND_OPERAND] = object_word(operand);
+        words[frame_field::UNCONTINUABLE] = Value::boolean(uncontinuable).word();
+        debug_assert!(registers.len() <= register_count);
+        let mut data = ObjectData::frame(words, register_count);
+        if let ObjectData::Words { words, .. } = &mut data {
+            for (slot, register) in words[frame_field::COUNT..].iter_mut().zip(registers) {
+                *slot = self.store(*register).bits();
+            }
+        }
+        data
     }
 
     /// A frame for `image::decode::decode_graph_section`'s first pass to
     /// fill later (`fill_frame`): a top-level activation with no registers,
     /// safe to hold and never observed before it is filled.
     pub(crate) fn allocate_placeholder_frame(&mut self) -> FrameReference<'gc> {
-        self.allocate_frame(Frame {
-            receiver: Word::NIL,
-            arguments: Vec::new(),
-            temporaries: Vec::new(),
-            program_counter: 0,
-            sender: None,
-            home: None,
-            current_class: None,
-            kind: FrameKind::TopLevel,
-            uncontinuable: false,
-        })
+        self.allocate_frame(
+            FrameFields {
+                sender: None,
+                home: None,
+                receiver: Value::nil(),
+                current_class: None,
+                program_counter: 0,
+                code: None,
+                kind: FrameKind::TopLevel,
+                uncontinuable: false,
+            },
+            &[],
+            0,
+        )
     }
 
     /// A returned top-level frame no activation produced, built from values.
@@ -1201,21 +1300,79 @@ impl<'gc> Heap<'gc> {
         if let Some(current_class) = current_class {
             self.check_object_origin(current_class);
         }
-        let frame = Frame {
-            receiver: self.store(receiver),
-            arguments: Vec::new(),
-            temporaries: temporaries
-                .iter()
-                .map(|temporary| self.store(*temporary))
-                .collect(),
-            program_counter: 0,
-            sender,
-            home: None,
-            current_class,
-            kind: FrameKind::TopLevel,
-            uncontinuable: true,
+        self.allocate_frame(
+            FrameFields {
+                sender,
+                home: None,
+                receiver,
+                current_class,
+                program_counter: 0,
+                code: None,
+                kind: FrameKind::TopLevel,
+                uncontinuable: true,
+            },
+            temporaries,
+            temporaries.len(),
+        )
+    }
+
+    /// The frame object `frame` is: the object the kernel's exception
+    /// machinery holds as an activation, and what a frame's `sender` and
+    /// `home` fields store.
+    pub fn frame_object(&self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
+        self.check_frame_origin(frame);
+        self.object_handle(frame.index)
+    }
+
+    /// The frame `object` is, or `None` when it is no frame object. `None`
+    /// rather than a panic, so that a kernel leaf handed some other object
+    /// by a program answers a failure instead of aborting.
+    pub fn object_frame(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
+        self.check_object_origin(object);
+        (self.objects[object.index as usize].header.format() == Format::Frame)
+            .then(|| self.frame_handle(object.index))
+    }
+
+    /// Rewrites every handle the heap holds to each `(placeholder, target)`
+    /// pair's placeholder into one to its target, and `objects` with them,
+    /// leaving each placeholder unreferenced for the next collection. The
+    /// image decoder's one use: an activation record and the frame record
+    /// it names are two records on the wire but one frame object here, and
+    /// a record read before the activation record may already hold its
+    /// placeholder. Moves nothing, so no handle goes stale.
+    ///
+    /// Sound only where the placeholders are the decoder's own: no step
+    /// state, host root or stack entry can hold one.
+    pub(crate) fn alias_placeholders(
+        &mut self,
+        aliases: &[(ObjectReference<'gc>, ObjectReference<'gc>)],
+        objects: &mut [ObjectReference<'gc>],
+    ) {
+        use crate::trace::Tracer;
+        if aliases.is_empty() {
+            return;
+        }
+        let length = u32::try_from(self.objects.len())
+            .expect("internal: an arena is addressed by 32-bit indices");
+        let mut table: Vec<u32> = (0..length).collect();
+        for (placeholder, target) in aliases {
+            self.check_object_origin(*placeholder);
+            self.check_object_origin(*target);
+            table[placeholder.index as usize] = target.index;
+        }
+        let mut forwarder = Forwarder {
+            #[cfg(debug_assertions)]
+            heap_id: self.heap_id,
+            #[cfg(debug_assertions)]
+            from_epoch: self.epoch,
+            #[cfg(debug_assertions)]
+            to_epoch: self.epoch,
+            objects: ForwardingTable { table },
         };
-        self.allocate_frame(frame)
+        self.forward_everything(&mut forwarder);
+        for object in objects {
+            forwarder.object(object);
+        }
     }
 
     // ---------- Handle-origin checks ----------
@@ -1356,7 +1513,7 @@ impl<'gc> Heap<'gc> {
     //
     // `&self`/`&mut self` index into `self.objects`, so the borrow checker
     // ties every accessor's result to the `Heap` it read from -- the same
-    // discipline `docs/design/memory.md` describes for the frame arena.
+    // discipline `docs/design/memory.md` describes for frames.
 
     /// The identity hash stored on `object`, 0 if nothing has asked for one
     /// yet. A read never assigns one: the image encoder writes exactly what is
@@ -1447,6 +1604,7 @@ impl<'gc> Heap<'gc> {
             ObjectData::Words { .. } => match entry.header.format() {
                 Format::FixedPointers => ObjectShape::Instance,
                 Format::IndexablePointers => ObjectShape::Array,
+                Format::Frame => ObjectShape::Activation,
                 Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
                     ObjectShape::Symbol
                 }
@@ -1456,7 +1614,6 @@ impl<'gc> Heap<'gc> {
             },
             ObjectData::Closure(_) => ObjectShape::Closure,
             ObjectData::Class(_) => ObjectShape::Class,
-            ObjectData::Activation(_) => ObjectShape::Activation,
         }
     }
 
@@ -1863,7 +2020,7 @@ impl<'gc> Heap<'gc> {
     /// keeps a future gap there from becoming a panic on an untrusted image.
     ///
     /// `Step::Block` runs this on every block activation, so it allocates
-    /// nothing: the two arenas are borrowed field by field rather than
+    /// nothing: the arena and the stack are borrowed field by field rather than
     /// through `closure`, which borrows the whole `Heap`, so each value goes
     /// straight from the object arena into its register with no intermediate
     /// buffer.
@@ -1959,27 +2116,10 @@ impl<'gc> Heap<'gc> {
     /// `raise_return` already raises for a dead home.
     pub fn closure_home(&self, object: ObjectReference<'gc>) -> Option<FrameReference<'gc>> {
         let captured = self.closure(object)?.captured_frame;
-        self.check_frame_origin(captured);
-        let slot = &self.frames[captured.index as usize];
-        Some(match &slot.frame.kind {
-            FrameKind::Closure(_) => slot.frame.home.unwrap_or(captured),
-            _ => captured,
-        })
-    }
-
-    /// The frame activation object `object` reifies, or `None` when `object`
-    /// is not an activation object. `None` rather than a panic, so that a
-    /// kernel leaf handed some other object by a program answers a failure
-    /// instead of aborting.
-    pub fn activation_object_frame(
-        &self,
-        object: ObjectReference<'gc>,
-    ) -> Option<FrameReference<'gc>> {
-        self.check_object_origin(object);
-        match &self.objects[object.index as usize].data {
-            ObjectData::Activation(frame) => Some(*frame),
-            _ => None,
+        if !self.frame_runs_a_closure(captured) {
+            return Some(captured);
         }
+        Some(self.frame_home(captured).unwrap_or(captured))
     }
 
     /// Renders a value for a user-facing error message.
@@ -2028,8 +2168,10 @@ impl<'gc> Heap<'gc> {
                                 .unwrap_or_default(),
                         }
                     }
+                    ObjectData::Words { .. } if entry.header.format() == Format::Frame => {
+                        "an Activation".to_string()
+                    }
                     ObjectData::Closure(_) => "a Block".to_string(),
-                    ObjectData::Activation(_) => "an Activation".to_string(),
                     ObjectData::Class(_) => {
                         format!("the class {}", self.class_display_name(object))
                     }
@@ -2139,11 +2281,11 @@ impl<'gc> Heap<'gc> {
         self.tables.applications.get(index.index()).cloned()
     }
 
-    pub fn code_id(&mut self, code: &Rc<CompiledCode>) -> CodeId {
+    pub(crate) fn code_id(&mut self, code: &Rc<CompiledCode>) -> CodeId {
         self.register_code(code, None)
     }
 
-    pub fn code_id_of_method(&mut self, method: &Rc<MixinMethod>) -> CodeId {
+    pub(crate) fn code_id_of_method(&mut self, method: &Rc<MixinMethod>) -> CodeId {
         self.register_code(&method.code, Some(method))
     }
 
@@ -2687,12 +2829,13 @@ impl<'gc> Heap<'gc> {
     // dead. `frame_local`/`frame_set_local` (with the activation stack, below)
     // follow the marriage instead.
     //
-    // Only the accessors a caller actually needs are added here;
-    // `frame_argument_count` and `frame_program_counter` have no caller yet, so they
-    // are not here. Three have only test callers: `frame_set_program_counter`,
-    // `frame_sender` and `frame_is_uncontinuable` read or write fields the
-    // image format records per frame, and the image and interpreter tests build
-    // and check frame records through them. Nothing in the runtime decides
+    // Only the accessors a caller actually needs are public here; a frame's
+    // argument count and program counter are read through
+    // `frame_register_shape` and `frame_record`. Three have only test
+    // callers: `frame_set_program_counter`, `frame_sender` and
+    // `frame_is_uncontinuable` read or write fields the image format records
+    // per frame, and the image and interpreter tests build and check frame
+    // records through them. Nothing in the runtime decides
     // anything by those fields -- whether a frame is live is
     // `frame_activation`, never `frame_is_uncontinuable`.
 
@@ -2705,33 +2848,135 @@ impl<'gc> Heap<'gc> {
         frame.index as usize
     }
 
+    /// `frame`'s words: its fixed fields, then its registers. The one lender
+    /// of a frame object's payload, private to the heap, so that every
+    /// public accessor copies out (`docs/design/memory.md`, "The seam").
+    fn frame_words(&self, frame: FrameReference<'gc>) -> &[u64] {
+        self.check_frame_origin(frame);
+        match &self.objects[frame.index as usize].data {
+            ObjectData::Words { words, .. } => words,
+            _ => unreachable!("internal: a frame handle names a frame object"),
+        }
+    }
+
+    /// `frame_words`, for a write.
+    fn frame_words_mut(&mut self, frame: FrameReference<'gc>) -> &mut [u64] {
+        self.check_frame_origin(frame);
+        match &mut self.objects[frame.index as usize].data {
+            ObjectData::Words { words, .. } => words,
+            _ => unreachable!("internal: a frame handle names a frame object"),
+        }
+    }
+
+    /// The fixed field `field` of `frame`, as a value.
+    fn frame_field(&self, frame: FrameReference<'gc>, field: usize) -> Value<'gc> {
+        self.load(Word::from_bits(self.frame_words(frame)[field]))
+    }
+
+    /// A fixed field holding a count or an index; 0 for anything else, which
+    /// no frame this heap built stores.
+    fn frame_count_field(&self, frame: FrameReference<'gc>, field: usize) -> usize {
+        self.frame_field(frame, field)
+            .as_small_integer()
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or(0)
+    }
+
+    /// A fixed field holding a frame object, as its frame.
+    fn frame_frame_field(
+        &self,
+        frame: FrameReference<'gc>,
+        field: usize,
+    ) -> Option<FrameReference<'gc>> {
+        self.frame_field(frame, field)
+            .as_object()
+            .and_then(|object| self.object_frame(object))
+    }
+
+    /// The stack entry `words`' frame is married to, or `None` once its
+    /// activation has returned.
+    fn married_entry(&self, words: &[u64]) -> Option<u32> {
+        self.load(Word::from_bits(words[frame_field::MARRIED]))
+            .as_small_integer()
+            .and_then(|entry| u32::try_from(entry).ok())
+    }
+
+    /// Whether `frame` is a closure activation's.
+    fn frame_runs_a_closure(&self, frame: FrameReference<'gc>) -> bool {
+        self.frame_count_field(frame, frame_field::KIND)
+            == usize::from(crate::image::opcodes::FRAME_CLOSURE)
+    }
+
+    /// The body that runs (or ran) in `frame`, or `None` when it has none to
+    /// name: a top-level frame, or a decoded frame whose kind names a body
+    /// its class's mixin does not carry. `image::decode` reconciles a
+    /// decoded frame against it.
+    pub(crate) fn frame_code(&self, frame: FrameReference<'gc>) -> Option<Rc<CompiledCode>> {
+        let id = self
+            .frame_field(frame, frame_field::CODE_ID)
+            .as_small_integer()
+            .and_then(|id| usize::try_from(id).ok())
+            .and_then(CodeId::from_index)?;
+        self.code(id)
+    }
+
+    /// The body a frame of `kind` runs, found the way a decoded frame's is:
+    /// a method's own, a closure's, and for the four class-carrying kinds
+    /// the field of the class's mixin each one's body lives in -- or, for a
+    /// `<:` clause's message, the body the level's clause names, since the
+    /// applying class's mixin holds one per clause. `None` for a top-level
+    /// frame, and for a kind whose class names no such body.
+    fn kind_code(&self, kind: &FrameKind<'gc>) -> Option<Rc<CompiledCode>> {
+        let mixin = |class: ClassReference<'gc>| {
+            self.class_application(class)
+                .map(|application| application.mixin.clone())
+        };
+        match kind {
+            FrameKind::Method(method) => Some(method.code.clone()),
+            FrameKind::Initializer(class) => mixin(*class)?.initializer_code.clone(),
+            FrameKind::SuperclassClause(class) => mixin(*class)?.superclass_clause_code.clone(),
+            FrameKind::SuperclassMessage(class) => mixin(*class)?.superclass_message_code.clone(),
+            FrameKind::MixinApplicationMessage(level) => self
+                .class_applied_clause(*level)
+                .and_then(|clause| clause.message_code),
+            FrameKind::Closure(closure) => self.closure_code(*closure),
+            FrameKind::TopLevel => None,
+        }
+    }
+
+    /// The code id a frame of `kind` running `code` records: a method's
+    /// registered with its method, so that `frame_kind` finds the method
+    /// again; none for a top-level frame.
+    fn frame_code_id(
+        &mut self,
+        kind: &FrameKind<'gc>,
+        code: Option<&Rc<CompiledCode>>,
+    ) -> Option<CodeId> {
+        match kind {
+            FrameKind::Method(method) => Some(self.code_id_of_method(method)),
+            FrameKind::TopLevel => None,
+            _ => code.map(|code| self.code_id(code)),
+        }
+    }
+
+    /// How many of `frame`'s registers are arguments: its code's argument
+    /// count, never more than it has registers. A top-level frame takes none.
+    fn frame_argument_count(&self, frame: FrameReference<'gc>) -> usize {
+        let registers = self.frame_words(frame).len() - frame_field::COUNT;
+        self.frame_code(frame)
+            .map_or(0, |code| usize::from(code.argument_count))
+            .min(registers)
+    }
+
     /// A reified frame's receiver. Fixed when the frame is created, so it
     /// needs no redirect while the frame is married.
     pub fn frame_receiver(&self, frame: FrameReference<'gc>) -> Value<'gc> {
-        self.check_frame_origin(frame);
-        self.load(self.frames[frame.index as usize].frame.receiver)
+        self.frame_field(frame, frame_field::RECEIVER)
     }
 
     pub fn frame_current_class(&self, frame: FrameReference<'gc>) -> Option<ClassReference<'gc>> {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.current_class
-    }
-
-    /// Grows a *dead* frame's register file, filling with nil. A married
-    /// frame's registers are its live entry's window, so it cannot grow here:
-    /// edit-and-continue has to reify and divorce a running activation first
-    /// (`docs/design/execution.md`, "How this meets the liveness
-    /// requirements").
-    pub fn frame_grow_temporaries(&mut self, frame: FrameReference<'gc>, needed: usize) {
-        self.check_frame_origin(frame);
-        debug_assert!(
-            self.frames[frame.index as usize].live.is_none(),
-            "a married frame's registers live on the activation stack; grow them through its activation"
-        );
-        let stored_frame = &mut self.frames[frame.index as usize].frame;
-        if stored_frame.temporaries.len() < needed {
-            stored_frame.temporaries.resize(needed, Word::NIL);
-        }
+        self.frame_field(frame, frame_field::CURRENT_CLASS)
+            .as_object()
     }
 
     /// Test and format level: the image tests use it to give a dead frame a
@@ -2743,18 +2988,17 @@ impl<'gc> Heap<'gc> {
         frame: FrameReference<'gc>,
         program_counter: usize,
     ) {
-        self.check_frame_origin(frame);
         debug_assert!(
-            self.frames[frame.index as usize].live.is_none(),
+            self.frame_activation(frame).is_none(),
             "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
-        self.frames[frame.index as usize].frame.program_counter = program_counter;
+        self.frame_words_mut(frame)[frame_field::PROGRAM_COUNTER] =
+            count_word(program_counter).bits();
     }
 
     pub fn frame_home(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.home
+        self.frame_frame_field(frame, frame_field::HOME)
     }
 
     /// A reified frame's recorded sender. `None` for every frame the runtime
@@ -2763,18 +3007,19 @@ impl<'gc> Heap<'gc> {
     /// image decoder rebuilt from a record that carries one. Test and format
     /// level: only tests read it.
     pub fn frame_sender(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.sender
+        self.frame_frame_field(frame, frame_field::SENDER)
     }
 
     /// The frame a closure activation captured, or `None` for any other
     /// kind. `locals::frame_at_depth` walks this.
     pub fn frame_captured(&self, frame: FrameReference<'gc>) -> Option<FrameReference<'gc>> {
-        self.check_frame_origin(frame);
-        match &self.frames[frame.index as usize].frame.kind {
-            FrameKind::Closure(closure) => self.closure_captured_frame(*closure),
-            _ => None,
+        if !self.frame_runs_a_closure(frame) {
+            return None;
         }
+        let closure = self
+            .frame_field(frame, frame_field::KIND_OPERAND)
+            .as_object()?;
+        self.closure_captured_frame(closure)
     }
 
     /// The frame's recorded `uncontinuable` flag. Test and format level:
@@ -2783,81 +3028,112 @@ impl<'gc> Heap<'gc> {
     /// `raise_return` treats every decoded frame as dead, because it
     /// decides by `frame_activation`, and a decoded frame is never married.
     pub fn frame_is_uncontinuable(&self, frame: FrameReference<'gc>) -> bool {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.uncontinuable
+        self.frame_field(frame, frame_field::UNCONTINUABLE)
+            .as_boolean()
+            == Some(true)
     }
 
-    /// A copy of `frame`'s `kind`. Cloning is cheap -- every variant holds
-    /// at most an `Rc` -- and `image::decode` is the only caller that needs
-    /// to match on the *whole* kind rather than one variant's payload
-    /// (`frame_captured`): once to resolve which of `Initializer`/
-    /// `SuperclassClause`/`SuperclassMessage`/`MixinApplicationMessage` a
-    /// frame carries a class for
-    /// (`frame_body`), and once to check that a class-carrying kind's class
-    /// is itself a class reference (`check_class_references`).
+    /// `frame`'s `kind`, rebuilt from its kind tag, its kind operand and,
+    /// for a method, its code id. Cloning a method's is cheap -- an `Rc` --
+    /// and `image::decode` is the only caller that needs to match on the
+    /// *whole* kind rather than one variant's payload (`frame_captured`): to
+    /// check that a class-carrying kind's class is itself a class reference
+    /// (`check_class_references`).
     pub fn frame_kind(&self, frame: FrameReference<'gc>) -> FrameKind<'gc> {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize].frame.kind.clone()
+        use crate::image::opcodes::{
+            FRAME_CLOSURE, FRAME_INITIALIZER, FRAME_METHOD, FRAME_MIXIN_APPLICATION_MESSAGE,
+            FRAME_SUPERCLASS_CLAUSE, FRAME_SUPERCLASS_MESSAGE,
+        };
+        let operand = self
+            .frame_field(frame, frame_field::KIND_OPERAND)
+            .as_object();
+        let tag = u8::try_from(self.frame_count_field(frame, frame_field::KIND)).ok();
+        let kind = match tag {
+            Some(FRAME_METHOD) => self
+                .frame_field(frame, frame_field::CODE_ID)
+                .as_small_integer()
+                .and_then(|id| usize::try_from(id).ok())
+                .and_then(CodeId::from_index)
+                .and_then(|id| self.code_method(id))
+                .map(FrameKind::Method),
+            Some(FRAME_CLOSURE) => operand.map(FrameKind::Closure),
+            Some(FRAME_INITIALIZER) => operand.map(FrameKind::Initializer),
+            Some(FRAME_SUPERCLASS_CLAUSE) => operand.map(FrameKind::SuperclassClause),
+            Some(FRAME_SUPERCLASS_MESSAGE) => operand.map(FrameKind::SuperclassMessage),
+            Some(FRAME_MIXIN_APPLICATION_MESSAGE) => {
+                operand.map(FrameKind::MixinApplicationMessage)
+            }
+            _ => None,
+        };
+        // Every frame this heap built records what its kind needs: a method
+        // frame's code id names its method (`frame_code_id`), and every other
+        // kind but a top-level one has its operand.
+        debug_assert!(
+            kind.is_some() || tag == Some(crate::image::opcodes::FRAME_TOP_LEVEL),
+            "internal: a frame object records its kind"
+        );
+        kind.unwrap_or(FrameKind::TopLevel)
     }
 
-    /// `program_counter`, and how many of a frame's registers are `arguments`
-    /// versus `temporaries`, read together through one slice index rather than
-    /// three. `image::decode::verify_graph` checks all three against the shape
-    /// of the compiled body it reconciles every decoded frame against.
+    /// `program_counter`, how many of a frame's registers are arguments and
+    /// how many registers it has, read together. `image::decode::verify_graph`
+    /// checks them against the shape of the compiled body it reconciles
+    /// every decoded frame against.
     pub fn frame_register_shape(&self, frame: FrameReference<'gc>) -> (usize, usize, usize) {
-        self.check_frame_origin(frame);
         debug_assert!(
-            self.frames[frame.index as usize].live.is_none(),
+            self.frame_activation(frame).is_none(),
             "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
-        let stored_frame = &self.frames[frame.index as usize].frame;
         (
-            stored_frame.program_counter,
-            stored_frame.arguments.len(),
-            stored_frame.temporaries.len(),
+            self.frame_count_field(frame, frame_field::PROGRAM_COUNTER),
+            self.frame_argument_count(frame),
+            self.frame_words(frame).len() - frame_field::COUNT,
         )
     }
 
-    /// The whole of `frame`'s contents as values. `image::encode::encode_frame`
-    /// writes a whole frame record and `GraphTable::visit_frame` walks a
-    /// whole frame's references; both need every field. Not for a hot path:
-    /// it copies every register out.
+    /// The whole of `frame`'s contents as values, its registers split at its
+    /// code's argument count. `image::encode::encode_frame` writes a whole
+    /// frame record and `GraphTable::visit_frame` walks a whole frame's
+    /// references; both need every field. Not for a hot path: it copies
+    /// every register out.
     ///
     /// Only for a dead frame, which is also the encoder's precondition: it
     /// only ever runs between sends, when nothing is live, and
     /// `image::snapshot` refuses to start otherwise.
     pub fn frame_record(&self, frame: FrameReference<'gc>) -> FrameRecord<'gc> {
-        self.check_frame_origin(frame);
         debug_assert!(
-            self.frames[frame.index as usize].live.is_none(),
+            self.frame_activation(frame).is_none(),
             "a married frame's program counter and registers live on the activation stack; \
              read or write them only once its activation has returned"
         );
-        let stored_frame = &self.frames[frame.index as usize].frame;
+        let mut arguments: Vec<Value<'gc>> = self.frame_words(frame)[frame_field::COUNT..]
+            .iter()
+            .map(|bits| self.load(Word::from_bits(*bits)))
+            .collect();
+        let temporaries = arguments.split_off(self.frame_argument_count(frame));
         FrameRecord {
-            receiver: self.load(stored_frame.receiver),
-            arguments: stored_frame
-                .arguments
-                .iter()
-                .map(|word| self.load(*word))
-                .collect(),
-            temporaries: stored_frame
-                .temporaries
-                .iter()
-                .map(|word| self.load(*word))
-                .collect(),
-            program_counter: stored_frame.program_counter,
-            sender: stored_frame.sender,
-            home: stored_frame.home,
-            current_class: stored_frame.current_class,
-            kind: stored_frame.kind.clone(),
-            uncontinuable: stored_frame.uncontinuable,
+            receiver: self.frame_receiver(frame),
+            arguments,
+            temporaries,
+            program_counter: self.frame_count_field(frame, frame_field::PROGRAM_COUNTER),
+            sender: self.frame_sender(frame),
+            home: self.frame_home(frame),
+            current_class: self.frame_current_class(frame),
+            kind: self.frame_kind(frame),
+            uncontinuable: self.frame_is_uncontinuable(frame),
         }
     }
 
     /// Replaces the entirety of a frame's contents with `record`, the frame
-    /// equivalent of `fill_placeholder`.
+    /// equivalent of `fill_placeholder`: the frame object is rebuilt in its
+    /// own slot, with the record's arguments and temporaries as its
+    /// registers, keeping its class, its guard and its identity hash. Its
+    /// code is found from the record's kind (`kind_code`), so the record's
+    /// split between arguments and temporaries is not kept: a frame's
+    /// arguments are its code's (`image::decode::decode_graph_section`
+    /// checks the record against them).
+    ///
     /// `image::decode::decode_graph_section`'s second pass fills each frame
     /// its first pass placeholder-allocated, before `verify_graph` runs,
     /// which assumes every frame is already filled in; `tests/image.rs`
@@ -2870,7 +3146,7 @@ impl<'gc> Heap<'gc> {
         self.check_frame_origin(frame);
         let FrameRecord {
             receiver,
-            arguments,
+            mut arguments,
             temporaries,
             program_counter,
             sender,
@@ -2879,30 +3155,34 @@ impl<'gc> Heap<'gc> {
             kind,
             uncontinuable,
         } = record;
-        let filled = Frame {
-            receiver: self.store(receiver),
-            arguments: arguments
-                .into_iter()
-                .map(|value| self.store(value))
-                .collect(),
-            temporaries: temporaries
-                .into_iter()
-                .map(|value| self.store(value))
-                .collect(),
-            program_counter,
-            sender,
-            home,
-            current_class,
-            kind,
-            uncontinuable,
-        };
-        self.frames[frame.index as usize].frame = filled;
+        let code = self.kind_code(&kind);
+        let code = self.frame_code_id(&kind, code.as_ref());
+        arguments.extend(temporaries);
+        let register_count = arguments.len();
+        let data = self.frame_payload(
+            FrameFields {
+                sender,
+                home,
+                receiver,
+                current_class,
+                program_counter,
+                code,
+                kind,
+                uncontinuable,
+            },
+            &arguments,
+            register_count,
+        );
+        let entry = &self.objects[frame.index as usize];
+        let (class, header) = (entry.class, entry.header);
+        self.objects[frame.index as usize] =
+            Object::new(class, header.guard(), header.identity_hash(), data);
     }
 
     // ---------- The activation stack ----------
     //
     // A live activation is a `StackEntry` plus its window of `values`.
-    // `reify` marries an arena `Frame` to an entry when something must hold
+    // `reify` marries a frame object to an entry when something must hold
     // the activation past this call -- today, only a block being created --
     // and `pop_activation` divorces it again. See
     // `docs/design/execution.md`, "Activations", "Lifecycle".
@@ -2973,9 +3253,9 @@ impl<'gc> Heap<'gc> {
     /// sender, as a returned Smalltalk context has none. Answers the
     /// activation's continuation, which the run loop applies to its value.
     ///
-    /// The registers move into the frame only when the activation was
+    /// The registers are copied into the frame only when the activation was
     /// marked (`retain_registers`): something still reaches them by
-    /// reference. Otherwise they are dropped with the stack window -- a
+    /// reference. Otherwise the frame's own stay nil -- a
     /// variable nothing captured is unreachable once its activation
     /// returns, and a captured one the closure carries itself
     /// (`docs/design/execution.md`, "The closure keeps its defining
@@ -2994,20 +3274,23 @@ impl<'gc> Heap<'gc> {
             .expect("internal: an activation handle names a live entry");
         let base = entry.base as usize;
         if let Some(frame) = entry.reified {
-            let registers = &self.stack.values[base..];
-            let split = entry.argument_count as usize;
-            let (arguments, temporaries) = if entry.retains_registers {
-                (registers[..split].to_vec(), registers[split..].to_vec())
-            } else {
-                (Vec::new(), Vec::new())
+            self.check_frame_origin(frame);
+            let Heap { objects, stack, .. } = self;
+            let ObjectData::Words { words, .. } = &mut objects[frame.index as usize].data else {
+                unreachable!("internal: a frame handle names a frame object")
             };
-            let slot = &mut self.frames[frame.index as usize];
-            slot.frame.arguments = arguments;
-            slot.frame.temporaries = temporaries;
-            slot.frame.program_counter = entry.program_counter;
-            slot.frame.sender = None;
-            slot.frame.uncontinuable = true;
-            slot.live = None;
+            if entry.retains_registers {
+                for (register, word) in words[frame_field::COUNT..]
+                    .iter_mut()
+                    .zip(&stack.values[base..])
+                {
+                    *register = word.bits();
+                }
+            }
+            words[frame_field::PROGRAM_COUNTER] = count_word(entry.program_counter).bits();
+            words[frame_field::SENDER] = Word::NIL.bits();
+            words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
+            words[frame_field::MARRIED] = Word::NIL.bits();
         }
         self.stack.values.truncate(base);
         self.stack.counted -= usize::from(entry.counted);
@@ -3017,8 +3300,12 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The arena frame for a live activation, created married to it on the
-    /// first call and answered again on every later one.
+    /// The frame object for a live activation, created married to it on the
+    /// first call and answered again on every later one. It has its code's
+    /// full register file -- the activation's window -- every register nil
+    /// while the activation runs, since the live ones are the stack's: so no
+    /// frame object ever grows, and the divorce copies the registers in
+    /// place.
     pub fn reify(&mut self, activation: ActivationReference) -> FrameReference<'gc> {
         self.check_activation(activation);
         let entry_index = activation.index as usize;
@@ -3026,25 +3313,35 @@ impl<'gc> Heap<'gc> {
             return frame;
         }
         let entry = &self.stack.entries[entry_index];
-        let frame = Frame {
-            receiver: self.store(entry.receiver),
-            arguments: Vec::new(),
-            temporaries: Vec::new(),
-            program_counter: entry.program_counter,
-            sender: None,
-            home: match &entry.kind {
-                FrameKind::Closure(closure) => self.closure_home(*closure),
-                _ => None,
-            },
-            current_class: entry.current_class,
-            kind: entry.kind.clone(),
-            uncontinuable: false,
+        let (receiver, current_class, program_counter) =
+            (entry.receiver, entry.current_class, entry.program_counter);
+        let (kind, code) = (entry.kind.clone(), entry.code.clone());
+        let window_end = self
+            .stack
+            .entries
+            .get(entry_index + 1)
+            .map_or(self.stack.values.len(), |above| above.base as usize);
+        let register_count = window_end - entry.base as usize;
+        let home = match &kind {
+            FrameKind::Closure(closure) => self.closure_home(*closure),
+            _ => None,
         };
-        let handle = self.allocate_frame(frame);
-        if self.frames.len() >= self.next_frame_collection {
-            self.request_collection();
-        }
-        self.frames[handle.index as usize].live = Some(activation.index);
+        let code = self.frame_code_id(&kind, Some(&code));
+        let handle = self.allocate_frame(
+            FrameFields {
+                sender: None,
+                home,
+                receiver,
+                current_class,
+                program_counter,
+                code,
+                kind,
+                uncontinuable: false,
+            },
+            &[],
+            register_count,
+        );
+        self.frame_words_mut(handle)[frame_field::MARRIED] = count_word(entry_index).bits();
         self.stack.entries[entry_index].reified = Some(handle);
         handle
     }
@@ -3347,23 +3644,12 @@ impl<'gc> Heap<'gc> {
     /// rather than panicking is what keeps the first from aborting the
     /// process.
     pub fn frame_local(&self, frame: FrameReference<'gc>, index: u16) -> Value<'gc> {
-        self.check_frame_origin(frame);
-        let slot = &self.frames[frame.index as usize];
-        let word = match slot.live {
+        let words = self.frame_words(frame);
+        let word = match self.married_entry(words) {
             Some(entry) => self.stack.values[self.register_slot(entry, index)],
-            None => {
-                let stored_frame = &slot.frame;
-                let register_index = index as usize;
-                if register_index < stored_frame.arguments.len() {
-                    stored_frame.arguments[register_index]
-                } else {
-                    stored_frame
-                        .temporaries
-                        .get(register_index - stored_frame.arguments.len())
-                        .copied()
-                        .unwrap_or(Word::NIL)
-                }
-            }
+            None => words
+                .get(frame_field::COUNT + index as usize)
+                .map_or(Word::NIL, |bits| Word::from_bits(*bits)),
         };
         self.load(word)
     }
@@ -3371,10 +3657,9 @@ impl<'gc> Heap<'gc> {
     /// `frame_local`'s twin, and silently a no-op for an index a dead
     /// frame's register file does not have, for the reason given there.
     pub fn frame_set_local(&mut self, frame: FrameReference<'gc>, index: u16, value: Value<'gc>) {
-        self.check_frame_origin(frame);
-        // Copied out first, so neither arm below holds a borrow of `frames`
-        // while it writes.
-        let live = self.frames[frame.index as usize].live;
+        // Copied out first, so neither arm below holds a borrow of the
+        // arena while it writes.
+        let live = self.married_entry(self.frame_words(frame));
         let word = self.store(value);
         match live {
             Some(entry) => {
@@ -3382,15 +3667,11 @@ impl<'gc> Heap<'gc> {
                 self.stack.values[slot] = word;
             }
             None => {
-                let stored_frame = &mut self.frames[frame.index as usize].frame;
-                let register_index = index as usize;
-                if register_index < stored_frame.arguments.len() {
-                    stored_frame.arguments[register_index] = word;
-                } else {
-                    let temporary_index = register_index - stored_frame.arguments.len();
-                    if let Some(slot) = stored_frame.temporaries.get_mut(temporary_index) {
-                        *slot = word;
-                    }
+                if let Some(slot) = self
+                    .frame_words_mut(frame)
+                    .get_mut(frame_field::COUNT + index as usize)
+                {
+                    *slot = word.bits();
                 }
             }
         }
@@ -3401,9 +3682,7 @@ impl<'gc> Heap<'gc> {
     /// built, since none of those ever ran here. `raise_return` uses it to
     /// tell a live home from a dead one.
     pub fn frame_activation(&self, frame: FrameReference<'gc>) -> Option<ActivationReference> {
-        self.check_frame_origin(frame);
-        self.frames[frame.index as usize]
-            .live
+        self.married_entry(self.frame_words(frame))
             .map(|entry| self.activation_handle(entry))
     }
 
@@ -3428,20 +3707,18 @@ impl<'gc> Heap<'gc> {
     /// safepoint serves the request (decided 2026-09-13). Setting
     /// `safepoint_requested` is what makes the poll take its slow path.
     ///
-    /// Must do nothing but set these two booleans: both call sites raise the
-    /// request while the object or frame just allocated is still half-wired
-    /// -- `push_object` before `object_handle` names it, `reify` between
-    /// `allocate_frame` and the writes that make the frame reachable from
-    /// its stack entry -- so it is harmless only because nothing here reads
-    /// the heap back. Real work here would have `reify` collect a frame no
-    /// stack entry points at yet.
+    /// Must do nothing but set these two booleans: its call site raises the
+    /// request while the object just allocated is still half-wired --
+    /// `push_object` before `object_handle` names it, and for a frame object
+    /// `reify` before the writes that make it reachable from its stack
+    /// entry -- so it is harmless only because nothing here reads the heap
+    /// back. Real work here would have `reify` collect a frame no stack
+    /// entry points at yet.
     ///
-    /// `push_object` and `reify` are its only two callers, not every
-    /// allocation path: `allocate_self_referential` and the image
-    /// decoder's `allocate_placeholder_frame` compare against no limit at
-    /// all. Harmless -- the bootstrap that calls the former is bounded, the
-    /// decoder never polls a safepoint, and the next ordinary allocation
-    /// compares against the same limit either way.
+    /// `push_object` is its only caller, not every allocation path:
+    /// `allocate_self_referential` compares against no limit at all.
+    /// Harmless -- the bootstrap that calls it is bounded, and the next
+    /// ordinary allocation compares against the same limit either way.
     fn request_collection(&mut self) {
         self.collection_requested = true;
         self.safepoint_requested = true;
@@ -3451,27 +3728,24 @@ impl<'gc> Heap<'gc> {
         self.collection_requested
     }
 
-    /// After a collection: each arena's next limit (`collection_limit`).
+    /// After a collection: the arena's next limit (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
         self.collection_requested = false;
         self.next_object_collection = collection_limit(self.collection_floor, self.objects.len());
-        self.next_frame_collection = collection_limit(self.collection_floor, self.frames.len());
     }
 
     #[cfg(debug_assertions)]
     pub(crate) fn set_collection_floor(&mut self, floor: usize) {
         self.collection_floor = floor;
         self.next_object_collection = floor;
-        self.next_frame_collection = floor;
     }
 
-    /// How much a move has to rewrite: both arenas, the activation stack's
+    /// How much a move has to rewrite: the arena, the activation stack's
     /// entries and registers, the canonical symbol table, and the host
     /// roots. The stress mode paces its moves by it.
     #[cfg(debug_assertions)]
     pub(crate) fn traced_size(&self) -> usize {
         self.objects.len()
-            + self.frames.len()
             + self.stack.entries.len()
             + self.stack.values.len()
             + self.canonical_symbols.len()
@@ -3490,7 +3764,7 @@ impl<'gc> Heap<'gc> {
         self.epoch
     }
 
-    /// Moves every object and every reified frame to a new index and
+    /// Moves every object, every reified frame among them, to a new index and
     /// rewrites every handle the heap itself holds -- in every arena record,
     /// in every stack entry and the continuation it owns, in every register,
     /// and in every host root -- into the next epoch. What the heap does not
@@ -3507,22 +3781,19 @@ impl<'gc> Heap<'gc> {
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);
         let objects = Rotation::new(self.objects.len(), to_epoch);
-        let frames = Rotation::new(self.frames.len(), to_epoch);
         self.objects.rotate_right(objects.shift as usize);
-        self.frames.rotate_right(frames.shift as usize);
         self.epoch = to_epoch;
         let mut forwarder = Forwarder {
             heap_id: self.heap_id,
             from_epoch,
             to_epoch,
             objects,
-            frames,
         };
         self.forward_everything(&mut forwarder);
         forwarder
     }
 
-    /// Compacts both arenas against `marker`'s bits and rewrites every handle
+    /// Compacts the arena against `marker`'s bits and rewrites every handle
     /// the heap itself holds into the next epoch. What the heap does not
     /// hold, the caller forwards with the answer, exactly as for a move
     /// (`World::collect`).
@@ -3540,7 +3811,6 @@ impl<'gc> Heap<'gc> {
             self.epoch = to_epoch;
         }
         let objects = compact_arena(&mut self.objects, &marker.objects, self.collection_floor);
-        let frames = compact_arena(&mut self.frames, &marker.frames, self.collection_floor);
         let mut forwarder = Forwarder {
             #[cfg(debug_assertions)]
             heap_id: self.heap_id,
@@ -3549,30 +3819,31 @@ impl<'gc> Heap<'gc> {
             #[cfg(debug_assertions)]
             to_epoch,
             objects,
-            frames,
         };
         self.forward_everything(&mut forwarder);
         forwarder
     }
 
     /// Forwards every handle the heap itself holds through `forwarder`:
-    /// every arena record, every stack entry and the continuation it owns,
-    /// every register, every surviving canonical symbol table entry, and
-    /// every host root. Shared by `move_everything` and `compact` -- both
-    /// build their own `Forwarder` first, over a different `Relocation`,
-    /// and then walk the same six roots through it -- so that a field
+    /// every arena record, the `Activation` class, every stack entry and
+    /// the continuation it owns, every register, every surviving canonical
+    /// symbol table entry, and every host root. Shared by `move_everything`,
+    /// `compact` and `alias_placeholders` -- each builds its own `Forwarder`
+    /// first, over its own `Relocation`, and then walks the same roots
+    /// through it -- so that a field
     /// either one must reach is named here once, rather than in two copies
     /// a later change can update in one and miss in the other (`trace.rs`'s
     /// reason for existing, one level up).
     fn forward_everything<M: Relocation>(&mut self, forwarder: &mut Forwarder<M>) {
         use crate::trace::{Trace, Tracer};
+        // A married frame's registers are its entry's, traced below with
+        // the stack; its married field is a stack index, and no stack entry
+        // moves.
         for object in &mut self.objects {
             object.trace(forwarder);
         }
-        // A married frame's registers are its entry's, traced below with
-        // the stack; `live` is a stack index, and no stack entry moves.
-        for slot in &mut self.frames {
-            slot.frame.trace(forwarder);
+        if let Some(class) = &mut self.activation_class {
+            forwarder.object(class);
         }
         for entry in &mut self.stack.entries {
             entry.trace(forwarder);
@@ -3599,13 +3870,11 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The arenas' occupancy (`Interpreter::heap_statistics`).
+    /// The arena's occupancy (`Interpreter::heap_statistics`).
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         crate::HeapStatistics {
             live_objects: self.objects.len(),
             object_slots: self.objects.capacity(),
-            live_frames: self.frames.len(),
-            frame_slots: self.frames.capacity(),
         }
     }
 
@@ -3621,7 +3890,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// The collector's counts and pauses since the process started, plus the
-    /// arenas' occupancy right now (`Interpreter::collector_statistics`,
+    /// arena's occupancy right now (`Interpreter::collector_statistics`,
     /// `--collector-statistics`).
     pub(crate) fn collector_statistics(&self) -> crate::CollectorStatistics {
         crate::CollectorStatistics {
@@ -3629,7 +3898,6 @@ impl<'gc> Heap<'gc> {
             total_pause: self.total_pause,
             longest_pause: self.longest_pause,
             live_objects: self.objects.len(),
-            live_frames: self.frames.len(),
         }
     }
 
@@ -3712,7 +3980,9 @@ impl<'gc> Heap<'gc> {
             let format = object.header.format();
             match &mut object.data {
                 ObjectData::Words { words, .. } => {
-                    // A number's digits are no `Value`s.
+                    // A number's digits are no `Value`s, and a reified
+                    // frame's fields and registers are exempt, as the
+                    // stack's are.
                     if matches!(format, Format::FixedPointers | Format::IndexablePointers) {
                         for field in words.iter_mut() {
                             let mut word = [Word::from_bits(*field)];
@@ -3737,26 +4007,28 @@ impl<'gc> Heap<'gc> {
                 // one, since a message to a future is answered by its value,
                 // so a nested class's enclosing object is never the future.
                 ObjectData::Class(_) => {}
-                // A reified frame: its registers are exempt.
-                ObjectData::Activation(_) => {}
             }
         }
         replaced
     }
 
-    /// Marks the heap's own roots -- the activation stack's entries and its
-    /// registers, and the host roots -- and answers the marker without
+    /// Marks the heap's own roots -- the `Activation` class, the activation
+    /// stack's entries and its registers, and the host roots -- and answers
+    /// the marker without
     /// draining it, so that the caller can add the step state's roots
     /// (`World::mark_everything_reachable`) before the traversal runs.
     ///
     /// The canonical symbol table is deliberately not among these roots: it
     /// is the system's one weak structure (`docs/design/memory.md`, "Weak
     /// references"), pruned against the finished marking by
-    /// `prune_canonical_symbols` rather than kept alive by it. The arenas
-    /// themselves are never roots, only what the roots reach.
+    /// `prune_canonical_symbols` rather than kept alive by it. The arena
+    /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
-        let mut marker = mark::Marker::new(self.objects.len(), self.frames.len());
+        let mut marker = mark::Marker::new(self.objects.len());
+        if let Some(class) = &mut self.activation_class {
+            marker.object(class);
+        }
         for entry in &mut self.stack.entries {
             entry.trace(&mut marker);
         }
@@ -3797,21 +4069,14 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Runs the marker's work lists empty. Each record is traced with the
-    /// arena borrowed field by field, which is what lets the marker be
-    /// borrowed at the same time.
+    /// Runs the marker's work list empty. Each record is traced with the
+    /// arena borrowed apart from the marker, which is what lets the marker
+    /// be borrowed at the same time. A married frame's registers are its
+    /// entry's, already traced with the stack, so its trace skips them.
     pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
         use crate::trace::Trace;
-        let Heap {
-            objects, frames, ..
-        } = self;
-        while let Some(work) = marker.next() {
-            match work {
-                mark::Work::Object(index) => objects[index as usize].trace(marker),
-                // A married frame's registers are its entry's, already traced
-                // with the stack; `live` is a stack index and no entry moves.
-                mark::Work::Frame(index) => frames[index as usize].frame.trace(marker),
-            }
+        while let Some(index) = marker.next() {
+            self.objects[index as usize].trace(marker);
         }
     }
 
@@ -3825,12 +4090,21 @@ impl<'gc> Heap<'gc> {
         marker
     }
 
-    /// Marks from the heap's own roots and compacts, for the heap's own
-    /// tests. A real collection goes through `World`.
+    /// Marks from the heap's own roots and `roots`, compacts, and forwards
+    /// `roots`, for the heap's own tests. A real collection goes through
+    /// `World`.
     #[cfg(test)]
-    fn collect_for_test(&mut self) {
-        let marker = self.mark_from_roots_for_test();
-        let _ = self.compact(marker);
+    fn collect_for_test(&mut self, roots: &mut [&mut Value<'gc>]) {
+        use crate::trace::Tracer;
+        let mut marker = self.begin_marking();
+        for root in roots.iter_mut() {
+            marker.value(root);
+        }
+        self.drain_marking(&mut marker);
+        let mut forwarder = self.compact(marker);
+        for root in roots.iter_mut() {
+            forwarder.value(root);
+        }
     }
 }
 
@@ -3838,23 +4112,13 @@ impl<'gc> Heap<'gc> {
 mod tests {
     use super::*;
 
-    /// The smallest activation the arena accepts: enough to get a
-    /// `FrameReference` back, with no field any test below reads. Gated like
-    /// its only caller -- the origin guard it feeds does not exist in a release
-    /// build, so neither does the test, so neither may this.
-    #[cfg(debug_assertions)]
-    fn bare_frame<'gc>() -> Frame<'gc> {
-        Frame {
-            receiver: Word::NIL,
-            arguments: Vec::new(),
-            temporaries: Vec::new(),
-            program_counter: 0,
-            sender: None,
-            home: None,
-            current_class: None,
-            kind: FrameKind::TopLevel,
-            uncontinuable: false,
-        }
+    /// A bare heap that can reify: one with an `Activation` class recorded,
+    /// as the bootstrap records the real one.
+    fn frame_heap<'gc>() -> Heap<'gc> {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Activation");
+        heap.set_activation_class(class);
+        heap
     }
 
     /// Reading a handle through a heap that did not allocate it is the one
@@ -3923,11 +4187,11 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "handle belongs to a different heap")]
     fn comparing_two_frame_handles_from_different_heaps_panics() {
-        let mut origin = Heap::new();
-        let mine = origin.allocate_frame(bare_frame());
+        let mut origin = frame_heap();
+        let mine = origin.allocate_placeholder_frame();
 
-        let mut other = Heap::new();
-        let theirs = other.allocate_frame(bare_frame());
+        let mut other = frame_heap();
+        let theirs = other.allocate_placeholder_frame();
 
         let _ = mine.same(theirs);
     }
@@ -4072,37 +4336,61 @@ mod tests {
         assert!(heap.object_class(class).same(class));
     }
 
-    fn top_level_frame<'gc>() -> Frame<'gc> {
-        Frame {
-            receiver: Word::NIL,
-            arguments: vec![],
-            temporaries: vec![],
-            program_counter: 0,
-            sender: None,
-            home: None,
-            current_class: None,
-            kind: FrameKind::TopLevel,
-            uncontinuable: false,
-        }
+    /// A returned top-level frame with a register file of `register_count`
+    /// nils and nothing else.
+    fn top_level_frame<'gc>(heap: &mut Heap<'gc>, register_count: usize) -> FrameReference<'gc> {
+        heap.allocate_returned_top_level_frame(
+            Value::nil(),
+            &vec![Value::nil(); register_count],
+            None,
+            None,
+        )
     }
 
-    /// Like `top_level_frame`, but with a distinct value in each of
-    /// `program_counter`, `arguments.len()` and `temporaries.len()`.
+    /// A body of `argument_count` arguments in `register_count` registers.
+    fn shaped_code(
+        argument_count: u16,
+        register_count: u16,
+    ) -> std::rc::Rc<crate::bytecode::CompiledCode> {
+        std::rc::Rc::new(crate::bytecode::CompiledCode::new(
+            crate::bytecode::CodeKind::Method,
+            vec![crate::bytecode::Instruction::Return { register: 0 }],
+            argument_count,
+            register_count,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        ))
+    }
+
+    /// A dead initializer frame with a distinct value in each of
+    /// `program_counter`, its argument count and its register count.
     /// `frame_register_shape` returns those three as a same-typed tuple, so a
     /// frame built from all-zero or otherwise equal fields cannot catch the
     /// tuple's positions being silently transposed -- exactly the
     /// silent-wrong-output risk this conversion carries.
     fn shaped_frame<'gc>(
+        heap: &mut Heap<'gc>,
         program_counter: usize,
-        argument_count: usize,
-        temporary_count: usize,
-    ) -> Frame<'gc> {
-        Frame {
-            arguments: vec![Word::NIL; argument_count],
-            temporaries: vec![Word::NIL; temporary_count],
-            program_counter,
-            ..top_level_frame()
-        }
+        argument_count: u16,
+        register_count: u16,
+    ) -> FrameReference<'gc> {
+        let class = named_class(heap, "Shaped");
+        let code = heap.code_id(&shaped_code(argument_count, register_count));
+        heap.allocate_frame(
+            FrameFields {
+                sender: None,
+                home: None,
+                receiver: Value::nil(),
+                current_class: Some(class),
+                program_counter,
+                code: Some(code),
+                kind: FrameKind::Initializer(class),
+                uncontinuable: true,
+            },
+            &[],
+            usize::from(register_count),
+        )
     }
 
     /// A frame is addressed by its position in the arena, so a handle must
@@ -4111,13 +4399,13 @@ mod tests {
     /// representation rests on.
     #[test]
     fn a_frame_handle_survives_the_arena_growing_under_it() {
-        let mut heap = Heap::new();
-        let first = heap.allocate_frame(shaped_frame(3, 2, 1));
+        let mut heap = frame_heap();
+        let first = shaped_frame(&mut heap, 3, 2, 5);
         for _ in 0..1000 {
-            heap.allocate_frame(top_level_frame());
+            top_level_frame(&mut heap, 0);
         }
         assert!(heap.frame_receiver(first).is_nil());
-        assert_eq!(heap.frame_register_shape(first), (3, 2, 1));
+        assert_eq!(heap.frame_register_shape(first), (3, 2, 5));
     }
 
     /// Frame identity is what the image round trip checks sharing by -- a
@@ -4125,9 +4413,9 @@ mod tests {
     /// reified frames may never compare equal however alike their contents are.
     #[test]
     fn two_frames_are_never_the_same_activation() {
-        let mut heap = Heap::new();
-        let first = heap.allocate_frame(top_level_frame());
-        let second = heap.allocate_frame(top_level_frame());
+        let mut heap = frame_heap();
+        let first = top_level_frame(&mut heap, 0);
+        let second = top_level_frame(&mut heap, 0);
         assert!(!first.same(second));
         assert!(first.same(first));
     }
@@ -4327,7 +4615,8 @@ mod tests {
     }
 
     /// The header every activation-stack test below pushes: nothing in it is
-    /// read back except where a test sets it on purpose.
+    /// read back except where a test sets it on purpose. A top-level frame
+    /// names no code, so a frame reified from it takes no arguments.
     fn header<'gc>() -> ActivationHeader<'gc> {
         ActivationHeader {
             receiver: Value::nil(),
@@ -4398,29 +4687,31 @@ mod tests {
     }
 
     /// The property the activation stack exists for: an activation nothing
-    /// reified is gone once it is popped, rather than kept in the frame
-    /// arena, whose slots only a collection reclaims, and only once nothing
-    /// reaches them.
+    /// reified is gone once it is popped, rather than kept in the arena as a
+    /// frame object, whose slot only a collection reclaims, and only once
+    /// nothing reaches it.
     #[test]
     fn an_activation_that_is_never_reified_leaves_nothing_behind() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
+        let objects = heap.objects.len();
         for _ in 0..1000 {
             let activation = heap.push_activation(header(), &[Value::small_integer(1)], 3);
             heap.pop_activation(activation);
         }
-        assert_eq!(heap.frames.len(), 0);
+        assert_eq!(heap.objects.len(), objects);
         assert_eq!(heap.stack.values.len(), 0);
         assert_eq!(heap.activation_depth(), 0);
     }
 
     #[test]
     fn reifying_an_activation_twice_answers_the_same_frame() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
+        let objects = heap.objects.len();
         let activation = heap.push_activation(header(), &[], 1);
         let first = heap.reify(activation);
         let second = heap.reify(activation);
         assert!(first.same(second));
-        assert_eq!(heap.frames.len(), 1);
+        assert_eq!(heap.objects.len(), objects + 1, "one frame object");
         heap.pop_activation(activation);
     }
 
@@ -4429,7 +4720,7 @@ mod tests {
     /// through the frame must be seen by the method, and vice versa.
     #[test]
     fn a_married_frame_reads_and_writes_the_live_registers() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
         let frame = heap.reify(activation);
         heap.activation_set_local(activation, 1, Value::small_integer(5));
@@ -4453,8 +4744,18 @@ mod tests {
     /// in `tests/heap.rs`.
     #[test]
     fn popping_a_reified_activation_divorces_its_frame() {
-        let mut heap = Heap::new();
-        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Initialized");
+        let activation = heap.push_activation(
+            ActivationHeader {
+                current_class: Some(class),
+                kind: FrameKind::Initializer(class),
+                code: shaped_code(1, 2),
+                ..header()
+            },
+            &[Value::small_integer(1)],
+            1,
+        );
         heap.activation_set_program_counter(activation, 4);
         let frame = heap.reify(activation);
         // What a `MakeClosure` whose block reads this frame by reference
@@ -4467,7 +4768,7 @@ mod tests {
         assert!(heap.frame_activation(frame).is_none());
         assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(1));
         assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(3));
-        assert_eq!(heap.frame_register_shape(frame), (4, 1, 1));
+        assert_eq!(heap.frame_register_shape(frame), (4, 1, 2));
         assert!(heap.frame_is_uncontinuable(frame));
         assert!(heap.frame_sender(frame).is_none());
         heap.frame_set_local(frame, 1, Value::small_integer(8));
@@ -4482,9 +4783,9 @@ mod tests {
     /// present one.
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        let captured_frame = heap.allocate_frame(top_level_frame());
+        let captured_frame = top_level_frame(&mut heap, 0);
         let closure = heap.allocate_object(
             class,
             ObjectData::Closure(ClosureData {
@@ -4518,7 +4819,7 @@ mod tests {
     /// divorced frame owns its own copy, so that reuse cannot reach it.
     #[test]
     fn a_divorced_frame_is_untouched_by_the_next_activation_at_its_depth() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         let first = heap.push_activation(header(), &[], 2);
         heap.activation_set_local(first, 1, Value::small_integer(3));
         let frame = heap.reify(first);
@@ -4706,12 +5007,12 @@ mod tests {
     /// exactly what the two nesting levels below exercise: the inner
     /// closure's captured frame is a *block* activation, so its home is that
     /// frame's own. This also exercises `allocate_frame`'s debug assertion
-    /// that `Frame.home` is populated exactly for a `FrameKind::Closure`
+    /// that a frame's home is populated exactly for a `FrameKind::Closure`
     /// activation, since `reify` builds that frame from a closure entry's
     /// `kind` here for the first time in this test module.
     #[test]
     fn a_closure_activations_home_and_captured_frame_are_its_closures() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         fn block_closure<'gc>(
             heap: &mut Heap<'gc>,
             class: ClassReference<'gc>,
@@ -4787,25 +5088,28 @@ mod tests {
         let _ = heap.move_everything();
     }
 
-    /// A move gives every object and every frame a new index -- the
-    /// rotation has no fixed point -- and rewrites everything that names
-    /// one: an array's element, a closure's captured frame and its copied
-    /// values, a frame's receiver, a class's own class, and the host roots.
+    /// A move gives every object, every frame object among them, a new
+    /// index -- the rotation has no fixed point -- and rewrites everything
+    /// that names one: an array's element, a closure's captured frame and
+    /// its copied values, a frame's receiver and its registers, a class's
+    /// own class, the heap's `Activation` class, and the host roots.
     #[test]
     #[cfg(debug_assertions)]
     fn a_move_gives_every_slot_a_new_index_and_rewrites_what_names_it() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let string = heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("a")));
         let array = heap.allocate_object(
             class,
             ObjectData::array([heap.store(Value::object(string))]),
         );
-        let frame = heap.allocate_frame(Frame {
-            receiver: heap.store(Value::object(string)),
-            ..top_level_frame()
-        });
-        heap.allocate_frame(top_level_frame());
+        let frame = heap.allocate_returned_top_level_frame(
+            Value::object(string),
+            &[Value::object(array)],
+            None,
+            None,
+        );
+        top_level_frame(&mut heap, 0);
         let closure = heap.allocate_object(
             class,
             ObjectData::Closure(ClosureData {
@@ -4872,6 +5176,16 @@ mod tests {
             .frame_receiver(captured_frame)
             .as_object()
             .is_some_and(|receiver| receiver.same(string)));
+        assert!(heap
+            .frame_local(captured_frame, 0)
+            .as_object()
+            .is_some_and(|register| register.same(array)));
+        let activation_class = heap.activation_class.expect("recorded");
+        assert!(
+            heap.object_class(heap.frame_object(captured_frame))
+                .same(activation_class),
+            "a frame object's class and the heap's `Activation` class are rewritten alike"
+        );
     }
 
     #[test]
@@ -4889,9 +5203,9 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale handle")]
     fn reading_a_frame_handle_minted_before_a_move_panics() {
-        let mut heap = Heap::new();
-        let frame = heap.allocate_frame(top_level_frame());
-        heap.allocate_frame(top_level_frame());
+        let mut heap = frame_heap();
+        let frame = top_level_frame(&mut heap, 0);
+        top_level_frame(&mut heap, 0);
         move_bare_heap(&mut heap);
         let _ = heap.frame_receiver(frame);
     }
@@ -5008,6 +5322,7 @@ mod tests {
     /// input" paragraph and `docs/design/memory.md` compute the decoder's
     /// placeholder-arena amplification from, so a change to `Object` that
     /// moves it fails here rather than leaving that figure silently wrong.
+    /// A frame object is one of these, its fields and registers boxed words.
     /// The class handle, the eight-byte header word and `ObjectData`, whose
     /// largest payload is `ClosureData` -- an `Rc`, a `Box<[Value]>`, a
     /// `FrameReference` and a `FeedbackBase`, 32 bytes; `ClassData` is boxed
@@ -5019,17 +5334,6 @@ mod tests {
     #[test]
     fn an_object_is_the_size_the_amplification_figure_assumes() {
         assert_eq!(std::mem::size_of::<Object>(), 56);
-    }
-
-    /// The frame-arena entry's twin of the pin above: `docs/design/memory.md`
-    /// derives the placeholder amplification from a `FrameSlot`'s release
-    /// size as well, so a field that grows the `Frame` or the slot fails
-    /// here rather than leaving that figure silently wrong.
-    #[cfg(all(target_pointer_width = "64", not(debug_assertions)))]
-    #[test]
-    fn a_frame_slot_is_the_size_the_amplification_figure_assumes() {
-        assert_eq!(std::mem::size_of::<Frame>(), 112);
-        assert_eq!(std::mem::size_of::<FrameSlot>(), 120);
     }
 
     /// Liveness is reachability from the roots, and the roots are what the
@@ -5081,54 +5385,80 @@ mod tests {
     /// of the root set instead of needing a rule of its own.
     #[test]
     fn marking_reaches_a_married_frame_through_its_entry() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         let activation = heap.push_activation(header(), &[], 1);
         let frame = heap.reify(activation);
 
         let marker = heap.mark_from_roots_for_test();
 
-        assert!(marker.frames.is_set(frame.index));
+        assert!(marker.objects.is_set(heap.frame_object(frame).index));
         heap.pop_activation(activation);
     }
 
-    /// An activation object answers the frame it reifies and describes itself
-    /// as an Activation; any other object answers no frame rather than
-    /// panicking, which is what a kernel leaf handed the wrong object relies
-    /// on.
+    /// An activation object is its frame's object: it answers the frame and
+    /// describes itself as an Activation; any other object answers no frame
+    /// rather than panicking, which is what a kernel leaf handed the wrong
+    /// object relies on.
     #[test]
     fn an_activation_object_answers_its_frame() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        let frame = heap.allocate_frame(top_level_frame());
-        let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
+        let frame = top_level_frame(&mut heap, 0);
+        let activation_object = heap.frame_object(frame);
         let other =
             heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("other")));
 
-        let answered = heap
-            .activation_object_frame(activation_object)
-            .expect("an activation object answers its frame");
-        assert_eq!(answered.index, frame.index);
-        assert!(heap.activation_object_frame(other).is_none());
+        assert!(heap
+            .object_frame(activation_object)
+            .is_some_and(|answered| answered.same(frame)));
+        assert!(heap.object_frame(other).is_none());
         assert_eq!(
             heap.describe(Value::object(activation_object)),
             "an Activation"
         );
     }
 
-    /// The collector traces an activation object's frame: a frame that only
-    /// an activation object reaches stays alive.
+    /// The collector traces an activation object as the frame it is: a frame
+    /// that only a register holding its object reaches stays alive.
     #[test]
     fn marking_reaches_a_frame_through_an_activation_object() {
-        let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(ObjectData::instance([]));
-        let frame = heap.allocate_frame(top_level_frame());
-        let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
+        let mut heap = frame_heap();
+        let frame = top_level_frame(&mut heap, 0);
+        let activation_object = heap.frame_object(frame);
         let activation = heap.push_activation(header(), &[Value::object(activation_object)], 1);
 
         let marker = heap.mark_from_roots_for_test();
 
-        assert!(marker.objects.is_set(activation_object.index));
-        assert!(marker.frames.is_set(frame.index));
+        assert!(marker.objects.is_set(heap.frame_object(frame).index));
+        heap.pop_activation(activation);
+    }
+
+    /// A collection moves a married frame like any object and leaves its
+    /// marriage alone: the field names a stack entry, and no entry moves, so
+    /// the frame found again through its forwarded object still reads the
+    /// live registers and still answers its activation.
+    #[test]
+    fn a_married_frame_survives_a_collection_and_reads_its_live_registers() {
+        let mut heap = frame_heap();
+        // Garbage below the frame, so that compaction moves it.
+        top_level_frame(&mut heap, 2);
+        let activation = heap.push_activation(header(), &[Value::small_integer(7)], 2);
+        let frame = heap.reify(activation);
+        heap.set_register(
+            heap.activation_register_base(activation),
+            1,
+            Value::small_integer(9),
+        );
+        let mut root = Value::object(heap.frame_object(frame));
+        heap.collect_for_test(&mut [&mut root]);
+        let frame = heap
+            .object_frame(root.as_object().expect("an object"))
+            .expect("a frame");
+        assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(7));
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(9));
+        assert!(heap
+            .frame_activation(frame)
+            .is_some_and(|live| live.same(activation)));
         heap.pop_activation(activation);
     }
 
@@ -5174,7 +5504,7 @@ mod tests {
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
         let before = heap.objects.len();
 
-        heap.collect_for_test();
+        heap.collect_for_test(&mut []);
 
         assert_eq!(before, 4);
         // The class, the reachable string, and nothing else.
@@ -5194,7 +5524,7 @@ mod tests {
             heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("live")));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
-        heap.collect_for_test();
+        heap.collect_for_test(&mut []);
 
         let Some(survivor) = heap.activation_local(activation, 0).as_object() else {
             panic!("the register no longer holds an object");
@@ -5204,47 +5534,31 @@ mod tests {
     }
 
     /// The growth policy's arithmetic (`docs/design/memory.md`, "The
-    /// trigger and the growth policy"), pinned against the mistake its two
-    /// near-identical lines invite: swapping which arena's length feeds
-    /// which limit would still compile, and would only misbehave at the
-    /// wrong time -- the wrong arena's limit still collects, just later or
-    /// earlier than it should. Covers both a live count under the floor,
-    /// where the floor must still win, and one above it in each arena, with
-    /// the two counts kept different so a swapped read shows up as a wrong
-    /// number rather than merely as the floor again.
+    /// trigger and the growth policy"), over the one arena: a live count
+    /// under the floor, where the floor must still win, and one above it,
+    /// frame objects counted with the rest -- there is no second arena whose
+    /// length could feed the limit instead.
     #[test]
     fn reset_collection_limits_reads_each_arenas_own_length() {
-        let mut heap = Heap::new();
+        let mut heap = frame_heap();
         heap.collection_floor = 8;
 
-        // Zero live in either arena: both limits fall back to the floor.
+        // One object, the `Activation` class, still under the floor once
+        // doubled (2 < 8): the floor still wins.
         heap.reset_collection_limits();
         assert_eq!(heap.next_object_collection, 8);
-        assert_eq!(heap.next_frame_collection, 8);
 
-        // One frame, still under the floor once doubled (2 < 8): the floor
-        // still wins.
-        heap.allocate_frame(top_level_frame());
-        heap.reset_collection_limits();
-        assert_eq!(heap.next_object_collection, 8);
-        assert_eq!(heap.next_frame_collection, 8);
-
-        // Six objects and five frames in total -- above the floor once
-        // doubled in both arenas, and still a different count in each.
+        // Two objects and four frame objects besides -- above the floor once
+        // doubled.
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        for _ in 0..5 {
-            heap.allocate_object(class, ObjectData::instance([]));
-        }
+        heap.allocate_object(class, ObjectData::instance([]));
         for _ in 0..4 {
-            heap.allocate_frame(top_level_frame());
+            top_level_frame(&mut heap, 0);
         }
-        let object_count = heap.objects.len();
-        let frame_count = heap.frames.len();
-        assert_ne!(object_count, frame_count);
+        assert_eq!(heap.objects.len(), 7);
 
         heap.reset_collection_limits();
-        assert_eq!(heap.next_object_collection, object_count * 2);
-        assert_eq!(heap.next_frame_collection, frame_count * 2);
+        assert_eq!(heap.next_object_collection, 14);
     }
 
     /// Compaction shrinks an arena against its next limit, never against

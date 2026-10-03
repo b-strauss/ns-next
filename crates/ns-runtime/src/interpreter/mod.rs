@@ -767,6 +767,8 @@ impl<'gc> Mutator<'gc> {
     /// calls it once, in the first entry the world makes.
     pub(crate) fn bootstrap_builtin_classes(&mut self) {
         self.builtin_classes = build_builtin_classes(self);
+        let activation = self.builtin_class(BuiltinClass::Activation);
+        self.heap.set_activation_class(activation);
         self.refresh_immediate_dispatch_ids();
         let class = self.builtin_class(BuiltinClass::VmMirror);
         let mirror = self.heap.allocate_instance(class, 0);
@@ -1499,13 +1501,13 @@ impl<'gc> Mutator<'gc> {
         self.heap.allocate_closure(class, closure)
     }
 
-    /// An instance of the kernel-private `Activation` class over `frame`,
-    /// which the caller has already reified (`Heap::reify`): an object keeps
-    /// a `FrameReference`, never an `ActivationReference`, since only a
-    /// reified frame survives its activation's pop.
+    /// The activation object of `frame`, which the caller has already
+    /// reified (`Heap::reify`): the frame object itself, an instance of the
+    /// kernel-private `Activation` class. It is a frame, never a running
+    /// activation's stack entry, since only a reified frame survives its
+    /// activation's pop.
     pub fn new_activation_object(&mut self, frame: FrameReference<'gc>) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Activation);
-        self.heap.allocate_activation(class, frame)
+        self.heap.frame_object(frame)
     }
 
     /// The `platform` object (`docs/design/core-library.md`, "The

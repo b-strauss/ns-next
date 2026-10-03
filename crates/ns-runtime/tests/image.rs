@@ -2580,21 +2580,20 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                 "makeClosure",
             );
             // Synthetic "paused" state: edit the home frame's program counter
-            // and grow its register file before snapshotting.
+            // and its last register before snapshotting. `mk` reads nothing
+            // by reference, so its registers were not kept, but its frame
+            // has its code's full register file, every one nil.
             interpreter.enter(|mutator| {
                 let closure_value = mutator.fetch(&closure);
                 let home = mutator
                     .heap()
                     .closure_home(object(closure_value))
                     .expect("expected a closure");
-                let (_, argument_count, temporary_count) =
-                    mutator.heap().frame_register_shape(home);
-                mutator
-                    .heap_mut()
-                    .frame_grow_temporaries(home, temporary_count + 1);
+                let (_, _, register_count) = mutator.heap().frame_register_shape(home);
+                assert!(register_count > 0, "`mk` has a register to write");
                 mutator.heap_mut().frame_set_local(
                     home,
-                    (argument_count + temporary_count) as u16,
+                    (register_count - 1) as u16,
                     Value::small_integer(9),
                 );
                 mutator.heap_mut().frame_set_program_counter(home, 1);
@@ -2625,10 +2624,10 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
         );
         let home = heap.frame_record(closure_home);
         assert_eq!(home.program_counter, 1);
-        let (_, argument_count, temporary_count) = heap.frame_register_shape(closure_home);
-        assert_eq!(temporary_count, home.temporaries.len());
+        let (_, argument_count, register_count) = heap.frame_register_shape(closure_home);
+        assert_eq!(register_count - argument_count, home.temporaries.len());
         assert_eq!(
-            heap.frame_local(closure_home, (argument_count + temporary_count - 1) as u16)
+            heap.frame_local(closure_home, (register_count - 1) as u16)
                 .as_small_integer(),
             Some(9)
         );
@@ -3474,9 +3473,13 @@ fn a_closure_capturing_a_block_activation_round_trips() {
         // The optimized lowering converts `[ x ]`: `x` is copied into the
         // inner closure when it is created, so the outer block's activation
         // returned without copying its registers into its frame
-        // (`docs/design/execution.md`, "Lifecycle"). The value survives in
+        // (`docs/design/execution.md`, "Lifecycle"): its frame has the
+        // block's one argument register, still nil. The value survives in
         // the closure, not in the frame.
-        assert!(captured.arguments.is_empty());
+        assert!(
+            matches!(captured.arguments[..], [argument] if argument.is_nil()),
+            "the frame's argument register was never written"
+        );
         assert_eq!(
             heap.closure_copied_values(object(decoded_0))
                 .expect("expected a closure")
@@ -8622,7 +8625,7 @@ fn an_activation_object_round_trips() {
         let held = object(held);
         assert!(heap.object_class(held).same(activation_class));
         let frame = heap
-            .activation_object_frame(held)
+            .object_frame(held)
             .expect("the slot holds an activation object");
         let receiver = heap.frame_receiver(frame);
         assert!(
@@ -10456,7 +10459,7 @@ fn an_activation_record_decodes_over_its_frame() {
     let bytes = activation_record(activation_header, OBJECT_ACTIVATION, 0, 1);
     GraphFixture::new().decoded(&bytes, "an activation record", |heap, graph| {
         let frame = heap
-            .activation_object_frame(graph.objects[0])
+            .object_frame(graph.objects[0])
             .expect("an activation object");
         assert!(frame.same(graph.frames[0]));
     });

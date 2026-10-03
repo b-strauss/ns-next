@@ -216,6 +216,8 @@ fn kept_closures_keep_their_frames() {
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let count = interpreter.stash(Value::small_integer(50));
     let fill = Symbol::intern("fill:");
+    interpreter.collect_now();
+    let before = interpreter.heap_statistics();
 
     let _ = expect_ok(interpreter.send(&instance, fill, &[count]));
     interpreter.collect_now();
@@ -227,23 +229,23 @@ fn kept_closures_keep_their_frames() {
         kept.live_objects, stable.live_objects,
         "a second collection must free nothing further"
     );
+    // 104: the fifty kept closures, the Array holding them, the loop's
+    // condition and body blocks -- `fill:`'s frame keeps its registers,
+    // which hold them, and every body-block frame names the body block as
+    // its closure -- and 51 frame objects. 51 frames, not 50: each of the fifty kept closures retains
+    // the body block's activation for its own iteration of the loop, and
+    // `fill:`'s own activation besides. The loop body writes `remaining` and
+    // `made`, both outer to it, so `fill:`'s activation was reified as the
+    // body block's `home` -- and every kept closure reaches that same one
+    // frame through its own body-block frame's `home`, one shared frame
+    // beyond the fifty distinct ones. The exact count: a change that shares
+    // or drops a frame here changes this number, which a lower-bound check
+    // would not catch.
     assert_eq!(
-        kept.live_frames, stable.live_frames,
-        "a second collection must not disturb the frames the kept closures hold"
-    );
-    // 51, not 50: each of the fifty kept closures retains the body block's
-    // activation for its own iteration of the loop, and `fill:`'s own
-    // activation besides. The loop body writes `remaining` and `made`, both
-    // outer to it, so `fill:`'s activation was reified as the body block's
-    // `home` -- and every kept closure reaches that same one frame through
-    // its own body-block frame's `home`, one shared frame beyond the fifty
-    // distinct ones. Tightened from `>= 50` to the exact count: a change
-    // that shares or drops a frame here changes this number, which a
-    // lower-bound check would not catch.
-    assert_eq!(
-        kept.live_frames, 51,
-        "fifty kept closures plus fill:'s own reified activation, {} found",
-        kept.live_frames
+        kept.live_objects - before.live_objects,
+        104,
+        "fifty kept closures, their Array, the loop's two blocks and 51 frames, {} found",
+        kept.live_objects - before.live_objects
     );
 
     // The loop's first iteration made the closure at index 1, capturing
@@ -264,8 +266,8 @@ fn kept_closures_keep_their_frames() {
 
 /// And a run that keeps nothing returns to where it started, which is the
 /// whole point of the step: a hundred times the allocation, none of it
-/// kept, must leave the same live objects and the same live frames behind
-/// as a hundredth as much work would.
+/// kept, must leave the same live objects -- frame objects among them --
+/// behind as a hundredth as much work would.
 #[test]
 fn discarding_everything_returns_to_the_starting_size() {
     let source = indoc! {"
@@ -299,10 +301,6 @@ fn discarding_everything_returns_to_the_starting_size() {
     assert_eq!(
         after_small.live_objects, after_large.live_objects,
         "a hundred times the work, nothing kept, and the same live set"
-    );
-    assert_eq!(
-        after_small.live_frames, after_large.live_frames,
-        "a hundred times the work, nothing kept, and the same live frames"
     );
 }
 
