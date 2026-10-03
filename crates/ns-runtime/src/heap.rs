@@ -28,6 +28,7 @@ mod header;
 pub(crate) mod mark;
 mod object;
 mod records;
+mod space;
 mod tables;
 mod value;
 mod world;

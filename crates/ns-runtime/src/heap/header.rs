@@ -22,7 +22,7 @@ const HASH_SHIFT: u32 = 34;
 const HASH_MASK: u64 = (IDENTITY_HASH_LIMIT as u64) - 1;
 const WORD_COUNT_SHIFT: u32 = 56;
 /// The word count that says the count is in an overflow word.
-const WORD_COUNT_OVERFLOW: usize = 255;
+pub(super) const WORD_COUNT_OVERFLOW: usize = 255;
 
 /// What an object's words after the header hold, and so how the collector
 /// walks them and how many units the last word leaves unused.

@@ -353,6 +353,7 @@ name = "ns-runtime"
 version = "0.1.0"
 dependencies = [
  "indoc",
+ "ns-memory",
  "ns-syntax",
 ]
 
