@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.lsp
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -91,6 +92,13 @@ class ServerBinaryLocatorTest {
         val architectures = entries("architecture.")
         assertEquals(3, systems.size)
         assertEquals(4, architectures.size)
+        // The lookup takes whichever matching key it meets first, which is
+        // only deterministic while at most one system prefix can match.
+        for (prefix in systems.keys) {
+            for (other in systems.keys - prefix) {
+                assertFalse("$prefix starts with $other", prefix.startsWith(other))
+            }
+        }
         for ((namePrefix, system) in systems) {
             for ((architectureName, architecture) in architectures) {
                 assertEquals("$system-$architecture", platformDirectory("$namePrefix 11.2", architectureName.uppercase()))
