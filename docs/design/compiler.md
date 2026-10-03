@@ -2,8 +2,9 @@
 
 > **Status:** built, including the reference lowering it is checked against.
 > **Code:** `crates/ns-runtime/src/bytecode.rs` (the instruction set and the
-> compiled-code shapes), `compiler/mod.rs` (entry points), `compiler/lower.rs`
-> (lowering, register allocation, the scope stack, the converted register
+> compiled-code shapes), `bytecode/compact.rs` (the `CodeBuilder` and the
+> eight-byte form a body is stored in), `compiler/mod.rs` (entry points),
+> `compiler/lower.rs` (lowering, register allocation, the scope stack, the converted register
 > layout), `compiler/capture.rs` (the capture analysis closure conversion runs
 > ahead of the optimized lowering), `compiler/control_flow.rs`
 > (inlining, and `recognize_mirror_send`), `compiler/primitive_method.rs`
@@ -15,19 +16,27 @@ the dispatch loop — is [execution.md](execution.md).
 
 ## The instruction set
 
-`Instruction` is a plain Rust enum dispatched by `match`, not hand-packed bytes.
-"Architecture-neutral and versioned" is a property of the *image encoding* of
-compiled code — a tag byte and a fixed operand layout per instruction, with the
-tag numbers fixed for good; see [image-format.md](image-format.md) — not a
-requirement on the in-memory representation. Manual opcode packing is a technique
-that pays off once a JIT or a very hot interpreter loop demands it. The profile
-of the loop over locals found that point: every dispatch decodes the enum's
-discriminant through a niche, and `program_counter` and the code pointer are
-spilled to `vm::run`'s stack frame ([execution.md](execution.md), "Where the 3%
-goes"). A compact encoding is planned, designed against the one-word value
-([execution.md](execution.md), "Planned: the compact instruction encoding").
+`Instruction` is the vocabulary a lowering emits: a plain Rust enum, which
+both lowerings and the image decoder hand to a `CodeBuilder`
+(`bytecode/compact.rs`). The builder encodes each instruction at once into
+the form a body is stored and run in -- one eight-byte `CompactInstruction`
+per instruction, with side tables for whatever does not fit -- and every
+tool, `disasm`, the image encoder, the decoder's verification and the tests,
+reads a body back as `Instruction`s through an exact decoded view
+([execution.md](execution.md), "The compact instruction encoding"). One
+instruction is one slot, so an instruction index is the same number in
+either form. "Architecture-neutral and versioned" is a property of the
+*image encoding* of compiled code — a tag byte and a fixed operand layout per
+`Instruction`, with the tag numbers fixed for good; see
+[image-format.md](image-format.md) — not of the in-memory form. The stored
+form became packed when the profile of the loop over locals showed what the
+enum cost the loop: every dispatch decoded its discriminant through a niche,
+and `program_counter` and the code pointer were spilled to `vm::run`'s stack
+frame ([execution.md](execution.md), "Where the 3% goes").
 
-Every register operand is a `u16`; every jump target is an instruction index. The
+Every register operand is a `u16`; every jump target is an instruction index.
+The eight-byte form narrows a register to a byte where it fits and takes a
+wide form where it does not, which the vocabulary never shows. The
 set follows the resolver's `Binding` variants and the lookup shapes directly, so
 that lowering is mostly a transliteration rather than a translation.
 
@@ -35,10 +44,11 @@ that lowering is mostly a transliteration rather than a translation.
 
 - `LoadLiteral { destination, literal }` — the literal is already lowered:
   `Nil | Boolean | SmallInteger | Float | String | Symbol | LargeInteger |
-  UnresolvedIdentifier`, with integer and float text parsed at compile time
-  rather than at each execution. `LargeInteger` carries an integer literal
-  beyond a `SmallInteger`'s 61 bits as its digits (an `ArbitraryInteger`);
-  `UnresolvedIdentifier` is the deferred case, see "Compilation cannot fail".
+  UnresolvedIdentifier | BodyTooLarge`, with integer and float text parsed at
+  compile time rather than at each execution. `LargeInteger` carries an
+  integer literal beyond a `SmallInteger`'s 61 bits as its digits (an
+  `ArbitraryInteger`); `UnresolvedIdentifier` and `BodyTooLarge` are the
+  deferred cases, see "Compilation cannot fail".
 - `LoadSelf { destination }`.
 - `LoadEnclosingObject { destination, depth }` — `outer N` with no message
   after it, `Binding::EnclosingObject`: the kth enclosing object, found as a
@@ -63,23 +73,25 @@ ignored a member of that name, is retired, and so is its wire tag 2
 **Sends** — each carries a `call_site`; see "Safepoints and call-site
 identity".
 
-- `SendPublic { selector, receiver_register, argument_registers, destination, call_site }` — an ordinary
-  explicit-receiver send, resolved with `lookupPublic`.
+- `SendPublic { selector, receiver_register, argument_registers, destination,
+  call_site }` — an ordinary explicit-receiver send, resolved with
+  `lookupPublic`.
 - `SendInlinable { selector, receiver_register, argument_registers, destination, call_site }` — the
   same send, decided exactly as `SendPublic` is, marking one the optimized
   lowering would have inlined. Only the reference lowering emits it, and only
   the depth count reads the mark; see "How the limit counts".
-- `SendLexical { depth, selector, argument_registers, destination, call_site }` — `Binding::LexicalSend`.
-  **No receiver register**: the receiver is `self` by construction, and the
-  kth-enclosing object is computed at run time.
+- `SendLexical { depth, selector, argument_registers, destination, call_site
+  }` — `Binding::LexicalSend`. **No receiver register**: the receiver is
+  `self` by construction, and the kth-enclosing object is computed at run
+  time.
 - `SendSuper { selector, argument_registers, destination, call_site }` — receiver is `self`, lookup
   starts at the current activation's `current_class`'s superclass.
-- `SendMirror { primitive, mirror_register, subject_register, argument_registers, destination, failure }`
-  — a send to the VM mirror whose failure block is lowered inline at
-  `failure`: it runs the mirror row `primitive`, bound at compile time, with
-  no lookup and no call site, and jumps to `failure` when the leaf declines.
-  Emitted only into `Kernel.ns`, which no image carries, so it has **no wire
-  tag**; see "Mirror sends".
+- `SendMirror { primitive, mirror_register, subject_register,
+  argument_registers, destination, failure }` — a send to the VM mirror whose
+  failure block is lowered inline at `failure`: it runs the mirror row
+  `primitive`, bound at compile time, with no lookup and no call site, and
+  jumps to `failure` when the leaf declines. Emitted only into `Kernel.ns`,
+  which no image carries, so it has **no wire tag**; see "Mirror sends".
 
 **Construction**
 
@@ -119,8 +131,10 @@ identity".
 
 **Branches**
 
-- `Jump { target }`, `BranchIfFalse { register, target }`, `BranchIfTrue { register, target }`,
-  `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation, destination, left, right, target }`.
+- `Jump { target }`, `BranchIfFalse { register, target }`,
+  `BranchIfTrue { register, target }`,
+  `JumpIfNotBoolean { register, target }`, `IntegerBinary { operation,
+  destination, left, right, target }`.
 
 **Nothing but control-flow inlining, arithmetic inlining and a mirror send's
 inlined failure block emits a branch.** Every other construct in the language
@@ -139,7 +153,10 @@ not a `SmallInteger` or the operation declines ("Arithmetic inlining" below).
 ```rust
 CompiledCode {
     kind: CodeKind,           // Method | Block | Initializer
-    instructions: Vec<Instruction>,
+    body: EncodedBody,         // the eight-byte slots and their side tables:
+                               // instruction(index), instructions() and
+                               // instruction_count() read it back as
+                               // Instructions; the run loop reads slot(index)
     argument_count: u16,
     register_count: u16,       // arguments + copied values + named temporaries
                                // + the vector register + scratch
@@ -160,10 +177,16 @@ then handed its closure's `copied_count` values into the registers just above
 its parameters.
 
 `outer_reach` is derived from the instructions, by the compiler and by the
-image decoder alike (`bytecode::outer_reach_of`), and decides whether the
+image decoder alike (`CompiledCode::from_builder`, off the encoding:
+`bytecode::compact::narrow_outer_reach` for an eight-byte slot,
+`bytecode::outer_reach_of` for the wide table), and decides whether the
 activation that creates a closure keeps its registers when it returns
 ([execution.md](execution.md), "Converted representation").
 `copied_count` is on the wire; `outer_reach` and `family_size` are not.
+A body is made from the `CodeBuilder` a lowering or the decoder emitted it
+into (`CompiledCode::from_builder`), or from a list of instructions encoded
+at once (`CompiledCode::new`), and either way derives both from what was
+emitted.
 
 A method's or a block's own statements are its local slot initializers first,
 one per declared local that has one, each `initializer_expression; StoreLocal`
@@ -174,26 +197,28 @@ with no initializer is skipped: its register keeps the **nil** every register
 starts with.
 
 A compiled body lives on the declaration it belongs to. A method's is on its
-`MixinMethod` (`code`); a mixin's instance initializer and its superclass clause's
-two bodies are on the `Mixin` (`initializer_code`, `superclass_clause_code`,
-`superclass_message_code`) — the clause's because a nested class's superclass
-clause is code too, evaluated by the accessor once per enclosing instance, and
-its message's because §6.2 evaluates the message's arguments on every
-instantiation. A declaration that applies mixins carries one more message
-body per `<:` clause, on that clause's `MixinApplicationClause`
-(`message_code`), compiled exactly as the superclass clause's message is —
-kind `SuperclassMessage`, in the declaration's own factory scope and with its
-factory's arity, since §6.2 evaluates every clause message with the applying
-class's factory arguments — and its superclass clause body answers the
-superclass and every `<:` receiver as one array
-([object-model.md](object-model.md), "Mixin application"). While the tree is built from source, `MixinMethod::from_declaration`
-compiles each method and `compile_mixin_bodies` a mixin's three bodies, before
-the mixin is wrapped in the `Rc` every application shares; `image::mixins::decode`
-attaches the bodies a row names from the image's code table. So a method without
-a body cannot exist, and nothing looks code up beside a declaration: a send that
-found a method has found its code. That is how the prior art holds it — Primordial
-Soup's `Method::bytecode()`, SOMns's `SInvokable.invokable`. Lowering turns every
-resolver binding into an instruction, so no bindings map outlives compilation.
+`MixinMethod` (`code`); a mixin's instance initializer and its superclass
+clause's two bodies are on the `Mixin` (`initializer_code`,
+`superclass_clause_code`, `superclass_message_code`) — the clause's because a
+nested class's superclass clause is code too, evaluated by the accessor once
+per enclosing instance, and its message's because §6.2 evaluates the message's
+arguments on every instantiation. A declaration that applies mixins carries
+one more message body per `<:` clause, on that clause's
+`MixinApplicationClause` (`message_code`), compiled exactly as the superclass
+clause's message is — kind `SuperclassMessage`, in the declaration's own
+factory scope and with its factory's arity, since §6.2 evaluates every clause
+message with the applying class's factory arguments — and its superclass
+clause body answers the superclass and every `<:` receiver as one array
+([object-model.md](object-model.md), "Mixin application"). While the tree is
+built from source, `MixinMethod::from_declaration` compiles each method and
+`compile_mixin_bodies` a mixin's three bodies, before the mixin is wrapped in
+the `Rc` every application shares; `image::mixins::decode` attaches the bodies
+a row names from the image's code table. So a method without a body cannot
+exist, and nothing looks code up beside a declaration: a send that found a
+method has found its code. That is how the prior art holds it — Primordial
+Soup's `Method::bytecode()`, SOMns's `SInvokable.invokable`. Lowering turns
+every resolver binding into an instruction, so no bindings map outlives
+compilation.
 
 ### One body per mixin
 
@@ -550,8 +575,8 @@ mirror row and the failure block for a send that is:
 - marked `Binding::MirrorSend` — which only `resolver::resolve_kernel`
   records, on a plain explicit-receiver send whose receiver is the bare
   identifier `vmMirror` naming the module root's member, so only shipped
-  core-library source (`Kernel.ns`, `PlatformFactory.ns`) ever has one (a cascade to `vmMirror` is not marked, and compiles as
-  ordinary sends);
+  core-library source (`Kernel.ns`, `PlatformFactory.ns`) ever has one (a
+  cascade to `vmMirror` is not marked, and compiles as ordinary sends);
 - a keyword send whose selector names a `MIRROR` row
   (`builtins::primitive::mirror_primitive_named`); and
 - ending in a literal block the inlining gate would accept, with no
@@ -609,7 +634,7 @@ no program reaches either module's root, and the bootstrap checks that each one'
 `vmMirror` holds the mirror, so the check's error is unreachable while that
 holds. The
 instruction reads and writes only its own activation's registers, so
-`bytecode::outer_reach_of` does not name it.
+`bytecode::outer_reach_of` answers 0 for it.
 
 **It has no wire tag**, and the encoder treats one as unreachable. It is
 emitted only for a `MirrorSend`, so only into shipped core-library source,
@@ -659,11 +684,16 @@ Each `CompiledCode` records its `family_size`, one past the highest number
 among its own sends and its nested blocks' sizes, 0 when there is none
 (`bytecode::family_size_of`). A block is finished before the root that
 contains it, so a block's size is its own subtree's, and the root's is the
-family's. Neither the number nor the size is on the wire: the decoder
+family's. A send's `CallSite` is stored in its `SendSite`, in the body's
+`send_sites` table, whichever of its eight-byte or wide forms the send
+took. Neither the number nor the size is on the wire: the decoder
 assigns every family's numbers itself, in this same emission order, once the
 whole code table is read, and derives the size from them with the same
 function, so a family is dense by construction rather than checked for it
-([image-format.md](image-format.md), "Verification").
+([image-format.md](image-format.md), "Verification"). It numbers them in
+place through `EncodedBody::for_each_emitted_mut`, which visits every send's
+call site and every block in emission order, whatever form each took -- a
+`MakeClosure` kept in the `wide` table included.
 
 The number indexes the running heap's cache table from the activation's
 `feedback_base`; a send whose number is at or past its body's `family_size`
@@ -683,11 +713,65 @@ Compilation is a total, deterministic lowering; a compiler-invariant violation i
 
 A program-level error the language raises at evaluation time is therefore
 **deferred to execution**: it is reported when, and only if, execution reaches
-it, so a method that is never run never fails. One literal carries that
-deferral, `Literal::UnresolvedIdentifier`: an identifier the resolver left
+it, so a method that is never run never fails. Two literals carry that
+deferral. `Literal::UnresolvedIdentifier` is an identifier the resolver left
 unbound, a module root's clause receiver, which the root rule decides and
 which never runs ([object-model.md](object-model.md), "The root rule").
 Every other name is bound, a predefined class name included.
+
+`Literal::BodyTooLarge` is the register ceiling. A register is numbered by a
+`u16`, so a body can use at most `u16::MAX` (65,535) of them: its
+parameters, the values a block is handed, its named temporaries, the vector
+register and the scratch registers its expressions need. Both lowerings count
+them with checked arithmetic in every build -- `named_locals_fit` before a
+body is laid out (the capture analysis neither declares nor walks a body that
+fails it), `Layout::converted`'s checked sums, and `fresh` and
+`allocate_scratch` as it is lowered -- because a wrapped index would be
+silently wrong code. A body past the ceiling is marked too large, nothing it
+emits is kept, and it compiles to the one body `compiler::body_too_large`
+builds: `LoadLiteral` of `Literal::BodyTooLarge` into the register after its
+arguments, then `ImplicitReturn` of that register, of the same kind and arity,
+with no copied value and statement 0 covering both instructions. Its
+`register_count` is its arguments and that one register; a body whose every
+register is an argument loads into its last argument's register instead, since
+the literal raises before anything is written. When it runs it raises
+`method too large: it needs more than 65535 registers`, with `block`,
+`initializer`, `superclass clause` or `inheritance clause message` in place of
+`method` for the other kinds (`interpreter/literals.rs`,
+`body_too_large_error`, which `vm::make_value` only calls). Each body is judged
+on its own: a block past the ceiling makes only that block raise, its creator
+hands it no copied value and compiles as it would around any block, and a
+sibling method still runs. A block with more parameters than a `u16` counts
+takes `u16::MAX` of them, and its `MakeClosure` names as many
+(`compiler::parameters_of`), so a call with more meets the block's arity
+check, which raises too. A method or a factory with more than 65,535
+parameters compiles and raises the same way; the message of a factory's `<:`
+clause, whose arity saturates too, is still handed every factory argument,
+since it raises before it reads one (`CompiledCode::stands_for_too_many_arguments`,
+`instantiate`'s `check_message_arity`). An image cannot carry such a method or
+factory, nor a register list of more than 65,535 entries -- a send or a tuple
+whose operands all read one parameter's register fits the ceiling under the
+optimized lowering -- since the wire stores those counts in 16 bits:
+`image::snapshot`, and so `ns-next build`, refuses the program with
+`image encoding cannot write a method arity of 65536: it does not fit the
+image format's 16-bit field` (or the register list's, the factory arity's)
+rather than aborting ([image-format.md](image-format.md), "The instruction
+encoding").
+
+The two lowerings meet the ceiling at different sizes. The reference lowering
+never reuses a register, so every value costs it one; the optimized lowering
+reuses its scratch registers from statement to statement. A method of 65,537
+statements answers under the optimized lowering and raises under the reference
+lowering (`crates/ns-runtime/tests/compact_encoding.rs`), and a body of more
+than 65,535 named temporaries raises under both. A body between the two
+ceilings is the one known case where the two lowerings' outcomes differ, and
+it is accepted: the ceiling is an implementation limit no shipped, measured or
+golden program comes near, far above the 8-bit temporary count of Primordial
+Soup's method header (`prior-art/primordialsoup/vm/object.h`, `NumTemps`) and
+the 6-bit one of Cog's (`temporaryCountOfMethodHeader`,
+`prior-art/opensmalltalk-vm/src/spur32.cog/cointerp.c`), and the
+specification states no limit (its text searched for "limit", "maximum", "at
+most" and "implementation-defined").
 
 Every integer literal is representable (§5.1.1), so none is deferred. One that
 fits a `SmallInteger`'s 61 bits lowers to `Literal::SmallInteger`, any other to
@@ -756,10 +840,10 @@ that kind, identically wrong under both engines.
 
 `compiler/reference.rs`, written from the AST and the resolver's bindings. It
 shares with `lower.rs` only what must have one definition or is purely
-mechanical: the bytecode types, `lower_literal`, `selector_of`, the parameter counting, the span helpers,
-and `nested::superclass_clause_expression` and
-`superclass_clause_message_arguments_expression` — the one definition of what a superclass
-clause evaluates.
+mechanical: the bytecode types, `lower_literal`, `selector_of`, the parameter
+counting, the span helpers, and `nested::superclass_clause_expression` and
+`superclass_clause_message_arguments_expression` — the one definition of what
+a superclass clause evaluates.
 
 A flag inside `Lowerer` was the alternative, and was rejected on two counts. It
 would check only the four differences above and leave the rest shared, the
@@ -823,16 +907,12 @@ runs (`check_shape`): no branch instruction, since only inlining emits one;
 every scratch register written by exactly one instruction; a named local
 written only by `StoreLocal`; and a named local read only by `Move`, every other
 operand being a scratch register — rule 3, the property that keeps a value from
-changing under its consumer. The ceilings — at most `u16::MAX` temporaries,
-block parameters, named locals and registers in a body — are checked in every
-build (`Body::new` and its callers, `fresh`), because an index that wrapped
-would be silently wrong code. A method's or a factory's parameter count comes
-from the shared `argument_count_of` and `factory_argument_count`, whose
-narrowing rests on the parser's bound instead. The optimized lowering is not
-yet as strict: `lower.rs`'s `allocate_scratch` adds without a check, so a
-body past that ceiling is silently wrong in a release build. Aligning it with
-`fresh` is open. (Its call-site counter is checked in every build; see
-"Safepoints and call-site identity".)
+changing under its consumer. The register ceiling is checked in every
+build (`Body::new`, `fresh`), as it is in `lower.rs`, and a body past it
+compiles to the raising body of "Compilation cannot fail"; the shape check
+does not run on a body it replaced. (The optimized lowering's call-site
+counter is checked in every build too; see "Safepoints and call-site
+identity".)
 
 ### Selecting it
 
@@ -850,7 +930,8 @@ oracle means nothing, and `load` and `inspect` decode rather than compile.
 The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs`, converted
 into `ns_runtime::Lowering` and passed to `program::load_program`, which
 `run` and `build` go through for every module of a program, the manifest
-included; `disasm` compiles one source file through `source::bootstrap`,
+included; `disasm` compiles one source file through
+`Interpreter::compile_module` on an interpreter bootstrapped with the switch,
 takes the switch as an `Option` and refuses it for an artifact, which
 carries the code it was built with.
 
@@ -867,10 +948,10 @@ covered by handing the switch to the same `program::load_program` call.
   under both lowerings against the same recorded answer. Under the reference
   lowering `golden_round_trips.rs` also takes the encoder and decoder over code with
   no jumps and many registers.
-- `run-corpus` runs every row four ways — `run` of its generated
-  application, and `build` then `load` of it, under each lowering — with no switch, because a gate must not be optional. A
-  row fails if any of the four differs, and the report names which. The gate's
-  counts stay per row.
+- `run-corpus` runs every row four ways — `run` of its generated application,
+  and `build` then `load` of it, under each lowering — with no switch, because
+  a gate must not be optional. A row fails if any of the four differs, and the
+  report names which. The gate's counts stay per row.
 - `crates/ns-runtime/tests/reference_lowering.rs` loads every corpus module the
   resolver accepts, under both lowerings, compiling without running. It
   exercises "Compilation cannot fail" and the reference lowering's shape
@@ -953,12 +1034,12 @@ that only the reference lowering emits, for exactly the sends
 `control_flow::recognize` and `recognize_mirror_send` accept.
 
 - **The count agrees at every point of every program.** The optimized lowering
-  omits exactly these activations and no others. On a non-Boolean receiver both
-  lowerings make the same real send with real closures, and from there count
-  alike; the `mustBeBoolean` send is made alike too. That holds for an
-  instance of a user subclass of `True`, which reaches `True`'s quick
-  methods: they mark the block as a control-flow step only for a Boolean
-  receiver, so its block is counted under both lowerings
+  omits exactly these activations and no others. On a non-Boolean receiver
+  both lowerings make the same real send with real closures, and from there
+  count alike; the `mustBeBoolean` send is made alike too. That holds for an
+  instance of a user subclass of `True`, which reaches `True`'s quick methods:
+  they mark the block as a control-flow step only for a Boolean receiver, so
+  its block is counted under both lowerings
   (`goldens/runtime/depth-limit/recursion_through_a_subclass_of_true_counts_alike_under_both_lowerings`).
 - **The agreement depends on the kernel's fast paths, which is why they
   apply under both lowerings.** The reference lowering's `SendInlinable` of
@@ -990,11 +1071,12 @@ that only the reference lowering emits, for exactly the sends
   reference lowering passes to a `SendInlinable` is a literal created right
   before the send — a mirror send's failure block included, and `Kernel.ns`
   passes no other literal block to one ("Mirror sends") — so the condition
-  holds for every program either lowering compiles, and a chain of exempt activations is then bounded by how deeply
-  blocks nest in the artifact — which the decoder caps at the parser's
-  ceiling of 128 ([image-format.md](image-format.md), "Verification"), so an
-  artifact stacks no more exempt activations above a counted one than source
-  can. A block that fails the condition is counted like any other.
+  holds for every program either lowering compiles, and a chain of exempt
+  activations is then bounded by how deeply blocks nest in the artifact —
+  which the decoder caps at the parser's ceiling of 128
+  ([image-format.md](image-format.md), "Verification"), so an artifact stacks
+  no more exempt activations above a counted one than source can. A block that
+  fails the condition is counted like any other.
 
 So the oracle compares even an overflow byte for byte — the output up to it,
 the error and the exit status. Two alternatives were rejected. Counting
@@ -1104,39 +1186,25 @@ answered, reading its source afresh, so its source is protected across it
 as an operand is across a send. The design is
 [object-model.md](object-model.md), "Simultaneous slots".
 
-## Follow-up: entry points that reach a class object only to find its mixin
+## Readers of compiled code take the mixin
 
-The compiler itself no longer has such an entry point: it compiles onto a
-`Mixin` while the tree is built, and never sees a class object. The pattern
-remains in two places. `image::encode_code_table` and `image::mixins::plan` each
-take a `ClassReference` parameter, and each one's first move is to walk from it to the
-`Mixin` that backs it — the code they encode lives on that mixin's tree and
-nowhere else. Reaching a class object's `mixin` is a read only `heap.rs` may
-perform, so each also needs a `&Heap` parameter purely to make that one hop.
-Taking the root mixin directly instead would remove the need for a `Heap` there —
-there is nothing else on the class object either of them reads.
-
-`ns-cli`'s `disasm` (`crates/ns-cli/src/commands/disasm.rs`) has the identical
-shape but not the identical fix: it takes no `ClassReference` parameter to narrow,
-since it builds a class object itself
-(from source, or from a loaded artifact) and reaches the mixin through its own
-`root_mixin_of` helper, needing a `Heap` for the same reason. It reads through
-`interpreter.enter` inside the lifetime of the interpreter that built the class
-object, because under the arena it must: a handle is an index meaningful only
-against its own heap, so a stand-in `Heap` reads the wrong object in a release
-build and trips the debug origin guard in a debug one. Its fix is not "take a
-`Mixin` instead of a `ClassReference`" but "stop building a class object at all" — a
-different, and possibly larger, change.
-
-Recorded here as a follow-up rather than undertaken now, because narrowing the
-signatures is a design change to the image module's interface, not a migration.
+Compiled code lives on a module's mixin tree, so what reads only the code
+takes mixins, never a class object. `image::encode_code_table`,
+`image::mixins::plan` and `image::mixins::encode` take the module roots'
+mixins and no `Heap`. `ns-next disasm` takes the root declaration from
+`Interpreter::compile_module` for a source -- compiled with the chosen
+lowering exactly as `load_module` compiles it, but applied to nothing -- or
+from `LoadedModule::declaration` for an artifact. None of them holds a
+handle, so none can read one through a heap that did not mint it
+([memory.md](memory.md), "A handle is arena-relative").
 
 ## Decisions
 
-- **`Instruction` is a Rust enum, not packed bytes**; the loop-over-locals
-  profile shows its dispatch cost, and a compact encoding is planned,
-  designed against the one-word value ([execution.md](execution.md),
-  "Planned: the compact instruction encoding").
+- **`Instruction` is a Rust enum, the vocabulary every lowering and tool
+  speaks; a body is stored and run in eight-byte slots** (2026-10-02),
+  encoded as it is emitted and read back through an exact view, since the
+  loop-over-locals profile showed what dispatching the enum cost
+  ([execution.md](execution.md), "The compact instruction encoding").
 - **A local's read costs no instruction**, which makes its register live storage
   and makes the value-register invariant necessary.
 - **Inlining is gated syntactically at compile time and guarded again at run

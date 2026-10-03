@@ -3,6 +3,7 @@ package io.github.bstrauss.newspeak.lsp
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermission
+import java.util.Properties
 
 /** Where the language server was found, or why it was not. */
 sealed interface ServerLocation {
@@ -61,19 +62,39 @@ class ServerBinaryLocator(
 /** Whether `operatingSystemName` (`System.getProperty("os.name")`) names a Windows system. */
 private fun isWindows(operatingSystemName: String): Boolean = operatingSystemName.startsWith("Windows")
 
+/**
+ * `platform-directories.properties`, beside this class: the mapping
+ * `build.gradle.kts` reads too, so the directory the build bundles the server
+ * under is the one this lookup finds it in. The lookup rule is the one that
+ * file's header states (a `system.` key matches the start of `os.name`, an
+ * `architecture.` key the lower-cased `os.arch`); `hostPlatform` in the build
+ * script follows it too, since a test cannot call build-script code.
+ */
+private object PlatformDirectories {
+    private val properties = Properties().apply {
+        val resource = checkNotNull(PlatformDirectories::class.java.getResourceAsStream("platform-directories.properties")) {
+            "platform-directories.properties is missing from the plugin"
+        }
+        resource.use(::load)
+    }
+
+    /** What `os.name` starts with, to the system part of the directory. */
+    val systems: Map<String, String> = entries("system.")
+
+    /** `os.arch` in lower case, to the architecture part of the directory. */
+    val architectures: Map<String, String> = entries("architecture.")
+
+    private fun entries(prefix: String): Map<String, String> = properties.stringPropertyNames()
+        .filter { key -> key.startsWith(prefix) }
+        .associate { key -> key.removePrefix(prefix) to properties.getProperty(key) }
+}
+
 /** `windows-x64`, `macos-arm64`, ...: the directory under `bin/` for this machine, or null for one the layout does not name. */
 fun platformDirectory(operatingSystemName: String, operatingSystemArchitecture: String): String? {
-    val system = when {
-        isWindows(operatingSystemName) -> "windows"
-        operatingSystemName.startsWith("Mac") -> "macos"
-        operatingSystemName.startsWith("Linux") -> "linux"
-        else -> return null
-    }
-    val architecture = when (operatingSystemArchitecture.lowercase()) {
-        "amd64", "x86_64" -> "x64"
-        "aarch64", "arm64" -> "arm64"
-        else -> return null
-    }
+    val system = PlatformDirectories.systems.entries
+        .firstOrNull { (namePrefix, _) -> operatingSystemName.startsWith(namePrefix) }
+        ?.value ?: return null
+    val architecture = PlatformDirectories.architectures[operatingSystemArchitecture.lowercase()] ?: return null
     return "$system-$architecture"
 }
 

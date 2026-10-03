@@ -11,6 +11,14 @@ use ns_syntax::Span;
 
 use crate::Symbol;
 
+mod compact;
+
+pub(crate) use compact::CreatedBlock;
+pub use compact::{
+    BlockSite, CodeBuilder, CompactInstruction, Emitted, EncodedBody, MirrorSite, SendSite,
+    WideSend,
+};
+
 /// A compiled instruction-set literal -- a lowered form of `ast::Literal` that
 /// keeps only what execution needs. Int/float text is parsed once at compile
 /// time; `String`/`Symbol`/`Array` still allocate a fresh heap
@@ -24,13 +32,18 @@ use crate::Symbol;
 /// `LoadLiteral` allocates the `LargeInteger` object each time it runs, which
 /// is sound because a value has no identity.
 ///
-/// `UnresolvedIdentifier` is the one program-level error a *resolved* module
-/// can still carry: an identifier with no binding -- a module root's clause
+/// `UnresolvedIdentifier` is the one unbound name a *resolved* module can
+/// still carry: an identifier with no binding -- a module root's clause
 /// receiver, which the root rule decides and which never runs (see
 /// `interpreter::literals::unresolved_identifier_error`). Compilation cannot
 /// raise a `NewspeakError`, so it is deferred: it is no lowered
 /// `ast::Literal` but the payload of a `LoadLiteral` that raises instead of
 /// producing a value.
+///
+/// `BodyTooLarge` is the other deferral: a body that needs more registers
+/// than a `u16` names compiles to a body that loads it first and raises
+/// `interpreter::literals::body_too_large_error` (`docs/design/compiler.md`,
+/// "Compilation cannot fail"), so a body never run never fails.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Nil,
@@ -41,6 +54,7 @@ pub enum Literal {
     Symbol(Symbol),
     LargeInteger(crate::ArbitraryInteger),
     UnresolvedIdentifier(String),
+    BodyTooLarge,
 }
 
 /// One send's identity within its code family (`docs/design/dispatch.md`,
@@ -78,7 +92,7 @@ pub enum IntegerOperation {
 
 /// Every register operand is a `u16` index into the frame's unified
 /// arguments-then-temporaries register file; every jump target is an instruction
-/// index into the owning `CompiledCode.instructions`.
+/// index into the owning `CompiledCode`'s instructions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
     LoadLiteral {
@@ -169,7 +183,7 @@ pub enum Instruction {
     /// here, not a value.
     ///
     /// Reads and writes only registers of the activation executing it, so
-    /// `outer_reach_of` does not name it.
+    /// its `outer_reach_of` reach is 0.
     SendMirror {
         primitive: crate::builtins::primitive::MirrorPrimitive,
         mirror_register: u16,
@@ -335,7 +349,7 @@ pub enum Instruction {
     /// instruction, so there is one source for each of them.
     ///
     /// Reads and writes only registers of the activation executing it -- never
-    /// another frame's by reference -- so `outer_reach_of` does not name it.
+    /// another frame's by reference -- so its `outer_reach_of` reach is 0.
     IntegerBinary {
         operation: IntegerOperation,
         destination: u16,
@@ -373,10 +387,14 @@ pub enum CodeKind {
     SuperclassMessage,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct CompiledCode {
     pub kind: CodeKind,
-    pub instructions: Vec<Instruction>,
+    /// The instructions, stored only in their eight-byte encoding
+    /// (`docs/design/execution.md`, "The compact instruction encoding"):
+    /// the loop runs the slots, and every tool reads the decoded
+    /// view (`instruction`, `instructions`).
+    body: EncodedBody,
     pub argument_count: u16,
     /// Total register count, in the order the registers are laid out:
     /// `argument_count`, then `copied_count`, then the named temporaries,
@@ -405,13 +423,15 @@ pub struct CompiledCode {
     /// level above that. `MakeClosure` marks the creating activation when
     /// this is non-zero, which is what makes a returning frame keep its
     /// registers (`docs/design/execution.md`, "Converted representation").
-    /// Derived from the instructions, never on the wire.
+    /// Derived from the encoding by `from_builder`, never on the wire.
     ///
     /// **Every instruction that reads or writes another frame's registers by
-    /// reference has to be named in `outer_reach_of`.** One that is not
-    /// leaves the creating activation unmarked, its frame drops its
-    /// registers when it returns, and the reads answer `nil` -- silent wrong
-    /// output at exit status 0, not a crash.
+    /// reference has to be named in `outer_reach_of`, and its eight-byte
+    /// form in `compact::narrow_outer_reach`, answering its depth, never
+    /// 0.** One that is not leaves the creating activation unmarked, its
+    /// frame drops its registers when it returns, and the reads answer `nil`
+    /// -- silent wrong output at exit status 0, not a crash. The round-trip
+    /// tests' `assert_derived_as_decoded` holds the two lists to each other.
     pub outer_reach: u16,
     /// Whether this is the body of `Block>>on:do:`, `ensure:` or
     /// `ifCurtailed:`, and where its parameters and locals live: recognized
@@ -421,6 +441,173 @@ pub struct CompiledCode {
     /// body carries none.
     pub unwind_marker: Option<UnwindMarker>,
     pub source: Span,
+}
+
+impl CompiledCode {
+    /// A body from its instructions, encoded at once; `family_size` and
+    /// `outer_reach` are derived from them, as the compiler derives them.
+    /// It carries no unwind marker: only the kernel's compilation
+    /// recognizes one.
+    pub fn new(
+        kind: CodeKind,
+        instructions: Vec<Instruction>,
+        argument_count: u16,
+        register_count: u16,
+        copied_count: u16,
+        statement_program_counter: Vec<(usize, Range<usize>)>,
+        source: Span,
+    ) -> CompiledCode {
+        let mut builder = CodeBuilder::new();
+        for instruction in instructions {
+            builder.emit(instruction);
+        }
+        CompiledCode::from_builder(
+            kind,
+            builder,
+            argument_count,
+            register_count,
+            copied_count,
+            statement_program_counter,
+            source,
+        )
+    }
+
+    /// A body from the builder a lowering or the image decoder emitted it
+    /// into; `family_size` and `outer_reach` are derived from it, read off
+    /// its tables as `family_size_of` and `outer_reach_of` read the decoded
+    /// view, so that building a body decodes none of it.
+    pub(crate) fn from_builder(
+        kind: CodeKind,
+        builder: CodeBuilder,
+        argument_count: u16,
+        register_count: u16,
+        copied_count: u16,
+        statement_program_counter: Vec<(usize, Range<usize>)>,
+        source: Span,
+    ) -> CompiledCode {
+        CompiledCode {
+            kind,
+            family_size: builder.family_size(),
+            outer_reach: builder.outer_reach(),
+            body: builder.finish(),
+            argument_count,
+            register_count,
+            copied_count,
+            statement_program_counter,
+            unwind_marker: None,
+            source,
+        }
+    }
+
+    /// The instruction at `index`, decoded: what was emitted there.
+    pub fn instruction(&self, index: usize) -> Instruction {
+        self.body.instruction(index)
+    }
+
+    /// Every instruction, decoded -- for tools and tests; the loop reads
+    /// `slot`.
+    pub fn instructions(&self) -> Vec<Instruction> {
+        self.body.instructions()
+    }
+
+    pub fn instruction_count(&self) -> usize {
+        self.body.len()
+    }
+
+    /// Whether this is the body a body past the register ceiling compiled
+    /// to (`compiler::body_too_large`), with its arity saturated at
+    /// `u16::MAX` because it stands for `given` arguments, more than a `u16`
+    /// counts. Such a body raises before it reads a register, so it may be
+    /// handed all of them.
+    pub fn stands_for_too_many_arguments(&self, given: usize) -> bool {
+        self.argument_count == u16::MAX
+            && given > usize::from(u16::MAX)
+            && self.instruction_count() > 0
+            && matches!(
+                self.instruction(0),
+                Instruction::LoadLiteral {
+                    literal: Literal::BodyTooLarge,
+                    ..
+                }
+            )
+    }
+
+    pub(crate) fn slot(&self, index: usize) -> CompactInstruction {
+        self.body.slot(index)
+    }
+
+    /// Whether the instruction at `index` is stored in a wide form -- a
+    /// `Wide` slot, or a send's wide form -- rather than in eight bytes.
+    /// For tests that a body past a table's sixteen-bit index really took
+    /// the wide form; nothing else needs to tell the forms apart.
+    #[doc(hidden)]
+    pub fn is_wide(&self, index: usize) -> bool {
+        matches!(
+            self.body.slot(index),
+            CompactInstruction::Wide { .. }
+                | CompactInstruction::SendPublicWide { .. }
+                | CompactInstruction::SendInlinableWide { .. }
+                | CompactInstruction::SendLexicalWide { .. }
+                | CompactInstruction::SendSuperWide { .. }
+        )
+    }
+
+    /// Whether the `NS_NEXT_STRESS_WIDE` stress mode is on, which makes
+    /// every instruction of a body built by the compiler take a wide form.
+    /// The one reading of that variable, for the tests whose expectation of
+    /// a form depends on it.
+    #[doc(hidden)]
+    pub fn every_instruction_is_wide() -> bool {
+        crate::interpreter::safepoint::stress_wide_from_env()
+    }
+
+    pub(crate) fn body(&self) -> &EncodedBody {
+        &self.body
+    }
+
+    pub(crate) fn body_mut(&mut self) -> &mut EncodedBody {
+        &mut self.body
+    }
+}
+
+/// Two bodies are equal when they mean the same: every field but the
+/// encoding, and the instructions the encoding decodes to, so a body built
+/// narrow equals the same body built by `CodeBuilder::always_wide`. A
+/// `Float` literal compares by its bits: the question is whether two bodies
+/// are the same, not whether their floats are numerically equal, so a NaN
+/// equals the NaN of the same payload and no other, and `0.0` differs from
+/// `-0.0` -- what the encoding keeps, and what a program can observe.
+impl PartialEq for CompiledCode {
+    fn eq(&self, other: &CompiledCode) -> bool {
+        // Destructured, so that a field added to `CompiledCode` must be
+        // decided here.
+        let CompiledCode {
+            kind,
+            body: _,
+            argument_count,
+            register_count,
+            statement_program_counter,
+            family_size,
+            copied_count,
+            outer_reach,
+            unwind_marker,
+            source,
+        } = self;
+        *kind == other.kind
+            && *argument_count == other.argument_count
+            && *register_count == other.register_count
+            && *statement_program_counter == other.statement_program_counter
+            && *family_size == other.family_size
+            && *copied_count == other.copied_count
+            && *outer_reach == other.outer_reach
+            && *unwind_marker == other.unwind_marker
+            && *source == other.source
+            && self.instruction_count() == other.instruction_count()
+            && (0..self.instruction_count()).all(|index| {
+                self.instruction(index)
+                    .is_identical_to(&other.instruction(index))
+            })
+    }
 }
 
 /// What makes an activation matter to the unwinder
@@ -491,7 +678,8 @@ impl Instruction {
     }
 
     /// `call_site`'s mutable twin, for the one place that assigns a call
-    /// site rather than reads one (`image::decode::number_call_sites`).
+    /// site rather than reads one (`EncodedBody::for_each_emitted_mut`,
+    /// through which the image decoder numbers call sites).
     /// Shares `call_site_variants!` with `call_site` above.
     pub fn call_site_mut(&mut self) -> Option<&mut CallSite> {
         match self {
@@ -499,12 +687,72 @@ impl Instruction {
             _ => None,
         }
     }
+
+    /// Whether `self` and `other` are the same instruction: `==`, except
+    /// that a `Float` literal compares by its bits, so that a NaN's payload
+    /// and a zero's sign count (`CompiledCode`'s `PartialEq`).
+    pub(crate) fn is_identical_to(&self, other: &Instruction) -> bool {
+        match (self, other) {
+            (
+                Instruction::LoadLiteral {
+                    destination: own_destination,
+                    literal: Literal::Float(own_value),
+                },
+                Instruction::LoadLiteral {
+                    destination: other_destination,
+                    literal: Literal::Float(other_value),
+                },
+            ) => {
+                own_destination == other_destination && own_value.to_bits() == other_value.to_bits()
+            }
+            _ => self == other,
+        }
+    }
+
+    /// Sets the target of a jump, of an inlined integer operation's
+    /// fallback, or of a mirror send's failure block -- the instructions a
+    /// lowering emits before it knows where they go.
+    pub(crate) fn set_target(&mut self, target: u32) {
+        match self {
+            Instruction::Jump {
+                target: jump_target,
+            }
+            | Instruction::JumpIfNotBoolean {
+                target: jump_target,
+                ..
+            }
+            | Instruction::BranchIfFalse {
+                target: jump_target,
+                ..
+            }
+            | Instruction::BranchIfTrue {
+                target: jump_target,
+                ..
+            }
+            // The fast path's own guard: its `target` is where the fallback
+            // send stands, patched exactly like a jump's.
+            | Instruction::IntegerBinary {
+                target: jump_target,
+                ..
+            }
+            // A mirror send's `failure` is where its inlined block stands.
+            | Instruction::SendMirror {
+                failure: jump_target,
+                ..
+            } => *jump_target = target,
+            other => unreachable!("internal: set_target on a non-jump instruction {other:?}"),
+        }
+    }
 }
 
 /// One past the highest call-site number among `instructions`' sends and
 /// the `family_size` of every block they create; 0 when there is none.
 /// `UNCACHED` sends are not numbered. The compiler and the decoder both
-/// compute it here, so the two cannot disagree about a body.
+/// derive a body's through `CompiledCode::from_builder`, off the encoding
+/// (`compact`'s `Tables::family_size`, which calls this for the wide
+/// table), so the two cannot disagree about a body; the round-trip tests'
+/// `assert_derived_as_decoded` hold that derivation to this function over
+/// the decoded view.
 pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
     instructions
         .iter()
@@ -521,15 +769,19 @@ pub(crate) fn family_size_of(instructions: &[Instruction]) -> u32 {
 
 /// A body's `outer_reach`. A nested block's reach counts one level less from
 /// here: the frame it reaches through is the one this body creates. The
-/// compiler and the decoder both compute it here, so the two cannot disagree
-/// about a body.
+/// compiler and the decoder both derive a body's through
+/// `CompiledCode::from_builder`, off the encoding: `compact`'s
+/// `narrow_outer_reach` for an eight-byte slot, this function for the wide
+/// table. The round-trip tests' `assert_derived_as_decoded` hold that
+/// derivation to this function over the decoded view.
 ///
-/// **The match below has to name every instruction that reaches another
-/// frame's registers by reference.** An omitted one contributes `0`, so
-/// `MakeClosure` never marks the creating activation, the frame loses its
-/// registers when it returns, and every read through it answers `nil`
-/// without a word (`docs/design/execution.md`, "The divorce"). Adding such
-/// an instruction is therefore a change to this function too.
+/// **The match below answers every instruction's reach, with no `_` arm, and
+/// so does `narrow_outer_reach` for the eight-byte forms**, so that a new
+/// instruction must decide. One that reached another frame's registers by
+/// reference but answered `0` would leave `MakeClosure` unable to mark the
+/// creating activation: the frame would lose its registers when it returns,
+/// and every read through it would answer `nil` without a word
+/// (`docs/design/execution.md`, "The divorce").
 pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
     instructions
         .iter()
@@ -537,7 +789,34 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
             Instruction::LoadOuterLocal { depth, .. }
             | Instruction::StoreOuterLocal { depth, .. } => *depth,
             Instruction::MakeClosure { code, .. } => code.outer_reach.saturating_sub(1),
-            _ => 0,
+            Instruction::LoadLiteral { .. }
+            | Instruction::LoadSelf { .. }
+            | Instruction::LoadEnclosingObject { .. }
+            | Instruction::Move { .. }
+            | Instruction::StoreLocal { .. }
+            | Instruction::SendLexical { .. }
+            | Instruction::SendPublic { .. }
+            | Instruction::SendInlinable { .. }
+            | Instruction::SendSuper { .. }
+            | Instruction::SendMirror { .. }
+            | Instruction::MakeArray { .. }
+            | Instruction::MakeVector { .. }
+            | Instruction::LoadVector { .. }
+            | Instruction::StoreVector { .. }
+            | Instruction::InitializeSlot { .. }
+            | Instruction::ReturnSlotIfFilled { .. }
+            | Instruction::MakeFuture { .. }
+            | Instruction::ResolveFuture { .. }
+            | Instruction::LoadOwnSlot { .. }
+            | Instruction::InitializeSlotProvisionally { .. }
+            | Instruction::Return { .. }
+            | Instruction::ImplicitReturn { .. }
+            | Instruction::NonLocalReturn { .. }
+            | Instruction::Jump { .. }
+            | Instruction::JumpIfNotBoolean { .. }
+            | Instruction::BranchIfFalse { .. }
+            | Instruction::BranchIfTrue { .. }
+            | Instruction::IntegerBinary { .. } => 0,
         })
         .max()
         .unwrap_or(0)
@@ -567,7 +846,7 @@ fn write_code(out: &mut String, code: &CompiledCode, name: &str, indent: usize) 
         code.argument_count, code.register_count
     )
     .expect("writing to a String cannot fail");
-    for (index, instruction) in code.instructions.iter().enumerate() {
+    for (index, instruction) in code.instructions().iter().enumerate() {
         let statement = code
             .statement_program_counter
             .iter()
@@ -804,6 +1083,7 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Symbol(symbol) => format!("#{symbol}"),
         Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),
         Literal::UnresolvedIdentifier(name) => format!("unresolved-ident '{name}'"),
+        Literal::BodyTooLarge => "body-too-large".to_string(),
     }
 }
 
@@ -813,25 +1093,22 @@ mod tests {
 
     #[test]
     fn compiled_code_construction_smoke_test() {
-        let code = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 1,
                     literal: Literal::SmallInteger(42),
                 },
                 Instruction::Return { register: 1 },
             ],
-            argument_count: 1,
-            register_count: 2,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 10),
-        };
-        assert_eq!(code.instructions.len(), 2);
+            1,
+            2,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 10),
+        );
+        assert_eq!(code.instruction_count(), 2);
         assert_eq!(code.register_count - code.argument_count, 1);
         assert_eq!(code, code.clone());
     }
@@ -843,18 +1120,17 @@ mod tests {
     #[test]
     fn outer_reach_counts_a_nested_blocks_reach_one_level_less() {
         let make = |outer_reach, instructions| {
-            Rc::new(CompiledCode {
-                kind: CodeKind::Block,
+            let code = CompiledCode::new(
+                CodeKind::Block,
                 instructions,
-                argument_count: 0,
-                register_count: 1,
-                statement_program_counter: vec![],
-                family_size: 0,
-                copied_count: 0,
-                outer_reach,
-                unwind_marker: None,
-                source: Span::new(0, 0),
-            })
+                0,
+                1,
+                0,
+                vec![],
+                Span::new(0, 0),
+            );
+            assert_eq!(code.outer_reach, outer_reach);
+            Rc::new(code)
         };
         let inner = make(
             2,
@@ -957,18 +1233,15 @@ mod tests {
 
     #[test]
     fn make_closure_carries_compiled_block_code() {
-        let block = Rc::new(CompiledCode {
-            kind: CodeKind::Block,
-            instructions: vec![Instruction::ImplicitReturn { register: 0 }],
-            argument_count: 1,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..1)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 5),
-        });
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            1,
+            1,
+            0,
+            vec![(0, 0..1)],
+            Span::new(0, 5),
+        ));
         let make = Instruction::MakeClosure {
             destination: 0,
             parameters: Rc::new(vec![Symbol::intern("x")]),
@@ -983,9 +1256,9 @@ mod tests {
 
     #[test]
     fn disassemble_lists_instructions_with_statement_labels_and_nested_blocks() {
-        let block = Rc::new(CompiledCode {
-            kind: CodeKind::Block,
-            instructions: vec![
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![
                 Instruction::LoadOuterLocal {
                     destination: 0,
                     depth: 1,
@@ -993,18 +1266,16 @@ mod tests {
                 },
                 Instruction::NonLocalReturn { register: 0 },
             ],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 1,
-            unwind_marker: None,
-            source: Span::new(0, 5),
-        });
-        let code = CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![
+            0,
+            1,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 5),
+        ));
+        assert_eq!(block.outer_reach, 1);
+        let code = CompiledCode::new(
+            CodeKind::Method,
+            vec![
                 Instruction::MakeClosure {
                     destination: 1,
                     parameters: Rc::new(vec![]),
@@ -1021,15 +1292,14 @@ mod tests {
                 Instruction::LoadSelf { destination: 3 },
                 Instruction::ImplicitReturn { register: 3 },
             ],
-            argument_count: 1,
-            register_count: 4,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 2,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 10),
-        };
+            1,
+            4,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 10),
+        );
+        assert_eq!(code.family_size, 2);
+        assert_eq!(code.outer_reach, 0);
         let text = disassemble(&code, "foo:");
         let expected = "\
 method foo: (args 1, registers 4)
@@ -1049,18 +1319,15 @@ method foo: (args 1, registers 4)
     /// every recorded disassembly of by-reference code where it is.
     #[test]
     fn disassembly_names_a_closures_copied_registers_only_when_it_has_some() {
-        let block = Rc::new(CompiledCode {
-            kind: CodeKind::Block,
-            instructions: vec![Instruction::ImplicitReturn { register: 0 }],
-            argument_count: 0,
-            register_count: 3,
-            statement_program_counter: vec![(0, 0..1)],
-            family_size: 0,
-            copied_count: 2,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 5),
-        });
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            0,
+            3,
+            2,
+            vec![(0, 0..1)],
+            Span::new(0, 5),
+        ));
         let copying = format_instruction(&Instruction::MakeClosure {
             destination: 1,
             parameters: Rc::new(vec![Symbol::intern("x")]),
@@ -1116,5 +1383,89 @@ method foo: (args 1, registers 4)
             format_literal(&literal),
             "large-int <100000 words> 0x186a0000000000001869f...00000000000000020000000000000001"
         );
+    }
+
+    /// A body from `instructions`, emitted into `builder`.
+    fn built(builder: CodeBuilder, instructions: &[Instruction]) -> CompiledCode {
+        let mut builder = builder;
+        for instruction in instructions {
+            builder.emit(instruction.clone());
+        }
+        CompiledCode::from_builder(
+            CodeKind::Method,
+            builder,
+            1,
+            300,
+            0,
+            vec![(0, 0..instructions.len())],
+            Span::new(0, 10),
+        )
+    }
+
+    fn load_float(value: f64) -> Instruction {
+        Instruction::LoadLiteral {
+            destination: 1,
+            literal: Literal::Float(value),
+        }
+    }
+
+    /// Equality is about what a body means, so the encoding a builder chose
+    /// does not enter it -- a NaN literal, sends, a block and a register
+    /// past a byte included.
+    #[test]
+    fn a_body_built_narrow_equals_the_same_body_built_wide() {
+        let block = Rc::new(CompiledCode::new(
+            CodeKind::Block,
+            vec![Instruction::ImplicitReturn { register: 0 }],
+            0,
+            1,
+            0,
+            vec![(0, 0..1)],
+            Span::new(0, 1),
+        ));
+        let instructions = [
+            load_float(f64::from_bits(0x7ff8_0000_0000_0001)),
+            load_float(1.5),
+            Instruction::SendPublic {
+                selector: Symbol::intern("at:put:"),
+                receiver_register: 1,
+                argument_registers: vec![2, 3],
+                destination: 4,
+                call_site: CallSite { number: 0 },
+            },
+            Instruction::MakeClosure {
+                destination: 5,
+                parameters: Rc::new(vec![]),
+                code: block,
+                copied: vec![],
+            },
+            Instruction::Move {
+                destination: 299,
+                source: 1,
+            },
+            Instruction::Return { register: 1 },
+        ];
+        let narrow = built(CodeBuilder::never_wide_by_stress(), &instructions);
+        let wide = built(CodeBuilder::always_wide(), &instructions);
+        assert!(!narrow.is_wide(0) && wide.is_wide(0));
+        assert_eq!(narrow, wide);
+        assert_eq!(wide, narrow);
+    }
+
+    /// A `Float` literal compares by its bits: the same NaN is the same
+    /// body, a NaN of another payload or a zero of the other sign is not.
+    #[test]
+    fn a_float_literal_compares_by_its_bits() {
+        let body = |value: f64| {
+            built(
+                CodeBuilder::never_wide_by_stress(),
+                &[load_float(value), Instruction::Return { register: 1 }],
+            )
+        };
+        let payload = f64::from_bits(0x7ff8_0000_0000_0001);
+        assert_eq!(body(payload), body(payload));
+        assert_ne!(body(payload), body(f64::NAN));
+        assert_ne!(body(0.0), body(-0.0));
+        assert_ne!(body(1.5), body(2.5));
     }
 }

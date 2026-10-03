@@ -15,22 +15,21 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: the compact instruction encoding**
-([execution.md](design/execution.md), "Planned: the compact instruction
-encoding"), which the road puts after road step 2 and before road step 3, the
-object space. Road step 2 is built: a value is one tagged word, Spur's, with
-a 61-bit `SmallInteger` over the `LargeInteger` that makes integers
-unbounded and boxed `Float`s beyond the `SmallFloat64` range ("The
-eight-byte value" below; [object-model.md](design/object-model.md), "Values
-and objects"). The encoding was designed with the user on 2026-10-02 --
-one eight-byte slot per instruction, side tables for everything that does
-not fit, the program counter still an instruction index -- and is planned in
-[its plan](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md),
-whose first task is a gate: a throwaway copy runs the loop on the slots and
-is measured against `master` before anything is built, and the user decides
-on its numbers. The whole road, decided with the user on
-2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a
-high-performance VM".
+**Next: road step 3, the object space**
+([memory.md](design/memory.md), "Planned: the object space";
+[object-model.md](design/object-model.md), "Planned: the object layout"):
+one header word and a class word, the fields inline, variably sized objects
+in one VM-owned space with byte-offset handles, in place of the two arenas.
+No implementation plan exists for it yet; one starts from the details
+[OPEN-WORK.md](OPEN-WORK.md)'s road lists under "To settle when planning".
+Everything before it on the road is built: road step 2's eight-byte value
+("The eight-byte value" below), and after it the compact instruction
+encoding ("The compact instruction encoding" below;
+[execution.md](design/execution.md), "The compact instruction encoding"),
+which stores and runs every body as eight-byte instructions with side
+tables, the program counter still an instruction index. The whole road,
+decided with the user on 2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md),
+"The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the
@@ -655,7 +654,7 @@ design:
 **What changed**, in the plan's order:
 
 1. **Lazy identity hashes** — a behaviour change of its own. An object carries
-   0 until `Object>>hash` asks, through `Heap::ensure_identity_hash`; the
+   0 until `Object>>hash` asks, through `Heap::object_ensure_identity_hash`; the
    encoder writes what is stored without assigning one, and the decoder keeps
    every value, 0 included. `hash` values change, which the specification
    leaves open and no recorded outcome pinned. A new fixture,
@@ -712,7 +711,7 @@ verbatim"). Fixed; see "M4 — Tag-named identity hashes" below.
 **What was deleted:** `Heap::alloc_placeholder_object`, whose callers now use
 `allocate_object`, since every object starts at hash 0;
 `Interpreter::allocate_identity_hash` (the `Heap`'s own `allocate_identity_hash` is
-now private, with `ensure_identity_hash` its only caller outside tests); and
+now private, with `object_ensure_identity_hash` its only caller outside tests); and
 the discarded `Object` allocation in
 `build_builtin_classes`, kept by step B only because removing it shifted every
 later hash.
@@ -1840,7 +1839,7 @@ dispatch id in the object header").
 
 **What changed:** two tests pinning the ids of a reapplied class and of a
 decoded graph (`27797ed`); the id in the header, stamped at allocation,
-restamped for every live instance when `Heap::set_class_application` changes
+restamped for every live instance when `Heap::class_set_application` changes
 a class's application, and stamped once for every decoded object after
 `rebuild_applications`, with a debug-build check in `Heap::dispatch_id` that
 the header agrees with the class (`681126d`); `ClassData` boxed (`5d3aeff`).
@@ -3982,3 +3981,95 @@ boxed floats; a float literal outside the immediate range allocating a
 `Float` each time it runs; a `Word` crossing heaps through the public
 payload fields; and `Float>>printString` printing 1.0e303 without an
 exponent.
+
+## The compact instruction encoding (2026-10-02)
+
+Plan: [ns-next-compact-instruction-encoding](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md);
+[execution.md](design/execution.md), "The compact instruction encoding".
+
+The step the road puts after road step 2 ([OPEN-WORK.md](OPEN-WORK.md),
+"The road to a high-performance VM"), designed with the user and built the
+same day, in stages each green. A compiled body is stored and run as
+fixed eight-byte instructions, `CompactInstruction`, a `#[repr(u8)]` enum
+with no heap field (`crates/ns-runtime/src/bytecode/compact.rs`), and
+everything that does not fit eight bytes sits in side tables of its
+`EncodedBody`: the constants, the allocated literals, a `SendSite` per
+send, a block per `MakeClosure`, the mirror sites, the array element
+registers, and the full `Instruction` of anything with no eight-byte form.
+`Instruction` stays the vocabulary: both lowerings and the image decoder
+emit into a `CodeBuilder`, which encodes at once, and every tool reads a
+body back through an exact decoded view. One instruction is one slot, so
+the program counter stays an instruction index and the wire format gained
+no tag. `nil`, the Booleans and a 32-bit integer load from the slot, any
+other immediate from a table of `Immediate` words, which hold no handle;
+each send kind has forms for no, one and two arguments and a wide form,
+and each of the nine integer operations an opcode of its own. Each
+instruction's effect is one function its narrow arm and the out-of-line
+`run_wide` share. `NS_NEXT_STRESS_WIDE`, a fourth stress mode, encodes
+every instruction in its wide form, and goldens and tests pin the forms no
+measured program reaches.
+
+- `8f80f2e` — an `Immediate` is a value that holds no handle, for code to
+  carry its constants.
+- `b7428f6` — the compact encoding, eight bytes an instruction, and its
+  exact round trip.
+- `2b3581e` — a compiled body is stored and run as eight-byte
+  instructions, read back through a decoded view.
+- `9996d38` — each send kind joins its own path, so the loop builds no
+  shared pending send.
+- `65ad13a` — every wide form runs, under `NS_NEXT_STRESS_WIDE` and in
+  goldens past every narrow limit (`goldens/runtime/encoding/`,
+  `crates/ns-runtime/tests/compact_encoding.rs`).
+- `6a03e90` — what the compact instruction encoding moved, on all sixteen
+  programs and the microbenchmarks.
+- This commit — the documentation describes the built state.
+- "a body past the register ceiling compiles, and raises when it runs" —
+  under both lowerings, a body that needs more than `u16::MAX` registers
+  compiles to one that raises `Literal::BodyTooLarge`'s error (literal tag
+  11) when it runs, where the optimized lowering's counts wrapped silently
+  in a release build and the reference lowering panicked.
+- "an image too large for its fields is refused, and a too-large clause
+  message raises" — `image::snapshot` answers an error where a count a
+  program decides passes its 16- or 32-bit field, rather than aborting, and
+  a factory of more than 65,535 parameters raises the too-large error from
+  its `<:` clause message rather than an arity mismatch.
+- The follow-ups closed (`fca1d70`, `add5e3d`, `2703d26`, `7b61056`,
+  `ef96c14`, and this commit) — every patched target, the visit's first
+  error and the wide form past each table are pinned; an encoded body's
+  tables and sites are private to `bytecode::compact`, read through inlined
+  accessors, with `vm::run` unchanged by them (the figures are in
+  [execution.md](design/execution.md));
+  two `CompiledCode`s are equal when they mean the same, a float literal
+  by its bits; loading decodes each body once; and a source of more than
+  `u32::MAX` bytes is refused by `ns_syntax::lex`, which `parse` and
+  `ns-lsp`'s analysis go through, before it is lexed.
+
+**The gate.** Before anything was built, a throwaway copy ran `vm::run` on
+the eight-byte slots and was measured against `master` by the protocol of
+"What the eight-byte value moved": thirteen of the sixteen programs got
+faster by 0.3% to 6.5%, but `bench_loop.ns` got 3.9% slower, separated.
+The user decided on those numbers to build the slots and to profile the
+loss, so the 32-bit stream the plan held in reserve was never measured.
+
+**The join.** The branch's first loop kept the loss (+3.5% on
+`bench_loop.ns`). An `xperf` profile traced it to the one join after the
+match where the four send kinds met: LLVM built their pending send as a
+stack aggregate with narrow stores, read it back as a byte and dispatched a
+second jump table on the kind. One send path per kind, each arm breaking
+out of its own kind's labelled block, removed it (`9996d38`).
+
+**Measured** in one sitting against the tree the branch started from,
+`49e1fcc`, three pinned release builds a side: twenty-one of the
+twenty-four sources are faster, by 1.2% to 5.4%, seven of them with
+separated ranges (CD -4.8%, `bench_megamorphic.ns` -5.4%, `bench_loop.ns`
+-1.9%); List, Permute and `bench_send.ns` move by +0.1% to +0.3%, inside
+their ranges. `vm::run` was 8,525 instructions with a stack frame of 0x3A8
+bytes at `9996d38`, against 7,000 and 0x358; its size now is in
+[execution.md](design/execution.md), "What the compact instruction
+encoding moved".
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
+threaded loop through `become`, measured on a throwaway copy; an
+`IntegerBinary` form with an immediate operand; the memory the encoding
+saves, counted but not measured; and the task reviews' minor findings under
+"Missing tests" and "Code quality follow-ups".

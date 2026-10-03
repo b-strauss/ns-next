@@ -67,17 +67,17 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
 fn analyze_unguarded(text: &str) -> Analysis {
     // The lexer runs on its own first because `ns_syntax::parse` refuses a
     // token stream with lexer errors before parsing, and because the
-    // classification needs the tokens themselves.
-    let (tokens, lexer_diagnostics) = ns_syntax::lexer::Lexer::new(text).run();
-    if lexer_diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-    {
-        return Analysis {
-            findings: lexer_diagnostics.into_iter().map(Finding::from).collect(),
-            classified: Vec::new(),
-        };
-    }
+    // classification needs the tokens themselves. `lex` also refuses a
+    // source longer than a span can address before lexing it.
+    let tokens = match ns_syntax::lex(text) {
+        Ok(tokens) => tokens,
+        Err(lexer_diagnostics) => {
+            return Analysis {
+                findings: lexer_diagnostics.into_iter().map(Finding::from).collect(),
+                classified: Vec::new(),
+            }
+        }
+    };
     let module = match ns_syntax::parse(text) {
         Ok(module) => module,
         Err(diagnostics) => {

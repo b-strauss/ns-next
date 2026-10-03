@@ -19,8 +19,8 @@ fn of_the_same_class<'gc>(
     argument: Option<Value<'gc>>,
 ) -> Option<ObjectReference<'gc>> {
     let other = argument.and_then(|value| value.as_object())?;
-    heap.class_of_object(other)
-        .same(heap.class_of_object(receiver))
+    heap.object_class(other)
+        .same(heap.object_class(receiver))
         .then_some(other)
 }
 

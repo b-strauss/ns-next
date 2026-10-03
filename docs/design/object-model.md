@@ -119,31 +119,31 @@ a value needs no identity, so a fresh one per execution is correct
 outside the `SmallFloat64` range does the same with a boxed `Float`, through
 `Mutator::new_float`.
 
-**The debug build keeps its exact check.** A debug handle carries its
-heap's id and its move epoch in full, and every accessor compares both
+**The debug build keeps its exact check.** A debug handle carries its heap's
+id and its move epoch in full, and every accessor compares both
 ([memory.md](memory.md), "The brand, checked by the compiler rather than by
-convention"). The Rust-side `Value` does too: in a debug build it is the
-word plus both numbers, 16 bytes, zero for an immediate, and in a release
-build it is the bare word. What is exactly eight bytes in both builds is a
-`Word`, what a heap object stores -- a field (`Instance`), an element
-(`Array`), a register (the activation stack's and a reified frame's) and a
-copied closure value -- so that the layout is the same in both. Only
-`Heap::load` and `Heap::store` convert: a load gives the word the heap's
-current id and epoch, and a store checks, in a debug build, that the value
-carries both before it becomes a word, so a stale handle is caught where it
-is stored (`a_stale_handle_is_caught_where_it_is_stored`) and cannot be
-laundered into a field. Both are crate-private, since a word carries no
-brand ([memory.md](memory.md), "The brand"). A stored word cannot go stale the way a Rust-side
-handle can, because every collection and every stress move rewrites it in
-place, through the `Trace` impls' `Tracer::word` ([memory.md](memory.md),
-"What the collector traces"). What still holds a Rust-side value or handle
--- a stack entry's receiver, a continuation's state, `ClassData.enclosing`,
-a host's `Root` -- keeps its brand and its `Trace`. Under generations (road
-step 4) a scavenge walks only the young objects and the remembered ones, so an old
-object whose store missed the barrier would keep a stale young word; that is
-what `NS_NEXT_STRESS_SCAVENGE`, with the vacated survivor space and the
-vacated eden region made no-access, will catch ([memory.md](memory.md),
-"Planned: generations").
+convention"). The Rust-side `Value` does too: in a debug build it is the word
+plus both numbers, 16 bytes, zero for an immediate, and in a release build it
+is the bare word. What is exactly eight bytes in both builds is a `Word`, what
+a heap object stores -- a field (`Instance`), an element (`Array`), a register
+(the activation stack's and a reified frame's) and a copied closure value --
+so that the layout is the same in both. Only `Heap::load` and `Heap::store`
+convert: a load gives the word the heap's current id and epoch, and a store
+checks, in a debug build, that the value carries both before it becomes a
+word, so a stale handle is caught where it is stored
+(`a_stale_handle_is_caught_where_it_is_stored`) and cannot be laundered into a
+field. Both are crate-private, since a word carries no brand
+([memory.md](memory.md), "The brand"). A stored word cannot go stale the way a
+Rust-side handle can, because every collection and every stress move rewrites
+it in place, through the `Trace` impls' `Tracer::word`
+([memory.md](memory.md), "What the collector traces"). What still holds a
+Rust-side value or handle -- a stack entry's receiver, a continuation's state,
+`ClassData.enclosing`, a host's `Root` -- keeps its brand and its `Trace`.
+Under generations (road step 4) a scavenge walks only the young objects and
+the remembered ones, so an old object whose store missed the barrier would
+keep a stale young word; that is what `NS_NEXT_STRESS_SCAVENGE`, with the
+vacated survivor space and the vacated eden region made no-access, will catch
+([memory.md](memory.md), "Planned: generations").
 
 A `String`'s `CodePoints` payload holds its code points in one of two widths
 and no handle ([core-library.md](core-library.md), "Strings are code points
@@ -186,7 +186,7 @@ means nothing against a different `Heap` are in [memory.md](memory.md).
 
 **The identity hash is drawn from a monotonic counter the first time `hash`
 asks for one**, never derived from an address and never from the arena index,
-and 0 means "not yet assigned" (`Heap::ensure_identity_hash`). An address- or
+and 0 means "not yet assigned" (`Heap::object_ensure_identity_hash`). An address- or
 index-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
@@ -335,13 +335,14 @@ to.
 
 **A lazy slot (§6.3.3) is an own slot like any other**, laid out at its
 position and starting `nil`, with two differences. The instance initializer
-skips it; its getter is a compiled method in the mixin's `methods`, with no fast
-path, which opens with `ReturnSlotIfFilled` -- answering a filled slot from
-its own activation -- and otherwise evaluates the initializer and stores it
-with `InitializeSlot` ([dispatch.md](dispatch.md), "Slot accessors"), and a mutable one's setter is an ordinary accessor entry.
-And it is outside a value's state: `mixin::declared_slots_of` leaves it out of
-`MixinApplication::declared_slots`, so the state-derived `=` and `hash` skip it
-([core-library.md](core-library.md), "Lazy slots first").
+skips it; its getter is a compiled method in the mixin's `methods`, with no
+fast path, which opens with `ReturnSlotIfFilled` -- answering a filled slot
+from its own activation -- and otherwise evaluates the initializer and stores
+it with `InitializeSlot` ([dispatch.md](dispatch.md), "Slot accessors"), and a
+mutable one's setter is an ordinary accessor entry. And it is outside a
+value's state: `mixin::declared_slots_of` leaves it out of
+`MixinApplication::declared_slots`, so the state-derived `=` and `hash` skip
+it ([core-library.md](core-library.md), "Lazy slots first").
 
 ## The nested-class accessor
 
@@ -429,7 +430,7 @@ its kind, and whose behaviour is a nested class of `Kernel.ns`
 kernel second"). The bootstrap builds each class object first, over a
 placeholder mixin, because a literal needs its class before any Newspeak has
 been read, and then gives it its kernel class's application with
-`Heap::set_class_application`. So the class object is the same one every
+`Heap::class_set_application`. So the class object is the same one every
 literal has had from the first instruction on, and its behaviour is the
 kernel's.
 
@@ -466,10 +467,11 @@ kernel's.
   private, so §6.3.1 keeps it out of every other module's reach; `Object`
   declares no accessor for it among §3.2's accessors for the predefined
   classes, so a bare `Top` is `self Top` and ends in `doesNotUnderstand:`
-  (`goldens/language/builtin-names/top_is_not_a_name.ns`); and the image decoder refuses its tag wherever an artifact names a class, as it
-  refuses the mirror's ([image-format.md](image-format.md), "Verification").
-  A program can reach it only as `Object`'s superclass, which is what §3.2
-  allows and nothing more.
+  (`goldens/language/builtin-names/top_is_not_a_name.ns`); and the image
+  decoder refuses its tag wherever an artifact names a class, as it refuses
+  the mirror's ([image-format.md](image-format.md), "Verification"). A program
+  can reach it only as `Object`'s superclass, which is what §3.2 allows and
+  nothing more.
 - **A builtin class's enclosing object is the kernel instance** — the one
   instance of `Kernel.ns`'s root class, instantiated with the VM mirror — and
   its `declaring_class` is the kernel class, as for any nested class. That is
@@ -632,33 +634,33 @@ for a level above `C`).
   by `interpreter/value_class.rs`'s `check_value_class`, which
   `interpreter/nested.rs`'s `after_clause` calls after `apply_mixin` answers
   the application, and only for an application that inherits `Value`; the
-  verdict is recorded on the class object (`ClassData::value_class_refusal`,
-  a `ValueClassRefusal`), and `decide_instantiation` refuses an instance of a
+  verdict is recorded on the class object (`ClassData::value_class_refusal`, a
+  `ValueClassRefusal`), and `decide_instantiation` refuses an instance of a
   class that carries one, beside the refusals it makes from
-  `instantiation_refusal`. A class that does not inherit `Value` pays one
-  flag test at creation, and a value class one more test per instantiation.
-  The class's own enclosing object is checked first, then the walk climbs
-  the new class object's superclass chain. At each level: a class that inherits `Value` and was created as a
-  class of its own — by `after_clause`, as a builtin or as a module root, not
-  a level a `<:` clause added — stops the walk **only if it carries no
-  recorded refusal of its own**, because it was checked the same way when it
-  was created and everything above it holds by induction. If it does carry
-  one, the walk does not trust it: a refused class still exists, since the
-  refusal is recorded rather than raised, so the new class inherits the
-  fault instead — a `NonValueEnclosingObject` with the `described` text taken
-  from that level's own verdict, naming the level that verdict names, or the
-  level the walk stopped at when it names none
+  `instantiation_refusal`. A class that does not inherit `Value` pays one flag
+  test at creation, and a value class one more test per instantiation. The
+  class's own enclosing object is checked first, then the walk climbs the new
+  class object's superclass chain. At each level: a class that inherits
+  `Value` and was created as a class of its own — by `after_clause`, as a
+  builtin or as a module root, not a level a `<:` clause added — stops the
+  walk **only if it carries no recorded refusal of its own**, because it was
+  checked the same way when it was created and everything above it holds by
+  induction. If it does carry one, the walk does not trust it: a refused class
+  still exists, since the refusal is recorded rather than raised, so the new
+  class inherits the fault instead — a `NonValueEnclosingObject` with the
+  `described` text taken from that level's own verdict, naming the level that
+  verdict names, or the level the walk stopped at when it names none
   (`goldens/library/value/a_value_subclass_of_a_refused_value_class_is_refused.ns`).
   So a fault inherited over several levels still names the level whose
   enclosing object is at fault, not the last class that passed it on
   (`goldens/library/value/a_value_two_levels_below_a_refused_value_class_names_the_faulty_level.ns`).
   Any other level — one that does not inherit `Value`, or a `<:` level, which
   is never created through `after_clause` — has its enclosing object checked
-  with `instantiate.rs`'s `is_a_value`, the predicate the slot check uses,
-  and the walk continues. Checking every level and not only the class's own
-  enclosing object matters because an inherited method reaches its own
-  level's enclosing objects through `outer`: in `class P = Foo new <: Value`,
-  `P` inherits `Value`, `Foo` does not, and a method of `Foo` whose enclosing
+  with `instantiate.rs`'s `is_a_value`, the predicate the slot check uses, and
+  the walk continues. Checking every level and not only the class's own
+  enclosing object matters because an inherited method reaches its own level's
+  enclosing objects through `outer`: in `class P = Foo new <: Value`, `P`
+  inherits `Value`, `Foo` does not, and a method of `Foo` whose enclosing
   object is mutable would make `P`'s instances reach mutable state
   (`goldens/library/value/a_value_over_a_class_with_a_mutable_enclosing_object_is_refused.ns`).
   Requiring `Foo` itself to inherit `Value` would be stricter than §3.1.1: a
@@ -880,21 +882,21 @@ until the program has made one.
   on a receiver that is no Boolean, and `IntegerBinary` on anything but two
   small integers; the compiler inlines neither `==` nor `isNil`.
 - *As a leaf's argument or subject*, a future is looked for only on the
-  failure path of the three ways a leaf runs — `mirror::execute_sent` (a
-  send to the mirror), `send_inlined` (`SendMirror`) and `execute_method` (a
+  failure path of the three ways a leaf runs — `mirror::execute_sent` (a send
+  to the mirror), `send_inlined` (`SendMirror`) and `execute_method` (a
   primitive method): the leaf declined or raised — and only once
   `futures_made` is set: `future::after_a_failed_leaf`, inlined into each
   caller, is that flag test and nothing more, and the search itself is the
   cold `see_through_a_failed_leaf` behind it (`send_inlined` tests the flag
   itself and goes to the cold `mirror::see_through_a_failed_row`);
-  `builtins::execute` itself is the plain dispatch to the leaf. A resolved one is replaced by its value and
-  the leaf runs again, in Rust. An unresolved one cannot be forced in Rust,
-  since nothing re-enters the loop: the answer is a step that activates the
-  future's block under `Continuation::Future` with `AfterForcing::Reexecute`,
-  which records that activation's value and runs the caller's instruction
-  again instead of the next one (`vm::reexecute`); the second time the
-  future is resolved. This rests on an invariant written on
-  `builtins::execute` and checked leaf by leaf: **a leaf that declines or
+  `builtins::execute` itself is the plain dispatch to the leaf. A resolved one
+  is replaced by its value and the leaf runs again, in Rust. An unresolved one
+  cannot be forced in Rust, since nothing re-enters the loop: the answer is a
+  step that activates the future's block under `Continuation::Future` with
+  `AfterForcing::Reexecute`, which records that activation's value and runs
+  the caller's instruction again instead of the next one (`vm::reexecute`);
+  the second time the future is resolved. This rests on an invariant written
+  on `builtins::execute` and checked leaf by leaf: **a leaf that declines or
   raises has changed nothing** ([dispatch.md](dispatch.md), "Primitives").
 - *The leaves that answer "no" rather than declining* — identity and the
   equality leaves of `Object`, `Value`, `Integer`, `Float`, `String`
@@ -988,10 +990,11 @@ defaulting to `new` — and `<:` is one lexer token. With at least one clause th
 whole body may be replaced by a `.`, which declares nothing: the applied mixins
 supply everything. `ClassDeclaration::mixin_applications` carries the clauses
 in written order, and the declaration's `Mixin::mixin_applications` one
-`MixinApplicationClause` each — its selector, whether its message has
-arguments, and that message's compiled body. Type arguments on a clause's
-receiver (`<: Collection[E]`) are parsed and dropped, as they are on a
-superclass clause ([frontend.md](frontend.md), "What is parsed and dropped").
+`MixinApplicationClause` each — its message (a `ClauseMessage`, the
+selector and whether it has arguments, the same record `Mixin::superclass`
+holds for the superclass clause) and that message's compiled body. Type
+arguments on a clause's receiver (`<: Collection[E]`) are parsed and dropped,
+as they are on a superclass clause ([frontend.md](frontend.md), "What is parsed and dropped").
 
 **Each clause adds one class level between the declaration and its
 superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
@@ -1003,10 +1006,11 @@ superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
 - **Its superclass is the level below**: `S` for the first clause, the
   previous level for each later one.
 - **Its enclosing object is the named class's** — "The enclosing object of *I*
-  is the enclosing object of *C*" — **and so is its declaring class.** A method
-  of the applied mixin was written where the named class is declared, so
-  `outer` inside it reaches the mixin's own enclosing objects, never the
-  applying declaration's (`goldens/language/class/mixin/mixin_outer_reaches_the_mixins_enclosing_object.ns`).
+  is the enclosing object of *C*" — **and so is its declaring class.** A
+  method of the applied mixin was written where the named class is declared,
+  so `outer` inside it reaches the mixin's own enclosing objects, never the
+  applying declaration's
+  (`goldens/language/class/mixin/mixin_outer_reaches_the_mixins_enclosing_object.ns`).
 - **Its primary factory selector is the clause's selector** — "Class *I* has a
   primary factory method (6) with the same selector as *m*" — which must name
   the named class's primary factory: a clause sending anything else is §6.1's
@@ -1209,9 +1213,9 @@ only if its own class side declares it
 §5.10 makes a `super` send's S the superclass of the activation's current
 class, which for a class-side method is `Class`: a class-side
 `super printString` answers `Class>>printString`, the class's name
-(`goldens/language/class/class-side/class_side_super_reaches_class.ns`), and a class-side
-`super new` does not instantiate, because nothing above the metaclass
-declares a factory.
+(`goldens/language/class/class-side/class_side_super_reaches_class.ns`), and a
+class-side `super new` does not instantiate, because nothing above the
+metaclass declares a factory.
 
 **Every class object's class is its metaclass, and every metaclass's class is
 `Metaclass`.** `attach_metaclass` sets both headers: the class object becomes
@@ -1281,14 +1285,13 @@ cannot disagree about which selector instantiates a class. Nothing about it
 reaches the image: like a slot's accessors (§6.3.2), it is rebuilt on the way
 out from the factory the mixin table already carries.
 
-**Dispatch is uniform.** A class object's dispatch id is its class's
-instances id — its metaclass's — the same rule as for every other object;
-there is no class-side id and no class-side lookup chain, and the inline
-caches guard on the header id as they do for an instance
-([dispatch.md](dispatch.md), "The dispatch id"). A class side's own
-`doesNotUnderstand:` handles every send its class object does not understand,
-since §5.5's handler is "defined for the class of the receiver" and that
-class is the metaclass
+**Dispatch is uniform.** A class object's dispatch id is its class's instances
+id — its metaclass's — the same rule as for every other object; there is no
+class-side id and no class-side lookup chain, and the inline caches guard on
+the header id as they do for an instance ([dispatch.md](dispatch.md), "The
+dispatch id"). A class side's own `doesNotUnderstand:` handles every send its
+class object does not understand, since §5.5's handler is "defined for the
+class of the receiver" and that class is the metaclass
 (`goldens/language/class/class-side/a_class_side_does_not_understand_handles_its_class_objects_sends.ns`).
 
 **The protocol is minimal, as Primordial Soup's is.** Reflection is a
@@ -1474,13 +1477,14 @@ and one that is captured is stored the way an object is. See
 
 ## Planned: the road to a high-performance VM
 
-Would change: the object representation becomes the one the reference
-engines with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with
-Primordial Soup beside them -- adapted where Newspeak's nesting requires it,
-and the JIT tiers follow on it. Decided with the user on 2026-09-29; the canonical order is [OPEN-WORK.md](../OPEN-WORK.md), "The road
-to a high-performance VM". Two `Planned:` sections below and three in
-[memory.md](memory.md) describe its representation steps still to come. The
-road, each step landing green on its own:
+Would change: the object representation becomes the one the reference engines
+with a JIT share -- Cog's Spur, Strongtalk and HotSpot, with Primordial Soup
+beside them -- adapted where Newspeak's nesting requires it, and the JIT tiers
+follow on it. Decided with the user on 2026-09-29; the canonical order is
+[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". Two
+`Planned:` sections below and three in [memory.md](memory.md) describe its
+representation steps still to come. The road, each step landing green on its
+own:
 
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
@@ -1488,9 +1492,9 @@ road, each step landing green on its own:
 2. **An eight-byte value**, on today's arena -- built: its first plan,
    `LargeInteger` ([core-library.md](core-library.md), "Large integers"),
    and its second, the tagged word ("Values and objects" above).
-   - **After road step 2, the compact instruction encoding**, designed
-     against the one-word value ([execution.md](execution.md), "Planned:
-     the compact instruction encoding").
+   - **After road step 2, the compact instruction encoding** -- built:
+     eight-byte instructions designed against the one-word value
+     ([execution.md](execution.md), "The compact instruction encoding").
 3. **The object space** -- one header word, the class word, the fields
    inline ("Planned: the object layout" below; [memory.md](memory.md),
    "Planned: the object space").
@@ -1574,7 +1578,7 @@ reclaimed once the `Mixin` itself is dropped -- its table entry freed, no
 declaration, enclosing mixin or code holding it -- and no application, no
 application-cache key or value and no class object's applied-clause field
 names it. A class's change of application restamps every instance's header
-by a heap walk, as `Heap::set_class_application` walks the arena today
+by a heap walk, as `Heap::class_set_application` walks the arena today
 (`crates/ns-runtime/src/heap.rs:2046-2062`), before the old guard id can
 become reclaimable.
 
@@ -1625,55 +1629,53 @@ Spur's forwarders take their first slot.
 **What becomes a heap object.** A class object keeps in fixed fields
 everything of today's `ClassData` that holds per class object: its enclosing
 object, declaring class, superclass, for a metaclass the class it describes
-(`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads
-on every send), its value-class refusal (a `SmallInteger` index into a Rust-side table of
-refusals, or `nil`, since today's `ValueClassRefusal` holds a Rust `String`
-and a `Symbol`, `types.rs:105-112`), for a level a `<:` clause added the
-clause that added it (`ClassData.applied_clause`: the applying declaration's
-mixin id, the clause index and the named builtin tag packed into one
-`SmallInteger`, or `nil`, since the `Rc<Mixin>` it holds today cannot live
-in the space), and its application as a `SmallInteger` full-width index into
-a Rust-side table of `MixinApplication`s, separate from the 22-bit guard id
-in instances' headers; the behaviour stays Rust. Eight fields, so a class
-object is 80 bytes with its header and class word. The application cache is keyed by the mixin's id and
-the superclass application's full-width index rather than by `Rc`
-addresses, which lets it become weak ([memory.md](memory.md), "Weak
-references"). A closure keeps its code id, captured frame and feedback base
-in fixed fields and its copied values inline; a code id indexes a Rust-side
-table of compiled code that is append-only per heap, its entries never freed
-or reused, since compiled code is shared by mixins and reclaiming it belongs
-with live editing. Each entry also records the code's owning `MixinMethod`,
-where it has one, so a method frame's code id names its method too -- the
+(`this_class`), its builtin tag (`ClassData.builtin`, which `act` re-reads on
+every send), its value-class refusal (a `SmallInteger` index into a Rust-side
+table of refusals, or `nil`, since today's `ValueClassRefusal` holds a Rust
+`String` and a `Symbol`, `types.rs:105-112`), for a level a `<:` clause added
+the clause that added it (`ClassData.applied_clause`: the applying
+declaration's mixin id, the clause index and the named builtin tag packed into
+one `SmallInteger`, or `nil`, since the `Rc<Mixin>` it holds today cannot live
+in the space), and its application as a `SmallInteger` full-width index into a
+Rust-side table of `MixinApplication`s, separate from the 22-bit guard id in
+instances' headers; the behaviour stays Rust. Eight fields, so a class object
+is 80 bytes with its header and class word. The application cache is keyed by
+the mixin's id and the superclass application's full-width index rather than
+by `Rc` addresses, which lets it become weak ([memory.md](memory.md), "Weak
+references"). A closure keeps its code id, captured frame and feedback base in
+fixed fields and its copied values inline; a code id indexes a Rust-side table
+of compiled code that is append-only per heap, its entries never freed or
+reused, since compiled code is shared by mixins and reclaiming it belongs with
+live editing. Each entry also records the code's owning `MixinMethod`, where
+it has one, so a method frame's code id names its method too -- the
 declaration the encoder writes today (`image/encode.rs`) and `frame_body`
-reads. A reified frame keeps its
-sender, home, receiver, current class, program counter, code id, kind, the
-kind's operand -- the closure of a block frame, or the class of an
-initializer, superclass-clause, superclass-message or mixin-application-message
-frame, a handle the trace and the barrier see --
+reads. A reified frame keeps its sender, home, receiver, current class,
+program counter, code id, kind, the kind's operand -- the closure of a block
+frame, or the class of an initializer, superclass-clause, superclass-message
+or mixin-application-message frame, a handle the trace and the barrier see --
 `uncontinuable`, and the index of the activation it is married to, if any
-(today `FrameSlot`'s `live`), in fixed fields and its registers inline, and the kernel-private
-`Activation` objects the exception machinery holds become these frame
-objects themselves; the running activations stay on the activation stack
-until road step 7. A frame object is allocated at `reify` with its code's
-full register count, whatever the code; whether the divorce copies the
-registers into it stays decided per activation from the block's
-`outer_reach`, as today. So no frame object ever grows, and suspension, the
-debugger and edit-and-continue find room for the registers in every reified
-frame. Edit-and-continue adding locals divorces the affected activation
-into a newly allocated, larger frame object -- allocated old and born
-remembered by the rule in [memory.md](memory.md), "Planned: generations" --
-the VM rewriting every reference to the old frame by a walk of every root the
-collector traces (`trace.rs`) and every heap object, since `become:` never
-forwards a frame; execution continues from the divorced frame, which needs a divorced
-frame put back on the stack, the piece suspend and resume need too
-([execution.md](execution.md), "How this meets the liveness requirements"). The cost is a few more words per
-reified frame, and `bench_block.ns`, which reifies a frame per iteration, is
-the workload that shows it.
-While a frame is married its registers live on the stack and the trace skips
-the object's inline copies. `FrameReference` stays, now the type of a handle
-to a frame object, so an `ActivationReference` is still never stored. The
-frame arena, its second forwarding table and every separate register vector
-go.
+(today `FrameSlot`'s `live`), in fixed fields and its registers inline, and
+the kernel-private `Activation` objects the exception machinery holds become
+these frame objects themselves; the running activations stay on the activation
+stack until road step 7. A frame object is allocated at `reify` with its
+code's full register count, whatever the code; whether the divorce copies the
+registers into it stays decided per activation from the block's `outer_reach`,
+as today. So no frame object ever grows, and suspension, the debugger and
+edit-and-continue find room for the registers in every reified frame.
+Edit-and-continue adding locals divorces the affected activation into a newly
+allocated, larger frame object -- allocated old and born remembered by the
+rule in [memory.md](memory.md), "Planned: generations" -- the VM rewriting
+every reference to the old frame by a walk of every root the collector traces
+(`trace.rs`) and every heap object, since `become:` never forwards a frame;
+execution continues from the divorced frame, which needs a divorced frame put
+back on the stack, the piece suspend and resume need too
+([execution.md](execution.md), "How this meets the liveness requirements").
+The cost is a few more words per reified frame, and `bench_block.ns`, which
+reifies a frame per iteration, is the workload that shows it. While a frame is
+married its registers live on the stack and the trace skips the object's
+inline copies. `FrameReference` stays, now the type of a handle to a frame
+object, so an `ActivationReference` is still never stored. The frame arena,
+its second forwarding table and every separate register vector go.
 
 **Strings have two widths.** A string holds one byte per code point while
 every code point fits Latin-1, 32 bits per code point otherwise; either way
@@ -1800,56 +1802,54 @@ their arguments on failure.
 **What `become:` refuses.** An immediate has no object to forward, and
 `become:` refuses one, as Spur does. It also refuses the objects the VM reads
 structurally on its hottest paths -- class objects, whose fields lookup and
-`outer` read, closures, whose captured frame the VM reads, and frame
-objects, whose sender and home the unwinder reads -- and symbols, whose
-canonicity §5.1.6 requires and which the weak symbol table reads -- and
-every other value object: strings, large integers, boxed floats and every
-instance of a value class. §3.1.1 makes a value immutable, and a `become:`
-on one would change, for every holder, what it holds -- a mutation of the
-value, even within one heap; with actors it would also reach only the
-references in its own heap and leave copies elsewhere unchanged. Spur
-refuses immutable objects the same way (`PrimErrNoModification` in
-`become:with:twoWay:copyHash:`,
+`outer` read, closures, whose captured frame the VM reads, and frame objects,
+whose sender and home the unwinder reads -- and symbols, whose canonicity
+§5.1.6 requires and which the weak symbol table reads -- and every other value
+object: strings, large integers, boxed floats and every instance of a value
+class. §3.1.1 makes a value immutable, and a `become:` on one would change,
+for every holder, what it holds -- a mutation of the value, even within one
+heap; with actors it would also reach only the references in its own heap and
+leave copies elsewhere unchanged. Spur refuses immutable objects the same way
+(`PrimErrNoModification` in `become:with:twoWay:copyHash:`,
 `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:45699`, `:45737`);
 SOMns, a Newspeak with values and actors, has no `become:` at all, and
 Primordial Soup forwards only in its MirrorBuilder's installation of an edit
-(`installAll`, `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`),
-which is where the VM-internal migration below happens too. Refusing values
-was decided with the user on 2026-09-29. The same refusals keep "The VM
-mirror is a capability" in `CLAUDE.md`: every instance a platform path names
-is a value -- `Platform`, `Transcript`, `KernelNamespace` and `Time` in
-`PlatformFactory.ns` and `Collections` in `CollectionsFactory.ns` are all
-declared `= Value new` -- and every class a platform path names is a class
-object, so a program's `become:` refuses each of them in either direction
-without a rule of its own. A program can reach, and `become:`, kernel-made
-non-value objects -- a VM error's `Error` or `MessageNotUnderstood` and its
-`Message` -- and that is harmless: `become:` never moves contents between
-classes, the kernel activations holding them are frame objects and refused,
-a kernel method whose receiver has been forwarded to a program object fails
-the slot-access check ("What a slot access checks" above) instead of
-writing kernel-private state into it, and shipped code reaches the mirror only lexically, through its class
+(`installAll`, `prior-art/primordialsoup/newspeak/Mirrors.ns:309-326`), which
+is where the VM-internal migration below happens too. Refusing values was
+decided with the user on 2026-09-29. The same refusals keep "The VM mirror is
+a capability" in `CLAUDE.md`: every instance a platform path names is a value --
+`Platform`, `Transcript`, `KernelNamespace` and `Time` in `PlatformFactory.ns`
+and `Collections` in `CollectionsFactory.ns` are all declared `= Value new` --
+and every class a platform path names is a class object, so a program's
+`become:` refuses each of them in either direction without a rule of its own.
+A program can reach, and `become:`, kernel-made non-value objects -- a VM
+error's `Error` or `MessageNotUnderstood` and its `Message` -- and that is
+harmless: `become:` never moves contents between classes, the kernel
+activations holding them are frame objects and refused, a kernel method whose
+receiver has been forwarded to a program object fails the slot-access check
+("What a slot access checks" above) instead of writing kernel-private state
+into it, and shipped code reaches the mirror only lexically, through its class
 objects' enclosing chain and the roots of `Kernel`, `PlatformFactory` and
 `CollectionsFactory`, each declared `= Object <: Value` and so a value, and
-the mirror itself is unreachable. Every object on a path from shipped code
-to the mirror is refused. So
-only instances of non-value classes and arrays are ever forwarded by a
-program.
+the mirror itself is unreachable. Every object on a path from shipped code to
+the mirror is refused. So only instances of non-value classes and arrays are
+ever forwarded by a program.
 
 **Everything stays editable.** The refusal is of a program's own `become:`,
 not of editing. A class object keeps its identity when its class is edited:
-the VM writes its fields -- a new application id when methods or slots
-change, a new superclass, a new value refusal -- and every reference to it
-stays valid; when the slots change, its instances migrate by allocating the
-new shape, copying the fields and forwarding the old instances with
-`become:`, which instances admit. A live frame gains locals by being divorced
-into a newly allocated, larger frame object, allocated old and born
-remembered, with a walk of every root the collector traces (`trace.rs`) and
-every heap object by the VM rewriting every reference to the old frame, since `become:` never forwards
-a frame, and execution continuing from the divorced frame ("Planned: the
-object layout" above).
-Closures keep their old code, as in Smalltalk, and new ones get the new code.
-Editing a value class migrates its instances the same way, inside the VM,
-which no program can observe, since a value has no identity.
+the VM writes its fields -- a new application id when methods or slots change,
+a new superclass, a new value refusal -- and every reference to it stays
+valid; when the slots change, its instances migrate by allocating the new
+shape, copying the fields and forwarding the old instances with `become:`,
+which instances admit. A live frame gains locals by being divorced into a
+newly allocated, larger frame object, allocated old and born remembered, with
+a walk of every root the collector traces (`trace.rs`) and every heap object
+by the VM rewriting every reference to the old frame, since `become:` never
+forwards a frame, and execution continuing from the divorced frame ("Planned:
+the object layout" above). Closures keep their old code, as in Smalltalk, and
+new ones get the new code. Editing a value class migrates its instances the
+same way, inside the VM, which no program can observe, since a value has no
+identity.
 
 Both one-way and two-way `become:`, each with the choice whether the
 identity hash moves with the identity (Spur's

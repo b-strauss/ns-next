@@ -26,15 +26,16 @@ Create a todo for each item.
 2. **Run the gates** exactly as listed (Git Bash syntax; the stress modes act
    only in debug builds). MOVES moves every object at the run loop's
    safepoints, CACHES vacates every inline cache at every safepoint, COLLECT
-   collects at every safepoint. The three run at once because each ends in a
-   long tail of a few depth-limit tests that leaves most cores idle, and the
-   tails overlap (measured 2026-10-01: 277 s, MOVES the longest, against
-   703 s, the sum of the three per-mode times, one after another). The stress
+   collects at every safepoint, WIDE encodes every instruction in its wide
+   form. The four run at once because each ends in a long tail of a few
+   depth-limit tests that leaves most cores idle, and the tails overlap
+   (measured 2026-10-01 for the first three: 277 s, MOVES the longest,
+   against 703 s, the sum of the three per-mode times, one after another). The stress
    runs use nextest's default profile, which leaves out the Are We Fast Yet
    benchmarks; they run once, plain, at the end of the list:
 
    ```bash
-   mkdir -p .temp && for mode in MOVES CACHES COLLECT; do
+   mkdir -p .temp && for mode in MOVES CACHES COLLECT WIDE; do
      (env NS_NEXT_STRESS_$mode=1 cargo nextest run --workspace --exclude ns-lsp      > .temp/stress-$mode.log 2>&1 || echo "stress $mode FAILED: .temp/stress-$mode.log") &
    done; wait; grep -h Summary .temp/stress-*.log
    cargo nextest run -p ns-lsp
@@ -43,6 +44,7 @@ Create a todo for each item.
    NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules
    NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules
    NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules
+   NS_NEXT_STRESS_WIDE=1 cargo run -p ns-cli -- run-corpus corpus/modules
    cargo build --workspace
    # the Are We Fast Yet benchmarks at full size, plain, never under stress
    cargo nextest run -p ns-cli --profile benchmarks

@@ -29,32 +29,102 @@ use std::rc::Rc;
 use ns_syntax::ast::{self, Expression, Statement};
 use ns_syntax::Span;
 
-use crate::bytecode::{CodeKind, CompiledCode};
+use crate::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
 use crate::mixin::Mixin;
 use crate::types::Binding;
+use crate::Symbol;
 
 use capture::{BodyKey, RootBody};
 use lower::{Enclosing, Lowerer};
 
-/// `instantiate::pattern_parameter_count` narrowed to the `u16` `CompiledCode`
-/// stores an argument count in. A pattern's parameter count is bounded by
-/// the keyword parts a parser can produce for one message, so the cast can
-/// never truncate in practice; the count itself has exactly one definition,
-/// shared with the interpreter's factory-arity guard.
-fn argument_count_of(pattern: &ast::MessagePattern) -> u16 {
-    crate::interpreter::instantiate::pattern_parameter_count(pattern) as u16
+/// A method's parameter count, `instantiate::pattern_parameter_count`'s one
+/// definition, shared with the interpreter's factory-arity guard. Left
+/// unnarrowed: a pattern can declare more parameters than a `u16` counts,
+/// and each lowering judges that against the register ceiling itself.
+fn argument_count_of(pattern: &ast::MessagePattern) -> usize {
+    crate::interpreter::instantiate::pattern_parameter_count(pattern)
 }
 
-/// A mixin's primary factory parameter count, narrowed to the `u16` a
-/// `CompiledCode` stores its arity in. `0` for a mixin with no factory of
-/// its own -- a builtin's, a class side's.
-fn factory_argument_count(mixin: &Mixin) -> u16 {
-    // Same reasoning as `argument_count_of` above: a factory's parameter count
-    // is the number of keyword parts one message pattern has, which no parser
-    // and no image (which stores it in a `u16` field) can push past `u16`.
-    mixin
-        .factory
-        .map_or(0, |factory| factory.argument_count as u16)
+/// A mixin's primary factory parameter count; `0` for a mixin with no
+/// factory of its own -- a builtin's, a class side's. Unnarrowed, as
+/// `argument_count_of` is.
+fn factory_argument_count(mixin: &Mixin) -> usize {
+    mixin.factory.map_or(0, |factory| factory.argument_count)
+}
+
+/// `count` as the `u16` a `CompiledCode` stores an arity in, or `u16::MAX`
+/// when it does not fit -- which only a body past the register ceiling
+/// meets, and that body is `body_too_large`'s, whose arity is never read
+/// for a register.
+fn saturated_count(count: usize) -> u16 {
+    u16::try_from(count).unwrap_or(u16::MAX)
+}
+
+/// Whether a body's parameters and named temporaries fit the registers a
+/// `u16` numbers, so that each has a resolver index and a register of its
+/// own. The capture analysis and both lowerings ask it before they lay a
+/// body out; one that fails it is never laid out, and compiles to
+/// `body_too_large`.
+fn named_locals_fit(argument_count: usize, temporary_count: usize) -> bool {
+    argument_count
+        .checked_add(temporary_count)
+        .is_some_and(|count| count <= usize::from(u16::MAX))
+}
+
+/// A local's resolver index -- or the register it sits in -- in a body
+/// that `named_locals_fit` admitted, where every index fits a `u16`; one
+/// past `u16::MAX` is a compiler defect, never a program's.
+fn local_index(index: usize) -> u16 {
+    u16::try_from(index)
+        .expect("internal: a local's index past u16::MAX in a body whose locals were checked")
+}
+
+/// The resolver index of a body's `offset`-th named temporary, which
+/// follows its parameters; `local_index`'s precondition holds.
+fn temporary_index(argument_count: u16, offset: usize) -> u16 {
+    local_index(usize::from(argument_count) + offset)
+}
+
+/// What a body past the register ceiling compiles to: the smallest
+/// well-formed body of its kind and arity, which raises the too-large error
+/// before it does anything else -- the deferral `Literal::UnresolvedIdentifier`
+/// uses, so that compiling never fails and a body never run never fails
+/// (`docs/design/compiler.md`, "Compilation cannot fail"). It takes no
+/// copied values: a too-large block's creator hands it none. Its one
+/// register follows the arguments; when every register is an argument the
+/// last argument's serves, since the literal raises before anything is
+/// written to it. Both lowerings build it here, so the two cannot disagree
+/// on its shape.
+fn body_too_large(kind: CodeKind, argument_count: u16, source: Span) -> CompiledCode {
+    let destination = argument_count.min(u16::MAX - 1);
+    let register_count = argument_count.max(destination + 1);
+    CompiledCode::new(
+        kind,
+        vec![
+            Instruction::LoadLiteral {
+                destination,
+                literal: Literal::BodyTooLarge,
+            },
+            Instruction::ImplicitReturn {
+                register: destination,
+            },
+        ],
+        argument_count,
+        register_count,
+        0,
+        vec![(0, 0..2)],
+        source,
+    )
+}
+
+/// A block's parameter names as its `MakeClosure` carries them: all of
+/// them, except for a block with more parameters than a `u16` counts, whose
+/// `body_too_large` body takes `u16::MAX`. Its `MakeClosure` names as many,
+/// so that the two agree, as the image decoder checks; a call with more
+/// arguments meets the block's arity check, which raises.
+fn parameters_of(mut parameters: Vec<Symbol>, code: &CompiledCode) -> Vec<Symbol> {
+    parameters.truncate(usize::from(code.argument_count));
+    parameters
 }
 
 pub fn compile_method(
@@ -329,7 +399,7 @@ fn compile_superclass_clause(
 ///
 /// The expression comes from `interpreter::nested`'s
 /// `superclass_clause_message_arguments_expression`, the one definition of what
-/// the clause's arguments are -- `SuperclassClause::has_arguments` is read off
+/// the clause's arguments are -- `ClauseMessage::has_arguments` is read off
 /// it too. `None` when the clause has no message, or a message with no
 /// arguments: then there is nothing to evaluate.
 fn compile_superclass_message(

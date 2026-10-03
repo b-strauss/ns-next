@@ -244,8 +244,8 @@ fn a_world_reached_from_roots_survives_moves() {
         let Some(built) = mutator.fetch(&built).as_object() else {
             panic!("`build` answers an array")
         };
-        assert_eq!(mutator.heap().array_length(built), Some(2));
-        let cell = mutator.heap().array_at(built, 0).expect("the cell");
+        assert_eq!(mutator.heap().array_element_count(built), Some(2));
+        let cell = mutator.heap().array_element(built, 0).expect("the cell");
         assert_eq!(mutator.heap().describe(cell), "an instance of Cell");
     });
 }

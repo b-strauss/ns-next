@@ -284,7 +284,7 @@ fn a_platform_member_is_built_on_first_use(member: &str) {
             let Some(platform) = mutator.fetch(&platform).as_object() else {
                 panic!("the platform is an object");
             };
-            let class = mutator.heap().class_of_object(platform);
+            let class = mutator.heap().object_class(platform);
             let application = mutator
                 .heap()
                 .class_application(class)
@@ -402,11 +402,11 @@ fn the_platform_class_is_nested_in_the_platform_factory() {
             panic!("the platform is an object");
         };
         let heap = mutator.heap();
-        let platform_class = heap.class_of_object(platform);
+        let platform_class = heap.object_class(platform);
         let factory = heap
             .class_enclosing(platform_class)
             .expect("the platform's class is a nested class");
-        let factory_class = heap.class_of_object(factory);
+        let factory_class = heap.object_class(factory);
         assert_eq!(heap.class_display_name(factory_class), "PlatformFactory");
         assert!(
             heap.class_enclosing(factory_class).is_none(),
@@ -465,7 +465,7 @@ fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
         };
         let heap = mutator.heap();
         let factory = heap
-            .class_enclosing(heap.class_of_object(platform))
+            .class_enclosing(heap.object_class(platform))
             .expect("the platform's class is a nested class");
         mutator.stash(Value::object(factory))
     })
@@ -535,10 +535,10 @@ fn the_collections_factory_answers_only_new_collections() {
         };
         let heap = mutator.heap();
         let factory = heap
-            .class_enclosing(heap.class_of_object(collections))
+            .class_enclosing(heap.object_class(collections))
             .expect("the facet's class is a nested class");
         assert_eq!(
-            heap.class_display_name(heap.class_of_object(factory)),
+            heap.class_display_name(heap.object_class(factory)),
             "CollectionsFactory"
         );
         mutator.stash(Value::object(factory))

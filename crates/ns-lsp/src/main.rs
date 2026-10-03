@@ -53,11 +53,16 @@ fn dump_tokens(files: &[String]) -> ExitCode {
     let mut status = ExitCode::SUCCESS;
     for file in files {
         match std::fs::read_to_string(file) {
-            Ok(text) => {
-                let mut dumped = ns_lsp::token_dump::dump(&text);
-                dumped["file"] = serde_json::Value::String(file.clone());
-                println!("{dumped}");
-            }
+            Ok(text) => match ns_lsp::token_dump::dump(&text) {
+                Ok(mut dumped) => {
+                    dumped["file"] = serde_json::Value::String(file.clone());
+                    println!("{dumped}");
+                }
+                Err(message) => {
+                    eprintln!("error: {file}: {message}");
+                    status = ExitCode::FAILURE;
+                }
+            },
             Err(error) => {
                 eprintln!("error: reading {file}: {error}");
                 status = ExitCode::FAILURE;

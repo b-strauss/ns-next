@@ -92,7 +92,7 @@ pub fn is_shipped_object<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) ->
         heap.class_is_shipped(object)
     } else {
         heap.instance_field_count(object).is_some()
-            && heap.class_is_shipped(heap.class_of_object(object))
+            && heap.class_is_shipped(heap.object_class(object))
     }
 }
 
@@ -188,7 +188,7 @@ fn class_accessor_members<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
 ) -> Vec<(Symbol, Value<'gc>)> {
-    let class = heap.class_of_object(object);
+    let class = heap.object_class(object);
     let Some(application) = heap.class_application(class) else {
         return Vec::new();
     };
@@ -235,7 +235,7 @@ fn class_accessor_target<'gc>(
         accessor.depth,
     )
     .as_object()?;
-    let root_class = heap.class_of_object(root);
+    let root_class = heap.object_class(root);
     if heap.class_enclosing(root_class).is_some() || !is_shipped_object(heap, root) {
         return None;
     }
@@ -257,7 +257,7 @@ fn class_accessor_target<'gc>(
 /// level's public slots, then its public nested classes' cache slots,
 /// superclass level first.
 fn state_members<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Vec<(Symbol, Value<'gc>)> {
-    let Some(application) = heap.class_application(heap.class_of_object(object)) else {
+    let Some(application) = heap.class_application(heap.object_class(object)) else {
         return Vec::new();
     };
     let mut levels: Vec<&Rc<MixinApplication>> = Vec::new();
@@ -422,7 +422,7 @@ mod tests {
         inner: ObjectReference<'gc>,
     ) -> Rc<crate::mixin::MixinMethod> {
         let application = heap
-            .class_application(heap.class_of_object(inner))
+            .class_application(heap.object_class(inner))
             .expect("Inner has an application");
         application
             .mixin

@@ -56,7 +56,7 @@ impl<'gc> Mutator<'gc> {
     /// then `Class`, `Behavior` and `Object`, by the ordinary lookup.
     pub(crate) fn attach_metaclass(&mut self, class: ClassReference<'gc>) -> ClassReference<'gc> {
         // A metaclass's class is `Metaclass`, never a metaclass of its own:
-        // `set_object_class(class, metaclass)` below on a metaclass would
+        // `object_set_class(class, metaclass)` below on a metaclass would
         // overwrite its `Metaclass` header, breaking §3.2's "every
         // metaclass is an instance of Metaclass" and the image decoder's
         // pairing.
@@ -80,12 +80,12 @@ impl<'gc> Mutator<'gc> {
             None,
         );
         let metaclass = self.allocate_class_object(data);
-        if !self.heap.set_class_this_class(metaclass, class) {
+        if !self.heap.class_set_this_class(metaclass, class) {
             unreachable!("internal: a metaclass is a class object");
         }
         let metaclass_class = self.builtin_class(BuiltinClass::Metaclass);
-        if !self.heap.set_object_class(metaclass, metaclass_class)
-            || !self.heap.set_object_class(class, metaclass)
+        if !self.heap.object_set_class(metaclass, metaclass_class)
+            || !self.heap.object_set_class(class, metaclass)
         {
             unreachable!("internal: `Metaclass` and a metaclass are class objects");
         }

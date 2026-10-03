@@ -27,16 +27,14 @@ use ns_syntax::ast::AccessModifier;
 use ns_syntax::Span;
 
 use crate::bytecode::CompiledCode;
-use crate::heap::Heap;
 use crate::mixin::{
-    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod,
-    MixinSlot, SuperclassClause,
+    mixin_key, slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot,
 };
-use crate::types::ClassReference;
 use crate::Symbol;
 
 use super::decode::{reserve_for, DecodeError, Reader};
-use super::encode::{u32_field, CodeIds, Writer};
+use super::encode::{u16_field, u32_field, CodeIds, Writer};
 use super::opcodes::{SLOT_IMMUTABLE, SLOT_LAZY_IMMUTABLE, SLOT_LAZY_MUTABLE, SLOT_MUTABLE};
 use super::symbols;
 
@@ -110,19 +108,10 @@ pub struct Row {
 /// (which needs them to write the table). Recomputing it is one walk of the
 /// tree and one `HashMap`; sharing a cached copy between the two would trade
 /// that for a lifetime that has to thread through `snapshot`.
-pub fn plan<'gc>(
-    heap: &Heap<'gc>,
-    module_roots: &[ClassReference<'gc>],
-) -> Result<Vec<Row>, String> {
+pub fn plan(module_roots: &[Rc<Mixin>]) -> Result<Vec<Row>, String> {
     let mut order = Vec::new();
-    for root_class in module_roots {
-        // Not a class object: no declarations to describe, so it contributes
-        // no rows rather than an error -- `encode_code_table` has always
-        // tolerated this, and the graph section is what actually refuses
-        // such a root.
-        if let Some(application) = heap.class_application(*root_class) {
-            crate::mixin::preorder(&application.mixin, &mut order);
-        }
+    for root in module_roots {
+        crate::mixin::preorder(root, &mut order);
     }
     let ids: HashMap<usize, u32> = order
         .iter()
@@ -241,14 +230,13 @@ pub(crate) type MixinIds = HashMap<usize, u32>;
 
 /// Writes the mixin table and returns the `mixin_key` -> row id map the
 /// object graph addresses a class object's mixin by.
-pub fn encode<'gc>(
+pub fn encode(
     writer: &mut Writer,
-    heap: &Heap<'gc>,
-    module_roots: &[ClassReference<'gc>],
+    module_roots: &[Rc<Mixin>],
     symbols: &mut symbols::Builder,
     codes: &CodeIds,
 ) -> Result<MixinIds, String> {
-    let rows = plan(heap, module_roots)?;
+    let rows = plan(module_roots)?;
     writer.write_u32(u32_field("mixin table entry count", rows.len()));
     for row in &rows {
         let mixin = &row.mixin;
@@ -269,16 +257,15 @@ pub fn encode<'gc>(
             Some(factory) => {
                 writer.write_boolean(true);
                 writer.write_u32(symbols.intern(factory.selector.as_str()));
-                writer.write_u16(u16_arity("factory", factory.argument_count));
+                writer.write_u16(u16_field("factory arity", factory.argument_count)?);
             }
             None => writer.write_boolean(false),
         }
         writer.write_boolean(mixin.has_initializer_expressions);
         match &mixin.superclass {
-            Some(clause) => {
+            Some(message) => {
                 writer.write_boolean(true);
-                writer.write_u32(symbols.intern(clause.selector.as_str()));
-                writer.write_boolean(clause.has_arguments);
+                write_clause_message(writer, *message, symbols);
             }
             None => writer.write_boolean(false),
         }
@@ -293,8 +280,7 @@ pub fn encode<'gc>(
             mixin.mixin_applications.len(),
         ));
         for clause in &mixin.mixin_applications {
-            writer.write_u32(symbols.intern(clause.selector.as_str()));
-            writer.write_boolean(clause.has_arguments);
+            write_clause_message(writer, clause.message, symbols);
             write_optional_id(
                 writer,
                 clause
@@ -308,7 +294,7 @@ pub fn encode<'gc>(
         for method in &row.methods {
             writer.write_u32(symbols.intern(method.selector.as_str()));
             writer.write_u8(access_tag(method.access));
-            writer.write_u16(u16_arity("method", method.argument_count));
+            writer.write_u16(u16_field("method arity", method.argument_count)?);
             writer.write_u32(codes.id_of(&method.code)?);
         }
         writer.write_u32(u32_field("mixin's nested count", row.nested.len()));
@@ -348,17 +334,15 @@ pub fn encode<'gc>(
         .collect())
 }
 
-/// A parameter count narrowed to the `u16` the wire (and `CompiledCode`)
-/// stores an arity in. A pattern with more than 65535 keyword parts is not
-/// something any parser produces; writing a truncated one would make the
-/// image self-inconsistent, so it aborts rather than truncating silently --
-/// the same contract as `encode::u32_field`.
-fn u16_arity(what: &str, count: usize) -> u16 {
-    assert!(
-        u16::try_from(count).is_ok(),
-        "image {what} arity of {count} does not fit the format's u16 field"
-    );
-    count as u16
+/// A superclass clause's or a `<:` clause's message: its selector, then
+/// whether it carries arguments.
+fn write_clause_message(
+    writer: &mut Writer,
+    message: ClauseMessage,
+    symbols: &mut symbols::Builder,
+) {
+    writer.write_u32(symbols.intern(message.selector.as_str()));
+    writer.write_boolean(message.has_arguments);
 }
 
 fn write_optional_id(writer: &mut Writer, id: Option<u32>) {
@@ -429,7 +413,7 @@ struct RawRow {
     slots: Vec<RawSlot>,
     factory: Option<Factory>,
     has_initializer_expressions: bool,
-    superclass: Option<SuperclassClause>,
+    superclass: Option<ClauseMessage>,
     mixin_applications: Vec<RawClause>,
     methods: Vec<(Symbol, AccessModifier, usize, u32)>,
     nested: Vec<u32>,
@@ -442,9 +426,8 @@ struct RawRow {
 /// A `<:` clause as read: its selector, whether its message takes arguments,
 /// and the code id of their body.
 struct RawClause {
-    selector: Symbol,
-    has_arguments: bool,
-    message: Option<u32>,
+    message: ClauseMessage,
+    message_code: Option<u32>,
 }
 
 /// A slot as read: its name, kind and accessibility.
@@ -525,10 +508,7 @@ fn read_row(
     };
     let has_initializer_expressions = reader.read_boolean()?;
     let superclass = if reader.read_boolean()? {
-        Some(SuperclassClause {
-            selector: read_symbol(reader, symbols)?,
-            has_arguments: reader.read_boolean()?,
-        })
+        Some(read_clause_message(reader, symbols)?)
     } else {
         None
     };
@@ -536,9 +516,8 @@ fn read_row(
     let mut mixin_applications: Vec<RawClause> = reserve_for(clause_count, reader);
     for _ in 0..clause_count {
         mixin_applications.push(RawClause {
-            selector: read_symbol(reader, symbols)?,
-            has_arguments: reader.read_boolean()?,
-            message: read_optional(reader, |reader| read_code_id(reader, codes))?,
+            message: read_clause_message(reader, symbols)?,
+            message_code: read_optional(reader, |reader| read_code_id(reader, codes))?,
         });
     }
     let method_count = reader.read_u32()? as usize;
@@ -574,6 +553,17 @@ fn read_row(
         initializer,
         superclass_clause,
         superclass_message,
+    })
+}
+
+/// The inverse of `write_clause_message`.
+fn read_clause_message(
+    reader: &mut Reader,
+    symbols: &symbols::Table,
+) -> Result<ClauseMessage, DecodeError> {
+    Ok(ClauseMessage {
+        selector: read_symbol(reader, symbols)?,
+        has_arguments: reader.read_boolean()?,
     })
 }
 
@@ -864,7 +854,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
             mixin_applications: row
                 .mixin_applications
                 .iter()
-                .map(|clause| clause.message)
+                .map(|clause| clause.message_code)
                 .collect(),
         });
         let nested = row
@@ -892,9 +882,8 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
                 .mixin_applications
                 .iter()
                 .map(|clause| MixinApplicationClause {
-                    selector: clause.selector,
-                    has_arguments: clause.has_arguments,
-                    message_code: clause.message.map(code_at),
+                    message: clause.message,
+                    message_code: clause.message_code.map(code_at),
                 })
                 .collect(),
             has_initializer_expressions: row.has_initializer_expressions,

@@ -82,13 +82,22 @@ impl Captures {
 /// initializers, then a slot initializer per initialized slot (an instance
 /// initializer only), then the statements.
 pub(crate) struct RootBody<'a> {
-    pub(crate) argument_count: u16,
+    pub(crate) argument_count: usize,
     pub(crate) temporaries: &'a [ast::SlotDeclaration],
     pub(crate) slot_initializers: Vec<&'a Expression>,
     pub(crate) statements: &'a [Statement],
 }
 
+/// A body whose named locals do not fit a `u16` (`super::named_locals_fit`)
+/// is neither declared nor walked, nor is anything nested in it: the
+/// lowering compiles it to `super::body_too_large` without asking for its
+/// layout, and the resolver's indices for its locals past `u16::MAX` name
+/// nothing.
 pub(crate) fn analyze(root: RootBody<'_>, bindings: &HashMap<Span, Binding>) -> Captures {
+    if !super::named_locals_fit(root.argument_count, root.temporaries.len()) {
+        return Captures::default();
+    }
+    let argument_count = super::saturated_count(root.argument_count);
     let mut walker = Walker {
         bindings,
         scopes: Vec::new(),
@@ -99,9 +108,9 @@ pub(crate) fn analyze(root: RootBody<'_>, bindings: &HashMap<Span, Binding>) -> 
         locals: HashMap::new(),
         needs: HashMap::new(),
     };
-    walker.declare(BodyKey::Root, root.argument_count, root.temporaries);
+    walker.declare(BodyKey::Root, argument_count, root.temporaries);
     walker.scopes.push(Scope::Frame { key: BodyKey::Root });
-    walker.local_initializers(BodyKey::Root, root.argument_count, root.temporaries);
+    walker.local_initializers(BodyKey::Root, argument_count, root.temporaries);
     for initializer in &root.slot_initializers {
         walker.expression(initializer);
     }
@@ -348,14 +357,22 @@ impl<'a> Walker<'a> {
                 Some(block) => self.expression(&block),
                 None => self.expression(initializer),
             }
-            self.write(key, argument_count + offset as u16, frame_position);
+            self.write(
+                key,
+                super::temporary_index(argument_count, offset),
+                frame_position,
+            );
         }
         // The clause's end: each simultaneous temporary written again with
         // its resolved value, in declaration order, after every future's
         // block was created.
         for (offset, temporary) in temporaries.iter().enumerate() {
             if temporary.simultaneous && temporary.initializer.is_some() {
-                self.write(key, argument_count + offset as u16, frame_position);
+                self.write(
+                    key,
+                    super::temporary_index(argument_count, offset),
+                    frame_position,
+                );
             }
         }
     }
@@ -466,12 +483,15 @@ impl<'a> Walker<'a> {
     }
 
     fn real_block(&mut self, block: &ast::BlockExpression) {
+        if !super::named_locals_fit(block.parameters.len(), block.body.temporaries.len()) {
+            return;
+        }
         let key = BodyKey::Block(block.span);
         let (_, creating_frame) = self.current_frame();
         self.position += 1;
         let loops = self.open_loops(creating_frame);
         self.creation.insert(key, (self.position, loops));
-        let argument_count = block.parameters.len() as u16;
+        let argument_count = super::saturated_count(block.parameters.len());
         self.declare(key, argument_count, &block.body.temporaries);
         self.scopes.push(Scope::Frame { key });
         self.local_initializers(key, argument_count, &block.body.temporaries);
@@ -486,13 +506,17 @@ impl<'a> Walker<'a> {
             let mut branch_assigned = vec![false; mutable.len()];
             let mut vector_size = 0;
             for index in 0..mutable.len() {
-                let Some(facts) = self.facts.get(&(*key, index as u16)) else {
+                // Every declared body's locals fit a `u16` (`analyze`).
+                let Some(facts) = self.facts.get(&(*key, super::local_index(index))) else {
                     continue;
                 };
                 branch_assigned[index] = facts.writes.iter().any(|write| write.conditional);
                 if mutable[index] && needs_vector(facts) {
                     places[index] = Place::Vector(vector_size);
-                    vector_size += 1;
+                    // At most one slot per local, and the locals fit.
+                    vector_size = vector_size
+                        .checked_add(1)
+                        .expect("internal: more vector slots than a body has locals");
                 }
             }
             bodies.insert(

@@ -108,46 +108,46 @@ fn a_reference_initializer_initializes_each_slot_then_answers_self() {
         mixin.initializer_code.clone().expect("an initializer")
     });
     assert!(matches!(
-        code.instructions[0],
+        code.instruction(0),
         Instruction::LoadLiteral { destination: 0, .. }
     ));
     assert_eq!(
-        code.instructions[1],
+        code.instruction(1),
         Instruction::InitializeSlot {
             source: 0,
             own_index: 0
         }
     );
     assert!(matches!(
-        code.instructions[2],
+        code.instruction(2),
         Instruction::LoadLiteral { destination: 1, .. }
     ));
     assert_eq!(
-        code.instructions[3],
+        code.instruction(3),
         Instruction::InitializeSlot {
             source: 1,
             own_index: 1
         }
     );
     assert!(matches!(
-        &code.instructions[4],
+        &code.instruction(4),
         Instruction::SendLexical { selector, argument_registers, destination: 2, .. }
             if *selector == Symbol::intern("a") && argument_registers.is_empty()
     ));
     assert!(matches!(
-        &code.instructions[5],
+        &code.instruction(5),
         Instruction::SendPublic { selector, receiver_register: 2, destination: 3, .. }
             if *selector == Symbol::intern("printString")
     ));
     assert_eq!(
-        code.instructions[6],
+        code.instruction(6),
         Instruction::LoadSelf { destination: 4 }
     );
     assert_eq!(
-        code.instructions[7],
+        code.instruction(7),
         Instruction::ImplicitReturn { register: 4 }
     );
-    assert_eq!(code.instructions.len(), 8);
+    assert_eq!(code.instructions().len(), 8);
     assert_eq!(
         code.statement_program_counter,
         vec![(0, 0..2), (1, 2..4), (2, 4..6)]
@@ -184,7 +184,7 @@ fn the_reference_lowering_emits_every_send_uncached() {
     let mut sends = 0;
     while let Some(body) = pending.pop() {
         assert_eq!(body.family_size, 0);
-        for instruction in &body.instructions {
+        for instruction in &body.instructions() {
             if let Instruction::MakeClosure { code: block, .. } = instruction {
                 pending.push(block.clone());
             }

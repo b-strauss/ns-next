@@ -248,7 +248,7 @@ pub(crate) fn after_clause<'gc>(
         Some(superclass),
     );
     if let Some(refusal) = value_class_refusal {
-        mutator.heap.set_class_value_refusal(class, refusal);
+        mutator.heap.class_set_value_refusal(class, refusal);
     }
     // Step 5: cache before answering, so step 1 hits from now on.
     crate::interpreter::locals::store_instance_field(
@@ -275,17 +275,17 @@ fn superclass_with_applied_levels<'gc>(
     let Some(superclass) = superclass.as_object() else {
         return Err(not_a_class_error(nested.name, superclass));
     };
-    if mutator.heap.class_application(superclass).is_none() {
+    let Some(super_application) = mutator.heap.class_application(superclass) else {
         return Err(not_a_class_error(nested.name, Value::object(superclass)));
-    }
+    };
     let applied: Vec<(usize, Value<'gc>)> = applied.into_iter().enumerate().collect();
-    let top =
-        build_applied_levels(mutator, nested, Some(superclass), &applied)?.unwrap_or(superclass);
-    let application = mutator
-        .heap
-        .class_application(top)
-        .expect("internal: every level build_applied_levels answers is a class object");
-    Ok((top, application))
+    let top = build_applied_levels(
+        mutator,
+        nested,
+        Some((superclass, super_application)),
+        &applied,
+    )?;
+    Ok(top.expect("internal: build_applied_levels answers a level over a superclass"))
 }
 
 /// What the superclass clause's activation answered, split into the
@@ -322,7 +322,8 @@ fn unpack_clause_value<'gc>(
 /// `declaration.mixin_applications` with the class its receiver evaluated to,
 /// in clause order. Answers the top level -- the superclass the
 /// declaration's own class is built on -- which is `superclass` itself when
-/// `applied` is empty.
+/// `applied` is empty. Each class travels with its application, so that
+/// neither the caller nor the next level looks up one already in hand.
 ///
 /// The one place a level is built, for a module's root class
 /// (`Mutator::load_root_class`) and for a nested one (`after_clause`) alike.
@@ -341,9 +342,9 @@ fn unpack_clause_value<'gc>(
 pub(crate) fn build_applied_levels<'gc>(
     mutator: &mut Mutator<'gc>,
     declaration: &Rc<Mixin>,
-    superclass: Option<ClassReference<'gc>>,
+    superclass: Option<(ClassReference<'gc>, Rc<MixinApplication>)>,
     applied: &[(usize, Value<'gc>)],
-) -> Result<Option<ClassReference<'gc>>, Signal<'gc>> {
+) -> Result<Option<(ClassReference<'gc>, Rc<MixinApplication>)>, Signal<'gc>> {
     let mut below = superclass;
     for &(index, applied_class) in applied {
         assert!(
@@ -362,7 +363,10 @@ pub(crate) fn build_applied_levels<'gc>(
         let Some((named_class, named_application)) = named else {
             return Err(not_a_mixin_error(declaration.name, index, applied_class));
         };
-        let below_application = below.and_then(|class| mutator.heap.class_application(class));
+        let (below_class, below_application) = match below {
+            Some((class, application)) => (Some(class), Some(application)),
+            None => (None, None),
+        };
         let application = mutator.apply_mixin(&named_application.mixin, below_application.as_ref());
         let enclosing = mutator.heap.class_enclosing(named_class);
         let declaring_class = mutator.heap.class_declaring(named_class);
@@ -371,8 +375,14 @@ pub(crate) fn build_applied_levels<'gc>(
             index,
             named_builtin: mutator.heap.class_builtin(named_class),
         };
-        below =
-            Some(mutator.new_applied_level(application, enclosing, declaring_class, below, clause));
+        let level = mutator.new_applied_level(
+            application.clone(),
+            enclosing,
+            declaring_class,
+            below_class,
+            clause,
+        );
+        below = Some((level, application));
     }
     Ok(below)
 }
@@ -457,7 +467,7 @@ pub(super) fn begin_creation<'gc>(
 ) {
     mutator
         .heap
-        .set_instance_field(enclosing, index, creation_in_progress());
+        .instance_set_field(enclosing, index, creation_in_progress());
     #[cfg(debug_assertions)]
     {
         mutator.creations_in_progress += 1;
@@ -481,7 +491,7 @@ pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedCla
     {
         mutator
             .heap
-            .set_instance_field(creation.enclosing, creation.index, Value::nil());
+            .instance_set_field(creation.enclosing, creation.index, Value::nil());
     }
     #[cfg(debug_assertions)]
     {

@@ -217,7 +217,7 @@ impl Trace for WhileLoop<'_> {
             expect: _,
         } = self;
         tracer.object(condition);
-        tracer.value(body);
+        trace_optional_object(body, tracer);
     }
 }
 

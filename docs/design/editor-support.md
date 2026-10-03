@@ -111,7 +111,9 @@ Modules:
 - `main.rs` — with no argument it speaks LSP on stdin and stdout; with
   `dump-tokens <files…>` it prints each file's tokens as JSON, for the lexer
   comparison. `dump-tokens` prints UTF-16 offsets, the unit the plugin's
-  documents use.
+  documents use, and refuses a file longer than a span can address
+  (`ns_syntax::source_too_long`) on stderr with a failing exit status, as it
+  does an unreadable one.
 - `server.rs` — the message loop over `lsp-server`, synchronous on one thread.
   Lexing, parsing and resolving one file takes milliseconds, so neither a
   debounce nor a worker pool buys anything. Open documents are keyed by the
@@ -131,7 +133,12 @@ Modules:
 **Protocol surface.** `initialize`, `textDocument/didOpen`, `didChange` (full
 text on every change), `didClose`, `publishDiagnostics` (push, supported by
 the platform since 2023.2), `textDocument/semanticTokens/full`, `shutdown`
-and `exit`. Nothing else.
+and `exit`. Nothing else. A request the server does not implement is answered
+`MethodNotFound`. A document notification whose params do not match the
+schema has no response to carry an error, so the server writes it to stderr
+and sends the client a `window/logMessage` of type `Error` -- the client's
+log for the server, not a `window/showMessage` popup, since the defect is the
+client's, not the user's text -- and keeps serving the documents already open.
 
 ### The resolver entry
 
@@ -177,7 +184,15 @@ excluded when the selector's tokens are found.
   slot read as a `LexicalSend { depth }`, as the specification makes it a send
   like any other; the server looks the selector up among the declarations of
   the class `depth` levels out — slot, nested class or method — and colours it
-  accordingly. A name that class only inherits cannot be placed statically and
+  accordingly. The resolver finds that depth over both sides of a class
+  together; the server looks only at the side the send reaches there. At
+  depth 0 that is the instance side from an instance-side body and the class
+  side (with the primary factory) from a class-side method; further out it is
+  always an instance side, since a class side holds methods only and every
+  nested class is declared on an instance side. A name declared as a slot on
+  one side and a method on the other is so coloured by the declaration the
+  send reaches. A
+  name that class only inherits cannot be placed statically and
   is coloured `method`, which is what it is: a send. A write, `name:: value`,
   is coloured over the whole `name::` token, the colons with the name.
 - **Messages to an object.** A send with an explicit receiver has no binding;
@@ -226,7 +241,10 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
   a receiver inside a keyword message's span, a lazy slot in both
-  modifier orders and both forms), each expected category asserted
+  modifier orders and both forms, a name a slot on one side of a class and a
+  method on the other, read from either side, from a nested class and from a
+  superclass clause, and the primary factory as a class-side member only),
+  each expected category asserted
   directly rather than through an `insta` snapshot, so every expectation is
   stated and reviewed rather than accepted;
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and
@@ -239,7 +257,9 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
   since every prefix of every corpus module is quadratic in its size;
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
   `initialize`, `didOpen`, the expected `publishDiagnostics`,
-  `semanticTokens/full`, `shutdown`.
+  `semanticTokens/full`, `shutdown`; a malformed notification, reported as a
+  `window/logMessage` error while the next request is still answered; an
+  unknown request, answered `MethodNotFound`.
 
 ## The plugin, `editors/jetbrains/`
 
@@ -319,8 +339,9 @@ Components:
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
   project.
 - **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
-  default, typed or chosen with a file picker, and a "Restart server" action. Stored at application level: the
-  path is specific to a machine, so it does not belong in `.idea/`.
+  default, typed or chosen with a file picker, and a "Restart server" action.
+  Stored at application level: the path is specific to a machine, so it does
+  not belong in `.idea/`.
 
 ### Which binary runs
 
@@ -335,10 +356,16 @@ Components:
    and the editor features work regardless.
 
 The plugin bundles the binary, built from the same commit as the Kotlin lexer,
-so the two always match. At first only `windows-x64` is bundled; the layout is
-per platform so that `windows-arm64`, `macos-x64`, `macos-arm64`, `linux-x64`
-and `linux-arm64` are added later by a CI build placing their binaries in the
-same tree, with no change to the plugin's code.
+so the two always match. The directory under `bin/` is decided by one mapping,
+`platform-directories.properties` beside `ServerBinaryLocator`: the system by
+what `os.name` starts with, the architecture by `os.arch`. The locator finds
+the server through it at run time, and the build reads the same file to place
+the server it builds for its own host. Only that host's server is bundled so
+far, so `plugin.xml`'s description names no platform; the layout is per
+platform so that the other five of `windows-x64`, `windows-arm64`,
+`macos-x64`, `macos-arm64`, `linux-x64` and `linux-arm64` are added later by a
+CI build placing their binaries in the same tree, with no change to the
+plugin's code.
 
 ## Build and packaging
 
@@ -355,7 +382,10 @@ same tree, with no change to the plugin's code.
   each run `cargo build -p ns-lsp` at the repository root, debug and `--release`
   respectively; `tasks.test` depends on the debug build and points the tests at
   it. Every sandbox an IDE starts from depends on the release build and gets
-  the binary in `bin/windows-x64/`, beside `THIRD-PARTY-NOTICES.txt` and
+  the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
+  `platform-directories.properties` names for it (a host the file does not
+  name fails the sandbox task rather than bundling a server the plugin would
+  not look for), beside `THIRD-PARTY-NOTICES.txt` and
   `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
   `prepareSandbox_runIde` with its split-mode siblings, which `runIde` starts
   from — a separate sandbox (`plugins_runIde/`), so configuring
@@ -474,20 +504,9 @@ and resolves cleanly in a JetBrains IDE today.
 - **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
   errors, so a lexer or parser warning on a module that parses is not shown.
   None exists today.
-- **A name declared on both sides of a class** with different kinds (a slot on
-  the instance side, a method on the class side) is coloured by the first
-  declaration, as `ClassMembers` merges both sides the way the resolver's
-  member set does.
-- **A malformed notification** is logged to stderr and ignored, so the client
-  sees no error for it.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file.
-- **Two copies of the platform-directory mapping:** `hostPlatform` in
-  `build.gradle.kts` falls back to `linux`/`x64` for a host
-  `ServerBinaryLocator.platformDirectory` does not name, and `plugin.xml`'s
-  description says the server is bundled for Windows x64 whatever host built
-  it. Both matter once the CI build for other platforms exists.
 
 ## Planned later
 

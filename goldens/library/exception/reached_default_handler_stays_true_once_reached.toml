@@ -1,0 +1,9 @@
+stdout = '''
+false
+7
+false
+42
+true
+7
+true
+'''

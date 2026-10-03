@@ -1,11 +1,12 @@
 # Liveness, reflection, and concurrency
 
-> **Status:** planned. Nothing in this document is built. What *is* built is the
-> groundwork every part of it depends on — reified activations and the
+> **Status:** planned. Nothing in this document is built. What *is* built is
+> the groundwork every part of it depends on — reified activations and the
 > kernel-private activation objects the exceptions are built on
 > ([core-library.md](core-library.md), "Exceptions"), the safepoint
-> statement→program-counter table, stable call-site identity, source and provenance retention,
-> identity hashes, §3.2's reified class hierarchy — each described in the document for its own aspect.
+> statement→program-counter table, stable call-site identity, source and
+> provenance retention, identity hashes, §3.2's reified class hierarchy — each
+> described in the document for its own aspect.
 > **Code:** none yet.
 
 This is the constraints document. It binds every milestone even though it
@@ -82,22 +83,21 @@ The inline caches ([dispatch.md](dispatch.md), "3b — The caches") are built
 for this: an entry holds no handle, so invalidating all of them
 (`Interpreter::invalidate_caches`) is resetting the heap's cache table and
 emptying its global cache, with every code family's range kept for the
-activations still running; a debug-build stress mode,
-`NS_NEXT_STRESS_CACHES`, does exactly that at every safepoint. Nothing calls
-it outside that mode and the tests yet, since nothing mutates a method table
-at run time. Scoping an invalidation to
-the applications a change affects comes with the first mutation that needs
-it. The dispatch id a cache guards on is a copy in the object header
-([dispatch.md](dispatch.md), "The dispatch id"), so `become:` must not let a stale guard hit, and a class change must
-restamp it, as
-`Heap::set_class_application` already does when a class's application
-changes; otherwise a cache hit would run the old class's method on the
-object. The planned forwarder meets the first by construction: it carries a
-reserved id that no guard holds, so every send whose guard is the receiver's
-own header misses on one, super and private lexical sends check the
-receiver's header before using a hit, and the target keeps its own id
-([object-model.md](object-model.md), "Planned: `become:` through
-forwarders", road step 5).
+activations still running; a debug-build stress mode, `NS_NEXT_STRESS_CACHES`,
+does exactly that at every safepoint. Nothing calls it outside that mode and
+the tests yet, since nothing mutates a method table at run time. Scoping an
+invalidation to the applications a change affects comes with the first
+mutation that needs it. The dispatch id a cache guards on is a copy in the
+object header ([dispatch.md](dispatch.md), "The dispatch id"), so `become:`
+must not let a stale guard hit, and a class change must restamp it, as
+`Heap::class_set_application` already does when a class's application changes;
+otherwise a cache hit would run the old class's method on the object. The
+planned forwarder meets the first by construction: it carries a reserved id
+that no guard holds, so every send whose guard is the receiver's own header
+misses on one, super and private lexical sends check the receiver's header
+before using a hit, and the target keeps its own id
+([object-model.md](object-model.md), "Planned: `become:` through forwarders",
+road step 5).
 
 ## Debugger
 
@@ -106,22 +106,24 @@ forwarders", road step 5).
 2. **Inspect.** Read receiver, arguments, temps and the sender chain through
    mirrors.
 3. **Edit and continue.** Recompile the edited method — new bytecode, new temp
-   count, new statement→program-counter table. For every affected context, the active one and
-   any pending frames running the same method, give it room for the added
-   slots, set the new ones to nil, and remap the program counter through the
-   statement→program-counter table. A running activation is an entry in a
-   stack where an entry in the middle cannot grow, so it is divorced into a
-   newly allocated, larger frame object, the VM rewrites every reference to
-   the old frame by a walk of every root the collector traces (`trace.rs`) and every heap object, the new frame allocated old and born remembered, and execution continues from the divorced
-   frame, which needs a divorced frame put back on the stack
-   ([execution.md](execution.md), "How this meets the liveness
-   requirements"; [object-model.md](object-model.md), "Planned: the object
-   layout"). That is the same move as forcing a frame out
-   of JIT-optimized form before debugging it, one level down, so the requirement
-   is met by the existing principle rather than in tension with it.
-   **Resume only at statement boundaries**, which is what keeps program-counter remapping
-   tractable: restart the current statement, or the whole method with receiver
-   and arguments preserved, rather than resuming mid-expression.
+   count, new statement→program-counter table. For every affected context, the
+   active one and any pending frames running the same method, give it room for
+   the added slots, set the new ones to nil, and remap the program counter
+   through the statement→program-counter table. A running activation is an
+   entry in a stack where an entry in the middle cannot grow, so it is
+   divorced into a newly allocated, larger frame object, the VM rewrites every
+   reference to the old frame by a walk of every root the collector traces
+   (`trace.rs`) and every heap object, the new frame allocated old and born
+   remembered, and execution continues from the divorced frame, which needs a
+   divorced frame put back on the stack ([execution.md](execution.md), "How
+   this meets the liveness requirements"; [object-model.md](object-model.md),
+   "Planned: the object layout"). That is the same move as forcing a frame out
+   of JIT-optimized form before debugging it, one level down, so the
+   requirement is met by the existing principle rather than in tension with
+   it. **Resume only at statement boundaries**, which is what keeps
+   program-counter remapping tractable: restart the current statement, or the
+   whole method with receiver and arguments preserved, rather than resuming
+   mid-expression.
 4. **Other context-mirror operations:** restart frame, force return value, step
    into/over/out.
 5. **Breakpoints** by bytecode patching, or by a per-method debug flag that

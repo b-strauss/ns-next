@@ -75,33 +75,64 @@ pub(crate) fn execute<'gc>(
             Some(Ok(Step::Value(Value::nil())))
         }
         ActivationPrimitive::Terminate => Some(Err(terminate(mutator, arguments))),
-        _ => {
-            let object = subject.as_object()?;
-            let frame = mutator.heap.activation_object_frame(object)?;
-            let live = mutator.heap.frame_activation(frame);
-            activation_leaf(mutator, primitive, subject, frame, live, arguments)
+        ActivationPrimitive::Sender => {
+            activation_leaf(mutator, SubjectLeaf::Sender, subject, arguments)
+        }
+        ActivationPrimitive::IsActiveHandler => {
+            activation_leaf(mutator, SubjectLeaf::IsActiveHandler, subject, arguments)
+        }
+        ActivationPrimitive::HandlerClass => {
+            activation_leaf(mutator, SubjectLeaf::HandlerClass, subject, arguments)
+        }
+        ActivationPrimitive::HandlerBlock => {
+            activation_leaf(mutator, SubjectLeaf::HandlerBlock, subject, arguments)
+        }
+        ActivationPrimitive::SetHandlerActive => {
+            activation_leaf(mutator, SubjectLeaf::SetHandlerActive, subject, arguments)
+        }
+        ActivationPrimitive::ReturnValue => {
+            activation_leaf(mutator, SubjectLeaf::ReturnValue, subject, arguments)
+        }
+        ActivationPrimitive::Restart => {
+            activation_leaf(mutator, SubjectLeaf::Restart, subject, arguments)
         }
     }
 }
 
-/// A leaf whose subject is an activation object, of `frame`, whose running
-/// activation is `live` -- `None` once it has returned.
+/// The leaves whose subject is an activation object, the ones
+/// `activation_leaf` runs: a type of their own, so that it has no arm for a
+/// leaf that takes no activation.
+#[derive(Clone, Copy)]
+enum SubjectLeaf {
+    Sender,
+    IsActiveHandler,
+    HandlerClass,
+    HandlerBlock,
+    SetHandlerActive,
+    ReturnValue,
+    Restart,
+}
+
+/// A leaf whose subject is an activation object: the object names a frame,
+/// whose running activation is `live` -- `None` once it has returned. A
+/// subject that is no activation object declines.
 fn activation_leaf<'gc>(
     mutator: &mut Mutator<'gc>,
-    primitive: ActivationPrimitive,
+    leaf: SubjectLeaf,
     subject: Value<'gc>,
-    frame: FrameReference<'gc>,
-    live: Option<ActivationReference>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
-    let answer = match primitive {
-        ActivationPrimitive::Sender => {
+    let object = subject.as_object()?;
+    let frame = mutator.heap.activation_object_frame(object)?;
+    let live = mutator.heap.frame_activation(frame);
+    let answer = match leaf {
+        SubjectLeaf::Sender => {
             match live.and_then(|activation| mutator.heap.activation_sender(activation)) {
                 Some(sender) => activation_object(mutator, sender),
                 None => Value::nil(),
             }
         }
-        ActivationPrimitive::IsActiveHandler => {
+        SubjectLeaf::IsActiveHandler => {
             let active = live
                 .and_then(|activation| {
                     let (_, _, active_register) = handler_registers(mutator, activation)?;
@@ -110,17 +141,17 @@ fn activation_leaf<'gc>(
                 .is_some_and(|value| value.as_boolean() == Some(true));
             Value::boolean(active)
         }
-        ActivationPrimitive::HandlerClass => {
+        SubjectLeaf::HandlerClass => {
             let activation = live?;
             let (class_register, _, _) = handler_registers(mutator, activation)?;
             mutator.heap.activation_local(activation, class_register)
         }
-        ActivationPrimitive::HandlerBlock => {
+        SubjectLeaf::HandlerBlock => {
             let activation = live?;
             let (_, block_register, _) = handler_registers(mutator, activation)?;
             mutator.heap.activation_local(activation, block_register)
         }
-        ActivationPrimitive::SetHandlerActive => {
+        SubjectLeaf::SetHandlerActive => {
             let activation = live?;
             let (_, _, active_register) = handler_registers(mutator, activation)?;
             let active = arguments.first().and_then(|value| value.as_boolean())?;
@@ -132,7 +163,7 @@ fn activation_leaf<'gc>(
         // Both name the frame rather than the activation, as every unwind
         // target does; a dead one is §7.2's `cannotReturn`, raised here, as
         // `raise_return` raises it for a block's `^`.
-        ActivationPrimitive::ReturnValue => {
+        SubjectLeaf::ReturnValue => {
             let value = *arguments.first()?;
             return Some(Err(match live {
                 Some(_) => Signal::Return(frame, value),
@@ -141,16 +172,11 @@ fn activation_leaf<'gc>(
                 ))),
             }));
         }
-        ActivationPrimitive::Restart => {
+        SubjectLeaf::Restart => {
             return Some(Err(match live {
                 Some(_) => Signal::Restart(frame),
                 None => Signal::Error(unwind::dead_activation_error(Symbol::intern("restart"))),
             }));
-        }
-        ActivationPrimitive::Current
-        | ActivationPrimitive::InheritsMixinOf
-        | ActivationPrimitive::Terminate => {
-            unreachable!("internal: {primitive:?} takes no activation subject")
         }
     };
     Some(Ok(Step::Value(answer)))

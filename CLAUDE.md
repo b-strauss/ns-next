@@ -6,15 +6,17 @@ Rust 1.98.0, edition 2021, five crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
-  checked against the reference lowering in `compiler/reference.rs`), the VM
-  (`vm.rs`) and the send machinery it calls (`interpreter/`: inline caches in
-  `inline_cache.rs` in front of the lookups in `resolve.rs`, the one unwinder in
-  `unwind.rs`, the VM mirror in `mirror.rs` and its leaves in `builtins/`), the
-  core library (`core-library/Kernel.ns`, `PlatformFactory.ns`,
-  `CollectionsFactory.ns`, booted by `interpreter/kernel.rs` and
-  `interpreter/core_library.rs`), `LargeInteger` arithmetic (`arbitrary_integer/`,
-  adapted from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of
-  32-bit handles, an activation stack reified on demand, a mark-compact
+  checked against the reference lowering in `compiler/reference.rs`), the
+  instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
+  `bytecode/compact.rs`), the VM (`vm.rs`) and the send machinery it calls
+  (`interpreter/`: inline caches in `inline_cache.rs` in front of the lookups
+  in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
+  `mirror.rs` and its leaves in `builtins/`), the core library
+  (`core-library/Kernel.ns`, `PlatformFactory.ns`, `CollectionsFactory.ns`,
+  booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
+  `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
+  from `num-bigint` and `num-integer`), the heap (`heap.rs`, an arena of 32-bit
+  handles, an activation stack reified on demand, a mark-compact
   collector run only at run-loop safepoints; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
@@ -76,7 +78,8 @@ leaf.
 **Compiling an already-resolved module can never raise a `NewspeakError`.** It is
 a total, deterministic lowering; a compiler-invariant violation is `panic!` /
 `debug_assert!`. A program-level error is deferred to execution
-(`Literal::UnresolvedIdentifier`), so a method never run never fails.
+(`Literal::UnresolvedIdentifier`, and `Literal::BodyTooLarge` for a body past
+the `u16` register ceiling), so a method never run never fails.
 
 **An expression's value register must still hold that value when its consumer
 executes.** A named local's register is live storage; `lower_operand` copies it,
@@ -113,11 +116,13 @@ would let a stale artifact decode into a different, valid program.
 move.** Never hold an `ObjectReference`, `ClassReference`, `FrameReference` or
 `ActivationReference` across the death of its interpreter — the index answers a
 different, valid object in another heap. Reach the real `Heap` (a `&Heap`
-parameter, or read through `interpreter.enter` while it lives, as `disasm` does).
-A host keeps a value across a run only as a `Root`. The debug-only origin guard,
-move epochs and the stress modes catch mistakes; a release build does not. A new
-field holding a handle or a stored `Word` needs its `Trace` impl (`memory.md`, "A
-handle is arena-relative", "The move stress mode").
+parameter, or read through `interpreter.enter` while it lives); a reader of
+compiled code alone takes the mixin, which holds no handle (`compiler.md`,
+"Readers of compiled code take the mixin"). A host keeps a value across a run
+only as a `Root`. The debug-only origin guard, move epochs and the stress modes
+catch mistakes; a release build does not. A new field holding a handle or a
+stored `Word` needs its `Trace` impl (`memory.md`, "A handle is arena-relative",
+"The move stress mode").
 
 **The brand is the compiler's, and needs no cast.** `World::enter` hands the
 `Mutator` to a closure generic over `'gc`, in safe Rust. Never add a public way
@@ -131,10 +136,13 @@ doctests on `Interpreter::enter` pin it (`memory.md`, "The brand").
 ever stored.** An activation's index is reused after its pop; `ClosureData`,
 `Frame` and image records take a `FrameReference` (`Heap::reify`). The run loop
 pops every activation it runs on every exit. **Every instruction that reads or
-writes another frame's registers by reference must be named in
-`bytecode::outer_reach_of`**, or the frame drops its registers on return and
-every read answers `nil` at exit status 0 (`execution.md`, "Activations",
-"Closure conversion").
+writes another frame's registers by reference must answer its depth, never 0,
+in `bytecode::outer_reach_of`, and its eight-byte form in
+`bytecode::compact::narrow_outer_reach`**, or the frame drops its registers on
+return and every read answers `nil` at exit status 0. Both matches are
+exhaustive, so the compiler makes a new instruction decide; the round-trip
+tests' `assert_derived_as_decoded` holds the two to each other
+(`execution.md`, "Activations", "Closure conversion").
 
 **An unwind target is a `FrameReference`.** Non-local return, `return:`,
 `resume:`, `retry` and the depth reserve name the target's frame; the unwinder
@@ -218,7 +226,8 @@ benchmarking, and once at the end of a branch, never under a stress mode:
 `cargo nextest run -p ns-cli --profile benchmarks` (`execution.md`, "The Are
 We Fast Yet benchmarks").
 
-The end-of-batch gates (the three stress modes, `run-corpus` plain and under
+The end-of-batch gates (the four stress modes: moves, caches, collection and
+every instruction wide; `run-corpus` plain and under
 stress, the benchmarks profile, `verifyPlugin`) are in the `finishing-a-batch`
 skill. A commit that
 never saw them is work in progress, not finished work; a subagent implementing

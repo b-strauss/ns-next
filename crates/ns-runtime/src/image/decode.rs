@@ -7,7 +7,10 @@ use std::rc::Rc;
 
 use ns_syntax::Span;
 
-use crate::bytecode::{CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal};
+use crate::bytecode::{
+    CallSite, CodeBuilder, CodeKind, CompiledCode, CreatedBlock, Emitted, Instruction,
+    IntegerOperation, Literal,
+};
 use crate::heap::{Heap, Word};
 use crate::interpreter::instantiate;
 use crate::mixin::DispatchId;
@@ -269,6 +272,16 @@ pub enum DecodeError {
     /// root class -- nothing for the graph's `CLASS_MODULE` tag to name and
     /// no declaration to instantiate.
     NotAClass,
+    /// A module's root section names a builtin for its root class to inherit
+    /// or apply that the loading bootstrap has no application for, so there
+    /// is no behaviour to build the root or its level on. `decode_root_section`
+    /// admits only `Object` and `Value`, which every bootstrap applies, so no
+    /// image reaches this today; it stands so that a change to either side is
+    /// a refusal that says what went wrong rather than a panic.
+    RootBuiltinWithoutApplication {
+        module: u32,
+        builtin: BuiltinClass,
+    },
     /// A selector the image names has no declaration to bind to: a
     /// mixin-table row's code list naming a selector its own method
     /// dictionary lacks, or a `FrameKind::Method` naming a selector its
@@ -302,18 +315,20 @@ pub enum DecodeError {
         expected: &'static str,
     },
     /// A method's -- or the instance initializer's -- compiled body takes a
-    /// different number of arguments than its own declaration does. The frame's
-    /// `arguments` come from the send (or the factory), its `temporaries` from
-    /// the body's `argument_count`; a disagreement leaves `read_local` indexing
-    /// `temporaries` past its end.
+    /// different number of arguments than its own declaration does. A send
+    /// (or a factory) is checked against the declaration, and its arguments
+    /// open the activation's register window, followed by the body's
+    /// `register_count - argument_count` temporaries; a disagreement leaves
+    /// the window shorter than the registers the body addresses, so a read
+    /// runs past its end, or longer, so every temporary is shifted.
     CodeArityMismatch {
         what: String,
         parameters: usize,
         argument_count: u16,
     },
     /// A body with no instructions, or one whose last instruction falls
-    /// through: the VM fetches `instructions[program_counter]` after every
-    /// fall-through, so either runs off the end of the vector.
+    /// through: the VM fetches the instruction at `program_counter` after
+    /// every fall-through, so either runs off the end of the body.
     UnterminatedBody,
     /// A register operand outside its own body's register file.
     RegisterOutOfRange {
@@ -510,8 +525,8 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::MixinTableNotATree { row } => write!(
                 f,
-                "the image's mixin table is not a declaration tree: row {row} is reached out of \
-                 declaration order, twice, or not at all"
+                "the image's mixin table is not a sequence of declaration trees: row {row} is \
+                 named as a nested declaration or class side out of declaration order, or twice"
             ),
             DecodeError::ModuleCountMismatch { declared, trees } => write!(
                 f,
@@ -571,6 +586,11 @@ impl std::fmt::Display for DecodeError {
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
             }
+            DecodeError::RootBuiltinWithoutApplication { module, builtin } => write!(
+                f,
+                "the root class of the image's module {module} builds on the builtin {builtin:?}, \
+                 which this build has no behaviour for"
+            ),
             DecodeError::UnknownSelector(selector) => write!(
                 f,
                 "the image names method `{selector}`, which the declaration it belongs to does not define"
@@ -870,14 +890,14 @@ pub fn decode_source_origin(reader: &mut Reader) -> Result<SourceOrigin, DecodeE
 }
 
 pub fn decode_scalar_value<'gc>(
-    reader: &mut Reader,
     mutator: &mut Mutator<'gc>,
+    reader: &mut Reader,
 ) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
         0 => Ok(Value::nil()),
         1 => Ok(Value::boolean(false)),
         2 => Ok(Value::boolean(true)),
-        3 => Ok(integer_value(reader.read_i64()?, mutator)),
+        3 => Ok(integer_value(mutator, reader.read_i64()?)),
         4 => Ok(mutator.new_float(reader.read_f64()?)),
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
@@ -886,7 +906,7 @@ pub fn decode_scalar_value<'gc>(
 /// An integer the wire carries as an `i64`, as the one representation it
 /// has: a `SmallInteger` in 61 bits, without allocating, which is nearly
 /// every one; a `LargeInteger` beyond them.
-fn integer_value<'gc>(number: i64, mutator: &mut Mutator<'gc>) -> Value<'gc> {
+fn integer_value<'gc>(mutator: &mut Mutator<'gc>, number: i64) -> Value<'gc> {
     if fits_small_integer(number) {
         Value::small_integer(number)
     } else {
@@ -1088,15 +1108,13 @@ fn block_nesting(
     nesting: &HashMap<usize, usize>,
 ) -> Result<usize, DecodeError> {
     let mut depth = 0;
-    for instruction in &code.instructions {
-        if let Instruction::MakeClosure { code: block, .. } = instruction {
-            // `decode_instruction` resolved the id against the bodies already
-            // read, and every one of them was measured.
-            let below = nesting
-                .get(&(Rc::as_ptr(block) as usize))
-                .ok_or(DecodeError::CodeNotInTable)?;
-            depth = depth.max(below + 1);
-        }
+    for block in code.body().created_blocks() {
+        // `decode_instruction` resolved the id against the bodies already
+        // read, and every one of them was measured.
+        let below = nesting
+            .get(&(Rc::as_ptr(block.code) as usize))
+            .ok_or(DecodeError::CodeNotInTable)?;
+        depth = depth.max(below + 1);
     }
     if depth > MAX_BLOCK_NESTING {
         return Err(DecodeError::BlockNestingTooDeep {
@@ -1221,7 +1239,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
         }
         for (index, clause) in mixin.mixin_applications.iter().enumerate() {
             match &clause.message_code {
-                Some(_) if !clause.has_arguments => {
+                Some(_) if !clause.message.has_arguments => {
                     return Err(DecodeError::UnexpectedMixinApplicationMessage)
                 }
                 // §6.2 evaluates a `<:` clause's message in the applying
@@ -1235,7 +1253,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                     format!("mixin application clause {} message", index + 1),
                     mixin.factory.map_or(0, |factory| factory.argument_count),
                 )?,
-                None if clause.has_arguments => {
+                None if clause.message.has_arguments => {
                     return Err(DecodeError::MissingMixinApplicationMessage)
                 }
                 None => {}
@@ -1251,7 +1269,9 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
 /// `verify_mixins` asks of a decoded declaration, answered off the same
 /// field `instantiate::clause_message_body` decides by at run time.
 fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
-    mixin.superclass.is_some_and(|clause| clause.has_arguments)
+    mixin
+        .superclass
+        .is_some_and(|message| message.has_arguments)
 }
 
 /// One decoded body against the declaration it is attached to:
@@ -1288,8 +1308,8 @@ fn check_code_arity(
 //
 // Decoding is byte-safe: every id, tag and length is checked as it is read. It
 // does not make the result *coherent*. The VM indexes
-// `code.instructions[program_counter]` directly, and
-// `locals::read_local`/`write_local` index a frame's `arguments`/`temporaries`
+// `code.slot(program_counter)` directly, and
+// `locals::read_local`/`write_local` index the activation's register window
 // directly, so a jump target, a register operand or an arity that decoded
 // cleanly can still panic the process the first time the body runs. Everything
 // below is a bounded, linear pass over the flat, topologically ordered table --
@@ -1321,16 +1341,12 @@ fn lexical_parents(table: &DecodedCodeTable) -> Result<Vec<Option<usize>>, Decod
     let index_of = code_index(table);
     let mut parents: Vec<Option<usize>> = vec![None; table.codes.len()];
     for (index, code) in table.codes.iter().enumerate() {
-        for instruction in &code.instructions {
-            let Instruction::MakeClosure {
-                parameters,
-                code: block,
-                copied,
-                ..
-            } = instruction
-            else {
-                continue;
-            };
+        for CreatedBlock {
+            code: block,
+            parameters,
+            copied,
+        } in code.body().created_blocks()
+        {
             let id = *index_of
                 .get(&(Rc::as_ptr(block) as usize))
                 .ok_or(DecodeError::CodeNotInTable)?;
@@ -1434,30 +1450,34 @@ fn number_call_sites(
     index_of: &HashMap<usize, usize>,
     writeback: &mut Vec<(usize, Rc<CompiledCode>)>,
 ) -> Result<(), DecodeError> {
-    for instruction in &mut code.instructions {
-        if let Instruction::MakeClosure { code: block, .. } = instruction {
-            // Captured before `Rc::make_mut` can move the block to a fresh
-            // allocation: `index_of` was built from the table's original
-            // pointers, and `lexical_parents` already proved this one names
-            // exactly one table entry.
-            let block_index = *index_of
-                .get(&(Rc::as_ptr(block) as usize))
-                .ok_or(DecodeError::CodeNotInTable)?;
-            number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
-            writeback.push((block_index, block.clone()));
-            continue;
-        }
-        // `call_site_mut` is the same variant list `call_site` reads
-        // through everywhere else, so a call-site-carrying instruction this
-        // arm does not know about is not a risk this function can introduce.
-        if let Some(call_site) = instruction.call_site_mut() {
-            if *call_site != CallSite::UNCACHED {
-                *call_site = CallSite { number: *next };
-                *next += 1;
+    // `for_each_emitted_mut` visits every send's call site and every block
+    // in emission order, whichever form each was encoded in -- a wide one's
+    // through `call_site_mut`, the same variant list `call_site` reads for
+    // `family_size_of` -- so no call-site-carrying instruction can go
+    // unnumbered here.
+    code.body_mut().for_each_emitted_mut(|emitted| {
+        match emitted {
+            Emitted::Block(block) => {
+                // Captured before `Rc::make_mut` can move the block to a
+                // fresh allocation: `index_of` was built from the table's
+                // original pointers, and `lexical_parents` already proved
+                // this one names exactly one table entry.
+                let block_index = *index_of
+                    .get(&(Rc::as_ptr(block) as usize))
+                    .ok_or(DecodeError::CodeNotInTable)?;
+                number_call_sites(Rc::make_mut(block), next, index_of, writeback)?;
+                writeback.push((block_index, block.clone()));
+            }
+            Emitted::CallSite(call_site) => {
+                if *call_site != CallSite::UNCACHED {
+                    *call_site = CallSite { number: *next };
+                    *next += 1;
+                }
             }
         }
-    }
-    code.family_size = crate::bytecode::family_size_of(&code.instructions);
+        Ok(())
+    })?;
+    code.family_size = code.body().family_size();
     Ok(())
 }
 
@@ -1466,16 +1486,22 @@ fn number_call_sites(
 /// instruction, every jump target is one of its own instructions, every
 /// register operand is inside its own register file, and every outer local
 /// is inside the register file of the body it addresses.
+///
+/// Each body is decoded here once, and both checks that read every
+/// instruction read that one view; everything else at load reads the
+/// encoding directly (`EncodedBody::created_blocks`,
+/// `EncodedBody::family_size`).
 pub fn verify_code_table(table: &DecodedCodeTable) -> Result<(), DecodeError> {
     let parents = lexical_parents(table)?;
     for (index, code) in table.codes.iter().enumerate() {
-        verify_body(code)?;
-        verify_outer_locals(table, &parents, index, code)?;
+        let instructions = code.instructions();
+        verify_body(code, &instructions)?;
+        verify_outer_locals(table, &parents, index, &instructions)?;
     }
     Ok(())
 }
 
-fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
+fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), DecodeError> {
     // Every activation is pushed with `register_count - argument_count`
     // temporaries, a `u16` subtraction.
     if code.argument_count > code.register_count {
@@ -1484,10 +1510,10 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
             register_count: code.register_count,
         });
     }
-    // The VM fetches `instructions[program_counter]` at the top of the loop and
-    // again after every fall-through, so an empty body -- or one whose last
-    // instruction falls through -- indexes past the end of the vector.
-    match code.instructions.last() {
+    // The VM fetches the instruction at `program_counter` at the top of the
+    // loop and again after every fall-through, so an empty body -- or one
+    // whose last instruction falls through -- indexes past its end.
+    match instructions.last() {
         Some(
             Instruction::Return { .. }
             | Instruction::ImplicitReturn { .. }
@@ -1496,7 +1522,7 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
         ) => {}
         _ => return Err(DecodeError::UnterminatedBody),
     }
-    for instruction in &code.instructions {
+    for instruction in instructions {
         for register in own_registers(instruction) {
             if register >= code.register_count {
                 return Err(DecodeError::RegisterOutOfRange {
@@ -1506,10 +1532,10 @@ fn verify_body(code: &CompiledCode) -> Result<(), DecodeError> {
             }
         }
         if let Some(target) = jump_target(instruction) {
-            if target as usize >= code.instructions.len() {
+            if target as usize >= instructions.len() {
                 return Err(DecodeError::JumpTargetOutOfRange {
                     target,
-                    instructions: code.instructions.len(),
+                    instructions: instructions.len(),
                 });
             }
         }
@@ -1683,9 +1709,9 @@ fn verify_outer_locals(
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index: usize,
-    code: &CompiledCode,
+    instructions: &[Instruction],
 ) -> Result<(), DecodeError> {
-    for instruction in &code.instructions {
+    for instruction in instructions {
         let (depth, local) = match instruction {
             Instruction::LoadOuterLocal { depth, index, .. }
             | Instruction::StoreOuterLocal { depth, index, .. } => (*depth, *index),
@@ -1791,31 +1817,28 @@ fn decode_code(
     // number once every body in the table is read.
     let uncached = reader.read_boolean()?;
     let instruction_count = reader.read_u32()? as usize;
-    let mut instructions = reserve_for(instruction_count, reader);
+    let mut builder = CodeBuilder::new();
     for _ in 0..instruction_count {
-        instructions.push(decode_instruction(reader, codes, symbols, uncached)?);
+        builder.emit(decode_instruction(reader, codes, symbols, uncached)?);
     }
-    Ok(CompiledCode {
+    // `from_builder` derives `family_size` and `outer_reach` as the compiler's
+    // bodies derive them, off the encoding. `family_size` is a placeholder, not
+    // yet the real answer: every send here carries a number-shaped stand-in,
+    // not the number `number_call_site_families` will give it, so this would
+    // double-count a non-uncached body's sends as if they were already dense
+    // from 0; it is recomputed there, once the real numbers exist.
+    // `outer_reach`, never on the wire, reads each nested block's own, which is
+    // already filled because post-order puts a block's code before its
+    // parent's.
+    Ok(CompiledCode::from_builder(
         kind,
-        // A placeholder, not yet the real answer: every send here carries a
-        // number-shaped stand-in, not the number `number_call_site_families`
-        // will give it, so this would double-count a non-uncached body's
-        // sends as if they were already dense from 0. Recomputed there, once
-        // the real numbers exist.
-        family_size: crate::bytecode::family_size_of(&instructions),
-        // Not on the wire: derived from the instructions with the same
-        // function the compiler used. It reads each nested block's own
-        // `outer_reach`, which is already filled because post-order puts a
-        // block's code before its parent's.
-        outer_reach: crate::bytecode::outer_reach_of(&instructions),
-        unwind_marker: None,
-        instructions,
+        builder,
         argument_count,
         register_count,
         copied_count,
         statement_program_counter,
         source,
-    })
+    ))
 }
 
 fn decode_registers(reader: &mut Reader) -> Result<Vec<u16>, DecodeError> {
@@ -2155,6 +2178,7 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
         LITERAL_SYMBOL => Literal::Symbol(decode_symbol(reader, symbols)?),
         LITERAL_UNRESOLVED_IDENTIFIER => Literal::UnresolvedIdentifier(reader.read_str()?),
         LITERAL_LARGE_INTEGER => Literal::LargeInteger(read_large_integer(reader)?),
+        LITERAL_BODY_TOO_LARGE => Literal::BodyTooLarge,
         tag => {
             return Err(DecodeError::InvalidTag {
                 what: "literal",
@@ -2300,12 +2324,12 @@ fn decode_class_tag_after<'gc>(
         CLASS_MODULE => read_module_class(reader, context.modules),
         CLASS_MODULE_LEVEL => read_module_level(reader, context.modules),
         CLASS_PLATFORM_PATH => {
-            read_platform_path_class(reader, &context.mutator.heap, context.platform_paths)
+            read_platform_path_class(&context.mutator.heap, reader, context.platform_paths)
         }
         CLASS_METACLASS => {
             let class = read_prebuilt_class(
-                reader,
                 context.mutator,
+                reader,
                 context.modules,
                 context.platform_paths,
             )?;
@@ -2326,8 +2350,8 @@ fn decode_class_tag_after<'gc>(
 /// which bounds the nesting at one: a class record's metaclass is a record of
 /// its own and is named by its id.
 fn read_prebuilt_class<'gc>(
-    reader: &mut Reader,
     mutator: &Mutator<'gc>,
+    reader: &mut Reader,
     modules: &ModuleClasses<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
@@ -2335,7 +2359,7 @@ fn read_prebuilt_class<'gc>(
         CLASS_BUILTIN => Ok(mutator.builtin_class(read_referenced_builtin_class(reader)?)),
         CLASS_MODULE => read_module_class(reader, modules),
         CLASS_MODULE_LEVEL => read_module_level(reader, modules),
-        CLASS_PLATFORM_PATH => read_platform_path_class(reader, &mutator.heap, platform_paths),
+        CLASS_PLATFORM_PATH => read_platform_path_class(&mutator.heap, reader, platform_paths),
         tag => Err(DecodeError::InvalidTag {
             what: "prebuilt class",
             tag,
@@ -2360,8 +2384,8 @@ fn read_platform_path<'gc>(
 /// `read_platform_path` where the format types the reference as a class:
 /// its object must be a class object.
 fn read_platform_path_class<'gc>(
-    reader: &mut Reader,
     heap: &Heap<'gc>,
+    reader: &mut Reader,
     platform_paths: &[Value<'gc>],
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match read_platform_path(reader, platform_paths)?.as_object() {
@@ -2423,7 +2447,7 @@ fn decode_value<'gc>(
         // 64/9 = 7.1x in a release build and 80/9 = 8.9x in a debug one, on
         // top of the placeholders' 16.0x and 20.0x: about 23.1x and 28.9x
         // in all, the worst case of a rejected load.
-        VALUE_SMALL_INTEGER => Ok(integer_value(reader.read_i64()?, context.mutator)),
+        VALUE_SMALL_INTEGER => Ok(integer_value(context.mutator, reader.read_i64()?)),
         // A float outside the immediate range allocates its boxed `Float`:
         // 9 bytes (tag, `f64`) for an `Object` alone, its payload inline,
         // 56/9 = 6.2x in a release build and 72/9 = 8.0x in a debug one, on
@@ -2672,17 +2696,17 @@ fn placeholder_frame<'gc>() -> Frame<'gc> {
 /// bytes, so this is a floor, not a typical size; kept at the one-byte tag
 /// the retired `CLASS_USER_ROOT` was, since the load peaks `memory.md`
 /// reports are derived from it and a lower bound stays a sound one.
-const MIN_OBJECT_RECORD_BYTES: usize = 6;
+pub(crate) const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
 /// `arguments` and `temporaries` counts (4 + 4), a `program_counter` (4),
 /// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel` kind
 /// tag (1), and `uncontinuable` (1). Every other frame kind is larger.
-const MIN_FRAME_RECORD_BYTES: usize = 18;
+pub(crate) const MIN_FRAME_RECORD_BYTES: usize = 18;
 
 /// The smallest entry of the closing hash table: a tag (1) and a hash (4). A
 /// builtin-class entry carries one more byte.
-const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
+pub(crate) const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
 
 /// A record count read from an untrusted stream, refused before it is used
 /// to *allocate*. The bytes still unread bound how many records can really
@@ -2739,25 +2763,26 @@ pub fn build_root_class<'gc>(
         .module_root(module_index)
         .cloned()
         .ok_or(DecodeError::NotAClass)?;
-    let superclass = Some(mutator.builtin_class(section.superclass));
-    let applied: Vec<(usize, Value<'gc>)> = section
-        .levels
-        .iter()
-        .map(|&(index, kind)| (index as usize, Value::object(mutator.builtin_class(kind))))
-        .collect();
-    // `decode_root_section` held every index to the root row's clauses, and a
-    // builtin class is always a class object, so this cannot fail; the
-    // mapping keeps a future change to either from being a panic.
-    let superclass = crate::interpreter::nested::build_applied_levels(
-        mutator,
-        &root_mixin,
-        superclass,
-        &applied,
-    )
-    .map_err(|_| DecodeError::NotAClassReference)?;
-    let super_application = superclass
-        .as_ref()
-        .and_then(|superclass| mutator.heap.class_application(*superclass));
+    let without_application = |builtin| DecodeError::RootBuiltinWithoutApplication {
+        module: u32::try_from(module_index).unwrap_or(u32::MAX),
+        builtin,
+    };
+    let builtin = mutator.builtin_class(section.superclass);
+    let application = mutator
+        .heap
+        .class_application(builtin)
+        .ok_or_else(|| without_application(section.superclass))?;
+    // One level at a time, so a refusal names the builtin its level applies.
+    // `decode_root_section` held every index to the root row's clauses, so
+    // the one thing `build_applied_levels` refuses is a class with no
+    // application.
+    let mut top = Some((builtin, application));
+    for &(index, kind) in &section.levels {
+        let applied = [(index as usize, Value::object(mutator.builtin_class(kind)))];
+        top = crate::interpreter::nested::build_applied_levels(mutator, &root_mixin, top, &applied)
+            .map_err(|_| without_application(kind))?;
+    }
+    let (superclass, super_application) = top.unzip();
     let application = mutator.apply_mixin(&root_mixin, super_application.as_ref());
     let root_class = mutator.new_class_object(application, None, None, superclass);
     let levels = super::encode::root_levels(&mutator.heap, root_class);
@@ -2965,7 +2990,7 @@ fn rebuild_applications<'gc>(
             if !context
                 .mutator
                 .heap
-                .install_class_application(object, application)
+                .class_install_application(object, application)
             {
                 unreachable!("this object was filled in as a class record");
             }
@@ -3025,7 +3050,7 @@ fn rebuild_applications<'gc>(
             context
                 .mutator
                 .heap
-                .set_class_value_refusal(object, refusal);
+                .class_set_value_refusal(object, refusal);
         }
     }
     Ok(())
@@ -3080,8 +3105,8 @@ fn rebuild_metaclasses<'gc>(
         let heap = &mut context.mutator.heap;
         let enclosing = heap.class_enclosing(this_class);
         let declaring_class = heap.class_declaring(this_class);
-        if !heap.install_class_application(metaclass, application)
-            || !heap.set_class_lexical_context(metaclass, enclosing, declaring_class)
+        if !heap.class_install_application(metaclass, application)
+            || !heap.class_set_lexical_context(metaclass, enclosing, declaring_class)
         {
             unreachable!("this object was filled in as a metaclass record");
         }
@@ -3110,7 +3135,7 @@ fn pair_metaclasses<'gc>(
         if heap.class_metaclass(class).is_none() {
             return Err(DecodeError::MetaclassPairing);
         }
-        let metaclass = heap.class_of_object(class);
+        let metaclass = heap.object_class(class);
         *named
             .entry(heap.object_identity_key(metaclass))
             .or_insert(0) += 1;
@@ -3181,7 +3206,7 @@ fn check_class_references<'gc>(
     frames: &[FrameReference<'gc>],
 ) -> Result<(), DecodeError> {
     for object in objects {
-        let class = heap.class_of_object(*object);
+        let class = heap.object_class(*object);
         if !heap.is_class(class) {
             return Err(DecodeError::NotAClassReference);
         }
@@ -3400,7 +3425,7 @@ pub fn decode_graph_section<'gc>(
             ObjectData::Symbol(symbol) => Some(*symbol),
             _ => None,
         };
-        context.mutator.heap.replace_object(
+        context.mutator.heap.object_replace(
             *object,
             Object {
                 class,
@@ -3457,7 +3482,7 @@ pub fn decode_graph_section<'gc>(
     context.mutator.heap.stamp_dispatch_ids(&objects);
     for frame in &frames {
         let decoded = decode_frame(reader, context, &tables, symbols)?;
-        context.mutator.heap.replace_frame(*frame, decoded);
+        context.mutator.heap.frame_replace(*frame, decoded);
     }
     check_class_references(&context.mutator.heap, &objects, &frames)?;
     let roots = decode_values(reader, context, &tables)?;
@@ -3476,8 +3501,8 @@ pub fn decode_graph_section<'gc>(
 /// repeated object and `u32::MAX` are refused, each for the reason its
 /// `DecodeError` gives.
 pub fn decode_tag_named_hashes<'gc>(
-    reader: &mut Reader,
     mutator: &mut Mutator<'gc>,
+    reader: &mut Reader,
     modules: &ModuleClasses<'gc>,
     platform_paths: &[Value<'gc>],
 ) -> Result<u32, DecodeError> {
@@ -3508,7 +3533,7 @@ pub fn decode_tag_named_hashes<'gc>(
                 }
             }
             HASHED_METACLASS => {
-                let class = read_prebuilt_class(reader, mutator, modules, platform_paths)?;
+                let class = read_prebuilt_class(mutator, reader, modules, platform_paths)?;
                 mutator
                     .heap
                     .class_metaclass(class)
@@ -3532,7 +3557,7 @@ pub fn decode_tag_named_hashes<'gc>(
             return Err(DecodeError::DuplicateTagNamedHash);
         }
         restored.push(target);
-        mutator.heap.set_identity_hash(target, hash);
+        mutator.heap.object_set_identity_hash(target, hash);
         max = max.max(hash);
     }
     Ok(max)
@@ -3755,9 +3780,9 @@ fn frame_body<'gc>(heap: &Heap<'gc>, frame: FrameReference<'gc>) -> Option<Rc<Co
 ///    walks the *static* `MakeClosure` nesting -- is only a bound on the
 ///    real `frame_at_depth` walk because of this.
 pub fn verify_graph<'gc>(
+    heap: &Heap<'gc>,
     graph: &DecodedGraph<'gc>,
     table: &DecodedCodeTable,
-    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     // Recomputed rather than threaded through from `verify_code_table`:
     // one more linear pass over the code table at load time, in exchange
@@ -3773,10 +3798,10 @@ pub fn verify_graph<'gc>(
         // executing, and a body with no instructions is already refused
         // (`UnterminatedBody`), so every genuine activation -- including one
         // that has not run a single instruction yet -- satisfies this.
-        if program_counter >= code.instructions.len() {
+        if program_counter >= code.instruction_count() {
             return Err(DecodeError::ProgramCounterOutOfRange {
                 program_counter,
-                instructions: code.instructions.len(),
+                instructions: code.instruction_count(),
             });
         }
         // An empty register file is what a returning activation that was
@@ -3801,18 +3826,18 @@ pub fn verify_graph<'gc>(
     // activation.
     for object in &graph.objects {
         if let Some(closure) = heap.closure_data(*object) {
-            verify_closure(&closure, table, &parents, &index_of, heap)?;
+            verify_closure(heap, &closure, table, &parents, &index_of)?;
         }
     }
     Ok(())
 }
 
 fn verify_closure<'gc>(
+    heap: &Heap<'gc>,
     closure: &ClosureData<'gc>,
     table: &DecodedCodeTable,
     parents: &[Option<usize>],
     index_of: &HashMap<usize, usize>,
-    heap: &Heap<'gc>,
 ) -> Result<(), DecodeError> {
     let code = &closure.code;
     if code.kind != CodeKind::Block {

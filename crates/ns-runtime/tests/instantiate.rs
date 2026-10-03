@@ -147,10 +147,10 @@ fn superclass_slot_initializer_runs_before_the_subclass_own_slots() {
             mutator.apply_mixin(&subclass_mixin, Some(&superclass_application));
         mutator
             .heap_mut()
-            .set_class_superclass(subclass, superclass)
+            .class_set_superclass(subclass, superclass)
             && mutator
                 .heap_mut()
-                .set_class_application(subclass, subclass_application)
+                .class_set_application(subclass, subclass_application)
     });
     assert!(relinked, "expected Sub to be a class object");
 

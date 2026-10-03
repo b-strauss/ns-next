@@ -42,7 +42,7 @@ impl<'gc> Mutator<'gc> {
                 }
                 AccessorKind::Setter => {
                     if let Some(value) = arguments.first() {
-                        if self.heap.set_instance_field(object, field, *value) {
+                        if self.heap.instance_set_field(object, field, *value) {
                             return Ok(Step::Value(receiver));
                         }
                     }

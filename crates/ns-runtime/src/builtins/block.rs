@@ -28,6 +28,12 @@ pub(crate) fn execute<'gc>(
             }
         }
     }
+    // Whether the body is a block, decided once for the whole loop.
+    let body = || {
+        arguments[0]
+            .as_object()
+            .filter(|body| mutator.heap().is_closure(*body))
+    };
     Some(Ok(match primitive {
         BlockPrimitive::Value => Step::Block {
             closure,
@@ -37,12 +43,12 @@ pub(crate) fn execute<'gc>(
         BlockPrimitive::ArgumentCount => Step::Value(Value::small_integer(parameters as i64)),
         BlockPrimitive::WhileTrue => condition_step(Box::new(WhileLoop {
             condition: closure,
-            body: arguments[0],
+            body: body(),
             expect: true,
         })),
         BlockPrimitive::WhileFalse => condition_step(Box::new(WhileLoop {
             condition: closure,
-            body: arguments[0],
+            body: body(),
             expect: false,
         })),
     }))
@@ -72,7 +78,7 @@ pub(crate) fn after_condition<'gc>(
     value: Value<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     match value.as_boolean() {
-        Some(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
+        Some(boolean) if boolean == state.expect => Ok(body_step(state)),
         Some(_) => Ok(Step::Value(Value::nil())),
         None => mutator.decide_send(value, Symbol::MUST_BE_BOOLEAN, &[]),
     }
@@ -85,15 +91,13 @@ pub(crate) fn after_body<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
 
 /// The body, activated -- or, when it is not a block, taken as its own value,
 /// so the condition runs again straight away.
-fn body_step<'gc>(mutator: &Mutator<'gc>, state: Box<WhileLoop<'gc>>) -> Step<'gc> {
-    if let Some(body) = state.body.as_object() {
-        if mutator.heap().is_closure(body) {
-            return Step::Block {
-                closure: body,
-                arguments: StepArguments::ControlFlow,
-                then: Continuation::WhileBody(state),
-            };
-        }
+fn body_step<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
+    match state.body {
+        Some(body) => Step::Block {
+            closure: body,
+            arguments: StepArguments::ControlFlow,
+            then: Continuation::WhileBody(state),
+        },
+        None => condition_step(state),
     }
-    condition_step(state)
 }

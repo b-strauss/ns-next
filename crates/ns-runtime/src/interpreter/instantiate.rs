@@ -11,8 +11,8 @@ use ns_syntax::Span;
 use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::mixin::{
-    slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod, MixinSlot,
-    SuperclassClause,
+    slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot,
 };
 use crate::types::*;
 use crate::Symbol;
@@ -61,10 +61,9 @@ fn build_methods(
             if let Some(marker) =
                 crate::compiler::unwind_marker::recognize(declaration, &method.code)
             {
-                method.code = Rc::new(crate::bytecode::CompiledCode {
-                    unwind_marker: Some(marker),
-                    ..(*method.code).clone()
-                });
+                let mut code = (*method.code).clone();
+                code.unwind_marker = Some(marker);
+                method.code = Rc::new(code);
             }
         }
         let previous = methods.insert(method.selector, MethodEntry::Compiled(Rc::new(method)));
@@ -111,12 +110,13 @@ fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
         .collect()
 }
 
-/// The run-time-visible half of a superclass clause. The selector defaults
-/// to `new` for an omitted message, per `newspeak-spec.pdf` §6.1 -- resolved
-/// once, here, so no reader of the clause re-derives it from the
-/// declaration.
-fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
-    SuperclassClause {
+/// The run-time-visible half of a superclass clause's or a `<:` clause's
+/// message: §6.2 builds a `<:` clause from §6.1's `inheritanceClause`, so
+/// both read the same way. The selector defaults to `new` for an omitted
+/// message, per `newspeak-spec.pdf` §6.1 -- resolved once, here, so no
+/// reader of the clause re-derives it from the declaration.
+fn clause_message_of(clause: &ast::SuperclassClause) -> ClauseMessage {
+    ClauseMessage {
         selector: super::nested::superclass_clause_message(clause)
             .map_or(Symbol::NEW, crate::compiler::lower::selector_of),
         has_arguments: super::nested::superclass_clause_message_arguments_expression(clause)
@@ -124,18 +124,11 @@ fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
     }
 }
 
-/// One `<:` clause's run-time half, read off the clause exactly as
-/// `superclass_clause_of` reads a superclass clause: §6.2 builds each one from
-/// §6.1's `inheritanceClause`, so the selector defaults to `new` the same way.
-/// Its message body is the compiler's to fill.
+/// One `<:` clause's run-time half. Its message body is the compiler's to
+/// fill.
 fn mixin_application_clause_of(clause: &ast::SuperclassClause) -> MixinApplicationClause {
-    let SuperclassClause {
-        selector,
-        has_arguments,
-    } = superclass_clause_of(clause);
     MixinApplicationClause {
-        selector,
-        has_arguments,
+        message: clause_message_of(clause),
         message_code: None,
     }
 }
@@ -164,6 +157,14 @@ impl Interpreter {
             let class = mutator.load_root_class(resolved);
             mutator.stash(Value::object(class))
         })
+    }
+
+    /// The module's root declaration with every body compiled onto it,
+    /// exactly as `load_module` compiles it, but applied to nothing: no class
+    /// object is built, so a caller after the code alone holds no handle and
+    /// needs no heap to read it.
+    pub fn compile_module(&mut self, resolved: &ResolvedModule) -> Rc<Mixin> {
+        self.enter(|mutator| mutator.compile_root_mixin(resolved))
     }
 
     /// Instantiates the class `class` holds, from a host: the six numbered
@@ -221,12 +222,7 @@ impl<'gc> Mutator<'gc> {
     /// compiled, for `load_module` to root.
     pub(crate) fn load_root_class(&mut self, resolved: &ResolvedModule) -> ClassReference<'gc> {
         let declaration = &resolved.module.root_class;
-        let source = if resolved.kernel {
-            ModuleSource::CoreLibrary
-        } else {
-            ModuleSource::User
-        };
-        let mixin = self.build_root_mixin(declaration, &resolved.bindings, source);
+        let mixin = self.compile_root_mixin(resolved);
         // Whatever the spelling, the rule leaves three class shapes to build:
         // over `Object`, over `Value`, or a `Value` level over `Object`.
         // `resolve` refuses every other root, so a defect reaches here only
@@ -249,24 +245,25 @@ impl<'gc> Mutator<'gc> {
                 (superclass_kind, !declaration.mixin_applications.is_empty())
             }
         };
-        let superclass = Some(self.builtin_class(superclass_kind));
+        let builtin = self.builtin_class(superclass_kind);
+        let superclass = self
+            .heap
+            .class_application(builtin)
+            .map(|application| (builtin, application));
         let applied: Vec<(usize, Value<'gc>)> = if applies_value {
             vec![(0, Value::object(self.builtin_class(BuiltinClass::Value)))]
         } else {
             Vec::new()
         };
-        let superclass =
-            match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
-                Ok(top) => top,
-                Err(_) => panic!("internal: every builtin class is a class object"),
-            };
+        let top = match super::nested::build_applied_levels(self, &mixin, superclass, &applied) {
+            Ok(top) => top,
+            Err(_) => panic!("internal: every builtin class is a class object"),
+        };
         // The slot layout is the application's job, not the class object's:
         // `apply_mixin` offsets this class's own slots past every inherited
         // one (`own_slot_base`), so a class object never computes -- or can
         // disagree about -- an instance's shape.
-        let super_application = superclass
-            .as_ref()
-            .and_then(|superclass| self.heap.class_application(*superclass));
+        let (superclass, super_application) = top.unzip();
         let application = self.apply_mixin(&mixin, super_application.as_ref());
         // `enclosing`/`declaring_class` are both `None` -- the module's root
         // class is the outermost level, so no object encloses it and no
@@ -304,6 +301,17 @@ impl<'gc> Mutator<'gc> {
         source: ModuleSource,
     ) -> Rc<Mixin> {
         Rc::new(self.mixin_of(declaration, root, bindings, source))
+    }
+
+    /// A module's root mixin, every body compiled, for `load_root_class` and
+    /// `Interpreter::compile_module`.
+    fn compile_root_mixin(&mut self, resolved: &ResolvedModule) -> Rc<Mixin> {
+        let source = if resolved.kernel {
+            ModuleSource::CoreLibrary
+        } else {
+            ModuleSource::User
+        };
+        self.build_root_mixin(&resolved.module.root_class, &resolved.bindings, source)
     }
 
     /// A module's root mixin: `build_mixin`'s, with the root rule's verdict
@@ -384,7 +392,7 @@ impl<'gc> Mutator<'gc> {
             methods,
             slots,
             factory: Some(factory),
-            superclass: declaration.superclass.as_ref().map(superclass_clause_of),
+            superclass: declaration.superclass.as_ref().map(clause_message_of),
             mixin_applications: declaration
                 .mixin_applications
                 .iter()
@@ -1057,7 +1065,7 @@ impl<'gc> Mutator<'gc> {
             .as_ref()
             .and_then(|application| application.mixin.superclass);
         // §6.1: "if the message is omitted, it defaults to `new`" -- already
-        // resolved into `SuperclassClause::selector` when the mixin was
+        // resolved into `ClauseMessage::selector` when the mixin was
         // built, and read from there rather than from the declaration: a
         // mixin decoded from an image has no declaration, and re-deriving
         // the default here would answer `new` for every one of them, so a
@@ -1101,17 +1109,17 @@ impl<'gc> Mutator<'gc> {
         clause: MixinApplicationClause,
     ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal<'gc>> {
         let expected = primary_factory_selector(&self.heap, superclass);
-        if Some(clause.selector) != expected {
+        if Some(clause.message.selector) != expected {
             return Err(not_the_primary_factory_error(
                 &self.heap,
                 ClauseKind::MixinApplication,
                 applying,
                 superclass,
-                clause.selector,
+                clause.message.selector,
                 expected,
             ));
         }
-        if !clause.has_arguments {
+        if !clause.message.has_arguments {
             return Ok(None);
         }
         let code = clause.message_code.unwrap_or_else(|| {
@@ -1126,13 +1134,22 @@ impl<'gc> Mutator<'gc> {
     /// not the declaration it was built for, which no source can build.
     /// Refused rather than pushed, since the activation would lay its
     /// registers out from the wrong count.
+    ///
+    /// The one body admitted with other than its own arity is the one a
+    /// factory of more than `u16::MAX` parameters compiles its message to,
+    /// whose arity saturates there (`CompiledCode::stands_for_too_many_arguments`):
+    /// it raises the too-large error before it reads a register, and every
+    /// register it has is an argument, so the window the given arguments lay
+    /// out covers it.
     fn check_message_arity(
         &self,
         code: &crate::bytecode::CompiledCode,
         applying: ClassReference<'gc>,
         arguments: &[Value<'gc>],
     ) -> Result<(), Signal<'gc>> {
-        if usize::from(code.argument_count) == arguments.len() {
+        if usize::from(code.argument_count) == arguments.len()
+            || code.stands_for_too_many_arguments(arguments.len())
+        {
             return Ok(());
         }
         Err(Signal::Error(NewspeakError {
@@ -1426,7 +1443,7 @@ pub(crate) fn check_value_slot<'gc>(
     let Some(instance) = receiver.as_object() else {
         return Ok(());
     };
-    let class = mutator.heap().class_of_object(instance);
+    let class = mutator.heap().object_class(instance);
     if !mutator.heap().class_inherits_value(class) {
         return Ok(());
     }
@@ -1457,7 +1474,7 @@ pub(crate) fn is_a_value<'gc>(mutator: &Mutator<'gc>, object: ObjectReference<'g
     }
     mutator
         .heap()
-        .class_inherits_value(mutator.heap().class_of_object(object))
+        .class_inherits_value(mutator.heap().object_class(object))
 }
 
 /// Whether the class object `class` is a value: exactly when its enclosing
@@ -1485,7 +1502,7 @@ pub(crate) fn class_object_is_a_value<'gc>(
             !mutator.heap().is_class(enclosing)
                 && mutator
                     .heap()
-                    .class_inherits_value(mutator.heap().class_of_object(enclosing))
+                    .class_inherits_value(mutator.heap().object_class(enclosing))
         }
     }
 }

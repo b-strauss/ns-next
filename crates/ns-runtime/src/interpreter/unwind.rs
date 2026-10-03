@@ -201,7 +201,7 @@ fn arrive<'gc>(
     match action {
         UnwindAction::Return(value) => UnwindOutcome::Returned { target, value },
         UnwindAction::Restart => {
-            mutator.heap.set_activation_program_counter(target, 0);
+            mutator.heap.activation_set_program_counter(target, 0);
             UnwindOutcome::Restarted { target }
         }
         UnwindAction::Terminate(_) => {
@@ -296,7 +296,7 @@ fn start_signalling<'gc>(
     mutator.taking_depth_reserve = false;
     match pushed {
         Ok(activation) => {
-            mutator.heap.set_activation_continuation(
+            mutator.heap.activation_set_continuation(
                 activation,
                 Continuation::VmErrorSignalled(Box::new(error.clone())),
             );
@@ -466,7 +466,7 @@ impl<'gc> Mutator<'gc> {
         then: Box<PendingUnwind<'gc>>,
     ) -> Result<ActivationReference, Signal<'gc>> {
         if let Some(closure) = block.as_object() {
-            if self.heap.closure_activation(closure).is_some() {
+            if self.heap.is_closure(closure) {
                 return self.push_step(
                     Step::Block {
                         closure,
@@ -508,7 +508,7 @@ impl<'gc> Mutator<'gc> {
             false,
         )?;
         self.heap
-            .set_activation_continuation(activation, Continuation::Unwind(then));
+            .activation_set_continuation(activation, Continuation::Unwind(then));
         Ok(activation)
     }
 }
@@ -526,18 +526,15 @@ mod tests {
 
     /// A body that returns its first register: nothing here runs it.
     fn trivial_code() -> Rc<CompiledCode> {
-        Rc::new(CompiledCode {
-            kind: CodeKind::Method,
-            instructions: vec![Instruction::Return { register: 0 }],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: Vec::new(),
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: ns_syntax::Span::new(0, 0),
-        })
+        Rc::new(CompiledCode::new(
+            CodeKind::Method,
+            vec![Instruction::Return { register: 0 }],
+            0,
+            1,
+            0,
+            Vec::new(),
+            ns_syntax::Span::new(0, 0),
+        ))
     }
 
     /// An activation that catches a return, as a method's does: a
@@ -631,7 +628,7 @@ mod tests {
             let class = mutator.builtin_class(BuiltinClass::Object);
             let floor = mutator.heap.activation_depth();
             let target = mutator.heap.push_activation(header(class), &[], 1);
-            mutator.heap.set_activation_program_counter(target, 5);
+            mutator.heap.activation_set_program_counter(target, 5);
             let frame = mutator.heap.reify(target);
             mutator.heap.push_activation(header(class), &[], 1);
             let outcome = unwind(

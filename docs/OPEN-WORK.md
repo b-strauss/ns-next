@@ -13,12 +13,14 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**The compact instruction encoding** ("After road step 2, the compact
-instruction encoding" below), designed on 2026-10-02 and planned in
-[its plan](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md):
-fixed eight-byte instructions, measured against `master` before they are
-built ([execution.md](design/execution.md), "Planned: the compact
-instruction encoding").
+**Road step 3, the object space** ("Step 3, the object space" below): one
+header word and a class word, the fields inline, variably sized objects in
+one VM-owned space with byte-offset handles
+([memory.md](design/memory.md), "Planned: the object space";
+[object-model.md](design/object-model.md), "Planned: the object layout").
+Its plan starts from the details "To settle when planning" lists for it.
+Everything before it on the road is built, the compact instruction
+encoding included.
 
 ## The road to a high-performance VM
 
@@ -68,11 +70,12 @@ and `prior-art/newspeak-benchmarks`.
   the constants `nil`, `true` and `false`, and handles -- with every other
   number a `LargeInteger` or a boxed `Float`.
   [object-model.md](design/object-model.md), "Values and objects".
-- **After road step 2, the compact instruction encoding**, designed against the
-  one-word value, from the dispatch findings of "Where the 3% goes": one
-  eight-byte slot per instruction, side tables for the rest, measured before
-  it is built (designed with the user on 2026-10-02).
-  [execution.md](design/execution.md), "Planned: the compact instruction
+- **After road step 2, the compact instruction encoding -- built**,
+  designed against the one-word value from the dispatch findings of "Where
+  the 3% goes": one eight-byte slot per instruction, side tables for the
+  rest, measured before it was built (designed with the user on
+  2026-10-02, built the same day).
+  [execution.md](design/execution.md), "The compact instruction
   encoding".
 - **Step 3, the object space.** One header word (the application id as the
   cache guard, the identity hash, format, size, GC bits, a `LargeInteger`'s
@@ -141,13 +144,14 @@ to be decided against the code:
   loop to `become` and measuring it against the `match` loop. Whether the
   project then moves to nightly is a decision of its own, taken on those
   numbers (decided with the user on 2026-10-02 to note it, not to plan it).
-  [execution.md](design/execution.md), "Planned: the compact instruction
+  [execution.md](design/execution.md), "The compact instruction
   encoding".
 - **`IntegerBinary` with an immediate operand.** `i + 1` loads the `1` into
   a register before the inlined operation reads it, one more dispatch on
   every iteration of a counting loop; a form that carries a small integer
-  operand in the slot would drop it. A compiler change after the compact
-  instruction encoding (noted with the user on 2026-10-02).
+  operand in the slot would drop it: a compiler change and one more
+  eight-byte form of the compact instruction encoding (noted with the user
+  on 2026-10-02).
   [compiler.md](design/compiler.md), "Arithmetic inlining".
 - **`IntegerBinary` without its `Jump`.** A successful inlined integer
   operation executes an unconditional `Jump` past its fallback send
@@ -246,9 +250,9 @@ to be decided against the code:
   `Float` bit identity, so `==` of two distinct handles asks the heap
   whether both are boxed floats before it answers `false`. Spur and
   Primordial Soup compare a boxed float by its object identity and read
-  nothing; giving bit identity up for that is a design question, an input
-  to the compact instruction encoding's measurements. Unmeasured; noted
-  2026-10-02. [object-model.md](design/object-model.md), "Values and
+  nothing; giving bit identity up for that is a design question, which a
+  measurement of what the read costs a program should inform. Unmeasured;
+  noted 2026-10-02. [object-model.md](design/object-model.md), "Values and
   objects".
 
 ## Planned: language and library
@@ -524,6 +528,12 @@ value objects are never copied across an actor boundary (§3.1.1).
   `=` or `==`. [core-library.md](design/core-library.md).
 - `bench_block.ns` measures 16% apart between two builds of the same tree —
   a standing protocol caveat, not a defect: pool several builds per tree.
+- **The memory the compact instruction encoding saves is counted, not
+  measured.** The forms compared put the eight-byte slots at 189 KB plus
+  small tables against 1.13 MB for the stored enum over the benchmark
+  programs' 23,635 instructions; no working set was measured before and
+  after. Noted 2026-10-02. [execution.md](design/execution.md), "What the
+  compact instruction encoding moved".
 
 ## Defects that change a correct program's output
 
@@ -739,79 +749,29 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `bytecode.rs:537`: `outer_reach_of` ends in `_ => 0`, so "every instruction
-  that reaches another frame's registers is named" rests on prose; an
-  exhaustive match would make the compiler enforce it.
-- `interpreter/inline_cache.rs`: `send_super` reads the current class and its
-  superclass before it knows whether the send is cached; `send_lexical`
-  computes N twice on a miss.
-- `interpreter/mod.rs`: `catches_return` clones a `FrameKind`
-  (`heap.activation_kind`).
-- `builtins/block.rs`: a native `whileTrue:`/`whileFalse:` loop checks its
-  body closure on every iteration.
-- `vm.rs`: `send` and `deliver` carry `#[allow(clippy::too_many_arguments)]`.
-- `heap.rs`: `Heap::allocate_returned_top_level_frame` is public only so
-  that `tests/image.rs`'s sender round trip can build a frame from values;
-  its doc says "a handle from another heap is refused here", which holds for
-  the values it stores, while `sender` and `current_class` rely on the brand.
-- Wrapping: `Interpreter::stash`'s doc has a 102-column line; memory.md's
-  "The brand" and object-model.md's paragraph on stored words are wrapped
-  unevenly (left by the eight-byte value's final review).
-- `image/inspect.rs:460` bounds the tag-named hash count with a minimum record
-  of 1 byte where the decoder uses `MIN_TAG_NAMED_HASH_BYTES` (5).
-- `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by
-  `read_local` indexing `arguments`, which it no longer does (it reads the flat
-  register window); the check is still needed.
-- `compiler/capture.rs`: `Captures::keys` is test-only.
-- `heap.rs`: `closure_home` indexes the frame arena without checking the
-  captured frame's handle origin, as every neighbouring accessor does;
-  `closure_activation` answers a parameter count that is only its body's own
-  `argument_count`, which the caller already holds.
-- `image/inspect.rs`: `read_closure_record` bounds its pre-allocation with
-  `min(1024)` rather than `reserve_for`, as the rest of the walk does.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
-  reloads its scope's indirection vector on every access.
-- `mixin.rs`: `MixinApplicationClause` repeats `SuperclassClause`'s fields.
-- `interpreter/nested.rs`: `after_clause` looks the application up twice; the
-  not-a-class error names a clause by position.
-- `image/encode.rs`: `encode_class_tag` scans the root levels twice;
-  `image/decode.rs`'s `build_root_class` maps every error to
-  `NotAClassReference`.
-- `builtins/value.rs`: `derived_equality` still pushes a class pair per node
-  that is discarded when already assumed; the hash of a value class object,
-  from its mixin's name alone, collides for same-named nested classes under
-  different enclosing values; every `<:` level gets a metaclass no program can
-  send to, part of the eager cost.
-- `core-library/Kernel.ns`: `defaultAction`'s `ifFail: [nil]` is unreachable;
-  `searching` and `reachedDefault` stay true after a search.
-- `builtins/activation.rs:157`: `activation_leaf` has an `unreachable!` arm;
-  a restart sets the target's program counter twice (`interpreter/unwind.rs`,
-  then `vm.rs`).
-- `tests/image.rs:9463`: `a_level_applying_the_mirrors_or_tops_mixin_is_refused`
-  has a stale name.
-- `heap.rs`: accessor names grew by accretion (`class_of_object` beside
-  `class_application`, `array_at` beside `instance_field`, verb-second names
-  such as `set_frame_program_counter`), and the `heap` parameter sits first in
-  some signatures and last in others. [memory.md](design/memory.md), "Known
-  rough edges in the seam".
-- `image::encode_code_table` and `image::mixins::plan` take a `ClassReference`
-  and a `&Heap` only to reach a mixin, and `disasm` builds a class object for
-  the same reason. [compiler.md](design/compiler.md), "Follow-up: entry points
-  that reach a class object only to find its mixin".
-- Editor: a name declared on both class sides with different kinds is
-  coloured by the first declaration; a malformed LSP notification is logged
-  and ignored; the platform-directory mapping exists twice (`build.gradle.kts`'s
-  `hostPlatform` and `plugin.xml`). [editor-support.md](design/editor-support.md),
-  "Known gaps".
-- The packaged artifact left: `image/decode.rs`'s `MixinTableNotATree`
-  message says a row is reached "or not at all", where a surplus row now
-  starts another tree; `inspect` prints a `<module N>` past the modules
-  without marking it; `bench` prints a generic "instantiation failed" after
-  the real report; `image.rs`'s
-  `an_unknown_header_flag_is_still_rejected_now_that_three_are_known` names
-  three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
-  message for a stray golden directory carries a run of spaces from a lost
-  line continuation.
+  reloads its scope's indirection vector (`LoadOuterLocal`, then
+  `LoadVector`/`StoreVector`) on every access. The vector register is
+  written once, by the frame's `MakeVector` at instruction 0, so one load
+  per activation would do; but it must dominate every use, so the fallback
+  body would need to know before it is lowered which outer vectors it
+  reaches (a pre-scan), a register for each in its by-reference `Layout`,
+  and a prologue outside every statement range -- not a simple change. The
+  cost falls only on a fallback closure's run, as "Fallback blocks" in
+  [execution.md](design/execution.md) intends: the common path pays nothing.
+- `builtins/value.rs`: the hash of a value class object, from its mixin's
+  name alone, collides for same-named nested classes under different
+  enclosing values. A collision breaks no contract, and folding in the
+  enclosing value is not plainly safe: the hash walk would unfold it, and
+  any node there that declines (an `Array` slot, `Kernel`'s `vmMirror`)
+  declines the whole hash, which `Behavior>>hash` then answers by identity,
+  so two equal class objects would hash apart. Distinguishing them needs a
+  walk that tolerates a decline below a class object -- a design decision.
+- Every `<:` level gets a metaclass (`Mutator::new_applied_level` calls
+  `attach_metaclass`) that no program sends to, part of the eager cost of
+  building levels. Removing it is a design point, not a clean-up: the
+  metaclass takes part in class-object equality (`class_state_pairs`) and in
+  what the image encoder walks.
 
 ## Goldens and documentation
 

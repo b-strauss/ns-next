@@ -15,7 +15,8 @@ use super::control_flow::{self, InlineForm};
 use super::simultaneous;
 use crate::builtins::primitive::MirrorPrimitive;
 use crate::bytecode::{
-    CallSite, CodeKind, CompiledCode, Instruction, IntegerOperation, Literal as BytecodeLiteral,
+    CallSite, CodeBuilder, CodeKind, CompiledCode, Instruction, IntegerOperation,
+    Literal as BytecodeLiteral,
 };
 use crate::interpreter::literals::{parse_float_literal, parse_integer_literal, IntegerLiteral};
 use crate::types::Binding;
@@ -51,6 +52,13 @@ pub(crate) struct Layout {
     /// only when it has vector variables.
     vector_register: Option<u16>,
     vector_size: u16,
+    /// `copied.len()`, which fits a `u16` because `base` does.
+    copied_count: u16,
+    /// One past this body's last named register: the parameters, the copied
+    /// values, the temporaries and the vector register. Everything above is
+    /// scratch. A layout exists only when this fits a `u16`, which is what
+    /// keeps every named register's index below from overflowing.
+    base: u16,
 }
 
 /// Where one frame keeps a variable, in that frame's own registers -- the
@@ -89,62 +97,81 @@ impl Layout {
     /// The layout of a converted body: the copied values sit between the
     /// parameters and the temporaries, and one hidden register after the
     /// temporaries holds the indirection vector when the body has one.
+    /// `None` when its named registers do not fit a `u16`: the body is past
+    /// the register ceiling.
     fn converted(
         key: BodyKey,
         argument_count: u16,
         temporary_count: u16,
         captures: &Captures,
-    ) -> Self {
+    ) -> Option<Self> {
         let body = captures.body(key);
         let copied = body.copied.clone();
-        let vector_register = if body.vector_size > 0 {
-            Some(argument_count + copied.len() as u16 + temporary_count)
+        let copied_count = u16::try_from(copied.len()).ok()?;
+        let below_vector = argument_count
+            .checked_add(copied_count)?
+            .checked_add(temporary_count)?;
+        let (vector_register, base) = if body.vector_size > 0 {
+            (Some(below_vector), below_vector.checked_add(1)?)
         } else {
-            None
+            (None, below_vector)
         };
-        Layout {
+        Some(Layout {
             key,
             argument_count,
             copied,
             places: body.places.clone(),
             vector_register,
             vector_size: body.vector_size,
-        }
+            copied_count,
+            base,
+        })
     }
 
     /// The layout of a fallback closure, or of a block nested in one: no
     /// copied values and no vector, so every local sits in the register its
     /// resolver index names (`docs/design/execution.md`, "Fallback blocks").
-    fn by_reference(key: BodyKey, argument_count: u16, temporary_count: u16) -> Self {
-        Layout {
+    /// `None` when its named locals do not fit a `u16`.
+    fn by_reference(key: BodyKey, argument_count: u16, temporary_count: u16) -> Option<Self> {
+        let base = argument_count.checked_add(temporary_count)?;
+        Some(Layout {
             key,
             argument_count,
             copied: Vec::new(),
-            places: vec![Place::Register; (argument_count + temporary_count) as usize],
+            places: vec![Place::Register; usize::from(base)],
             vector_register: None,
             vector_size: 0,
+            copied_count: 0,
+            base,
+        })
+    }
+
+    /// The layout a body past the register ceiling is given, since it is
+    /// never laid out: no register at all. Nothing is lowered against it
+    /// (`Lowerer::too_large`).
+    fn past_the_ceiling(key: BodyKey) -> Self {
+        Layout {
+            key,
+            argument_count: 0,
+            copied: Vec::new(),
+            places: Vec::new(),
+            vector_register: None,
+            vector_size: 0,
+            copied_count: 0,
+            base: 0,
         }
-    }
-
-    fn local_count(&self) -> u16 {
-        self.places.len() as u16
-    }
-
-    /// One past this body's last named register: the parameters, the copied
-    /// values, the temporaries and the vector register. Everything above is
-    /// scratch.
-    fn base(&self) -> u16 {
-        self.local_count() + self.copied.len() as u16 + u16::from(self.vector_register.is_some())
     }
 
     /// The register a local of *this* body sits in: the copied values sit
     /// between the parameters and the temporaries, so every temporary is
-    /// pushed up by their count.
+    /// pushed up by their count. Below `base`, so it fits.
     fn local_register(&self, index: u16) -> u16 {
         if index < self.argument_count {
             index
         } else {
-            index + self.copied.len() as u16
+            index
+                .checked_add(self.copied_count)
+                .expect("internal: a local's register past the body's base")
         }
     }
 
@@ -162,7 +189,7 @@ impl Layout {
                     self.copied.iter().position(|held| *held == entry).expect(
                         "internal: a variable the capture analysis did not hand this block",
                     );
-                self.argument_count + position as u16
+                super::local_index(usize::from(self.argument_count) + position)
             }
         }
     }
@@ -213,10 +240,13 @@ fn access_through(hops: u16, location: Location) -> Access {
 /// The runtime `captured_frame` hop count from the innermost scope up to the
 /// scope at `position`: the number of `Frame` scopes above it.
 fn hops_above(scopes: &[ScopeKind], position: usize) -> u16 {
-    scopes[position + 1..]
+    let hops = scopes[position + 1..]
         .iter()
         .filter(|scope| matches!(scope, ScopeKind::Frame { .. }))
-        .count() as u16
+        .count();
+    // One scope per block literal, and the parser refuses nesting past its
+    // `MAX_DEPTH` of 128, so a hop count never nears `u16::MAX`.
+    u16::try_from(hops).expect("internal: more block nesting than the parser admits")
 }
 
 /// Whether anything reads an expression's value once it is computed. A position
@@ -250,7 +280,16 @@ fn declaring_scope(scopes: &[ScopeKind], depth: u16) -> (usize, BodyKey, bool) {
 pub(crate) struct Lowerer<'a> {
     bindings: &'a Rc<HashMap<Span, Binding>>,
     kind: CodeKind,
+    /// Saturated at `u16::MAX`: only a body that is `too_large` meets a
+    /// count past it.
     argument_count: u16,
+    /// Whether this body needs more registers than a `u16` numbers: its
+    /// named registers do not fit (it is never laid out, and lowers
+    /// nothing), or its scratch registers ran past `u16::MAX`
+    /// (`allocate_scratch`). From then on nothing emitted is kept: `finish`
+    /// answers `super::body_too_large`, never a body whose register indices
+    /// wrapped.
+    too_large: bool,
     /// The capture analysis of the whole code family, shared by every body
     /// of it (`compiler/capture.rs`).
     captures: Rc<Captures>,
@@ -272,7 +311,7 @@ pub(crate) struct Lowerer<'a> {
     /// with `Inlined` entries pushed above it while an inlined block body
     /// is being lowered.
     scopes: Vec<ScopeKind>,
-    instructions: Vec<Instruction>,
+    code: CodeBuilder,
     base: u16,
     next_scratch: u16,
     max_register: u16,
@@ -326,7 +365,7 @@ impl<'a> Lowerer<'a> {
     pub(crate) fn new(
         kind: CodeKind,
         key: BodyKey,
-        argument_count: u16,
+        argument_count: usize,
         temporaries: &[ast::SlotDeclaration],
         bindings: &'a Rc<HashMap<Span, Binding>>,
         captures: Rc<Captures>,
@@ -340,13 +379,26 @@ impl<'a> Lowerer<'a> {
             layouts,
         } = enclosing;
         scopes.push(ScopeKind::Frame { key, by_reference });
-        let temporary_count = temporaries.len() as u16;
-        let layout = if by_reference {
-            Layout::by_reference(key, argument_count, temporary_count)
+        // Judged before the capture analysis is asked for the body: it
+        // declares no body whose named locals do not fit, and the resolver's
+        // indices for its locals past `u16::MAX` name nothing.
+        let layout = if super::named_locals_fit(argument_count, temporaries.len()) {
+            let argument_count = super::local_index(argument_count);
+            let temporary_count = super::local_index(temporaries.len());
+            if by_reference {
+                Layout::by_reference(key, argument_count, temporary_count)
+            } else {
+                Layout::converted(key, argument_count, temporary_count, &captures)
+            }
         } else {
-            Layout::converted(key, argument_count, temporary_count, &captures)
+            None
         };
-        let base = layout.base();
+        let too_large = layout.is_none();
+        let argument_count = super::saturated_count(argument_count);
+        let layout = layout.unwrap_or_else(|| Layout::past_the_ceiling(key));
+        // A body past the ceiling has no register table to fill.
+        let named_temporaries = if too_large { &[][..] } else { temporaries };
+        let base = layout.base;
         // Indexed by *register*, not by resolver index. A parameter and an
         // immutable local slot are read-only because nothing but their
         // initialization writes them (§3.6); a copied register because the
@@ -355,9 +407,9 @@ impl<'a> Lowerer<'a> {
         // and a vector variable's own register because it stays nil. A
         // simultaneous temporary (§6.3.2) is written twice whatever its
         // declaration says: its future, then its value at the clause's end.
-        let mut read_only_locals = vec![true; base as usize];
-        for (offset, temporary) in temporaries.iter().enumerate() {
-            let index = argument_count + offset as u16;
+        let mut read_only_locals = vec![true; usize::from(base)];
+        for (offset, temporary) in named_temporaries.iter().enumerate() {
+            let index = super::temporary_index(argument_count, offset);
             let writable = (temporary.mutability != ast::SlotMutability::Immutable
                 || temporary.simultaneous)
                 && layout.places[index as usize] == Place::Register;
@@ -367,27 +419,29 @@ impl<'a> Lowerer<'a> {
         // analysis of its own -- it was walked as the inlined block it also
         // is -- and anything nested in it reaches every one of its registers,
         // so every writable register counts.
-        let mut reachable_by_a_fallback_closure = vec![false; base as usize];
+        let mut reachable_by_a_fallback_closure = vec![false; usize::from(base)];
         if by_reference {
             for (register, read_only) in read_only_locals.iter().enumerate() {
                 reachable_by_a_fallback_closure[register] = !read_only;
             }
-        } else {
+        } else if !too_large {
+            // A body past the ceiling was never analysed, and has no
+            // register to mark.
             let body = captures.body(key);
             for (index, assigned) in body.branch_assigned.iter().enumerate() {
                 // A vector variable's own register stays nil: the fallback
                 // closure writes the vector slot instead.
                 if *assigned && body.places[index] == Place::Register {
-                    let register = layout.local_register(index as u16);
+                    let register = layout.local_register(super::local_index(index));
                     reachable_by_a_fallback_closure[register as usize] = true;
                 }
             }
         }
-        let mut instructions = Vec::new();
+        let mut code = CodeBuilder::new();
         // Before the local initializers, which already write through it:
         // `| x ::= 3. |` on a vector variable is a `StoreVector`.
         if let Some(destination) = layout.vector_register {
-            instructions.push(Instruction::MakeVector {
+            code.emit(Instruction::MakeVector {
                 destination,
                 size: layout.vector_size,
             });
@@ -396,13 +450,14 @@ impl<'a> Lowerer<'a> {
             bindings,
             kind,
             argument_count,
+            too_large,
             captures,
             layout: Rc::new(layout),
             layouts,
             by_reference,
             blocks_by_reference: false,
             scopes,
-            instructions,
+            code,
             base,
             next_scratch: base,
             max_register: base,
@@ -416,28 +471,42 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// A scratch register. Checked in every build: past `u16::MAX` it
+    /// marks the body too large and answers the last register again, which
+    /// `finish` never keeps -- a wrapped index would be silently wrong code.
     fn allocate_scratch(&mut self) -> u16 {
         let register = self.next_scratch;
-        self.next_scratch += 1;
-        self.max_register = self.max_register.max(self.next_scratch);
+        match register.checked_add(1) {
+            Some(next) => {
+                self.next_scratch = next;
+                self.max_register = self.max_register.max(next);
+            }
+            None => self.too_large = true,
+        }
         register
     }
 
     fn emit(&mut self, instruction: Instruction) -> usize {
-        self.instructions.push(instruction);
-        self.instructions.len() - 1
+        self.code.emit(instruction)
     }
 
     /// Lowers a body's own statements, then its end (`finish_body`). The
     /// last statement's value is read only when falling off the end answers
     /// it; every other statement's value is discarded.
     pub(crate) fn lower_body(&mut self, statements: &[Statement]) {
+        if self.too_large {
+            return;
+        }
         let last_use = if self.answers_last_value() {
             ValueUse::Read
         } else {
             ValueUse::Discarded
         };
         for (index, statement) in statements.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             let use_ = if index + 1 == statements.len() {
                 last_use
             } else {
@@ -453,9 +522,9 @@ impl<'a> Lowerer<'a> {
     /// (statements are the safepoint/scratch-liveness boundary).
     fn lower_statement(&mut self, statement: &Statement, use_: ValueUse) {
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         self.lower_statement_inner(statement, use_);
-        let end = self.instructions.len();
+        let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -468,8 +537,11 @@ impl<'a> Lowerer<'a> {
     /// VM turns it into an absolute field index at run time via the executing
     /// activation's slot base (`Heap::activation_slot_base`).
     pub(crate) fn lower_slot_initializer(&mut self, initializer: &Expression, own_index: u32) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });
         self.record_statement(start);
@@ -485,8 +557,11 @@ impl<'a> Lowerer<'a> {
         block: &Expression,
         own_index: u32,
     ) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         let closure = self.lower_expression_for(block, ValueUse::Read);
         let future = self.allocate_scratch();
         self.emit(Instruction::MakeFuture {
@@ -508,8 +583,11 @@ impl<'a> Lowerer<'a> {
     /// only register live across it is this statement's own scratch
     /// register, which no send can write. One statement.
     pub(crate) fn lower_simultaneous_slot_end(&mut self, own_index: u32) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
-        let start = self.instructions.len();
+        let start = self.code.len();
         let register = self.allocate_scratch();
         self.emit(Instruction::LoadOwnSlot {
             destination: register,
@@ -529,7 +607,7 @@ impl<'a> Lowerer<'a> {
     /// Records the statement that began at instruction `start` and ends
     /// here, and moves on to the next statement index.
     fn record_statement(&mut self, start: usize) {
-        let end = self.instructions.len();
+        let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -545,13 +623,16 @@ impl<'a> Lowerer<'a> {
     /// (`Heap::activation_slot_base`), the class whose slot this is. The
     /// test precedes the one statement, as a prologue.
     pub(crate) fn lower_lazy_slot_getter(&mut self, initializer: &Expression, own_index: u32) {
+        if self.too_large {
+            return;
+        }
         self.next_scratch = self.base;
         self.emit(Instruction::ReturnSlotIfFilled { own_index });
-        let start = self.instructions.len();
+        let start = self.code.len();
         let source = self.lower_expression_for(initializer, ValueUse::Read);
         self.emit(Instruction::InitializeSlot { source, own_index });
         self.emit(Instruction::Return { register: source });
-        let end = self.instructions.len();
+        let end = self.code.len();
         self.statement_program_counter
             .push((self.statement_index, start..end));
         self.statement_index += 1;
@@ -572,12 +653,19 @@ impl<'a> Lowerer<'a> {
     /// each of those temporaries back and stores it resolved, one statement
     /// apiece, in declaration order.
     pub(crate) fn lower_local_initializers(&mut self, temporaries: &[ast::SlotDeclaration]) {
+        if self.too_large {
+            return;
+        }
         for (position, temporary) in temporaries.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             let Some(initializer) = &temporary.initializer else {
                 continue;
             };
             self.next_scratch = self.base;
-            let start = self.instructions.len();
+            let start = self.code.len();
             let source = match simultaneous::future_block(temporary) {
                 Some(block) => {
                     let closure = self.lower_expression_for(&block, ValueUse::Read);
@@ -593,17 +681,23 @@ impl<'a> Lowerer<'a> {
             // Through the same `Access` as an assignment: a captured-and-
             // written local's initializer writes its scope's vector, not a
             // register (`docs/design/execution.md`, "Converted representation").
-            let access = self.resolve_variable(0, self.argument_count + position as u16);
+            let access =
+                self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             self.emit_store(access, source);
             self.record_statement(start);
         }
         for (position, temporary) in temporaries.iter().enumerate() {
+            if self.too_large {
+                // Nothing more is kept (`finish`): stop lowering.
+                return;
+            }
             if !temporary.simultaneous || temporary.initializer.is_none() {
                 continue;
             }
             self.next_scratch = self.base;
-            let start = self.instructions.len();
-            let access = self.resolve_variable(0, self.argument_count + position as u16);
+            let start = self.code.len();
+            let access =
+                self.resolve_variable(0, super::temporary_index(self.argument_count, position));
             let read = self.emit_read(access);
             // `ResolveFuture` runs user code -- the future's block -- exactly
             // as a send does, and runs again once that block has answered
@@ -750,16 +844,7 @@ impl<'a> Lowerer<'a> {
         // body, because it walked that block literal as the inlined one it
         // also is (`docs/design/execution.md`, "Fallback blocks").
         let by_reference = self.by_reference || self.blocks_by_reference;
-        let copied: Vec<u16> = if by_reference {
-            Vec::new()
-        } else {
-            self.captures
-                .body(key)
-                .copied
-                .iter()
-                .map(|entry| self.layout.register_holding(*entry))
-                .collect()
-        };
+        let first_call_site = self.next_call_site;
         let mut enclosing_read_only_locals = self.enclosing_read_only_locals.clone();
         enclosing_read_only_locals.push(self.read_only_locals.clone());
         let mut layouts = self.layouts.clone();
@@ -767,7 +852,7 @@ impl<'a> Lowerer<'a> {
         let mut inner = Lowerer::new(
             CodeKind::Block,
             key,
-            parameters.len() as u16,
+            parameters.len(),
             &block.body.temporaries,
             self.bindings,
             self.captures.clone(),
@@ -786,8 +871,25 @@ impl<'a> Lowerer<'a> {
         // family, never restarting at each `MakeClosure`
         // (`docs/design/dispatch.md`, "Code families").
         let after = inner.next_call_site;
+        let too_large = inner.too_large;
         let code = inner.finish(block.span);
-        self.next_call_site = after;
+        // A block past the register ceiling is `super::body_too_large`,
+        // which takes no copied values and makes no send, so its creator
+        // hands it none -- the capture analysis may not even hold an entry
+        // for it -- and the family's numbering resumes where it stood, as
+        // if the block made no send.
+        let copied: Vec<u16> = if by_reference || too_large {
+            Vec::new()
+        } else {
+            self.captures
+                .body(key)
+                .copied
+                .iter()
+                .map(|entry| self.layout.register_holding(*entry))
+                .collect()
+        };
+        self.next_call_site = if too_large { first_call_site } else { after };
+        let parameters = super::parameters_of(parameters, &code);
         let destination = self.allocate_scratch();
         self.emit(Instruction::MakeClosure {
             destination,
@@ -829,9 +931,14 @@ impl<'a> Lowerer<'a> {
     /// executes -- the arguments still to come, for instance.
     fn lower_operand(&mut self, expression: &Expression, rest: &[Expression]) -> u16 {
         let register = self.lower_expression(expression);
-        let clobbered = rest
-            .iter()
-            .any(|later| self.writes_register(later, register, 0));
+        // Only a writable named local can be clobbered (`materialize`), so
+        // nothing else walks `rest`: a long argument list or tuple of one
+        // parameter would otherwise cost a walk per operand, quadratic.
+        let writable_local = register < self.base && !self.read_only_locals[usize::from(register)];
+        let clobbered = writable_local
+            && rest
+                .iter()
+                .any(|later| self.writes_register(later, register, 0));
         self.materialize(register, clobbered)
     }
 
@@ -1531,40 +1638,17 @@ impl<'a> Lowerer<'a> {
     }
 
     /// The index the next emitted instruction will get -- a forward label.
+    /// Passing `u32::MAX` would take a body of gigabytes of source, near
+    /// the four gibibytes a `Span`'s `u32` offsets address; were one to, a
+    /// wrapped label would be a jump to the wrong instruction, so it panics
+    /// instead.
     fn here(&self) -> u32 {
-        self.instructions.len() as u32
+        u32::try_from(self.code.len())
+            .expect("internal: more instructions in one body than a u32 numbers")
     }
 
     fn patch_target(&mut self, instruction_index: usize, target: u32) {
-        match &mut self.instructions[instruction_index] {
-            Instruction::Jump {
-                target: jump_target,
-            }
-            | Instruction::JumpIfNotBoolean {
-                target: jump_target,
-                ..
-            }
-            | Instruction::BranchIfFalse {
-                target: jump_target,
-                ..
-            }
-            | Instruction::BranchIfTrue {
-                target: jump_target,
-                ..
-            }
-            // The fast path's own guard: its `target` is where the fallback
-            // send stands, patched exactly like a jump's.
-            | Instruction::IntegerBinary {
-                target: jump_target,
-                ..
-            }
-            // A mirror send's `failure` is where its inlined block stands.
-            | Instruction::SendMirror {
-                failure: jump_target,
-                ..
-            } => *jump_target = target,
-            other => unreachable!("internal: patch_target on a non-jump instruction {other:?}"),
-        }
+        self.code.patch_target(instruction_index, target);
     }
 
     /// Lowers `block`'s statements directly into the current instruction stream
@@ -1895,6 +1979,9 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(crate) fn finish(self, source: Span) -> CompiledCode {
+        if self.too_large {
+            return super::body_too_large(self.kind, self.argument_count, source);
+        }
         // Control-flow inlining and the integer leaves' fast path are the two
         // sources of a patched target, and every one of their labels is a
         // `here()` that `finish_body`'s terminator guarantees is a real
@@ -1910,7 +1997,8 @@ impl<'a> Lowerer<'a> {
         // is a compiler bug, not a program error, so it is a `debug_assert!`
         // -- checked on every debug test run, free in release.
         debug_assert!(
-            self.instructions
+            self.code
+                .instructions()
                 .iter()
                 .filter_map(|instruction| match instruction {
                     Instruction::Jump { target }
@@ -1923,21 +2011,18 @@ impl<'a> Lowerer<'a> {
                     } => Some(*target as usize),
                     _ => None,
                 })
-                .all(|target| target < self.instructions.len()),
+                .all(|target| target < self.code.len()),
             "internal: a jump target does not name an instruction of this body"
         );
-        CompiledCode {
-            kind: self.kind,
-            family_size: crate::bytecode::family_size_of(&self.instructions),
-            copied_count: self.layout.copied.len() as u16,
-            outer_reach: crate::bytecode::outer_reach_of(&self.instructions),
-            unwind_marker: None,
-            instructions: self.instructions,
-            argument_count: self.argument_count,
-            register_count: self.max_register,
-            statement_program_counter: self.statement_program_counter,
+        CompiledCode::from_builder(
+            self.kind,
+            self.code,
+            self.argument_count,
+            self.max_register,
+            self.layout.copied_count,
+            self.statement_program_counter,
             source,
-        }
+        )
     }
 }
 
@@ -1982,7 +2067,7 @@ mod tests {
     /// analysis of that same body.
     fn lowerer_for<'a>(
         kind: CodeKind,
-        argument_count: u16,
+        argument_count: usize,
         temporaries: &[ast::SlotDeclaration],
         slot_initializers: Vec<&Expression>,
         statements: &[Statement],
@@ -2038,7 +2123,7 @@ mod tests {
         let argument_count = match &method.pattern {
             ast::MessagePattern::Unary { .. } => 0,
             ast::MessagePattern::Binary { .. } => 1,
-            ast::MessagePattern::Keyword { parts } => parts.len() as u16,
+            ast::MessagePattern::Keyword { parts } => parts.len(),
         };
         lowerer_for(
             CodeKind::Method,
@@ -2073,7 +2158,7 @@ mod tests {
         assert_eq!(register, 0);
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::LoadLiteral {
                 destination: 0,
                 literal: BytecodeLiteral::SmallInteger(42)
@@ -2102,7 +2187,7 @@ mod tests {
         );
         let code = lowerer.finish(method.span);
         assert!(
-            code.instructions.is_empty(),
+            code.instructions().is_empty(),
             "no instruction needed to read a param"
         );
         assert_eq!(code.argument_count, 1);
@@ -2130,10 +2215,10 @@ mod tests {
         }
         let code = lowerer.finish(method.span);
         // An explicit `self` receiver is a depth-0 lexical send.
+        let instructions = code.instructions();
         let Some(Instruction::SendLexical {
             argument_registers, ..
-        }) = code
-            .instructions
+        }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
         else {
@@ -2144,7 +2229,7 @@ mod tests {
             "`t` is register 0; the first argument must not be its live register"
         );
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: argument_registers[0],
                 source: 0
             }),
@@ -2170,14 +2255,14 @@ mod tests {
         let code = lowerer.finish(method.span);
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { .. })),
             "no operand needs a copy here: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter_map(|instruction| match instruction {
                     Instruction::SendPublic {
@@ -2212,11 +2297,11 @@ mod tests {
         let code = lowerer.finish(method.span);
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { .. })),
             "a parameter needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2232,23 +2317,24 @@ mod tests {
         let code = lower_whole_method(source, 0); // `local` is register 0
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "an immutable local needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
     /// The receiver register of the one `SendPublic` whose selector is
     /// `selector`.
     fn public_receiver(code: &CompiledCode, selector: &str) -> u16 {
+        let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             receiver_register, ..
-        }) = code.instructions.iter().find(
+        }) = instructions.iter().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector: sent, .. } if sent.as_str() == selector),
         ) else {
-            panic!("expected a `{selector}` send: {:?}", code.instructions)
+            panic!("expected a `{selector}` send: {:?}", code.instructions())
         };
         *receiver_register
     }
@@ -2269,11 +2355,11 @@ mod tests {
         let code = lower_whole_method(source, 0); // `t` is register 0
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "nothing the `foo` send runs can write `t`'s register: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
             public_receiver(&code, "+"),
@@ -2296,17 +2382,18 @@ mod tests {
         let code = lower_whole_method(source, 0); // `c` is register 0, `t` register 1
         let receiver = public_receiver(&code, "+");
         assert_ne!(
-            receiver, 1,
+            receiver,
+            1,
             "the `ifTrue:` fallback closure can write `t` from inside `foo`: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: receiver,
                 source: 1
             }),
             "the copy out of `t` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2323,23 +2410,23 @@ mod tests {
         "};
         let code = lower_whole_method(source, 1); // `t` is register 0
                                                   // An explicit `self` receiver is a depth-0 lexical send.
+        let instructions = code.instructions();
         let Some(Instruction::SendLexical {
             argument_registers, ..
-        }) = code
-            .instructions
+        }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::SendLexical { .. }))
         else {
-            panic!("expected the keyword send: {:?}", code.instructions);
+            panic!("expected the keyword send: {:?}", code.instructions());
         };
         assert_ne!(argument_registers[0], 0, "`t` is register 0");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: argument_registers[0],
                 source: 0
             }),
             "the copy out of `t` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2359,14 +2446,14 @@ mod tests {
     /// the copy out of `t` (register 0) went into.
     fn receiver_and_copy_of_the_binary_send(code: &CompiledCode) -> (u16, u16) {
         let receiver = public_receiver(code, "+");
-        let Some(Instruction::Move { destination, .. }) = code
-            .instructions
+        let instructions = code.instructions();
+        let Some(Instruction::Move { destination, .. }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::Move { source: 0, .. }))
         else {
             panic!(
                 "expected a copy out of `t`'s register: {:?}",
-                code.instructions
+                code.instructions()
             );
         };
         (receiver, *destination)
@@ -2390,9 +2477,10 @@ mod tests {
         let (receiver, copy) = receiver_and_copy_of_the_binary_send(&code);
         assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
         assert_eq!(
-            receiver, copy,
+            receiver,
+            copy,
             "the `+` send reads the copy of `t`: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -2413,8 +2501,9 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(&source, 0);
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
-            panic!("expected the block literal: {:?}", code.instructions);
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
+            panic!("expected the block literal: {:?}", code.instructions());
         };
         assert_eq!(
             block.copied_count, 0,
@@ -2423,9 +2512,10 @@ mod tests {
         let (receiver, copy) = receiver_and_copy_of_the_binary_send(block);
         assert_ne!(receiver, 0, "`t` is written before the `+` send reads it");
         assert_eq!(
-            receiver, copy,
+            receiver,
+            copy,
             "the `+` send reads the copy of `t`: {:?}",
-            block.instructions
+            block.instructions()
         );
     }
 
@@ -2444,7 +2534,7 @@ mod tests {
         lowerer.lower_statement(&method.body.statements[0], ValueUse::Discarded); // `t:: 7.`
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -2475,7 +2565,7 @@ mod tests {
         // Both literals land in scratch register 1 -- the allocator reset
         // between statements instead of growing.
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -2508,7 +2598,7 @@ mod tests {
         lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::LoadLiteral {
                 destination: 0,
                 literal: BytecodeLiteral::LargeInteger(
@@ -2533,7 +2623,7 @@ mod tests {
         lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::LoadLiteral {
                 destination: 0,
                 literal: BytecodeLiteral::SmallInteger(255)
@@ -2559,7 +2649,7 @@ mod tests {
         let destination = lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -2595,7 +2685,7 @@ mod tests {
         let destination = lowerer.lower_expression(return_expression(&foo));
         let code = lowerer.finish(foo.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![Instruction::SendLexical {
                 depth: 0,
                 selector: crate::Symbol::intern("bar"),
@@ -2621,7 +2711,7 @@ mod tests {
         lowerer.lower_statement(&foo.body.statements[0], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
         assert!(matches!(
-            &code.instructions[2],
+            &code.instruction(2),
             Instruction::SendLexical { depth: 0, selector, argument_registers, .. }
                 if selector.as_str() == "at:put:" && argument_registers.len() == 2
         ));
@@ -2633,7 +2723,7 @@ mod tests {
         });
         let code = lowerer.finish(foo.span);
         assert!(matches!(
-            &code.instructions[0],
+            &code.instruction(0),
             Instruction::SendSuper { selector, argument_registers, destination: 0, .. }
                 if selector.as_str() == "printString" && argument_registers.is_empty()
         ));
@@ -2653,7 +2743,7 @@ mod tests {
         lowerer.lower_statement(&bump.body.statements[0], ValueUse::Discarded);
         let code = lowerer.finish(bump.span);
         assert!(matches!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(Instruction::SendLexical { depth: 0, selector, argument_registers, .. })
                 if selector.as_str() == "n:" && argument_registers.len() == 1
         ));
@@ -2661,7 +2751,7 @@ mod tests {
 
     /// The argument register of every `n:` setter send in `code`, in order.
     fn setter_arguments(code: &CompiledCode) -> Vec<u16> {
-        code.instructions
+        code.instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::SendLexical {
@@ -2703,11 +2793,11 @@ mod tests {
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "nothing reads the assignment's value, so it needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
             setter_arguments(&code),
@@ -2727,15 +2817,15 @@ mod tests {
         "};
         let code = lower_whole_method(source, 0); // temporary `t` is register 0
         let [copy] = setter_arguments(&code)[..] else {
-            panic!("expected one setter send: {:?}", code.instructions);
+            panic!("expected one setter send: {:?}", code.instructions());
         };
         assert_ne!(copy, 0, "the setter can write `t` before `Return` reads");
-        assert!(code.instructions.contains(&Instruction::Move {
+        assert!(code.instructions().contains(&Instruction::Move {
             destination: copy,
             source: 0
         }));
         assert_eq!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(&Instruction::Return { register: copy })
         );
     }
@@ -2781,22 +2871,22 @@ mod tests {
         lowerer.lower_slot_initializer(initializers[1], 4);
         let code = lowerer.finish(method.span);
         let [copy] = setter_arguments(&code)[..] else {
-            panic!("expected one setter send: {:?}", code.instructions);
+            panic!("expected one setter send: {:?}", code.instructions());
         };
         assert_ne!(
             copy, 1,
             "the setter can write `p` before `InitializeSlot` reads"
         );
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: copy,
                 source: 1
             }),
             "the copy out of `p` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(&Instruction::InitializeSlot {
                 source: copy,
                 own_index: 4
@@ -2829,14 +2919,14 @@ mod tests {
         let code = lowerer.finish(method.span);
         assert!(
             !code
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { .. })),
             "a parameter needs no copy: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::SendLexical {
                     depth: 0,
@@ -2872,23 +2962,23 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
-        let Instruction::MakeClosure { code: block, .. } = &code.instructions[0] else {
-            panic!("expected the block literal: {:?}", code.instructions);
+        let Instruction::MakeClosure { code: block, .. } = &code.instruction(0) else {
+            panic!("expected the block literal: {:?}", code.instructions());
         };
         let [discarded, read] = setter_arguments(block)[..] else {
-            panic!("expected two setter sends: {:?}", block.instructions);
+            panic!("expected two setter sends: {:?}", block.instructions());
         };
         assert_eq!(
             discarded, 0,
             "the first value is discarded: `t`'s own register"
         );
         assert_ne!(read, 0, "the block answers the second value");
-        assert!(block.instructions.contains(&Instruction::Move {
+        assert!(block.instructions().contains(&Instruction::Move {
             destination: read,
             source: 0
         }));
         assert_eq!(
-            block.instructions.last(),
+            block.instructions().last(),
             Some(&Instruction::ImplicitReturn { register: read })
         );
     }
@@ -2907,16 +2997,16 @@ mod tests {
             ) : ()
         "};
         let code = lower_whole_method(source, 0);
-        let Instruction::MakeClosure { code: block, .. } = &code.instructions[0] else {
-            panic!("expected the block literal: {:?}", code.instructions);
+        let Instruction::MakeClosure { code: block, .. } = &code.instruction(0) else {
+            panic!("expected the block literal: {:?}", code.instructions());
         };
         assert!(
             !block
-                .instructions
+                .instructions()
                 .iter()
                 .any(|instruction| matches!(instruction, Instruction::Move { source: 0, .. })),
             "a block parameter needs no copy: {:?}",
-            block.instructions
+            block.instructions()
         );
         assert_eq!(
             setter_arguments(block),
@@ -2952,12 +3042,12 @@ mod tests {
             assert!(
                 arguments.iter().all(|&argument| argument > 1),
                 "the send's value is read, so each branch's is: {:?}",
-                returned.instructions
+                returned.instructions()
             );
         }
         let loop_code = lower_whole_method(source, 3);
         let [condition, body] = setter_arguments(&loop_code)[..] else {
-            panic!("expected two setter sends: {:?}", loop_code.instructions);
+            panic!("expected two setter sends: {:?}", loop_code.instructions());
         };
         assert_ne!(condition, 0, "the guard reads the condition's value");
         assert_eq!(body, 0, "nothing reads the loop body's value");
@@ -2984,9 +3074,12 @@ mod tests {
             argument_registers,
             destination: send_destination,
             ..
-        }] = &code.instructions[..]
+        }] = &code.instructions()[..]
         else {
-            panic!("expected one depth-0 lexical send: {:?}", code.instructions);
+            panic!(
+                "expected one depth-0 lexical send: {:?}",
+                code.instructions()
+            );
         };
         assert_eq!(selector.as_str(), "Array");
         assert!(argument_registers.is_empty());
@@ -3007,7 +3100,7 @@ mod tests {
         lowerer.lower_statement(&foo.body.statements[1], ValueUse::Discarded);
         let code = lowerer.finish(foo.span);
         let receiver_registers: Vec<u16> = code
-            .instructions
+            .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -3022,9 +3115,10 @@ mod tests {
         // inlinable branch of this body assigns it, so no fallback closure
         // reaches it -- so the cascade reads `c` itself.
         assert_eq!(
-            receiver_registers[1], 0,
+            receiver_registers[1],
+            0,
             "the cascade receiver is `c`'s own register: {:?}",
-            code.instructions
+            code.instructions()
         );
         assert_eq!(
             receiver_registers[1], receiver_registers[2],
@@ -3038,7 +3132,7 @@ mod tests {
     /// The registers the cascade's `add:` sends read their receiver out of.
     fn cascade_receivers(code: &CompiledCode) -> (u16, u16) {
         let receiver_registers: Vec<u16> = code
-            .instructions
+            .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -3050,7 +3144,10 @@ mod tests {
             })
             .collect();
         let [first, second] = receiver_registers[..] else {
-            panic!("expected the cascade's two sends: {:?}", code.instructions);
+            panic!(
+                "expected the cascade's two sends: {:?}",
+                code.instructions()
+            );
         };
         (first, second)
     }
@@ -3076,12 +3173,12 @@ mod tests {
         assert_ne!(first, 0, "the receiver must not be `c`'s own live register");
         assert_eq!(first, second, "both cascade sends share one register");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: first,
                 source: 0
             }),
             "the copy out of `c` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3106,12 +3203,12 @@ mod tests {
         assert_ne!(first, 0, "the receiver must not be `c`'s own live register");
         assert_eq!(first, second, "both cascade sends share one register");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: first,
                 source: 0
             }),
             "the copy out of `c` is a Move: {:?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3154,7 +3251,7 @@ mod tests {
             0,
         );
         assert_eq!(
-            &code.instructions[code.instructions.len() - 2..],
+            &code.instructions()[code.instructions().len() - 2..],
             &[
                 Instruction::LoadSelf { destination: 3 },
                 Instruction::ImplicitReturn { register: 3 }
@@ -3174,7 +3271,7 @@ mod tests {
             0,
         );
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3196,16 +3293,17 @@ mod tests {
             "},
             0,
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             destination: 0,
             parameters,
             code: block,
             copied,
-        }) = code.instructions.first()
+        }) = instructions.first()
         else {
             panic!(
                 "expected a MakeClosure instruction, got {:?}",
-                code.instructions
+                code.instructions()
             );
         };
         assert_eq!(parameters.as_slice(), &[crate::Symbol::intern("x")]);
@@ -3218,7 +3316,7 @@ mod tests {
         // `x` is the block's own register 0: read with no instruction, then
         // returned as the block's implicit value.
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
         assert_eq!(block.statement_program_counter, vec![(0, 0..0)]);
@@ -3242,14 +3340,14 @@ mod tests {
         "};
         let code = lower_whole_method(source, 0);
         let numbers = |code: &CompiledCode| -> Vec<u32> {
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter_map(Instruction::call_site)
                 .map(|site| site.number)
                 .collect()
         };
         let first_block = |code: &CompiledCode| -> Rc<CompiledCode> {
-            code.instructions
+            code.instructions()
                 .iter()
                 .find_map(|instruction| match instruction {
                     Instruction::MakeClosure { code: block, .. } => Some(block.clone()),
@@ -3288,17 +3386,18 @@ mod tests {
         // `x` is r0, `t` is r1 (unused: it lives in the vector), the vector
         // is r2.
         assert_eq!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::MakeVector {
                 destination: 2,
                 size: 1
             }
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: block,
             copied,
             ..
-        }) = code.instructions.get(1)
+        }) = instructions.get(1)
         else {
             panic!()
         };
@@ -3307,7 +3406,7 @@ mod tests {
         assert_eq!(block.copied_count, 2);
         assert_eq!(block.outer_reach, 0);
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::StoreVector {
                     vector: 1,
@@ -3330,18 +3429,19 @@ mod tests {
             "},
             0,
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: block,
             copied,
             ..
-        }) = code.instructions.first()
+        }) = instructions.first()
         else {
             panic!()
         };
         assert_eq!(*copied, vec![0]); // the parameter's own register
         assert_eq!(block.copied_count, 1);
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
         assert_eq!(block.outer_reach, 0);
@@ -3359,23 +3459,24 @@ mod tests {
             0,
         );
         assert_eq!(
-            code.instructions[0],
+            code.instruction(0),
             Instruction::MakeVector {
                 destination: 1,
                 size: 1
             }
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: block,
             copied,
             ..
-        }) = code.instructions.get(1)
+        }) = instructions.get(1)
         else {
             panic!()
         };
         assert_eq!(*copied, vec![1]); // the vector register
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 1,
@@ -3402,27 +3503,29 @@ mod tests {
             "},
             0,
         );
+        let instructions = code.instructions();
         let Some(Instruction::MakeClosure {
             code: outer,
             copied,
             ..
-        }) = code.instructions.first()
+        }) = instructions.first()
         else {
             panic!()
         };
         assert_eq!(*copied, vec![0]);
+        let instructions = outer.instructions();
         let Some(Instruction::MakeClosure {
             code: inner,
             copied: inner_copied,
             ..
-        }) = outer.instructions.first()
+        }) = instructions.first()
         else {
             panic!()
         };
         // The middle block holds it in its own first copied register.
         assert_eq!(*inner_copied, vec![0]);
         assert_eq!(
-            inner.instructions,
+            inner.instructions(),
             vec![Instruction::ImplicitReturn { register: 0 }]
         );
     }
@@ -3439,7 +3542,7 @@ mod tests {
             0,
         );
         let fallback = code
-            .instructions
+            .instructions()
             .iter()
             .find_map(|instruction| match instruction {
                 Instruction::MakeClosure {
@@ -3453,7 +3556,7 @@ mod tests {
                 _ => None,
             })
             .expect("the fallback path builds a real closure");
-        assert!(fallback.instructions.iter().any(|instruction| matches!(
+        assert!(fallback.instructions().iter().any(|instruction| matches!(
             instruction,
             Instruction::StoreOuterLocal {
                 depth: 1,
@@ -3464,7 +3567,7 @@ mod tests {
         assert_eq!(fallback.outer_reach, 1);
         // Nothing captured `t`, so it stays a register.
         assert!(!code
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })));
     }
@@ -3480,11 +3583,12 @@ mod tests {
             "},
             0,
         );
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
             panic!()
         };
         assert_eq!(
-            block.instructions,
+            block.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3506,11 +3610,12 @@ mod tests {
             "},
             0,
         );
-        let Some(Instruction::MakeClosure { code: empty, .. }) = code.instructions.first() else {
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: empty, .. }) = instructions.first() else {
             panic!()
         };
         assert_eq!(
-            empty.instructions,
+            empty.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3519,11 +3624,12 @@ mod tests {
                 Instruction::ImplicitReturn { register: 0 }
             ]
         );
-        let Some(Instruction::MakeClosure { code: two, .. }) = code.instructions.get(2) else {
-            panic!("{:?}", code.instructions)
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: two, .. }) = instructions.get(2) else {
+            panic!("{:?}", code.instructions())
         };
         assert_eq!(
-            two.instructions,
+            two.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3575,7 +3681,7 @@ mod tests {
         let destination = lowerer.lower_expression(return_expression(&method));
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3621,7 +3727,7 @@ mod tests {
         lowerer.lower_body(&method.body.statements);
         let code = lowerer.finish(method.span);
         assert_eq!(
-            code.instructions,
+            code.instructions(),
             vec![
                 Instruction::LoadLiteral {
                     destination: 0,
@@ -3658,7 +3764,7 @@ mod tests {
         // `6`, `7`, the inlined `*` with its guard and its fallback send,
         // then the field write: six instructions, all one statement.
         assert!(matches!(
-            code.instructions.last(),
+            code.instructions().last(),
             Some(Instruction::InitializeSlot {
                 source: 2,
                 own_index: 4
@@ -3679,7 +3785,7 @@ mod tests {
     }
 
     fn has<F: Fn(&Instruction) -> bool>(code: &CompiledCode, predicate: F) -> bool {
-        code.instructions.iter().any(predicate)
+        code.instructions().iter().any(predicate)
     }
 
     /// Lowers `method` of a nested class `C` in a kernel-shaped module that
@@ -3757,7 +3863,7 @@ mod tests {
             },
             Instruction::Return { register: 3 },
         ];
-        assert_eq!(code.instructions, expected, "{:#?}", code.instructions);
+        assert_eq!(code.instructions(), expected, "{:#?}", code.instructions());
         // The one call site is `vmMirror`'s lexical send: `SendMirror`
         // carries none, since nothing about it is looked up at run time.
         assert_eq!(code.family_size, 1);
@@ -3789,7 +3895,7 @@ mod tests {
                 Instruction::JumpIfNotBoolean { register: 0, .. }
             )),
             "{:#?}",
-            code.instructions
+            code.instructions()
         );
         assert!(has(&code, |instruction| matches!(
             instruction,
@@ -3815,7 +3921,7 @@ mod tests {
             Instruction::SendPublic { selector, receiver_register: 0, .. } if selector.as_str() == "ifTrue:ifFalse:"
         )));
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
                 .count(),
@@ -3861,7 +3967,7 @@ mod tests {
                 }
             )),
             "{:#?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3884,26 +3990,27 @@ mod tests {
     #[test]
     fn the_inlined_fast_paths_fallback_reuses_the_registers_the_guard_read() {
         let code = compile_foo("x + (x bump)");
-        let Some(Instruction::IntegerBinary { left, right, .. }) = code
-            .instructions
+        let instructions = code.instructions();
+        let Some(Instruction::IntegerBinary { left, right, .. }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
         else {
-            panic!("expected the fast path: {:#?}", code.instructions)
+            panic!("expected the fast path: {:#?}", code.instructions())
         };
+        let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             receiver_register,
             argument_registers,
             ..
-        }) = code.instructions.iter().find(
+        }) = instructions.iter().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "+"),
         ) else {
-            panic!("expected the fallback send: {:#?}", code.instructions)
+            panic!("expected the fallback send: {:#?}", code.instructions())
         };
         assert_eq!(*receiver_register, *left);
         assert_eq!(*argument_registers, vec![*right]);
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter(|instruction| matches!(
                     instruction,
@@ -3912,7 +4019,7 @@ mod tests {
                 .count(),
             1,
             "the argument is evaluated once, on both paths: {:#?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3953,21 +4060,21 @@ mod tests {
             1,
         );
         // `foo` takes no parameters, so its only local `total` is register 0.
-        let Some(Instruction::IntegerBinary { left, .. }) = code
-            .instructions
+        let instructions = code.instructions();
+        let Some(Instruction::IntegerBinary { left, .. }) = instructions
             .iter()
             .find(|instruction| matches!(instruction, Instruction::IntegerBinary { .. }))
         else {
-            panic!("expected the fast path: {:#?}", code.instructions)
+            panic!("expected the fast path: {:#?}", code.instructions())
         };
         assert_ne!(*left, 0, "`total` can be written before the guard reads it");
         assert!(
-            code.instructions.contains(&Instruction::Move {
+            code.instructions().contains(&Instruction::Move {
                 destination: *left,
                 source: 0
             }),
             "the guard reads the copy of `total`: {:#?}",
-            code.instructions
+            code.instructions()
         );
     }
 
@@ -3975,7 +4082,7 @@ mod tests {
     fn while_true_compiles_to_a_back_edge_jump_and_a_must_be_boolean_fallback() {
         let code = compile_foo("[x] whileTrue: [x]");
         let back_edge =
-            code.instructions.iter().enumerate().find_map(
+            code.instructions().iter().enumerate().find_map(
                 |(index, instruction)| match instruction {
                     Instruction::Jump { target } if (*target as usize) < index => Some(*target),
                     _ => None,
@@ -3984,7 +4091,7 @@ mod tests {
         assert!(
             back_edge.is_some(),
             "expected a backward Jump, got {:#?}",
-            code.instructions
+            code.instructions()
         );
         assert!(has(&code, |instruction| matches!(
             instruction,
@@ -4035,7 +4142,7 @@ mod tests {
     fn a_real_block_nested_in_an_inlined_block_is_converted_and_its_fallback_copy_is_not() {
         let code = compile_foo("x ifTrue: [ [ x ] value ] ifFalse: [nil]");
         let closures: Vec<(Rc<CompiledCode>, Vec<u16>)> = code
-            .instructions
+            .instructions()
             .iter()
             .filter_map(|instruction| match instruction {
                 Instruction::MakeClosure { code, copied, .. } => {
@@ -4050,7 +4157,7 @@ mod tests {
         let (inlined_arm_block, copied) = &closures[0];
         assert_eq!(*copied, vec![0], "handed the method's own register for x");
         assert_eq!(
-            inlined_arm_block.instructions[0],
+            inlined_arm_block.instruction(0),
             Instruction::ImplicitReturn { register: 0 }
         );
         assert_eq!(inlined_arm_block.outer_reach, 0);
@@ -4058,17 +4165,18 @@ mod tests {
         // out: through the fallback closure's own frame to the method's.
         let (fallback_true_block, fallback_copied) = &closures[1];
         assert!(fallback_copied.is_empty());
+        let instructions = fallback_true_block.instructions();
         let Some(Instruction::MakeClosure {
             code: nested,
             copied: nested_copied,
             ..
-        }) = fallback_true_block.instructions.first()
+        }) = instructions.first()
         else {
             panic!("the fallback closure re-creates the nested block")
         };
         assert!(nested_copied.is_empty());
         assert_eq!(
-            nested.instructions[0],
+            nested.instruction(0),
             Instruction::LoadOuterLocal {
                 destination: 0,
                 depth: 2,
@@ -4082,13 +4190,13 @@ mod tests {
     fn a_return_inside_an_inlined_block_follows_the_enclosing_code_kind() {
         let code = compile_foo("x ifTrue: [^1] ifFalse: [^2]");
         assert_eq!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .filter(|instruction| matches!(instruction, Instruction::Return { .. }))
                 .count(),
             3,
             "{:#?}",
-            code.instructions
+            code.instructions()
         );
         assert!(!has(&code, |instruction| matches!(
             instruction,
@@ -4096,11 +4204,12 @@ mod tests {
         )));
         // Inside a block body the same `^` is a non-local return.
         let code = compile_foo("[ x ifTrue: [^1] ifFalse: [^2] ]");
-        let Some(Instruction::MakeClosure { code: block, .. }) = code.instructions.first() else {
+        let instructions = code.instructions();
+        let Some(Instruction::MakeClosure { code: block, .. }) = instructions.first() else {
             panic!()
         };
         assert!(block
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::NonLocalReturn { .. })));
     }
@@ -4111,7 +4220,7 @@ mod tests {
         // first argument's register must survive the inlined `x baz` statement.
         let code = compile_foo("x foo: (x bar) with: (x ifTrue: [x baz. 1] ifFalse: [2])");
         let bar_destination = code
-            .instructions
+            .instructions()
             .iter()
             .find_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -4123,7 +4232,7 @@ mod tests {
             })
             .expect("a bar send");
         let baz_destination = code
-            .instructions
+            .instructions()
             .iter()
             .find_map(|instruction| match instruction {
                 Instruction::SendPublic {
@@ -4135,9 +4244,10 @@ mod tests {
             })
             .expect("a baz send");
         assert_ne!(bar_destination, baz_destination);
+        let instructions = code.instructions();
         let Some(Instruction::SendPublic {
             selector, argument_registers, ..
-        }) = code.instructions.iter().rev().find(
+        }) = instructions.iter().rev().find(
             |instruction| matches!(instruction, Instruction::SendPublic { selector, .. } if selector.as_str() == "foo:with:"),
         )
         else {
@@ -4187,7 +4297,7 @@ mod tests {
         // (`self` r0, `x` r1, guard+destination r2-r3, and the costliest arm's
         // own 3 scratch registers r4-r6).
         let code = compile_foo("x ifTrue: [(x + 1) + (x + 2)] ifFalse: [(x + 3) + (x + 4)]");
-        assert_eq!(code.register_count, 7, "{:#?}", code.instructions);
+        assert_eq!(code.register_count, 7, "{:#?}", code.instructions());
     }
 
     #[test]
@@ -4200,7 +4310,154 @@ mod tests {
         );
         assert_eq!(
             code.statement_program_counter[0].1,
-            0..code.instructions.len()
+            0..code.instructions().len()
+        );
+    }
+
+    /// `foo<pattern> = ( | t0 t1 ... | <statements> )`, with `count`
+    /// generated temporaries, lowered whole.
+    fn lower_with_temporaries(pattern: &str, count: usize, statements: &str) -> CompiledCode {
+        let temporaries: String = (0..count).map(|index| format!("t{index} ")).collect();
+        lower_whole_method(
+            &formatdoc! {"
+                class X = Object new (
+                ) (
+                  foo{pattern} = ( | {temporaries}| {statements} )
+                ) : ()
+            "},
+            0,
+        )
+    }
+
+    /// The body `compiler::body_too_large` builds for a body of `kind`
+    /// taking `argument_count` arguments: its one register follows them.
+    fn assert_raises_too_large(code: &CompiledCode, kind: CodeKind, argument_count: u16) {
+        assert_eq!(code.kind, kind);
+        assert_eq!(
+            code.instructions(),
+            vec![
+                Instruction::LoadLiteral {
+                    destination: argument_count,
+                    literal: BytecodeLiteral::BodyTooLarge,
+                },
+                Instruction::ImplicitReturn {
+                    register: argument_count
+                },
+            ]
+        );
+        assert_eq!(code.argument_count, argument_count);
+        assert_eq!(code.register_count, argument_count + 1);
+        assert_eq!(code.copied_count, 0);
+        assert_eq!(code.statement_program_counter, vec![(0, 0..2)]);
+    }
+
+    fn loads_body_too_large(code: &CompiledCode) -> bool {
+        has(code, |instruction| {
+            matches!(
+                instruction,
+                Instruction::LoadLiteral {
+                    literal: BytecodeLiteral::BodyTooLarge,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// `u16::MAX - 1` temporaries and the scratch register `self` is
+    /// answered from fill the ceiling exactly; one temporary more needs a
+    /// register past it, and more temporaries than registers cannot even be
+    /// laid out. Neither panics: both compile to the raising body.
+    #[test]
+    fn a_body_past_the_register_ceiling_compiles_to_one_that_raises() {
+        let at_the_ceiling = lower_with_temporaries("", usize::from(u16::MAX) - 1, "");
+        assert_eq!(at_the_ceiling.register_count, u16::MAX);
+        assert!(!loads_body_too_large(&at_the_ceiling));
+
+        let one_scratch_past = lower_with_temporaries("", usize::from(u16::MAX), "");
+        assert_raises_too_large(&one_scratch_past, CodeKind::Method, 0);
+
+        let locals_past = lower_with_temporaries(": a with: b", usize::from(u16::MAX) + 1, "^a");
+        assert_raises_too_large(&locals_past, CodeKind::Method, 2);
+    }
+
+    /// The scratch registers alone can pass the ceiling: a tuple's elements
+    /// are each in a register of their own until `MakeArray` reads them.
+    #[test]
+    fn scratch_registers_past_the_ceiling_compile_to_a_body_that_raises() {
+        let tuple = |count: usize| {
+            let elements: String = (0..count).map(|_| "1. ").collect();
+            compile_foo(&format!("{{{elements}}}"))
+        };
+        // `x` is r0, so `u16::MAX - 2` elements and the tuple's own register
+        // fill it exactly.
+        let at_the_ceiling = tuple(usize::from(u16::MAX) - 2);
+        assert_eq!(at_the_ceiling.register_count, u16::MAX);
+        assert!(!loads_body_too_large(&at_the_ceiling));
+        assert_raises_too_large(&tuple(usize::from(u16::MAX) - 1), CodeKind::Method, 1);
+    }
+
+    /// A block is judged on its own: one whose copied value and temporaries
+    /// pass the ceiling raises, its creator hands it no copied value, and
+    /// the method that creates it compiles as it would around any block.
+    #[test]
+    fn a_block_past_the_register_ceiling_raises_and_its_creator_hands_it_nothing() {
+        let temporaries: String = (0..usize::from(u16::MAX))
+            .map(|index| format!("t{index} "))
+            .collect();
+        let code = compile_foo(&format!("[ | {temporaries}| x ]"));
+        assert!(!loads_body_too_large(&code));
+        let Some(Instruction::MakeClosure {
+            code: block,
+            copied,
+            ..
+        }) = code
+            .instructions()
+            .into_iter()
+            .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+        else {
+            panic!("the method creates the block")
+        };
+        assert!(copied.is_empty());
+        assert_raises_too_large(&block, CodeKind::Block, 0);
+    }
+
+    /// More parameters than a `u16` counts: the raising block takes
+    /// `u16::MAX` of them, all its registers, and loads into the last, which
+    /// the literal raises before writing; its `MakeClosure` names as many,
+    /// so the two agree.
+    #[test]
+    fn a_block_with_more_parameters_than_registers_takes_as_many_as_it_can_count() {
+        let parameters: String = (0..=usize::from(u16::MAX))
+            .map(|index| format!(":p{index} "))
+            .collect();
+        let code = compile_foo(&format!("[{parameters}| p0 ]"));
+        let Some(Instruction::MakeClosure {
+            code: block,
+            parameters,
+            copied,
+            ..
+        }) = code
+            .instructions()
+            .into_iter()
+            .find(|instruction| matches!(instruction, Instruction::MakeClosure { .. }))
+        else {
+            panic!("the method creates the block")
+        };
+        assert_eq!(parameters.len(), usize::from(u16::MAX));
+        assert!(copied.is_empty());
+        assert_eq!(block.argument_count, u16::MAX);
+        assert_eq!(block.register_count, u16::MAX);
+        assert_eq!(
+            block.instructions(),
+            vec![
+                Instruction::LoadLiteral {
+                    destination: u16::MAX - 1,
+                    literal: BytecodeLiteral::BodyTooLarge,
+                },
+                Instruction::ImplicitReturn {
+                    register: u16::MAX - 1
+                },
+            ]
         );
     }
 }

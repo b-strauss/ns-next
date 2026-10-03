@@ -595,8 +595,8 @@ ns_runtime::for_each_lowering! {
             );
 
             let upper_clause = heap.class_applied_clause(upper).expect("an applied level");
-            assert_eq!(upper_clause.selector, Symbol::intern("withValue:"));
-            assert!(upper_clause.has_arguments);
+            assert_eq!(upper_clause.message.selector, Symbol::intern("withValue:"));
+            assert!(upper_clause.message.has_arguments);
             let code = upper_clause
                 .message_code
                 .expect("a message with arguments is compiled");
@@ -611,8 +611,8 @@ ns_runtime::for_each_lowering! {
             );
 
             let lower_clause = heap.class_applied_clause(lower).expect("an applied level");
-            assert_eq!(lower_clause.selector, Symbol::NEW);
-            assert!(!lower_clause.has_arguments);
+            assert_eq!(lower_clause.message.selector, Symbol::NEW);
+            assert!(!lower_clause.message.has_arguments);
             assert!(lower_clause.message_code.is_none());
         });
     }

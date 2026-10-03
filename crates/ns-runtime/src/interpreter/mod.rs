@@ -15,7 +15,7 @@ mod metaclass;
 pub(crate) mod mirror;
 pub(crate) mod nested;
 pub(crate) mod resolve;
-mod safepoint;
+pub(crate) mod safepoint;
 pub(crate) mod sends;
 mod slots;
 pub(crate) mod unwind;
@@ -477,7 +477,7 @@ impl Interpreter {
     /// let _ = interpreter.send(&root, Symbol::intern("size"), &[]);
     /// let length = interpreter.enter(|mutator| {
     ///     let array = mutator.fetch(&root).as_object()?;
-    ///     mutator.heap().array_length(array)
+    ///     mutator.heap().array_element_count(array)
     /// });
     /// assert_eq!(length, Some(1));
     /// ```
@@ -544,10 +544,10 @@ impl Interpreter {
 
     /// Roots an immediate -- `nil`, a Boolean or a `SmallInteger` -- a host
     /// built itself, outside any entry; a float is made only inside one, by
-    /// `Mutator::new_float`, since one outside the immediate range is boxed. An object is rooted with
-    /// `Mutator::stash`, inside the entry that reached it. A host can build
-    /// an immediate but never hold an object handle outside an entry, so a
-    /// `Value<'static>` holds none.
+    /// `Mutator::new_float`, since one outside the immediate range is boxed.
+    /// An object is rooted with `Mutator::stash`, inside the entry that
+    /// reached it. A host can build an immediate but never hold an object
+    /// handle outside an entry, so a `Value<'static>` holds none.
     pub fn stash(&self, value: Value<'static>) -> Root {
         self.world.stash(value)
     }
@@ -1128,13 +1128,16 @@ impl<'gc> Mutator<'gc> {
             } => {
                 let control_flow = matches!(arguments, StepArguments::ControlFlow);
                 let arguments = arguments.slice(send_arguments);
-                let (code, parameter_count, captured_frame, closure_feedback_base) = self
+                let (code, captured_frame, closure_feedback_base) = self
                     .heap
                     .closure_activation(closure)
                     .expect("internal: a block step is decided only for a closure object");
-                if let Err(signal) =
-                    check_block_arity(&self.heap, parameter_count, captured_frame, arguments.len())
-                {
+                if let Err(signal) = check_block_arity(
+                    &self.heap,
+                    code.argument_count as usize,
+                    captured_frame,
+                    arguments.len(),
+                ) {
                     // The block never runs, so its continuation is thrown
                     // away as a popped one's is: a future being forced is
                     // unresolved again rather than left resolving.
@@ -1148,7 +1151,7 @@ impl<'gc> Mutator<'gc> {
                 // which never ran `MakeClosure` at all.
                 let feedback_base = if closure_feedback_base == FeedbackBase::NOT_ASSIGNED {
                     let fresh = self.caches.fresh_range(code.family_size);
-                    self.heap.set_closure_feedback_base(closure, fresh);
+                    self.heap.closure_set_feedback_base(closure, fresh);
                     fresh
                 } else {
                     closure_feedback_base
@@ -1378,13 +1381,7 @@ impl<'gc> Mutator<'gc> {
     /// `docs/design/execution.md`, "Unwinding" -- and a block's `^`
     /// always targets its home, never the block.
     pub(crate) fn catches_return(&self, activation: ActivationReference) -> bool {
-        matches!(
-            self.heap.activation_kind(activation),
-            FrameKind::Method(_)
-                | FrameKind::SuperclassClause(_)
-                | FrameKind::SuperclassMessage(_)
-                | FrameKind::MixinApplicationMessage(_)
-        )
+        self.heap.activation_runs_method_or_clause(activation)
     }
 
     /// Where a `^` in `activation` returns to. A block returns from its home --
@@ -1420,7 +1417,7 @@ impl<'gc> Mutator<'gc> {
 
     pub fn class_of(&self, value: Value<'gc>) -> ClassReference<'gc> {
         match value.as_object() {
-            Some(object) => self.heap.class_of_object(object),
+            Some(object) => self.heap.object_class(object),
             // Nil/Boolean/SmallInteger/Float classes are wired up by the
             // bootstrap into interpreter-held globals, read from there via
             // `Mutator::builtin_class(kind)`.
@@ -2044,7 +2041,7 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         let length = interpreter.enter(|mutator| {
             let array = mutator.new_array(vec![Value::small_integer(1), Value::small_integer(2)]);
-            mutator.heap().array_length(array)
+            mutator.heap().array_element_count(array)
         });
         assert_eq!(length, Some(2));
         assert_eq!(

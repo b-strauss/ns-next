@@ -528,7 +528,10 @@ ns_runtime::for_each_lowering! {
             let Some(array) = mutator.fetch(&array).as_object() else {
                 panic!("an array");
             };
-            assert_eq!(mutator.heap().array_at(array, 0).and_then(Value::as_small_integer), Some(3));
+            assert_eq!(
+                mutator.heap().array_element(array, 0).and_then(Value::as_small_integer),
+                Some(3)
+            );
         });
     }
 }

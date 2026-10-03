@@ -350,6 +350,41 @@ fn benchmark_takes_a_project_file() {
     assert!(stdout.contains("median"), "{stdout}");
 }
 
+/// A program `bench` cannot instantiate is reported once, by the refusal
+/// that names why, with no second, generic line after it.
+#[test]
+fn benchmark_reports_a_failed_instantiation_once() {
+    let directory = ScratchDirectory::new("bench-instantiation");
+    let file = directory.join("Keyed.ns");
+    std::fs::write(
+        &file,
+        indoc! {"
+            class Keyed withValue: value = Object new () (
+              public main: platform args: arguments = ( ^0 )
+            ) : ()
+        "},
+    )
+    .unwrap();
+    let out = ns_next()
+        .arg("bench")
+        .arg(&file)
+        .arg("--iterations")
+        .arg("1")
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_ne!(out.status.code(), Some(0));
+    let errors: Vec<&str> = stderr
+        .lines()
+        .filter(|line| line.starts_with("error:"))
+        .collect();
+    assert_eq!(errors.len(), 1, "stderr: {stderr}");
+    assert!(
+        errors[0].contains("its primary factory is `withValue:`"),
+        "stderr: {stderr}"
+    );
+}
+
 /// `bench` must reject a zero iteration count rather than dividing by it
 /// (the median computation indexes `timings[timings.len() / 2]`, which is
 /// only safe because `iterations >= 1` is enforced up front).

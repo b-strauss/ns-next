@@ -172,14 +172,14 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     for (index, clause) in mixin.mixin_applications.iter().enumerate() {
         let message = match code.mixin_applications.get(index).copied().flatten() {
             Some(id) => format!(" -> code {id}"),
-            None if clause.has_arguments => " -> (no code)".to_string(),
+            None if clause.message.has_arguments => " -> (no code)".to_string(),
             None => String::new(),
         };
         let _ = writeln!(
             out,
             "      mixin application {}  {}{message}",
             index + 1,
-            clause.selector
+            clause.message.selector
         );
     }
     for nested in &mixin.nested {
@@ -215,15 +215,24 @@ struct GraphView {
     tag_named: Vec<String>,
 }
 
+/// What the graph's tags name by index: the platform paths, and how many
+/// levels each module's root section rebuilds, in module order. A reference
+/// past them is shown as such rather than refused: `inspect` reports on the
+/// files that fail to load too.
+struct TagTargets<'a> {
+    paths: &'a [Vec<Symbol>],
+    module_levels: Vec<usize>,
+}
+
 /// A platform path reference, after its tag, as `<platform path N: member
 /// member ...>`. An index past the section is shown as such rather than
 /// refused: `inspect` reports on the files that fail to load too.
 fn read_platform_path(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     let index = reader.read_u32()?;
-    Ok(match paths.get(index as usize) {
+    Ok(match targets.paths.get(index as usize) {
         Some(path) => format!(
             "<platform path {index}: {}>",
             platform_paths::describe(path)
@@ -234,16 +243,16 @@ fn read_platform_path(
 
 fn read_class_tag(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
         opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
         opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
-        opcodes::CLASS_MODULE => read_module_class_tag(reader)?,
-        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader)?,
-        opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, paths)?,
+        opcodes::CLASS_MODULE => read_module_class_tag(reader, targets)?,
+        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
+        opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, targets)?,
         opcodes::CLASS_METACLASS => {
-            format!("metaclass of {}", read_prebuilt_class_tag(reader, paths)?)
+            format!("metaclass of {}", read_prebuilt_class_tag(reader, targets)?)
         }
         tag => {
             return Err(decode::DecodeError::InvalidTag {
@@ -259,13 +268,13 @@ fn read_class_tag(
 /// it -- which is also what keeps this walk's recursion one level deep.
 fn read_prebuilt_class_tag(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
         opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
-        opcodes::CLASS_MODULE => read_module_class_tag(reader)?,
-        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader)?,
-        opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, paths)?,
+        opcodes::CLASS_MODULE => read_module_class_tag(reader, targets)?,
+        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
+        opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, targets)?,
         tag => {
             return Err(decode::DecodeError::InvalidTag {
                 what: "prebuilt class",
@@ -276,17 +285,37 @@ fn read_prebuilt_class_tag(
 }
 
 /// A module's root class, after its `CLASS_MODULE` or `HASHED_MODULE_CLASS`
-/// tag.
-fn read_module_class_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
-    Ok(format!("<module {}>", reader.read_u32()?))
+/// tag. A module past the module section is shown as such, as a platform
+/// path past its section is.
+fn read_module_class_tag(
+    reader: &mut decode::Reader,
+    targets: &TagTargets<'_>,
+) -> Result<String, decode::DecodeError> {
+    let module = reader.read_u32()?;
+    Ok(if (module as usize) < targets.module_levels.len() {
+        format!("<module {module}>")
+    } else {
+        format!("<module {module}: out of range>")
+    })
 }
 
 /// A module level, after its `CLASS_MODULE_LEVEL` or `HASHED_MODULE_LEVEL`
-/// tag.
-fn read_module_level_tag(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+/// tag. A module past the module section, or a position past the levels its
+/// root section rebuilds, is shown as such.
+fn read_module_level_tag(
+    reader: &mut decode::Reader,
+    targets: &TagTargets<'_>,
+) -> Result<String, decode::DecodeError> {
     let module = reader.read_u32()?;
     let position = reader.read_u32()?;
-    Ok(format!("<module {module} level {position}>"))
+    let levels = targets.module_levels.get(module as usize).copied();
+    Ok(
+        if levels.is_some_and(|levels| (position as usize) < levels) {
+            format!("<module {module} level {position}>")
+        } else {
+            format!("<module {module} level {position}: out of range>")
+        },
+    )
 }
 
 /// A class record's body, after its tag: a class applying a row of the mixin
@@ -294,7 +323,7 @@ fn read_module_level_tag(reader: &mut decode::Reader) -> Result<String, decode::
 /// declaring class are the builtin's and so are not in the record.
 fn read_class_record(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     let applied_by = |reader: &mut decode::Reader| -> Result<String, decode::DecodeError> {
         let row = reader.read_u32()?;
@@ -304,13 +333,13 @@ fn read_class_record(
     Ok(match reader.read_u8()? {
         opcodes::MIXIN_ROW => {
             let mixin = reader.read_u32()?;
-            let superclass = read_optional_class(reader, paths)?;
+            let superclass = read_optional_class(reader, targets)?;
             let enclosing = if reader.read_boolean()? {
-                read_value(reader, paths)?
+                read_value(reader, targets)?
             } else {
                 "-".to_string()
             };
-            let declaring = read_optional_class(reader, paths)?;
+            let declaring = read_optional_class(reader, targets)?;
             let applied = if reader.read_boolean()? {
                 applied_by(reader)?
             } else {
@@ -323,7 +352,7 @@ fn read_class_record(
         }
         opcodes::MIXIN_BUILTIN => {
             let builtin = decode::read_builtin_class(reader)?;
-            let superclass = read_optional_class(reader, paths)?;
+            let superclass = read_optional_class(reader, targets)?;
             let applied = applied_by(reader)?;
             format!(
                 "class mixin builtin {builtin:?}, superclass {superclass}, applied by {applied}"
@@ -340,10 +369,10 @@ fn read_class_record(
 
 fn read_optional_class(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     if reader.read_boolean()? {
-        read_class_tag(reader, paths)
+        read_class_tag(reader, targets)
     } else {
         Ok("-".to_string())
     }
@@ -359,7 +388,7 @@ fn read_frame_reference(reader: &mut decode::Reader) -> Result<String, decode::D
 
 fn read_value(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
         opcodes::VALUE_NIL => "nil".to_string(),
@@ -368,9 +397,9 @@ fn read_value(
         opcodes::VALUE_SMALL_INTEGER => reader.read_i64()?.to_string(),
         opcodes::VALUE_FLOAT => reader.read_f64()?.to_string(),
         opcodes::VALUE_OBJECT_ID => format!("object {}", reader.read_u32()?),
-        opcodes::VALUE_CLASS_TAG => format!("class {}", read_class_tag(reader, paths)?),
+        opcodes::VALUE_CLASS_TAG => format!("class {}", read_class_tag(reader, targets)?),
         opcodes::VALUE_PLATFORM => "<platform>".to_string(),
-        opcodes::VALUE_PLATFORM_PATH => read_platform_path(reader, paths)?,
+        opcodes::VALUE_PLATFORM_PATH => read_platform_path(reader, targets)?,
         opcodes::VALUE_LARGE_INTEGER => format!("large-int {}", read_large_integer_text(reader)?),
         tag => return Err(decode::DecodeError::InvalidTag { what: "value", tag }),
     })
@@ -388,22 +417,22 @@ fn read_large_integer_text(reader: &mut decode::Reader) -> Result<String, decode
 
 fn read_values(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<Vec<String>, decode::DecodeError> {
     let count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
-    (0..count).map(|_| read_value(reader, paths)).collect()
+    (0..count).map(|_| read_value(reader, targets)).collect()
 }
 
 fn read_closure_record(
     reader: &mut decode::Reader,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     let code = reader.read_u32()?;
     let captured = reader.read_u32()?;
     let count = reader.read_u16()? as usize;
-    let mut copied = Vec::with_capacity(count.min(1024));
+    let mut copied = decode::reserve_for(count, reader);
     for _ in 0..count {
-        copied.push(read_value(reader, paths)?);
+        copied.push(read_value(reader, targets)?);
     }
     Ok(format!(
         "code {code}, captured frame {captured}, copied [{}]",
@@ -414,26 +443,36 @@ fn read_closure_record(
 fn walk_graph(
     reader: &mut decode::Reader,
     symbols: &symbols::Table,
-    paths: &[Vec<Symbol>],
+    targets: &TagTargets<'_>,
 ) -> Result<GraphView, decode::DecodeError> {
-    let object_count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
-    let frame_count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
+    let object_count = decode::bounded_count(
+        reader.read_u32()? as usize,
+        decode::MIN_OBJECT_RECORD_BYTES,
+        reader,
+    )?;
+    let frame_count = decode::bounded_count(
+        reader.read_u32()? as usize,
+        decode::MIN_FRAME_RECORD_BYTES,
+        reader,
+    )?;
 
     let mut objects = Vec::with_capacity(object_count);
     for _ in 0..object_count {
-        let class = read_class_tag(reader, paths)?;
+        let class = read_class_tag(reader, targets)?;
         let hash = reader.read_u32()?;
         let body = match reader.read_u8()? {
             opcodes::OBJECT_INSTANCE => {
-                format!("instance {{{}}}", read_values(reader, paths)?.join(", "))
+                format!("instance {{{}}}", read_values(reader, targets)?.join(", "))
             }
             opcodes::OBJECT_STRING => format!("string {:?}", reader.read_str()?),
             opcodes::OBJECT_SYMBOL => format!("symbol #{}", symbols.get(reader.read_u32()?)?),
-            opcodes::OBJECT_ARRAY => format!("array [{}]", read_values(reader, paths)?.join(", ")),
-            opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, paths)?),
-            opcodes::OBJECT_CLASS => read_class_record(reader, paths)?,
+            opcodes::OBJECT_ARRAY => {
+                format!("array [{}]", read_values(reader, targets)?.join(", "))
+            }
+            opcodes::OBJECT_CLOSURE => format!("closure {}", read_closure_record(reader, targets)?),
+            opcodes::OBJECT_CLASS => read_class_record(reader, targets)?,
             opcodes::OBJECT_METACLASS => {
-                format!("metaclass of {}", read_class_tag(reader, paths)?)
+                format!("metaclass of {}", read_class_tag(reader, targets)?)
             }
             opcodes::OBJECT_ACTIVATION => format!("activation of frame {}", reader.read_u32()?),
             tag => {
@@ -448,28 +487,28 @@ fn walk_graph(
 
     let mut frames = Vec::with_capacity(frame_count);
     for _ in 0..frame_count {
-        let receiver = read_value(reader, paths)?;
-        let arguments = read_values(reader, paths)?;
-        let temporaries = read_values(reader, paths)?;
+        let receiver = read_value(reader, targets)?;
+        let arguments = read_values(reader, targets)?;
+        let temporaries = read_values(reader, targets)?;
         let program_counter = reader.read_u32()?;
         let sender = read_frame_reference(reader)?;
         let home = read_frame_reference(reader)?;
-        let current_class = read_optional_class(reader, paths)?;
+        let current_class = read_optional_class(reader, targets)?;
         let kind = match reader.read_u8()? {
             opcodes::FRAME_METHOD => format!("method {}", symbols.get(reader.read_u32()?)?),
             opcodes::FRAME_TOP_LEVEL => "top level".to_string(),
             opcodes::FRAME_INITIALIZER => {
-                format!("initializer of {}", read_class_tag(reader, paths)?)
+                format!("initializer of {}", read_class_tag(reader, targets)?)
             }
             opcodes::FRAME_SUPERCLASS_CLAUSE => {
-                format!("superclass clause of {}", read_class_tag(reader, paths)?)
+                format!("superclass clause of {}", read_class_tag(reader, targets)?)
             }
             opcodes::FRAME_SUPERCLASS_MESSAGE => {
-                format!("superclass message of {}", read_class_tag(reader, paths)?)
+                format!("superclass message of {}", read_class_tag(reader, targets)?)
             }
             opcodes::FRAME_MIXIN_APPLICATION_MESSAGE => format!(
                 "mixin application message of {}",
-                read_class_tag(reader, paths)?
+                read_class_tag(reader, targets)?
             ),
             opcodes::FRAME_CLOSURE => format!("closure object {}", reader.read_u32()?),
             tag => {
@@ -489,19 +528,23 @@ fn walk_graph(
         ));
     }
 
-    let roots = read_values(reader, paths)?;
+    let roots = read_values(reader, targets)?;
 
-    let count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
-    let mut tag_named = Vec::new();
+    let count = decode::bounded_count(
+        reader.read_u32()? as usize,
+        decode::MIN_TAG_NAMED_HASH_BYTES,
+        reader,
+    )?;
+    let mut tag_named = Vec::with_capacity(count);
     for _ in 0..count {
         let who = match reader.read_u8()? {
             opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(reader)?),
-            opcodes::HASHED_MODULE_CLASS => read_module_class_tag(reader)?,
-            opcodes::HASHED_MODULE_LEVEL => read_module_level_tag(reader)?,
+            opcodes::HASHED_MODULE_CLASS => read_module_class_tag(reader, targets)?,
+            opcodes::HASHED_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
             opcodes::HASHED_PLATFORM => "<platform>".to_string(),
-            opcodes::HASHED_PLATFORM_PATH => read_platform_path(reader, paths)?,
+            opcodes::HASHED_PLATFORM_PATH => read_platform_path(reader, targets)?,
             opcodes::HASHED_METACLASS => {
-                format!("metaclass of {}", read_prebuilt_class_tag(reader, paths)?)
+                format!("metaclass of {}", read_prebuilt_class_tag(reader, targets)?)
             }
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
@@ -686,8 +729,15 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         detail: format!("{} paths", paths.len()),
     });
     offset = reader.position();
+    let targets = TagTargets {
+        paths: &paths,
+        module_levels: decoded_modules
+            .iter()
+            .map(|module| module.section.levels.len())
+            .collect(),
+    };
     let graph =
-        walk_graph(&mut reader, &symbol_table, &paths).map_err(|error| error.to_string())?;
+        walk_graph(&mut reader, &symbol_table, &targets).map_err(|error| error.to_string())?;
     sections.push(Section {
         name: "graph",
         start: offset,

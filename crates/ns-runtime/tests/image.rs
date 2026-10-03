@@ -101,7 +101,7 @@ fn every_scalar_value_variant_round_trips() {
             assert!(encode::encode_scalar_value(&mut writer, value));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
             match (value.kind(), decoded.kind()) {
                 (ValueKind::Nil, ValueKind::Nil) => {}
                 (ValueKind::Boolean(expected), ValueKind::Boolean(actual)) => {
@@ -161,7 +161,7 @@ fn scalar_value_boundary_cases_round_trip() {
             assert!(encode::encode_scalar_value(&mut writer, value));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
             match (value.kind(), decoded.kind()) {
                 (ValueKind::SmallInteger(expected), ValueKind::SmallInteger(actual)) => {
                     assert_eq!(expected, actual)
@@ -180,7 +180,7 @@ fn scalar_value_boundary_cases_round_trip() {
         writer.write_i64(i64::MAX);
         let bytes = writer.into_bytes();
         let mut reader = decode::Reader::new(&bytes);
-        let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+        let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
         let large = decoded
             .as_object()
             .and_then(|object| mutator.heap().large_integer(object));
@@ -204,7 +204,7 @@ fn scalar_value_boundary_cases_round_trip() {
             writer.write_f64(f64::from_bits(bits));
             let bytes = writer.into_bytes();
             let mut reader = decode::Reader::new(&bytes);
-            let decoded = decode::decode_scalar_value(&mut reader, mutator).expect("decode");
+            let decoded = decode::decode_scalar_value(mutator, &mut reader).expect("decode");
             assert!(decoded.as_object().is_some(), "{bits:#x} is boxed");
             assert_eq!(
                 mutator.heap().float_value(decoded).map(f64::to_bits),
@@ -280,7 +280,7 @@ fn an_invalid_scalar_tag_is_an_error_not_a_panic() {
     let mut reader = decode::Reader::new(&bytes);
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(
-        |mutator| match decode::decode_scalar_value(&mut reader, mutator) {
+        |mutator| match decode::decode_scalar_value(mutator, &mut reader) {
             Err(decode::DecodeError::InvalidTag {
                 what: "value",
                 tag: 200,
@@ -494,24 +494,21 @@ const RICH: &str = indoc! {"
 "};
 
 fn every_instruction_once() -> CompiledCode {
-    let block = Rc::new(CompiledCode {
-        kind: CodeKind::Block,
-        instructions: vec![Instruction::NonLocalReturn { register: 0 }],
-        argument_count: 1,
+    let block = Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![Instruction::NonLocalReturn { register: 0 }],
+        1,
         // One parameter, two copied values, one temporary: the widest
         // register layout a block can have, so the round trip covers
         // `copied_count` too.
-        register_count: 4,
-        statement_program_counter: vec![(0, 0..1)],
-        family_size: 0,
-        copied_count: 2,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(1, 2),
-    });
-    CompiledCode {
-        kind: CodeKind::Initializer,
-        instructions: vec![
+        4,
+        2,
+        vec![(0, 0..1)],
+        Span::new(1, 2),
+    ));
+    let code = CompiledCode::new(
+        CodeKind::Initializer,
+        vec![
             Instruction::LoadLiteral {
                 destination: 0,
                 literal: Literal::Nil,
@@ -664,21 +661,21 @@ fn every_instruction_once() -> CompiledCode {
                 literal: Literal::UnresolvedIdentifier("Object".into()),
             },
         ],
-        argument_count: 2,
-        register_count: 15,
-        statement_program_counter: vec![(0, 0..3), (1, 3..37)],
-        // One past the highest number among its own sends (0..=3, in
-        // emission order -- what `number_call_site_families` assigns on the
-        // decoded side too) and the block's `family_size` (0): the same
-        // `bytecode::family_size_of` the decoder recomputes with, so the
-        // round trip must agree.
-        family_size: 4,
-        copied_count: 0,
-        // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
-        outer_reach: 2,
-        unwind_marker: None,
-        source: Span::new(10, 20),
-    }
+        2,
+        15,
+        0,
+        vec![(0, 0..3), (1, 3..37)],
+        Span::new(10, 20),
+    );
+    // One past the highest number among its own sends (0..=3, in emission
+    // order -- what `number_call_site_families` assigns on the decoded side
+    // too) and the block's `family_size` (0): derived as the decoder
+    // derives it, through `CompiledCode::from_builder`, so the round trip
+    // must agree.
+    assert_eq!(code.family_size, 4);
+    // Its own `LoadOuterLocal`/`StoreOuterLocal` reach two frames out.
+    assert_eq!(code.outer_reach, 2);
+    code
 }
 
 /// The compiled code of `class`'s method `selector` -- the body the method
@@ -728,7 +725,7 @@ fn install_mixin<'gc>(mutator: &mut Mutator<'gc>, class: ClassReference<'gc>, mi
         .clone();
     let application = mutator.apply_mixin(&Rc::new(mixin), super_application.as_ref());
     assert!(
-        mutator.heap_mut().set_class_application(class, application),
+        mutator.heap_mut().class_set_application(class, application),
         "a class object"
     );
 }
@@ -772,11 +769,16 @@ fn round_trip_code_table<'gc>(
 ) -> (decode::DecodedCodeTable, mixins::Decoded, encode::CodeIds) {
     let mut writer = encode::Writer::new();
     let mut symbols = symbols::Builder::new();
-    let ids = encode::encode_code_table(&mut writer, heap, &[class], &mut symbols)
+    let ids = encode::encode_code_table(&mut writer, &[root_mixin_of(heap, class)], &mut symbols)
         .expect("encode code table");
     let mut mixin_writer = encode::Writer::new();
-    mixins::encode(&mut mixin_writer, heap, &[class], &mut symbols, &ids)
-        .expect("encode mixin table");
+    mixins::encode(
+        &mut mixin_writer,
+        &[root_mixin_of(heap, class)],
+        &mut symbols,
+        &ids,
+    )
+    .expect("encode mixin table");
     let bytes = writer.into_bytes();
     let mixin_bytes = mixin_writer.into_bytes();
     let table = symbols.build();
@@ -836,7 +838,7 @@ fn every_instruction_variant_round_trips() {
 fn call_site_and_call_site_mut_agree_on_every_instruction_variant() {
     let code = every_instruction_once();
     let mut saw_a_call_site = false;
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         let immutable = instruction.call_site();
         let mutable = instruction.clone().call_site_mut().copied();
         assert_eq!(
@@ -871,7 +873,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
             let decoded = &table.codes[*id as usize];
             let original = method_code(mutator.heap(), class, selector.as_str());
             assert_eq!(**decoded, *original, "{selector}");
-            for instruction in &decoded.instructions {
+            for instruction in &decoded.instructions() {
                 if let Instruction::MakeClosure { code, .. } = instruction {
                     let child_id = table
                         .codes
@@ -904,7 +906,7 @@ fn a_real_modules_code_table_round_trips_and_nests_blocks_before_their_parents()
 /// `bytecode::family_size_of`.
 fn call_site_numbers(code: &CompiledCode) -> Vec<u32> {
     let mut numbers = Vec::new();
-    for instruction in &code.instructions {
+    for instruction in &code.instructions() {
         if let Instruction::MakeClosure { code: block, .. } = instruction {
             numbers.extend(call_site_numbers(block));
         } else if let Some(site) = instruction.call_site() {
@@ -1185,7 +1187,7 @@ fn the_retired_load_builtin_class_tag_is_refused() {
 /// decoding as whatever literal takes the next free number.
 #[test]
 fn an_invalid_or_retired_literal_tag_is_a_decode_error_not_a_panic() {
-    let mut payloads = vec![vec![LITERAL_LARGE_INTEGER + 1]];
+    let mut payloads = vec![vec![LITERAL_BODY_TOO_LARGE + 1]];
     for tag in RETIRED_LITERALS {
         payloads.push(vec![tag, 0x41, 0x00, 0x00, 0x00]);
     }
@@ -1274,6 +1276,108 @@ fn a_large_integer_value_round_trips() {
             );
         });
     }
+}
+
+/// A body past the register ceiling travels as the raising body it compiled
+/// to, `Literal::BodyTooLarge` and all: once loaded it raises the same
+/// error, and its sibling, which never needed the ceiling, still answers.
+#[test]
+fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
+    let temporaries: String = (0..=usize::from(u16::MAX))
+        .map(|index| format!("t{index} "))
+        .collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public run = ( | {temporaries}| t0:: 1. ^t0 )
+          public answer = ( ^7 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(&source);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+    let mut loaded = image::load(&bytes).expect("load");
+    assert_eq!(
+        expect_error(
+            loaded
+                .interpreter
+                .send(&loaded.roots[0], Symbol::intern("run"), &[]),
+            "run",
+        ),
+        "method too large: it needs more than 65535 registers"
+    );
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("answer"), &[]),
+        "answer",
+    );
+    assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+}
+
+/// The image's error for `source`'s module: a snapshot of its class alone,
+/// which a program the format cannot carry refuses rather than aborts.
+fn snapshot_error(source: &str) -> String {
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+            Ok(_) => panic!("expected the snapshot to be refused"),
+            Err(message) => message,
+        }
+    })
+}
+
+/// A method of more than 65,535 parameters compiles, but its arity does not
+/// fit the mixin table's 16-bit field: building the image is refused with
+/// an error, never a panic.
+#[test]
+fn a_method_of_more_parameters_than_the_format_counts_is_refused_not_a_panic() {
+    let pattern: String = (0..=usize::from(u16::MAX))
+        .map(|index| format!("k: p{index} "))
+        .collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public {pattern}= ( ^p0 )
+        ) : ()
+    "};
+    assert_eq!(
+        snapshot_error(&source),
+        "image encoding cannot write a method arity of 65536: it does not fit the image format's 16-bit field"
+    );
+}
+
+/// A tuple of 65,536 elements that all read one parameter's register fits
+/// the register ceiling under the optimized lowering, but its register list
+/// does not fit the code table's 16-bit length: refused, never a panic.
+#[test]
+fn a_register_list_longer_than_the_format_counts_is_refused_not_a_panic() {
+    let elements: String = (0..=usize::from(u16::MAX)).map(|_| "x. ").collect();
+    let source = formatdoc! {"
+        class X = Object new (
+        ) (
+          public tuple: x = ( ^{{{elements}}} )
+        ) : ()
+    "};
+    assert_eq!(
+        snapshot_error(&source),
+        "image encoding cannot write a register list of 65536: it does not fit the image format's 16-bit field"
+    );
 }
 
 /// A float outside the immediate range in a slot survives a snapshot as a
@@ -1372,7 +1476,7 @@ fn a_large_integer_literal_round_trips() {
         let expected =
             Literal::LargeInteger(ArbitraryInteger::parse("99999999999999999999", 10).unwrap());
         assert!(
-            original.instructions.iter().any(|instruction| matches!(
+            original.instructions().iter().any(|instruction| matches!(
                 instruction,
                 Instruction::LoadLiteral { literal, .. } if *literal == expected
             )),
@@ -1442,7 +1546,7 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
         let code = method_code(mutator.heap(), class, "answer");
         let expected = Literal::LargeInteger(ArbitraryInteger::from_i64(i64::MAX));
         assert!(
-            code.instructions.iter().any(|instruction| matches!(
+            code.instructions().iter().any(|instruction| matches!(
                 instruction,
                 Instruction::LoadLiteral { literal, .. } if *literal == expected
             )),
@@ -1828,8 +1932,12 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
         let class = class_reference(mutator, &class);
         let mut writer = encode::Writer::new();
         let mut symbols = symbols::Builder::new();
-        encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
-            .expect("encode code table");
+        encode::encode_code_table(
+            &mut writer,
+            &[root_mixin_of(mutator.heap(), class)],
+            &mut symbols,
+        )
+        .expect("encode code table");
         (symbols.build(), writer.into_bytes())
     });
     for cut in [1usize, bytes.len() / 3, bytes.len() / 2, bytes.len() - 1] {
@@ -2136,7 +2244,7 @@ fn deepest_block_nesting_the_parser_accepts() -> usize {
 
 /// How many `MakeClosure` hops the deepest block in `code` sits below it.
 fn block_nesting(code: &CompiledCode) -> usize {
-    code.instructions
+    code.instructions()
         .iter()
         .filter_map(|instruction| match instruction {
             Instruction::MakeClosure { code: block, .. } => Some(1 + block_nesting(block)),
@@ -2231,13 +2339,19 @@ fn expect_error(result: HostResult, what: &str) -> String {
 /// one needs exactly the map `image::snapshot` builds. Called from inside an
 /// entry, alongside the rest of the encoding its callers do.
 fn mixin_ids_for<'gc>(
-    class: ClassReference<'gc>,
     mutator: &Mutator<'gc>,
+    class: ClassReference<'gc>,
     symbols: &mut symbols::Builder,
     ids: &encode::CodeIds,
 ) -> HashMap<usize, u32> {
     let mut scratch = encode::Writer::new();
-    mixins::encode(&mut scratch, mutator.heap(), &[class], symbols, ids).expect("mixin table")
+    mixins::encode(
+        &mut scratch,
+        &[root_mixin_of(mutator.heap(), class)],
+        symbols,
+        ids,
+    )
+    .expect("mixin table")
 }
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
@@ -2259,12 +2373,16 @@ fn round_trip_graph(
         let platform_value = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
-            .expect("encode code table");
-        let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
-        encode::encode_graph_section(
+        let ids = encode::encode_code_table(
             &mut writer,
+            &[root_mixin_of(mutator.heap(), class)],
+            &mut symbols,
+        )
+        .expect("encode code table");
+        let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
+        encode::encode_graph_section(
             mutator.heap(),
+            &mut writer,
             &root_values,
             platform_value,
             &ids,
@@ -2358,8 +2476,8 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
                 let first = mutator.new_string("x".to_string());
                 let second = mutator.new_string("y".to_string());
                 // Requested in this order, so `second` holds the higher hash.
-                mutator.heap_mut().ensure_identity_hash(first);
-                mutator.heap_mut().ensure_identity_hash(second);
+                mutator.heap_mut().object_ensure_identity_hash(first);
+                mutator.heap_mut().object_ensure_identity_hash(second);
                 vec![
                     mutator.stash(Value::object(second)),
                     mutator.stash(Value::object(first)),
@@ -2372,11 +2490,11 @@ fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
         let decoded_0 = mutator.fetch(&decoded[0]);
         let decoded_1 = mutator.fetch(&decoded[1]);
         let heap = mutator.heap();
-        let higher = heap.identity_hash(object(original_0));
-        let lower = heap.identity_hash(object(original_1));
+        let higher = heap.object_identity_hash(object(original_0));
+        let lower = heap.object_identity_hash(object(original_1));
         assert!(higher > lower, "hashes are handed out in request order");
-        assert_eq!(heap.identity_hash(object(decoded_0)), higher);
-        assert_eq!(heap.identity_hash(object(decoded_1)), lower);
+        assert_eq!(heap.object_identity_hash(object(decoded_0)), higher);
+        assert_eq!(heap.object_identity_hash(object(decoded_1)), lower);
         assert_eq!(max, higher);
     });
 }
@@ -2431,7 +2549,7 @@ fn an_instance_of_the_root_class_keeps_its_class_and_fields() {
         let class = class_reference(mutator, &class);
         let decoded_0 = mutator.fetch(&decoded[0]);
         let heap = mutator.heap();
-        assert!(heap.class_of_object(object(decoded_0)).same(class));
+        assert!(heap.object_class(object(decoded_0)).same(class));
         assert_eq!(heap.instance_field_count(object(decoded_0)), Some(2));
         let field = |index| {
             heap.instance_field(object(decoded_0), index)
@@ -2479,7 +2597,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
                     (argument_count + temporary_count) as u16,
                     Value::small_integer(9),
                 );
-                mutator.heap_mut().set_frame_program_counter(home, 1);
+                mutator.heap_mut().frame_set_program_counter(home, 1);
             });
             vec![closure]
         });
@@ -2535,7 +2653,7 @@ fn a_closure_and_its_paused_home_frame_round_trip() {
             "re-resolved against the class's method map"
         );
         assert!(heap
-            .class_of_object(object(heap.frame_receiver(closure_home)))
+            .object_class(object(heap.frame_receiver(closure_home)))
             .same(class));
         assert!(home
             .current_class
@@ -2603,13 +2721,16 @@ fn the_graph_section_encoding_is_deterministic() {
             let platform = mutator.fetch(&platform);
             let mut symbols = symbols::Builder::new();
             let mut writer = encode::Writer::new();
-            let ids =
-                encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
-                    .expect("encode code table");
-            let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
-            encode::encode_graph_section(
+            let ids = encode::encode_code_table(
                 &mut writer,
+                &[root_mixin_of(mutator.heap(), class)],
+                &mut symbols,
+            )
+            .expect("encode code table");
+            let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
+            encode::encode_graph_section(
                 mutator.heap(),
+                &mut writer,
                 &roots,
                 platform,
                 &ids,
@@ -3251,14 +3372,18 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let platform = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut writer, mutator.heap(), &[class], &mut symbols)
-            .expect("encode code table");
+        let ids = encode::encode_code_table(
+            &mut writer,
+            &[root_mixin_of(mutator.heap(), class)],
+            &mut symbols,
+        )
+        .expect("encode code table");
         let before = writer.into_bytes().len();
         let mut writer = encode::Writer::new();
-        let mixin_ids = mixin_ids_for(class, mutator, &mut symbols, &ids);
+        let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
         encode::encode_graph_section(
-            &mut writer,
             mutator.heap(),
+            &mut writer,
             &roots,
             platform,
             &ids,
@@ -3587,18 +3712,15 @@ fn a_top_level_frame_kind_decodes() {
 /// `copied_count` copied values, in one register more than the two together
 /// -- enough for the graph decoder, which never runs it.
 fn block_code(argument_count: u16, copied_count: u16) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
-        kind: CodeKind::Block,
-        instructions: vec![Instruction::ImplicitReturn { register: 0 }],
+    Rc::new(CompiledCode::new(
+        CodeKind::Block,
+        vec![Instruction::ImplicitReturn { register: 0 }],
         argument_count,
-        register_count: argument_count + copied_count + 1,
-        statement_program_counter: vec![],
-        family_size: 0,
+        argument_count + copied_count + 1,
         copied_count,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(0, 0),
-    })
+        vec![],
+        Span::new(0, 0),
+    ))
 }
 
 /// A graph section holding one closure object and the one `TopLevel` frame
@@ -3724,7 +3846,9 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
     let platform = interpreter.platform();
     let (bytes, max_hash) = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
-        let max_hash = mutator.heap_mut().ensure_identity_hash(object(instance));
+        let max_hash = mutator
+            .heap_mut()
+            .object_ensure_identity_hash(object(instance));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
@@ -3747,10 +3871,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
             "the image's methods are rebuilt, each carrying its body"
         );
         let root_0 = mutator.fetch(&loaded.roots[0]);
-        assert!(mutator
-            .heap()
-            .class_of_object(object(root_0))
-            .same(root_class));
+        assert!(mutator.heap().object_class(object(root_0)).same(root_class));
     });
     let bumped = expect_ok(
         loaded
@@ -3765,7 +3886,7 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         );
         let fresh = mutator.new_string("fresh".to_string());
         assert!(
-            mutator.heap_mut().ensure_identity_hash(fresh) > max_hash,
+            mutator.heap_mut().object_ensure_identity_hash(fresh) > max_hash,
             "no hash collision with loaded objects"
         );
     });
@@ -3876,7 +3997,7 @@ fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
         let instance = mutator.fetch(&loaded.roots[0]);
-        let decoded_alpha_class = mutator.heap().class_of_object(object(instance));
+        let decoded_alpha_class = mutator.heap().object_class(object(instance));
         let ids = mutator.heap().class_dispatch_ids(decoded_alpha_class);
         assert_ne!(ids.instances, DispatchId::NONE);
         assert_eq!(mutator.heap().dispatch_id(instance), ids.instances);
@@ -4229,22 +4350,15 @@ fn code_with(
     register_count: u16,
     instructions: Vec<Instruction>,
 ) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
+    Rc::new(CompiledCode::new(
         kind,
         instructions,
         argument_count,
         register_count,
-        statement_program_counter: vec![],
-        // `verify_code_table` never looks at `family_size` -- numbering a
-        // family is `number_call_site_families`'s job, and none of these
-        // tests calls it -- so an arbitrary value is fine here. The same
-        // holds for `outer_reach`, which only the VM reads.
-        family_size: 0,
-        copied_count: 0,
-        outer_reach: 0,
-        unwind_marker: None,
-        source: Span::new(0, 0),
-    })
+        0,
+        vec![],
+        Span::new(0, 0),
+    ))
 }
 
 /// `code_with`, plus a `copied_count` for the bodies that declare one.
@@ -4255,10 +4369,9 @@ fn code_with_copied(
     copied_count: u16,
     instructions: Vec<Instruction>,
 ) -> Rc<CompiledCode> {
-    Rc::new(CompiledCode {
-        copied_count,
-        ..(*code_with(kind, argument_count, register_count, instructions)).clone()
-    })
+    let mut code = (*code_with(kind, argument_count, register_count, instructions)).clone();
+    code.copied_count = copied_count;
+    Rc::new(code)
 }
 
 fn table_of(codes: Vec<Rc<CompiledCode>>) -> decode::DecodedCodeTable {
@@ -4431,7 +4544,7 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
 
 #[test]
 fn a_body_that_runs_past_its_last_instruction_is_refused() {
-    // The VM fetches `code.instructions[program_counter]` after every
+    // The VM fetches `code.slot(program_counter)` after every
     // fall-through, so a body whose last instruction is not a return or a jump
     // indexes one past the end. An empty body indexes past the end immediately.
     for instructions in [vec![], vec![Instruction::LoadSelf { destination: 0 }]] {
@@ -4868,10 +4981,8 @@ fn a_method_body_taking_the_wrong_number_of_arguments_is_refused_on_load() {
     let (mut interpreter, class) = load(source);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let body = CompiledCode {
-            argument_count: 2,
-            ..(*method_code(mutator.heap(), class, "foo:")).clone()
-        };
+        let mut body = (*method_code(mutator.heap(), class, "foo:")).clone();
+        body.argument_count = 2;
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo:", Rc::new(body));
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
@@ -4898,10 +5009,8 @@ fn a_method_root_naming_a_block_body_is_refused_on_load() {
     let (mut interpreter, class) = load(source);
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let body = CompiledCode {
-            kind: CodeKind::Block,
-            ..(*method_code(mutator.heap(), class, "foo")).clone()
-        };
+        let mut body = (*method_code(mutator.heap(), class, "foo")).clone();
+        body.kind = CodeKind::Block;
         let doctored = with_method_code(mixin_of(mutator.heap(), class), "foo", Rc::new(body));
         install_mixin(mutator, class, doctored);
         let (_table, decoded_mixins, _ids) = round_trip_code_table(mutator.heap(), class);
@@ -5032,7 +5141,7 @@ fn a_closure_captured_by_its_lexical_parents_activation_verifies() {
         &closure_over_frame(foo_frame(2)),
         "decode",
         |heap, graph| {
-            decode::verify_graph(graph, &table, heap).expect("the captured frame runs `foo`");
+            decode::verify_graph(heap, graph, &table).expect("the captured frame runs `foo`");
         },
     );
 }
@@ -5048,7 +5157,7 @@ fn a_frame_with_no_registers_at_all_verifies() {
         &closure_over_frame(foo_frame(0)),
         "decode",
         |heap, graph| {
-            decode::verify_graph(graph, &table, heap)
+            decode::verify_graph(heap, graph, &table)
                 .expect("a frame that kept no registers is what an unmarked return leaves");
         },
     );
@@ -5062,7 +5171,7 @@ fn a_frame_whose_register_file_is_too_small_for_its_code_is_refused() {
     // `locals::read_local`, reached from a version-matching image.
     let (mut fixture, table) = closure_world();
     fixture.decoded(&closure_over_frame(foo_frame(1)), "decode", |heap, graph| {
-        let error = decode::verify_graph(graph, &table, heap).expect_err("undersized frame");
+        let error = decode::verify_graph(heap, graph, &table).expect_err("undersized frame");
         assert_eq!(
             error,
             decode::DecodeError::FrameRegisterFile {
@@ -5098,7 +5207,7 @@ fn a_closure_captured_by_a_frame_that_does_not_run_its_lexical_parent_is_refused
     });
     fixture.decoded(&bytes, "decode", |heap, graph| {
         assert_eq!(
-            decode::verify_graph(graph, &table, heap),
+            decode::verify_graph(heap, graph, &table),
             Err(decode::DecodeError::CapturedFrameMismatch)
         );
     });
@@ -5410,7 +5519,7 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
         let instance_object = object(mutator.fetch(&instance));
         mutator
             .heap_mut()
-            .set_identity_hash(instance_object, u32::MAX - 1);
+            .object_set_identity_hash(instance_object, u32::MAX - 1);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -5428,16 +5537,16 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     loaded.interpreter.enter(|mutator| {
         let root_0 = mutator.fetch(&loaded.roots[0]);
         assert_eq!(
-            mutator.heap().identity_hash(object(root_0)),
+            mutator.heap().object_identity_hash(object(root_0)),
             u32::MAX - 1,
             "the image's hash is preserved, not clamped"
         );
         let first = mutator.new_string("a".to_string());
         let second = mutator.new_string("b".to_string());
         let heap = mutator.heap_mut();
-        assert_eq!(heap.ensure_identity_hash(first), u32::MAX);
+        assert_eq!(heap.object_ensure_identity_hash(first), u32::MAX);
         assert_eq!(
-            heap.ensure_identity_hash(second),
+            heap.object_ensure_identity_hash(second),
             u32::MAX,
             "an exhausted counter shares its last hash instead of overflowing"
         );
@@ -5462,7 +5571,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         let hashed_value = mutator.fetch(&hashed);
         let assigned = mutator
             .heap_mut()
-            .ensure_identity_hash(object(hashed_value));
+            .object_ensure_identity_hash(object(hashed_value));
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let unhashed_value = mutator.fetch(&unhashed);
@@ -5476,7 +5585,7 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         )
         .expect("snapshot");
         assert_eq!(
-            mutator.heap().identity_hash(object(unhashed_value)),
+            mutator.heap().object_identity_hash(object(unhashed_value)),
             0,
             "snapshotting assigns no hash"
         );
@@ -5490,16 +5599,16 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
         );
         let heap = mutator.heap_mut();
         assert_eq!(
-            heap.identity_hash(kept),
+            heap.object_identity_hash(kept),
             assigned,
             "an assigned hash is preserved"
         );
         assert_eq!(
-            heap.identity_hash(fresh),
+            heap.object_identity_hash(fresh),
             0,
             "an unassigned hash stays unassigned"
         );
-        assert!(heap.ensure_identity_hash(fresh) > assigned);
+        assert!(heap.object_ensure_identity_hash(fresh) > assigned);
     });
 }
 
@@ -5523,9 +5632,11 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let integer = mutator.builtin_class(BuiltinClass::Integer);
-        let integer_hash = mutator.heap_mut().ensure_identity_hash(integer);
-        let class_hash = mutator.heap_mut().ensure_identity_hash(class);
-        let platform_hash = mutator.heap_mut().ensure_identity_hash(object(platform));
+        let integer_hash = mutator.heap_mut().object_ensure_identity_hash(integer);
+        let class_hash = mutator.heap_mut().object_ensure_identity_hash(class);
+        let platform_hash = mutator
+            .heap_mut()
+            .object_ensure_identity_hash(object(platform));
         let bytes = snapshot_one(
             mutator,
             None,
@@ -5557,17 +5668,20 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         let loaded_integer = mutator.builtin_class(BuiltinClass::Integer);
         let loaded_string = mutator.builtin_class(BuiltinClass::String);
         let heap = mutator.heap_mut();
-        assert_eq!(heap.identity_hash(loaded_integer), integer_hash);
-        assert_eq!(heap.identity_hash(loaded_class), class_hash);
-        assert_eq!(heap.identity_hash(object(loaded_platform)), platform_hash);
+        assert_eq!(heap.object_identity_hash(loaded_integer), integer_hash);
+        assert_eq!(heap.object_identity_hash(loaded_class), class_hash);
         assert_eq!(
-            heap.identity_hash(loaded_string),
+            heap.object_identity_hash(object(loaded_platform)),
+            platform_hash
+        );
+        assert_eq!(
+            heap.object_identity_hash(loaded_string),
             0,
             "a builtin nothing asked for its hash stays unassigned"
         );
         let largest = integer_hash.max(class_hash).max(platform_hash);
         assert!(
-            heap.ensure_identity_hash(loaded_string) > largest,
+            heap.object_ensure_identity_hash(loaded_string) > largest,
             "the counter is advanced past the tag-named hashes too"
         );
     });
@@ -5580,7 +5694,7 @@ fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
         let class = class_reference(mutator, &class);
         let modules = image::ModuleClasses::of(mutator.heap(), &[class]);
         let mut reader = decode::Reader::new(bytes);
-        decode::decode_tag_named_hashes(&mut reader, mutator, &modules, &[])
+        decode::decode_tag_named_hashes(mutator, &mut reader, &modules, &[])
     })
 }
 
@@ -5965,7 +6079,7 @@ fn class_name<'gc>(heap: &ns_runtime::Heap<'gc>, class: ClassReference<'gc>) -> 
 }
 
 fn class_of<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> ClassReference<'gc> {
-    heap.class_of_object(object(value))
+    heap.object_class(object(value))
 }
 
 /// The value sitting in `enclosing`'s hidden cache slot for nested
@@ -6445,24 +6559,21 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         let class = class_reference(mutator, &class);
         // The one thing an image can present that the load-time checks let
         // through: right kind, right arity, wrong value.
-        let doctored = Rc::new(CompiledCode {
-            kind: CodeKind::SuperclassMessage,
-            instructions: vec![
+        let doctored = Rc::new(CompiledCode::new(
+            CodeKind::SuperclassMessage,
+            vec![
                 Instruction::LoadLiteral {
                     destination: 0,
                     literal: Literal::SmallInteger(1),
                 },
                 Instruction::Return { register: 0 },
             ],
-            argument_count: 0,
-            register_count: 1,
-            statement_program_counter: vec![(0, 0..2)],
-            family_size: 0,
-            copied_count: 0,
-            outer_reach: 0,
-            unwind_marker: None,
-            source: Span::new(0, 0),
-        });
+            0,
+            1,
+            0,
+            vec![(0, 0..2)],
+            Span::new(0, 0),
+        ));
         let doctored = with_nested(mixin_of(mutator.heap(), class), "Derived", |nested| {
             assert!(
                 nested.superclass_message_code.is_some(),
@@ -6717,6 +6828,119 @@ fn an_image_of_two_modules_restores_both_and_the_graph_reaching_them() {
     );
 }
 
+/// Where the graph section starts, as `inspect` attributes it.
+fn graph_section_start(bytes: &[u8]) -> usize {
+    image::inspect::inspect(bytes)
+        .expect("inspect")
+        .sections
+        .iter()
+        .find(|section| section.name == "graph")
+        .expect("a graph section")
+        .start
+}
+
+/// Rewrites the one occurrence of `pattern` in the graph section to
+/// `replacement`.
+fn rewrite_in_graph(bytes: &mut [u8], pattern: &[u8], replacement: &[u8]) {
+    let start = graph_section_start(bytes);
+    let occurrences: Vec<usize> = bytes[start..]
+        .windows(pattern.len())
+        .enumerate()
+        .filter(|(_, window)| *window == pattern)
+        .map(|(offset, _)| start + offset)
+        .collect();
+    assert_eq!(
+        occurrences.len(),
+        1,
+        "the pattern must occur exactly once in the graph section"
+    );
+    let position = occurrences[0];
+    bytes[position..position + replacement.len()].copy_from_slice(replacement);
+}
+
+/// `inspect` reports on the files that fail to load too, so a class tag
+/// naming a module past the module section, or a level past the ones a root
+/// section rebuilds, is shown marked as such rather than refused or printed
+/// as if it named one.
+#[test]
+fn inspect_marks_a_module_class_tag_past_the_modules() {
+    let (mut interpreter, first, second, instance) = two_module_world();
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("held:"),
+            std::slice::from_ref(&second),
+        ),
+        "held:",
+    );
+    let mut bytes = two_module_image(&mut interpreter, &first, &second, &instance);
+    let mut held_second = vec![VALUE_CLASS_TAG, CLASS_MODULE];
+    held_second.extend(1u32.to_le_bytes());
+    let mut held_seventh = vec![VALUE_CLASS_TAG, CLASS_MODULE];
+    held_seventh.extend(7u32.to_le_bytes());
+    rewrite_in_graph(&mut bytes, &held_second, &held_seventh);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("class <module 7: out of range>")),
+        "the module past the section is marked: {:?}",
+        report.graph_objects
+    );
+
+    let source = indoc! {"
+        class Root = Object new <: Value () ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let platform = interpreter.platform();
+    let mut bytes = interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let level = mutator
+            .heap()
+            .class_superclass(root_class)
+            .expect("the root's level");
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            platform,
+            &[Value::object(level)],
+        )
+        .expect("snapshot")
+    });
+    let mut level_zero = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
+    level_zero.extend(0u32.to_le_bytes());
+    level_zero.extend(0u32.to_le_bytes());
+    let mut level_three = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
+    level_three.extend(0u32.to_le_bytes());
+    level_three.extend(3u32.to_le_bytes());
+    rewrite_in_graph(&mut bytes, &level_zero, &level_three);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.graph_roots,
+        vec!["class <module 0 level 3: out of range>".to_string()]
+    );
+}
+
+/// No image reaches this refusal today -- the root rule admits only `Object`
+/// and `Value`, which every bootstrap applies -- so its report is pinned
+/// here, where a malformed message would otherwise go unseen.
+#[test]
+fn a_root_builtin_without_an_application_names_its_module_and_builtin() {
+    let error = decode::DecodeError::RootBuiltinWithoutApplication {
+        module: 2,
+        builtin: BuiltinClass::Value,
+    };
+    assert_eq!(
+        error.to_string(),
+        "the root class of the image's module 2 builds on the builtin Value, which this build \
+         has no behaviour for"
+    );
+}
+
 #[test]
 fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();
@@ -6914,7 +7138,7 @@ fn a_module_levels_own_hash_survives_an_image() {
             .heap()
             .class_superclass(class)
             .expect("the level `<: Value` added");
-        let hash = mutator.heap_mut().ensure_identity_hash(level);
+        let hash = mutator.heap_mut().object_ensure_identity_hash(level);
         let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
@@ -6943,7 +7167,7 @@ fn a_module_levels_own_hash_survives_an_image() {
         let level = heap
             .class_superclass(class_reference(mutator, &module_class))
             .expect("the loaded level");
-        assert_eq!(heap.identity_hash(level), hash);
+        assert_eq!(heap.object_identity_hash(level), hash);
     });
 }
 
@@ -7544,10 +7768,10 @@ fn two_modules_encode_as_two_trees_in_module_order() {
     let second = interpreter.load_module(&resolved);
     interpreter.enter(|mutator| {
         let roots = [
-            class_reference(mutator, &first),
-            class_reference(mutator, &second),
+            root_mixin_of(mutator.heap(), class_reference(mutator, &first)),
+            root_mixin_of(mutator.heap(), class_reference(mutator, &second)),
         ];
-        let rows = mixins::plan(mutator.heap(), &roots).expect("plan");
+        let rows = mixins::plan(&roots).expect("plan");
         let names: Vec<&str> = rows.iter().map(|row| row.mixin.name.as_str()).collect();
         // First's tree -- itself, its nested Inner, Inner's and its own
         // class sides in preorder -- then Second's.
@@ -7560,11 +7784,10 @@ fn two_modules_encode_as_two_trees_in_module_order() {
         assert!(!names[second_at..].contains(&"Inner"));
         let mut symbols = symbols::Builder::new();
         let mut code = encode::Writer::new();
-        let ids = encode::encode_code_table(&mut code, mutator.heap(), &roots, &mut symbols)
-            .expect("encode code table");
+        let ids =
+            encode::encode_code_table(&mut code, &roots, &mut symbols).expect("encode code table");
         let mut writer = encode::Writer::new();
-        mixins::encode(&mut writer, mutator.heap(), &roots, &mut symbols, &ids)
-            .expect("encode mixin table");
+        mixins::encode(&mut writer, &roots, &mut symbols, &ids).expect("encode mixin table");
         let table = symbols.build();
         let code_bytes = code.into_bytes();
         let decoded_code = decode::decode_code_table(&mut decode::Reader::new(&code_bytes), &table)
@@ -8197,7 +8420,7 @@ fn a_frame_program_counter_past_its_bodys_last_instruction_is_refused() {
     let bytes = closure_over_frame(foo_frame_at_program_counter(2, 99));
     fixture.decoded(&bytes, "decode", |heap, graph| {
         let error =
-            decode::verify_graph(graph, &table, heap).expect_err("out-of-range program counter");
+            decode::verify_graph(heap, graph, &table).expect_err("out-of-range program counter");
         assert_eq!(
             error,
             decode::DecodeError::ProgramCounterOutOfRange {
@@ -8362,7 +8585,7 @@ fn an_activation_object_round_trips() {
         assert!(
             mutator
                 .heap_mut()
-                .set_instance_field(object(instance), 0, Value::object(activation)),
+                .instance_set_field(object(instance), 0, Value::object(activation)),
             "the holder has a slot"
         );
         let class = class_reference(mutator, &class);
@@ -8387,7 +8610,7 @@ fn an_activation_object_round_trips() {
             .instance_field(holder, 0)
             .expect("the loaded holder has its slot");
         let held = object(held);
-        assert!(heap.class_of_object(held).same(activation_class));
+        assert!(heap.object_class(held).same(activation_class));
         let frame = heap
             .activation_object_frame(held)
             .expect("the slot holds an activation object");
@@ -8427,7 +8650,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         let mut forged = mutator.heap().frame_snapshot(home);
         assert!(forged.uncontinuable, "`mk` had returned");
         forged.uncontinuable = false;
-        mutator.heap_mut().replace_frame(home, forged);
+        mutator.heap_mut().frame_replace(home, forged);
         let class = class_reference(mutator, &class);
         let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
@@ -8668,7 +8891,7 @@ fn regenerate_the_golden_fixture() {
 }
 
 #[test]
-fn an_unknown_header_flag_is_still_rejected_now_that_three_are_known() {
+fn a_header_flag_this_build_does_not_assign_is_rejected() {
     // Bit 3 is not assigned. A flag this build does not implement means a
     // section it cannot see, so continuing would read the next field out of
     // whatever that section occupies.
@@ -9068,7 +9291,7 @@ fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
             .expect("the decoded class record has its metaclass");
         assert!(kept.same(metaclass), "one metaclass, not two");
         assert!(
-            mutator.heap().class_of_object(loaded_holder).same(kept),
+            mutator.heap().object_class(loaded_holder).same(kept),
             "the decoded class is an instance of the decoded metaclass"
         );
         assert!(
@@ -9127,8 +9350,8 @@ fn a_builtin_metaclass_round_trips_by_tag() {
             .metaclass_of(loaded_class)
             .is_some_and(|metaclass| metaclass.same(other)));
         // Each is its class's class, as the header says.
-        assert!(mutator.heap().class_of_object(integer).same(kept));
-        assert!(mutator.heap().class_of_object(loaded_class).same(other));
+        assert!(mutator.heap().object_class(integer).same(kept));
+        assert!(mutator.heap().object_class(loaded_class).same(other));
     });
 }
 
@@ -9154,7 +9377,7 @@ fn a_metaclass_identity_hash_survives() {
             .collect();
         metaclasses
             .into_iter()
-            .map(|metaclass| mutator.heap_mut().ensure_identity_hash(metaclass))
+            .map(|metaclass| mutator.heap_mut().object_ensure_identity_hash(metaclass))
             .collect::<Vec<u32>>()
     });
     let bytes = snapshot_world(
@@ -9189,7 +9412,7 @@ fn a_metaclass_identity_hash_survives() {
             .into_iter()
             .map(|class| {
                 let metaclass = mutator.metaclass_of(class).expect("a metaclass");
-                mutator.heap().identity_hash(metaclass)
+                mutator.heap().object_identity_hash(metaclass)
             })
             .collect();
         assert_eq!(loaded_hashes, hashes);
@@ -9214,7 +9437,7 @@ fn a_root_level_metaclass_round_trips_by_tag() {
             .class_superclass(root_class)
             .expect("the root's level");
         let metaclass = mutator.metaclass_of(level).expect("a metaclass");
-        let hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+        let hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
@@ -9249,8 +9472,8 @@ fn a_root_level_metaclass_round_trips_by_tag() {
         assert!(mutator
             .metaclass_of(level)
             .is_some_and(|level_metaclass| level_metaclass.same(metaclass)));
-        assert!(mutator.heap().class_of_object(level).same(metaclass));
-        assert_eq!(mutator.heap().identity_hash(metaclass), hash);
+        assert!(mutator.heap().object_class(level).same(metaclass));
+        assert_eq!(mutator.heap().object_identity_hash(metaclass), hash);
     });
 }
 
@@ -9343,7 +9566,7 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
         let mirror = (0..field_count)
             .filter_map(|index| heap.instance_field(kernel, index))
             .find(|field| match field.kind() {
-                ValueKind::Object(field) => heap.class_of_object(field).same(mirror_class),
+                ValueKind::Object(field) => heap.object_class(field).same(mirror_class),
                 _ => false,
             })
             .expect("the kernel holds the mirror");
@@ -9467,7 +9690,7 @@ fn a_nested_metaclass_reference_is_refused() {
     one_level.extend_from_slice(&[0, 0, 0, 0]); // no roots
     fixture.decoded(&one_level, "Integer's metaclass by tag", |heap, graph| {
         let Some(element) = heap
-            .array_at(graph.objects[0], 0)
+            .array_element(graph.objects[0], 0)
             .and_then(Value::as_object)
         else {
             panic!("the array holds a class object");
@@ -9727,8 +9950,8 @@ fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
         let marker_clause = heap
             .class_applied_clause(marker_level)
             .expect("the Marker level carries the clause that added it");
-        assert_eq!(marker_clause.selector.as_str(), "withMark:");
-        assert!(marker_clause.has_arguments);
+        assert_eq!(marker_clause.message.selector.as_str(), "withMark:");
+        assert!(marker_clause.message.has_arguments);
         assert!(heap.class_applied_clause(stamp_level).is_some());
         assert!(heap.class_applied_clause(base).is_none());
     });
@@ -9805,7 +10028,7 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
             let clause = heap
                 .class_applied_clause(level)
                 .expect("the level carries the root's clause");
-            assert_eq!(clause.selector, Symbol::NEW);
+            assert_eq!(clause.message.selector, Symbol::NEW);
             assert_eq!(
                 heap.class_builtin(heap.class_superclass(level).expect("a superclass")),
                 Some(BuiltinClass::Object)
@@ -9947,7 +10170,7 @@ fn a_well_formed_applied_level_record_decodes_with_its_clause() {
         let clause = heap
             .class_applied_clause(graph.objects[0])
             .expect("the record's clause is attached to the level");
-        assert_eq!(clause.selector, Symbol::NEW);
+        assert_eq!(clause.message.selector, Symbol::NEW);
         assert_eq!(class_name(heap, graph.objects[0]), "Marker");
     });
 }
@@ -10105,7 +10328,7 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
 /// level applying the mirror's mixin would hand its instances every
 /// primitive.
 #[test]
-fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
+fn a_level_applying_a_builtin_no_program_may_name_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let applied = row_named(&fixture, "Applied");
     for kind in [
@@ -10391,7 +10614,7 @@ fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
             continue;
         }
         seen.push(object);
-        if heap.class_of_object(object).same(future_class) {
+        if heap.object_class(object).same(future_class) {
             return true;
         }
         if let Some(elements) = heap.array_elements(object) {
@@ -10454,7 +10677,7 @@ fn a_resolved_future_is_written_as_its_value() {
         assert!(
             mutator
                 .heap_mut()
-                .set_instance_field(object(holder), 1, Value::object(kept)),
+                .instance_set_field(object(holder), 1, Value::object(kept)),
             "the holder has its kept slot"
         );
         assert!(reaches_a_future(mutator, holder), "the premise");
@@ -10492,14 +10715,18 @@ fn a_resolved_future_is_written_as_its_value() {
         let first = object(mutator.fetch(&first));
         let second = object(mutator.fetch(&second));
         let kept = object(mutator.fetch(&kept));
-        let element = heap.array_at(first, 0).expect("first holds one element");
+        let element = heap
+            .array_element(first, 0)
+            .expect("first holds one element");
         assert!(
             object(element).same(second),
             "first's element is second's array itself"
         );
-        let back = heap.array_at(second, 0).expect("second holds one element");
+        let back = heap
+            .array_element(second, 0)
+            .expect("second holds one element");
         assert!(object(back).same(first), "and second's is first's");
-        let kept_element = heap.array_at(kept, 0).expect("kept holds one element");
+        let kept_element = heap.array_element(kept, 0).expect("kept holds one element");
         assert!(
             object(kept_element).same(second),
             "kept's element is second's array itself"
@@ -10624,19 +10851,19 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             let heap = mutator.heap_mut();
             match corruption {
                 "no closure" => {
-                    heap.set_instance_field(future, 0, Value::small_integer(5));
+                    heap.instance_set_field(future, 0, Value::small_integer(5));
                 }
                 "state 7" => {
-                    heap.set_instance_field(future, 1, Value::small_integer(7));
+                    heap.instance_set_field(future, 1, Value::small_integer(7));
                 }
                 _ => {
-                    heap.set_instance_field(future, 0, Value::object(other));
-                    heap.set_instance_field(future, 1, Value::small_integer(2));
-                    heap.set_instance_field(other, 0, Value::object(future));
-                    heap.set_instance_field(other, 1, Value::small_integer(2));
+                    heap.instance_set_field(future, 0, Value::object(other));
+                    heap.instance_set_field(future, 1, Value::small_integer(2));
+                    heap.instance_set_field(other, 0, Value::object(future));
+                    heap.instance_set_field(other, 1, Value::small_integer(2));
                 }
             }
-            heap.set_instance_field(object(holder), 0, Value::object(future));
+            heap.instance_set_field(object(holder), 0, Value::object(future));
             let class = class_reference(mutator, &class);
             let platform = mutator.fetch(&platform);
             match snapshot_one(
@@ -10745,7 +10972,7 @@ fn a_root_level_class_tag_names_the_root_classs_own_level() {
             .heap()
             .class_superclass(root)
             .expect("the root's level");
-        mutator.heap_mut().ensure_identity_hash(level)
+        mutator.heap_mut().object_ensure_identity_hash(level)
     });
     fixture.decoded(&bytes, "a root level", |heap, graph| {
         let element = heap
@@ -10757,7 +10984,7 @@ fn a_root_level_class_tag_names_the_root_classs_own_level() {
         let Some(level) = element.as_object() else {
             panic!("the element is a class object")
         };
-        assert_eq!(heap.identity_hash(level), level_hash);
+        assert_eq!(heap.object_identity_hash(level), level_hash);
         assert!(heap.class_applied_clause(level).is_some());
     });
 }
@@ -10964,11 +11191,10 @@ fn a_clause_message_whose_arity_disagrees_with_the_factory_is_refused_at_load() 
     let error = verify_doctored_applied(|applied| {
         let mut clauses = applied.mixin_applications.clone();
         let message = clauses[0].message_code.clone().expect("withMark: x * 10");
-        clauses[0].message_code = Some(Rc::new(CompiledCode {
-            argument_count: message.argument_count + 1,
-            register_count: message.register_count + 1,
-            ..(*message).clone()
-        }));
+        let mut doctored = (*message).clone();
+        doctored.argument_count = message.argument_count + 1;
+        doctored.register_count = message.register_count + 1;
+        clauses[0].message_code = Some(Rc::new(doctored));
         Mixin {
             mixin_applications: clauses,
             ..applied
@@ -11028,7 +11254,7 @@ fn a_clause_message_with_arguments_and_no_body_is_refused_at_load() {
 fn a_clause_message_without_arguments_that_carries_a_body_is_refused_at_load() {
     let error = verify_doctored_applied(|applied| {
         let mut clauses = applied.mixin_applications.clone();
-        assert!(!clauses[1].has_arguments, "<: Stamp sends new");
+        assert!(!clauses[1].message.has_arguments, "<: Stamp sends new");
         clauses[1].message_code = clauses[0].message_code.clone();
         Mixin {
             mixin_applications: clauses,
@@ -11846,13 +12072,13 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
             .heap()
             .class_enclosing(object)
             .expect("the kernel instance encloses Object");
-        let kernel_class = mutator.heap().class_of_object(kernel);
+        let kernel_class = mutator.heap().object_class(kernel);
         let collections_class = class_reference(mutator, &collections_class);
         let collections_factory = mutator
             .heap()
             .class_enclosing(collections_class)
             .expect("the collections factory instance encloses the facet class");
-        let collections_factory_class = mutator.heap().class_of_object(collections_factory);
+        let collections_factory_class = mutator.heap().object_class(collections_factory);
         for (shipped, expected) in [
             (
                 kernel,
@@ -11972,12 +12198,15 @@ fn decode_tag_named_with_the_transcript(bytes: &[u8]) -> (Result<u32, decode::De
         let transcript = mutator.fetch(&transcript);
         let mut reader = decode::Reader::new(bytes);
         let result = decode::decode_tag_named_hashes(
-            &mut reader,
             mutator,
+            &mut reader,
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             &[transcript],
         );
-        (result, mutator.heap().identity_hash(object(transcript)))
+        (
+            result,
+            mutator.heap().object_identity_hash(object(transcript)),
+        )
     })
 }
 
@@ -12027,12 +12256,12 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
             .heap()
             .class_metaclass(array)
             .expect("Array has a metaclass");
-        let class_hash = mutator.heap_mut().ensure_identity_hash(array);
-        let metaclass_hash = mutator.heap_mut().ensure_identity_hash(metaclass);
+        let class_hash = mutator.heap_mut().object_ensure_identity_hash(array);
+        let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
         let mut writer = encode::Writer::new();
         encode::encode_tag_named_hashes(
-            &mut writer,
             mutator,
+            &mut writer,
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             platform,
             &[array],
@@ -12041,8 +12270,8 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
         let entries = u32::from_le_bytes(bytes[..4].try_into().expect("a count"));
         let mut reader = decode::Reader::new(&bytes);
         let decoded = decode::decode_tag_named_hashes(
-            &mut reader,
             mutator,
+            &mut reader,
             &image::ModuleClasses::of(mutator.heap(), &[class]),
             &[Value::object(array)],
         );

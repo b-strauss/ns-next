@@ -77,6 +77,7 @@ fn literal_tags_are_fixed() {
     assert_eq!(LITERAL_SYMBOL, 5);
     assert_eq!(LITERAL_UNRESOLVED_IDENTIFIER, 9);
     assert_eq!(LITERAL_LARGE_INTEGER, 10);
+    assert_eq!(LITERAL_BODY_TOO_LARGE, 11);
 }
 
 /// Two tags sharing a number would make the encoder ambiguous and the decoder
@@ -136,6 +137,7 @@ fn no_two_tags_share_a_number() {
         LITERAL_SYMBOL,
         LITERAL_UNRESOLVED_IDENTIFIER,
         LITERAL_LARGE_INTEGER,
+        LITERAL_BODY_TOO_LARGE,
     ];
     let mut sorted = literals;
     sorted.sort_unstable();

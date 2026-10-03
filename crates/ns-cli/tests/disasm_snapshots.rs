@@ -285,7 +285,7 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
             ..(*application.mixin).clone()
         };
         let rewired = mutator.apply_mixin(&Rc::new(bare), application.superclass.as_ref());
-        assert!(mutator.heap_mut().set_class_application(class, rewired));
+        assert!(mutator.heap_mut().class_set_application(class, rewired));
         let origin = SourceOrigin::File("bare.ns".into());
         let modules = [ns_runtime::image::ModuleSource {
             class,

@@ -45,7 +45,7 @@ pub(crate) fn recognize(
     // than left to run an `ensure:` block twice.
     assert!(
         !code
-            .instructions
+            .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })),
         "internal: Kernel.ns's Block>>{selector} keeps a local in an indirection vector, \
@@ -68,7 +68,7 @@ pub(crate) fn recognize(
     };
     if let Some(register) = written {
         debug_assert!(
-            code.instructions
+            code.instructions()
                 .iter()
                 .any(|instruction| writes_register(instruction, register)),
             "internal: Kernel.ns's Block>>{selector} never writes register {register}, \
@@ -101,5 +101,5 @@ fn local_register(declaration: &ast::MethodDeclaration, code: &CompiledCode, nam
             panic!("internal: Kernel.ns's marked Block method declares no local {name}")
         });
     debug_assert_eq!(code.copied_count, 0, "a method is handed no copied values");
-    code.argument_count + position as u16
+    super::temporary_index(code.argument_count, position)
 }

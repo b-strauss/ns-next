@@ -20,19 +20,18 @@ struct BenchmarkStatistics {
     collector_statistics: Option<ns_runtime::CollectorStatistics>,
 }
 
-/// Renders an `instantiate`/`send` failure for `bench`'s purposes. Neither
-/// call site treats it as fatal to the whole process the way `run` does --
-/// `execute` folds it into its `Result` instead -- so this
-/// produces a `String`, not an `ExitCode`.
-fn signal_message(signal: ns_runtime::HostSignal) -> String {
+/// Reports a failed entry send on stderr, once, and answers the exit code
+/// `bench` ends with.
+fn report_signal(signal: ns_runtime::HostSignal) -> ExitCode {
     match signal {
         ns_runtime::HostSignal::Error(error) => {
-            format!("Uncaught Newspeak error: {}", error.message)
+            eprintln!("error: Uncaught Newspeak error: {}", error.message);
         }
         ns_runtime::HostSignal::Return => {
-            "internal: non-local return escaped the entry send".to_string()
+            eprintln!("error: internal: non-local return escaped the entry send");
         }
     }
+    ExitCode::FAILURE
 }
 
 /// One assemble-and-send sample. Assembling the application happens but is
@@ -42,21 +41,23 @@ fn signal_message(signal: ns_runtime::HostSignal) -> String {
 /// instance variables (loop counters, accumulators), so sending the same
 /// application a second time would time a cheaper run against
 /// already-mutated state instead of the same workload every iteration.
+///
+/// A failure is reported on stderr where it happens --
+/// `instantiate_application` reports its own -- so the `Err` carries only
+/// the exit code.
 fn timed_send(
     program: &Program,
     loaded: &mut Loaded,
     arguments: &[ns_runtime::Root],
-) -> Result<std::time::Duration, String> {
-    // `instantiate_application` has already reported its failure on stderr.
-    let application = program::instantiate_application(program, loaded)
-        .map_err(|_| String::from("instantiation failed"))?;
+) -> Result<std::time::Duration, ExitCode> {
+    let application = program::instantiate_application(program, loaded)?;
     let start = std::time::Instant::now();
     let outcome =
         loaded
             .interpreter
             .send(&application, ns_runtime::Symbol::MAIN_ARGUMENTS, arguments);
     let elapsed = start.elapsed();
-    outcome.map(|_| elapsed).map_err(signal_message)
+    outcome.map(|_| elapsed).map_err(report_signal)
 }
 
 /// Loads the program (which compiles every module), discards one warm-up
@@ -70,7 +71,7 @@ fn benchmark_entry(
     cache_statistics: bool,
     collector_statistics: bool,
     program_arguments: &[String],
-) -> Result<BenchmarkStatistics, String> {
+) -> Result<BenchmarkStatistics, ExitCode> {
     let mut loaded = program::load_program(program, ns_runtime::Lowering::Optimized);
     let arguments = entry::main_arguments(&mut loaded.interpreter, program_arguments);
 
@@ -158,10 +159,7 @@ pub(crate) fn execute(
                 entry::print_collector_statistics(collector_statistics);
             }
         }
-        Err(message) => {
-            eprintln!("error: {message}");
-            return ExitCode::FAILURE;
-        }
+        Err(code) => return code,
     }
     ExitCode::SUCCESS
 }

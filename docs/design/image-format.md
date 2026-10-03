@@ -42,19 +42,19 @@ or slices, and any recursion whose depth the input controls is bounded or made
 iterative.
 
 That guarantee is about **decoding**. `load` sends the packaged application
-`main: platform args:` with no flag at all, so starting one executes its
-code with the same exposure as running the equivalent source. Recursion depth
-is bounded by one counted limit, 100,000 activations, an ordinary Newspeak
-error rather than a native stack overflow, since nothing re-enters the run loop
-from Rust; and a crafted `SendInlinable` cannot use the count's one
-exemption to recurse uncounted. Nor can it stack more exempt activations above
-a counted one than source can: that number is bounded by how deeply blocks
-nest, which the decoder caps at the parser's own ceiling ("Verification"
-below); see [execution.md](execution.md), "The depth limit". A mutated
-artifact that decodes cleanly can still abort while executing — a native that
-indexes an argument it was not given, for one: the `whileTrue:` and
-`whileFalse:` leaves read `arguments[0]` unchecked, and the decoder does not check a send's argument count
-against its selector — and that is not a decoder defect.
+`main: platform args:` with no flag at all, so starting one executes its code
+with the same exposure as running the equivalent source. Recursion depth is
+bounded by one counted limit, 100,000 activations, an ordinary Newspeak error
+rather than a native stack overflow, since nothing re-enters the run loop from
+Rust; and a crafted `SendInlinable` cannot use the count's one exemption to
+recurse uncounted. Nor can it stack more exempt activations above a counted
+one than source can: that number is bounded by how deeply blocks nest, which
+the decoder caps at the parser's own ceiling ("Verification" below); see
+[execution.md](execution.md), "The depth limit". A mutated artifact that
+decodes cleanly can still abort while executing — a native that indexes an
+argument it was not given, for one: the `whileTrue:` and `whileFalse:` leaves
+read `arguments[0]` unchecked, and the decoder does not check a send's
+argument count against its selector — and that is not a decoder defect.
 
 ## The artifact
 
@@ -214,12 +214,21 @@ a load; nothing recompiles. How each instruction is encoded is below.
 
 ## The instruction encoding
 
-In memory an instruction is a Rust enum; on the wire it is **a tag byte followed
-by a fixed operand layout** for that tag. Registers are `u16`, jump targets are
-instruction indices, a send's call site is its `u32` number within its code
-family, selectors and names are symbol-table ids, and a literal
-carries its own tag byte from a second table. No instruction's operands
-nest.
+On the wire an instruction is a `bytecode::Instruction`, written as **a tag
+byte followed by a fixed operand layout** for that tag. Registers are `u16`,
+jump targets are instruction indices, a send's call site is its `u32` number
+within its code family, selectors and names are symbol-table ids, and a
+literal carries its own tag byte from a second table. No instruction's
+operands nest.
+
+In memory a body is stored in a different form, eight bytes an instruction
+with side tables ([execution.md](execution.md), "The compact instruction
+encoding"), which the wire does not see: the encoder writes the
+`Instruction`s it reads back through the body's decoded view, and the
+decoder emits every `Instruction` it reads into a `CodeBuilder`. One
+instruction is one eight-byte slot, so a jump target, the statement map and
+a frame's `program_counter` are the same instruction index on the wire and
+in memory.
 
 **A tag is assigned once and never changes.** A new instruction takes the next
 free number; a removed one retires its number rather than freeing it for reuse.
@@ -355,25 +364,44 @@ Literals:
 - 10 `LargeInteger`: an integer literal beyond `i64`, in the same wire form
   as value tag 9 below -- a sign byte, a `u32` digit count and that many
   `u64` digits, least significant first -- so the decoder parses no text.
+- 11 `BodyTooLarge`: no payload; what the body standing in for one past the
+  register ceiling loads first. It raises its error when it runs
+  ([compiler.md](compiler.md), "Compilation cannot fail").
 
-**A call-site number is a property of the code, never a byte on the wire.**
-It is feedback-table bookkeeping, not program meaning: the decoder assigns
-every family's numbers itself, in the compiler's own emission order, once
-the whole code table is read (`decode::number_call_site_families`), rather
-than trusting a number the file claims. A code record carries one flag,
-whether its sends were compiled uncached (the reference lowering never
-numbers a send at all, so it marks the whole body rather than leaving each
-send to say so), and one count, `copied_count`, so that a block's register
-layout is known from its code alone. `outer_reach` is not on the wire either:
-the decoder derives it with the compiler's own `bytecode::outer_reach_of`,
-which works because a block's code precedes its parent's in the table. A
-body's `family_size` is not on the wire either way; both
-sides derive it from the sends' numbers and the blocks' sizes with the same
-function (`bytecode::family_size_of`). A block precedes its parent in the
-table, but its numbers depend on where its `MakeClosure` sits in its root's
-emission order, so the decoder numbers a family only once its root -- the
-body nothing else's `MakeClosure` creates -- has been read in full. The
-golden image is 1281 bytes.
+**A count past its field refuses the image, never aborts it.** A count a
+program decides is written through a checked narrowing that answers an
+error, `image encoding cannot write a <what> of <n>: it does not fit the
+image format's 16-bit field` (or `32-bit`): in 16 bits a register list, a
+closure's parameter and copied-value counts and a method's or factory's
+arity (`encode::u16_field`), all of which a valid program can pass
+([compiler.md](compiler.md), "Compilation cannot fail"); in 32 bits a
+string's, a symbol's, a value list's and a `LargeInteger`'s digit count
+(`encode::u32_length`). Every other count goes through the asserting
+`encode::u32_field`, because no program can pass it: object and frame ids
+and counts are bounded by the heap's 32-bit handles, declaration, statement
+and instruction counts by source, whose `Span` offsets are 32-bit --
+`ns_syntax::lex`, which `parse` goes through, refuses a source of more than
+`u32::MAX` bytes with a parse diagnostic before lexing it -- and the symbol
+table's count by the two together.
+
+**A call-site number is a property of the code, never a byte on the wire.** It
+is feedback-table bookkeeping, not program meaning: the decoder assigns every
+family's numbers itself, in the compiler's own emission order, once the whole
+code table is read (`decode::number_call_site_families`), rather than trusting a
+number the file claims, writing each into the decoded body in place through
+`EncodedBody::for_each_emitted_mut`. A code record carries one flag, whether its
+sends were compiled uncached (the reference lowering never numbers a send at
+all, so it marks the whole body rather than leaving each send to say so), and
+one count, `copied_count`, so that a block's register layout is known from its
+code alone. `outer_reach` is not on the wire either: the decoder derives it as
+the compiler does, in `CompiledCode::from_builder`, which works because a
+block's code precedes its parent's in the table. A body's `family_size` is not
+on the wire either way; both sides derive it from the sends' numbers and the
+blocks' sizes the same way, read off the encoding as `bytecode::family_size_of`
+reads the decoded view. A block precedes its parent in the table, but its
+numbers depend on where its `MakeClosure` sits in its root's emission order, so
+the decoder numbers a family only once its root -- the body nothing else's
+`MakeClosure` creates -- has been read in full. The golden image is 1281 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -382,18 +410,18 @@ share a number, so a renumbering fails the suite at the moment it happens instea
 of surfacing later as an image that no longer means what it said.
 
 The graph section's six tag families live there under the same rule: how a
-`Value` is encoded, an object record's body, how a class record names its mixin,
-how a class reference is named, what a frame was activated for, and which tag-named object an entry of the closing
-hash table names (`HASHED_*`, below). The platform paths added one tag to three
-of them, each followed by a `u32` index into the platform path section:
-`VALUE_PLATFORM_PATH` = 8, `CLASS_PLATFORM_PATH` = 5 and
-`HASHED_PLATFORM_PATH` = 4. They were bare literals in the encoder and
-again in the decoder until `inspect` became a third reader of those bytes — and
-three hand-kept copies of one numbering is how a viewer starts quietly
-disagreeing with the loader. A closure frame (`FRAME_CLOSURE`) names the closure
-object it runs by object id: the closure's data sits inline in its object, so
-that the tracer can rewrite its two frame handles in place
-([memory.md](memory.md), "What the collector traces").
+`Value` is encoded, an object record's body, how a class record names its
+mixin, how a class reference is named, what a frame was activated for, and
+which tag-named object an entry of the closing hash table names (`HASHED_*`,
+below). The platform paths added one tag to three of them, each followed by a
+`u32` index into the platform path section: `VALUE_PLATFORM_PATH` = 8,
+`CLASS_PLATFORM_PATH` = 5 and `HASHED_PLATFORM_PATH` = 4. They were bare
+literals in the encoder and again in the decoder until `inspect` became a
+third reader of those bytes — and three hand-kept copies of one numbering is
+how a viewer starts quietly disagreeing with the loader. A closure frame
+(`FRAME_CLOSURE`) names the closure object it runs by object id: the closure's
+data sits inline in its object, so that the tracer can rewrite its two frame
+handles in place ([memory.md](memory.md), "What the collector traces").
 
 **A `LargeInteger` is a value on the wire, never a record.** Value tag 9,
 `VALUE_LARGE_INTEGER`, carries it inline wherever a value goes -- a field,
@@ -566,48 +594,47 @@ of an artifact that carried one module, are retired
 program loaded them is also what keeps every identity hash the bootstrap
 draws the same as in the run that wrote the image.
 
-**Platform paths.** Immediately before the graph:
-a `u32` count, then per path a `u32` member count and that many symbol ids
-(`image::platform_paths`). A started image's section is empty: nothing
-before `main:args:` holds the platform or anything reached through it
-("Packaging" below), so the section serves an image `image::snapshot`
-writes, and the image with heap state to come. A path is the list of public members sent from the
-platform, one unary send each. The encoder finds them with
-`platform_paths::discover`, which walks from the platform over, for every level
-of an object's class, each **public** slot's field — a lazy slot's included,
-skipped while `nil` — and each **public** nested class's cache slot, skipped
-while empty, and then over each **public class accessor** the object
-answers: a method the compiler recognized, in shipped source other than the
-kernel, as exactly `^outer <Root> <Nested>` naming a nested class of its
-module's root (`MixinMethod::class_accessor`, read by the image code alone —
-no fast path and no per-send check). For one, `discover` decides without
-running anything what the send would do — the public lookup must find the
-recognized method, its `outer <Root>` must reach a module root's shipped
-instance, and the lexical send of `<Nested>` there must find that root's
-nested class — and reads the root instance's cache slot for that class,
-skipped while empty. It records every **shipped object** it reaches — a class object
-whose own mixin is compiled from shipped source (`Mixin.shipped`,
-`Heap::class_is_shipped`), or an instance with slots of such a class — and
-descends into shipped instances only, never into a class object. The one
-definition, `platform_paths::is_shipped_object`, is what the encoder's
-refusals and the loader apply too, so no path is written that a loader must
-refuse. Breadth-first, visiting each object
-once, so an object's path is its shortest, and among equals the first in
-member order — superclass level first, within a level its slots and nested
-classes in declaration order, then the class accessors by selector: one
-world encodes to one byte sequence. A string or an array is no shipped instance even when its class is a
-builtin: it carries its own data, and the image writes it as a record. Only the
-paths the graph **uses** are written, in the order the graph first reaches
-them, numbered densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
+**Platform paths.** Immediately before the graph: a `u32` count, then per path
+a `u32` member count and that many symbol ids (`image::platform_paths`). A
+started image's section is empty: nothing before `main:args:` holds the
+platform or anything reached through it ("Packaging" below), so the section
+serves an image `image::snapshot` writes, and the image with heap state to
+come. A path is the list of public members sent from the platform, one unary
+send each. The encoder finds them with `platform_paths::discover`, which walks
+from the platform over, for every level of an object's class, each **public**
+slot's field — a lazy slot's included, skipped while `nil` — and each
+**public** nested class's cache slot, skipped while empty, and then over each
+**public class accessor** the object answers: a method the compiler
+recognized, in shipped source other than the kernel, as exactly
+`^outer <Root> <Nested>` naming a nested class of its module's root
+(`MixinMethod::class_accessor`, read by the image code alone — no fast path
+and no per-send check). For one, `discover` decides without running anything
+what the send would do — the public lookup must find the recognized method,
+its `outer <Root>` must reach a module root's shipped instance, and the
+lexical send of `<Nested>` there must find that root's nested class — and
+reads the root instance's cache slot for that class, skipped while empty. It
+records every **shipped object** it reaches — a class object whose own mixin
+is compiled from shipped source (`Mixin.shipped`, `Heap::class_is_shipped`),
+or an instance with slots of such a class — and descends into shipped
+instances only, never into a class object. The one definition,
+`platform_paths::is_shipped_object`, is what the encoder's refusals and the
+loader apply too, so no path is written that a loader must refuse.
+Breadth-first, visiting each object once, so an object's path is its shortest,
+and among equals the first in member order — superclass level first, within a
+level its slots and nested classes in declaration order, then the class
+accessors by selector: one world encodes to one byte sequence. A string or an
+array is no shipped instance even when its class is a builtin: it carries its
+own data, and the image writes it as a record. Only the paths the graph
+**uses** are written, in the order the graph first reaches them, numbered
+densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
 `MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the platform is an
 instance of the nested class `Platform` of the shipped `PlatformFactory.ns`
-([core-library.md](core-library.md), "The platform"): its public slots are
-the lazy `transcript`, `collections`, `kernel` and `time`, and its class
-accessors `Platform`, `Transcript`, `KernelNamespace`, `Time` and
-`Stopwatch` name those classes of the module, once the module root's
-accessor for each has run. `time`'s own class accessor `Stopwatch` answers
-the class `Stopwatch` does, so the path `Stopwatch`, the shorter, is the
-one written for it. `collections`
+([core-library.md](core-library.md), "The platform"): its public slots are the
+lazy `transcript`, `collections`, `kernel` and `time`, and its class accessors
+`Platform`, `Transcript`, `KernelNamespace`, `Time` and `Stopwatch` name those
+classes of the module, once the module root's accessor for each has run.
+`time`'s own class accessor `Stopwatch` answers the class `Stopwatch` does, so
+the path `Stopwatch`, the shorter, is the one written for it. `collections`
 answers an instance of the shipped `CollectionsFactory.ns`'s facet
 `Collections`, whose own class accessors `Collections` and `List` name that
 module's two classes the same way, so `collections Collections` and
@@ -615,18 +642,17 @@ module's two classes the same way, so `collections Collections` and
 member. All seven classes are private to their root: a class accessor reaches
 them by a lexical send (§5.9), and `discover` looks the class up the same way
 (`dispatch::lexical_member`), so a private nested class is named by its
-accessor's path like a public one.
-Neither root instance is named by any path, and neither is ever written:
-nothing a program can name answers `PlatformFactory`'s root, and
-`CollectionsFactory`'s root is reached only lexically, from inside its own
-module, never through a slot a program can read. A second platform a program
-made with `platform class new` is an ordinary instance record of the class
-the path `Platform` names, and a second facet made with `platform collections
-class new` is one of the class the path `collections Collections` names.
-A `Stopwatch` is an object, not a value, and is written the same way, as a
-record of the class the path `Stopwatch` names with its readings; a started
-one reads a wrong time once loaded into another process
-([core-library.md](core-library.md), "The platform").
+accessor's path like a public one. Neither root instance is named by any path,
+and neither is ever written: nothing a program can name answers
+`PlatformFactory`'s root, and `CollectionsFactory`'s root is reached only
+lexically, from inside its own module, never through a slot a program can
+read. A second platform a program made with `platform class new` is an
+ordinary instance record of the class the path `Platform` names, and a second
+facet made with `platform collections class new` is one of the class the path
+`collections Collections` names. A `Stopwatch` is an object, not a value, and
+is written the same way, as a record of the class the path `Stopwatch` names
+with its readings; a started one reads a wrong time once loaded into another
+process ([core-library.md](core-library.md), "The platform").
 
 An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
 class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the
@@ -808,16 +834,17 @@ register-less frame; the reads then answer `nil` and the writes are dropped
 Tightening the check is not available: nothing on the wire distinguishes a
 legitimately register-less frame from a crafted one. It is the same class as
 the `own_index` gap below — wrong but safe output from a mutated program,
-never a panic. Under the planned object layout the gap will close: every reified frame
-will have room for its registers and the encoder will write its full
-register file, so a frame record's register file will have to match its body
-and `verify_graph` will be able to refuse one that does not ("Planned: the image under the new representation" below).
+never a panic. Under the planned object layout the gap will close: every
+reified frame will have room for its registers and the encoder will write its
+full register file, so a frame record's register file will have to match its
+body and `verify_graph` will be able to refuse one that does not ("Planned:
+the image under the new representation" below).
 
 **`Instruction::InitializeSlot`'s and `ReturnSlotIfFilled`'s `own_index` is not
 one of the counts these passes bound.** `verify_mixins` checks a body's kind and
 arity against its declaration, but nothing checks that a slot instruction's
 index falls within the mixin's own slot count. This is harmless at run time:
-`Heap::set_instance_field` and `Heap::instance_field` are total, so an
+`Heap::instance_set_field` and `Heap::instance_field` are total, so an
 out-of-range index writes nothing and reads as an empty slot, and an in-range
 but wrong one writes or reads a different slot of the instance -- silently
 wrong output, never a panic. That is acceptable for
@@ -969,28 +996,28 @@ text answer the mis-classed object too.
 capability: whoever holds it can run any leaf, and the bootstrap hands it to
 the shipped core-library modules alone, `Kernel.ns` and `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
-boundary"). Its class has builtin class tag **14**
-(`BuiltinClass::VmMirror`, appended to `BuiltinClass::ALL` after the retired
-13), which `builtin_class_from_tag` knows so that the closing table of
-tag-named hashes can name it as it names every builtin. **Everywhere the
-graph names a class — a class reference, the class behind a
-`CLASS_METACLASS`, a root class's superclass, the builtin a `<:` clause
-named — the decoder reads the tag through `read_referenced_builtin_class`,
-which refuses 14** as an invalid tag (`read_program_builtin_class`, which
-reads a superclass or a `<:` clause's builtin, calls it first): an
-artifact that could name the mirror's class could instantiate a second mirror
-or reach the one there is, and so claim every primitive, which no source
-module can (`a_level_applying_the_mirrors_or_tops_mixin_is_refused` and
+boundary"). Its class has builtin class tag **14** (`BuiltinClass::VmMirror`,
+appended to `BuiltinClass::ALL` after the retired 13), which
+`builtin_class_from_tag` knows so that the closing table of tag-named hashes
+can name it as it names every builtin. **Everywhere the graph names a class —
+a class reference, the class behind a `CLASS_METACLASS`, a root class's
+superclass, the builtin a `<:` clause named — the decoder reads the tag
+through `read_referenced_builtin_class`, which refuses 14** as an invalid tag
+(`read_program_builtin_class`, which reads a superclass or a `<:` clause's
+builtin, calls it first): an artifact that could name the mirror's class could
+instantiate a second mirror or reach the one there is, and so claim every
+primitive, which no source module can
+(`a_level_applying_a_builtin_no_program_may_name_is_refused` and
 `a_root_level_naming_a_clause_out_of_place_is_refused`, whose last case is a
-root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder refuses the other direction:
-an image whose graph reaches the mirror object is not written at all, since
-it would hand the capability to whatever loaded it
+root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder
+refuses the other direction: an image whose graph reaches the mirror object is
+not written at all, since it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
 and neither is one whose graph reaches the mirror's class, `Top`,
-`Activation`, `Future` or the metaclass of one of them (`encode::unnameable_class`),
-which the decoder would refuse.
-Neither can happen to a program built from source, which cannot obtain the
-mirror; both are there for the day something could.
+`Activation`, `Future` or the metaclass of one of them
+(`encode::unnameable_class`), which the decoder would refuse. Neither can
+happen to a program built from source, which cannot obtain the mirror; both
+are there for the day something could.
 
 **`Top` is refused the same way, for the same kind of reason.** The three
 classes the object model gained carry tags **15** (`Top`), **16** (`Value`)
@@ -1009,19 +1036,20 @@ artifact can name what no source can
 otherwise build a class outside §3.2's hierarchy that inherits nothing at
 all, not even `doesNotUnderstand:`.
 
-**`Behavior`, `Class` and `Metaclass` carry tags 20, 21 and 22**, after
-the retired 18 and 19. `read_program_builtin_class` refuses them as the
-builtin a `<:` level applies (`MIXIN_BUILTIN`) and as a root's superclass or
-level, since `Object` declares no accessor for any of them and no source
-module can name them — and a class over one of them could never be
-instantiated. As a class reference in the graph they are accepted, since a
-program reaches `Metaclass` as `3 class class class` and may keep it in a
-slot; a class record's superclass is such a reference, so a crafted class
-record over `Class` decodes, and its application carries the refusal to
-instantiate a class object like any class below `Behavior`. An object record that is no class object but whose class refuses
-instantiation as a class object — an instance of `Class`, `Metaclass` or a
-metaclass — is `InstanceOfAClassClass`, and a class record whose row is some
-row's class side is `ClassRecordAppliesAClassSide`: no source makes either.
+**`Behavior`, `Class` and `Metaclass` carry tags 20, 21 and 22**, after the
+retired 18 and 19. `read_program_builtin_class` refuses them as the builtin a
+`<:` level applies (`MIXIN_BUILTIN`) and as a root's superclass or level,
+since `Object` declares no accessor for any of them and no source module can
+name them — and a class over one of them could never be instantiated. As a
+class reference in the graph they are accepted, since a program reaches
+`Metaclass` as `3 class class class` and may keep it in a slot; a class
+record's superclass is such a reference, so a crafted class record over
+`Class` decodes, and its application carries the refusal to instantiate a
+class object like any class below `Behavior`. An object record that is no
+class object but whose class refuses instantiation as a class object — an
+instance of `Class`, `Metaclass` or a metaclass — is `InstanceOfAClassClass`,
+and a class record whose row is some row's class side is
+`ClassRecordAppliesAClassSide`: no source makes either.
 
 **An activation object is a record of its own; its class is named nowhere
 else.** `ObjectData::Activation`, an instance of the kernel-private
@@ -1491,29 +1519,29 @@ entry on the explicit activation stack ([execution.md](execution.md),
 activation stack is its only copy, since sends do not recurse through the Rust
 call stack ([execution.md](execution.md), "The trampoline") and nothing
 re-enters the run loop from Rust ([execution.md](execution.md), "No re-entry
-from Rust"). What is missing is a yield path out of `vm::run`, a re-entry
-point that would continue a decoded frame at its `program_counter`, and an encoding for
-what each stack entry's `Continuation` carries in Rust: a native loop's
+from Rust"). What is missing is a yield path out of `vm::run`, a re-entry point
+that would continue a decoded frame at its `program_counter`, and an encoding
+for what each stack entry's `Continuation` carries in Rust: a native loop's
 `WhileLoop` or `DoLoop`, a nested class's `NestedClassCreation`, an
-instantiation's `Instantiation`, the unwind an `ensure:` block's return
-carries on (`Unwind`, holding a `PendingUnwind`: its target frame and whether
-it returns a value, restarts or terminates), the end of the run a VM
-error's `signal` returns into (`VmErrorSignalled`) and a future's forcing
-(`Future`, holding a `FutureForcing`). An image records none of
-them today, and a suspended activation without its continuation would resume
-without the rest of the loop, the class creation, the walk or the unwind it
-belongs to. The depth limit's reserve (`Mutator.depth_reserve`), a frame
-held while an error near the limit is signalled, would have to travel with
-the stack as well ([execution.md](execution.md), "The depth limit").
-Under the planned object layout every reified frame will have room for its
-registers, since a frame object will be allocated with its code's full
-register count ([object-model.md](object-model.md),
-"Planned: the object layout"). Suspending then means reifying and divorcing the whole stack, which is the same
-operation a debugger performs on the frames it touches — and the same operation upstream
+instantiation's `Instantiation`, the unwind an `ensure:` block's return carries
+on (`Unwind`, holding a `PendingUnwind`: its target frame and whether it returns
+a value, restarts or terminates), the end of the run a VM error's `signal`
+returns into (`VmErrorSignalled`) and a future's forcing (`Future`, holding a
+`FutureForcing`). An image records none of them today, and a suspended
+activation without its continuation would resume without the rest of the loop,
+the class creation, the walk or the unwind it belongs to. The depth limit's
+reserve (`Mutator.depth_reserve`), a frame held while an error near the limit is
+signalled, would have to travel with the stack as well
+([execution.md](execution.md), "The depth limit"). Under the planned object
+layout every reified frame will have room for its registers, since a frame
+object will be allocated with its code's full register count
+([object-model.md](object-model.md), "Planned: the object layout"). Suspending
+then means reifying and divorcing the whole stack, which is the same operation a
+debugger performs on the frames it touches — and the same operation upstream
 performs, since Cog flushes its stack zone to contexts (`divorceAllFrames`)
-before taking a snapshot. An activation's `program_counter` being stored only at sends,
-`MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are exactly the
-safepoints, and a suspension could only happen at a send boundary.
+before taking a snapshot. An activation's `program_counter` being stored only at
+sends, `MakeClosure` and `NonLocalReturn` is *not* an obstacle: those are
+exactly the safepoints, and a suspension could only happen at a send boundary.
 
 Whoever builds this must first close a decoder gap that today is inert only
 because nothing reactivates a decoded frame. `decode::verify_graph` checks a
