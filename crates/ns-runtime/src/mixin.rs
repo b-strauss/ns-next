@@ -943,9 +943,10 @@ impl MixinApplication {
 /// `image::decode::rebuild_applications` builds one link per class record.
 /// The default glue would release the chain recursively and overflow the
 /// stack on a long one, which aborts the process; this releases it in a
-/// loop instead. Objects and frames need no such glue -- both are arena
-/// entries with nothing to unwind on drop -- which makes this the only
-/// hand-written iterative `Drop` in the crate. It is not the only
+/// loop instead. Objects and frames need no such glue -- both are words
+/// in the heap's object space, with nothing to unwind on drop -- which
+/// makes this the only hand-written iterative `Drop` in the crate. It is
+/// not the only
 /// recursive graph: `Mixin`'s `nested` and `class_side` links are also
 /// `Rc` and also drop recursively, but their depth is bounded by the
 /// parser and `image::mixins::decode` refuses anything deeper, so a ceiling

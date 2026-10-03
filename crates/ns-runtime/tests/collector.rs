@@ -1,5 +1,5 @@
 //! The collector through a real interpreter: what survives a collection,
-//! what does not, and what that does to the arenas
+//! what does not, and what that does to the object space
 //! (`docs/design/memory.md`, "The gates the collector needs").
 
 #![cfg(debug_assertions)]
@@ -46,7 +46,7 @@ fn integer_of(value: Value<'_>) -> i64 {
 }
 
 /// A module whose entry allocates a great many short-lived closures and
-/// keeps none of them. Collecting between runs must give the arena back.
+/// keeps none of them. Collecting between runs must give the space back.
 #[test]
 fn a_collection_gives_back_what_a_run_discarded() {
     // `timesRepeat:` is a kernel-library convenience the bare bootstrap does
@@ -408,7 +408,7 @@ fn allocating_past_the_limit_collects_during_the_run() {
 /// Every kind of value a heap object stores -- a `SmallInteger`, a boxed
 /// float, a `LargeInteger`, `nil` and another object -- survives being
 /// stored as a bare word through a move and a collection at every
-/// safepoint: the collector rewrites each word by its index, and every word
+/// safepoint: the collector rewrites each word by its offset, and every word
 /// reads back as the value that was stored.
 #[test]
 fn every_kind_of_stored_word_survives_moves_and_collections() {

@@ -21,9 +21,11 @@ use page_map::PageMap;
 /// How a committed page range may be accessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protection {
-    /// Any access faults. A debug build puts a vacated range here, so that a
-    /// stale offset into it finds no slice rather than reading whatever the
-    /// collector left there.
+    /// Any access faults, and a stale offset into such a range finds no
+    /// slice rather than reading whatever the collector left there. The
+    /// heap protects nothing yet: its accessors lend only the words below
+    /// the top, which already refuses an offset into the vacated tail
+    /// (docs/design/memory.md, "The object space").
     NoAccess,
     /// Readable and writable.
     ReadWrite,
@@ -39,8 +41,9 @@ pub enum Operation {
 }
 
 /// Why an operation on a reservation did not happen. Nothing here panics:
-/// running out of memory is something the heap reports, not a crash
-/// (docs/design/memory.md, "The memory layer").
+/// a refusal is a value, and what running out of memory does is the heap's
+/// to decide -- today it aborts, as a failed allocation of the Rust
+/// allocator does (docs/design/memory.md, "The object space").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
     /// The range is empty, not aligned as the operation requires, or not

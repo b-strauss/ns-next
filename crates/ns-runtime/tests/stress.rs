@@ -85,7 +85,7 @@ fn run_sum(interpreter: &mut Interpreter, class: &Root) -> i64 {
 /// `run`'s answer, how many times everything moved, and how many safepoints
 /// the stress mode took. The collect stress mode is turned off regardless of
 /// `NS_NEXT_STRESS_COLLECT`: a collection also moves everything (it compacts
-/// against the mark bits rather than merely rotating, but a debug build
+/// against the mark bits rather than merely shifting, but a debug build
 /// bumps the same move epoch either way, since a handle into the old
 /// arrangement is exactly as stale after one as after the other), so this
 /// comparison -- an exact count of the moves the *move* stress mode alone

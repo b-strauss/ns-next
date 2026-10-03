@@ -505,7 +505,7 @@ pub struct Heap<'gc> {
     collection_requested: bool,
     /// The smallest limit a collection will set, in bytes. A program that
     /// stays under it never collects: `bench_loop.ns` and `bench_send.ns`
-    /// run in 4.6 MB and should not pay for a collector they do not need.
+    /// should not pay for a collector they do not need.
     collection_floor: usize,
     /// How many collections have run, and how long they have taken in total
     /// and at the longest (`Interpreter::collector_statistics`,
@@ -1415,7 +1415,7 @@ impl<'gc> Heap<'gc> {
 
     /// Allocates a frame object of `fields` holding `registers` and then
     /// nils up to `register_count`. Every `FrameReference` in the workspace
-    /// is minted here or by `object_frame`, from a frame object's index.
+    /// is minted here or by `object_frame`, from a frame object's offset.
     ///
     /// `home` is what `closure_home` reads back for a closure created in
     /// this frame, and the image records it, so it must be populated
@@ -6306,7 +6306,7 @@ mod tests {
             .expect("a frame")
     }
 
-    /// A move rotates a married frame like any object and leaves its
+    /// A move shifts a married frame like any object and leaves its
     /// marriage alone: found again through a host root, it reads and writes
     /// the live registers and answers its activation, and the divorce after
     /// the move copies the retained registers into the moved object.

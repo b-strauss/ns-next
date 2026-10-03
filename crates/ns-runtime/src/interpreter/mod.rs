@@ -691,14 +691,14 @@ impl Interpreter {
         self.world.cache_statistics()
     }
 
-    /// The arenas' occupancy. Available in every build: it is what a
+    /// The object space's occupancy. Available in every build: it is what a
     /// measurement and a retention test both read.
     pub fn heap_statistics(&self) -> crate::HeapStatistics {
         self.world.heap_statistics()
     }
 
     /// The collector's counts and pauses since the process started, plus the
-    /// arenas' occupancy right now (`--collector-statistics`). Available in
+    /// object space's occupancy right now (`--collector-statistics`). Available in
     /// every build, like `heap_statistics`.
     pub fn collector_statistics(&self) -> crate::CollectorStatistics {
         self.world.collector_statistics()
@@ -2002,8 +2002,9 @@ fn builtin_mixin(kind: BuiltinClass) -> Rc<crate::mixin::Mixin> {
 /// Builds the single, genuinely self-referential `Object`-tagged class
 /// object every `BuiltinClass` shares as its own `.class`, which is what
 /// lets an object's class word stay non-optional. The construction itself lives in
-/// `Heap::allocate_self_referential_class`; under the arena it is ordinary
-/// safe Rust, because the slot's index is known before the slot is filled.
+/// `Heap::allocate_self_referential_class`; in a space of offsets it is
+/// ordinary safe Rust, because the object is allocated before its class
+/// word is written with its own offset.
 fn build_self_referential_object_class<'gc>(
     heap: &mut Heap<'gc>,
     application: Rc<crate::mixin::MixinApplication>,
