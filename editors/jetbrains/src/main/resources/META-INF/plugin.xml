@@ -14,8 +14,10 @@
       <li>Semantic colouring from ns-next's resolver: parameters, locals, slots, nested classes
           and sends.</li>
     </ul>
-    <p>The language server, <code>ns-next-lsp</code>, is bundled for Windows x64. On other
-    platforms, set its path under <em>Settings | Languages &amp; Frameworks | Newspeak</em>.</p>
+    <p>The language server, <code>ns-next-lsp</code>, is bundled for the platform the plugin was
+    built on. Where none is bundled, the plugin says so; build it with
+    <code>cargo build -p ns-lsp --release</code> and set its path under
+    <em>Settings | Languages &amp; Frameworks | Newspeak</em>.</p>
     ]]></description>
 
     <change-notes><![CDATA[

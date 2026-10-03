@@ -1,6 +1,7 @@
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.PrepareSandboxTask
+import java.util.Properties
 
 plugins {
     id("org.jetbrains.kotlin.jvm") version "2.4.10"
@@ -78,20 +79,37 @@ tasks.withType<PrepareSandboxTask>().configureEach {
     disabledPlugins.add("com.intellij.modules.ultimate")
 }
 
-/** The platform this build runs on, as `ServerBinaryLocator` names it; only its server is bundled for now. */
-val hostPlatform: String = run {
-    val operatingSystemName = System.getProperty("os.name")
-    val system = when {
-        operatingSystemName.startsWith("Windows") -> "windows"
-        operatingSystemName.startsWith("Mac") -> "macos"
-        else -> "linux"
+/**
+ * The directory under `bin/` for the platform this build runs on -- only its
+ * server is bundled for now -- from the mapping `ServerBinaryLocator` finds the
+ * server through at run time, looked up the same way: the system by what
+ * `os.name` starts with, the architecture by `os.arch` in lower case. A host
+ * the mapping does not name fails the build when a sandbox is prepared rather
+ * than bundling the server under a directory the plugin would never look in.
+ */
+val hostPlatform: Provider<String> = providers
+    .fileContents(layout.projectDirectory.file(
+        "src/main/resources/io/github/bstrauss/newspeak/lsp/platform-directories.properties",
+    ))
+    .asText
+    .map { text ->
+        val mapping = Properties().apply { load(text.reader()) }
+        val operatingSystemName = System.getProperty("os.name")
+        val operatingSystemArchitecture = System.getProperty("os.arch")
+        val system = mapping.stringPropertyNames()
+            .filter { key -> key.startsWith("system.") }
+            .firstOrNull { key -> operatingSystemName.startsWith(key.removePrefix("system.")) }
+            ?.let(mapping::getProperty)
+        val architecture = mapping.getProperty("architecture.${operatingSystemArchitecture.lowercase()}")
+        if (system == null || architecture == null) {
+            throw GradleException(
+                "platform-directories.properties names no bin/ directory for this host " +
+                    "(os.name \"$operatingSystemName\", os.arch \"$operatingSystemArchitecture\"), " +
+                    "and the plugin would not find a server bundled under any other",
+            )
+        }
+        "$system-$architecture"
     }
-    val architecture = when (System.getProperty("os.arch").lowercase()) {
-        "aarch64", "arm64" -> "arm64"
-        else -> "x64"
-    }
-    "$system-$architecture"
-}
 
 val buildLanguageServerRelease by tasks.registering(Exec::class) {
     description = "Builds ns-next-lsp (release) with Cargo for the plugin distribution."
@@ -110,7 +128,7 @@ tasks.withType<PrepareSandboxTask>()
         dependsOn(buildLanguageServerRelease)
         // Beside the jars rather than inside one, so it starts without being extracted.
         from(repositoryRoot.resolve("target/release/ns-next-lsp$executableSuffix")) {
-            into(pluginName.map { name -> "$name/bin/$hostPlatform" })
+            into(pluginName.zip(hostPlatform) { name, platform -> "$name/bin/$platform" })
         }
         from(layout.projectDirectory.file("THIRD-PARTY-NOTICES.txt")) {
             into(pluginName)

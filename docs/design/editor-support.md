@@ -352,10 +352,16 @@ Components:
    and the editor features work regardless.
 
 The plugin bundles the binary, built from the same commit as the Kotlin lexer,
-so the two always match. At first only `windows-x64` is bundled; the layout is
-per platform so that `windows-arm64`, `macos-x64`, `macos-arm64`, `linux-x64`
-and `linux-arm64` are added later by a CI build placing their binaries in the
-same tree, with no change to the plugin's code.
+so the two always match. The directory under `bin/` is decided by one mapping,
+`platform-directories.properties` beside `ServerBinaryLocator`: the system by
+what `os.name` starts with, the architecture by `os.arch`. The locator finds
+the server through it at run time, and the build reads the same file to place
+the server it builds for its own host. Only that host's server is bundled so
+far, so `plugin.xml`'s description names no platform; the layout is per
+platform so that the other five of `windows-x64`, `windows-arm64`,
+`macos-x64`, `macos-arm64`, `linux-x64` and `linux-arm64` are added later by a
+CI build placing their binaries in the same tree, with no change to the
+plugin's code.
 
 ## Build and packaging
 
@@ -372,7 +378,10 @@ same tree, with no change to the plugin's code.
   each run `cargo build -p ns-lsp` at the repository root, debug and `--release`
   respectively; `tasks.test` depends on the debug build and points the tests at
   it. Every sandbox an IDE starts from depends on the release build and gets
-  the binary in `bin/windows-x64/`, beside `THIRD-PARTY-NOTICES.txt` and
+  the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
+  `platform-directories.properties` names for it (a host the file does not
+  name fails the sandbox task rather than bundling a server the plugin would
+  not look for), beside `THIRD-PARTY-NOTICES.txt` and
   `LICENSE`: `prepareSandbox`, which `buildPlugin` packages, and
   `prepareSandbox_runIde` with its split-mode siblings, which `runIde` starts
   from — a separate sandbox (`plugins_runIde/`), so configuring
@@ -494,11 +503,6 @@ and resolves cleanly in a JetBrains IDE today.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file.
-- **Two copies of the platform-directory mapping:** `hostPlatform` in
-  `build.gradle.kts` falls back to `linux`/`x64` for a host
-  `ServerBinaryLocator.platformDirectory` does not name, and `plugin.xml`'s
-  description says the server is bundled for Windows x64 whatever host built
-  it. Both matter once the CI build for other platforms exists.
 
 ## Planned later
 

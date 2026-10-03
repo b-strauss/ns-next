@@ -38,7 +38,10 @@ From this directory (`gradlew.bat` on Windows outside Git Bash):
 
 Every task that prepares a sandbox builds `ns-next-lsp` with Cargo itself, so
 `cargo` must be on `PATH`; the binary is bundled for the platform the build
-runs on only.
+runs on only, under the directory
+`src/main/resources/io/github/bstrauss/newspeak/lsp/platform-directories.properties`
+names for it -- the mapping the plugin finds its server through. A host that
+file does not name fails the task.
 
 A change to `../../crates/ns-syntax/src/lexer.rs` must be mirrored in
 `src/main/kotlin/io/github/bstrauss/newspeak/lexer/NewspeakLexer.kt` in the
