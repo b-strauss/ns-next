@@ -294,7 +294,7 @@ fn compare_node<'gc>(
             if mutator.heap().is_class(left) && mutator.heap().is_class(right) {
                 return Some(Pair::Classes(left, right));
             }
-            if mutator.heap().symbol_value(left).is_some() {
+            if mutator.heap().is_symbol(left) {
                 return Some(Pair::Decided(text::symbol_equals(left, Some(second))));
             }
             let heap = mutator.heap();

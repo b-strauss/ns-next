@@ -403,6 +403,11 @@ pub enum DecodeError {
     /// answer the mis-classed object, so the image is refused instead of
     /// trusted (`docs/design/image-format.md`, "Verification").
     SymbolOfWrongClass(String),
+    /// An `OBJECT_STRING` record's class tag names the builtin `Symbol`
+    /// class. A Symbol object is a String of that class, so the record
+    /// would be a second Symbol of its text, outside the canonical table,
+    /// and two Symbols of one text would not be identical (§5.1.6).
+    StringOfSymbolClass,
     /// Bytes remain after the last section. Refused rather than ignored:
     /// silently accepting a tail means a padded image loads as something its
     /// author did not write.
@@ -693,6 +698,9 @@ impl std::fmt::Display for DecodeError {
             DecodeError::SymbolOfWrongClass(text) => {
                 write!(f, "symbol #{text} is recorded with a class other than Symbol")
             }
+            DecodeError::StringOfSymbolClass => f.write_str(
+                "a string record has the class Symbol, which only a symbol record may have",
+            ),
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
@@ -3291,6 +3299,7 @@ pub fn decode_graph_section<'gc>(
     let mut pending_futures: Vec<Value<'gc>> = Vec::new();
     let metaclass_rows = metaclass_rows(context.mixins);
     let metaclass_class = context.mutator.builtin_class(BuiltinClass::Metaclass);
+    let symbol_class = context.mutator.builtin_class(BuiltinClass::Symbol);
     for (index, object) in objects.iter().enumerate() {
         let ObjectHeader {
             class,
@@ -3346,7 +3355,12 @@ pub fn decode_graph_section<'gc>(
                 }
                 Record::Instance(fields)
             }
-            OBJECT_STRING => Record::String(reader.read_code_points()?),
+            OBJECT_STRING => {
+                if class.same(symbol_class) {
+                    return Err(DecodeError::StringOfSymbolClass);
+                }
+                Record::String(reader.read_code_points()?)
+            }
             OBJECT_SYMBOL => Record::Symbol(decode_symbol(reader, symbols)?),
             OBJECT_ARRAY => Record::Array(decode_values(reader, context, &tables)?),
             OBJECT_CLOSURE => Record::Closure(decode_closure_record(reader, context, &tables)?),

@@ -2996,6 +2996,27 @@ fn a_symbol_recorded_twice_is_refused() {
 }
 
 #[test]
+fn a_string_recorded_with_the_class_symbol_is_refused() {
+    // A Symbol is a String whose class is `Symbol`, one object per text;
+    // a string record of that class would be a second object of a text the
+    // canonical table never hears of.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 1, 0);
+    writer.write_u8(CLASS_BUILTIN);
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Symbol));
+    writer.write_u32(1); // identity hash
+    writer.write_u8(OBJECT_STRING);
+    writer.write_str("new");
+    writer.write_u32(0); // no roots
+    let error = GraphFixture::new().decode_error(&writer.into_bytes());
+    assert_eq!(error, decode::DecodeError::StringOfSymbolClass);
+    assert_eq!(
+        error.to_string(),
+        "a string record has the class Symbol, which only a symbol record may have"
+    );
+}
+
+#[test]
 fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
     // `decode_graph_section` enters every `OBJECT_SYMBOL` record into the
     // heap's canonical symbol table as it decodes it, before anything else

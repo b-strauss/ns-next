@@ -107,6 +107,12 @@ impl Symbol {
         })
     }
 
+    /// The symbol `text` was interned as; `None` if nothing interned it.
+    /// Never interns, so asking about a text a program built leaks nothing.
+    pub fn lookup(text: &str) -> Option<Symbol> {
+        INTERNER.with_borrow(|interner| interner.lookup.get(text).copied())
+    }
+
     pub fn as_str(self) -> &'static str {
         INTERNER.with_borrow(|interner| interner.strings[self.0 as usize])
     }
@@ -140,6 +146,16 @@ mod tests {
         let first = Symbol::intern("foo:");
         let second = Symbol::intern("bar:");
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_lookup_finds_an_interned_text_and_never_interns() {
+        assert_eq!(Symbol::lookup("never interned anywhere 7f3a"), None);
+        assert_eq!(Symbol::lookup("never interned anywhere 7f3a"), None);
+        assert_eq!(
+            Symbol::lookup(Symbol::intern("abc").as_str()),
+            Some(Symbol::intern("abc"))
+        );
     }
 
     #[test]

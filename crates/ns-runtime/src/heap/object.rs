@@ -13,7 +13,6 @@ use crate::heap::{ClassReference, FrameReference, ObjectReference, Word};
 use crate::mixin::DispatchId;
 use crate::trace::{trace_optional_object, trace_words, Trace, Tracer};
 use crate::types::{BuiltinClass, FrameKind, ValueClassRefusal};
-use crate::Symbol;
 
 #[derive(Debug, Clone)]
 pub(in crate::heap) struct Object<'gc> {
@@ -65,12 +64,15 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// reads one; `SixtyFourBit`, a `LargeInteger`'s magnitude, least
     /// significant digit first, its sign the header's negative bit, or a
     /// boxed `Float`'s one word of `f64::to_bits` -- the class's builtin
-    /// tells those two apart, as Spur's does.
+    /// tells those two apart, as Spur's does; `Bytes` and `ThirtyTwoBit`, a
+    /// String's or a Symbol's code points packed little-endian, eight or two
+    /// to a word (`PackedString`), the class's builtin again telling the
+    /// two apart.
     ///
-    /// `format` and `negative` are what `Object::new` derives the header
-    /// from; once built, readers ask the header. Build one through
-    /// `ObjectData::instance`, `array`, `large_integer` or `float`, the one
-    /// place each kind's layout is decided.
+    /// `format`, `unused` and `negative` are what `Object::new` derives the
+    /// header from; once built, readers ask the header. Build one through
+    /// `ObjectData::instance`, `array`, `large_integer`, `float` or
+    /// `string`, the one place each kind's layout is decided.
     ///
     /// A `LargeInteger` never holds a value a `SmallInteger` does, and a
     /// boxed `Float` never one inside the immediate range:
@@ -78,13 +80,12 @@ pub(in crate::heap) enum ObjectData<'gc> {
     /// make either and decide it, so each number has one representation.
     Words {
         format: Format,
+        /// The units the last word leaves unused: 0 unless `format` is
+        /// `Bytes` or `ThirtyTwoBit`.
+        unused: u8,
         negative: bool,
         words: Box<[u64]>,
     },
-    String(crate::CodePoints),
-    /// The interned id and the same text as code points, so that a Symbol,
-    /// a String, answers every String accessor.
-    Symbol(Symbol, crate::CodePoints),
     Closure(ClosureData<'gc>),
     /// Boxed: a class object's data is what would otherwise set every
     /// object's size, and class objects are few (`docs/design/dispatch.md`,
@@ -111,6 +112,7 @@ impl ObjectData<'_> {
     fn pointers(format: Format, words: impl IntoIterator<Item = Word>) -> Self {
         ObjectData::Words {
             format,
+            unused: 0,
             negative: false,
             words: words.into_iter().map(Word::bits).collect(),
         }
@@ -120,6 +122,7 @@ impl ObjectData<'_> {
     pub(in crate::heap) fn large_integer(integer: &crate::ArbitraryInteger) -> Self {
         ObjectData::Words {
             format: Format::SixtyFourBit,
+            unused: 0,
             negative: integer.is_negative(),
             words: integer.magnitude().into(),
         }
@@ -129,9 +132,140 @@ impl ObjectData<'_> {
     pub(in crate::heap) fn float(value: f64) -> Self {
         ObjectData::Words {
             format: Format::SixtyFourBit,
+            unused: 0,
             negative: false,
             words: Box::new([value.to_bits()]),
         }
+    }
+
+    /// A String's or a Symbol's payload: `text`'s code points, one byte
+    /// each while every one fits Latin-1 and 32 bits each otherwise, as
+    /// `CodePoints` keeps them, so that `size` and `at:` stay one access.
+    /// Unit `index` is byte `index % 8` of word `index / 8`, or half
+    /// `index % 2` of word `index / 2`, least significant first; the last
+    /// word's unused units are zero, so that equal texts have equal words.
+    pub(in crate::heap) fn string(text: &crate::CodePoints) -> Self {
+        let (format, words): (Format, Box<[u64]>) = match text.as_wide() {
+            None => (
+                Format::Bytes,
+                text.as_bytes()
+                    .unwrap_or_default()
+                    .chunks(BYTES_PER_WORD)
+                    .map(|chunk| {
+                        let mut bytes = [0u8; BYTES_PER_WORD];
+                        bytes[..chunk.len()].copy_from_slice(chunk);
+                        u64::from_le_bytes(bytes)
+                    })
+                    .collect(),
+            ),
+            Some(units) => (
+                Format::ThirtyTwoBit,
+                units
+                    .chunks(THIRTY_TWO_BIT_UNITS_PER_WORD)
+                    .map(|chunk| {
+                        chunk
+                            .iter()
+                            .rev()
+                            .fold(0, |word, unit| (word << 32) | u64::from(*unit))
+                    })
+                    .collect(),
+            ),
+        };
+        let per_word = units_per_word(format).unwrap_or(1);
+        // Below `per_word`, which is at most 8.
+        let unused = u8::try_from(words.len() * per_word - text.size()).unwrap_or(0);
+        ObjectData::Words {
+            format,
+            unused,
+            negative: false,
+            words,
+        }
+    }
+}
+
+/// How many units one word of a string of `format` holds; `None` for a
+/// format no string has.
+fn units_per_word(format: Format) -> Option<usize> {
+    match format {
+        Format::Bytes => Some(BYTES_PER_WORD),
+        Format::ThirtyTwoBit => Some(THIRTY_TWO_BIT_UNITS_PER_WORD),
+        _ => None,
+    }
+}
+
+/// A String's or a Symbol's packed units, read in place: the one reader of
+/// the layout `ObjectData::string` decides.
+#[derive(Clone, Copy)]
+pub(in crate::heap) struct PackedString<'a> {
+    format: Format,
+    size: usize,
+    words: &'a [u64],
+}
+
+impl<'a> PackedString<'a> {
+    /// The string an object of `header` holding `words` is; `None` unless
+    /// its format is `Bytes` or `ThirtyTwoBit`.
+    pub(in crate::heap) fn new(header: Header, words: &'a [u64]) -> Option<PackedString<'a>> {
+        let format = header.format();
+        let per_word = units_per_word(format)?;
+        let size = (words.len() * per_word).saturating_sub(usize::from(header.unused()));
+        Some(PackedString {
+            format,
+            size,
+            words,
+        })
+    }
+
+    /// The number of code points.
+    pub(in crate::heap) fn size(self) -> usize {
+        self.size
+    }
+
+    /// The code point at the 0-based `index`; `None` past the end.
+    pub(in crate::heap) fn code_point_at(self, index: usize) -> Option<u32> {
+        if index >= self.size {
+            return None;
+        }
+        let word = *self.words.get(index / units_per_word(self.format)?)?;
+        Some(match self.format {
+            Format::Bytes => u32::from(word.to_le_bytes()[index % BYTES_PER_WORD]),
+            // The low half first; truncating keeps the half `index` names.
+            _ => (word >> (32 * (index % THIRTY_TWO_BIT_UNITS_PER_WORD))) as u32,
+        })
+    }
+
+    /// Every code point, in order.
+    pub(in crate::heap) fn code_points(self) -> impl Iterator<Item = u32> + 'a {
+        (0..self.size).filter_map(move |index| self.code_point_at(index))
+    }
+
+    /// The code points in the 0-based, half-open `start..end`, copied out;
+    /// `None` when the range is not inside the string.
+    pub(in crate::heap) fn slice(self, start: usize, end: usize) -> Option<crate::CodePoints> {
+        if start > end || end > self.size {
+            return None;
+        }
+        let units = (start..end).filter_map(move |index| self.code_point_at(index));
+        Some(match self.format {
+            // A byte string's units are Latin-1 code points, so they need
+            // no check.
+            Format::Bytes => crate::CodePoints::from_bytes(
+                units.filter_map(|unit| u8::try_from(unit).ok()).collect(),
+            ),
+            _ => crate::CodePoints::from_wide(units.collect()),
+        })
+    }
+
+    /// The whole text, copied out.
+    pub(in crate::heap) fn to_code_points(self) -> crate::CodePoints {
+        self.slice(0, self.size)
+            .unwrap_or_else(|| crate::CodePoints::from(""))
+    }
+
+    /// Whether two strings hold the same code points. The width is
+    /// canonical and the unused units are zero, so this compares the words.
+    pub(in crate::heap) fn same_text(self, other: PackedString<'_>) -> bool {
+        self.format == other.format && self.size == other.size && self.words == other.words
     }
 }
 
@@ -153,23 +287,12 @@ impl ObjectData<'_> {
         let (format, unused, payload_words) = match self {
             ObjectData::Words {
                 format,
+                unused,
                 negative,
                 words,
             } => {
-                let header = Header::new(guard, *format, 0, 1 + words.len());
+                let header = Header::new(guard, *format, *unused, 1 + words.len());
                 return header.with_negative(*negative);
-            }
-            ObjectData::String(text) | ObjectData::Symbol(_, text) => {
-                let (format, per_word) = if text.is_wide() {
-                    (Format::ThirtyTwoBit, THIRTY_TWO_BIT_UNITS_PER_WORD)
-                } else {
-                    (Format::Bytes, BYTES_PER_WORD)
-                };
-                let units = text.size();
-                let words = units.div_ceil(per_word);
-                // Below `per_word`, which is at most 8.
-                let unused = u8::try_from(words * per_word - units).unwrap_or(0);
-                (format, unused, words)
             }
             ObjectData::Closure(closure) => (
                 Format::Closure,
@@ -395,7 +518,6 @@ impl Trace for ObjectData<'_> {
                     trace_word_bits(words, tracer);
                 }
             }
-            ObjectData::String(_) | ObjectData::Symbol(..) => {}
             ObjectData::Closure(closure) => closure.trace(tracer),
             ObjectData::Class(class) => class.trace(tracer),
             ObjectData::Activation(frame) => tracer.frame(frame),

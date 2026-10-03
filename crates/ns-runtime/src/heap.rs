@@ -31,7 +31,7 @@ mod value;
 mod world;
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header};
-use object::{ClassData, ClosureData, Frame, FrameSlot, Object, ObjectData};
+use object::{ClassData, ClosureData, Frame, FrameSlot, Object, ObjectData, PackedString};
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, Record};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
@@ -881,7 +881,7 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         text: crate::CodePoints,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(class, ObjectData::String(text))
+        self.allocate_object(class, ObjectData::string(&text))
     }
 
     /// A Symbol object of `class` for `symbol`. `Mutator::new_symbol` is the
@@ -893,7 +893,7 @@ impl<'gc> Heap<'gc> {
     ) -> ObjectReference<'gc> {
         self.allocate_object(
             class,
-            ObjectData::Symbol(symbol, crate::CodePoints::from(symbol.as_str())),
+            ObjectData::string(&crate::CodePoints::from(symbol.as_str())),
         )
     }
 
@@ -1060,10 +1060,8 @@ impl<'gc> Heap<'gc> {
             Record::Instance(fields) => {
                 ObjectData::instance(fields.into_iter().map(|value| self.store(value)))
             }
-            Record::String(text) => ObjectData::String(text),
-            Record::Symbol(symbol) => {
-                ObjectData::Symbol(symbol, crate::CodePoints::from(symbol.as_str()))
-            }
+            Record::String(text) => ObjectData::string(&text),
+            Record::Symbol(symbol) => ObjectData::string(&crate::CodePoints::from(symbol.as_str())),
             Record::Array(elements) => {
                 ObjectData::array(elements.into_iter().map(|value| self.store(value)))
             }
@@ -1449,11 +1447,13 @@ impl<'gc> Heap<'gc> {
             ObjectData::Words { .. } => match entry.header.format() {
                 Format::FixedPointers => ObjectShape::Instance,
                 Format::IndexablePointers => ObjectShape::Array,
+                Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
+                    ObjectShape::Symbol
+                }
+                Format::Bytes | Format::ThirtyTwoBit => ObjectShape::String,
                 _ if self.is_boxed_float(object) => ObjectShape::Float,
                 _ => ObjectShape::LargeInteger,
             },
-            ObjectData::String(_) => ObjectShape::String,
-            ObjectData::Symbol(..) => ObjectShape::Symbol,
             ObjectData::Closure(_) => ObjectShape::Closure,
             ObjectData::Class(_) => ObjectShape::Class,
             ObjectData::Activation(_) => ObjectShape::Activation,
@@ -1601,19 +1601,18 @@ impl<'gc> Heap<'gc> {
     /// The leaves that only read the elements use the accessors below,
     /// which copy out a size, a code point or a hash, not the whole text.
     pub fn str_value(&self, object: ObjectReference<'gc>) -> Option<String> {
-        self.code_points(object)
-            .map(|code_points| code_points.to_utf8())
+        self.packed_string(object)
+            .map(|string| string.to_code_points().to_utf8())
     }
 
-    /// The one lender of a String's payload, private to the heap, so that
+    /// The one reader of a String's payload, private to the heap, so that
     /// every public accessor copies out (`docs/design/memory.md`, "The
-    /// seam").
-    fn code_points(&self, object: ObjectReference<'gc>) -> Option<&crate::CodePoints> {
+    /// seam"). A Symbol is a String, so it answers one too.
+    fn packed_string(&self, object: ObjectReference<'gc>) -> Option<PackedString<'_>> {
         self.check_object_origin(object);
-        match &self.objects[object.index as usize].data {
-            ObjectData::String(code_points) | ObjectData::Symbol(_, code_points) => {
-                Some(code_points)
-            }
+        let entry = &self.objects[object.index as usize];
+        match &entry.data {
+            ObjectData::Words { words, .. } => PackedString::new(entry.header, words),
             _ => None,
         }
     }
@@ -1621,22 +1620,22 @@ impl<'gc> Heap<'gc> {
     /// A String's code points, copied out; `None` for any other object.
     /// For the image encoder, which writes the whole text.
     pub fn string_code_points(&self, object: ObjectReference<'gc>) -> Option<crate::CodePoints> {
-        self.code_points(object).cloned()
+        self.packed_string(object).map(PackedString::to_code_points)
     }
 
     pub fn is_string(&self, object: ObjectReference<'gc>) -> bool {
-        self.code_points(object).is_some()
+        self.packed_string(object).is_some()
     }
 
     /// A String's number of code points; `None` for any other object.
     pub fn string_size(&self, object: ObjectReference<'gc>) -> Option<usize> {
-        self.code_points(object).map(crate::CodePoints::size)
+        self.packed_string(object).map(PackedString::size)
     }
 
     /// The code point at the 0-based `index`; `None` for any other object
     /// or past the end.
     pub fn string_code_point_at(&self, object: ObjectReference<'gc>, index: usize) -> Option<u32> {
-        self.code_points(object)?.code_point_at(index)
+        self.packed_string(object)?.code_point_at(index)
     }
 
     /// The code points in the 0-based, half-open `start..end`; `None` for
@@ -1647,7 +1646,7 @@ impl<'gc> Heap<'gc> {
         start: usize,
         end: usize,
     ) -> Option<crate::CodePoints> {
-        self.code_points(object)?.slice(start, end)
+        self.packed_string(object)?.slice(start, end)
     }
 
     /// `first`'s code points followed by `second`'s; `None` unless both are
@@ -1657,26 +1656,38 @@ impl<'gc> Heap<'gc> {
         first: ObjectReference<'gc>,
         second: ObjectReference<'gc>,
     ) -> Option<crate::CodePoints> {
+        let second = self.packed_string(second)?;
         Some(
-            self.code_points(first)?
-                .concatenate(self.code_points(second)?),
+            self.packed_string(first)?
+                .to_code_points()
+                .concatenate(&second.to_code_points()),
         )
     }
 
     /// Whether two Strings hold the same code points; `None` unless both
-    /// are Strings. The width is canonical, so this compares the payloads.
+    /// are Strings.
     pub fn strings_equal(
         &self,
         first: ObjectReference<'gc>,
         second: ObjectReference<'gc>,
     ) -> Option<bool> {
-        Some(self.code_points(first)? == self.code_points(second)?)
+        Some(
+            self.packed_string(first)?
+                .same_text(self.packed_string(second)?),
+        )
     }
 
-    /// A String's content hash; `None` for any other object.
+    /// A String's content hash; `None` for any other object. Hashes the
+    /// units in place, as `CodePoints::content_hash` hashes the same text.
     pub fn string_hash(&self, object: ObjectReference<'gc>) -> Option<i64> {
-        self.code_points(object)
-            .map(crate::CodePoints::content_hash)
+        let string = self.packed_string(object)?;
+        Some(crate::hash::content_hash_of_characters(
+            string.code_points().map(|code_point| {
+                // Every unit is a scalar value by construction; the
+                // replacement character stands in for a panic.
+                char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER)
+            }),
+        ))
     }
 
     /// A number object's words, its header and whether it is a boxed
@@ -1744,12 +1755,23 @@ impl<'gc> Heap<'gc> {
         matches!(self.number_words(object), Some((false, ..)))
     }
 
+    /// Whether `object` is a Symbol: a String whose class is the builtin
+    /// `Symbol`. Reads no text, for a caller that needs no interned id.
+    pub fn is_symbol(&self, object: ObjectReference<'gc>) -> bool {
+        self.is_string(object)
+            && self.class_builtin(self.object_class(object)) == Some(BuiltinClass::Symbol)
+    }
+
+    /// The interned symbol a Symbol object stands for; `None` for any other
+    /// object, a String of the same text included. The object holds only
+    /// its text, so this finds the symbol again by it -- never interning:
+    /// `Mutator::new_symbol` and the image decoder intern a text before
+    /// they allocate its object.
     pub fn symbol_value(&self, object: ObjectReference<'gc>) -> Option<Symbol> {
-        self.check_object_origin(object);
-        match &self.objects[object.index as usize].data {
-            ObjectData::Symbol(symbol, _) => Some(*symbol),
-            _ => None,
+        if !self.is_symbol(object) {
+            return None;
         }
+        Symbol::lookup(&self.str_value(object)?)
     }
 
     /// The one object `symbol` already is in this heap, if anything has
@@ -1978,7 +2000,15 @@ impl<'gc> Heap<'gc> {
                 self.check_object_origin(object);
                 let entry = &self.objects[object.index as usize];
                 match &entry.data {
-                    ObjectData::String(string) => format!("the String {string:?}"),
+                    ObjectData::Words { .. } if self.is_string(object) => {
+                        match self.symbol_value(object) {
+                            Some(symbol) => format!("the Symbol #{symbol}"),
+                            None => format!(
+                                "the String {:?}",
+                                self.str_value(object).unwrap_or_default()
+                            ),
+                        }
+                    }
                     ObjectData::Words { words, .. }
                         if entry.header.format() == Format::IndexablePointers =>
                     {
@@ -1998,7 +2028,6 @@ impl<'gc> Heap<'gc> {
                                 .unwrap_or_default(),
                         }
                     }
-                    ObjectData::Symbol(symbol, _) => format!("the Symbol #{symbol}"),
                     ObjectData::Closure(_) => "a Block".to_string(),
                     ObjectData::Activation(_) => "an Activation".to_string(),
                     ObjectData::Class(_) => {
@@ -3702,8 +3731,6 @@ impl<'gc> Heap<'gc> {
                     } = closure;
                     replace(copied);
                 }
-                // No `Value` field at all.
-                ObjectData::String(_) | ObjectData::Symbol(..) => {}
                 // Every handle a class object holds -- its enclosing object,
                 // its declaring class, its superclass, itself -- is an
                 // `ObjectReference`, not a `Value`: no future can stand in
@@ -3841,17 +3868,17 @@ mod tests {
         let mut origin = Heap::new();
         let class = origin.allocate_self_referential(ObjectData::instance([]));
         let object =
-            origin.allocate_object(class, ObjectData::String(crate::CodePoints::from("mine")));
+            origin.allocate_object(class, ObjectData::string(&crate::CodePoints::from("mine")));
 
         let mut other = Heap::new();
         let other_class = other.allocate_self_referential(ObjectData::instance([]));
         other.allocate_object(
             other_class,
-            ObjectData::String(crate::CodePoints::from("theirs")),
+            ObjectData::string(&crate::CodePoints::from("theirs")),
         );
         other.allocate_object(
             other_class,
-            ObjectData::String(crate::CodePoints::from("theirs")),
+            ObjectData::string(&crate::CodePoints::from("theirs")),
         );
 
         // In range for `other` -- which is exactly why this is silent
@@ -3872,13 +3899,13 @@ mod tests {
         let mut origin = Heap::new();
         let class = origin.allocate_self_referential(ObjectData::instance([]));
         let mine =
-            origin.allocate_object(class, ObjectData::String(crate::CodePoints::from("mine")));
+            origin.allocate_object(class, ObjectData::string(&crate::CodePoints::from("mine")));
 
         let mut other = Heap::new();
         let other_class = other.allocate_self_referential(ObjectData::instance([]));
         let theirs = other.allocate_object(
             other_class,
-            ObjectData::String(crate::CodePoints::from("theirs")),
+            ObjectData::string(&crate::CodePoints::from("theirs")),
         );
 
         // Both are the second object their own heap allocated, so both
@@ -3952,13 +3979,13 @@ mod tests {
         let mut origin = Heap::new();
         let class = origin.allocate_self_referential(ObjectData::instance([]));
         let mine =
-            origin.allocate_object(class, ObjectData::String(crate::CodePoints::from("mine")));
+            origin.allocate_object(class, ObjectData::string(&crate::CodePoints::from("mine")));
 
         let mut other = Heap::new();
         let other_class = other.allocate_self_referential(ObjectData::instance([]));
         let theirs = other.allocate_object(
             other_class,
-            ObjectData::String(crate::CodePoints::from("theirs")),
+            ObjectData::string(&crate::CodePoints::from("theirs")),
         );
 
         // Both are the second object their own heap allocated, so both
@@ -4010,12 +4037,13 @@ mod tests {
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let narrow = heap.allocate_object(
             class,
-            ObjectData::String(crate::CodePoints::from("abcdefghi")),
+            ObjectData::string(&crate::CodePoints::from("abcdefghi")),
         );
         let header = heap.objects[narrow.index as usize].header;
         assert_eq!(header.format(), Format::Bytes);
         assert_eq!(header.word_count(), 1 + 2, "nine bytes take two words");
-        let wide = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("€uro")));
+        let wide =
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("€uro")));
         let header = heap.objects[wide.index as usize].header;
         assert_eq!(header.format(), Format::ThirtyTwoBit);
         assert_eq!(header.word_count(), 1 + 2);
@@ -4115,15 +4143,18 @@ mod tests {
         heap.allocate_self_referential(ObjectData::instance([]));
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let first =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("first")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("first")));
         for _ in 0..1000 {
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("filler")));
+            heap.allocate_object(
+                class,
+                ObjectData::string(&crate::CodePoints::from("filler")),
+            );
         }
         assert_eq!(heap.str_value(first).as_deref(), Some("first"));
         assert!(heap.object_class(first).same(class));
 
         let twin =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("first")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("first")));
         assert!(!first.same(twin));
     }
 
@@ -4132,6 +4163,15 @@ mod tests {
     /// duplicated rather than shared because that one is private to
     /// `types.rs`'s test module.
     fn named_class<'gc>(heap: &mut Heap<'gc>, name: &str) -> ClassReference<'gc> {
+        builtin_named_class(heap, name, None)
+    }
+
+    /// `named_class`, marked as the core-library class `builtin`.
+    fn builtin_named_class<'gc>(
+        heap: &mut Heap<'gc>,
+        name: &str,
+        builtin: Option<BuiltinClass>,
+    ) -> ClassReference<'gc> {
         let application = std::rc::Rc::new(crate::mixin::MixinApplication {
             index: crate::heap::ApplicationIndex::UNREGISTERED,
             mixin: std::rc::Rc::new(crate::mixin::Mixin::empty(Symbol::intern(name))),
@@ -4150,8 +4190,89 @@ mod tests {
             enclosing: None,
             declaring_class: None,
             superclass: None,
-            builtin: None,
+            builtin,
         })
+    }
+
+    #[test]
+    fn a_string_of_nine_bytes_spans_two_words_and_answers_each_code_point() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "String");
+        let object = heap.allocate_string(class, crate::CodePoints::from("abcdefghi"));
+        assert_eq!(heap.string_size(object), Some(9));
+        assert_eq!(heap.string_code_point_at(object, 8), Some(u32::from('i')));
+        assert_eq!(heap.string_code_point_at(object, 9), None);
+        assert_eq!(heap.str_value(object).as_deref(), Some("abcdefghi"));
+    }
+
+    #[test]
+    fn a_wide_string_keeps_its_width_and_its_text() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "String");
+        let object = heap.allocate_string(class, crate::CodePoints::from("€uro 😀"));
+        assert_eq!(heap.string_size(object), Some(6));
+        assert_eq!(heap.str_value(object).as_deref(), Some("€uro 😀"));
+    }
+
+    #[test]
+    fn every_string_accessor_reads_the_packed_units() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "String");
+        for text in [
+            "",
+            "a",
+            "abcdefgh",
+            "abcdefghi",
+            "naïve",
+            "€",
+            "€u",
+            "€uro 😀",
+        ] {
+            let object = heap.allocate_string(class, crate::CodePoints::from(text));
+            let expected = crate::CodePoints::from(text);
+            assert_eq!(heap.string_size(object), Some(expected.size()), "{text}");
+            for index in 0..=expected.size() {
+                assert_eq!(
+                    heap.string_code_point_at(object, index),
+                    expected.code_point_at(index),
+                    "{text} at {index}"
+                );
+            }
+            assert_eq!(heap.string_code_points(object), Some(expected.clone()));
+            assert_eq!(heap.string_hash(object), Some(expected.content_hash()));
+            let twin = heap.allocate_string(class, crate::CodePoints::from(text));
+            assert_eq!(heap.strings_equal(object, twin), Some(true), "{text}");
+            assert_eq!(
+                heap.string_concatenation(object, twin),
+                Some(expected.concatenate(&expected))
+            );
+            assert_eq!(
+                heap.string_slice(object, 0, expected.size()),
+                Some(expected)
+            );
+        }
+        let short = heap.allocate_string(class, crate::CodePoints::from("abc"));
+        let longer = heap.allocate_string(class, crate::CodePoints::from("abcd"));
+        assert_eq!(heap.strings_equal(short, longer), Some(false));
+    }
+
+    #[test]
+    fn only_an_object_of_the_builtin_symbol_class_answers_its_symbol() {
+        let mut heap = Heap::new();
+        let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
+        let string_class = named_class(&mut heap, "String");
+        let symbol = Symbol::intern("at:put:");
+        let object = heap.allocate_symbol(symbol_class, symbol);
+        assert_eq!(heap.symbol_value(object), Some(symbol));
+        assert!(heap.is_string(object));
+        assert_eq!(heap.str_value(object).as_deref(), Some("at:put:"));
+        assert_eq!(heap.describe(Value::object(object)), "the Symbol #at:put:");
+        let string = heap.allocate_string(string_class, crate::CodePoints::from("at:put:"));
+        assert_eq!(heap.symbol_value(string), None);
+        assert_eq!(
+            heap.describe(Value::object(string)),
+            "the String \"at:put:\""
+        );
     }
 
     #[test]
@@ -4199,7 +4320,7 @@ mod tests {
         let class = named_class(&mut heap, "Foo");
         let not_a_class = heap.allocate_object(
             class,
-            ObjectData::String(crate::CodePoints::from("not a class")),
+            ObjectData::string(&crate::CodePoints::from("not a class")),
         );
         let instance = heap.allocate_object(not_a_class, ObjectData::instance([]));
         assert_eq!(heap.describe(Value::object(instance)), "an object");
@@ -4675,7 +4796,7 @@ mod tests {
     fn a_move_gives_every_slot_a_new_index_and_rewrites_what_names_it() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        let string = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("a")));
+        let string = heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("a")));
         let array = heap.allocate_object(
             class,
             ObjectData::array([heap.store(Value::object(string))]),
@@ -4759,7 +4880,7 @@ mod tests {
     fn reading_an_object_handle_minted_before_a_move_panics() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        let string = heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("a")));
+        let string = heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("a")));
         move_bare_heap(&mut heap);
         let _ = heap.str_value(string);
     }
@@ -4801,7 +4922,7 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let stale =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("stale")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("stale")));
         let array = heap.allocate_object(class, ObjectData::array([Word::NIL]));
         let root = heap.stash(Value::object(array));
         move_bare_heap(&mut heap);
@@ -4920,9 +5041,9 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let reachable =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("live")));
         let unreachable =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("dead")));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
         let marker = heap.mark_from_roots_for_test();
@@ -4939,8 +5060,10 @@ mod tests {
     fn marking_follows_an_edge_out_of_a_reachable_object() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        let target =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("target")));
+        let target = heap.allocate_object(
+            class,
+            ObjectData::string(&crate::CodePoints::from("target")),
+        );
         let holder = heap.allocate_object(
             class,
             ObjectData::instance([heap.store(Value::object(target))]),
@@ -4979,7 +5102,7 @@ mod tests {
         let frame = heap.allocate_frame(top_level_frame());
         let activation_object = heap.allocate_object(class, ObjectData::Activation(frame));
         let other =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("other")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("other")));
 
         let answered = heap
             .activation_object_frame(activation_object)
@@ -5042,11 +5165,11 @@ mod tests {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
         let reachable =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
-        heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("live")));
+        heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("dead")));
         heap.allocate_object(
             class,
-            ObjectData::String(crate::CodePoints::from("also dead")),
+            ObjectData::string(&crate::CodePoints::from("also dead")),
         );
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
         let before = heap.objects.len();
@@ -5066,9 +5189,9 @@ mod tests {
     fn a_survivor_is_still_itself_after_compaction() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(ObjectData::instance([]));
-        heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("dead")));
+        heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("dead")));
         let reachable =
-            heap.allocate_object(class, ObjectData::String(crate::CodePoints::from("live")));
+            heap.allocate_object(class, ObjectData::string(&crate::CodePoints::from("live")));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
         heap.collect_for_test();
