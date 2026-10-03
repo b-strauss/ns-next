@@ -401,7 +401,7 @@ fn read_closure_record(
     let code = reader.read_u32()?;
     let captured = reader.read_u32()?;
     let count = reader.read_u16()? as usize;
-    let mut copied = Vec::with_capacity(count.min(1024));
+    let mut copied = decode::reserve_for(count, reader);
     for _ in 0..count {
         copied.push(read_value(reader, paths)?);
     }
@@ -416,8 +416,16 @@ fn walk_graph(
     symbols: &symbols::Table,
     paths: &[Vec<Symbol>],
 ) -> Result<GraphView, decode::DecodeError> {
-    let object_count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
-    let frame_count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
+    let object_count = decode::bounded_count(
+        reader.read_u32()? as usize,
+        decode::MIN_OBJECT_RECORD_BYTES,
+        reader,
+    )?;
+    let frame_count = decode::bounded_count(
+        reader.read_u32()? as usize,
+        decode::MIN_FRAME_RECORD_BYTES,
+        reader,
+    )?;
 
     let mut objects = Vec::with_capacity(object_count);
     for _ in 0..object_count {
@@ -491,8 +499,12 @@ fn walk_graph(
 
     let roots = read_values(reader, paths)?;
 
-    let count = decode::bounded_count(reader.read_u32()? as usize, 1, reader)?;
-    let mut tag_named = Vec::new();
+    let count = decode::bounded_count(
+        reader.read_u32()? as usize,
+        decode::MIN_TAG_NAMED_HASH_BYTES,
+        reader,
+    )?;
+    let mut tag_named = Vec::with_capacity(count);
     for _ in 0..count {
         let who = match reader.read_u8()? {
             opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(reader)?),

@@ -749,13 +749,9 @@ where every reified frame will carry its full register file on the wire.
 
 Small, deliberately left, none affecting an outcome.
 
-- `image/inspect.rs:460` bounds the tag-named hash count with a minimum record
-  of 1 byte where the decoder uses `MIN_TAG_NAMED_HASH_BYTES` (5).
 - `image/decode.rs`: `DecodeError::CodeArityMismatch`'s comments justify it by
   `read_local` indexing `arguments`, which it no longer does (it reads the flat
   register window); the check is still needed.
-- `image/inspect.rs`: `read_closure_record` bounds its pre-allocation with
-  `min(1024)` rather than `reserve_for`, as the rest of the walk does.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is

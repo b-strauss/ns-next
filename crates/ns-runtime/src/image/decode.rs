@@ -2677,17 +2677,17 @@ fn placeholder_frame<'gc>() -> Frame<'gc> {
 /// bytes, so this is a floor, not a typical size; kept at the one-byte tag
 /// the retired `CLASS_USER_ROOT` was, since the load peaks `memory.md`
 /// reports are derived from it and a lower bound stays a sound one.
-const MIN_OBJECT_RECORD_BYTES: usize = 6;
+pub(crate) const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
 /// The smallest frame record the wire admits: a `nil` receiver (1), empty
 /// `arguments` and `temporaries` counts (4 + 4), a `program_counter` (4),
 /// absent `sender`, `home` and `current_class` (1 + 1 + 1), a `TopLevel` kind
 /// tag (1), and `uncontinuable` (1). Every other frame kind is larger.
-const MIN_FRAME_RECORD_BYTES: usize = 18;
+pub(crate) const MIN_FRAME_RECORD_BYTES: usize = 18;
 
 /// The smallest entry of the closing hash table: a tag (1) and a hash (4). A
 /// builtin-class entry carries one more byte.
-const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
+pub(crate) const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
 
 /// A record count read from an untrusted stream, refused before it is used
 /// to *allocate*. The bytes still unread bound how many records can really
