@@ -2,7 +2,7 @@
 
 use super::Parser;
 use crate::ast::*;
-use crate::token::TokenKind;
+use crate::token::{Token, TokenKind};
 
 impl<'a> Parser<'a> {
     /// `codeBody → [temporaries] statements` (§5.1.8, and §7.2 for the return), where
@@ -21,31 +21,153 @@ impl<'a> Parser<'a> {
                     break
                 }
                 TokenKind::Caret => {
-                    self.bump(); // `^`
-                    let expression = self.parse_expression();
+                    let caret = self.bump();
+                    let expression = self.parse_statement().unwrap_or_else(|| {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!("expected an expression, found {:?}", token.kind),
+                        );
+                        Expression::Literal(Literal::Nil { span: caret.span })
+                    });
                     statements.push(Statement::Return(expression));
                     self.eat(TokenKind::Dot); // optional trailing dot
-                    break; // nothing after a return
+
+                    // Nothing follows a return (§7.2). What does is skipped to
+                    // the body's end, unless a member starts there: then the
+                    // body was never closed, which its owner reports.
+                    if !self.at_body_close() && !self.at_member_start() {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!(
+                                "expected the end of the body after a return (§7.2), found {:?}",
+                                token.kind
+                            ),
+                        );
+                        self.skip_rest_of_body();
+                    }
+                    break;
                 }
                 TokenKind::Dot => {
                     let dot = self.bump();
                     self.push_error(dot.span, "a `.` ends a statement, and none is here");
                 }
                 _ => {
-                    let expression = self.parse_expression();
+                    let before = self.position;
+                    let Some(expression) = self.parse_statement() else {
+                        break;
+                    };
                     statements.push(Statement::Expression(expression));
-                    if !self.eat(TokenKind::Dot) {
+                    if self.eat(TokenKind::Dot) || self.at_body_close() {
+                        continue;
+                    }
+                    if self.at_member_start() {
                         break;
                     }
+                    // A statement the expression did not end: skip to the next
+                    // one, so one error does not end the body. An expression
+                    // that consumed nothing has reported its token already.
+                    if self.position != before {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!("expected `.` between statements, found {:?}", token.kind),
+                        );
+                    }
+                    self.skip_rest_of_statement();
                 }
             }
         }
-        let end = self.current().span;
+        let end = if self.at_body_close() && !self.at(TokenKind::EndOfInput) {
+            self.current().span
+        } else {
+            self.previous_span()
+        };
         CodeBody {
             temporaries,
             temporaries_delimiters,
             statements,
             span: start.merge(end),
+        }
+    }
+
+    /// A statement's expression. When it reported an error and a member
+    /// starts inside what it consumed, the body was never closed and the
+    /// member is the next one in the class: the expression is parsed again
+    /// up to that member start, its first diagnostics dropped, so the member
+    /// is read as one and the half-typed method keeps the class around it. A
+    /// statement without an error is never parsed again, so a valid parse
+    /// stays as it is. Answers `None` when the member starts at the
+    /// statement's first token: there is no statement.
+    fn parse_statement(&mut self) -> Option<Expression> {
+        let checkpoint = self.checkpoint();
+        let expression = self.parse_expression();
+        let reported_an_error = self.diagnostics[checkpoint.1..]
+            .iter()
+            .any(|diagnostic| diagnostic.severity == crate::diagnostic::Severity::Error);
+        if !reported_an_error {
+            return Some(expression);
+        }
+        let reached = self.position;
+        let member_start =
+            (checkpoint.0..reached).find(|position| self.member_starts_at(*position));
+        self.position = reached;
+        let Some(member_start) = member_start else {
+            return Some(expression);
+        };
+        self.restore(checkpoint);
+        if member_start == checkpoint.0 {
+            return None;
+        }
+        // The member start reads as the end of input while the expression is
+        // parsed again: `bump` never passes one, so nothing reaches past it.
+        // Set and lifted around one call, whatever it parses -- a block's
+        // body bounds its own statements the same way, inside this bound.
+        let bound = self.tokens[member_start];
+        self.tokens[member_start].kind = TokenKind::EndOfInput;
+        let expression = self.parse_expression();
+        self.tokens[member_start] = bound;
+        // A diagnostic at the bound names the token the source has there,
+        // not the end of input the re-parse saw.
+        let seen = format!("found {:?}", TokenKind::EndOfInput);
+        let real = format!("found {:?}", bound.kind);
+        for diagnostic in &mut self.diagnostics[checkpoint.1..] {
+            if diagnostic.span == bound.span {
+                diagnostic.message = diagnostic.message.replace(&seen, &real);
+            }
+        }
+        Some(expression)
+    }
+
+    /// `at_member_start` at another position, the cursor left where it was.
+    fn member_starts_at(&mut self, position: usize) -> bool {
+        let cursor = self.position;
+        self.position = position;
+        let starts = self.at_member_start();
+        self.position = cursor;
+        starts
+    }
+
+    /// After an error in a statement: skip to the `.` that ends it and past
+    /// it. A stray `}` that closes nothing is skipped as well, so the body
+    /// always moves on.
+    fn skip_rest_of_statement(&mut self) {
+        if !self.skip_balanced(&[TokenKind::Dot]) && self.at(TokenKind::RightBrace) {
+            self.bump();
+        }
+        self.eat(TokenKind::Dot);
+    }
+
+    /// After a statement nothing may follow: skip to the body's close, or to
+    /// a member start, stray `}` included.
+    fn skip_rest_of_body(&mut self) {
+        loop {
+            self.skip_balanced(&[]);
+            if !self.at(TokenKind::RightBrace) {
+                break;
+            }
+            self.bump();
         }
     }
 
@@ -198,8 +320,8 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Equals);
         let open = self.expect(TokenKind::LeftParenthesis);
         let body = self.parse_code_body();
-        let end = self.current().span;
-        let close = self.expect(TokenKind::RightParenthesis);
+        let close = self.close_method_body();
+        let end = close.map_or_else(|| self.previous_span(), |token| token.span);
         MethodDeclaration {
             access,
             pattern,
@@ -210,6 +332,26 @@ impl<'a> Parser<'a> {
             }),
             span: start.merge(end),
         }
+    }
+
+    /// A method body's `)`. When it is missing and a member starts here, the
+    /// method ends where its body did, so the member after it is read as
+    /// one -- the method being typed keeps the class around it. Otherwise
+    /// what is left is skipped, balanced, up to the method's `)`.
+    fn close_method_body(&mut self) -> Option<Token> {
+        if self.at(TokenKind::RightParenthesis) {
+            return Some(self.bump());
+        }
+        let token = self.current();
+        self.push_error(
+            token.span,
+            &format!(
+                "expected `)` to end the method body, found {:?}",
+                token.kind
+            ),
+        );
+        self.skip_rest_of_body();
+        self.eat_token(TokenKind::RightParenthesis)
     }
 
     /// `slotDecls → seqSlotDecls | simSlotDecls` (§6.3.2), `| slotDef* |` or
@@ -503,7 +645,7 @@ impl<'a> Parser<'a> {
         let class_comment = self.take_class_comment();
         let (header_slots, slot_delimiters, initializer_expressions, g1_span) =
             self.parse_header_body();
-        let g1_end = self.current().span;
+        let g1_end = self.end_of_group();
         self.expect(TokenKind::RightParenthesis);
 
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
@@ -513,7 +655,7 @@ impl<'a> Parser<'a> {
             if self.at(TokenKind::LeftParenthesis) {
                 self.bump(); // `(`
                 let (lazy, methods, nested) = self.parse_side_body();
-                let end = self.current().span;
+                let end = self.end_of_group();
                 let close = self.expect(TokenKind::RightParenthesis);
                 (lazy, methods, nested, end, close)
             } else {
@@ -825,11 +967,15 @@ impl<'a> Parser<'a> {
                     lazy_slots.push(self.parse_lazy_slot_declaration());
                 }
                 _ => {
-                    let token = self.bump();
+                    let token = self.current();
                     self.push_error(
                         token.span,
                         "expected a method, nested class, or lazy slot declaration",
                     );
+                    // One error for the whole run, up to the next member.
+                    if !self.skip_balanced(&[]) && !self.at(TokenKind::RightParenthesis) {
+                        self.bump(); // a stray `]` or `}`
+                    }
                 }
             }
             if self.position == before {
@@ -865,8 +1011,12 @@ impl<'a> Parser<'a> {
                     methods.push(self.parse_method_declaration());
                 }
                 _ => {
-                    let token = self.bump();
+                    let token = self.current();
                     self.push_error(token.span, "expected a method declaration");
+                    // One error for the whole run, up to the next method.
+                    if !self.skip_balanced(&[]) && !self.at(TokenKind::RightParenthesis) {
+                        self.bump(); // a stray `]` or `}`
+                    }
                 }
             }
             if self.position == before {
@@ -874,7 +1024,7 @@ impl<'a> Parser<'a> {
                 self.push_error(token.span, "unexpected token on the class side");
             }
         }
-        let end = self.current().span;
+        let end = self.end_of_group();
         ClassBody {
             slots: Vec::new(),
             initializer_expressions: Vec::new(),
@@ -883,6 +1033,16 @@ impl<'a> Parser<'a> {
             delimiters: None,
             slot_delimiters: None,
             span: start.merge(end),
+        }
+    }
+
+    /// Where a class's `( … )` group ends: its `)`, or, when recovery found
+    /// none, the last token it consumed.
+    fn end_of_group(&self) -> crate::span::Span {
+        if self.at(TokenKind::RightParenthesis) {
+            self.current().span
+        } else {
+            self.previous_span()
         }
     }
 
@@ -1007,13 +1167,66 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Whether a member of a class side starts at the cursor -- a nested
+    /// class, a lazy slot or a method, an access modifier before it
+    /// included. A recovery skip stops here, so the member after an error is
+    /// read as one rather than swallowed.
+    pub(super) fn at_member_start(&mut self) -> bool {
+        self.at_nested_class() || self.at_lazy_slot_prefix() || self.looks_like_method()
+    }
+
+    /// Skips what is left of a construct after an error, each bracketed
+    /// group whole, so a recovery never stops at a bracket inside a group nor
+    /// takes a bracket that closes an enclosing one. Stops -- consuming
+    /// nothing more -- at a token of `stops` outside every group, at a
+    /// closing bracket no skipped group opened, at a member start, or at the
+    /// end of input. Answers whether it skipped anything.
+    pub(super) fn skip_balanced(&mut self, stops: &[TokenKind]) -> bool {
+        let start = self.position;
+        let mut expected_closers: Vec<TokenKind> = Vec::new();
+        loop {
+            let kind = self.peek();
+            if kind == TokenKind::EndOfInput || self.at_member_start() {
+                break;
+            }
+            match kind {
+                TokenKind::LeftParenthesis => expected_closers.push(TokenKind::RightParenthesis),
+                TokenKind::LeftBracket => expected_closers.push(TokenKind::RightBracket),
+                TokenKind::LeftBrace => expected_closers.push(TokenKind::RightBrace),
+                TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    match expected_closers
+                        .iter()
+                        .rposition(|expected| *expected == kind)
+                    {
+                        Some(index) => expected_closers.truncate(index),
+                        None => break,
+                    }
+                }
+                _ if expected_closers.is_empty() && stops.contains(&kind) => break,
+                _ => {}
+            }
+            self.bump();
+        }
+        self.position != start
+    }
+
+    /// Whether the cursor is at what ends a code body: its `)` or `]`, or
+    /// the end of input.
+    fn at_body_close(&self) -> bool {
+        matches!(
+            self.peek(),
+            TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::EndOfInput
+        )
+    }
+
     /// Speculative lookahead: does the cursor sit at `accessModifier?
     /// messagePattern '=' '('` (a method), rather than an initializer expression?
     fn looks_like_method(&mut self) -> bool {
         let checkpoint = self.checkpoint();
         self.parse_access_modifier();
-        let _ = self.try_parse_message_pattern();
-        let is_method = self.at(TokenKind::Equals)
+        // A bare `= (` starts no method: without a pattern there is none.
+        let is_method = self.try_parse_message_pattern().is_some()
+            && self.at(TokenKind::Equals)
             && self.tokens.get(self.position + 1).map(|token| token.kind)
                 == Some(TokenKind::LeftParenthesis);
         self.restore(checkpoint);

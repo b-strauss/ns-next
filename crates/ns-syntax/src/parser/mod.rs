@@ -70,12 +70,24 @@ impl<'a> Parser<'a> {
         self.peek() == kind
     }
 
+    /// Consumes the current token, never an end of input: neither the real
+    /// one nor the bound a recovering re-parse sets (`parse_statement`), so
+    /// nothing parsed under that bound reaches past it.
     fn bump(&mut self) -> Token {
         let token = self.current();
-        if self.position < self.tokens.len() - 1 {
+        if self.position < self.tokens.len() - 1 && token.kind != TokenKind::EndOfInput {
             self.position += 1;
         }
         token
+    }
+
+    /// The span of the last token consumed: where a node that recovery ended
+    /// early ends, so its span never reaches an unrelated token after it.
+    pub(super) fn previous_span(&self) -> crate::span::Span {
+        match self.position.checked_sub(1) {
+            Some(index) => self.tokens[index].span,
+            None => self.current().span,
+        }
     }
 
     fn eat(&mut self, kind: TokenKind) -> bool {
