@@ -3435,15 +3435,17 @@ impl Sizing<'_, '_, '_> {
         Ok(())
     }
 
-    /// `decode_object_header`'s reading.
-    fn header(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+    /// `decode_object_header`'s reading; answers whether the header named
+    /// the builtin `Future`.
+    fn header(&self, reader: &mut Reader) -> Result<bool, DecodeError> {
         let tag = reader.read_u8()?;
         if tag != CLASS_BUILTIN {
-            return self.class_tag_after(tag, reader);
+            return self.class_tag_after(tag, reader).map(|()| false);
         }
         match read_builtin_class(reader)? {
-            BuiltinClass::Activation | BuiltinClass::Future => Ok(()),
-            kind => referenced_builtin_class(kind).map(drop),
+            BuiltinClass::Activation => Ok(false),
+            BuiltinClass::Future => Ok(true),
+            kind => referenced_builtin_class(kind).map(|_| false),
         }
     }
 
@@ -3551,9 +3553,19 @@ impl Sizing<'_, '_, '_> {
         reader: &mut Reader,
         symbols_named: &mut [bool],
     ) -> Result<(PlannedRecord, usize), DecodeError> {
-        self.header(reader)?;
+        let future = self.header(reader)?;
         reader.read_u32()?; // the identity hash, checked by the second pass
         let (fields, frame) = match reader.read_u8()? {
+            // A future has exactly its two fields; a record under its header
+            // claiming any other count is refused here, before it is
+            // allocated, as the second pass would refuse it once read.
+            OBJECT_INSTANCE if future => {
+                let count = self.values(reader)?;
+                if count != crate::interpreter::future::FIELD_COUNT {
+                    return Err(DecodeError::FutureRecord);
+                }
+                (count, false)
+            }
             OBJECT_INSTANCE | OBJECT_ARRAY => (self.values(reader)?, false),
             OBJECT_STRING => {
                 let text = reader.read_text()?;
@@ -3791,6 +3803,12 @@ pub fn decode_graph_section<'gc>(
                 let count = reader.read_u32()? as usize;
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
+                // The first pass refused any other count under the `Future`
+                // header; restated here, beside the layout check, as what
+                // reading the two fields below rests on.
+                if future_header && count != crate::interpreter::future::FIELD_COUNT {
+                    return Err(DecodeError::FutureRecord);
+                }
                 if class_named_by_path {
                     let expected = context
                         .mutator
@@ -3815,11 +3833,12 @@ pub fn decode_graph_section<'gc>(
                 // a closure is checked below, once the record it names has
                 // been read.
                 if future_header {
-                    let fields = context
-                        .mutator
-                        .heap
-                        .instance_fields(*object)
-                        .unwrap_or_default();
+                    let heap = &context.mutator.heap;
+                    let fields: [Value<'gc>; crate::interpreter::future::FIELD_COUNT] =
+                        std::array::from_fn(|index| {
+                            heap.instance_field(*object, index)
+                                .unwrap_or_else(Value::nil)
+                        });
                     let computation =
                         crate::interpreter::future::decoded_future_computation(&fields)
                             .ok_or(DecodeError::FutureRecord)?;

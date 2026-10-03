@@ -10729,6 +10729,32 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     );
 }
 
+/// A record under the `Future` header has exactly a future's two fields, so
+/// the first pass refuses any other count before anything is allocated:
+/// neither the record's placeholder nor a copy of its fields ever exists,
+/// however many fields it claims and carries.
+#[test]
+fn a_future_record_with_another_field_count_is_refused_before_allocating() {
+    let bytes = future_record(|writer| {
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(100_000);
+        for _ in 0..100_000 {
+            writer.write_u8(VALUE_NIL);
+        }
+    });
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::FutureRecord
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
 /// A module whose `probe` slot holds §6.3.2's data cycle: each of `Probe`'s
 /// arrays holds the other's future, resolved once the clause ends. `kept` is
 /// for a test to fill, and `second` answers a block to make a future of.

@@ -22,7 +22,10 @@ const RESOLVED: i64 = 2;
 /// `a_futures_slots_are_where_this_module_reads_them` pins both.
 const COMPUTATION_FIELD: usize = 0;
 const STATE_FIELD: usize = 1;
-const FIELD_COUNT: usize = 2;
+/// How many fields a future has, and so how many a decoded record under the
+/// `Future` header must carry: the image decoder refuses any other count
+/// before it allocates the record (`decode::decode_graph_section`).
+pub(crate) const FIELD_COUNT: usize = 2;
 
 /// Where a future is in its life.
 pub enum FutureState<'gc> {
