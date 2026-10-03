@@ -108,12 +108,25 @@ pub fn encode(classified: &[Classified], text: &str, line_index: &LineIndex) -> 
     encoded
 }
 
-/// What one class declares, both sides together, under the full selector --
-/// the same set `crates/ns-runtime/src/resolver/classes.rs`'s
-/// `own_member_names` builds, but remembering what kind of member each is.
-/// A name declared twice is a resolver error; the first declaration wins
-/// here, so the colour is stable while the error is shown.
+/// What one class declares, each side apart, under the full selector. The
+/// resolver searches both sides together (`own_member_names` in
+/// `crates/ns-runtime/src/resolver/classes.rs`) and records only the depth a
+/// send binds at. The object the send reaches at that depth is an instance
+/// when the body holding the send -- or, further out, the nested class
+/// holding it -- is declared on the instance side, and the class object when
+/// it is declared on the class side; a name both sides declare with
+/// different kinds is coloured by the side reached. A name one side declares
+/// twice is a resolver error; the first declaration wins here, so the colour
+/// is stable while the error is shown.
 struct ClassMembers {
+    instance_side: SideMembers,
+    class_side: SideMembers,
+}
+
+/// What one side of a class declares: one level of the chain a send's depth
+/// indexes.
+#[derive(Default)]
+struct SideMembers {
     members: HashMap<String, MemberKind>,
 }
 
@@ -127,37 +140,52 @@ enum MemberKind {
 
 impl ClassMembers {
     fn of(declaration: &ast::ClassDeclaration) -> ClassMembers {
-        let mut members = HashMap::new();
-        for body in std::iter::once(&declaration.instance_side).chain(&declaration.class_side) {
-            for slot in &body.slots {
-                let readonly = slot.mutability == ast::SlotMutability::Immutable;
-                members
-                    .entry(slot.name.name.clone())
-                    .or_insert(MemberKind::Slot { readonly });
-                if !readonly {
-                    members
-                        .entry(format!("{}:", slot.name.name))
-                        .or_insert(MemberKind::SlotSetter);
-                }
-            }
-            for method in &body.methods {
-                members
-                    .entry(selector_of(&method.pattern))
-                    .or_insert(MemberKind::Method);
-            }
-            for nested in &body.nested_classes {
-                members
-                    .entry(nested.name.name.clone())
-                    .or_insert(MemberKind::NestedClass);
-            }
-        }
-        // §6: a declaration without a factory signature has the factory `new`.
+        let mut class_side = declaration
+            .class_side
+            .as_ref()
+            .map_or_else(SideMembers::default, SideMembers::of);
+        // §6: a declaration without a factory signature has the factory `new`;
+        // §6.3 makes it a member of the metaclass mixin the class side becomes.
         let factory = declaration
             .factory
             .as_ref()
             .map_or_else(|| "new".to_string(), selector_of);
-        members.entry(factory).or_insert(MemberKind::Method);
-        ClassMembers { members }
+        class_side
+            .members
+            .entry(factory)
+            .or_insert(MemberKind::Method);
+        ClassMembers {
+            instance_side: SideMembers::of(&declaration.instance_side),
+            class_side,
+        }
+    }
+}
+
+impl SideMembers {
+    fn of(body: &ast::ClassBody) -> SideMembers {
+        let mut members = HashMap::new();
+        for slot in &body.slots {
+            let readonly = slot.mutability == ast::SlotMutability::Immutable;
+            members
+                .entry(slot.name.name.clone())
+                .or_insert(MemberKind::Slot { readonly });
+            if !readonly {
+                members
+                    .entry(format!("{}:", slot.name.name))
+                    .or_insert(MemberKind::SlotSetter);
+            }
+        }
+        for method in &body.methods {
+            members
+                .entry(selector_of(&method.pattern))
+                .or_insert(MemberKind::Method);
+        }
+        for nested in &body.nested_classes {
+            members
+                .entry(nested.name.name.clone())
+                .or_insert(MemberKind::NestedClass);
+        }
+        SideMembers { members }
     }
 }
 
@@ -225,11 +253,14 @@ impl Classifier<'_> {
     }
 
     /// `enclosing` is the chain around this declaration, innermost first --
-    /// the resolver's `class_chain` without this class's own level.
-    fn class(&mut self, declaration: &ast::ClassDeclaration, enclosing: &[&ClassMembers]) {
+    /// the resolver's `class_chain` without this class's own level, each
+    /// level the side the declaration nested in it is declared on.
+    fn class(&mut self, declaration: &ast::ClassDeclaration, enclosing: &[&SideMembers]) {
         let own = ClassMembers::of(declaration);
-        let mut chain: Vec<&ClassMembers> = vec![&own];
+        let mut chain: Vec<&SideMembers> = vec![&own.instance_side];
         chain.extend_from_slice(enclosing);
+        let mut class_side_chain: Vec<&SideMembers> = vec![&own.class_side];
+        class_side_chain.extend_from_slice(enclosing);
 
         self.emit(declaration.name.span, TokenCategory::Class, true, false);
         // A module root's clauses bind nothing; a nested class's receivers
@@ -324,19 +355,25 @@ impl Classifier<'_> {
                 self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             }
         }
-        for body in std::iter::once(&declaration.instance_side).chain(&declaration.class_side) {
+        let sides = std::iter::once((&declaration.instance_side, &chain)).chain(
+            declaration
+                .class_side
+                .iter()
+                .map(|side| (side, &class_side_chain)),
+        );
+        for (body, side_chain) in sides.clone() {
             for method in &body.methods {
-                self.method(method, &chain);
+                self.method(method, side_chain);
             }
         }
-        for body in std::iter::once(&declaration.instance_side).chain(&declaration.class_side) {
+        for (body, side_chain) in sides {
             for nested in &body.nested_classes {
-                self.class(nested, &chain);
+                self.class(nested, side_chain);
             }
         }
     }
 
-    fn method(&mut self, method: &ast::MethodDeclaration, chain: &[&ClassMembers]) {
+    fn method(&mut self, method: &ast::MethodDeclaration, chain: &[&SideMembers]) {
         match &method.pattern {
             ast::MessagePattern::Unary { selector }
             | ast::MessagePattern::Binary { selector, .. } => {
@@ -356,7 +393,7 @@ impl Classifier<'_> {
         &mut self,
         parameters: &[&ast::Identifier],
         body: &ast::CodeBody,
-        chain: &[&ClassMembers],
+        chain: &[&SideMembers],
     ) {
         self.enter_scope(parameters, &body.temporaries);
         for temporary in &body.temporaries {
@@ -392,7 +429,7 @@ impl Classifier<'_> {
         self.scopes.push(scope);
     }
 
-    fn statement(&mut self, statement: &Statement, chain: &[&ClassMembers]) {
+    fn statement(&mut self, statement: &Statement, chain: &[&SideMembers]) {
         match statement {
             Statement::Expression(expression) | Statement::Return(expression) => {
                 self.expression(expression, chain)
@@ -400,7 +437,7 @@ impl Classifier<'_> {
         }
     }
 
-    fn expression(&mut self, expression: &Expression, chain: &[&ClassMembers]) {
+    fn expression(&mut self, expression: &Expression, chain: &[&SideMembers]) {
         match expression {
             Expression::Identifier(identifier) => self.identifier(identifier, chain),
             Expression::Literal(_) => {}
@@ -433,7 +470,7 @@ impl Classifier<'_> {
         }
     }
 
-    fn identifier(&mut self, identifier: &ast::Identifier, chain: &[&ClassMembers]) {
+    fn identifier(&mut self, identifier: &ast::Identifier, chain: &[&SideMembers]) {
         // `outer` is reserved by the lexer, never a member name (per the
         // spec). `resolve_identifier` skips only `self`/`super`, so a bare
         // `outer` with no further message chained after it (the two-hop
@@ -456,7 +493,7 @@ impl Classifier<'_> {
         }
     }
 
-    fn setter_target(&mut self, target: &ast::Identifier, chain: &[&ClassMembers]) {
+    fn setter_target(&mut self, target: &ast::Identifier, chain: &[&SideMembers]) {
         // The binding is keyed by the name's span; the colour covers the
         // whole `name::` token, so the colons read as part of the write.
         let span = self.setter_token(target.span);
@@ -508,7 +545,7 @@ impl Classifier<'_> {
         }
     }
 
-    fn send(&mut self, send: &ast::Send, chain: &[&ClassMembers]) {
+    fn send(&mut self, send: &ast::Send, chain: &[&SideMembers]) {
         match self.bindings.get(&send.span).copied() {
             Some(Binding::LexicalSend { depth }) => {
                 let (category, readonly) =
@@ -609,7 +646,7 @@ impl Classifier<'_> {
         }
     }
 
-    fn member_use(&mut self, span: Span, name: &str, chain: &[&ClassMembers]) {
+    fn member_use(&mut self, span: Span, name: &str, chain: &[&SideMembers]) {
         let depth = match self.bindings.get(&span) {
             Some(Binding::LexicalSend { depth }) => *depth,
             _ => return,
@@ -635,7 +672,7 @@ impl Classifier<'_> {
 
 /// What `name` is in the class `depth` levels out, or a send when that class
 /// does not declare it.
-fn member_category(chain: &[&ClassMembers], depth: u16, name: &str) -> (TokenCategory, bool) {
+fn member_category(chain: &[&SideMembers], depth: u16, name: &str) -> (TokenCategory, bool) {
     match chain
         .get(depth as usize)
         .and_then(|members| members.members.get(name))
@@ -1041,6 +1078,46 @@ mod tests {
                 "`{word}` sent to `other`"
             );
         }
+    }
+
+    #[test]
+    fn a_name_on_both_sides_is_coloured_by_the_side_the_send_reaches() {
+        // The resolver binds each `size` below by depth alone, over both
+        // sides together; the object a send reaches at depth 0 is an instance
+        // in an instance-side body and the class object in a class-side one,
+        // and at depth 1 from `Inner` an instance of `Shapes`.
+        let text = indoc::indoc! {"
+            class Shapes = Object new (
+              | size = 1. |
+            ) (
+              class Inner = Object new () (
+                public peek = ( ^size )
+              )
+              public read = ( ^size )
+            ) : (
+              public size = ( ^2 )
+              public ask = ( ^size )
+            )
+        "};
+        let analysis = crate::analysis::analyze(text);
+        assert!(analysis.findings.is_empty(), "the module is clean");
+        let classified_at = |occurrence: usize| {
+            let start = text
+                .match_indices("size")
+                .nth(occurrence)
+                .expect("`size` occurrence")
+                .0 as u32;
+            analysis
+                .classified
+                .iter()
+                .find(|classified| classified.span.start == start)
+                .map(|classified| (classified.category, classified.declaration))
+        };
+        assert_eq!(classified_at(0), Some((Property, true)), "the slot");
+        assert_eq!(classified_at(1), Some((Property, false)), "from `Inner`");
+        assert_eq!(classified_at(2), Some((Property, false)), "instance side");
+        assert_eq!(classified_at(3), Some((Method, true)), "the method");
+        assert_eq!(classified_at(4), Some((Method, false)), "class side");
     }
 
     #[test]

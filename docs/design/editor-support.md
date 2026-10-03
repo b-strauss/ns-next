@@ -179,7 +179,13 @@ excluded when the selector's tokens are found.
   slot read as a `LexicalSend { depth }`, as the specification makes it a send
   like any other; the server looks the selector up among the declarations of
   the class `depth` levels out — slot, nested class or method — and colours it
-  accordingly. A name that class only inherits cannot be placed statically and
+  accordingly. The resolver finds that depth over both sides of a class
+  together; the server looks only at the side the send reaches there: the
+  instance side when the body holding the send, or the nested class holding
+  it, is declared on the instance side, the class side (with the primary
+  factory) when on the class side. A name declared as a slot on one side and a
+  method on the other is so coloured by the declaration the send reaches. A
+  name that class only inherits cannot be placed statically and
   is coloured `method`, which is what it is: a send. A write, `name:: value`,
   is coloured over the whole `name::` token, the colons with the name.
 - **Messages to an object.** A send with an explicit receiver has no binding;
@@ -228,7 +234,8 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
   a receiver inside a keyword message's span, a lazy slot in both
-  modifier orders and both forms), each expected category asserted
+  modifier orders and both forms, a name a slot on one side of a class and a
+  method on the other), each expected category asserted
   directly rather than through an `insta` snapshot, so every expectation is
   stated and reviewed rather than accepted;
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and
@@ -477,10 +484,6 @@ and resolves cleanly in a JetBrains IDE today.
 - **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
   errors, so a lexer or parser warning on a module that parses is not shown.
   None exists today.
-- **A name declared on both sides of a class** with different kinds (a slot on
-  the instance side, a method on the class side) is coloured by the first
-  declaration, as `ClassMembers` merges both sides the way the resolver's
-  member set does.
 - **A malformed notification** is logged to stderr and ignored, so the client
   sees no error for it.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
