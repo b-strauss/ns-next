@@ -15,22 +15,25 @@ and how much of each aspect exists, is in `docs/design/` — start at its
 
 ## Where the next session starts
 
-**Next: road step 3b, the object space**
-([memory.md](design/memory.md), "Planned: the object space";
-[object-model.md](design/object-model.md), "Planned with road step 3b:
-handles"): the arena of boxed blocks gives way to one space of variably
-sized objects in `ns-memory`'s reservation, with byte-offset handles, bump
-allocation and sliding compaction; the layout of an object's words does not
-change. Its design was decided with the user on 2026-09-29 and 2026-10-03;
-it has no implementation plan yet, so the session starts by writing one.
-Everything before it on the road is built: road step 2's eight-byte value
-("The eight-byte value" below), the compact instruction encoding ("The
-compact instruction encoding" below) and road step 3a, the object
-representation ("The object representation" below;
-[object-model.md](design/object-model.md), "The object layout"), which made
-every object a header word, a class word and its fields in one block of
-words per arena slot. The whole road, decided with the user on 2026-09-29,
-is in [OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance VM".
+**Next: road step 4, generations**
+([memory.md](design/memory.md), "Planned: generations";
+[image-format.md](design/image-format.md), "Planned: the image under
+generations"): eden and two survivor spaces at the low end of the object
+space's reservation, below the old space; a copying scavenger with
+age-based tenuring; a remembered bit and set behind the store accessors;
+large objects allocated old; and a load that tenures before the decoder
+allocates, with the mark-compact of the object space as the old space's
+collector. Its design is in those sections; it has no implementation plan
+yet, so the session starts by writing one. Everything before it on the road
+is built: road step 2's eight-byte value ("The eight-byte value" below),
+the compact instruction encoding ("The compact instruction encoding"
+below), road step 3a, the object representation ("The object
+representation" below), and road step 3b, the object space ("The object
+space" below; [memory.md](design/memory.md), "The object space"), which put
+every object -- a header word, a class word and its fields -- in one space
+in `ns-memory`'s reservation, named by a 64-bit byte offset. The whole road,
+decided with the user on 2026-09-29, is in [OPEN-WORK.md](OPEN-WORK.md),
+"The road to a high-performance VM".
 
 **Everything else still to be done is listed in [OPEN-WORK.md](OPEN-WORK.md)**,
 each item with where it is explained. The sections below record the
@@ -4086,8 +4089,9 @@ the user on 2026-09-29 and 2026-10-03 and built in thirteen stages, each
 green. Every object in the arena is one `Box<[u64]>` in road step 3's final
 layout: a header word -- the dispatch guard in bits 0-21, the format, a
 `LargeInteger`'s negative bit, a 22-bit identity hash and the word count --
-then the class word, then the fields. The handle is still the arena index,
-and the space in `ns-memory`'s reservation is road step 3b.
+then the class word, then the fields. The handle stayed the arena index
+until road step 3b put the objects in the space ("The object space"
+below).
 
 - `c66bb94` -- the reserved guard values are the three lowest ids (`NONE`
   0, `VACANT` 1, `FORWARDED` 2), and minting stops below 2^22.
@@ -4146,3 +4150,67 @@ What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): lending a
 the recorded guard and the slot-access check, with road step 5; the ids'
 reclamation and a weak application cache, with live editing; and the task
 reviews' minor findings under "Missing tests" and "Code quality follow-ups".
+
+## The object space (2026-10-03)
+
+Plan: [ns-next-object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md);
+[memory.md](design/memory.md), "The object space".
+
+Road step 3b ([OPEN-WORK.md](OPEN-WORK.md), "The road to a
+high-performance VM"), the second of road step 3's two plans, designed with
+the user on 2026-09-29 and 2026-10-03 and built in six stages, each green.
+The arena of boxed blocks gives way to one object space in `ns-memory`'s
+reservation, the memory layer's first user: every object lies end to end in
+it, its header word, class word and fields as road step 3a laid them out,
+an overflow word before the header past 254 words; a handle is the 64-bit
+byte offset of the header; allocation bumps the top and writes the object in
+place; and the collector marks in the header and slides the survivors down,
+forwarding every handle through a live-word bitmap. Three decisions were
+taken with the user while planning: the live-word bitmap with a prefix count
+per 64 words as the forwarding table; no debug no-access protection of
+vacated pages until generated code dereferences addresses; and running out
+of memory aborts, as a failed `Vec` push does.
+
+- `c22b93c3` -- the memory layer lends its committed read-write prefix in
+  O(1) (`Reservation::prefix`), the end of the prefix kept as a field.
+- `bc006499` -- marking sets the header's mark bit, and marking and
+  forwarding read an object's pointer words through one enumeration,
+  `pointer_ranges`; the mark-bit side table goes.
+- `e1873990` -- a handle is a 64-bit byte offset, a `NonZeroU64`, still
+  backed by arena slots; `Resolved` grows from 16 to 24 bytes in a release
+  build.
+- `d65b2a0a` -- the object space (`heap/space.rs`): a 64 GiB reservation,
+  a 256 KiB first commit that at least doubles as it grows, a bump of the
+  top, the overflow word and the walk, built and tested on its own.
+- `e4fd5286` -- objects live in the space; a collection slides the
+  survivors down through a live-word bitmap (`heap/compaction.rs`) and
+  gives back committed memory past twice its next limit; the trigger
+  counts bytes, with a 512 KiB floor; the move stress mode shifts every
+  object by a distance that varies with the epoch.
+- `a51ed31c` -- every allocation writes its object in place in the space,
+  and the per-object Rust allocations go; the decoder refuses a class
+  record whose placeholder has another size, where it rebuilt the object.
+- `5d1b903f` -- the object access path inlines again: `pointer_words`,
+  `pointer_words_mut` and `pointer_word` are `#[inline(always)]`, after a
+  profile found `pointer_words` outlined and holding 5.3% to 8.2% of three
+  programs' samples.
+- `cd82cd3c` and the documentation commit after it -- the decoder's
+  amplification bound recomputed for the space: a rejected load's transient
+  peak is about 10.7x of the graph section's bytes in a release build and
+  16x in a debug one, plus at most 4x of the symbol section's
+  ([memory.md](design/memory.md), "The amplification bound of a rejected
+  load"), where it was 12.0x and 16x; the documentation describes the built
+  state and records the measurement.
+
+Measured against `d3e9f6f`, the tree the branch started from, seventeen of
+the twenty-four sources are faster, ten with separated ranges, by 3.8% to
+22.1% (`bench_block.ns`); Mandelbrot, `bench_loop.ns` and NBody are 1.5% to
+2.5% slower, separated; Havlak's peak working set falls from 41.9 MB to
+30.2 MB ([execution.md](design/execution.md), "What the object space
+moved").
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a
+Newspeak-level out-of-memory error; the debug no-access protection of
+vacated pages, for road step 8's generated code; the encoder's 32-bit
+object ids, which abort past about four billion objects; and the three
+slower programs, not profiled.

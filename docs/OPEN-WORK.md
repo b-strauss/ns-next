@@ -13,31 +13,16 @@ Code references of the items dated before 2026-09-30 were checked against the tr
 
 ## Next
 
-**Road step 3b, the object space** ("Step 3, the object space" below): the
-arena of boxed blocks gives way to one space in `ns-memory`'s reservation,
-with byte-offset handles, bump allocation and sliding compaction over
-variably sized objects; the layout of an object's words, which road step 3a
-built, does not change ([memory.md](design/memory.md), "Planned: the object
-space"; [object-model.md](design/object-model.md), "Planned with road step
-3b: handles"). Its design decisions were taken with the user on 2026-09-29
-and 2026-10-03; it has no implementation plan yet, so the next session
-writes one. Everything before it on the road is built, road step 3a, the
-object representation, included.
-
-What road step 3b's plan retires (road step 3a's final review, 2026-10-03):
-`Heap::fill_placeholder_class`'s fallback, the one remaining place a block
-is rebuilt in its slot rather than written in place (it builds a class
-record beside a placeholder of the wrong size, which a valid first pass
-never produces, and the space cannot resize an object in place); the
-structures keyed by the arena index, which become keyed by the byte offset
-and are rebuilt or forwarded where the index is today --
-`object_identity_key`, the inverse symbol map `symbol_of`, and
-`rebuild_applications`' position map (the frame's `MARRIED` field holds a
-stack index, not an arena index, and is unaffected); and the per-object
-Rust allocations the space replaces, `Payload::into_block` with
-`push_object`, and the decoder's class-payload temporary that
-`fill_placeholder_class` copies from. Nothing in the tree keys on a `Box`'s
-address.
+**Road step 4, generations** ("Step 4, generations" below): eden and two
+survivor spaces at the low end of the object space's reservation, below the
+old space; a copying scavenger with age-based tenuring; a remembered bit and
+set behind the store accessors; large objects allocated old; and a load
+that tenures before the decoder allocates ([memory.md](design/memory.md),
+"Planned: generations"; [image-format.md](design/image-format.md),
+"Planned: the image under generations"). Its design is in those sections;
+it has no implementation plan yet, so the next session writes one.
+Everything before it on the road is built, road step 3b, the object space,
+included.
 
 ## The road to a high-performance VM
 
@@ -82,7 +67,7 @@ and `prior-art/newspeak-benchmarks`.
   [execution.md](design/execution.md), "The Are We Fast Yet benchmarks":
   three pinned release builds of `1792df5`, pooled, as that document's
   measurement protocol asks (decided with the user on 2026-09-30).
-- **Step 2, second plan, the eight-byte value -- built**, on today's arena:
+- **Step 2, second plan, the eight-byte value -- built**, on the arena:
   one tagged 64-bit word -- a `SmallInteger` of 61 bits, a `SmallFloat64`,
   the constants `nil`, `true` and `false`, and handles -- with every other
   number a `LargeInteger` or a boxed `Float`.
@@ -94,26 +79,28 @@ and `prior-art/newspeak-benchmarks`.
   2026-10-02, built the same day).
   [execution.md](design/execution.md), "The compact instruction
   encoding".
-- **Step 3, the object space.** One header word (the application id as the
-  cache guard, the identity hash, format, size, GC bits, a `LargeInteger`'s
+- **Step 3, the object space -- built.** One header word (the application
+  id as the cache guard, the identity hash, format, size, GC bits, a `LargeInteger`'s
   sign) and a class word, the fields inline, variably sized objects in one
   VM-owned space with byte-offset handles. Built in two plans (decided with
-  the user on 2026-10-03), as road step 2's value was built on today's arena
+  the user on 2026-10-03), as road step 2's value was built on the arena
   first. **3a, the representation -- built** (2026-10-03,
   [its plan](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md)):
-  each arena slot one block of words in the final layout, the handle still
-  an arena index; every object kind a format, class objects, closures and
-  reified frames among them, and the frame arena gone; strings and symbols
+  the final layout of an object's words, then on the arena; every object
+  kind a format, class objects, closures and reified frames among them, and
+  the frame arena gone; strings and symbols
   byte- and 32-bit-indexed objects, `Symbol` under `String`; per-heap ids
   for mixins, applications and code, the application cache keyed by them;
   the image's frames object records, sized in a first pass before anything
   is allocated. [object-model.md](design/object-model.md), "The object
   layout"; [image-format.md](design/image-format.md), "Frames are object
-  records", "Two passes". **3b, the space** -- the arena replaced by
-  `ns-memory`'s reservation, byte-offset handles, bump allocation and
-  sliding compaction. [memory.md](design/memory.md), "Planned: the object
-  space"; [image-format.md](design/image-format.md), "Planned: the image
-  under the object space and generations".
+  records", "Two passes". **3b, the space -- built** (2026-10-03,
+  [its plan](superpowers/plans/2026-10-03-1934-ns-next-object-space.md)):
+  the arena replaced by one space in `ns-memory`'s reservation, handles
+  64-bit byte offsets, bump allocation writing each object in place, the
+  overflow word, the mark bit in the header and sliding compaction through
+  a live-word bitmap. [memory.md](design/memory.md), "The object space";
+  [execution.md](design/execution.md), "What the object space moved".
 - **Step 4, generations**: eden and two survivor spaces below the old space,
   a copying scavenger with age-based tenuring, and a remembered bit and set
   behind the store accessors. [memory.md](design/memory.md), "Planned:
@@ -158,6 +145,17 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   numbers (decided with the user on 2026-10-02 to note it, not to plan it).
   [execution.md](design/execution.md), "The compact instruction
   encoding".
+- **A debug build's no-access protection of vacated pages**, for when
+  generated code dereferences addresses itself (road step 8, the baseline
+  JIT). The heap protects no page today: its accessors lend only the words
+  below the space's top, so a stale offset into the tail a compaction
+  vacated already finds no word, and one below the top is caught by the
+  debug build's epoch check. Generated code that loads through base plus
+  handle bypasses the slice, and protecting what a compaction or, under
+  generations, a scavenge vacates is what turns its stale load into a fault
+  (deferred with the user on 2026-10-03; `ns-memory` already supplies
+  `Protection::NoAccess`). [memory.md](design/memory.md), "The object
+  space", "The memory layer".
 - **`IntegerBinary` with an immediate operand.** `i + 1` loads the `1` into
   a register before the inlined operation reads it, one more dispatch on
   every iteration of a counting loop; a form that carries a small integer
@@ -259,7 +257,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `Mutator::new_integer`. Unmeasured. [core-library.md](design/core-library.md),
   "Large integers"; [memory.md](design/memory.md), "Known rough edges in the
   seam".
-- **`Object>>==` reads the arena for every two distinct objects.** The
+- **`Object>>==` reads the heap for every two distinct objects.** The
   identity leaf (`builtins/object_class.rs`, `identical`) gives a boxed
   `Float` bit identity, so `==` of two distinct handles asks the heap
   whether both are boxed floats before it answers `false`. Spur and
@@ -503,20 +501,22 @@ value objects are never copied across an actor boundary (§3.1.1).
   (separates a cost that tracks the collection count from one that tracks
   the pause); and `COLLECTION_FLOOR` raised above the whole allocation, so it
   never collects but still pays the trigger's comparison. Not run either:
-  pre-sizing the arena with `with_capacity`, and whether the max-over-median
-  latency gap persists under the collector. The allocator measurement puts
-  16.9% of `bench_block.ns`'s samples in the Windows heap and measures it
-  15.6% faster under mimalloc ([memory.md](design/memory.md), "Payloads
-  belong to the Rust allocator, and what that costs"), but whether that is
-  this residual was not isolated. The object representation (road step 3a)
-  removed the frame arena, and the object space (road step 3b) will remove
-  the per-object frees, so the collector is measured afresh after each.
-- **Road step 3a left the sources slower by up to 30.5% against `d0e8b08`**
-  (nineteen of twenty-four separated, from 3.6% to 30.5%), most of it the
-  per-object allocation of frame and closure blocks that road step 3b removes.
-  3b is measured against the same baseline, and what it does not recover is
-  investigated then. [execution.md](design/execution.md), "What the object
-  representation moved".
+  whether the max-over-median latency gap persists under the collector. The
+  allocator measurement put 16.9% of `bench_block.ns`'s samples in the
+  Windows heap ([memory.md](design/memory.md), "What owning the memory
+  gave"); the object space removed the per-object allocations and frees,
+  and `bench_block.ns` now makes 229 collections over `bench --iterations
+  10`, 12.0 ms of pause in all, but the residual was not measured afresh.
+- **Mandelbrot 2.5%, `bench_loop.ns` 1.9% and NBody 1.5% slower after the
+  object space**, each with separated ranges against the tree road step 3b
+  started from, `d3e9f6f`, while seventeen of the twenty-four sources got
+  faster. None of the three was profiled after the inlining fix that
+  recovered List, DeltaBlueTon80 and Richards; the 64-bit handle alone
+  measured 0.9% to 9.9% slower on every source. Whether road steps 3a and 3b
+  together are level with `d0e8b08`, road step 3a's base, was not measured:
+  each was measured against its own base in its own sitting.
+  [execution.md](design/execution.md), "What the object space moved",
+  "What the object representation moved".
 - **`bench_block.ns` 4.4% slower since the value conditions.** Not isolated.
   Hypothesis (a), the seeded symbol, is refuted; (b), the extra `Value`-level
   class object, and (c), hardware counters, are to run.
@@ -580,10 +580,10 @@ value objects are never copied across an actor boundary (§3.1.1).
 ## Known defects and gaps
 
 None of these changes a correct program's output; each is wrong but safe, or
-reachable only from a crafted artifact, except the first, which a program
-can reach and which ends in the operating system killing the process, and
-three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
-`Object>>printString`'s one text and `to:by:do:`'s zero step.
+reachable only from a crafted artifact, except the first three, which a
+program can reach and which end the process, and three a program meets as a
+gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
+text and `to:by:do:`'s zero step.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -597,6 +597,23 @@ three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
   (`crates/ns-runtime/src/arbitrary_integer/mod.rs`), where the digits are
   reserved;
   [core-library.md](design/core-library.md), "Large integers".
+- **Running out of memory aborts the process; there is no Newspeak-level
+  out-of-memory error.** A commit the operating system refuses, or the
+  object space's reservation used up (64 GiB on a 64-bit target), ends in
+  `std::alloc::handle_alloc_error` (`heap.rs`, `out_of_memory`), as a failed
+  `Vec` push does -- decided with the user on 2026-10-03, so that allocation
+  stays infallible and no hot path carries a `Result`. An error a program
+  can handle, signalled before the space is exhausted, is not designed.
+  [memory.md](design/memory.md), "The object space".
+- **Writing an image of more than about four billion objects aborts
+  instead of refusing.** The encoder writes object ids and counts through
+  `u32_field` (`crates/ns-runtime/src/image/encode.rs`), which asserts that
+  a count fits 32 bits; while a handle was a 32-bit index no heap could pass
+  it, but a 64-bit offset no longer caps the object count, so a heap past
+  `u32::MAX` objects is now reachable and `build` aborts on it. Refusing it
+  with an encode error, or widening the ids on the wire, would close it.
+  [image-format.md](design/image-format.md), "The instruction encoding"
+  ("A count past its field refuses the image").
 - **`load --print-source` of a project prints every module's source with
   nothing between them** (`crates/ns-cli/src/commands/load.rs`), so a reader
   cannot tell where one module ends; a boundary line naming each module's
@@ -629,9 +646,9 @@ three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
   applying row**; the run-time arity guard turns a crafted mismatch into a
   Newspeak error. [image-format.md](design/image-format.md).
 - **An `own_index` bound is unchecked** — wrong but safe output, accepted; it
-  stays safe because every access is bounds-checked per object, today per
-  block and in the planned object space against the object's own word count
-  ([memory.md](design/memory.md), "Planned: the object space").
+  stays safe because every access is bounds-checked per object, against the
+  object's own word count in the space ([memory.md](design/memory.md), "The
+  object space").
   [image-format.md](design/image-format.md), "Verification".
 - **The memory bound under a crafted artifact** is proportional but large,
   about 129 × (limit + reserve) stack entries: `MAX_BLOCK_NESTING` is 128
@@ -649,8 +666,8 @@ three a program meets as a gap: `ns-next run`'s panic on a closed pipe,
   filled into its placeholder in place. The fix belongs in `reserve_for`
   itself, for every caller at once: a cap in bytes rather than elements,
   `count.min(reader.remaining() / size_of::<T>())`, so no reservation
-  exceeds the bytes still unread. The arena's `Vec` doubling slack is not
-  counted either.
+  exceeds the bytes still unread. A decoder table's `Vec` doubling slack is
+  not counted either.
 - **`Heap::traced_size` counts the canonical symbol table's empty slots**
   (`heap.rs`), which never shrink; worth revisiting once many heaps live in one
   process.
@@ -773,21 +790,20 @@ Small, deliberately left, none affecting an outcome.
   (`heap/tables.rs`'s module doc, `mixin.rs` above `CLAUSE_INDEX_LIMIT`);
   test names that outlived what they name
   (`class_data_is_reachable_through_object_data` in `types.rs`,
-  `reset_collection_limits_reads_each_arenas_own_length` in `heap.rs`,
   `an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counter`
   in `tests/image.rs`); stale comments in `image/decode.rs` (`describe` at
   the refusal's recompute; the eight-words-a-byte check, which no
   well-formed record approaches, to be called a backstop) and
   `interpreter/instantiate.rs` ("only the cold error path clones it");
   `closure_activation` reading the closure twice on the hottest closure
-  path; and `trace_block` returning silently on a block shorter than two
-  words, where a `debug_assert!` would be louder.
+  path; and `pointer_ranges` clamping silently to a block shorter than its
+  format expects, where a `debug_assert!` would be louder.
 - Every collection and every move rebuilds the inverse symbol map
   (`Heap::symbol_of`) through a temporary `Vec` of the live symbols, drained
-  from the map and re-inserted under their forwarded indices (noted
+  from the map and re-inserted under their forwarded offsets (noted
   2026-10-03). Walking `canonical_symbols` directly would avoid it, but needs
   a way to make a `Symbol` from its table index, which `Symbol` does not
-  offer; road step 3b rekeys the map by byte offset anyway ("Next").
+  offer.
 - Strings go through `CodePoints` where the packed words could serve
   directly (noted 2026-10-03): `Heap::string_concatenation`, the `,` leaf,
   builds three -- each operand unpacked, then the result -- before the

@@ -1,8 +1,9 @@
 # Object model — values, objects, mixins, classes
 
-> **Status:** built, a value as one tagged word and the object layout on
-> today's arena included (road step 3a, "The object layout"); the rest of
-> the road to a high-performance VM -- the object space, `become:` and the
+> **Status:** built, a value as one tagged word, the object layout (road
+> step 3a, "The object layout") and the object space with byte-offset
+> handles (road step 3b, "Handles into the object space") included; the rest
+> of the road to a high-performance VM -- generations, `become:` and the
 > JIT tiers among its steps -- is planned ("Planned: the road to a
 > high-performance VM").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the handle types and every read
@@ -25,9 +26,9 @@
 Value      = one tagged 64-bit word (heap/value.rs)                  // Copy, opaque
 ValueKind  = Nil | Boolean(bool) | SmallInteger(i64) | SmallFloat(f64) | Object(ObjectReference)
 Word       = the bare word a heap object stores, 8 bytes in every build
-ObjectReference = a 32-bit index into the `Heap`'s object arena; ClassReference is an alias
+ObjectReference = the 64-bit byte offset of an object in the `Heap`'s object space; ClassReference is an alias
 
-an object = one arena slot, a Box<[u64]>:
+an object = its words in the space, end to end with the others:
             [header word][class word][field 1][field 2] ...   ("The object layout")
 ```
 
@@ -36,7 +37,7 @@ rest is:
 
 | Low bits | Meaning |
 |---|---|
-| `000` | an object handle: the arena index shifted left by three; from road step 3 the object's byte offset in the space, so that the space's base plus the word is its address |
+| `000` | an object handle: the object's byte offset in the space, a multiple of 8, so that the space's base plus the word is its address |
 | `001` | a `SmallInteger` of 61 bits, `(value << 3) \| 1` |
 | `010` | a constant: `nil`, `false` and `true` are the payloads 0, 1 and 2, with room for more |
 | `100` | a `SmallFloat64` |
@@ -182,21 +183,21 @@ non-object. An image carries a symbol as a record; the decoder enters each one
 into the loading heap's table and refuses a second record of the same text
 ([image-format.md](image-format.md), "Verification").
 
-**An `ObjectReference` is an index, not a pointer.** Every object lives in one
-`Heap`'s arena and is reached only through a `Heap` accessor; the index is
+**An `ObjectReference` is an offset, not a pointer.** Every object lives in one
+`Heap`'s object space and is reached only through a `Heap` accessor; the offset is
 private to the `heap` module -- `crates/ns-runtime/src/heap.rs` and its
 submodules, `heap/value.rs` among them, which puts it into a word and takes it
 out again -- so the compiler refuses to read it anywhere else. `Value` is
 therefore `Copy` and a handle has no destructor. What that representation buys,
-how the collector reclaims a slot once nothing reaches it, and why a handle
+how the collector reclaims an object once nothing reaches it, and why a handle
 means nothing against a different `Heap` are in [memory.md](memory.md).
 
 **The identity hash is drawn from a counter the first time `hash` asks for
-one**, never derived from an address and never from the arena index, and 0
+one**, never derived from an address and never from the handle's offset, and 0
 means "not yet assigned" (`Heap::object_ensure_identity_hash`); it is 22 bits
 of the header word, and the counter wraps within them ("The identity hash is
 22 bits wide" below). An address- or
-index-derived hash would break the moment a moving collector relocates the
+offset-derived hash would break the moment a moving collector relocates the
 object or a `become:` swaps identities, and identity has to be stable across a
 snapshot; see [memory.md](memory.md). Assigning it lazily, as Cog/Spur
 (`hashBitsOf:`) and Primordial Soup (`Object_identityHash`) do, keeps
@@ -236,9 +237,9 @@ activation, which is what a non-local return aims at, and a frame records it
 (its home field); the enclosing *object* is the tempting misreading, since
 both are handles.
 
-**Never `{:?}` a `Value`.** `ObjectReference`'s hand-written `Debug` prints its arena
-index only, so this cannot recurse -- but it renders Rust internals such as
-`ObjectReference(#42)`, useless in a message meant for a Newspeak programmer.
+**Never `{:?}` a `Value`.** `ObjectReference`'s hand-written `Debug` prints its
+offset only, so this cannot recurse -- but it renders Rust internals such as
+`ObjectReference(@336)`, useless in a message meant for a Newspeak programmer.
 `Heap::describe` answers "the String \"foo\"" instead.
 
 ## Three layers, not one
@@ -1484,23 +1485,34 @@ and cheap to carry.
   can add a variant for code entered live in the debugger without changing the
   type its call sites depend on.
 
-## Arena allocation and handles
+## Handles into the object space
 
-`Rc<RefCell<Object>>` was the Milestone 1 model. It is gone: an object is a
-slot in one `Heap`'s arena, one block of words ("The object layout" below),
-and an `ObjectReference` is a 32-bit index into it, private to the `heap`
-module. The representation, what it measured, the root discipline with its
-lifetime brand, and the mark-compact collector are designed in
-[memory.md](memory.md), "Checked roots and a collector" onward. The space
-that replaces the arena, with the words in memory the heap owns, is
-[memory.md](memory.md), "Planned: the object space".
+`Rc<RefCell<Object>>` was the Milestone 1 model, and an arena of boxed
+blocks with 32-bit index handles the next. Both are gone: an object is its
+words in one `Heap`'s object space, in memory the heap reserves and commits
+through `crates/ns-memory` ("The object layout" below), and an
+`ObjectReference` is the 64-bit byte offset of its header from the space's
+base, private to the `heap` module. The representation, what it measured,
+the root discipline with its lifetime brand, and the mark-compact collector
+are designed in [memory.md](memory.md), "Checked roots and a collector"
+onward, and the space in [memory.md](memory.md), "The object space".
+
+**A handle is 64 bits wide**, so the space is bounded by its reservation
+rather than by a handle's width. HotSpot's compressed oops store a reference
+in 32 bits and so cap a heap at 32 GB; that saving exists because a Java
+field of reference type holds nothing else. A Newspeak field holds any value
+-- an integer, a float, an object -- so it is a full 64-bit word whatever
+the handle's width, as in Spur. With the words in one space, every field,
+element and register accessor reads through the object's own block, which
+ends where its header's count says, not only through the space's bounds, so
+no access through one object reaches the next object's header.
 
 Two consequences belong here rather than there, because they are about this
 document's subject.
 
 **An activation is an object too, when something needs it to be.** A running
 activation is an entry on the `Heap`'s activation stack, and it becomes a
-first-class frame -- an object of the frame format in the same arena,
+first-class frame -- an object of the frame format in the same space,
 addressed by a `FrameReference` with the same privacy as an
 `ObjectReference` -- only when something reifies it: a block capturing it, or
 the exception machinery naming it. So an activation nothing reifies costs no
@@ -1521,16 +1533,16 @@ own:
 1. **The memory layer** -- a crate of its own that reserves one contiguous
    address range and commits it on demand ([memory.md](memory.md),
    "The memory layer").
-2. **An eight-byte value**, on today's arena -- built: its first plan,
+2. **An eight-byte value**, on the arena of the time -- built: its first plan,
    `LargeInteger` ([core-library.md](core-library.md), "Large integers"),
    and its second, the tagged word ("Values and objects" above).
    - **After road step 2, the compact instruction encoding** -- built:
      eight-byte instructions designed against the one-word value
      ([execution.md](execution.md), "The compact instruction encoding").
 3. **The object space** -- one header word, the class word, the fields
-   inline, in two plans: **3a, the representation** on today's arena --
-   built ("The object layout" below) -- and **3b, the space**
-   ([memory.md](memory.md), "Planned: the object space").
+   inline, in two plans, both built: **3a, the representation** on the
+   arena ("The object layout" below), and **3b, the space**
+   ([memory.md](memory.md), "The object space").
 4. **Generations** ([memory.md](memory.md), "Planned: generations").
 5. **`become:` through forwarders** ("Planned: `become:` through forwarders"
    below).
@@ -1551,27 +1563,26 @@ fields -- in exactly the layout road step 3 settles. The header word plus
 class word (option A), frames as heap objects and strings in two widths were
 decided with the user on 2026-09-29; the rest is derived. Road step 3 is
 built in two plans (decided with the user on 2026-10-03), as the one-word
-value was built on today's arena first. **3a, the representation**, is
-built: each slot of the arena is one `Box<[u64]>` holding the object's
-words, header word first, and the handle is still the arena index; every
-object kind is a format, class objects, closures and reified frames are such
-objects, there is no second arena for frames, and the image's frames are
-object records ([image-format.md](image-format.md), "Frames are object
-records"). Every guard read goes through the slot's pointer to its block, an
-indirection more than a guard kept in the slot itself, accepted so that 3a
-fixes the final layout and 3b only changes where the words live. **3b, the
-space**, is planned: the arena gives way to the space in `ns-memory`'s
-reservation, with byte-offset handles, bump allocation and sliding
-compaction ([memory.md](memory.md), "Planned: the object space"; "Planned
-with road step 3b: handles" below).
+value was built on the arena first, and both are built. **3a, the
+representation**, fixed the final layout on the arena: every object kind is
+a format, class objects, closures and reified frames are such objects, there
+is no separate store for frames, and the image's frames are object records
+([image-format.md](image-format.md), "Frames are object records"). **3b,
+the space**, changed only where the words live: every object lies in the
+space in `ns-memory`'s reservation, with byte-offset handles, bump
+allocation and sliding compaction ([memory.md](memory.md), "The object
+space"; "Handles into the object space" above), so a guard read is one load
+from the space's base plus the handle.
 
 ```
 [header word][class word][field 1][field 2] ...     8-byte aligned, at least 16 bytes
 ```
 
-The block's layout is decided in `heap/object.rs`: `Payload` builds each
-kind's words and `Payload::into_block` is the one place a header is derived;
-`heap/header.rs` holds `Header` and `Format`.
+The block's layout is decided in `heap/object.rs` (the fixed fields of a
+class object, a closure and a frame, the string packing, and
+`pointer_ranges`); `Heap::allocate_block` is the one place a new object's
+header is written, in place in the space; `heap/header.rs` holds `Header`
+and `Format`.
 
 **The header word**, after Spur's (`headerForSlots:format:classIndex:`) and
 HotSpot's compact object headers (JEP 450, a product feature from JDK 25 as
@@ -1585,17 +1596,17 @@ the lock bits into one 64-bit word:
 | 27-30 | the age, for the generations (road step 4); 0 until then |
 | 31 | the remembered bit (road step 4); 0 until then |
 | 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`) |
-| 33 | the mark bit; 0 while the collector keeps its mark bits in a bitmap beside the arena (`heap/mark.rs`) |
+| 33 | the mark bit, set while a collection runs and cleared as compaction moves the object ([memory.md](memory.md), "Marking") |
 | 34-55 | the identity hash, drawn lazily from the counter; 0 means none yet |
 | 56-63 | the number of words after the header -- the class word and the fields; 255 means the real count is in an overflow word *before* the header |
 
 The word count sits in the top byte, as Spur's does, so the overflow word
 before a large object's header carries 255 in its top byte and the real
-count in its low 56 bits, and a linear walk tells it from a header. On the
-arena an object of more than 254 words stores 255 and its block's own length
-is its count; the overflow word comes with the space, the first thing that
-walks the words linearly. A debug build checks on every access that the
-header's count matches the block (`check_block`).
+count in its low 56 bits, and a linear walk tells it from a header. The
+object space is the first thing that walks the words linearly, and the
+first user of the overflow word: an object of more than 254 words after its
+header stores 255 there and takes the overflow word
+([memory.md](memory.md), "The object space").
 
 **The reserved guard values sit at the low end**, as Primordial Soup's
 reserved class ids do (`kIllegalCid = 0`, `kForwardingCorpseCid = 1`,
@@ -1688,7 +1699,7 @@ either layout open.
 | 3 | closure | three fixed fields, then its copied values |
 | 4 | 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
 | 5 | forwarded | a forwarder -- `become:`'s ("Planned: `become:` through forwarders") and the scavenger's for a young object it has copied -- whose class word holds the new location; none exists before road step 5 |
-| 6 | free | a gap the collector leaves, walkable like an object; none exists before the space (road step 3b) |
+| 6 | free | a gap a collector leaves, walkable like an object; none exists, since the sliding compaction leaves no gap |
 | 7 | class | a class object: eight fixed fields |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
 | 16-23 | byte-indexed | a one-byte string or symbol |
@@ -1710,8 +1721,9 @@ its class word to the class and that class's to the metaclass, through
 objects a crafted image may not have made what they claim to be.
 
 **The format decides what the collector traces**: `object.rs`'s
-`trace_block` hands `Tracer::word` the class word and, by the header's
-format alone, every field of the two pointer formats, a class object's
+`pointer_ranges` names, for marking and for `trace_block`'s forwarding
+alike, the class word and, by the header's format alone, every field of
+the two pointer formats, a class object's
 object fields, a closure's captured frame and copied values, and a frame's
 fixed fields and, once it is no longer married, its registers -- never the
 digits of a `LargeInteger`, a `Float`'s bits or a string's code points,
@@ -1804,15 +1816,16 @@ The cost is a few more words per reified frame, and `bench_block.ns`, which
 reifies a frame per iteration, is the workload that shows it. While a frame
 is married its registers live on the stack and the trace skips the object's
 inline copies. `FrameReference` is the type of a handle to a frame object,
-so an `ActivationReference` is still never stored, and a frame has no arena,
+so an `ActivationReference` is still never stored, and a frame has no store,
 forwarding table or register vector of its own.
 
 **Strings have two widths.** A string holds one byte per code point while
 every code point fits Latin-1, 32 bits per code point otherwise -- the
 byte-indexed and 32-bit-indexed formats, eight or two units to a word, least
 significant first, the last word's unused units zero, so that equal texts
-have equal words (`object.rs`'s `Payload::string` and `PackedString`, the one
-writer and the one reader of the layout). Either way the elements are code
+have equal words (`object.rs`'s `pack_string` and `pack_code_points`, the
+writers, and `PackedString`, the one reader of the layout). Either way the
+elements are code
 points, so `size` and `at:` are one access, read in place. §5.1.5 makes a
 string's elements "integers representing the encoding of the string in
 Unicode normal form C" and leaves the representation to the implementation.
@@ -1848,20 +1861,6 @@ element and register accessor indexes the object's own block, so no access
 through one object -- a crafted image's by-reference register write
 included -- can reach another object's words, and an out-of-range index that
 a valid program produces raises an ordinary Newspeak error, never a panic.
-
-### Planned with road step 3b: handles
-
-Would change: an `ObjectReference` becomes the object's byte offset, 64
-bits wide, so the space is bounded by its reservation rather than by a
-handle's width. HotSpot's compressed oops store a reference in 32 bits and
-so cap a heap at 32 GB; that saving exists because a Java field of reference
-type holds nothing else. A Newspeak field holds any value -- an integer, a
-float, an object -- so it is a full 64-bit word whatever the handle's width,
-as in Spur. With the words in one space, every field, element and register
-accessor checks its index against the object's own word count, not only
-against the space's bounds, so that the guarantee the arena's separate
-blocks give today -- no access through one object reaches the next
-object's header -- still holds.
 
 ### Planned with road step 5: what a slot access checks
 
@@ -2096,11 +2095,12 @@ remove slots of a class with live instances.
   the `LargeInteger` that makes integers unbounded** (decided with the user
   on 2026-09-29; "Values and objects" above; [core-library.md](core-library.md),
   "Large integers"). Spur's tags and the immediate floats in Spur's range
-  are derived. It needs no object space: a 32-bit arena index already fits
-  the word.
+  are derived. It needed no object space: it was built when a handle was a
+  32-bit arena index, and the 64-bit byte offset of road step 3b fits the
+  word as well, a multiple of 8 under the object tag.
 - **An object is a header word, a class word and its fields** (decided with
-  the user on 2026-09-29, built on today's arena by road step 3a on
-  2026-10-03; "The object layout" above). The header's guard is the
+  the user on 2026-09-29, built by road step 3a on 2026-10-03; "The object
+  layout" above). The header's guard is the
   application id, because a class-index guard would make nested classes
   megamorphic; the class object gets a word of its own rather than a class
   index packed beside the guard, so that `class` and `outer` stay one load.
@@ -2108,21 +2108,26 @@ remove slots of a class with live instances.
   object is a class is read from its header alone.
 - **Strings store code points in one of two widths**, Latin-1 or 32
   bits, with UTF-8 only at the boundaries (decided with the user on
-  2026-09-29, built on today's arena on 2026-10-01, as the byte- and
-  32-bit-indexed formats on 2026-10-03; "The object layout" above).
+  2026-09-29, built on 2026-10-01, as the byte- and 32-bit-indexed formats
+  on 2026-10-03; "The object layout" above).
   `Symbol` is a subclass of `String`, refused by `new`, and `=` stays
   class-tight both ways.
 - **A program's own `become:` will refuse value objects** (decided with the
   user on 2026-09-29; "Planned: `become:` through forwarders" above): a value
   is immutable, and forwarding it would change what every holder holds. Editing
   a value class still migrates its instances inside the VM.
+- **A handle is the 64-bit byte offset of the object's header in the
+  space**, never 0, so an optional handle is one word (decided with the
+  user on 2026-09-29, built by road step 3b on 2026-10-03; "Handles into the
+  object space" above): no handle width caps the heap, and base plus handle
+  is the address generated code will use.
 - **Reified frames are heap objects**, of the frame format in the same
-  arena, and there is no frame arena (decided with the user on 2026-09-29,
-  built on 2026-10-03). Closures and class objects are objects of their own
-  formats too, a derived part of the same layout; the kernel's `Activation`
-  object is the frame object itself.
-- **Road step 3 is built as two plans, the representation (3a) on today's
-  arena -- built -- and then the space (3b)**, and five details of the
+  space, and there is no separate store for frames (decided with the user
+  on 2026-09-29, built on 2026-10-03). Closures and class objects are
+  objects of their own formats too, a derived part of the same layout; the
+  kernel's `Activation` object is the frame object itself.
+- **Road step 3 is built as two plans, the representation (3a) on the
+  arena and then the space (3b), both built**, and five details of the
   layout are settled (decided with the user on 2026-10-03; "The object
   layout" above): the recorded guard and the slot-access check come with
   `become:` in road step 5, the guard in the activation stack's entry

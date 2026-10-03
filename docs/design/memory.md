@@ -1,19 +1,22 @@
 # Memory — object lifetime, identity, collection
 
-> **Status:** built. Objects live in an arena owned by one `Heap`,
-> addressed by 32-bit handles, each slot one block of words in road step
-> 3's layout ([object-model.md](object-model.md), "The object layout");
-> activations live on an activation stack in the same `Heap` and become
-> frame objects in the arena only when something reifies one.
+> **Status:** built. Objects live end to end in one object space owned by
+> one `Heap`, in memory the heap reserves and commits through
+> `crates/ns-memory` ("The object space"), each object its header word,
+> class word and fields in road step 3's layout
+> ([object-model.md](object-model.md), "The object layout"), addressed by
+> handles that are 64-bit byte offsets; activations live on an activation
+> stack in the same `Heap` and become frame objects in the space only when
+> something reifies one.
 > Identity, layout ownership and the seam that routes every access through
-> `Heap` are built. A mark-compact collector reclaims a slot once nothing
+> `Heap` are built. A mark-compact collector reclaims an object once nothing
 > reaches it: marking walks the roots through `trace.rs`'s one edge
-> enumeration and every object by its format, compaction slides the arena's
-> live slots to the front, truncates and shrinks with hysteresis, and
-> rewrites every handle through a flat forwarding table, in one
-> stop-the-world pass. It runs
+> enumeration and sets each reached object's mark bit in its header,
+> compaction slides the survivors down to the space's first offset and
+> gives committed memory back with hysteresis, and every handle is
+> rewritten through a live-word bitmap, in one stop-the-world pass. It runs
 > only at a safepoint of the run loop, on a request an allocation past the
-> arena's limit sets — never inside an allocation itself. The root
+> space's limit sets — never inside an allocation itself. The root
 > discipline it runs on, in "Checked roots and a collector", is built in all
 > three of its parts: nothing re-enters the run loop from Rust, so no Rust
 > frame is live below a safepoint (step 2a); the run loop polls a safepoint,
@@ -23,21 +26,20 @@
 > movable handle carries a lifetime brand, so that holding one across a
 > safepoint is a compile error (step 2c). The canonical symbol table is
 > weak; everything else the collector traces is strong.
-> The memory layer, `crates/ns-memory` ("The memory layer"), is built and
-> nothing uses it yet.
-> **Planned:** memory the heap owns through it, one space
-> of variably sized objects in place of the arena's separate blocks
-> ("Planned: the object space", road step 3b), a nursery ("Planned:
-> generations") and allocation by a bump in eden ("Planned: inline
-> allocation").
-> **Code:** `crates/ns-runtime/src/heap.rs` (the arena, the activation
-> stack, the handle types and their brand, every accessor, the host root
-> table, the move, the collection trigger, compaction and forwarding),
-> `heap/object.rs` (the block of words an object is, and `trace_block`,
-> which walks one by its format), `heap/header.rs` (the header word),
+> **Planned:** a nursery ("Planned: generations") and allocation by a bump
+> in eden ("Planned: inline allocation").
+> **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the
+> handle types and their brand, every accessor and allocation, the host
+> root table, the move, the collection trigger, marking, compaction and
+> forwarding), `heap/space.rs` (the object space: the reservation, the
+> bump, the overflow word and the walk), `heap/compaction.rs` (the
+> live-word bitmap a collection forwards through, and the move's shift),
+> `heap/object.rs` (the block of words an object is, `pointer_ranges`,
+> which names its pointer words by its format, and `trace_block`),
+> `heap/header.rs` (the header word),
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
 > tables of mixins, applications and code),
-> `heap/mark.rs` (the mark bits and the marker), `heap/world.rs` (the step
+> `heap/mark.rs` (the marker's work list), `heap/world.rs` (the step
 > state at rest, the entry that lends it out, and `World::collect`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
 > doctests that pin the brand), `trace.rs` (every root the collector
@@ -65,14 +67,16 @@ is 22 bits wide"). This is required by identity-keyed
 collections, by image roots, and by `become:`; an address-derived hash would
 break the moment an object moved or an identity was swapped.
 
-**Objects live in an arena and activations on a stack, not in
-`Rc<RefCell<_>>`.** One `Heap` owns `objects: Vec<Box<[u64]>>`, each slot
-one object's words, and the activation stack every running activation lives
-on. A *reified* activation -- one a block captured, the exception machinery
-named or the image decoder rebuilt -- is an object of the frame format in
-the same arena. An `ObjectReference` or a `FrameReference` is a 32-bit index
-into the arena, an `ActivationReference` into the stack. The representation is described below, and the stack in
-[execution.md](execution.md), "Activations". A slot is reclaimed once the
+**Objects live in one object space and activations on a stack, not in
+`Rc<RefCell<_>>`.** One `Heap` owns `space: Space`, a reservation of
+`ns-memory` in which every object lies end to end as its words, and the
+activation stack every running activation lives on. A *reified*
+activation -- one a block captured, the exception machinery named or the
+image decoder rebuilt -- is an object of the frame format in the same
+space. An `ObjectReference` or a `FrameReference` is the byte offset of
+the object's header from the space's base, an `ActivationReference` an
+index into the stack. The representation is described below, and the stack in
+[execution.md](execution.md), "Activations". An object is reclaimed once the
 collector's mark pass cannot reach it, so a cycle is no longer the special
 case that leaks: the tracer follows every field, not a reference count, and a
 cycle nothing outside it reaches goes with the rest of the garbage at the next
@@ -83,24 +87,27 @@ problem the image format inherits: the format is defined against the
 *logical* value model rather than against this representation, so replacing
 it again would not break images.
 
-### The representation: an arena of typed handles
+### The representation: one space of objects and typed handles
 
-The model is the Nova JavaScript engine's: a value carries either its data
-inline or a 32-bit index into a typed arena, with no `Rc` and no `RefCell`
-anywhere in it. Nova's `Value` is a Rust enum; ours is one tagged word,
-Spur's, which holds either ([object-model.md](object-model.md), "Values and
-objects"). Nova is the useful comparison rather than V8 because it
-solves this problem in Rust, where the borrow checker is available as an
-enforcement mechanism and a C++ engine's conventions are not.
+The model began as the Nova JavaScript engine's: a value carries either its
+data inline or a handle the heap resolves, with no `Rc` and no `RefCell`
+anywhere in it. Nova's `Value` is a Rust enum and its handle an index into
+a typed arena; ours is one tagged word, Spur's, which holds either
+([object-model.md](object-model.md), "Values and objects"), and the handle
+is a byte offset into one space of objects, as the address-based engines
+lay out their heaps ("The object space"). Nova is the useful comparison
+rather than V8 because it solves this problem in Rust, where the borrow
+checker is available as an enforcement mechanism and a C++ engine's
+conventions are not.
 
 ```rust
 Value  = one tagged word: a handle, a SmallInteger, a SmallFloat64 or a constant   // Copy
 Word   = the bare word a heap object stores, 8 bytes in every build
-ObjectReference        { index: u32 }   // private to heap.rs; 4 bytes in a release build
-FrameReference      { index: u32 }   // likewise, a frame object's; ClassReference is an alias for ObjectReference
-ActivationReference { index: u32 }   // likewise, into the activation stack
+ObjectReference     { offset: NonZeroU64 }   // private to the heap module; 8 bytes in a release build
+FrameReference      { offset: NonZeroU64 }   // likewise, a frame object's; ClassReference is an alias for ObjectReference
+ActivationReference { index: u32 }           // likewise, into the activation stack
 
-Heap { objects: Vec<Box<[u64]>>,      // one block of words per object: header, class word, fields
+Heap { space: Space,                  // every object end to end: header, class word, fields
        stack: ActivationStack, tables: Tables,   // mixins, applications, code
        next_identity_hash: u32 }
 ```
@@ -112,9 +119,9 @@ every shared handle, and a `RefCell` borrow on every single register read and
 write. A register access is now a slice index into an owned `Vec`. Over
 `bench_loop.ns` on a release build that measured as **19.4–19.6 ms before,
 16.4–16.8 ms after** — about 15%. The rest of the cost of an activation nothing
-captures — a `Vec` apiece for its arguments and temporaries, and an arena entry
-— went with the activation stack. A reified activation takes one arena slot,
-its frame object, allocated with room for its whole register file, into
+captures — a `Vec` apiece for its arguments and temporaries, and a heap entry
+— went with the activation stack. A reified activation takes one object in
+the space, its frame object, allocated with room for its whole register file, into
 which it copies its registers on return — which, since closure conversion,
 only an activation whose block can still reach them by reference does. [execution.md](execution.md) has both:
 "Lifecycle" for when the registers are copied, "What the activation stack
@@ -122,38 +129,39 @@ moved" for the figures.
 
 `ObjectReference`, `FrameReference`, `ActivationReference` and `Value` are `Copy`. A handle has no
 destructor and nothing to clone, which is why `Value` could become `Copy` at all,
-and it is what makes an arena entry cheap to hand around.
+and it is what makes a handle cheap to hand around.
 
-Three properties follow from an index that did not follow from a pointer.
+Three properties follow from an offset that did not follow from a pointer.
 
-**A slot's index is known before the slot is filled.** Building an object that
-names itself — a bootstrap class whose own class is itself — used to need
+**An object can name itself in safe Rust.** Building an object that names
+itself — a bootstrap class whose own class is itself — used to need
 `Rc::new_uninit` and `Rc::from_raw`, which were the crate's `unsafe`. `Heap`
-reserves the index, then writes the record that mentions it, in safe Rust.
-The crate now forbids `unsafe` code outright (`#![forbid(unsafe_code)]` in
-`lib.rs`; "The brand" below says why it needs none).
+allocates the object, then writes its class word with its own offset, in
+safe Rust (`Heap::allocate_self_referential_class`). The crate forbids
+`unsafe` code outright (`#![forbid(unsafe_code)]` in `lib.rs`; "The brand"
+below says why it needs none); the space's own `unsafe` is in
+`crates/ns-memory` ("The memory layer").
 
 **There is no reference chain to unwind.** See "Iterative teardown" below.
 
 **A handle is only meaningful against the heap that minted it.** See "A handle
-is arena-relative" below.
+is space-relative" below.
 
-An arena is also closer to the shape the image format already writes. Handles are
-architecture-neutral by construction, which is requirement 4 in
-[liveness-and-reflection.md](liveness-and-reflection.md), and identity hashes
-already come from a counter rather than an address, so nothing about identity
-depends on where an object sits.
+The image format writes ids, not offsets, so where an object sits never
+reaches an artifact: images are architecture-neutral by construction, which
+is requirement 4 in [liveness-and-reflection.md](liveness-and-reflection.md),
+and identity hashes come from a counter rather than an address, so nothing
+about identity depends on where an object sits.
 
-### A handle is arena-relative
+### A handle is space-relative
 
-An index is meaningful only against the `Heap` that allocated it. That was the
-open question the arena had to settle, and this is the answer: not globally
-unique, arena-relative.
+An offset is meaningful only against the `Heap` whose space it was minted
+in: not globally unique, space-relative.
 
-Reading a handle through the wrong heap is the one new failure mode the arena
-introduces, and it is silent — an index minted by another heap is in range and
-names a different, perfectly valid object, so the read answers the wrong thing
-rather than failing. A `debug_assertions`-only guard makes that explicit rather
+Reading a handle through the wrong heap is silent — an offset minted by
+another heap may lie inside this heap's space and name a different,
+perfectly valid object, so the read answers the wrong thing rather than
+failing. A `debug_assertions`-only guard makes that explicit rather
 than conventional: each `Heap` carries a distinct id, each handle records the
 id of the heap that minted it, and every accessor in `heap.rs` that takes a
 handle asserts the two match. The check of an `ActivationReference` also
@@ -161,23 +169,26 @@ compares a generation, because a stack index is reused as soon as its entry
 is popped. An `ObjectReference` or a `FrameReference` also carries the heap's
 move epoch, which the same check compares ("The move stress mode" below). In
 a release build neither the fields nor the checks exist, and a handle is
-exactly its 32-bit index.
+exactly its 64-bit offset, a `NonZeroU64`, so an `Option` of a handle is one
+word too (`a_handle_and_an_optional_handle_are_one_word`, `heap.rs`, a
+release-build test). The offset is never 0: the first object starts at
+byte 16 ("The object space").
 
 The room the actor milestone needs is still there. Actors are designed to get one
 heap each so that pauses stay local
 ([liveness-and-reflection.md](liveness-and-reflection.md)), which will ask how a
-handle encodes *which* heap. A handle is 32 bits and its field is private to
-`heap.rs`, so widening it to carry a heap tag is a change to one module — and the
+handle encodes *which* heap. A handle's field is private to the `heap`
+module, so making it carry a heap tag is a change to one module — and the
 debug guard is already the place that knows a handle has an origin at all.
 
 One deliberate escape exists, and it is opaque rather than a hole.
-`Heap::object_identity_key` is `pub(crate)` and returns the index as a
+`Heap::object_identity_key` is `pub(crate)` and returns the offset as a
 `usize` for the places that need a handle as a `HashMap`/`HashSet` key rather
 than a comparison: `image/encode.rs`, `image/decode.rs`,
 `image/platform_paths.rs` and the derived equality walk of
 `builtins/value.rs`. A frame is an object, so a frame's key is its frame
 object's. Every one stores it, compares it, or looks it up; none does
-arithmetic on it, and none assumes it is an index into anything. So the
+arithmetic on it, and none assumes it is an offset into anything. So the
 property that matters survives — a handle's *encoding* is still `heap.rs`'s
 alone to change — but the narrower claim that nothing outside the module ever
 sees the bits is not true, and these are where to look first if the encoding
@@ -185,7 +196,7 @@ changes.
 
 It sits on `Heap`, not on the handle, so that the origin check applies to them
 like it does to every accessor. Handed a handle and no heap, the operation has
-nothing to check against, and two handles from different arenas then produce the
+nothing to check against, and two handles from different heaps then produce the
 same key and collide silently in a caller's map. Folding the debug-only `origin`
 field into the key instead was tried and reverted: that makes the collision
 impossible in exactly the build that would have reported it and leaves it
@@ -197,10 +208,11 @@ Rust has no iterative drop glue, so releasing a deep reference graph recurses an
 a sufficiently deep one aborts the process. Since an image is untrusted input and
 its graph depth is attacker-controlled, that is not acceptable.
 
-Under the arena, objects and activations have no such graph: an object's
-block holds words, a word holds an index, and dropping the `Heap` drops flat
-`Vec`s — the arena of boxed blocks and the activation stack's two vectors. The hand-written iterative
-`Drop` implementations they used to need are gone.
+Objects and activations have no such graph: an object is words in the
+space, a word holds an offset, and dropping the `Heap` releases the space's
+reservation in one call and drops the activation stack's two flat vectors.
+The hand-written iterative `Drop` implementations they used to need are
+gone.
 
 **`MixinApplication` still owns a real chain** — `superclass:
 Option<Rc<MixinApplication>>` — and keeps its hand-written iterative `Drop`
@@ -231,17 +243,23 @@ depth.
 ### The seam
 
 The `heap` module -- `crates/ns-runtime/src/heap.rs` and its submodules,
-`heap/value.rs` among them, which puts a handle's index into a value's word and
+`heap/value.rs` among them, which puts a handle's offset into a value's word and
 takes it out again -- is the only place that knows what a handle is and what
 an object's words hold. Every read and write of an object, a frame or a
 running activation goes through a `Heap` accessor, so replacing the store
 behind them touches that module rather than the 193 call sites (109 under
 `src`, 84 in the integration tests) the workspace held before the seam
-existed. Replacing `Rc<RefCell<_>>` with the arena is the evidence that this
-works: **no call site outside `heap.rs` and `types.rs` changed** for either
-the frame conversion or the object one. Road step 3a first narrowed the seam
+existed. The replacements so far are the evidence that this works.
+Replacing `Rc<RefCell<_>>` with an arena of 32-bit indices changed **no
+call site outside `heap.rs` and `types.rs`**, for either the frame
+conversion or the object one. Road step 3a first narrowed the seam
 so that nothing outside the `heap` module names a payload type, then turned
-every object kind into a block of words behind it. Callers build objects
+every object kind into a block of words behind it. Road step 3b replaced
+that arena with the object space and the index with a byte offset; outside
+the `heap` module one call site changed, the decoder's, because
+`fill_placeholder_class` now answers whether the placeholder has a class
+object's size -- an object in the space cannot be resized, so the decoder
+refuses the image instead. Callers build objects
 through typed allocations (`allocate_instance`, `allocate_class`,
 `allocate_closure`, `reify`, the decoder's `allocate_placeholder` and its
 in-place `fill_*`) and the value types of `heap/records.rs` (`NewClass`,
@@ -262,12 +280,12 @@ back into the interpreter while holding a reference.
 
 **The seam is compiler-enforced.** `ObjectReference`, `FrameReference`,
 `ActivationReference` and the `ClassReference` alias are declared in `heap.rs`
-with a **private** inner field, so reading a handle's index from anywhere else
+with a **private** inner field, so reading a handle's offset from anywhere else
 — any other module of `ns-runtime` included — fails to compile. There is no
 grep gate to remember and no visibility to widen: an accessor that is missing
 has to be added in `heap.rs`, which is where the store is. The one way out is
 the pair of `pub(crate)` identity-key accessors described above, which hand
-the index over as an opaque key and are used as one — a named exception rather
+the offset over as an opaque key and are used as one — a named exception rather
 than an unenforced boundary, and one the origin guard still covers, since they
 are accessors on `Heap` like any other.
 
@@ -330,12 +348,14 @@ file next starts from a list rather than from rediscovery.
   still copies both operands' digits out (`large_integer`). The encoder
   reads each record through the copying accessors (`instance_fields`,
   `frame_record`, ...), and converts each `String` to UTF-8 once. Copy-out
-  is a property of an accessor's *return type*, not of the store; what the
-  arena changed is that a *borrowing* accessor became expressible at all.
-  Under `Rc<RefCell<_>>` one would have had to hand back a `Ref` guard,
-  which is unusable at a site that calls back into the interpreter; under
-  the arena an accessor can lend out a slice tied to the `&Heap` borrow, and
-  the borrow checker enforces the rest. Whether to lend the encoder its
+  is a property of an accessor's *return type*, not of the store, and the
+  object space changed no accessor's: what the store decides is whether a
+  *borrowing* accessor is expressible at all. Under `Rc<RefCell<_>>` one
+  would have had to hand back a `Ref` guard, which is unusable at a site
+  that calls back into the interpreter; since the arena, and in the space
+  today, an accessor can lend out a slice of an object's words tied to the
+  `&Heap` borrow, and the borrow checker enforces the rest.
+  Whether to lend the encoder its
   records, or `LargeInteger` arithmetic its operands, is a measurement
   ([OPEN-WORK.md](../OPEN-WORK.md)); the encoder is not on a measured path.
 
@@ -355,8 +375,8 @@ object at the safepoints and so checks the enumeration against the whole
 suite; **2c** brands every movable handle with a lifetime, so that holding one
 across a safepoint is a compile error. The collector itself is step 5,
 complete since 2026-09-20: a release build's trigger requests a collection
-once the arena's length passes its limit, served at the run loop's next
-safepoint ("The trigger and the growth policy" below).
+once the bytes the objects occupy reach its limit, served at the run loop's
+next safepoint ("The trigger and the growth policy" below).
 
 **The collector has to move objects.** `become:`-style identity swap and object
 forwarding are requirements, not conveniences: adding an instance variable to a
@@ -368,7 +388,7 @@ and MMTk supports object forwarding.
 A moving collector must not only *find* every root but *update* it, and roots
 held in Rust locals across a collection are the hard case: under `Rc` those
 references kept their objects alive and never needed updating, and under a
-moving collector they are roots the collector cannot see and indices it cannot
+moving collector they are roots the collector cannot see and handles it cannot
 rewrite. The design answers that in three layers: where a collection may
 happen, what may be on the Rust stack when it does, and what the compiler
 checks.
@@ -433,9 +453,10 @@ set the stretch writes its frame back and leaves its entry, and `run` calls
 line, so `vm.rs` holds the compare and the call and nothing of what a
 safepoint does. The safepoint serves a request by clearing the flag, except
 under the stress mode below, which keeps it set. The collector's trigger sets
-it in a release build too: `push_object`, through which `reify` allocates
-its frame object as every allocation does, compares the arena's length
-against a limit, not a counter, and requests a collection when it is reached ("The trigger and the growth policy" below).
+it in a release build too: `allocate_block`, through which `reify` allocates
+its frame object as every allocation does, compares the bytes the objects
+occupy against a limit, not a counter, and requests a collection when it is
+reached ("The trigger and the growth policy" below).
 
 That the slow path serves the request, which a release build's trigger now
 also raises, is what keeps the poll in the binary. With an empty release slow
@@ -484,7 +505,7 @@ contains one (`NewClass`, `NewClosure`, `FrameRecord`, `ValueClassRefusal`,
 `Signal`, `NewspeakError`, `Heap` itself) — carries a lifetime `'gc`,
 invariant (`heap.rs`'s `Brand<'gc>`, a zero-sized
 `PhantomData<fn(&'gc ()) -> &'gc ()>`) so that it can be neither shortened nor
-extended. A release handle is still exactly its 32-bit index.
+extended. A release handle is still exactly its 64-bit offset.
 
 **The step state is a `Mutator<'gc>`** (`interpreter/mod.rs`): the heap, the
 builtin classes, the application caches, the argument buffer and the spare
@@ -637,12 +658,17 @@ mode checks.
 `trace.rs` enumerates the roots, type by type: a `Trace` impl hands every
 field that holds an `ObjectReference`, a `ClassReference`, a `FrameReference`
 or a `Word` to a `Tracer`, one `&mut` at a time. An object is no Rust type
-with an impl: `heap/object.rs`'s `trace_block` walks its words by the format
-in its header ([object-model.md](object-model.md), "The object layout"). A
+with an impl: `heap/object.rs`'s `pointer_ranges` names the indices of its
+pointer words by the format in its header
+([object-model.md](object-model.md), "The object layout") -- the one
+enumeration of an object's pointer words, which marking reads the words
+through (`Heap::drain_marking`) and forwarding rewrites them through
+(`trace_block`), so a field one of the two must reach cannot be missed by
+the other. A
 `Word` -- a class word, an instance's or an array's field, a register, a
 copied closure value, an object field of a class object, a closure or a
 frame -- goes to `Tracer::word`,
-which marks or rewrites it by the index it holds: it carries no origin or
+which marks or rewrites it by the offset it holds: it carries no origin or
 epoch to check, since `Heap::store` checked the value it was made from
 ([object-model.md](object-model.md), "The debug build keeps its exact
 check").
@@ -667,7 +693,7 @@ check").
   a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
   that of every forcing chained behind it; and every register. `StackEntry`'s impl is
   in `heap.rs`, where its fields are private.
-- Every object in the arena, by its format: its class word; an instance's
+- Every object in the space, by its format: its class word; an instance's
   or an array's fields; a closure's captured frame and its copied values,
   never its code id or feedback base; a class object's enclosing object,
   declaring class, superclass, for a metaclass its class (`this_class`), and
@@ -691,13 +717,13 @@ check").
 
 **Every impl names every field and matches every variant**, with no `..` and
 no `_` arm, so a field or a variant added later does not compile until someone
-decides whether it holds a handle; `trace_block` likewise matches every
+decides whether it holds a handle; `pointer_ranges` likewise matches every
 `Format`, so a new format does not compile until its pointer words are
 named. That is what keeps the enumeration complete
 as the types grow; the stress mode checks that the places it is applied to are
 complete. Enumerating is `trace.rs`'s and rewriting is `heap.rs`'s
-(`Forwarder`), since only `heap.rs` can mint a handle. `trace.rs` exists in a
-debug build only, until the collector needs it in every build.
+(`Forwarder`), since only `heap.rs` can mint a handle. `trace.rs` exists in
+every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
 that captured it, or through the live entry it is married to. Two things the
@@ -781,20 +807,24 @@ everything at the safepoints its schedule picks, so the whole existing suite,
 which pins every program's outcome, runs under it unchanged.
 
 A move (`World::move_everything`: `Heap::move_everything`, then the step
-state's own roots) rotates the arena by a shift in `1..len` that varies
-with the epoch, so no slot keeps its index, and rewrites every traced handle: a
-compacting collection that treats everything as live. Every `ObjectReference` and
+state's own roots) shifts every object by one distance and rewrites every
+traced handle: a compacting collection that treats everything as live. When
+the objects start at the space's first offset they shift up by
+`8 * (2 + epoch % 31)` bytes, varied by the epoch so that moves do not all
+shift alike, and otherwise back down to the first offset, so no object keeps
+its offset at any move and the space never creeps upward
+(`compaction::Shift`). Every `ObjectReference` and
 `FrameReference` carries, in a debug build and beside the origin it already carries,
 the heap's move epoch when it was minted or last forwarded, and every accessor
 compares the two, so a handle the tracer missed panics at its first read
-("stale handle") instead of perhaps printing a wrong answer. The rotation
+("stale handle") instead of perhaps printing a wrong answer. The shift
 checks the forwarding; the epoch checks the completeness. The `Forwarder`
 checks each handle it rewrites as well — its origin, and that its epoch is the
 one being moved from — because a foreign or stale handle stored in the heap is
 a mistake the move would otherwise make permanent. A value stored in a heap
 object or a register is a bare `Word` with no epoch to check, so `Heap::store`
 refuses a foreign or stale value when it is stored, and the move rewrites the
-word by its index. `ActivationReference` carries no
+word by its offset. `ActivationReference` carries no
 epoch: no stack entry moves, and its generation already covers an index reused
 after a pop. V8's `--stress-compaction`, SpiderMonkey's compacting GC zeal mode
 and HotSpot's `ScavengeALot` exist for the same reason. Here the stress mode
@@ -802,8 +832,9 @@ also comes first: the tracing and forwarding the collector will need are built,
 and held to the whole suite, before the collector is.
 
 **The schedule is budgeted, not every safepoint.** A move costs work
-proportional to what it traces — the arena, the activation stack's entries
-and registers, and the host roots (`Heap::traced_size`) — so moving at every
+proportional to what it traces — the objects, the activation stack's entries
+and registers, the canonical symbol table and the host roots
+(`Heap::traced_size`) — so moving at every
 safepoint is quadratic in a deep recursion: the tests and goldens that recurse
 to 100,000 activations, and the `bench_*` fixtures, would take hours per suite
 run in a debug build. So while the traced size is at most
@@ -905,16 +936,16 @@ signal about how much of the difficulty is hidden.
 
 ### What this leaves for the collector itself
 
-With the arena in place and roots checked, the collector's own root set is the
-list in "What the collector traces" above. Most of it is two things: the
-bootstrap, standing in for upstream's object store, and the activation stack
-([execution.md](execution.md), "Activations") — a contiguous, precisely typed
-pair of arrays rather than a pointer-chased chain of individually allocated
-frames. The safepoint exists in every build, and the tracing (`trace.rs`) and
-the forwarding (`Forwarder`, `Heap::move_everything`) exist in a debug build,
-checked by the stress mode. The collector un-gates the tracing and the
-forwarding, and adds liveness, reclamation, the allocation counter that
-requests a collection, and the spaces — a nursery, a large-object space.
+With the handles behind the seam and the roots checked, the collector's own
+root set is the list in "What the collector traces" above. Most of it is two
+things: the bootstrap, standing in for upstream's object store, and the
+activation stack ([execution.md](execution.md), "Activations") — a
+contiguous, precisely typed pair of arrays rather than a pointer-chased chain
+of individually allocated frames. The safepoint, the tracing (`trace.rs`)
+and the forwarding (`Forwarder`) exist in every build; the move
+(`Heap::move_everything`) exists in a debug build, where the stress mode
+checks the roots with it. What the collector does not have yet is
+generations: a nursery and a large-object space ("Planned: generations").
 
 Closure conversion ([execution.md](execution.md), "Closure conversion") was
 built directly before the collector for the collector's sake. Before it, a
@@ -977,14 +1008,14 @@ creator's frame record without registers.
   fell from 228.8 MB at `dc0ffe5` — the commit directly before the collector
   — to 5.6 MB at the head, level with `bench_loop.ns` and `bench_send.ns`
   ("How the collector is measured" below has the full measurement, against
-  the recorded expectation). The arena is now proportional to what is live
+  the recorded expectation). The heap is now proportional to what is live
   rather than to what the process has ever created, because a collection
-  runs at the next safepoint once the arena's length passes its limit ("The
+  runs at the next safepoint once the objects' bytes reach its limit ("The
   trigger and the growth policy" below). Closure conversion's own peak rise
   on this source under `--iterations 30` — 454.7 MB to 466.4 MB, attributed
   to the indirection-vector `Array` a written capture now allocates
   ([execution.md](execution.md), "What closure conversion moved") — was
-  exactly this kind of cost: garbage the arena kept only because nothing
+  exactly this kind of cost: garbage the heap kept only because nothing
   reclaimed it. The allocation itself did not change; what changed is that
   the collector now takes it back.
 
@@ -1024,28 +1055,29 @@ creator's frame record without registers.
 
 ### What an object costs
 
-An arena slot is a `Box<[u64]>`, 16 bytes in both builds -- a pointer and a
-length -- pinned by the release-build test
-`an_object_slot_is_one_boxed_block_of_words` (`heap.rs`), which also checks
-that the arena's element type is that box. The block it points to is the
-object, 8 bytes a word in both builds: the header word, the class word, then
-the fields ([object-model.md](object-model.md), "The object layout"). So
-the layout a debug build tests is the layout a release build runs, and an
-object costs the same in both:
+An object costs its words in the space and nothing else: 8 bytes a word in
+both builds -- the header word, the class word, then the fields
+([object-model.md](object-model.md), "The object layout") -- and one
+overflow word more, before the header, when the words after the header
+number more than 254, which the header's byte cannot count ("The object
+space"). There is no slot, no pointer to the words and no allocation of
+the Rust allocator per object. So the layout a debug build tests is the
+layout a release build runs, and an object costs the same in both:
 
-| Object | Words in its block | With its slot |
+| Object | Words | Bytes |
 |---|---|---|
-| an instance of n fields, an `Array` of n elements | 2 + n | 32 + 8n bytes |
-| a class object | 2 + 8 | 96 bytes |
-| a closure with c copied values | 2 + 3 + c | 56 + 8c bytes |
-| a frame object of r registers | 2 + 10 + r | 112 + 8r bytes |
-| a `LargeInteger` of d digits | 2 + d | 32 + 8d bytes |
-| a boxed `Float` | 2 + 1 | 40 bytes |
-| a string or symbol of n code points | 2 + ⌈n/8⌉, or 2 + ⌈n/2⌉ when wide | 32 + 8⌈n/8⌉ bytes, or 32 + 8⌈n/2⌉ |
+| an instance of n fields, an `Array` of n elements | 2 + n | 16 + 8n |
+| a class object | 2 + 8 | 80 |
+| a closure with c copied values | 2 + 3 + c | 40 + 8c |
+| a frame object of r registers | 2 + 10 + r | 96 + 8r |
+| a `LargeInteger` of d digits | 2 + d | 16 + 8d |
+| a boxed `Float` | 2 + 1 | 24 |
+| a string or symbol of n code points | 2 + ⌈n/8⌉, or 2 + ⌈n/2⌉ when wide | 16 + 8⌈n/8⌉, or 16 + 8⌈n/2⌉ |
 
-Each block is one allocation of the Rust allocator ("Payloads belong to the
-Rust allocator" below). The handles the Rust side holds are larger in a debug
-build -- 12 bytes against 4, a `Value` 16 against 8 -- because a debug handle
+Each adds 8 bytes, its overflow word, once its words after the header pass
+254: an `Array` of 254 elements or more, a frame of 244 registers or more.
+The handles the Rust side holds are larger in a debug
+build -- 16 bytes against 8, a `Value` 16 against 8 -- because a debug handle
 carries the id of the heap that minted it and the move epoch the stress mode
 checks it against; nothing inside an object is a Rust-side handle.
 
@@ -1059,7 +1091,7 @@ because a record must be addressable before the records that reference it
 are read; nothing collects during a load, because the decoder never polls a
 safepoint, so a rejected image cannot give them back part-way through. It is
 not retained past that: `image::load` owns its `Interpreter` in a local, so
-every `Err` path drops it and the arena with it -- the cost is a transient
+every `Err` path drops it and the space with it -- the cost is a transient
 peak during loading, not a leak for the process's life.
 
 **The decoder reads the graph section twice**
@@ -1080,24 +1112,23 @@ derivation is `decode_value`'s doc comment, `image/decode.rs`):
 
 | Contribution | Release | Debug |
 |---|---|---|
-| A record's placeholder against its smallest record: a metaclass record of 9 bytes becomes a class object of 96 | 10.7x | 10.7x |
-| The same with the decoder's own tables -- a handle per record in the placeholder table, the first pass's 8-byte size, a metaclass record's pending index | **12.0x** | 12.9x |
+| A record's placeholder against its smallest record: a metaclass record of 9 bytes becomes a class object of 80 | 8.9x | 8.9x |
+| The same with the decoder's own tables -- a handle per record in the placeholder table (8 bytes in a release build, 16 in a debug one), the first pass's 8-byte size, a metaclass record's pending index | **10.7x** | 11.6x |
 | A value's word against its encoding: a one-byte `VALUE_NIL` becomes an 8-byte word | 8x | 8x |
 | A UTF-8 byte of a string packed in the 32-bit form | 4x | 4x |
-| An allocating value: an `i64` beyond 61 bits, or a float outside the immediate range, 9 bytes for a word and a 40-byte object | 5.3x | 5.3x |
-| A one-digit `VALUE_LARGE_INTEGER`, 14 bytes for the same 48 (its digits read into a `Vec` first, 4.0x while it lives) | 3.4x | 3.4x |
+| An allocating value: an `i64` beyond 61 bits, or a float outside the immediate range, 9 bytes for a word and a 24-byte object (the `i64`'s one digit held in a boxed slice until its object is made, 4.4x while it lives) | 3.6x | 3.6x |
+| A one-digit `VALUE_LARGE_INTEGER`, 14 bytes for the same 32 (its digits read into a `Vec` first, 2.9x while it lives) | 2.3x | 2.3x |
 | The root list, read after every record into `Value`s, `reserve_for` capping its reservation at the bytes left | 8x | **16x** |
 | A symbol's text, allocated once per symbol-table entry | ≤ 4x of the symbol section | ≤ 4x of the symbol section |
 
 The other record kinds stay below the metaclass record: a class record is at
-least 19 bytes for the same 96 (5.1x), a frame record at least 21 for 112
-(5.3x; 6.1x and 6.7x with the decoder's tables), an instance, array, string
-or symbol record at least 11 for 32 (2.9x), a closure record at least 17 for
-56 (3.3x). A class or metaclass record's eight fields are laid out beside its
-placeholder before they are copied into it, 80 bytes one record at a time, a
-constant.
+least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
+tables), a frame record at least 21 for 96 (4.6x; 5.7x and 6.5x), an
+instance, array, string or symbol record at least 11 for 16 (1.5x), a
+closure record at least 17 for 40 (2.4x). A placeholder is filled in place,
+so no record's fields are laid out beside it.
 
-**So the transient peak of a rejected load is about 12.0x of the graph
+**So the transient peak of a rejected load is about 10.7x of the graph
 section's bytes in a release build (a graph of metaclass records) and about
 16x in a debug one (a graph that is all root list), plus at most 4x of the
 symbol section's bytes.** An integer beyond 61 bits but within `i64` is the
@@ -1107,11 +1138,15 @@ worst allocating value: it costs a `LargeInteger` for the 9 bytes of an `i64`
 and its digit count is bounded against the bytes left before its `Vec` is
 allocated (`read_large_integer_parts`).
 
-**What the figures do not count**: the allocator's own overhead per
-allocation; an arena `Vec` that doubles while the decoder allocates, which
-holds both buffers for a moment; and the decoded `Vec<Instruction>` of one
-compiled body at a time while the code table is verified ("The trigger and
-the growth policy" below). Each stays proportional to the input.
+**What the figures do not count**: the Rust allocator's own overhead per
+allocation of the decoder's tables; a table's `Vec` that doubles while the
+decoder fills it, which holds both buffers for a moment; the object space's
+commit growth, which commits at least double what it had committed, so the
+space may have up to about twice what the placeholders occupy committed --
+committed, not touched, so it is charged against the commit limit but not
+the working set ("The object space"); and the decoded `Vec<Instruction>` of
+one compiled body at a time while the code table is verified ("The trigger
+and the growth policy" below). Each stays proportional to the input.
 
 `bounded_count` is what keeps all of this proportional to the input rather
 than to a 32-bit count -- without it a crafted `u32::MAX` would allocate
@@ -1122,17 +1157,18 @@ of allocating before filling, which the format's back-references require.
 This is also *better* than the model it replaced, which is the part that
 makes it an accepted cost rather than a regression. Under `Rc<RefCell<_>>`
 each placeholder was its own heap allocation with the same lifetime, plus a
-refcount and an allocator round trip per record; the arena makes each
-placeholder one block and one slot push. The collector's interest here is
+refcount and an allocator round trip per record; the space makes each
+placeholder one bump of its top. The collector's interest here is
 the peak, not a lifetime bug.
 
 ### The shape: mark, compact, forward
 
-Decided with the user on 2026-09-20; built. The collector
-marks from the roots, slides the live slots to the front of the arena, and
-rewrites every handle through a forwarding table. One space, stop-the-world.
-Generations are planned ("Planned: generations" below), with this collector as
-the old space's.
+Decided with the user on 2026-09-20 over the arena the heap then had, and
+kept for the object space; built. The collector marks from the roots,
+slides the survivors down to the space's first offset, and rewrites every
+handle through a forwarding table. One space, stop-the-world. Generations
+are planned ("Planned: generations" below), with this collector as the old
+space's.
 
 Three things the representation settles before any taste enters:
 
@@ -1141,74 +1177,85 @@ Three things the representation settles before any taste enters:
   dereference that needs `unsafe`, and a stale one undefined behaviour rather
   than a wrong but safe read, so it would take with it the checked access, the
   origin guards, the epoch check and the brand's proof that every access is
-  safe. That is a different runtime, not a choice of collector. The planned
-  object space will own its memory as the address-based engines do but keep
-  handles as byte offsets read through bounds-checked slices, which will keep
-  all four ("Planned: the object space").
+  safe. That is a different runtime, not a choice of collector. The object
+  space owns its memory as the address-based engines do but keeps handles as
+  byte offsets read through bounds-checked slices, which keeps all four
+  ("The object space").
 - **Reference counting is out**, because cycles need tracing and `become:`
   needs forwarding.
 - **Conservative scanning is out**, decided earlier and on its own grounds
   ("Considered and rejected: conservative stack scanning").
 
-What is left is the choice between a non-moving free list over the slot table,
-a semispace copier, and mark-compact — and the two arguments that usually
-decide it do not apply here. Every slot is the same size, a boxed slice, so a
-free list has no fragmentation to solve; and an object's words are a separate
-allocation, its block, that no collector here moves, so a copier buys far
-less locality than it would where objects sit inline in one space.
+What is left is the choice between a non-moving free list, a semispace
+copier, and mark-compact. Over the arena it was made on, every slot was the
+same size, so a free list had no fragmentation to solve, and a copier moved
+slots, not the words behind them, so it bought little locality. In the
+space objects are variably sized, which gives a free list fragmentation to
+manage; a sliding compaction leaves none and keeps the survivors in the
+order they were allocated, which is the locality a copier would buy,
+without a copier's second half of the space.
 
 Mark-compact was chosen for four reasons:
 
-- **It reaches the goal of the step.** The table shrinks and the pages go back
-  to the operating system. A free list holds the table at its historic maximum
-  for the life of the process, which is the figure step 5 exists to fix.
-- **Rewriting is the cheap part here rather than the expensive one.** Over an
-  index arena the forwarding table is a flat `Vec<u32>` over the slot count:
-  O(1) per handle, 4 bytes per slot while a collection runs — 32 MB against the
-  466 MB `bench_block.ns` peaked at before the collector, at `--iterations 30`.
-  In an address-based collector this is what costs. Nova, the one engine with
-  the same representation, pays more than
-  it needs to: its `CompactionList` stores shift runs and binary-searches per
-  handle.
-- **A free list's sweep scales with the historic maximum**, while every phase of
-  a mark-compact scales with the live set. Where there is much garbage and
-  little live data — `bench_block.ns` — mark-compact is the cheaper of the two,
-  not the dearer.
+- **It reaches the goal of the step.** The space shrinks and its pages go
+  back to the operating system (`Space::release_above`). A free list holds
+  the heap at its historic maximum for the life of the process, which is the
+  figure step 5 exists to fix.
+- **Rewriting is the cheap part here rather than the expensive one.** The
+  forwarding table is a live-word bitmap with a prefix count per 64 words:
+  O(1) per handle, one cache line a lookup, about 3% of the space while a
+  collection runs ("Compaction and forwarding" below). Nova, the one engine
+  whose handles are not addresses, pays more than it needs to: its
+  `CompactionList` stores shift runs and binary-searches per handle
+  (`prior-art/nova/nova_vm/src/heap/heap_bits.rs:1345`, `:1457`).
+- **Its work is bounded by the space, not by the process's history.** Marking
+  visits only what is live; the compaction's walks step through every
+  allocation, the dead included, reading one word to step over a dead one,
+  and copy only the survivors. A free list's sweep walks the same space and
+  keeps all of it.
 - **It uses the machinery that exists and is under test.** `trace.rs`,
   `Forwarder`, the epoch check and the move stress mode were built for exactly
   this shape; under a free list they would stay a debug-only appendage with no
   production role.
 
 The prior art points the same way. Nova (`prior-art/nova/nova_vm/src/heap/`),
-the only reference implementation with this representation, is mark-and-sweep
-with compaction over per-type vectors and is not generational. Strongtalk's
+whose handles are indices, is mark-and-sweep with compaction over per-type
+vectors and is not generational. Strongtalk's
 full collection is a mark-compact despite the name of `markSweep.cpp`
 (`prepare_for_compaction`, `compact`), under a scavenged young generation.
-Spur compacts its old space. Every current HotSpot collector moves, and the one
+Spur compacts its old space by sliding, planning every survivor's new
+address before moving any (`planCompactSavingForwarders`, `compact`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:62399`, `:61596`),
+which is the compaction here. Every current HotSpot collector moves, and the one
 free-list old space it had, CMS's, was deprecated in JDK 9 and removed in
 JDK 14. Primordial Soup is the one that keeps a free list, in its old space
-(`vm/heap.h`, seven size classes) — and it has the fragmentation this design
-does not, because its objects are variably sized in address space.
+(`vm/heap.h`, seven size classes) -- and with it the fragmentation a sliding
+compaction does not leave.
 
 ### Marking
 
-Mark bits live in a side table, one `Vec<u64>` for the arena, one bit per
-slot — 1/128 of the arena's 16-byte slots — and exist only while a
-collection runs. The header word reserves bit 33 for a mark bit, which
-stays 0: on the arena a slot index addresses the bit without touching the
-object's block, and the header's mark bit belongs to the collector of a
-later road step, which walks the space by its headers (`heap/mark.rs`).
-Nova's `heap_bits.rs` keeps its bits beside the data too.
+The mark bit is bit 33 of each object's header word
+([object-model.md](object-model.md), "The object layout"), set while a
+collection runs and cleared as compaction moves each survivor, so that
+outside a collection no object is marked; a debug build checks that at the
+start of every marking. A bit in the header needs no side table and is read
+in the cache line of the object's own header; Spur and Primordial Soup keep
+theirs there too.
 
-Marking is a second `Tracer` (`trace.rs`) beside `Forwarder`: it sets the bit
-and, where the bit was clear, pushes the index onto an explicit work list;
-`Heap::drain_marking` then hands each marked object's block to
-`trace_block`. The
-traversal is iterative because the graph's depth is the program's to choose —
-the reasoning that already made `MixinApplication`'s `Drop` iterative. Sharing
-one edge enumeration between marking and forwarding is what keeps the two from
-drifting: a field a later change adds is named in exactly one place, and the
-compiler refuses that place until it is named.
+The marker (`heap/mark.rs`) is a `Tracer` (`trace.rs`) beside `Forwarder`,
+through which the roots enter its explicit work list; `Heap::drain_marking`
+then pops each offset, skips an object already marked, sets the bit and
+pushes every unmarked object its pointer words name, read through
+`pointer_ranges` -- the one enumeration of an object's pointer words, which
+forwarding's `trace_block` walks too ("What the collector traces"). The bit
+is set when an object is visited, not when it is pushed, so an object
+reached twice before its visit is popped twice and visited once, which also
+ends the traversal on a cycle. The traversal is iterative because the
+graph's depth is the program's to choose — the reasoning that already made
+`MixinApplication`'s `Drop` iterative. Sharing one edge enumeration between
+marking and forwarding is what keeps the two from drifting: a field a later
+change adds is named in exactly one place, and the compiler refuses that
+place until it is named.
 
 The roots are the list `Heap::move_everything` and `World::move_everything`
 already walk — the activation stack's entries and registers, the builtin
@@ -1220,60 +1267,82 @@ along an edge.
 
 ### Compaction and forwarding
 
-Three passes over the arena. One over the bits with a running destination
-index, which *is* the forwarding table, a `Vec<u32>` over the slot count. One
-that slides the live slots forward and truncates the arena to the number of
-live ones — the dead blocks drop there. One with the existing `Forwarder`
-over everything that holds a handle — the roots and every object by its
-format (`forward_everything`) — looking up the table instead of applying a
-`Rotation`.
+Three walks over the space, each from its first object to its top, stepping
+from one allocation to the next by the word count in each header, or in the
+overflow word before it (`space::object_at`). The first records every word
+of each marked object's allocation, its overflow word included, as live in
+the forwarding table, a `ForwardingTable` (`heap/compaction.rs`): one bit
+per word of the space and, per chunk of 64 words, the number of live words
+before the chunk, filled in once the bits are (`summarize`). A survivor's
+new position is the first object's plus the live words before it -- the
+chunk's prefix plus the `popcount` of the live bits below it in the chunk --
+one entry, a mask and a `popcount` per lookup, the bits and the prefix side
+by side so that a lookup reads one cache line. The second walk slides each
+survivor down to that position and clears its mark bit; a destination is
+never above its source, so copying down never overwrites an allocation the
+walk has yet to read, and the new top is the first object plus the live
+words. The third is the existing `Forwarder` over everything that holds a
+handle -- the roots and every object by its format (`forward_everything`)
+-- each offset looked up in the table. The table takes two `u64`s per 64
+words of the space, about 3%, and lives only while the collection runs
+(decided with the user on 2026-10-03; "Decisions" below).
 
-Frames are objects in the same arena, so a closure's captured frame, a
+Frames are objects in the same space, so a closure's captured frame, a
 frame's sender and home and the objects a frame holds are one graph with one
 mark, one compaction and one forwarding table.
 
 The epoch is unchanged, and it is what makes a stale handle loud rather than
-silent. A reclaimed slot does not linger to be read the way a free list's
-would; it is gone, and the index that takes its place carries a new epoch.
-Poisoning a freed slot, which Primordial Soup does with `kUnallocatedByte`, is
-not needed here.
+silent. A reclaimed object does not linger to be read the way a free list's
+would: the space ends at the new top, and every accessor reads through the
+slice below it, so an offset into the vacated tail finds no word; one below
+the new top names whatever survivor slid there, and carries an old epoch.
+Poisoning freed memory, which Primordial Soup does with `kUnallocatedByte`,
+is not needed here, and neither, until generated code dereferences
+addresses, is protecting the vacated pages ("The object space").
 
 The move stress mode stays beside the collector rather than being folded into
 it. It moves everything without liveness, so it isolates the completeness of
 the root enumeration from the correctness of marking: when the collector's own
 gate fails, a green move stress says the fault is in marking. `Forwarder`
-therefore takes its mapping as a parameter — a rotation for the stress mode, a
-forwarding table for the collector.
+therefore takes its mapping as a parameter, a `Relocation` -- the shift for
+the stress mode, the forwarding table for the collector.
 
 ### The trigger and the growth policy
 
 A collection happens only at a safepoint of the run loop, as decided on
 2026-09-13. An allocation sets the request at most; it never collects.
 
-The test is a comparison, not a counter. `push_object` already holds the
-arena's length, so it compares that against a limit and sets the safepoint
-request when it is reached; `reify` allocates its frame object through it
-like every other allocation. One predictable branch, and no new state on the
+The test is a comparison, not a counter. `allocate_block`, through which
+every allocation enters the space, `reify`'s frame object included, already
+holds the space's new top, so it compares the bytes the objects occupy --
+the top less the space's start -- against a limit and sets the safepoint
+request when it is reached. One predictable branch, and no new state on the
 hot path.
 
-After a collection the arena's limit becomes `max(floor, live * 2)`, so that
-between two collections no more is allocated than is live and the marking work
-per allocated slot is amortized constant. The floor — 4096 slots — keeps a
-small program out of the collector altogether: `bench_loop.ns` and
-`bench_send.ns` run in 4.6 MB today and should never collect. Soup's
-`GrowthPolicy` and HotSpot's free-ratio control have the same shape.
+After a collection the limit becomes `max(floor, live * 2)` in bytes
+(`collection_limit`), so that between two collections no more is allocated
+than is live and the marking work per allocated byte is amortized constant.
+The floor -- 512 KiB of objects, about 4,096 objects at a 128-byte average
+(`COLLECTION_FLOOR`, `heap.rs`) -- keeps a small program out of the
+collector altogether: `bench_loop.ns` and `bench_send.ns` never collect.
+Soup's `GrowthPolicy` and HotSpot's free-ratio control have the same shape.
 
-Compaction gives memory back against the same limit (`collection_limit`, which
-`compact_arena` and `reset_collection_limits` share): an arena buffer more
-than twice its next limit is cut back to the limit, and one within twice it
-is kept. Measured against the live set instead, the two part under the
-floor -- a live set of 72 objects cut the buffer to 144 slots, and the next
-cycle, allowed to reach 4,096, grew it back through five reallocations, each
-a copy and fresh pages, at every collection; that was about 5% of
-`bench_value.ns` ([execution.md](execution.md), "What exceptions cost").
-The price is retention: under the floor the arena keeps up to twice the
-floor after a collection, 8,192 slots -- about 131 KB of slot table (16 bytes
-a slot) in either build; the blocks of the dead objects are freed.
+The space commits as it grows (`Space::ensure_committed`): its first commit
+is 256 KiB, and a growth commits at least double what is committed and at
+least what the allocation needs, rounded up to a page, so a run of
+allocations commits a logarithmic number of times. Compaction gives memory
+back against the same limit that triggers a collection (`collection_limit`,
+which `compact` and `reset_collection_limits` share): a space with more than
+twice its next limit committed gives back what lies above the limit
+(`Space::release_above`, never below the top or the first commit), and one
+within twice it keeps what it has. Measured against the live set instead,
+the two part under the floor -- a live set far below the floor would cut
+the space to twice that, and the next cycle, allowed to reach the floor,
+would commit its way back at every collection; on the arena, where the same
+choice cut a buffer of slots, that was about 5% of `bench_value.ns`
+([execution.md](execution.md), "What exceptions cost"). The price is
+retention: under the floor the space keeps up to twice the floor committed
+after a collection, 1 MiB, in either build.
 
 The image decoder never collects, because it never polls — it does not run in
 the run loop. The transient peak described under the decode amplification above
@@ -1302,9 +1371,10 @@ In a release build this gives the safepoint's slow path its first real work.
 program ever made would outlive the process, since a selector literal makes
 one. It is not a root for marking; after marking and before compaction, an
 entry whose object is unmarked becomes `None`, and the rest are forwarded like
-everything else. The table has an inverse map, from a symbol object's index to
-its `Symbol` (`Heap::symbol_of`), pruned with the table and rebuilt after every
-compaction and move.
+everything else. The table has an inverse map, from a symbol object's offset to
+its `Symbol` (`Heap::symbol_of`), keyed by the offset so that it holds no
+handle, pruned with the table and rebuilt after every compaction and
+move.
 Nova has exactly this pair: `shift_strong_u32_index` answers an index,
 `shift_weak_u32_index` answers an `Option`.
 
@@ -1363,7 +1433,8 @@ program has been. Marking walks every `StackEntry` — receiver, `current_class`
 `kind`, the continuation and `reified` — and every register in `stack.values`.
 
 A frame object is collected exactly as every other object is, with the same
-bits and the same forwarding table: there is no frame arena.
+mark bit and the same forwarding table: there is no separate store for
+frames.
 
 **A married frame cannot be collected, and that needs no rule of its own.**
 `StackEntry::trace` follows `reified`, so a frame whose activation is still
@@ -1409,7 +1480,8 @@ recorded outputs catch the difference.
 
 False retention is caught by counting rather than by observing: a
 `debug_assertions`-only `collect_now`, beside `move_now`, and a
-`heap_statistics` answering live and occupied slots of the arena. A program that
+`heap_statistics` answering the objects in the space, the bytes they
+occupy and the bytes committed for it. A program that
 discards n closures is back at its starting size afterwards; one that keeps n
 closures keeps n frames.
 
@@ -1477,17 +1549,19 @@ statistics for every source and the inline check are in
 [execution.md](execution.md), "What the moving collector moved".
 
 
-### Payloads belong to the Rust allocator, and what that costs
+### What owning the memory gave
 
-An object's slot is 16 bytes in the arena, a boxed slice, and its words --
-header, class word and fields, in the final layout -- are one separate Rust
-allocation, its block ("What an object costs" above). Reading a field, or
-the guard in the header, is therefore two dependent loads, the slot's pointer
-and then the block, usually in different cache lines. A collection does not
-merely reclaim slots; it drops the dead blocks, one call into the system
-allocator each, and the program allocates them again as it runs on.
+Before the object space, an object's words were one separate Rust
+allocation, its block, behind a 16-byte slot of an arena: reading a field,
+or the guard in the header, was two dependent loads, the slot's pointer and
+then the block, usually in different cache lines, and a collection dropped
+the dead blocks one call into the system allocator each, which the program
+then allocated again as it ran on. Since road step 3b an object is its words
+in the space, and a handle reaches them with one bounds-checked index from
+the space's base; allocation is a bump of the top, and a collection frees
+nothing one by one -- it slides the survivors down and moves the top.
 
-**What the allocator costs was measured on 2026-09-28**, before road step
+**What the allocator cost was measured on 2026-09-28**, before road step
 3a, when an object's variable part was a payload of its own beside a 56-byte
 slot, by swapping the
 global allocator of `ns-cli` in scratch builds (three builds a side, two
@@ -1502,28 +1576,34 @@ against the Windows heap the shipped build uses:
 | `bench_megamorphic.ns` | level | +6.6% |
 | A scratch source churning short-lived lists, instances and strings | **−8.9%** | −5.6% |
 
-An xperf profile of the shipped allocator puts 16.9% of `bench_block.ns`'s
+An xperf profile of the shipped allocator put 16.9% of `bench_block.ns`'s
 samples and 11.0% of the churning source's in `ntdll.dll`'s heap; under
-mimalloc about 3% and 2% remain in the allocator's own functions, with about
+mimalloc about 3% and 2% remained in the allocator's own functions, with about
 1.3% more in the drop glue of the payload types the slots then held. The bump
-allocator, which never reuses memory, is slower than mimalloc and on three
+allocator, which never reuses memory, was slower than mimalloc and on three
 sources slower than the Windows heap: memory that is never recycled is cold.
-The mimalloc swap is the measured alternative, not an adopted one.
+The space reuses its memory -- a compaction slides the survivors into the
+bytes the dead left -- and measured `bench_block.ns` 22.1% faster than the
+arena, the allocation-heavy microbenchmarks 7.4% to 13.1% faster
+([execution.md](execution.md), "What the object space moved").
 
-**That measurement answers only what the allocator calls cost**, and it is not
-why the address-based engines own their memory. They do because of what
-owning it makes possible, none of which the measurement covers:
+**That measurement answered only what the allocator calls cost**, and it is
+not why the address-based engines own their memory. They do because of what
+owning it makes possible:
 
 - **Fields inline with the header.** Primordial Soup, Strongtalk and Spur lay
   an object out as its header followed by its fields in one allocation, so a
   field is one load at a fixed offset (Strongtalk's compiled field load is
   `movl dst,[base + offset*oopSize - Mem_Tag]`,
-  `prior-art/strongtalk/vm/compiler/codeGenerator.cpp:930-941`).
+  `prior-art/strongtalk/vm/compiler/codeGenerator.cpp:930-941`). Built: road
+  step 3a put the fields inline, and road step 3b the objects in the space,
+  so a field is one load from the space's base plus the handle and the
+  field's offset, behind the slice's bounds check.
 - **A nursery where death is free.** Soup's semispaces
   (`prior-art/primordialsoup/vm/heap.h:40-73`), Strongtalk's eden and
   survivors and Spur's scavenger copy the survivors and never touch the dead,
-  so a young collection costs what survives. Here every dead object with a
-  payload is freed one by one.
+  so a young collection costs what survives. Road step 4 ("Planned:
+  generations"); the space's reservation is where its nursery will lie.
 - **Allocation a JIT can inline.** Cogit bumps `freeStart` against
   `scavengeThreshold` in machine code for `new`, closures and boxed floats
   (`genPrimitiveNew`, `genCreateFullClosure:…`,
@@ -1532,16 +1612,14 @@ owning it makes possible, none of which the measurement covers:
   `:15181`);
   Strongtalk does it in generated stubs its compiled code calls
   (`test_for_scavenge`, `prior-art/strongtalk/vm/prims/generatedPrimitives.cpp:52-69`).
-  A `malloc` call cannot be inlined.
-- **A moving collector owns the space it moves objects in**, which the slot
-  arena already does and the blocks do not.
+  A `malloc` call cannot be inlined; a bump of the space's top can, which
+  road step 6 does ("Planned: inline allocation").
+- **A moving collector owns the space it moves objects in.** Built: the
+  collector slides the objects within the space it owns.
 
-So the question is not where blocks live but whether they are separate at
-all, and a block region beside the arena would keep both the second load and
-the per-object free. Road step 3a put the fields inline after a header word
-and a class word, in each object's block; road step 3b puts the blocks
-themselves in memory the heap owns ("The memory layer", "Planned: the object
-space" below).
+So the question was never where blocks live but whether they are separate
+at all: a block region beside the arena would have kept both the second
+load and the per-object free.
 
 **An object is size-stable on every hot path.** Both reference runtimes
 implement a growable collection in Newspeak over a fixed `Array`: Primordial
@@ -1553,8 +1631,8 @@ and copies. ns-next's `List` in the shipped `CollectionsFactory.ns` does the
 same. **Every object is fixed-size once allocated: no block grows in
 place** -- a frame object is allocated with its code's full register file,
 and an image's frame record carries exactly that many registers
-([image-format.md](image-format.md), "Verification") -- so the planned
-object space needs no growth-in-place case. What changes an
+([image-format.md](image-format.md), "Verification") -- so the object
+space needs no growth-in-place case. What changes an
 object's size is reflective and rare -- edit-and-continue adding locals to a
 live activation, a MirrorBuilder adding or removing slots of live instances
 (requirements 2 and 3 of
@@ -1591,17 +1669,19 @@ in the workspace with `unsafe` code, and `ns-runtime` keeps
 interface is safe again -- a malformed range is an error value, and a slice is
 lent only over memory that is committed and accessible -- so everything above
 it keeps the compiler-checked guarantee. This is step 1 of the road in
-[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". Nothing
-uses the crate yet: road step 3b, "Planned: the object space", is its first
-user, and what says how the heap will use it is in the future tense below.
-`Reservation` is not `Send` or `Sync`, since it holds a `NonNull`; whether it
-should be is left to road step 3b.
+[OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM". The
+heap is its user: each `Heap`'s object space is one `Reservation` ("The
+object space" below). `Reservation` is not `Send` or `Sync`, since it holds
+a `NonNull`, and nothing needs it to be: the space belongs to one `Heap`,
+and an interpreter, which holds `Rc`s throughout, is not `Send` either.
 
 - **One contiguous reservation per heap**: `Reservation::reserve` rounds the
   size up to the platform's reservation granularity and commits nothing. The
-  heap will hold the nursery and the old space alike in it, reserved once at a size chosen at
-  start-up with a generous default, since reserved address space costs
-  nothing, and committed as the space grows. A handle will be an offset from the
+  heap holds its object space in it, reserved once at a generous size --
+  64 GiB on a 64-bit target and 1 GiB otherwise (`DEFAULT_RESERVATION`,
+  `heap/space.rs`), since reserved address space costs nothing until it is
+  committed -- and committed as the space grows; under generations the
+  nursery will lie in it beside the old space. A handle is an offset from the
   reservation's base, so the base must be fixed and the reservation
   contiguous, as HotSpot's compressed oops require; Spur's segments at
   scattered addresses (`addSegmentOfSize:`,
@@ -1613,8 +1693,12 @@ should be is left to road step 3b.
 - **Operations**: `reserve`, `commit` a range, `decommit` a range when a space
   shrinks, `protect` a range as no-access or read-write, and lend each
   accessible, committed range as its own `&[u64]` (`words`) and `&mut [u64]`
-  (`words_mut`, and `split_words_mut` for several disjoint ranges at once);
-  dropping the reservation releases it. Ranges are byte offsets from the
+  (`words_mut`, and `split_words_mut` for several disjoint ranges at once),
+  and the committed read-write range at the base up to an end, `0..end`, in
+  O(1) (`prefix`, `prefix_mut`): the reservation keeps the end of that range
+  as a field, refreshed whenever its page map changes, so lending it is one
+  comparison rather than a walk of the map; dropping the reservation
+  releases it. Ranges are byte offsets from the
   base: commit, decommit and protect take page-aligned, non-empty ranges
   inside the reservation, the slices 8-byte-aligned ones that are committed
   read-write throughout and no longer than `isize::MAX` bytes, and a
@@ -1625,15 +1709,13 @@ should be is left to road step 3b.
   the page map records the most restrictive state the call could have left
   (`record_failure`): it may under-report access after a failure but never
   over-report it, so a lent slice never covers memory a partly failed call
-  changed. The heap will not store slices borrowed from its own
-  reservation, which would make it self-referential; it will re-borrow them each
-  time it needs them -- one call answering the split slices per space, each
-  survivor space, eden and the old space, per step between two safepoints,
-  and again after any commit, since a collection protects and old-space
-  growth commits inside an entry -- and
-  pick the slice by an offset's range, so an offset into a protected or
-  uncommitted range finds no slice: that selection is the bounds check the
-  accessors rely on.
+  changed. The heap does not store slices borrowed from its own
+  reservation, which would make it self-referential; it re-borrows the
+  prefix up to the space's top at every access (`Space::words`,
+  `words_mut`) and indexes it by the offset, so an offset at or above the
+  top finds no word: that slice is the bounds check the accessors rely on.
+  Under generations it will take one slice per space -- each survivor
+  space, eden and the old space -- through `split_words_mut`.
 - **Two implementations behind one interface**: Windows (`VirtualAlloc`,
   `VirtualFree`, `VirtualProtect`, through `windows-sys`) and POSIX (`mmap`
   with `PROT_NONE` to reserve, `mprotect` to commit and protect, a re-mapping
@@ -1655,71 +1737,96 @@ should be is left to road step 3b.
   large reservation cannot.
 - **A failure is a value, never a panic**: a reservation or a commit the
   operating system refuses answers a `MemoryError::Refused` carrying the
-  operation and the system's error number, which the heap will report as running out of
-  memory.
-- **In a debug build a vacated range will be protected as no-access**, as Soup does
-  around its scavenges and mark-sweeps
-  (`from_.NoAccess()`, `prior-art/primordialsoup/vm/heap.cc:341-344`,
-  `:653-655`). Since an offset into a protected range finds no slice, a stale
-  one fails the accessor's bounds check at once --
-  a panic in the debug build's stress runs. This catches a stale offset into
-  an evacuated nursery space or the compacted-away tail above the new top; a
-  stale offset below the new top lands in live, compacted memory, which is
-  what the epoch check on the Rust-side handles is for. The crate supplies
-  `Protection::NoAccess` and the slice refusal; the heap's use of them is
-  planned ("Planned: the object space").
+  operation and the system's error number. What running out of memory does
+  is the heap's to decide: it aborts ("The object space").
+- **No-access protection of a vacated range is supplied, and the heap does
+  not use it yet.** Soup protects a vacated range around its scavenges and
+  mark-sweeps (`from_.NoAccess()`,
+  `prior-art/primordialsoup/vm/heap.cc:341-344`, `:653-655`), and since an
+  offset into a protected range finds no slice, a stale one would fail the
+  accessor's bounds check at once. The crate supplies `Protection::NoAccess`
+  and the slice refusal; why the heap protects nothing is in "The object
+  space".
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
 
-## Planned: the object space
+## The object space
 
-Would change: `Heap`'s arena of boxed blocks, `objects`, gives way to one
-space of variably sized objects, each the same header word, class word and
-fields inline ([object-model.md](object-model.md), "The object layout"), in
-memory from "The memory layer". Road step 3b; it follows the eight-byte value
-(road step 2), the compact instruction encoding and road step 3a. Road step
-3 is built in two plans (decided with the user on 2026-10-03), and the
-first, 3a, is built: each slot of the arena holds one block of words in the
-final layout, reified frames are objects of the frame format so there is no
-frame arena, and the collector traces, marks and compacts by format over the
-one arena with an index-forwarding table. 3b replaces the arena with the
-space below; the layout of an object's words does not change.
+Built by road step 3b on 2026-10-03
+([its plan](../superpowers/plans/2026-10-03-1934-ns-next-object-space.md)),
+after the eight-byte value (road step 2), the compact instruction encoding
+and road step 3a, which fixed the layout of an object's words; 3b changed
+where the words live and nothing about the layout. Every object of a `Heap`
+lies end to end in one space (`heap/space.rs`), a `Reservation` of the
+memory layer above: each its header word, its class word and its fields
+([object-model.md](object-model.md), "The object layout"), from the first
+object's offset up to the top.
 
-- **Allocation is a bump pointer** in the space, as Soup's `Heap::Allocate`
-  (`prior-art/primordialsoup/vm/heap.h:373-387`). Objects are 8-byte aligned
-  and at least 16 bytes, a header and a class word.
-- **A handle is a 64-bit byte offset from the space's base**, so base plus
-  handle is the object's address, the form generated code will use. The first
-  object starts at offset 16, not 0, so an all-zero word -- a missed
-  initialization -- is never a live reference. There is no 32 GB ceiling:
-  HotSpot's compressed oops save memory because a Java reference field is 32
-  bits, while every field here is a full `Value` word able to hold any value, so
-  the offset can be as wide as the word allows after its tag. The words in the
-  space are 8 bytes in every build, as the blocks' are, so the layout a debug
-  build tests is the layout a release build runs. The Rust-side types --
-  `ObjectReference`, and `Value` in Rust variables, structures, continuations
-  and host roots -- carry the heap id and the move epoch in full in a debug
-  build, as they do today, so the origin guard and the epoch check stay exact
-  wherever a stale handle can arise. Every store already checks in a debug
-  build that the stored Rust-side value's heap id and epoch are current before
-  it becomes a word (`Heap::store`), so a stale value cannot be laundered into
-  a field; a word read out of an object is given the current ones
-  (`Heap::load`), since a full collection rewrites every word it walks by
-  format and cannot miss one the way it can miss an unknown Rust field; under
-  generations a scavenge walks only the young and the remembered objects, and
-  a missed barrier is what `NS_NEXT_STRESS_SCAVENGE` catches ("Planned:
-  generations"). The one exception is deliberate: a married frame's inline
-  registers are skipped, because while it is married its registers live on the
-  activation stack, which is traced as a root.
-- **Access stays behind `Heap`'s accessors**, which read the space's words
-  through bounds-checked slices, so a stale offset reads a wrong object at
-  worst, never undefined behaviour; every field, element and register accessor
-  also checks its index against the object's own word count, so no access
-  through one object reaches the next object's header -- the guarantee the
-  arena's separate blocks give today. Accessors may lend an object's fields as
-  a slice rather than copy them out, as a string's units and a `LargeInteger`'s
-  digits already are, which ends the copy-out costs "Known rough edges in the
-  seam" names.
+- **The reservation and its growth.** A heap reserves 64 GiB on a 64-bit
+  target and 1 GiB otherwise (`DEFAULT_RESERVATION`): address space costs
+  nothing until it is committed. The first commit is 256 KiB
+  (`MINIMUM_COMMIT`), and a growth commits at least double what is
+  committed and at least what the allocation needs, rounded up to a page,
+  never past the reservation (`Space::ensure_committed`), so a run of
+  allocations commits a logarithmic number of times. A compaction gives back
+  what lies above the next limit once more than twice it is committed ("The
+  trigger and the growth policy"). Each constant is one line to change.
+- **Allocation is a bump of the top** (`Space::allocate`, through
+  `Heap::allocate_block`), as Soup's `Heap::Allocate`
+  (`prior-art/primordialsoup/vm/heap.h:373-387`), and every allocation
+  writes its object's header, class word and fields in place, so no object
+  is built beside the space and copied in. Objects are 8-byte aligned and at
+  least 16 bytes, a header and a class word.
+- **A handle is a 64-bit byte offset from the reservation's base** to the
+  object's header, a `NonZeroU64`, so an `Option` of a handle is one word
+  too, and base plus handle is the object's address, the form generated code
+  will use. The first allocation starts at offset 16 (`FIRST_OBJECT`), not
+  0, so an all-zero word -- a missed initialization -- is never a live
+  reference. There is no 32 GB ceiling: HotSpot's compressed oops save
+  memory because a Java reference field is 32 bits, while every field here
+  is a full `Value` word able to hold any value, so the offset can be as
+  wide as the word allows after its tag. No handle caps the number of
+  objects either; the reservation does. The words in the space are 8 bytes
+  in every build, so the layout a debug build tests is the layout a release
+  build runs. The Rust-side types -- `ObjectReference`, and `Value` in Rust
+  variables, structures, continuations and host roots -- carry the heap id
+  and the move epoch in full in a debug build, so the origin guard and the
+  epoch check stay exact wherever a stale handle can arise. Every store
+  checks in a debug build that the stored Rust-side value's heap id and
+  epoch are current before it becomes a word (`Heap::store`), so a stale
+  value cannot be laundered into a field; a word read out of an object is
+  given the current ones (`Heap::load`), since a full collection rewrites
+  every word it walks by format and cannot miss one the way it can miss an
+  unknown Rust field; under generations a scavenge will walk only the young
+  and the remembered objects, and a missed barrier is what
+  `NS_NEXT_STRESS_SCAVENGE` will catch ("Planned: generations"). The one
+  exception is deliberate: a married frame's inline registers are skipped,
+  because while it is married its registers live on the activation stack,
+  which is traced as a root.
+- **The overflow word.** The header's top byte counts the words after the
+  header up to 254; 255 says the count is in an overflow word *before* the
+  header, whose top byte is that same 255 and whose low 56 bits are the
+  count, so a walk standing at an allocation's first word tells an overflow
+  word from a header, as Spur's does (`numSlotsOfAny:`, `objectAfter:`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:55584`, `:55781`).
+  The space is its first use: the arena's blocks knew their own length.
+  The space is walked linearly by these counts (`space::object_at`), which
+  is how compaction, a move, the forwarding of every object and the debug
+  check of the mark bits visit every object.
+- **Access stays behind `Heap`'s accessors**, which read the words through
+  `Space::words`, the slice `[0, top)` that `Reservation::prefix` lends in
+  O(1), so every access is bounds-checked against the top and a stale offset
+  reads a wrong object at worst, never undefined behaviour and never memory
+  outside the objects. `Heap::block` ends where the header's count says, so
+  no field, element or register accessor reaches the next object's header
+  -- the guarantee the arena's separate blocks gave. The access path is
+  forced inline (`#[inline(always)]` on `pointer_words`, `pointer_words_mut`
+  and `pointer_word`, `#[inline]` on `Reservation::prefix`): the space made
+  `Heap::block` larger, LLVM then outlined `pointer_words`, and the call
+  alone held 5.3% to 8.2% of a benchmark's samples
+  ([execution.md](execution.md), "What the object space moved"). The
+  accessors still copy out; lending an object's fields as a slice is the
+  open question "Known rough edges in the seam" names.
 - **Frames stay objects of the frame format** in the space, with their
   registers inline. Married and divorced frames keep their meaning
   ("Frames, the activation stack and the marriage"); a frame object is
@@ -1727,53 +1834,68 @@ space below; the layout of an object's words does not change.
   whether a divorce copies the registers stays decided per activation from
   the block's `outer_reach`. The activation stack of running activations is
   unchanged until road step 7, the execution model for compiled code.
-- **The collector is mark and sliding compaction** over variably sized
-  objects, after Spur's planning compactor, which slides unpinned marked
-  objects down and plans their new addresses before moving any
-  (`compact`, `planCompactSavingForwarders`,
-  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`). The
-  forwarding addresses live in a side table while a collection runs, where
-  Spur saves each object's first field to make room for one. The heap is walked
-  linearly by the word count in each header, with the overflow word before the
-  header for large objects -- the first use of the overflow word, which the
-  arena, whose blocks know their own length, does not need.
-- **The weak symbol table and the replacement of resolved futures** walk the
-  space and read fields by format, as they walk the arena today.
-- **The trigger** compares the space's fill level in bytes against a limit
-  reset after each collection, as the slot count is compared today ("The
-  trigger and the growth policy").
-- **The stress modes stay**: `NS_NEXT_STRESS_MOVES` shifts every object by an
-  offset, so every handle changes; `NS_NEXT_STRESS_COLLECT`,
-  `NS_NEXT_STRESS_CACHES` and `NS_NEXT_STRESS_WIDE` are unchanged.
-- **The space belongs to a `Heap`**, never to a thread or the process, because
-  an actor is meant to be a per-heap scope
+- **The collector is mark and sliding compaction** over the variably sized
+  objects, after Spur's planning compactor, which slides marked objects
+  down and plans their new addresses before moving any (`compact`,
+  `planCompactSavingForwarders`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`).
+  The mark bit is in the header ("Marking"); the forwarding addresses live
+  in a side table while a collection runs, a live-word bitmap with a prefix
+  count per 64 words, where Spur saves each object's first field to make
+  room for one ("Compaction and forwarding").
+- **The weak symbol table and the replacement of resolved futures** walk
+  the space and read fields by format; the inverse symbol map is keyed by
+  offset ("Weak references").
+- **The trigger** compares the bytes the objects occupy against a limit
+  reset after each collection, with a 512 KiB floor ("The trigger and the
+  growth policy").
+- **The move stress mode shifts every object** by `8 * (2 + epoch % 31)`
+  bytes up from the first offset, and back down to it at the next move, so
+  every handle changes at every move ("The move stress mode");
+  `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_CACHES` and
+  `NS_NEXT_STRESS_WIDE` are unchanged.
+- **Running out of memory aborts the process.** A commit the operating
+  system refuses, or a reservation used up, ends in
+  `std::alloc::handle_alloc_error`, as a failed `Vec` push does, so
+  allocation stays infallible and no hot path carries a `Result`
+  (decided with the user on 2026-10-03). A Newspeak-level out-of-memory
+  error is open ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **No page is protected, in either build** (decided with the user on
+  2026-10-03). The accessors lend only `[0, top)`, so a stale offset at or
+  above the top -- into the tail a compaction vacated -- already finds no
+  word, and one below the top lands in live, compacted memory, which is what
+  the epoch check is for. Protecting the vacated pages pays when code
+  dereferences addresses itself, which is road step 8's generated code; it
+  is open until then ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **The space belongs to a `Heap`**, never to a thread or the process,
+  because an actor is meant to be a per-heap scope
   ([liveness-and-reflection.md](liveness-and-reflection.md)).
 
 **What changes in `CLAUDE.md`, and when.** Its invariants describe what is
-built, so each changes when its road step lands, not before. Road steps 1 and
-3a are done: the crate list names `crates/ns-memory`, the one crate with
-`unsafe`, and "the crate forbids unsafe code" names `ns-runtime`; "An image
-is untrusted input" states the figures of "The amplification bound of a
-rejected load" above; the handle paragraphs name no frame arena; and "A cache
-records what the lookup decided" reads the builtin tag as a field of the
-class object, which `act` still reads afresh on every send. Still to come:
-the handle paragraphs describe a 64-bit byte offset (road step 3b); the
-gates' stress loop gains `SCAVENGE`, "nothing collects during a load"
-becomes "the decoder allocates only after a tenure between entries; the
-platform-path sends may collect at their safepoints like any run; the graph
-pass allocates after the last tenure and never polls a safepoint" -- so the
-peak argument stands -- and the crate list's sentence on the mark-compact
-collector names the scavenger beside it (road step 4); and "The VM mirror is
-a capability" gains, as a consequence, that a program's `become:` refuses
-value objects and class objects, which covers every object a platform path
-names (road step 5; [object-model.md](object-model.md), "Planned: `become:`
-through forwarders"). "Decided per activation from the block's
-`outer_reach`" stands, since the divorce keeps that rule.
+built, so each changes when its road step lands, not before. Road steps 1,
+3a and 3b are done: the crate list names `crates/ns-memory`, the one crate
+with `unsafe`, and the heap's space in its reservation; "the crate forbids
+unsafe code" names `ns-runtime`; "An image is untrusted input" states the
+figures of "The amplification bound of a rejected load" above; the handle
+paragraphs describe a 64-bit byte offset and name no frame arena; and "A
+cache records what the lookup decided" reads the builtin tag as a field of
+the class object, which `act` still reads afresh on every send. Still to
+come: the gates' stress loop gains `SCAVENGE`, "nothing collects during a
+load" becomes "the decoder allocates only after a tenure between entries;
+the platform-path sends may collect at their safepoints like any run; the
+graph pass allocates after the last tenure and never polls a safepoint" --
+so the peak argument stands -- and the crate list's sentence on the
+mark-compact collector names the scavenger beside it (road step 4); and "The
+VM mirror is a capability" gains, as a consequence, that a program's
+`become:` refuses value objects and class objects, which covers every object
+a platform path names (road step 5; [object-model.md](object-model.md),
+"Planned: `become:` through forwarders"). "Decided per activation from the
+block's `outer_reach`" stands, since the divorce keeps that rule.
 
 ## Planned: generations
 
 Would change: the space gains a nursery with a copying scavenger, and the
-mark-compact of "Planned: the object space" becomes the old space's collector.
+mark-compact of "The object space" becomes the old space's collector.
 Road step 4.
 
 - **Layout**: the nursery sits at the low end of the reservation -- two
@@ -1818,7 +1940,7 @@ Road step 4.
   registers written on divorce and by `StoreOuterLocal`, a closure's copied
   values, and a forwarder's target. The debug check of the stored Rust-side
   value's heap id and epoch, which every store accessor makes from road step
-  2 on ("Planned: the object space"), holds here too. The collector's own rewrites -- the
+  2 on ("The object space"), holds here too. The collector's own rewrites -- the
   scavenge, the compaction, the replacement of resolved futures -- keep the
   remembered set themselves. The running activation stack's registers are
   roots and take no barrier.
@@ -1851,7 +1973,7 @@ Road step 4.
   full collection, since a young symbol can die in either. At a scavenge a
   young entry whose symbol was not copied becomes `None`, a copied one is
   rewritten to its new location, and an old entry is left alone; the table
-  is not a strong root. The inverse map from a symbol object's index to its
+  is not a strong root. The inverse map from a symbol object's offset to its
   `Symbol` is kept in step the same way.
 - **A fifth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
   safepoint, which is what finds a store that missed the barrier. So that a
@@ -1896,15 +2018,15 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   now, the hash of an object an image names by tag rather than by record
   ([image-format.md](image-format.md), "Identity hashes are preserved
   verbatim").
-- **A handle is an arena-relative index, not a globally unique name**, and a
+- **A handle is a space-relative offset, not a globally unique name**, and a
   `debug_assertions`-only origin guard says so at every accessor rather than
   leaving it to convention. It exists because the failure it catches is silent:
   a handle from another heap is in range and names a valid object, so the read
   succeeds with the wrong answer. It costs nothing in a release build, where the
   origin field does not exist. An `ActivationReference` adds a generation to the same
   guard, for the same reason: a stack index is reused once its entry is popped.
-- **Activations live on a stack, not in the arena**, so that what nothing
-  captures is not retained. Only a reified frame reaches the arena, and it is
+- **Activations live on a stack, not in the object space**, so that what nothing
+  captures is not retained. Only a reified frame reaches the space, and it is
   the one activation form anything may store.
 - **A moving collector, not a conservative one**, because `become:` and instance
   migration are requirements. Conservative scanning with pinning was considered
@@ -1914,7 +2036,7 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   ceiling would exclude valid programs. Where a depth *is* independently
   bounded — the `Mixin` declaration tree, capped by the parser — a ceiling is
   the right answer and `image/mixins.rs` uses one. Objects and activations need
-  neither: an arena entry holds indices, so there is nothing to unwind.
+  neither: an object's words hold offsets, so there is nothing to unwind.
 - **A collection happens only at a safepoint in the run loop, or between
   entries where only roots hold values** (as `Interpreter::collect_now` does
   for tests), never inside an allocation (decided 2026-09-13), so no
@@ -1955,27 +2077,25 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 - **Every object is one block of words, traced by its format, and a reified
   frame is an object** (road step 3a, decided with the user on 2026-09-29 and
   2026-10-03, built on 2026-10-03; [object-model.md](object-model.md), "The
-  object layout"): the arena's slot is a boxed slice of the header word, the
-  class word and the fields, there is no frame arena, and one mark, one
-  compaction and one forwarding table cover everything. The handle stays the
-  arena index until the space (road step 3b).
-- **Mark-compact over the index arena, one space, stop-the-world** (decided
-  with the user on 2026-09-20). Under the planned generations it is the old
-  space's collector, over variably sized objects ("Planned: generations").
-  Over uniform slots a free list has no fragmentation to solve and a copier
-  little locality to win, so the choice rested on what the step is for — the
-  table shrinks and the pages go back — on rewriting being O(1) per handle
-  through a flat forwarding table over an index arena, and on the machinery
-  already built and under test. Nova, the one engine with this representation,
+  object layout"): an object is the header word, the class word and the
+  fields, there is no separate store for frames, and one mark, one
+  compaction and one forwarding table cover everything.
+- **Mark-compact, one space, stop-the-world** (decided with the user on
+  2026-09-20 over the index arena, kept for the object space). Under the
+  planned generations it is the old space's collector ("Planned:
+  generations"). The choice rested on what the step is for — the heap
+  shrinks and the pages go back — on rewriting being O(1) per handle
+  through a forwarding table, and on the machinery already built and under
+  test; over the space's variably sized objects a sliding compaction also
+  leaves none of the fragmentation a free list would have to manage. Nova
   compacts; Strongtalk, Spur and HotSpot compact or evacuate their old
   generation, and HotSpot removed the one free-list old space it had.
 - **MMTk is ruled out by what it would replace**, not by a comparison of
   collectors. Its handles are raw addresses, so adopting it would replace the
   checked access, the origin guards, the epoch check and the brand's proof along
-  with the collector. Owning the memory is not what costs them: the planned
-  object space will own its memory and keep all four, because its handles
-  will be byte offsets read through bounds-checked slices ("Planned: the object
-  space").
+  with the collector. Owning the memory is not what costs them: the object
+  space owns its memory and keeps all four, because its handles are byte
+  offsets read through bounds-checked slices ("The object space").
 - **`unsafe` is acceptable on a performance-critical path where the abstraction
   over it is safe again** (decided with the user on 2026-09-21), so an option is
   not dismissed for needing `unsafe` alone -- the argument has to be about what
@@ -1998,10 +2118,11 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   ids, so a weak cache is decidable, but nothing drops a mixin before live
   editing, so the ids are minted and none is reclaimed
   ([object-model.md](object-model.md), "An application has two ids").
-- **A collection is requested by comparing the arena's length against a limit**,
-  reset to `max(4096, live * 2)` after each collection, rather than by counting
-  allocations: the length is already in hand where an allocation happens, so the
-  hot path pays one predictable branch and carries no new state.
+- **A collection is requested by comparing the bytes the objects occupy
+  against a limit**, reset to `max(512 KiB, live bytes * 2)` after each
+  collection, rather than by counting allocations: the space's top is already
+  in hand where an allocation happens, so the hot path pays one predictable
+  branch and carries no new state.
 - **Collecting at every safepoint is a third stress mode and a third gate**,
   `NS_NEXT_STRESS_COLLECT`, kept beside the move stress rather than replacing
   it, because moving everything without liveness is what separates a missing
@@ -2009,17 +2130,40 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 - **Fields go inline after the header word and the class word, and the
   objects into a space the heap owns, not payloads into a region beside the
   arena** (decided with the user on 2026-09-29; the fields inline built by
-  road step 3a, the space planned as road step 3b). An allocator
-  swap measured what the allocator calls cost ("Payloads belong to the Rust
-  allocator, and what that costs"); what the address-based engines gain by
+  road step 3a, the space by road step 3b). An allocator
+  swap measured what the allocator calls cost ("What owning the memory
+  gave"); what the address-based engines gain by
   owning their memory -- one load per field, a nursery where death is free,
   allocation a JIT can inline -- needs the fields inline, which a payload region
-  would not give; the blocks of road step 3a still give neither the one load
-  nor the nursery. The memory layer, the eight-byte value, the object space,
+  would not give; the space gives the one load, and the nursery and the
+  inline allocation build on it (road steps 4 and 6). The memory layer, the eight-byte value, the object space,
   generations, `become:` and inline allocation are steps 1 to 6 of the road in
   [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
 - **One reservation per heap, contiguous and committed as it grows**
-  (built as `Reservation`; the heap's use of it is planned), because
+  (built: `Reservation`, which holds each heap's object space), because
   a handle is an offset from a fixed base, so the base cannot move and the
   space cannot be scattered; for Windows and POSIX from the start (decided
   with the user on 2026-09-29).
+- **The forwarding table is a live-word bitmap with a prefix count per 64
+  words** (decided with the user on 2026-10-03, built by road step 3b;
+  "Compaction and forwarding"): one bit per word of the space for every word
+  of a surviving object, and per chunk of 64 words the live words before
+  it, so a survivor's new offset is one table entry, a mask and a
+  `popcount` away -- O(1) per handle, one cache line per lookup, about 3% of
+  the space while a collection runs. Rejected: a sorted list of old and new
+  offsets with a binary search per handle, O(log n) dependent loads, the
+  cost Nova's `CompactionList` pays
+  (`prior-art/nova/nova_vm/src/heap/heap_bits.rs:1345`, `:1457`); and a dense
+  table indexed by offset over 16, one load but half the space again in
+  memory and a cache miss per handle on any heap larger than the cache.
+- **No page is protected yet; a debug build's no-access protection of
+  vacated pages waits for generated code** (decided with the user on
+  2026-10-03). The accessors lend only `[0, top)`, so a stale offset at or
+  above the top already finds no word; the protection pays when code
+  dereferences addresses itself, which is road step 8's baseline JIT
+  ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **A refused commit or an exhausted reservation aborts the process**, as a
+  failed `Vec` push does, through `std::alloc::handle_alloc_error` (decided
+  with the user on 2026-10-03). Allocation stays infallible, so no hot path
+  carries a `Result`; a Newspeak-level out-of-memory error is open
+  ([OPEN-WORK.md](../OPEN-WORK.md)).
