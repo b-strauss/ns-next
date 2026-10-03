@@ -43,18 +43,39 @@ pub struct DispatchId(u32);
 impl DispatchId {
     /// What `Heap::dispatch_id` answers for a value whose class has no
     /// application -- only a crafted image makes one -- and what an
-    /// application built outside `apply_mixin` carries. Never cached.
-    pub const NONE: DispatchId = DispatchId(u32::MAX);
+    /// application built outside `apply_mixin` carries. Never cached. 0, so
+    /// that a header word left zero by a missed initialization carries a
+    /// guard no application was minted (`docs/design/object-model.md`, "The
+    /// reserved guard values sit at the low end").
+    pub const NONE: DispatchId = DispatchId(0);
     /// The guard of a cache entry that guards nothing: a vacant, polymorphic
     /// or megamorphic site. `Heap::dispatch_id` never answers it, so no
     /// receiver matches one.
-    pub(crate) const VACANT: DispatchId = DispatchId(u32::MAX - 1);
+    pub(crate) const VACANT: DispatchId = DispatchId(1);
+    /// A forwarder's guard (road step 5): never minted, so that every send
+    /// guarded on a forwarded receiver's own header misses.
+    pub(crate) const FORWARDED: DispatchId = DispatchId(2);
+    /// The first id the counter mints.
+    pub(crate) const FIRST_MINTED: u32 = 3;
+    /// One past the last id: the header word's guard field is 22 bits wide.
+    pub(crate) const LIMIT: u32 = 1 << 22;
 
     pub(crate) fn from_counter(value: u32) -> DispatchId {
-        debug_assert!(value < DispatchId::VACANT.0);
+        debug_assert!((DispatchId::FIRST_MINTED..DispatchId::LIMIT).contains(&value));
         DispatchId(value)
     }
+
+    /// The id as the header word's low 22 bits hold it.
+    // Read by the header word from the next task on; only tests use it until then.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn bits(self) -> u32 {
+        self.0
+    }
 }
+
+// The forwarder's guard is reserved now and used from road step 5 on; the
+// assertion keeps it below every minted id.
+const _: () = assert!(DispatchId::FORWARDED.0 < DispatchId::FIRST_MINTED);
 
 /// An application's id, for its instances. There is no second, class-side
 /// id: a class object's class is its metaclass (`newspeak-spec.pdf` §3.2),
@@ -908,5 +929,19 @@ pub fn preorder(mixin: &Rc<Mixin>, out: &mut Vec<Rc<Mixin>>) {
     }
     if let Some(class_side) = &mixin.class_side {
         preorder(class_side, out);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_id_tests {
+    use super::DispatchId;
+
+    #[test]
+    fn the_reserved_guards_are_the_three_lowest_ids() {
+        assert_eq!(DispatchId::NONE.bits(), 0);
+        assert_eq!(DispatchId::VACANT.bits(), 1);
+        assert_eq!(DispatchId::FORWARDED.bits(), 2);
+        assert_eq!(DispatchId::FIRST_MINTED, 3);
+        assert_eq!(DispatchId::LIMIT, 1 << 22);
     }
 }

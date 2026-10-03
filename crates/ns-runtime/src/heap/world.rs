@@ -40,7 +40,7 @@ impl World {
                 spare_walks: Vec::new(),
                 lowering,
                 argument_buffer: Vec::new(),
-                next_dispatch_id: 0,
+                next_dispatch_id: crate::mixin::DispatchId::FIRST_MINTED,
                 caches: crate::interpreter::inline_cache::InlineCaches::new(),
                 unhandled_exceptions_to_resume: 0,
                 depth_reserve: None,

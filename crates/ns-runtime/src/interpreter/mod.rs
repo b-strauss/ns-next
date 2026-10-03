@@ -342,9 +342,10 @@ pub struct Mutator<'gc> {
     /// when it is given back, so it holds no handle a move would have to
     /// find.
     pub(crate) argument_buffer: Vec<Value<'gc>>,
-    /// The next dispatch id `apply_mixin` mints. Past the last id below
-    /// `DispatchId::VACANT` it stops minting and applications get `NONE`,
-    /// which is never cached: slower, never wrong.
+    /// The next dispatch id `apply_mixin` mints. It starts at
+    /// `DispatchId::FIRST_MINTED` and mints below `DispatchId::LIMIT` (22
+    /// bits, the header word's guard field); once exhausted applications get
+    /// `NONE`, which is never cached: slower, never wrong.
     pub(crate) next_dispatch_id: u32,
     /// The inline caches (`inline_cache.rs`): per heap, since a dispatch id
     /// means nothing in another heap.
@@ -794,22 +795,19 @@ impl<'gc> Mutator<'gc> {
     /// The next dispatch id, or `DispatchIds::NONE` once the counter is
     /// exhausted: an application built after that point is simply never
     /// cached, which is slower but never wrong, so running out is not an
-    /// error. Stopping strictly before `DispatchId::VACANT` and
-    /// `DispatchId::NONE` -- rather than at them -- is what keeps
-    /// `DispatchId::from_counter`'s assertion from ever firing on a minted
-    /// id.
+    /// error. The counter starts at `DispatchId::FIRST_MINTED`, above the
+    /// reserved guards, and stops below `DispatchId::LIMIT`, which is what
+    /// keeps `DispatchId::from_counter`'s assertion from ever firing on a
+    /// minted id.
     ///
     /// One id per application: a class object's class is its metaclass, an
     /// application of its own, so no second, class-side id goes with it.
     pub(crate) fn mint_dispatch_ids(&mut self) -> crate::mixin::DispatchIds {
         let first = self.next_dispatch_id;
-        let Some(after) = first.checked_add(1) else {
-            return crate::mixin::DispatchIds::NONE;
-        };
-        if after > u32::MAX - 1 {
+        if first >= crate::mixin::DispatchId::LIMIT {
             return crate::mixin::DispatchIds::NONE;
         }
-        self.next_dispatch_id = after;
+        self.next_dispatch_id = first + 1;
         crate::mixin::DispatchIds {
             instances: crate::mixin::DispatchId::from_counter(first),
         }
@@ -2408,46 +2406,37 @@ mod tests {
         assert_eq!(std::mem::size_of::<crate::dispatch::Lookup>(), 24);
     }
 
-    /// Minting stops strictly before `DispatchId::VACANT`, never landing on
-    /// it or on `NONE`: both are reserved meanings (`Heap::dispatch_id` never
-    /// answers `VACANT`, and `NONE` means "not cached"), so a minted id must
-    /// never equal either.
+    /// The counter starts above the reserved guards, so the first mint after
+    /// `FIRST_MINTED` answers it and the next answers the one after.
     #[test]
-    fn minting_never_reaches_vacant_and_answers_none_once_exhausted() {
+    fn the_first_mint_follows_the_reserved_guards() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            // One id below the ceiling: the last mintable id is MAX - 2,
-            // immediately below `VACANT` (MAX - 1).
-            mutator.next_dispatch_id = u32::MAX - 2;
-            let last = mutator.mint_dispatch_ids();
+            mutator.next_dispatch_id = crate::mixin::DispatchId::FIRST_MINTED;
             assert_eq!(
-                last.instances,
-                crate::mixin::DispatchId::from_counter(u32::MAX - 2)
+                mutator.mint_dispatch_ids().instances,
+                crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::FIRST_MINTED)
             );
-            assert_ne!(last.instances, crate::mixin::DispatchId::VACANT);
-            assert_ne!(last.instances, crate::mixin::DispatchId::NONE);
-
-            let exhausted = mutator.mint_dispatch_ids();
-            assert_eq!(exhausted, crate::mixin::DispatchIds::NONE);
+            assert_eq!(
+                mutator.mint_dispatch_ids().instances,
+                crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::FIRST_MINTED + 1)
+            );
         });
     }
 
-    /// Every application gets an id of its own, and one only: minting
-    /// advances the counter by one, so a handful of mints answer
-    /// consecutive, distinct ids.
+    /// Minting stops below the header word's 22-bit guard field and answers
+    /// `NONE` from then on, so that application runs uncached.
     #[test]
-    fn every_mint_answers_the_next_single_id() {
+    fn minting_stops_below_twenty_two_bits_and_answers_none_once_exhausted() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let start = mutator.next_dispatch_id;
-            for offset in 0..5 {
-                let minted = mutator.mint_dispatch_ids();
-                assert_eq!(
-                    minted.instances,
-                    crate::mixin::DispatchId::from_counter(start + offset)
-                );
-            }
-            assert_eq!(mutator.next_dispatch_id, start + 5);
+            mutator.next_dispatch_id = crate::mixin::DispatchId::LIMIT - 1;
+            assert_eq!(
+                mutator.mint_dispatch_ids().instances,
+                crate::mixin::DispatchId::from_counter(crate::mixin::DispatchId::LIMIT - 1)
+            );
+            assert_eq!(mutator.mint_dispatch_ids(), crate::mixin::DispatchIds::NONE);
+            assert_eq!(mutator.mint_dispatch_ids(), crate::mixin::DispatchIds::NONE);
         });
     }
 
