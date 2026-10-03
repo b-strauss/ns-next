@@ -33,8 +33,8 @@ mod world;
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header};
 use object::{
-    class_field, closure_field, frame_field, trace_block, PackedString, Payload, CLASS, FIELDS,
-    HEADER,
+    class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, Payload,
+    CLASS, FIELDS, HEADER,
 };
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
@@ -613,16 +613,21 @@ impl Relocation for ForwardingTable {
     }
 }
 
-/// Slides the marked slots of one arena to the front, truncates the rest
-/// away -- which is where the dead records drop, and their payloads with
-/// them -- and answers the table that maps old index to new. `floor` is the
-/// heap's collection floor, which the arena's next limit never falls below
-/// (`collection_limit`).
-fn compact_arena<T>(slots: &mut Vec<T>, bits: &mark::MarkBits, floor: usize) -> ForwardingTable {
+/// Slides the slots of one arena that `take_mark` says survive to the
+/// front, truncates the rest away -- which is where the dead records drop,
+/// and their payloads with them -- and answers the table that maps old index
+/// to new. `take_mark` is asked once per slot, in order, and may clear the
+/// slot's mark as it answers. `floor` is the heap's collection floor, which
+/// the arena's next limit never falls below (`collection_limit`).
+fn compact_arena<T>(
+    slots: &mut Vec<T>,
+    mut take_mark: impl FnMut(&mut T) -> bool,
+    floor: usize,
+) -> ForwardingTable {
     let mut table = vec![DEAD; slots.len()];
     let mut destination = 0usize;
     for (source, destination_of_source) in table.iter_mut().enumerate() {
-        if bits.is_set(source as u32) {
+        if take_mark(&mut slots[source]) {
             *destination_of_source = u32::try_from(destination)
                 .expect("internal: an arena is addressed by 32-bit indices");
             if destination != source {
@@ -4091,15 +4096,17 @@ impl<'gc> Heap<'gc> {
         forwarder
     }
 
-    /// Compacts the arena against `marker`'s bits and rewrites every handle
-    /// the heap itself holds into the next epoch. What the heap does not
+    /// Compacts the arena against the mark bits the finished marking set,
+    /// clearing each survivor's as it goes so that no object leaves the
+    /// collection marked, and rewrites every handle the heap itself holds
+    /// into the next epoch. What the heap does not
     /// hold, the caller forwards with the answer, exactly as for a move
     /// (`World::collect`).
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between runs.
     #[must_use = "the interpreter's own roots are forwarded through the answer; dropping it leaves them stale"]
-    pub(crate) fn compact(&mut self, marker: mark::Marker) -> Forwarder<ForwardingTable> {
+    pub(crate) fn compact(&mut self) -> Forwarder<ForwardingTable> {
         #[cfg(debug_assertions)]
         let from_epoch = self.epoch;
         #[cfg(debug_assertions)]
@@ -4108,7 +4115,15 @@ impl<'gc> Heap<'gc> {
         {
             self.epoch = to_epoch;
         }
-        let objects = compact_arena(&mut self.objects, &marker.objects, self.collection_floor);
+        let objects = compact_arena(
+            &mut self.objects,
+            |block| {
+                let header = Header(block[HEADER]);
+                block[HEADER] = header.with_marked(false).0;
+                header.marked()
+            },
+            self.collection_floor,
+        );
         let mut forwarder = Forwarder {
             #[cfg(debug_assertions)]
             heap_id: self.heap_id,
@@ -4308,11 +4323,11 @@ impl<'gc> Heap<'gc> {
         replaced
     }
 
-    /// Marks the heap's own roots -- the `Activation` class, the activation
-    /// stack's entries and its registers, and the host roots -- and answers
-    /// the marker without
-    /// draining it, so that the caller can add the step state's roots
-    /// (`World::mark_everything_reachable`) before the traversal runs.
+    /// Pushes the heap's own roots -- the `Activation` class, the activation
+    /// stack's entries and its registers, and the host roots -- onto a new
+    /// marker and answers it without draining it, so that the caller can add
+    /// the step state's roots (`World::mark_everything_reachable`) before
+    /// the traversal runs.
     ///
     /// The canonical symbol table is deliberately not among these roots: it
     /// is the system's one weak structure (`docs/design/memory.md`, "Weak
@@ -4321,7 +4336,15 @@ impl<'gc> Heap<'gc> {
     /// itself is never a root, only what the roots reach.
     pub(crate) fn begin_marking(&mut self) -> mark::Marker {
         use crate::trace::{Trace, Tracer};
-        let mut marker = mark::Marker::new(self.objects.len());
+        // A mark left set would make this marking skip that object's edges
+        // and so collect what only it reaches.
+        debug_assert!(
+            self.objects
+                .iter()
+                .all(|block| !Header(block[HEADER]).marked()),
+            "internal: a mark bit survived the last collection"
+        );
+        let mut marker = mark::Marker::new();
         if let Some(class) = &mut self.activation_class {
             marker.object(class);
         }
@@ -4351,14 +4374,13 @@ impl<'gc> Heap<'gc> {
     /// "Weak references").
     ///
     /// Must run between marking and compaction, never outside that window:
-    /// after compaction the mark bits no longer line up with the arena's
-    /// indices, and before marking has finished draining, an entry cleared
-    /// here reads bits that are not yet complete and could wrongly prune a
-    /// symbol the traversal has not reached yet.
-    pub(crate) fn prune_canonical_symbols(&mut self, marker: &mark::Marker) {
+    /// compaction clears the mark bits, and before marking has finished
+    /// draining, an entry cleared here reads bits that are not yet complete
+    /// and could wrongly prune a symbol the traversal has not reached yet.
+    pub(crate) fn prune_canonical_symbols(&mut self) {
         for slot in &mut self.canonical_symbols {
             if let Some(object) = slot {
-                if !marker.objects.is_set(object.index) {
+                if !Header(self.objects[object.index as usize][HEADER]).marked() {
                     self.symbol_of.remove(&object.index);
                     *slot = None;
                 }
@@ -4366,24 +4388,41 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// Runs the marker's work list empty. Each record is traced with the
-    /// arena borrowed apart from the marker, which is what lets the marker
-    /// be borrowed at the same time. A married frame's registers are its
-    /// entry's, already traced with the stack, so its trace skips them.
+    /// Runs the marker's work list empty: each object popped unmarked is
+    /// marked, and every unmarked object its pointer words name is pushed.
+    /// The mark bit is set when the object is visited, not when it is
+    /// pushed, so an object reached twice before its visit is popped twice
+    /// and visited once -- which is also what ends the traversal on a
+    /// cycle. A married frame's registers are its entry's, already pushed
+    /// with the stack, so `pointer_ranges` leaves them out.
     pub(crate) fn drain_marking(&mut self, marker: &mut mark::Marker) {
         while let Some(index) = marker.next() {
-            trace_block(&mut self.objects[index as usize], marker);
+            let block = &mut self.objects[index as usize];
+            let header = Header(block[HEADER]);
+            if header.marked() {
+                continue;
+            }
+            block[HEADER] = header.with_marked(true).0;
+            let block = &self.objects[index as usize];
+            for range in pointer_ranges(block) {
+                for bits in &block[range] {
+                    if let Some(target) = Word::from_bits(*bits).object_index() {
+                        if !Header(self.objects[target as usize][HEADER]).marked() {
+                            marker.push(target);
+                        }
+                    }
+                }
+            }
         }
     }
 
-    /// Marks from the heap's own roots and drains, for the heap's own tests.
-    /// A real collection goes through `World`, which owns the step state's
-    /// roots as well.
+    /// Clears every object's mark bit, for a test that marks without
+    /// compacting and then goes on to collect.
     #[cfg(test)]
-    fn mark_from_roots_for_test(&mut self) -> crate::heap::mark::Marker {
-        let mut marker = self.begin_marking();
-        self.drain_marking(&mut marker);
-        marker
+    fn clear_marks_for_test(&mut self) {
+        for block in &mut self.objects {
+            block[HEADER] = Header(block[HEADER]).with_marked(false).0;
+        }
     }
 
     /// Marks from the heap's own roots and `roots`, prunes the canonical
@@ -4398,8 +4437,8 @@ impl<'gc> Heap<'gc> {
             marker.value(root);
         }
         self.drain_marking(&mut marker);
-        self.prune_canonical_symbols(&marker);
-        let mut forwarder = self.compact(marker);
+        self.prune_canonical_symbols();
+        let mut forwarder = self.compact();
         for root in roots.iter_mut() {
             forwarder.value(root);
         }
@@ -5933,6 +5972,36 @@ mod tests {
         assert!(slots.is_empty());
     }
 
+    /// Marks from the heap's own roots, answers whether each of `objects` was
+    /// reached, and clears every mark again, so that the test can go on to
+    /// collect: a mark left set would make the next marking skip that object's
+    /// edges.
+    fn marked_by_marking<'gc>(heap: &mut Heap<'gc>, objects: &[ObjectReference<'gc>]) -> Vec<bool> {
+        let mut marker = heap.begin_marking();
+        heap.drain_marking(&mut marker);
+        let marked = objects
+            .iter()
+            .map(|object| heap.header(*object).marked())
+            .collect();
+        heap.clear_marks_for_test();
+        marked
+    }
+
+    #[test]
+    fn a_collection_leaves_no_mark_bit_set() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(Payload::instance([]));
+        let kept = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("kept")));
+        heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
+        let mut root = Value::object(kept);
+        heap.collect_for_test(&mut [&mut root]);
+        let Some(kept) = root.as_object() else {
+            panic!("the root keeps its object")
+        };
+        assert!(!heap.header(kept).marked());
+        assert!(!heap.header(heap.object_class(kept)).marked());
+    }
+
     /// Liveness is reachability from the roots, and the roots are what the
     /// heap holds, not what a Rust local happens to name. `unreachable` is a
     /// perfectly valid object that nothing can get to, which is exactly the
@@ -5947,11 +6016,9 @@ mod tests {
             heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
-        let marker = heap.mark_from_roots_for_test();
+        let marked = marked_by_marking(&mut heap, &[reachable, class, unreachable]);
 
-        assert!(marker.objects.is_set(reachable.index));
-        assert!(marker.objects.is_set(class.index));
-        assert!(!marker.objects.is_set(unreachable.index));
+        assert_eq!(marked, vec![true, true, false]);
         heap.pop_activation(activation);
     }
 
@@ -5969,9 +6036,9 @@ mod tests {
         );
         let activation = heap.push_activation(header(), &[Value::object(holder)], 1);
 
-        let marker = heap.mark_from_roots_for_test();
+        let marked = marked_by_marking(&mut heap, &[target]);
 
-        assert!(marker.objects.is_set(target.index));
+        assert_eq!(marked, vec![true]);
         heap.pop_activation(activation);
     }
 
@@ -5983,10 +6050,11 @@ mod tests {
         let mut heap = frame_heap();
         let activation = heap.push_activation(header(), &[], 1);
         let frame = heap.reify(activation);
+        let frame_object = heap.frame_object(frame);
 
-        let marker = heap.mark_from_roots_for_test();
+        let marked = marked_by_marking(&mut heap, &[frame_object]);
 
-        assert!(marker.objects.is_set(heap.frame_object(frame).index));
+        assert_eq!(marked, vec![true]);
         heap.pop_activation(activation);
     }
 
@@ -6021,9 +6089,9 @@ mod tests {
         let activation_object = heap.frame_object(frame);
         let activation = heap.push_activation(header(), &[Value::object(activation_object)], 1);
 
-        let marker = heap.mark_from_roots_for_test();
+        let marked = marked_by_marking(&mut heap, &[activation_object]);
 
-        assert!(marker.objects.is_set(heap.frame_object(frame).index));
+        assert_eq!(marked, vec![true]);
         heap.pop_activation(activation);
     }
 
@@ -6151,9 +6219,8 @@ mod tests {
     /// Two ordinary objects reference each other through their `Instance`
     /// payloads, so the traversal reaches back to the first one through the
     /// second. This is what pins that the traversal terminates on a cycle:
-    /// `MarkBits::set` answers "already set" for the first object the
-    /// second time it is reached, which is what stops it from being pushed
-    /// onto the work list again. A regression here hangs this test rather
+    /// the first object's header is already marked the second time it is
+    /// reached, which is what stops its edges from being followed again. A regression here hangs this test rather
     /// than failing it.
     #[test]
     fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
@@ -6165,10 +6232,9 @@ mod tests {
         heap.instance_set_field(first, 0, Value::object(second));
         let activation = heap.push_activation(header(), &[Value::object(first)], 1);
 
-        let marker = heap.mark_from_roots_for_test();
+        let marked = marked_by_marking(&mut heap, &[first, second]);
 
-        assert!(marker.objects.is_set(first.index));
-        assert!(marker.objects.is_set(second.index));
+        assert_eq!(marked, vec![true, true]);
         heap.pop_activation(activation);
     }
 
@@ -6257,7 +6323,7 @@ mod tests {
         let mut within: Vec<u32> = Vec::with_capacity(2 * floor);
         within.extend(0..100);
         let kept = within.capacity();
-        let _ = compact_arena(&mut within, &mark::MarkBits::new(100), floor);
+        let _ = compact_arena(&mut within, |_| false, floor);
         assert!(within.is_empty());
         assert_eq!(
             within.capacity(),
@@ -6267,7 +6333,7 @@ mod tests {
 
         let mut past: Vec<u32> = Vec::with_capacity(16 * floor);
         past.extend(0..100);
-        let _ = compact_arena(&mut past, &mark::MarkBits::new(100), floor);
+        let _ = compact_arena(&mut past, |_| false, floor);
         assert!(past.is_empty());
         assert!(
             (floor..16 * floor).contains(&past.capacity()),

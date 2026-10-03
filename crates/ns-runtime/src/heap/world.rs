@@ -142,7 +142,7 @@ impl World {
     /// Marks everything reachable: the heap's own roots, then the step state's
     /// -- the bootstrap's builtin classes, the `platform` singleton, the VM
     /// mirror, the kernel and the depth limit's reserve -- then the traversal.
-    pub(crate) fn mark_everything_reachable(&mut self) -> crate::heap::mark::Marker {
+    pub(crate) fn mark_everything_reachable(&mut self) {
         use crate::trace::Tracer;
         let mutator = &mut self.mutator;
         let mut marker = mutator.heap.begin_marking();
@@ -162,7 +162,6 @@ impl World {
             marker.frame(frame);
         }
         mutator.heap.drain_marking(&mut marker);
-        marker
     }
 
     /// One collection: mark everything reachable, compact the arena, and
@@ -185,13 +184,13 @@ impl World {
         if self.mutator.futures_made {
             crate::interpreter::future::replace_resolved_futures(&mut self.mutator);
         }
-        let marker = self.mark_everything_reachable();
-        // Between marking and compacting: after compaction the mark bits no
-        // longer line up with the arena, and before marking finishes an
+        self.mark_everything_reachable();
+        // Between marking and compacting: compaction clears the mark bits,
+        // and before marking finishes an
         // entry cleared here could resurrect nothing but would be read
         // before it is complete (`docs/design/memory.md`, "Weak references").
-        self.mutator.heap.prune_canonical_symbols(&marker);
-        let mut forwarder = self.mutator.heap.compact(marker);
+        self.mutator.heap.prune_canonical_symbols();
+        let mut forwarder = self.mutator.heap.compact();
         self.forward_step_state(&mut forwarder);
         self.mutator.heap.reset_collection_limits();
         self.mutator.heap.record_collection(start.elapsed());

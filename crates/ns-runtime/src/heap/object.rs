@@ -211,56 +211,60 @@ impl Payload {
     }
 }
 
-/// Hands every word of `block` that holds a stored `Word` to `tracer`,
-/// deciding which by the header's format alone: the class word always;
-/// every field of `FixedPointers` and `IndexablePointers`; a class object's
-/// object fields; a closure's captured frame and copied values; a frame's
-/// fixed fields, and its registers once it is no longer married; nothing of
-/// `SixtyFourBit`, `Bytes` and `ThirtyTwoBit`, whose digits and code points
-/// would read as handles.
-pub(in crate::heap) fn trace_block<T: Tracer>(block: &mut [u64], tracer: &mut T) {
+/// How many ranges `pointer_ranges` answers: the class word's, then at
+/// most one per pointer field of a class object, the format with the most.
+pub(in crate::heap) const POINTER_RANGES: usize = 1 + class_field::POINTERS.len();
+
+/// The indices of every word of `block` that holds a stored `Word`, as
+/// ranges relative to the block's start, decided by the header's format
+/// alone: the class word always; every field of `FixedPointers` and
+/// `IndexablePointers`; a class object's object fields; a closure's captured
+/// frame and copied values; a frame's fixed fields, and its registers once
+/// it is no longer married; nothing of `SixtyFourBit`, `Bytes` and
+/// `ThirtyTwoBit`, whose digits and code points would read as handles.
+///
+/// The one enumeration of an object's pointer words: marking reads the
+/// words through it and forwarding rewrites them through `trace_block`, so
+/// a field one of the two must reach cannot be missed by the other
+/// (`docs/design/memory.md`, "What the collector traces"). Unused entries
+/// are empty, and every range is clamped to the block, so a block shorter
+/// than its format expects yields empty ranges rather than a panic.
+pub(in crate::heap) fn pointer_ranges(block: &[u64]) -> [std::ops::Range<usize>; POINTER_RANGES] {
+    let mut ranges: [std::ops::Range<usize>; POINTER_RANGES] = Default::default();
     let Some(&header) = block.get(HEADER) else {
-        return;
+        return ranges;
     };
-    let Some((class, fields)) = block.get_mut(CLASS..).and_then(<[u64]>::split_first_mut) else {
-        return;
-    };
-    trace_word_bits(std::slice::from_mut(class), tracer);
+    let length = block.len();
+    let clamped = |start: usize, end: usize| start.min(length)..end.min(length);
+    ranges[0] = clamped(CLASS, CLASS + 1);
     match Header(header).format() {
-        Format::FixedPointers | Format::IndexablePointers => trace_word_bits(fields, tracer),
+        Format::FixedPointers | Format::IndexablePointers => ranges[1] = clamped(FIELDS, length),
         // A married frame's registers are its stack entry's, traced with
         // the stack; its own stay nil until the divorce copies them in, so
         // they are skipped rather than walked for nothing.
         Format::Frame => {
-            let married = fields
-                .get(frame_field::MARRIED)
+            let married = block
+                .get(FIELDS + frame_field::MARRIED)
                 .is_some_and(|bits| *bits != Word::NIL.bits());
-            let traced = if married {
-                frame_field::COUNT.min(fields.len())
+            let end = if married {
+                FIELDS + frame_field::COUNT
             } else {
-                fields.len()
+                length
             };
-            trace_word_bits(&mut fields[..traced], tracer);
+            ranges[1] = clamped(FIELDS, end);
         }
         // A closure's code id and feedback base are numbers; its captured
         // frame and its copied values are the pointers.
         Format::Closure => {
-            let fixed = closure_field::COUNT.min(fields.len());
-            let (head, copied) = fields.split_at_mut(fixed);
-            if let Some(frame) =
-                head.get_mut(closure_field::CAPTURED_FRAME..=closure_field::CAPTURED_FRAME)
-            {
-                trace_word_bits(frame, tracer);
-            }
-            trace_word_bits(copied, tracer);
+            let frame = FIELDS + closure_field::CAPTURED_FRAME;
+            ranges[1] = clamped(frame, frame + 1);
+            ranges[2] = clamped(FIELDS + closure_field::COUNT, length);
         }
         // A class object's builtin, applied clause and application are
         // numbers; the rest are objects or nil.
         Format::Class => {
-            for field in class_field::POINTERS {
-                if let Some(word) = fields.get_mut(field..=field) {
-                    trace_word_bits(word, tracer);
-                }
+            for (range, field) in ranges[1..].iter_mut().zip(class_field::POINTERS) {
+                *range = clamped(FIELDS + field, FIELDS + field + 1);
             }
         }
         // Digits and code points, no stored words; and no block in the
@@ -270,6 +274,15 @@ pub(in crate::heap) fn trace_block<T: Tracer>(block: &mut [u64], tracer: &mut T)
         | Format::ThirtyTwoBit
         | Format::Forwarded
         | Format::Free => {}
+    }
+    ranges
+}
+
+/// Hands every word of `block` that `pointer_ranges` names to `tracer` and
+/// writes back what the tracer leaves in it.
+pub(in crate::heap) fn trace_block<T: Tracer>(block: &mut [u64], tracer: &mut T) {
+    for range in pointer_ranges(block) {
+        trace_word_bits(&mut block[range], tracer);
     }
 }
 
@@ -528,4 +541,40 @@ pub(in crate::heap) mod class_field {
         THIS_CLASS,
         VALUE_CLASS_REFUSAL,
     ];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mixin::DispatchId;
+
+    #[test]
+    fn pointer_ranges_name_the_class_word_and_each_formats_pointer_fields() {
+        let block = |format: Format, fields: usize| {
+            let mut words = vec![Word::NIL.bits(); FIELDS + fields];
+            words[HEADER] = Header::new(DispatchId::NONE, format, 0, 1 + fields).0;
+            words
+        };
+        let covered =
+            |words: &[u64]| -> Vec<usize> { pointer_ranges(words).into_iter().flatten().collect() };
+        assert_eq!(covered(&block(Format::FixedPointers, 2)), vec![CLASS, 2, 3]);
+        assert_eq!(covered(&block(Format::SixtyFourBit, 2)), vec![CLASS]);
+        assert_eq!(
+            covered(&block(Format::Closure, closure_field::COUNT + 1)),
+            vec![
+                CLASS,
+                FIELDS + closure_field::CAPTURED_FRAME,
+                FIELDS + closure_field::COUNT
+            ]
+        );
+        let class = block(Format::Class, class_field::COUNT);
+        let mut expected = vec![CLASS];
+        expected.extend(class_field::POINTERS.iter().map(|field| FIELDS + field));
+        assert_eq!(covered(&class), expected);
+        // A frame's registers count only once it is no longer married.
+        let mut frame = block(Format::Frame, frame_field::COUNT + 2);
+        assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT + 2);
+        frame[FIELDS + frame_field::MARRIED] = 0b1001; // a SmallInteger
+        assert_eq!(covered(&frame).len(), 1 + frame_field::COUNT);
+    }
 }

@@ -3,8 +3,10 @@
 //! format, 27-30 the age, 31 the remembered bit, 32 a `LargeInteger`'s
 //! negative bit, 33 the mark bit, 34-55 the identity hash and 56-63 the
 //! number of words after the header (255: the count is in an overflow word).
-//! The age, the remembered bit and the mark bit belong to the collectors of
-//! later road steps; nothing writes them yet, so they stay 0.
+//! The collector sets the mark bit while a collection runs and clears it as
+//! it compacts, so that outside a collection no object is marked. The age
+//! and the remembered bit belong to the generational collector of road
+//! step 4; nothing writes them yet, so they stay 0.
 
 use crate::mixin::DispatchId;
 
@@ -15,6 +17,7 @@ const GUARD_MASK: u64 = (1 << 22) - 1;
 const FORMAT_SHIFT: u32 = 22;
 const FORMAT_MASK: u64 = 0b1_1111;
 const NEGATIVE_BIT: u64 = 1 << 32;
+const MARK_BIT: u64 = 1 << 33;
 const HASH_SHIFT: u32 = 34;
 const HASH_MASK: u64 = (IDENTITY_HASH_LIMIT as u64) - 1;
 const WORD_COUNT_SHIFT: u32 = 56;
@@ -141,6 +144,20 @@ impl Header {
         }
     }
 
+    /// Whether the running collection has reached this object; clear
+    /// outside a collection.
+    pub(super) fn marked(self) -> bool {
+        self.0 & MARK_BIT != 0
+    }
+
+    pub(super) fn with_marked(self, marked: bool) -> Header {
+        if marked {
+            Header(self.0 | MARK_BIT)
+        } else {
+            Header(self.0 & !MARK_BIT)
+        }
+    }
+
     /// The words after the header, the class word included; 255 means the
     /// count is in an overflow word.
     pub(super) fn word_count(self) -> usize {
@@ -156,6 +173,7 @@ impl std::fmt::Debug for Header {
             .field("format", &self.format())
             .field("unused", &self.unused())
             .field("negative", &self.negative())
+            .field("marked", &self.marked())
             .field("identity_hash", &self.identity_hash())
             .field("word_count", &self.word_count())
             .finish()
@@ -183,7 +201,16 @@ mod tests {
             0,
             "age and the remembered bit stay 0"
         );
-        assert_eq!(header.0 >> 33 & 1, 0, "the mark bit stays 0");
+    }
+
+    #[test]
+    fn the_mark_bit_is_bit_thirty_three_and_disturbs_no_other_field() {
+        let header = Header::new(DispatchId::NONE, Format::Closure, 0, 7).with_identity_hash(5);
+        assert!(!header.marked(), "a new header is unmarked");
+        let marked = header.with_marked(true);
+        assert!(marked.marked());
+        assert_eq!(marked.0, header.0 | 1 << 33);
+        assert_eq!(marked.with_marked(false), header);
     }
 
     #[test]
