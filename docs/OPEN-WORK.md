@@ -772,8 +772,6 @@ Small, deliberately left, none affecting an outcome.
   building levels. Removing it is a design point, not a clean-up: the
   metaclass takes part in class-object equality (`class_state_pairs`) and in
   what the image encoder walks.
-- `tests/image.rs:9463`: `a_level_applying_the_mirrors_or_tops_mixin_is_refused`
-  has a stale name.
 - `image::encode_code_table` and `image::mixins::plan` take a `ClassReference`
   and a `&Heap` only to reach a mixin, and `disasm` builds a class object for
   the same reason. [compiler.md](design/compiler.md), "Follow-up: entry points
@@ -787,9 +785,7 @@ Small, deliberately left, none affecting an outcome.
   message says a row is reached "or not at all", where a surplus row now
   starts another tree; `inspect` prints a `<module N>` past the modules
   without marking it; `bench` prints a generic "instantiation failed" after
-  the real report; `image.rs`'s
-  `an_unknown_header_flag_is_still_rejected_now_that_three_are_known` names
-  three flags where two are known; `crates/ns-cli/tests/common/mod.rs`'s
+  the real report; `crates/ns-cli/tests/common/mod.rs`'s
   message for a stray golden directory carries a run of spaces from a lost
   line continuation.
 

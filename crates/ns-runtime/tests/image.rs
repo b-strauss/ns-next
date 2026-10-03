@@ -8753,7 +8753,7 @@ fn regenerate_the_golden_fixture() {
 }
 
 #[test]
-fn an_unknown_header_flag_is_still_rejected_now_that_three_are_known() {
+fn a_header_flag_this_build_does_not_assign_is_rejected() {
     // Bit 3 is not assigned. A flag this build does not implement means a
     // section it cannot see, so continuing would read the next field out of
     // whatever that section occupies.
@@ -10190,7 +10190,7 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
 /// level applying the mirror's mixin would hand its instances every
 /// primitive.
 #[test]
-fn a_level_applying_the_mirrors_or_tops_mixin_is_refused() {
+fn a_level_applying_a_builtin_no_program_may_name_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let applied = row_named(&fixture, "Applied");
     for kind in [

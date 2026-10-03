@@ -1007,7 +1007,7 @@ through `read_referenced_builtin_class`, which refuses 14** as an invalid tag
 builtin, calls it first): an artifact that could name the mirror's class could
 instantiate a second mirror or reach the one there is, and so claim every
 primitive, which no source module can
-(`a_level_applying_the_mirrors_or_tops_mixin_is_refused` and
+(`a_level_applying_a_builtin_no_program_may_name_is_refused` and
 `a_root_level_naming_a_clause_out_of_place_is_refused`, whose last case is a
 root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder
 refuses the other direction: an image whose graph reaches the mirror object is
