@@ -4064,7 +4064,7 @@ twenty-four sources are faster, by 1.2% to 5.4%, seven of them with
 separated ranges (CD -4.8%, `bench_megamorphic.ns` -5.4%, `bench_loop.ns`
 -1.9%); List, Permute and `bench_send.ns` move by +0.1% to +0.3%, inside
 their ranges. `vm::run` was 8,525 instructions with a stack frame of 0x3A8
-bytes at `0155374`, against 7,000 and 0x358; its size now is in
+bytes at `9996d38`, against 7,000 and 0x358; its size now is in
 [execution.md](design/execution.md), "What the compact instruction
 encoding moved".
 
