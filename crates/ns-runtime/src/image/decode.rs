@@ -2515,9 +2515,6 @@ fn decode_optional_class<'gc>(
 /// - The root list, read after every record into `Value`s (`reserve_for`
 ///   caps its reservation at the bytes left): 8 bytes a one-byte root in a
 ///   release build, 8x, and 16 in a debug one, **16x**.
-/// - A class or metaclass record's fields, laid out beside the placeholder
-///   before they are copied into it (`Heap::fill_placeholder_class`): 80
-///   bytes, one record at a time, a constant.
 ///
 /// So the peak is about **12.0x** in a release build (a graph of
 /// metaclass records) and **16x** in a debug one (a graph that is all root
@@ -3931,7 +3928,12 @@ pub fn decode_graph_section<'gc>(
         };
         let heap = &mut context.mutator.heap;
         if let Some(record) = record {
-            heap.fill_placeholder_class(*object, class, identity_hash, record);
+            // A placeholder the first pass sized for some other record is
+            // refused, as a string's of the wrong size is: the space cannot
+            // resize it.
+            if !heap.fill_placeholder_class(*object, class, identity_hash, record) {
+                return Err(DecodeError::UnexpectedEndOfFile);
+            }
         }
         if let Some(applied) = applied_clause {
             if !heap.class_set_applied_clause(*object, applied) {

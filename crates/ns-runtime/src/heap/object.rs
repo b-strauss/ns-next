@@ -7,10 +7,29 @@
 //! rather than its callers (`docs/design/memory.md`, "The seam"). Callers
 //! build objects through `Heap`'s typed allocations and the value types of
 //! `records.rs`, and read them through its accessors.
+//!
+//! A block's fields are read by its header's format (`docs/design/memory.md`):
+//! `FixedPointers`, an instance's fields; `IndexablePointers`, an `Array`'s
+//! elements -- both as the bits of a stored `Word`, so only `Heap::store`
+//! writes one and only `Heap::load` reads one; `SixtyFourBit`, a
+//! `LargeInteger`'s magnitude, least significant digit first, its sign the
+//! header's negative bit, or a boxed `Float`'s one word of `f64::to_bits` --
+//! the class's builtin tells those two apart, as Spur's does; `Bytes` and
+//! `ThirtyTwoBit`, a String's or a Symbol's code points packed
+//! little-endian, eight or two to a word (`pack_code_points`,
+//! `PackedString`), the class's builtin again telling the two apart;
+//! `Frame`, a reified activation (`frame_field`); `Closure`, a block closure
+//! (`closure_field`); `Class`, a class object (`class_field`). Each
+//! allocation in `Heap` writes its object's header, class word and fields
+//! straight into the space.
+//!
+//! A `LargeInteger` never holds a value a `SmallInteger` does, and a boxed
+//! `Float` never one inside the immediate range: `Mutator::new_integer` and
+//! `Mutator::new_float` are the one way to make either and decide it, so
+//! each number has one representation.
 
 use crate::heap::header::{Format, Header};
 use crate::heap::Word;
-use crate::mixin::DispatchId;
 use crate::trace::Tracer;
 
 /// Where a block keeps its header word (`header.rs` gives the layout).
@@ -33,183 +52,6 @@ pub(in crate::heap) const HEADER: usize = 0;
 pub(in crate::heap) const CLASS: usize = 1;
 /// Where a block's fields start: field `index` is word `FIELDS + index`.
 pub(in crate::heap) const FIELDS: usize = 2;
-
-/// What an object is about to hold, before it has a class: its format, the
-/// units its last word leaves unused, a `LargeInteger`'s sign and its field
-/// words, read by format (`docs/design/memory.md`): `FixedPointers`, an
-/// instance's fields; `IndexablePointers`, an `Array`'s elements -- both as
-/// the bits of a stored `Word`, so only `Heap::store` writes one and only
-/// `Heap::load` reads one; `SixtyFourBit`, a `LargeInteger`'s magnitude,
-/// least significant digit first, its sign the header's negative bit, or a
-/// boxed `Float`'s one word of `f64::to_bits` -- the class's builtin tells
-/// those two apart, as Spur's does; `Bytes` and `ThirtyTwoBit`, a String's
-/// or a Symbol's code points packed little-endian, eight or two to a word
-/// (`PackedString`), the class's builtin again telling the two apart;
-/// `Frame`, a reified activation (`Payload::frame`); `Closure`, a block
-/// closure (`Payload::closure`); `Class`, a class object
-/// (`Payload::class`).
-///
-/// Build one through `Payload::instance`, `array`, `large_integer`, `float`,
-/// `string`, `frame`, `closure` or `class`, the one place each kind's layout
-/// is decided, and turn it into a block with `into_block`, the one
-/// place a header is derived. The words already leave room for the header
-/// and the class word, so that `Heap::place_block` copies the block into
-/// the space whole.
-///
-/// A `LargeInteger` never holds a value a `SmallInteger` does, and a boxed
-/// `Float` never one inside the immediate range: `Mutator::new_integer` and
-/// `Mutator::new_float` are the one way to make either and decide it, so
-/// each number has one representation.
-pub(in crate::heap) struct Payload {
-    format: Format,
-    /// The units the last word leaves unused: 0 unless `format` is `Bytes`
-    /// or `ThirtyTwoBit`.
-    unused: u8,
-    negative: bool,
-    /// The block to be: `FIELDS` words left for the header and the class
-    /// word, then the fields.
-    block: Vec<u64>,
-}
-
-impl Payload {
-    /// An instance's payload: `fields`, each a stored word.
-    pub(in crate::heap) fn instance(fields: impl IntoIterator<Item = Word>) -> Self {
-        Self::pointers(Format::FixedPointers, fields)
-    }
-
-    /// An `Array`'s payload: `elements`, each a stored word.
-    pub(in crate::heap) fn array(elements: impl IntoIterator<Item = Word>) -> Self {
-        Self::pointers(Format::IndexablePointers, elements)
-    }
-
-    /// A reified activation's payload: `fields`, the fixed fields
-    /// `frame_field` names, then `register_count` registers, every one nil.
-    pub(in crate::heap) fn frame(
-        fields: [Word; frame_field::COUNT],
-        register_count: usize,
-    ) -> Self {
-        Self::pointers(
-            Format::Frame,
-            fields
-                .into_iter()
-                .chain(std::iter::repeat_n(Word::NIL, register_count)),
-        )
-    }
-
-    /// A block closure's payload: `fields`, the fixed fields `closure_field`
-    /// names, then `copied`, each a stored word.
-    pub(in crate::heap) fn closure(
-        fields: [Word; closure_field::COUNT],
-        copied: impl IntoIterator<Item = Word>,
-    ) -> Self {
-        Self::pointers(Format::Closure, fields.into_iter().chain(copied))
-    }
-
-    /// A class object's payload: the fields `class_field` names.
-    pub(in crate::heap) fn class(fields: [Word; class_field::COUNT]) -> Self {
-        Self::pointers(Format::Class, fields)
-    }
-
-    fn pointers(format: Format, words: impl IntoIterator<Item = Word>) -> Self {
-        Self::of_words(format, false, words.into_iter().map(Word::bits))
-    }
-
-    fn of_words(format: Format, negative: bool, words: impl IntoIterator<Item = u64>) -> Self {
-        let words = words.into_iter();
-        let mut block = Vec::with_capacity(FIELDS + words.size_hint().0);
-        block.resize(FIELDS, 0);
-        block.extend(words);
-        Payload {
-            format,
-            unused: 0,
-            negative,
-            block,
-        }
-    }
-
-    /// A `LargeInteger`'s payload: its magnitude's digits and its sign.
-    pub(in crate::heap) fn large_integer(integer: &crate::ArbitraryInteger) -> Self {
-        Self::of_words(
-            Format::SixtyFourBit,
-            integer.is_negative(),
-            integer.magnitude().iter().copied(),
-        )
-    }
-
-    /// A boxed `Float`'s payload: one word of its bits.
-    pub(in crate::heap) fn float(value: f64) -> Self {
-        Self::of_words(Format::SixtyFourBit, false, [value.to_bits()])
-    }
-
-    /// A String's or a Symbol's payload: `text`'s code points, one byte
-    /// each while every one fits Latin-1 and 32 bits each otherwise, as
-    /// `CodePoints` keeps them, so that `size` and `at:` stay one access.
-    /// Unit `index` is byte `index % 8` of word `index / 8`, or half
-    /// `index % 2` of word `index / 2`, least significant first; the last
-    /// word's unused units are zero, so that equal texts have equal words.
-    pub(in crate::heap) fn string(text: &crate::CodePoints) -> Self {
-        let mut payload = match text.as_wide() {
-            None => Self::of_words(
-                Format::Bytes,
-                false,
-                text.as_bytes()
-                    .unwrap_or_default()
-                    .chunks(BYTES_PER_WORD)
-                    .map(|chunk| {
-                        let mut bytes = [0u8; BYTES_PER_WORD];
-                        bytes[..chunk.len()].copy_from_slice(chunk);
-                        u64::from_le_bytes(bytes)
-                    }),
-            ),
-            Some(units) => Self::of_words(
-                Format::ThirtyTwoBit,
-                false,
-                units.chunks(THIRTY_TWO_BIT_UNITS_PER_WORD).map(|chunk| {
-                    chunk
-                        .iter()
-                        .rev()
-                        .fold(0, |word, unit| (word << 32) | u64::from(*unit))
-                }),
-            ),
-        };
-        let per_word = units_per_word(payload.format).unwrap_or(1);
-        let words = payload.block.len() - FIELDS;
-        // Below `per_word`, which is at most 8.
-        payload.unused = u8::try_from(words * per_word - text.size()).unwrap_or(0);
-        payload
-    }
-
-    /// The field words, for a constructor that fills some in once the
-    /// layout is decided.
-    pub(in crate::heap) fn fields_mut(&mut self) -> &mut [u64] {
-        &mut self.block[FIELDS..]
-    }
-
-    /// The block of an object of the class `class` names, holding this
-    /// payload, guarding on `guard`, with `identity_hash` (0: none yet): its
-    /// header -- its format, its size as road step 3's layout stores it, the
-    /// class word plus the fields, and a `LargeInteger`'s sign -- its class
-    /// word, then its fields. The one place a header is derived.
-    pub(in crate::heap) fn into_block(
-        self,
-        class: Word,
-        guard: DispatchId,
-        identity_hash: u32,
-    ) -> Box<[u64]> {
-        let Payload {
-            format,
-            unused,
-            negative,
-            mut block,
-        } = self;
-        let header = Header::new(guard, format, unused, block.len() - CLASS)
-            .with_negative(negative)
-            .with_identity_hash(identity_hash);
-        block[HEADER] = header.0;
-        block[CLASS] = class.bits();
-        block.into_boxed_slice()
-    }
-}
 
 /// How many ranges `pointer_ranges` answers: the class word's, then at
 /// most one per pointer field of a class object, the format with the most.
@@ -286,9 +128,9 @@ pub(in crate::heap) fn trace_block<T: Tracer>(block: &mut [u64], tracer: &mut T)
     }
 }
 
-/// How many field words `Payload::string` gives `text`, read without
-/// converting it: one byte a unit while every code point fits Latin-1,
-/// 32 bits a unit otherwise.
+/// How many field words `string_shape` gives the `CodePoints` of `text`,
+/// read without converting it: one byte a unit while every code point fits
+/// Latin-1, 32 bits a unit otherwise.
 pub(in crate::heap) fn string_field_count(text: &str) -> usize {
     let units = text.chars().count();
     let wide = text.chars().any(|character| u32::from(character) > 0xFF);
@@ -299,7 +141,7 @@ pub(in crate::heap) fn string_field_count(text: &str) -> usize {
     })
 }
 
-/// Packs `text` into `words` as `Payload::string` lays out the
+/// Packs `text` into `words` as `pack_code_points` lays out the
 /// `CodePoints` of `text`, without converting it: unit `index` is byte
 /// `index % 8` of word `index / 8`, or half `index % 2` of word `index / 2`,
 /// the last word's unused units zero. Answers the format and the unused
@@ -328,6 +170,52 @@ pub(in crate::heap) fn pack_string(text: &str, words: &mut [u64]) -> Option<(For
     Some((format, unused))
 }
 
+/// A String's or a Symbol's shape for `text`: its format, one byte a unit
+/// while every code point fits Latin-1 and 32 bits a unit otherwise, as
+/// `CodePoints` keeps them, so that `size` and `at:` stay one access; the
+/// units its last word leaves unused; and its field count.
+pub(in crate::heap) fn string_shape(text: &crate::CodePoints) -> (Format, u8, usize) {
+    let (format, per_word) = match text.as_wide() {
+        None => (Format::Bytes, BYTES_PER_WORD),
+        Some(_) => (Format::ThirtyTwoBit, THIRTY_TWO_BIT_UNITS_PER_WORD),
+    };
+    let size = text.size();
+    let field_count = size.div_ceil(per_word);
+    // Below `per_word`, which is at most 8.
+    let unused = u8::try_from(field_count * per_word - size).unwrap_or(0);
+    (format, unused, field_count)
+}
+
+/// Packs the code points of `text` into `words`, the field count
+/// `string_shape` gives: unit `index` is byte `index % 8` of word
+/// `index / 8`, or half `index % 2` of word `index / 2`, least significant
+/// first; the last word's unused units are zero, so that equal texts have
+/// equal words. Writes every word.
+pub(in crate::heap) fn pack_code_points(text: &crate::CodePoints, words: &mut [u64]) {
+    debug_assert_eq!(words.len(), string_shape(text).2);
+    match text.as_wide() {
+        None => {
+            let bytes = text.as_bytes().unwrap_or_default();
+            for (word, chunk) in words.iter_mut().zip(bytes.chunks(BYTES_PER_WORD)) {
+                let mut packed = [0u8; BYTES_PER_WORD];
+                packed[..chunk.len()].copy_from_slice(chunk);
+                *word = u64::from_le_bytes(packed);
+            }
+        }
+        Some(units) => {
+            for (word, chunk) in words
+                .iter_mut()
+                .zip(units.chunks(THIRTY_TWO_BIT_UNITS_PER_WORD))
+            {
+                *word = chunk
+                    .iter()
+                    .rev()
+                    .fold(0, |packed, unit| (packed << 32) | u64::from(*unit));
+            }
+        }
+    }
+}
+
 /// How many units one word of a string of `format` holds; `None` for a
 /// format no string has.
 fn units_per_word(format: Format) -> Option<usize> {
@@ -339,7 +227,7 @@ fn units_per_word(format: Format) -> Option<usize> {
 }
 
 /// A String's or a Symbol's packed units, read in place: the one reader of
-/// the layout `Payload::string` decides.
+/// the layout `pack_code_points` writes.
 #[derive(Clone, Copy)]
 pub(in crate::heap) struct PackedString<'a> {
     format: Format,

@@ -24,6 +24,7 @@ use crate::mixin::{DispatchId, DispatchIds, Mixin, MixinApplication, MixinMethod
 use crate::types::*;
 use crate::Symbol;
 use std::num::NonZeroU64;
+use std::ops::Range;
 use std::rc::Rc;
 
 mod compaction;
@@ -41,8 +42,8 @@ use compaction::Shift;
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, WORD_COUNT_OVERFLOW};
 use object::{
-    class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, Payload,
-    CLASS, FIELDS, HEADER,
+    class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, CLASS,
+    FIELDS, HEADER,
 };
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
 use space::{allocation_words, block_range, object_at, overflow_word, Space, FIRST_OBJECT};
@@ -424,8 +425,8 @@ struct ActivationStack<'gc> {
 }
 
 /// The initial value of `Heap::collection_floor`, and of `next_collection`
-/// before anything has collected, in bytes of objects allocated: 4,096 of
-/// the arena's slots at a 128-byte average; `bench_loop.ns` and
+/// before anything has collected, in bytes of objects allocated: about
+/// 4,096 objects at a 128-byte average; `bench_loop.ns` and
 /// `bench_send.ns` should never collect (`docs/design/memory.md`, "The
 /// trigger and the growth policy").
 const COLLECTION_FLOOR: usize = 512 << 10;
@@ -493,9 +494,9 @@ pub struct Heap<'gc> {
     /// holds it set for its own reasons, for as long as the mode is on.
     /// Otherwise the safepoint that takes a request clears it.
     safepoint_requested: bool,
-    /// The bytes of objects past `FIRST_OBJECT` at which the next
-    /// allocation asks for a collection. Checked against the top the
-    /// allocation already has in hand, so the hot path pays one
+    /// The bytes the objects take, from the space's start to its top, at
+    /// which the next allocation asks for a collection. Checked against the
+    /// top the allocation already has in hand, so the hot path pays one
     /// predictable branch and carries no counter.
     next_collection: usize,
     /// Whether a limit has been reached since the last collection. Separate
@@ -706,7 +707,7 @@ pub struct CollectorStatistics {
 }
 
 /// A frame object's fixed fields as values and handles, before
-/// `Heap::frame_payload` stores them (`object.rs`'s `frame_field` gives
+/// `Heap::frame_fixed_words` stores them (`object.rs`'s `frame_field` gives
 /// the layout). Its married field is not here: only `reify` sets it.
 struct FrameFields<'gc> {
     sender: Option<FrameReference<'gc>>,
@@ -738,6 +739,14 @@ fn out_of_memory(bytes: usize) -> ! {
 /// them from panicking.
 fn count_word(count: usize) -> Word {
     count_value(count).word()
+}
+
+/// Writes `words` into `slots`, in order, as their bits: a new object's
+/// fields, each word already stored (`Heap::store`).
+fn write_words(slots: &mut [u64], words: impl IntoIterator<Item = Word>) {
+    for (slot, word) in slots.iter_mut().zip(words) {
+        *slot = word.bits();
+    }
 }
 
 /// `count_word`'s value, for a field written through `set_pointer_word`.
@@ -843,22 +852,28 @@ impl<'gc> Heap<'gc> {
     //
     // Every construction of an `ObjectReference` in the workspace -- src or
     // tests -- goes through the typed allocations below, each of which
-    // builds the payload it names here, so that replacing what backs a
-    // handle only ever touches the heap module.
+    // writes the object it names straight into the space, so that replacing
+    // what backs a handle only ever touches the heap module.
 
-    /// Allocates `data` under `class`, through `place_block`, so the
-    /// collection limit applies. It carries no identity hash until
-    /// something asks for one (`object_ensure_identity_hash`), so allocating
-    /// draws nothing from the counter. Private to the heap: callers name the
-    /// kind of object they build (`allocate_instance` and its siblings).
+    /// Allocates an object of `class` through `allocate_block`, so the
+    /// collection limit applies: `format`, `unused` units left in its last
+    /// word, `negative` for a `LargeInteger`'s sign, and `field_count` nil
+    /// fields, whose word indices it answers for the caller to fill. It
+    /// carries no identity hash until something asks for one
+    /// (`object_ensure_identity_hash`), so allocating draws nothing from the
+    /// counter. Private to the heap: callers name the kind of object they
+    /// build (`allocate_instance` and its siblings).
     fn allocate_object(
         &mut self,
         class: ClassReference<'gc>,
-        data: Payload,
-    ) -> ObjectReference<'gc> {
-        let dispatch_id = self.header_dispatch_id(class);
+        format: Format,
+        unused: u8,
+        negative: bool,
+        field_count: usize,
+    ) -> (ObjectReference<'gc>, Range<usize>) {
+        let guard = self.header_dispatch_id(class);
         let class_word = self.store(Value::object(class));
-        self.place_block(data.into_block(class_word, dispatch_id, 0))
+        self.allocate_block(class_word, guard, format, unused, negative, field_count)
     }
 
     /// An instance of `class` with `field_count` fields, every one nil.
@@ -867,10 +882,8 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         field_count: usize,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(
-            class,
-            Payload::instance(std::iter::repeat_n(Word::NIL, field_count)),
-        )
+        self.allocate_object(class, Format::FixedPointers, 0, false, field_count)
+            .0
     }
 
     /// An `Array`-shaped object of `class` holding `elements`, in order.
@@ -879,8 +892,19 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         elements: &[Value<'gc>],
     ) -> ObjectReference<'gc> {
-        let data = Payload::array(elements.iter().map(|element| self.store(*element)));
-        self.allocate_object(class, data)
+        // `store`'s check, made apart from the copy so that a release
+        // build, which has no check, copies the words in one loop.
+        #[cfg(debug_assertions)]
+        for element in elements {
+            self.store(*element);
+        }
+        let (object, fields) =
+            self.allocate_object(class, Format::IndexablePointers, 0, false, elements.len());
+        write_words(
+            &mut self.space.words_mut()[fields],
+            elements.iter().map(|element| element.word()),
+        );
+        object
     }
 
     /// A String of `class` holding `text`.
@@ -889,7 +913,10 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         text: crate::CodePoints,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(class, Payload::string(&text))
+        let (format, unused, field_count) = object::string_shape(&text);
+        let (object, fields) = self.allocate_object(class, format, unused, false, field_count);
+        object::pack_code_points(&text, &mut self.space.words_mut()[fields]);
+        object
     }
 
     /// A Symbol object of `class` for `symbol`. `Mutator::new_symbol` is the
@@ -899,10 +926,7 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         symbol: Symbol,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(
-            class,
-            Payload::string(&crate::CodePoints::from(symbol.as_str())),
-        )
+        self.allocate_string(class, crate::CodePoints::from(symbol.as_str()))
     }
 
     /// A `LargeInteger` object of `class` holding `integer`.
@@ -914,7 +938,16 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         integer: crate::ArbitraryInteger,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(class, Payload::large_integer(&integer))
+        let digits = integer.magnitude();
+        let (object, fields) = self.allocate_object(
+            class,
+            Format::SixtyFourBit,
+            0,
+            integer.is_negative(),
+            digits.len(),
+        );
+        self.space.words_mut()[fields].copy_from_slice(digits);
+        object
     }
 
     /// A boxed `Float` of `class` holding `value`. `Mutator::new_float` is
@@ -925,7 +958,9 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         value: f64,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(class, Payload::float(value))
+        let (object, fields) = self.allocate_object(class, Format::SixtyFourBit, 0, false, 1);
+        self.space.words_mut()[fields].fill(value.to_bits());
+        object
     }
 
     /// A block closure of `class` (`NewClosure` says what it holds).
@@ -934,15 +969,38 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         closure: NewClosure<'gc>,
     ) -> ObjectReference<'gc> {
-        let data = self.closure_payload(closure);
-        self.allocate_object(class, data)
+        let NewClosure {
+            code,
+            captured_frame,
+            copied,
+            feedback_base,
+        } = closure;
+        let fixed = self.closure_fixed_words(&code, captured_frame, feedback_base);
+        #[cfg(debug_assertions)]
+        for value in &copied {
+            self.store(*value);
+        }
+        let (object, fields) = self.allocate_object(
+            class,
+            Format::Closure,
+            0,
+            false,
+            closure_field::COUNT + copied.len(),
+        );
+        write_words(
+            &mut self.space.words_mut()[fields],
+            fixed
+                .into_iter()
+                .chain(copied.iter().map(|value| value.word())),
+        );
+        object
     }
 
     /// A block closure of `class` running `code`, whose copied values are
     /// the registers `copied` names in the window at `register_base`: what
-    /// `MakeClosure` builds. Each value goes from its register into the
-    /// block as it is built, with no list of them in between, which would
-    /// be one more allocation and free per closure made.
+    /// `MakeClosure` builds. Each value goes from its register straight into
+    /// the closure's word, with no list of them in between, which would be
+    /// one more allocation and free per closure made.
     pub(crate) fn allocate_closure_from_registers(
         &mut self,
         class: ClassReference<'gc>,
@@ -952,27 +1010,29 @@ impl<'gc> Heap<'gc> {
         register_base: RegisterBase,
         copied: &[u16],
     ) -> ObjectReference<'gc> {
-        let fields = self.closure_fixed_words(code, captured_frame, feedback_base);
-        let data = Payload::closure(
-            fields,
-            copied
-                .iter()
-                .map(|register| self.store(self.register(register_base, *register))),
+        let fixed = self.closure_fixed_words(code, captured_frame, feedback_base);
+        // `register`'s window check and `store`'s origin check, made apart
+        // from the copy, which reads the registers' words directly.
+        #[cfg(debug_assertions)]
+        for register in copied {
+            self.store(self.register(register_base, *register));
+        }
+        let (object, fields) = self.allocate_object(
+            class,
+            Format::Closure,
+            0,
+            false,
+            closure_field::COUNT + copied.len(),
         );
-        self.allocate_object(class, data)
-    }
-
-    /// A closure's payload from its record, each copied value stored as a
-    /// word.
-    fn closure_payload(&mut self, closure: NewClosure<'gc>) -> Payload {
-        let NewClosure {
-            code,
-            captured_frame,
-            copied,
-            feedback_base,
-        } = closure;
-        let fields = self.closure_fixed_words(&code, captured_frame, feedback_base);
-        Payload::closure(fields, copied.into_iter().map(|value| self.store(value)))
+        let Heap { space, stack, .. } = self;
+        let (fixed_slots, copied_slots) =
+            space.words_mut()[fields].split_at_mut(closure_field::COUNT);
+        write_words(fixed_slots, fixed);
+        let base = register_base.index as usize;
+        for (slot, register) in copied_slots.iter_mut().zip(copied) {
+            *slot = stack.values[base + usize::from(*register)].bits();
+        }
+        object
     }
 
     /// A closure's fixed fields, `closure_field`'s, stored: the one place
@@ -1000,15 +1060,20 @@ impl<'gc> Heap<'gc> {
         metaclass: ClassReference<'gc>,
         class: NewClass<'gc>,
     ) -> ClassReference<'gc> {
-        let data = self.class_payload(class);
-        self.allocate_object(metaclass, data)
+        let fixed = self.class_fixed_words(class);
+        let (object, fields) =
+            self.allocate_object(metaclass, Format::Class, 0, false, class_field::COUNT);
+        write_words(&mut self.space.words_mut()[fields], fixed);
+        object
     }
 
-    /// A class object's payload from its record. Every field set after
-    /// creation starts nil: `this_class`, the applied clause and the
-    /// value-class verdict each have their setter. The application is
-    /// named by its index, so it must be the table's own entry.
-    fn class_payload(&self, class: NewClass<'gc>) -> Payload {
+    /// A class object's fields from its record, stored: the one place they
+    /// are laid out, for a new class object and for a placeholder filled in
+    /// place (`fill_placeholder_class`). Every field set after creation
+    /// starts nil: `this_class`, the applied clause and the value-class
+    /// verdict each have their setter. The application is named by its
+    /// index, so it must be the table's own entry.
+    fn class_fixed_words(&self, class: NewClass<'gc>) -> [Word; class_field::COUNT] {
         let NewClass {
             application,
             enclosing,
@@ -1036,7 +1101,7 @@ impl<'gc> Heap<'gc> {
             fields[class_field::BUILTIN] = count_word(builtin as usize);
         }
         fields[class_field::APPLICATION] = count_word(application.index().index());
-        Payload::class(fields)
+        fields
     }
 
     /// A class object that is genuinely its own `.class`. Under `Rc` this
@@ -1044,7 +1109,7 @@ impl<'gc> Heap<'gc> {
     /// `Rc::from_raw`, because an object's class is non-optional and
     /// `Rc::new_cyclic` only ever offers a `Weak` that fails to upgrade until
     /// construction finishes. A heap of offsets has no such problem: the
-    /// object is placed first and its class word then overwritten with its
+    /// object is allocated first and its class word then written with its
     /// own offset, in safe Rust.
     ///
     /// Like every object, it carries no identity hash until one is asked
@@ -1052,32 +1117,40 @@ impl<'gc> Heap<'gc> {
     pub fn allocate_self_referential_class(&mut self, class: NewClass<'gc>) -> ClassReference<'gc> {
         // It is an instance of itself, so its id is its own instances id.
         let dispatch_id = class.application.dispatch_ids.instances;
-        let data = self.class_payload(class);
-        self.allocate_self_referential_guarded(dispatch_id, data)
+        let fixed = self.class_fixed_words(class);
+        let (object, fields) =
+            self.allocate_self_referential_guarded(dispatch_id, Format::Class, class_field::COUNT);
+        write_words(&mut self.space.words_mut()[fields], fixed);
+        object
     }
 
-    /// An object whose class is itself, holding `data` that is no class
-    /// object: the shape a crafted image can give a class reference, which
-    /// the heap's own tests build. It guards on `NONE`: being its own
-    /// class, it has no class that could supply an instances id.
+    /// An object whose class is itself, with `field_count` nil fields and no
+    /// class object's format: the shape a crafted image can give a class
+    /// reference, which the heap's own tests build. It guards on `NONE`:
+    /// being its own class, it has no class that could supply an instances
+    /// id.
     #[cfg(test)]
-    fn allocate_self_referential(&mut self, data: Payload) -> ObjectReference<'gc> {
-        self.allocate_self_referential_guarded(DispatchId::NONE, data)
+    fn allocate_self_referential(&mut self, field_count: usize) -> ObjectReference<'gc> {
+        self.allocate_self_referential_guarded(DispatchId::NONE, Format::FixedPointers, field_count)
+            .0
     }
 
-    /// An object whose class is itself, holding `data` and guarding on
-    /// `dispatch_id`: its own class is not yet in the space to read, so the
-    /// caller supplies it. Placed with a nil class word, which names the
-    /// object itself before anything can read it.
+    /// An object whose class is itself, of `format` with `field_count` nil
+    /// fields, guarding on `dispatch_id`: its own class is not yet in the
+    /// space to read, so the caller supplies it. Its class word is written
+    /// with the object's own offset before anything reads it. Answers the
+    /// object and its fields' word indices, as `allocate_block` does.
     fn allocate_self_referential_guarded(
         &mut self,
         dispatch_id: DispatchId,
-        data: Payload,
-    ) -> ObjectReference<'gc> {
-        let handle = self.place_block(data.into_block(Word::NIL, dispatch_id, 0));
+        format: Format,
+        field_count: usize,
+    ) -> (ObjectReference<'gc>, Range<usize>) {
+        let (handle, fields) =
+            self.allocate_block(Word::NIL, dispatch_id, format, 0, false, field_count);
         let class_word = self.store(Value::object(handle));
         self.block_mut(handle)[CLASS] = class_word.bits();
-        handle
+        (handle, fields)
     }
 
     /// An object for `image::decode::decode_graph_section` to fill later
@@ -1090,17 +1163,17 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         field_count: usize,
     ) -> ObjectReference<'gc> {
-        self.allocate_object(
-            class,
-            Payload::instance(std::iter::repeat_n(Word::NIL, field_count)),
-        )
+        self.allocate_object(class, Format::FixedPointers, 0, false, field_count)
+            .0
     }
 
     /// Fills a placeholder in place as a class object of `class` (its
     /// metaclass, or `Metaclass` for a metaclass record) with
-    /// `identity_hash`, holding what `record` says. A class object is a
-    /// fixed handful of fields, laid out by `class_payload` and copied into
-    /// the placeholder the first pass sized for them.
+    /// `identity_hash`, holding what `record` says; `false`, and nothing
+    /// changed, when the placeholder does not have a class object's fields.
+    /// A valid first pass never sizes a class record otherwise, and an
+    /// object never changes its size in the space, so the caller refuses
+    /// the image rather than keep a wrong object.
     /// `image::decode::decode_graph_section`'s second pass is the only
     /// caller, and it only ever calls this, and the other `fill_placeholder_*`
     /// fills below, on a handle its first pass placeholder-allocated and
@@ -1120,30 +1193,21 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         identity_hash: u32,
         record: NewClass<'gc>,
-    ) {
+    ) -> bool {
         self.check_object_origin(object);
-        let mut data = self.class_payload(record);
+        let fields = self.class_fixed_words(record);
         let placeholder = self.fields_mut(object);
-        debug_assert_eq!(
-            placeholder.len(),
-            data.fields_mut().len(),
-            "the first pass sizes every class and metaclass record at the class object's size"
-        );
-        if placeholder.len() == data.fields_mut().len() {
-            placeholder.copy_from_slice(data.fields_mut());
-            self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
-        } else {
-            // Cannot happen: a valid sizing pass never sizes a class record
-            // otherwise. The placeholder is left as it is -- an object never
-            // changes its size in the space -- so that a size the first
-            // pass got wrong is a wrong object, never a panic on untrusted
-            // input.
+        if placeholder.len() != class_field::COUNT {
+            return false;
         }
+        write_words(placeholder, fields);
+        self.rewrite_placeholder_header(object, class, identity_hash, Format::Class, 0);
+        true
     }
 
     /// Begins filling a placeholder in place, as an instance or an `Array`
     /// of `class` (`format`) with `identity_hash`: its header becomes the one
-    /// `Payload::into_block` writes for an object of that format and size,
+    /// `allocate_block` writes for an object of that format and size,
     /// guarding on `NONE` until `stamp_dispatch_ids` runs, and its class word
     /// names `class`. Its fields stay nil until `fill_placeholder_field`
     /// writes them. The image decoder's second pass fills a record this way
@@ -1188,7 +1252,7 @@ impl<'gc> Heap<'gc> {
 
     /// Fills a placeholder in place as a String or a Symbol of `class` with
     /// `identity_hash` holding `text`, packed into its words exactly as
-    /// `Payload::string` packs the `CodePoints` of `text`: one byte a unit
+    /// `allocate_string` packs the `CodePoints` of `text`: one byte a unit
     /// while every code point fits Latin-1, 32 bits otherwise. `false`, and
     /// nothing written, when the placeholder is not the size the first pass
     /// read for that text (`record_size::string_fields`).
@@ -1209,7 +1273,7 @@ impl<'gc> Heap<'gc> {
 
     /// Begins filling a placeholder in place as a closure of `class` with
     /// `identity_hash`, running `code` and capturing `captured_frame`: its
-    /// header, class word and the fixed fields `Payload::closure` writes,
+    /// header, class word and the fixed fields `allocate_closure` writes,
     /// with a feedback base not yet assigned, as every decoded closure's is.
     /// Its copied values follow through `fill_placeholder_field`, from
     /// `record_size::CLOSURE_FIXED_FIELDS` on.
@@ -1233,7 +1297,7 @@ impl<'gc> Heap<'gc> {
     }
 
     /// A placeholder's header and class word, rewritten as
-    /// `Payload::into_block` writes them for an object of `format` with
+    /// `allocate_block` writes them for an object of `format` with
     /// `unused` units left in its last word, at the placeholder's own size.
     fn rewrite_placeholder_header(
         &mut self,
@@ -1255,12 +1319,25 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Where every allocation enters an object into the space: bumps the
-    /// top by the block's words, and by an overflow word first when the
-    /// header cannot hold its count, and copies the block in. A 64-bit
-    /// handle has no ceiling the space could reach, so none is checked; a
-    /// reservation used up is running out of memory.
-    fn place_block(&mut self, block: Box<[u64]>) -> ObjectReference<'gc> {
-        let word_count = block.len() - 1;
+    /// top by the object's words, and by an overflow word first when the
+    /// header cannot hold its count, and writes the header -- `format`,
+    /// `unused` units left in the last word, `negative`, guarding on
+    /// `guard`, no identity hash yet -- the class word `class`, and
+    /// `field_count` fields, every one nil. Answers the object and its
+    /// fields' word indices in `self.space.words()`, for the caller to write
+    /// what it holds; nothing moves before it has. A 64-bit handle has no
+    /// ceiling the space could reach, so none is checked; a reservation used
+    /// up is running out of memory.
+    fn allocate_block(
+        &mut self,
+        class: Word,
+        guard: DispatchId,
+        format: Format,
+        unused: u8,
+        negative: bool,
+        field_count: usize,
+    ) -> (ObjectReference<'gc>, Range<usize>) {
+        let word_count = field_count.saturating_add(1);
         let allocation = allocation_words(word_count);
         let Some(start) = self.space.allocate(allocation) else {
             out_of_memory(allocation.saturating_mul(8))
@@ -1271,13 +1348,18 @@ impl<'gc> Heap<'gc> {
             words[header] = overflow_word(word_count);
             header += 1;
         }
-        words[header..header + block.len()].copy_from_slice(&block);
+        words[header + HEADER] = Header::new(guard, format, unused, word_count)
+            .with_negative(negative)
+            .0;
+        words[header + CLASS] = class.bits();
+        let fields = header + FIELDS..header + FIELDS + field_count;
+        words[fields.clone()].fill(Word::NIL.bits());
         self.object_count += 1;
-        if self.space.top() - FIRST_OBJECT >= self.next_collection {
+        if self.space.top() - self.space.start() >= self.next_collection {
             self.request_collection();
         }
         match NonZeroU64::new(8 * header as u64) {
-            Some(offset) => self.object_handle(offset),
+            Some(offset) => (self.object_handle(offset), fields),
             None => unreachable!("internal: an object lies past the first object"),
         }
     }
@@ -1360,33 +1442,31 @@ impl<'gc> Heap<'gc> {
         let class = self
             .activation_class
             .expect("internal: the bootstrap records the Activation class before anything reifies");
-        let data = self.frame_payload(fields, registers, register_count);
-        let object = self.allocate_object(class, data);
+        debug_assert!(registers.len() <= register_count);
+        let fixed = self.frame_fixed_words(fields);
+        #[cfg(debug_assertions)]
+        for register in registers {
+            self.store(*register);
+        }
+        let (object, words) = self.allocate_object(
+            class,
+            Format::Frame,
+            0,
+            false,
+            frame_field::COUNT + register_count,
+        );
+        // The registers past `registers` are the nils `allocate_block` wrote.
+        write_words(
+            &mut self.space.words_mut()[words],
+            fixed
+                .into_iter()
+                .chain(registers.iter().map(|register| register.word())),
+        );
         self.frame_handle(object.offset)
     }
 
-    /// A frame object's payload: `fields` stored, `registers` stored after
-    /// them, then nils up to `register_count` registers in all.
-    fn frame_payload(
-        &self,
-        fields: FrameFields<'gc>,
-        registers: &[Value<'gc>],
-        register_count: usize,
-    ) -> Payload {
-        let words = self.frame_fixed_words(fields);
-        debug_assert!(registers.len() <= register_count);
-        let mut data = Payload::frame(words, register_count);
-        for (slot, register) in data.fields_mut()[frame_field::COUNT..]
-            .iter_mut()
-            .zip(registers)
-        {
-            *slot = self.store(*register).bits();
-        }
-        data
-    }
-
     /// A frame object's fixed fields, `frame_field`'s, stored: the one place
-    /// they are laid out, for a new frame (`frame_payload`) and for a
+    /// they are laid out, for a new frame (`allocate_frame`) and for a
     /// placeholder filled in place (`fill_frame_fields`).
     fn frame_fixed_words(&self, fields: FrameFields<'gc>) -> [Word; frame_field::COUNT] {
         let FrameFields {
@@ -1701,8 +1781,9 @@ impl<'gc> Heap<'gc> {
         &mut self.block_mut(object)[FIELDS..]
     }
 
-    /// The class `block`'s class word names. Only `Payload::into_block`
-    /// writes one, from a class handle, so it always names an object.
+    /// The class `block`'s class word names. Only `allocate_block` and
+    /// `rewrite_placeholder_header` write one, from a class handle or the
+    /// object's own, so it always names an object.
     #[inline]
     fn block_class(&self, block: &[u64]) -> ClassReference<'gc> {
         match self.load(Word::from_bits(block[CLASS])).as_object() {
@@ -3951,13 +4032,13 @@ impl<'gc> Heap<'gc> {
     ///
     /// Must do nothing but set these two booleans: its call site raises the
     /// request while the object just allocated is still half-wired --
-    /// `place_block` before `object_handle` names it, and for a frame object
+    /// `allocate_block` before `object_handle` names it, and for a frame object
     /// `reify` before the writes that make it reachable from its stack
     /// entry -- so it is harmless only because nothing here reads the heap
     /// back. Real work here would have `reify` collect a frame no stack
     /// entry points at yet.
     ///
-    /// `place_block` is its only caller, so every allocation path compares
+    /// `allocate_block` is its only caller, so every allocation path compares
     /// against the limit.
     fn request_collection(&mut self) {
         self.collection_requested = true;
@@ -4494,20 +4575,13 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn reading_a_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
-        let class = origin.allocate_self_referential(Payload::instance([]));
-        let object =
-            origin.allocate_object(class, Payload::string(&crate::CodePoints::from("mine")));
+        let class = origin.allocate_self_referential(0);
+        let object = origin.allocate_string(class, crate::CodePoints::from("mine"));
 
         let mut other = Heap::new();
-        let other_class = other.allocate_self_referential(Payload::instance([]));
-        other.allocate_object(
-            other_class,
-            Payload::string(&crate::CodePoints::from("theirs")),
-        );
-        other.allocate_object(
-            other_class,
-            Payload::string(&crate::CodePoints::from("theirs")),
-        );
+        let other_class = other.allocate_self_referential(0);
+        other.allocate_string(other_class, crate::CodePoints::from("theirs"));
+        other.allocate_string(other_class, crate::CodePoints::from("theirs"));
 
         // In range for `other` -- which is exactly why this is silent
         // without the guard.
@@ -4525,15 +4599,12 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn comparing_two_handles_from_different_heaps_panics() {
         let mut origin = Heap::new();
-        let class = origin.allocate_self_referential(Payload::instance([]));
-        let mine = origin.allocate_object(class, Payload::string(&crate::CodePoints::from("mine")));
+        let class = origin.allocate_self_referential(0);
+        let mine = origin.allocate_string(class, crate::CodePoints::from("mine"));
 
         let mut other = Heap::new();
-        let other_class = other.allocate_self_referential(Payload::instance([]));
-        let theirs = other.allocate_object(
-            other_class,
-            Payload::string(&crate::CodePoints::from("theirs")),
-        );
+        let other_class = other.allocate_self_referential(0);
+        let theirs = other.allocate_string(other_class, crate::CodePoints::from("theirs"));
 
         // Both are the second object their own heap allocated, so both
         // carry the same index: without the guard this answers `true`.
@@ -4573,9 +4644,9 @@ mod tests {
     #[test]
     fn identity_keys_separate_objects_that_share_an_identity_hash() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let first = heap.allocate_object(class, Payload::instance([]));
-        let second = heap.allocate_object(class, Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
+        let first = heap.allocate_instance(class, 0);
+        let second = heap.allocate_instance(class, 0);
 
         assert_eq!(heap.object_identity_hash(first), 0);
         assert_eq!(
@@ -4599,7 +4670,7 @@ mod tests {
     #[test]
     fn an_object_word_is_a_byte_offset_past_the_first_sixteen_bytes() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let object = heap.allocate_instance(class, 1);
         for handle in [class, object] {
             let word = heap.store(Value::object(handle)).bits();
@@ -4620,15 +4691,12 @@ mod tests {
     #[should_panic(expected = "handle belongs to a different heap")]
     fn keying_a_handle_through_a_foreign_heap_panics() {
         let mut origin = Heap::new();
-        let class = origin.allocate_self_referential(Payload::instance([]));
-        let mine = origin.allocate_object(class, Payload::string(&crate::CodePoints::from("mine")));
+        let class = origin.allocate_self_referential(0);
+        let mine = origin.allocate_string(class, crate::CodePoints::from("mine"));
 
         let mut other = Heap::new();
-        let other_class = other.allocate_self_referential(Payload::instance([]));
-        let theirs = other.allocate_object(
-            other_class,
-            Payload::string(&crate::CodePoints::from("theirs")),
-        );
+        let other_class = other.allocate_self_referential(0);
+        let theirs = other.allocate_string(other_class, crate::CodePoints::from("theirs"));
 
         // Both are the second object their own heap allocated, so both
         // carry the same index: without the guard these two keys are equal.
@@ -4676,26 +4744,21 @@ mod tests {
     #[test]
     fn an_object_header_records_its_format_and_size() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let narrow = heap.allocate_object(
-            class,
-            Payload::string(&crate::CodePoints::from("abcdefghi")),
-        );
+        let class = heap.allocate_self_referential(0);
+        let narrow = heap.allocate_string(class, crate::CodePoints::from("abcdefghi"));
         let header = heap.header(narrow);
         assert_eq!(header.format(), Format::Bytes);
         assert_eq!(header.word_count(), 1 + 2, "nine bytes take two words");
-        let wide = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("€uro")));
+        let wide = heap.allocate_string(class, crate::CodePoints::from("€uro"));
         let header = heap.header(wide);
         assert_eq!(header.format(), Format::ThirtyTwoBit);
         assert_eq!(header.word_count(), 1 + 2);
-        let array = heap.allocate_object(class, Payload::array([Word::NIL; 3]));
+        let array = heap.allocate_array(class, &[Value::nil(); 3]);
         let header = heap.header(array);
         assert_eq!(header.format(), Format::IndexablePointers);
         assert_eq!(header.word_count(), 1 + 3);
-        let negative = heap.allocate_object(
-            class,
-            Payload::large_integer(&crate::ArbitraryInteger::from_i128(-(1 << 100))),
-        );
+        let negative =
+            heap.allocate_large_integer(class, crate::ArbitraryInteger::from_i128(-(1 << 100)));
         let header = heap.header(negative);
         assert_eq!(header.format(), Format::SixtyFourBit);
         assert!(header.negative());
@@ -4708,8 +4771,8 @@ mod tests {
         // A filler object first, so `class` does not land at the first
         // offset -- an implementation that always answered the first
         // object's handle would otherwise still pass this test.
-        heap.allocate_self_referential(Payload::instance([]));
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        heap.allocate_self_referential(0);
+        let class = heap.allocate_self_referential(0);
         assert!(heap.object_class(class).same(class));
     }
 
@@ -4804,16 +4867,16 @@ mod tests {
         let mut heap = Heap::new();
         // A filler object first, so neither `class` nor `first` lands at
         // the first offset -- see `a_self_referential_class_is_its_own_class`.
-        heap.allocate_self_referential(Payload::instance([]));
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let first = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("first")));
+        heap.allocate_self_referential(0);
+        let class = heap.allocate_self_referential(0);
+        let first = heap.allocate_string(class, crate::CodePoints::from("first"));
         for _ in 0..1000 {
-            heap.allocate_object(class, Payload::string(&crate::CodePoints::from("filler")));
+            heap.allocate_string(class, crate::CodePoints::from("filler"));
         }
         assert_eq!(heap.str_value(first).as_deref(), Some("first"));
         assert!(heap.object_class(first).same(class));
 
-        let twin = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("first")));
+        let twin = heap.allocate_string(class, crate::CodePoints::from("first"));
         assert!(!first.same(twin));
     }
 
@@ -5055,8 +5118,8 @@ mod tests {
     fn a_digit_shaped_like_an_object_word_is_never_forwarded() {
         let mut heap = Heap::new();
         let class = named_class(&mut heap, "LargeInteger");
-        heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
-        let filler = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("live")));
+        heap.allocate_string(class, crate::CodePoints::from("dead"));
+        let filler = heap.allocate_string(class, crate::CodePoints::from("live"));
         let shaped = Word::with_object_offset(filler.offset).bits();
         assert_eq!(shaped & 0b111, 0, "the digit reads as an object word");
         let integer = crate::ArbitraryInteger::from_sign_and_digits(false, &[shaped, shaped]);
@@ -5106,15 +5169,14 @@ mod tests {
         assert!(!heap.instance_set_field(object, 2, Value::nil()));
     }
 
-    /// `describe`'s instance arm is the one non-mechanical
-    /// rewrite the arena conversion made: a nested read through a re-bound
+    /// `describe`'s instance arm reads the mixin's name through a re-bound
     /// `class` intermediate rather than a single chained borrow. Nothing
     /// else in the workspace asserts its output, so pin it directly.
     #[test]
     fn describe_names_an_instance_by_its_class_mixin_name() {
         let mut heap = Heap::new();
         let class = named_class(&mut heap, "Foo");
-        let instance = heap.allocate_object(class, Payload::instance([]));
+        let instance = heap.allocate_instance(class, 0);
         assert_eq!(heap.describe(Value::object(instance)), "an instance of Foo");
     }
 
@@ -5126,11 +5188,8 @@ mod tests {
     fn describe_falls_back_to_an_object_for_a_class_reference_that_is_not_a_class() {
         let mut heap = Heap::new();
         let class = named_class(&mut heap, "Foo");
-        let not_a_class = heap.allocate_object(
-            class,
-            Payload::string(&crate::CodePoints::from("not a class")),
-        );
-        let instance = heap.allocate_object(not_a_class, Payload::instance([]));
+        let not_a_class = heap.allocate_string(class, crate::CodePoints::from("not a class"));
+        let instance = heap.allocate_instance(not_a_class, 0);
         assert_eq!(heap.describe(Value::object(instance)), "an object");
     }
 
@@ -5301,10 +5360,10 @@ mod tests {
 
     /// The image decoder fills each record's placeholder in place, so that a
     /// record costs its placeholder and nothing beside it; the block it
-    /// leaves must be exactly the one the normal construction builds --
+    /// leaves must be exactly the one the normal allocation writes --
     /// header (format, size, unused units, guard, identity hash) and words.
     #[test]
-    fn an_instance_or_array_filled_in_place_is_the_block_a_payload_builds() {
+    fn an_instance_or_array_filled_in_place_is_the_block_its_allocation_writes() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Thing");
         let values = [Value::small_integer(7), Value::nil(), Value::object(class)];
@@ -5318,14 +5377,18 @@ mod tests {
                 !heap.fill_placeholder_field(placeholder, values.len(), Value::nil()),
                 "a field past the placeholder is refused"
             );
-            let words: Vec<Word> = values.iter().map(|value| heap.store(*value)).collect();
-            let payload = match format {
-                PlaceholderFormat::Instance => Payload::instance(words),
-                PlaceholderFormat::Array => Payload::array(words),
+            let built = match format {
+                PlaceholderFormat::Instance => {
+                    let instance = heap.allocate_instance(class, values.len());
+                    for (index, value) in values.iter().enumerate() {
+                        assert!(heap.instance_set_field(instance, index, *value));
+                    }
+                    instance
+                }
+                PlaceholderFormat::Array => heap.allocate_array(class, &values),
             };
-            let expected =
-                payload.into_block(heap.store(Value::object(class)), DispatchId::NONE, 42);
-            assert_eq!(heap.block(placeholder), &expected[..]);
+            heap.object_set_identity_hash(built, 42);
+            assert_eq!(heap.block(placeholder), heap.block(built));
         }
     }
 
@@ -5334,7 +5397,7 @@ mod tests {
     /// with the same unused units -- narrow, Latin-1 and wide, at and either
     /// side of a word's boundary.
     #[test]
-    fn a_string_filled_in_place_is_the_block_a_payload_builds() {
+    fn a_string_filled_in_place_is_the_block_its_allocation_writes() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "String");
         for text in [
@@ -5349,12 +5412,9 @@ mod tests {
         ] {
             let placeholder = heap.allocate_placeholder(class, record_size::string_fields(text));
             assert!(heap.fill_placeholder_string(placeholder, class, 9, text));
-            let expected = Payload::string(&crate::CodePoints::from(text)).into_block(
-                heap.store(Value::object(class)),
-                DispatchId::NONE,
-                9,
-            );
-            assert_eq!(heap.block(placeholder), &expected[..], "{text:?}");
+            let built = heap.allocate_string(class, crate::CodePoints::from(text));
+            heap.object_set_identity_hash(built, 9);
+            assert_eq!(heap.block(placeholder), heap.block(built), "{text:?}");
             let wrong_size = heap.allocate_placeholder(class, record_size::string_fields(text) + 1);
             assert!(!heap.fill_placeholder_string(wrong_size, class, 9, text));
         }
@@ -5362,7 +5422,7 @@ mod tests {
 
     /// A closure filled in place: its fixed fields and its copied values.
     #[test]
-    fn a_closure_filled_in_place_is_the_block_a_payload_builds() {
+    fn a_closure_filled_in_place_is_the_block_its_allocation_writes() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Block");
         let frame = heap.allocate_placeholder_frame(0);
@@ -5379,21 +5439,50 @@ mod tests {
                 value
             ));
         }
-        let payload = heap.closure_payload(NewClosure {
-            code,
-            captured_frame: frame,
-            copied: vec![Value::small_integer(1), Value::object(class)],
-            feedback_base: FeedbackBase::NOT_ASSIGNED,
-        });
-        let expected = payload.into_block(heap.store(Value::object(class)), DispatchId::NONE, 5);
-        assert_eq!(heap.block(placeholder), &expected[..]);
+        let built = heap.allocate_closure(
+            class,
+            NewClosure {
+                code,
+                captured_frame: frame,
+                copied: vec![Value::small_integer(1), Value::object(class)],
+                feedback_base: FeedbackBase::NOT_ASSIGNED,
+            },
+        );
+        heap.object_set_identity_hash(built, 5);
+        assert_eq!(heap.block(placeholder), heap.block(built));
+    }
+
+    /// A class placeholder the first pass sized wrongly is refused and left as
+    /// it was: the space cannot resize an object in place, and a valid first
+    /// pass never sizes a class record otherwise.
+    #[test]
+    fn a_class_placeholder_of_the_wrong_size_is_refused_and_left_alone() {
+        let mut heap = Heap::new();
+        let class = named_class(&mut heap, "Point");
+        let placeholder = heap.allocate_placeholder(class, 3);
+        let application = heap.class_application(class).expect("a class");
+        let filled = heap.fill_placeholder_class(
+            placeholder,
+            class,
+            0,
+            NewClass {
+                application,
+                enclosing: None,
+                declaring_class: None,
+                superclass: None,
+                builtin: None,
+            },
+        );
+        assert!(!filled);
+        assert!(!heap.is_class(placeholder));
+        assert_eq!(heap.instance_field_count(placeholder), Some(3));
     }
 
     /// A frame filled in place -- its fixed fields, then register by
     /// register -- is the frame `allocate_frame` builds from the same fields
     /// and registers.
     #[test]
-    fn a_frame_filled_in_place_is_the_frame_allocate_frame_builds() {
+    fn a_frame_filled_in_place_is_the_block_its_allocation_writes() {
         let mut heap = frame_heap();
         let class = named_class(&mut heap, "Thing");
         let sender = heap.allocate_placeholder_frame(0);
@@ -5442,7 +5531,7 @@ mod tests {
     #[test]
     fn a_closure_keeps_its_code_frame_feedback_base_and_copied_values_in_its_words() {
         let mut heap = frame_heap();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let frame = heap.allocate_placeholder_frame(0);
         let code = trivial_code();
         let object = heap.allocate_closure(
@@ -5474,7 +5563,7 @@ mod tests {
     #[test]
     fn a_closures_copied_values_land_after_the_activations_arguments() {
         let mut heap = frame_heap();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let captured_frame = top_level_frame(&mut heap, 0);
         let closure = heap.allocate_closure(
             class,
@@ -5648,9 +5737,9 @@ mod tests {
     #[test]
     fn an_identity_hash_is_assigned_on_first_request_not_at_allocation() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let first = heap.allocate_object(class, Payload::instance([]));
-        let second = heap.allocate_object(class, Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
+        let first = heap.allocate_instance(class, 0);
+        let second = heap.allocate_instance(class, 0);
         assert_eq!(
             heap.object_identity_hash(first),
             0,
@@ -5723,7 +5812,7 @@ mod tests {
                 },
             )
         }
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let block_header = |closure| ActivationHeader {
             receiver: Value::nil(),
             current_class: None,
@@ -5784,10 +5873,9 @@ mod tests {
     #[cfg(debug_assertions)]
     fn a_move_gives_every_object_a_new_offset_and_rewrites_what_names_it() {
         let mut heap = frame_heap();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let string = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("a")));
-        let array =
-            heap.allocate_object(class, Payload::array([heap.store(Value::object(string))]));
+        let class = heap.allocate_self_referential(0);
+        let string = heap.allocate_string(class, crate::CodePoints::from("a"));
+        let array = heap.allocate_array(class, &[Value::object(string)]);
         let frame = heap.allocate_returned_top_level_frame(
             Value::object(string),
             &[Value::object(array)],
@@ -5878,8 +5966,8 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn reading_an_object_handle_minted_before_a_move_panics() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let string = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("a")));
+        let class = heap.allocate_self_referential(0);
+        let string = heap.allocate_string(class, crate::CodePoints::from("a"));
         move_bare_heap(&mut heap);
         let _ = heap.str_value(string);
     }
@@ -5902,7 +5990,7 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn comparing_a_stale_handle_with_a_fresh_one_panics() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let root = heap.stash(Value::object(class));
         move_bare_heap(&mut heap);
         let Some(fresh) = heap.fetch(&root).as_object() else {
@@ -5919,9 +6007,9 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn a_stale_handle_is_caught_where_it_is_stored() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let stale = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("stale")));
-        let array = heap.allocate_object(class, Payload::array([Word::NIL]));
+        let class = heap.allocate_self_referential(0);
+        let stale = heap.allocate_string(class, crate::CodePoints::from("stale"));
+        let array = heap.allocate_array(class, &[Value::nil()]);
         let root = heap.stash(Value::object(array));
         move_bare_heap(&mut heap);
         let Some(array) = heap.fetch(&root).as_object() else {
@@ -5989,12 +6077,8 @@ mod tests {
     fn an_instance_of_a_non_class_answers_no_dispatch_id() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let not_a_class = mutator
-                .heap
-                .allocate_self_referential(Payload::instance([]));
-            let instance = mutator
-                .heap
-                .allocate_object(not_a_class, Payload::instance([]));
+            let not_a_class = mutator.heap.allocate_self_referential(0);
+            let instance = mutator.heap.allocate_instance(not_a_class, 0);
             assert_eq!(
                 mutator.heap.dispatch_id(Value::object(instance)),
                 crate::mixin::DispatchId::NONE
@@ -6032,9 +6116,9 @@ mod tests {
     #[test]
     fn a_collection_leaves_no_mark_bit_set() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let kept = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("kept")));
-        heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
+        let class = heap.allocate_self_referential(0);
+        let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        heap.allocate_string(class, crate::CodePoints::from("dead"));
         let mut root = Value::object(kept);
         heap.collect_for_test(&mut [&mut root]);
         let Some(kept) = root.as_object() else {
@@ -6051,11 +6135,9 @@ mod tests {
     #[test]
     fn marking_reaches_what_a_root_reaches_and_nothing_else() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let reachable =
-            heap.allocate_object(class, Payload::string(&crate::CodePoints::from("live")));
-        let unreachable =
-            heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
+        let class = heap.allocate_self_referential(0);
+        let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
+        let unreachable = heap.allocate_string(class, crate::CodePoints::from("dead"));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
         let marked = marked_by_marking(&mut heap, &[reachable, class, unreachable]);
@@ -6069,13 +6151,10 @@ mod tests {
     #[test]
     fn marking_follows_an_edge_out_of_a_reachable_object() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let target =
-            heap.allocate_object(class, Payload::string(&crate::CodePoints::from("target")));
-        let holder = heap.allocate_object(
-            class,
-            Payload::instance([heap.store(Value::object(target))]),
-        );
+        let class = heap.allocate_self_referential(0);
+        let target = heap.allocate_string(class, crate::CodePoints::from("target"));
+        let holder = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(holder, 0, Value::object(target)));
         let activation = heap.push_activation(header(), &[Value::object(holder)], 1);
 
         let marked = marked_by_marking(&mut heap, &[target]);
@@ -6107,10 +6186,10 @@ mod tests {
     #[test]
     fn an_activation_object_answers_its_frame() {
         let mut heap = frame_heap();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let frame = top_level_frame(&mut heap, 0);
         let activation_object = heap.frame_object(frame);
-        let other = heap.allocate_object(class, Payload::string(&crate::CodePoints::from("other")));
+        let other = heap.allocate_string(class, crate::CodePoints::from("other"));
 
         assert!(heap
             .object_frame(activation_object)
@@ -6267,10 +6346,10 @@ mod tests {
     #[test]
     fn marking_terminates_on_a_cycle_between_two_ordinary_objects() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let first = heap.allocate_object(class, Payload::instance([Word::NIL]));
-        let second =
-            heap.allocate_object(class, Payload::instance([heap.store(Value::object(first))]));
+        let class = heap.allocate_self_referential(0);
+        let first = heap.allocate_instance(class, 1);
+        let second = heap.allocate_instance(class, 1);
+        assert!(heap.instance_set_field(second, 0, Value::object(first)));
         heap.instance_set_field(first, 0, Value::object(second));
         let activation = heap.push_activation(header(), &[Value::object(first)], 1);
 
@@ -6285,14 +6364,10 @@ mod tests {
     #[test]
     fn collecting_reclaims_what_no_root_reaches() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        let reachable =
-            heap.allocate_object(class, Payload::string(&crate::CodePoints::from("live")));
-        heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
-        heap.allocate_object(
-            class,
-            Payload::string(&crate::CodePoints::from("also dead")),
-        );
+        let class = heap.allocate_self_referential(0);
+        let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
+        heap.allocate_string(class, crate::CodePoints::from("dead"));
+        heap.allocate_string(class, crate::CodePoints::from("also dead"));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
         let before = heap.heap_statistics().live_objects;
 
@@ -6310,10 +6385,9 @@ mod tests {
     #[test]
     fn a_survivor_is_still_itself_after_compaction() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
-        heap.allocate_object(class, Payload::string(&crate::CodePoints::from("dead")));
-        let reachable =
-            heap.allocate_object(class, Payload::string(&crate::CodePoints::from("live")));
+        let class = heap.allocate_self_referential(0);
+        heap.allocate_string(class, crate::CodePoints::from("dead"));
+        let reachable = heap.allocate_string(class, crate::CodePoints::from("live"));
         let activation = heap.push_activation(header(), &[Value::object(reachable)], 1);
 
         heap.collect_for_test(&mut []);
@@ -6328,7 +6402,7 @@ mod tests {
     #[test]
     fn objects_lie_end_to_end_from_the_first_offset() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let first = heap.allocate_instance(class, 2);
         let second = heap.allocate_instance(class, 0);
         let key = |object| heap.object_identity_key(object);
@@ -6341,7 +6415,7 @@ mod tests {
     #[test]
     fn an_object_past_two_hundred_and_fifty_four_words_survives_a_collection_and_a_move() {
         let mut heap = frame_heap();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         heap.allocate_instance(class, 3); // dies, so the large ones slide
         let elements: Vec<Value> = (0..300).map(Value::small_integer).collect();
         let array = heap.allocate_array(class, &elements);
@@ -6390,7 +6464,17 @@ mod tests {
     #[test]
     fn a_frame_of_two_hundred_and_fifty_registers_takes_an_overflow_word() {
         let mut heap = frame_heap();
+        let before = heap.heap_statistics().occupied_bytes;
         let frame = top_level_frame(&mut heap, 250);
+        assert_eq!(
+            heap.heap_statistics().occupied_bytes - before,
+            8 * allocation_words(1 + frame_field::COUNT + 250),
+            "the overflow word is there"
+        );
+        assert_eq!(
+            allocation_words(1 + frame_field::COUNT + 250),
+            2 + frame_field::COUNT + 251
+        );
         heap.frame_set_local(frame, 249, Value::small_integer(7));
         assert_eq!(heap.frame_local(frame, 249).as_small_integer(), Some(7));
     }
@@ -6398,7 +6482,7 @@ mod tests {
     #[test]
     fn an_allocation_larger_than_the_first_commit_reads_back_its_last_element() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let elements = vec![Value::small_integer(1); 100_000];
         let array = heap.allocate_array(class, &elements);
         assert_eq!(
@@ -6414,7 +6498,7 @@ mod tests {
     #[test]
     fn a_collection_slides_the_survivors_together_from_the_first_offset() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         heap.allocate_instance(class, 5);
         let kept = heap.allocate_instance(class, 2);
         heap.allocate_array(class, &vec![Value::nil(); 400]);
@@ -6438,7 +6522,7 @@ mod tests {
     #[should_panic(expected = "stale handle")]
     fn reading_an_object_handle_kept_across_a_collection_panics() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         heap.allocate_instance(class, 1);
         let kept = heap.allocate_instance(class, 3);
         let mut root = Value::object(kept);
@@ -6454,7 +6538,7 @@ mod tests {
     #[cfg(debug_assertions)]
     fn a_move_shifts_every_object_and_the_next_one_shifts_it_back() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         let object = heap.allocate_instance(class, 1);
         let roots = [
             heap.stash(Value::object(class)),
@@ -6484,18 +6568,18 @@ mod tests {
         heap.collection_floor = 64;
         heap.reset_collection_limits();
         assert_eq!(heap.next_collection, 64);
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         heap.allocate_instance(class, 10);
         heap.reset_collection_limits();
         assert_eq!(heap.next_collection, 2 * 8 * (2 + 12));
     }
 
     /// Compaction gives committed memory back only past twice its next limit,
-    /// and then no lower than the limit -- the arena's hysteresis, in bytes.
+    /// and then no lower than the limit -- the space's hysteresis, in bytes.
     #[test]
     fn compaction_gives_memory_back_only_past_twice_the_limit() {
         let mut heap = Heap::new();
-        let class = heap.allocate_self_referential(Payload::instance([]));
+        let class = heap.allocate_self_referential(0);
         heap.allocate_array(class, &vec![Value::nil(); 1 << 20]);
         let grown = heap.heap_statistics().committed_bytes;
         let mut root = Value::object(class);
