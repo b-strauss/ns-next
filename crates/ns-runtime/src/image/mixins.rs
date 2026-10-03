@@ -29,8 +29,8 @@ use ns_syntax::Span;
 use crate::bytecode::CompiledCode;
 use crate::heap::Heap;
 use crate::mixin::{
-    mixin_key, slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod,
-    MixinSlot, SuperclassClause,
+    mixin_key, slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot,
 };
 use crate::types::ClassReference;
 use crate::Symbol;
@@ -275,10 +275,9 @@ pub fn encode<'gc>(
         }
         writer.write_boolean(mixin.has_initializer_expressions);
         match &mixin.superclass {
-            Some(clause) => {
+            Some(message) => {
                 writer.write_boolean(true);
-                writer.write_u32(symbols.intern(clause.selector.as_str()));
-                writer.write_boolean(clause.has_arguments);
+                write_clause_message(writer, *message, symbols);
             }
             None => writer.write_boolean(false),
         }
@@ -293,8 +292,7 @@ pub fn encode<'gc>(
             mixin.mixin_applications.len(),
         ));
         for clause in &mixin.mixin_applications {
-            writer.write_u32(symbols.intern(clause.selector.as_str()));
-            writer.write_boolean(clause.has_arguments);
+            write_clause_message(writer, clause.message, symbols);
             write_optional_id(
                 writer,
                 clause
@@ -346,6 +344,17 @@ pub fn encode<'gc>(
         .enumerate()
         .map(|(index, row)| (mixin_key(&row.mixin), u32_field("mixin table id", index)))
         .collect())
+}
+
+/// A superclass clause's or a `<:` clause's message: its selector, then
+/// whether it carries arguments.
+fn write_clause_message(
+    writer: &mut Writer,
+    message: ClauseMessage,
+    symbols: &mut symbols::Builder,
+) {
+    writer.write_u32(symbols.intern(message.selector.as_str()));
+    writer.write_boolean(message.has_arguments);
 }
 
 fn write_optional_id(writer: &mut Writer, id: Option<u32>) {
@@ -416,7 +425,7 @@ struct RawRow {
     slots: Vec<RawSlot>,
     factory: Option<Factory>,
     has_initializer_expressions: bool,
-    superclass: Option<SuperclassClause>,
+    superclass: Option<ClauseMessage>,
     mixin_applications: Vec<RawClause>,
     methods: Vec<(Symbol, AccessModifier, usize, u32)>,
     nested: Vec<u32>,
@@ -429,9 +438,8 @@ struct RawRow {
 /// A `<:` clause as read: its selector, whether its message takes arguments,
 /// and the code id of their body.
 struct RawClause {
-    selector: Symbol,
-    has_arguments: bool,
-    message: Option<u32>,
+    message: ClauseMessage,
+    message_code: Option<u32>,
 }
 
 /// A slot as read: its name, kind and accessibility.
@@ -512,10 +520,7 @@ fn read_row(
     };
     let has_initializer_expressions = reader.read_boolean()?;
     let superclass = if reader.read_boolean()? {
-        Some(SuperclassClause {
-            selector: read_symbol(reader, symbols)?,
-            has_arguments: reader.read_boolean()?,
-        })
+        Some(read_clause_message(reader, symbols)?)
     } else {
         None
     };
@@ -523,9 +528,8 @@ fn read_row(
     let mut mixin_applications: Vec<RawClause> = reserve_for(clause_count, reader);
     for _ in 0..clause_count {
         mixin_applications.push(RawClause {
-            selector: read_symbol(reader, symbols)?,
-            has_arguments: reader.read_boolean()?,
-            message: read_optional(reader, |reader| read_code_id(reader, codes))?,
+            message: read_clause_message(reader, symbols)?,
+            message_code: read_optional(reader, |reader| read_code_id(reader, codes))?,
         });
     }
     let method_count = reader.read_u32()? as usize;
@@ -561,6 +565,17 @@ fn read_row(
         initializer,
         superclass_clause,
         superclass_message,
+    })
+}
+
+/// The inverse of `write_clause_message`.
+fn read_clause_message(
+    reader: &mut Reader,
+    symbols: &symbols::Table,
+) -> Result<ClauseMessage, DecodeError> {
+    Ok(ClauseMessage {
+        selector: read_symbol(reader, symbols)?,
+        has_arguments: reader.read_boolean()?,
     })
 }
 
@@ -851,7 +866,7 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
             mixin_applications: row
                 .mixin_applications
                 .iter()
-                .map(|clause| clause.message)
+                .map(|clause| clause.message_code)
                 .collect(),
         });
         let nested = row
@@ -879,9 +894,8 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
                 .mixin_applications
                 .iter()
                 .map(|clause| MixinApplicationClause {
-                    selector: clause.selector,
-                    has_arguments: clause.has_arguments,
-                    message_code: clause.message.map(code_at),
+                    message: clause.message,
+                    message_code: clause.message_code.map(code_at),
                 })
                 .collect(),
             has_initializer_expressions: row.has_initializer_expressions,

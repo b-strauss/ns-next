@@ -431,25 +431,27 @@ pub struct Factory {
     pub argument_count: usize,
 }
 
-/// A mixin's superclass clause, reduced to what run time reads off it.
+/// The message a superclass clause or a `<:` clause sends its class,
+/// reduced to what run time reads off it. §6.2 builds a `<:` clause from
+/// §6.1's `inheritanceClause`, so the two carry the same message and read
+/// it the same way.
 ///
-/// The clause's *expressions* are Newspeak code, compiled per mixin into
-/// `Mixin::superclass_clause_code` / `superclass_message_code`; what is left
-/// here is the part the orchestration around those bodies needs, which it
-/// consults before any body runs. Storing it is what keeps
+/// The message's *arguments* are Newspeak code, compiled per mixin into
+/// `Mixin::superclass_message_code` or `MixinApplicationClause::message_code`;
+/// what is left here is the part the orchestration around those bodies needs,
+/// which it consults before any body runs. Storing it is what keeps
 /// `instantiate::clause_message_body` from having to read `Mixin::declaration`:
 /// without it, a mixin decoded from an image would fall back to `new` and every
 /// class whose superclass has a keyword factory would raise a spurious "not the
 /// primary factory message" error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SuperclassClause {
-    /// The factory selector the clause's message names; `new` when the
-    /// message is omitted (§6.1: "if the message is omitted, it defaults to
-    /// `new`").
+pub struct ClauseMessage {
+    /// The factory selector the message names; `new` when it is omitted
+    /// (§6.1: "if the message is omitted, it defaults to `new`").
     pub selector: Symbol,
-    /// Whether that message carries argument expressions, and therefore a
-    /// compiled body in `Mixin::superclass_message_code`. The
-    /// overwhelmingly common `= Object new` shape has none and runs no code.
+    /// Whether the message carries argument expressions, and therefore a
+    /// compiled body. The overwhelmingly common `= Object new` shape has none
+    /// and runs no code.
     pub has_arguments: bool,
 }
 
@@ -463,13 +465,8 @@ pub struct SuperclassClause {
 /// each of them writes its own message.
 #[derive(Debug, Clone)]
 pub struct MixinApplicationClause {
-    /// The factory selector the clause's message names; `new` when the
-    /// message is omitted, the default §6.1 gives a superclass clause, whose
-    /// production (`inheritanceClause`) §6.2 reuses.
-    pub selector: Symbol,
-    /// Whether that message carries argument expressions, and therefore a
-    /// compiled body in `message_code`.
-    pub has_arguments: bool,
+    /// The factory message the clause sends the class it names.
+    pub message: ClauseMessage,
     /// The message's arguments as one body, compiled exactly as
     /// `Mixin::superclass_message_code` is -- with the applying declaration's
     /// own factory parameters in scope, since §6.2 evaluates the message in
@@ -526,7 +523,9 @@ pub struct Mixin {
     /// This mixin's own instance slots, in declaration order.
     pub slots: Vec<MixinSlot>,
     pub factory: Option<Factory>,
-    pub superclass: Option<SuperclassClause>,
+    /// The superclass clause's message; `None` for a mixin with no
+    /// superclass clause of its own -- a builtin's, and a class side's.
+    pub superclass: Option<ClauseMessage>,
     /// §6.2's `<:` clauses, in declaration order: each one adds a level
     /// between this declaration's own class and its superclass, the first
     /// clause's level lowest. Empty for a declaration that applies no mixin,

@@ -172,14 +172,14 @@ fn expand_mixin(mixin: &Rc<crate::mixin::Mixin>, code: &mixins::MixinCode) -> St
     for (index, clause) in mixin.mixin_applications.iter().enumerate() {
         let message = match code.mixin_applications.get(index).copied().flatten() {
             Some(id) => format!(" -> code {id}"),
-            None if clause.has_arguments => " -> (no code)".to_string(),
+            None if clause.message.has_arguments => " -> (no code)".to_string(),
             None => String::new(),
         };
         let _ = writeln!(
             out,
             "      mixin application {}  {}{message}",
             index + 1,
-            clause.selector
+            clause.message.selector
         );
     }
     for nested in &mixin.nested {

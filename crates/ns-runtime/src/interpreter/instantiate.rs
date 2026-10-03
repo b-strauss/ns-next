@@ -11,8 +11,8 @@ use ns_syntax::Span;
 use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::mixin::{
-    slot_accessors, Factory, MethodEntry, Mixin, MixinApplicationClause, MixinMethod, MixinSlot,
-    SuperclassClause,
+    slot_accessors, ClauseMessage, Factory, MethodEntry, Mixin, MixinApplicationClause,
+    MixinMethod, MixinSlot,
 };
 use crate::types::*;
 use crate::Symbol;
@@ -110,12 +110,13 @@ fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
         .collect()
 }
 
-/// The run-time-visible half of a superclass clause. The selector defaults
-/// to `new` for an omitted message, per `newspeak-spec.pdf` §6.1 -- resolved
-/// once, here, so no reader of the clause re-derives it from the
-/// declaration.
-fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
-    SuperclassClause {
+/// The run-time-visible half of a superclass clause's or a `<:` clause's
+/// message: §6.2 builds a `<:` clause from §6.1's `inheritanceClause`, so
+/// both read the same way. The selector defaults to `new` for an omitted
+/// message, per `newspeak-spec.pdf` §6.1 -- resolved once, here, so no
+/// reader of the clause re-derives it from the declaration.
+fn clause_message_of(clause: &ast::SuperclassClause) -> ClauseMessage {
+    ClauseMessage {
         selector: super::nested::superclass_clause_message(clause)
             .map_or(Symbol::NEW, crate::compiler::lower::selector_of),
         has_arguments: super::nested::superclass_clause_message_arguments_expression(clause)
@@ -123,18 +124,11 @@ fn superclass_clause_of(clause: &ast::SuperclassClause) -> SuperclassClause {
     }
 }
 
-/// One `<:` clause's run-time half, read off the clause exactly as
-/// `superclass_clause_of` reads a superclass clause: §6.2 builds each one from
-/// §6.1's `inheritanceClause`, so the selector defaults to `new` the same way.
-/// Its message body is the compiler's to fill.
+/// One `<:` clause's run-time half. Its message body is the compiler's to
+/// fill.
 fn mixin_application_clause_of(clause: &ast::SuperclassClause) -> MixinApplicationClause {
-    let SuperclassClause {
-        selector,
-        has_arguments,
-    } = superclass_clause_of(clause);
     MixinApplicationClause {
-        selector,
-        has_arguments,
+        message: clause_message_of(clause),
         message_code: None,
     }
 }
@@ -384,7 +378,7 @@ impl<'gc> Mutator<'gc> {
             methods,
             slots,
             factory: Some(factory),
-            superclass: declaration.superclass.as_ref().map(superclass_clause_of),
+            superclass: declaration.superclass.as_ref().map(clause_message_of),
             mixin_applications: declaration
                 .mixin_applications
                 .iter()
@@ -1057,7 +1051,7 @@ impl<'gc> Mutator<'gc> {
             .as_ref()
             .and_then(|application| application.mixin.superclass);
         // §6.1: "if the message is omitted, it defaults to `new`" -- already
-        // resolved into `SuperclassClause::selector` when the mixin was
+        // resolved into `ClauseMessage::selector` when the mixin was
         // built, and read from there rather than from the declaration: a
         // mixin decoded from an image has no declaration, and re-deriving
         // the default here would answer `new` for every one of them, so a
@@ -1101,17 +1095,17 @@ impl<'gc> Mutator<'gc> {
         clause: MixinApplicationClause,
     ) -> Result<Option<Rc<crate::bytecode::CompiledCode>>, Signal<'gc>> {
         let expected = primary_factory_selector(&self.heap, superclass);
-        if Some(clause.selector) != expected {
+        if Some(clause.message.selector) != expected {
             return Err(not_the_primary_factory_error(
                 &self.heap,
                 ClauseKind::MixinApplication,
                 applying,
                 superclass,
-                clause.selector,
+                clause.message.selector,
                 expected,
             ));
         }
-        if !clause.has_arguments {
+        if !clause.message.has_arguments {
             return Ok(None);
         }
         let code = clause.message_code.unwrap_or_else(|| {

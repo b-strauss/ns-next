@@ -1224,7 +1224,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
         }
         for (index, clause) in mixin.mixin_applications.iter().enumerate() {
             match &clause.message_code {
-                Some(_) if !clause.has_arguments => {
+                Some(_) if !clause.message.has_arguments => {
                     return Err(DecodeError::UnexpectedMixinApplicationMessage)
                 }
                 // §6.2 evaluates a `<:` clause's message in the applying
@@ -1238,7 +1238,7 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
                     format!("mixin application clause {} message", index + 1),
                     mixin.factory.map_or(0, |factory| factory.argument_count),
                 )?,
-                None if clause.has_arguments => {
+                None if clause.message.has_arguments => {
                     return Err(DecodeError::MissingMixinApplicationMessage)
                 }
                 None => {}
@@ -1254,7 +1254,9 @@ pub fn verify_mixins(mixins: &mixins::Decoded) -> Result<(), DecodeError> {
 /// `verify_mixins` asks of a decoded declaration, answered off the same
 /// field `instantiate::clause_message_body` decides by at run time.
 fn mixin_needs_superclass_message_code(mixin: &Rc<crate::mixin::Mixin>) -> bool {
-    mixin.superclass.is_some_and(|clause| clause.has_arguments)
+    mixin
+        .superclass
+        .is_some_and(|message| message.has_arguments)
 }
 
 /// One decoded body against the declaration it is attached to:

@@ -9812,8 +9812,8 @@ fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
         let marker_clause = heap
             .class_applied_clause(marker_level)
             .expect("the Marker level carries the clause that added it");
-        assert_eq!(marker_clause.selector.as_str(), "withMark:");
-        assert!(marker_clause.has_arguments);
+        assert_eq!(marker_clause.message.selector.as_str(), "withMark:");
+        assert!(marker_clause.message.has_arguments);
         assert!(heap.class_applied_clause(stamp_level).is_some());
         assert!(heap.class_applied_clause(base).is_none());
     });
@@ -9890,7 +9890,7 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
             let clause = heap
                 .class_applied_clause(level)
                 .expect("the level carries the root's clause");
-            assert_eq!(clause.selector, Symbol::NEW);
+            assert_eq!(clause.message.selector, Symbol::NEW);
             assert_eq!(
                 heap.class_builtin(heap.class_superclass(level).expect("a superclass")),
                 Some(BuiltinClass::Object)
@@ -10032,7 +10032,7 @@ fn a_well_formed_applied_level_record_decodes_with_its_clause() {
         let clause = heap
             .class_applied_clause(graph.objects[0])
             .expect("the record's clause is attached to the level");
-        assert_eq!(clause.selector, Symbol::NEW);
+        assert_eq!(clause.message.selector, Symbol::NEW);
         assert_eq!(class_name(heap, graph.objects[0]), "Marker");
     });
 }
@@ -11116,7 +11116,7 @@ fn a_clause_message_with_arguments_and_no_body_is_refused_at_load() {
 fn a_clause_message_without_arguments_that_carries_a_body_is_refused_at_load() {
     let error = verify_doctored_applied(|applied| {
         let mut clauses = applied.mixin_applications.clone();
-        assert!(!clauses[1].has_arguments, "<: Stamp sends new");
+        assert!(!clauses[1].message.has_arguments, "<: Stamp sends new");
         clauses[1].message_code = clauses[0].message_code.clone();
         Mixin {
             mixin_applications: clauses,

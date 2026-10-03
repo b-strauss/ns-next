@@ -399,7 +399,7 @@ fn compile_superclass_clause(
 ///
 /// The expression comes from `interpreter::nested`'s
 /// `superclass_clause_message_arguments_expression`, the one definition of what
-/// the clause's arguments are -- `SuperclassClause::has_arguments` is read off
+/// the clause's arguments are -- `ClauseMessage::has_arguments` is read off
 /// it too. `None` when the clause has no message, or a message with no
 /// arguments: then there is nothing to evaluate.
 fn compile_superclass_message(

@@ -990,10 +990,11 @@ defaulting to `new` — and `<:` is one lexer token. With at least one clause th
 whole body may be replaced by a `.`, which declares nothing: the applied mixins
 supply everything. `ClassDeclaration::mixin_applications` carries the clauses
 in written order, and the declaration's `Mixin::mixin_applications` one
-`MixinApplicationClause` each — its selector, whether its message has
-arguments, and that message's compiled body. Type arguments on a clause's
-receiver (`<: Collection[E]`) are parsed and dropped, as they are on a
-superclass clause ([frontend.md](frontend.md), "What is parsed and dropped").
+`MixinApplicationClause` each — its message (a `ClauseMessage`, the
+selector and whether it has arguments, the same record `Mixin::superclass`
+holds for the superclass clause) and that message's compiled body. Type
+arguments on a clause's receiver (`<: Collection[E]`) are parsed and dropped,
+as they are on a superclass clause ([frontend.md](frontend.md), "What is parsed and dropped").
 
 **Each clause adds one class level between the declaration and its
 superclass**, lowest first, so the last clause's mixin is the nearest to `C`.

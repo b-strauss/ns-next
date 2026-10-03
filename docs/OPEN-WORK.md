@@ -759,7 +759,6 @@ Small, deliberately left, none affecting an outcome.
   and a prologue outside every statement range -- not a simple change. The
   cost falls only on a fallback closure's run, as "Fallback blocks" in
   [execution.md](design/execution.md) intends: the common path pays nothing.
-- `mixin.rs`: `MixinApplicationClause` repeats `SuperclassClause`'s fields.
 - `image/encode.rs`: `encode_class_tag` scans the root levels twice;
   `image/decode.rs`'s `build_root_class` maps every error to
   `NotAClassReference`.
