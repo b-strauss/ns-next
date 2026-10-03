@@ -13,7 +13,7 @@ impl<'a> Parser<'a> {
     /// dot that ends no statement. Stops at `]`, `)` or the end of input.
     pub(crate) fn parse_code_body(&mut self) -> CodeBody {
         let start = self.current().span;
-        let temporaries = self.parse_temporaries();
+        let (temporaries, temporaries_delimiters) = self.parse_temporaries();
         let mut statements = Vec::new();
         loop {
             match self.peek() {
@@ -43,6 +43,7 @@ impl<'a> Parser<'a> {
         let end = self.current().span;
         CodeBody {
             temporaries,
+            temporaries_delimiters,
             statements,
             span: start.merge(end),
         }
@@ -59,9 +60,9 @@ impl<'a> Parser<'a> {
     /// `parse_lazy_slot_declaration`. A code body never
     /// legitimately starts with a binary `|` send (there is no left operand),
     /// so a leading `Bar` / `DoubleBar` is unambiguously a temporary section.
-    fn parse_temporaries(&mut self) -> Vec<SlotDeclaration> {
+    fn parse_temporaries(&mut self) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
         if !self.at(TokenKind::Bar) && !self.at(TokenKind::DoubleBar) {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         self.parse_slot_declarations()
     }
@@ -195,14 +196,18 @@ impl<'a> Parser<'a> {
         let access = self.parse_access_modifier();
         let pattern = self.parse_message_pattern();
         self.expect(TokenKind::Equals);
-        self.expect(TokenKind::LeftParenthesis);
+        let open = self.expect(TokenKind::LeftParenthesis);
         let body = self.parse_code_body();
         let end = self.current().span;
-        self.expect(TokenKind::RightParenthesis);
+        let close = self.expect(TokenKind::RightParenthesis);
         MethodDeclaration {
             access,
             pattern,
             body,
+            body_delimiters: open.map(|open| Delimiters {
+                open: open.span,
+                close: close.map(|token| token.span),
+            }),
             span: start.merge(end),
         }
     }
@@ -215,25 +220,34 @@ impl<'a> Parser<'a> {
     /// section and a statement -- and so does this. (The specification lists
     /// `seqSlotDecls` first, which would read every `||` as the empty
     /// section and leave `simSlotDecls` unreachable.)
-    pub(crate) fn parse_slot_declarations(&mut self) -> Vec<SlotDeclaration> {
+    pub(crate) fn parse_slot_declarations(&mut self) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
         if self.at(TokenKind::DoubleBar) {
             let checkpoint = self.checkpoint();
-            let slots = self.parse_slot_section(TokenKind::DoubleBar);
+            let section = self.parse_slot_section(TokenKind::DoubleBar);
             if self.diagnostics.len() == checkpoint.1 {
-                return slots;
+                return section;
             }
             self.restore(checkpoint);
-            self.bump(); // the empty sequential section
-            return Vec::new();
+            let empty = self.bump(); // the empty sequential section
+            return (
+                Vec::new(),
+                Some(Delimiters {
+                    open: empty.span,
+                    close: Some(empty.span),
+                }),
+            );
         }
         self.parse_slot_section(TokenKind::Bar)
     }
 
     /// One section, between two `close` tokens.
-    fn parse_slot_section(&mut self, close: TokenKind) -> Vec<SlotDeclaration> {
-        if !self.eat(close) {
-            return Vec::new();
-        }
+    fn parse_slot_section(
+        &mut self,
+        close: TokenKind,
+    ) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
+        let Some(open) = self.eat_token(close) else {
+            return (Vec::new(), None);
+        };
         let mut slots = Vec::new();
         while !self.at(close) && !self.at(TokenKind::EndOfInput) {
             let start = self.current().span;
@@ -286,8 +300,14 @@ impl<'a> Parser<'a> {
                 span: start.merge(end),
             });
         }
-        self.expect(close);
-        slots
+        let closing = self.expect(close);
+        (
+            slots,
+            Some(Delimiters {
+                open: open.span,
+                close: closing.map(|token| token.span),
+            }),
+        )
     }
 
     fn recover_to_dot(&mut self, close: TokenKind) {
@@ -469,6 +489,8 @@ impl<'a> Parser<'a> {
                     initializer_expressions: Vec::new(),
                     methods: Vec::new(),
                     nested_classes: Vec::new(),
+                    delimiters: None,
+                    slot_delimiters: None,
                     span,
                 },
                 class_side: None,
@@ -477,28 +499,30 @@ impl<'a> Parser<'a> {
         }
 
         // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
-        self.expect(TokenKind::LeftParenthesis);
+        let instance_open = self.expect(TokenKind::LeftParenthesis);
         let class_comment = self.take_class_comment();
-        let (header_slots, initializer_expressions, g1_span) = self.parse_header_body();
+        let (header_slots, slot_delimiters, initializer_expressions, g1_span) =
+            self.parse_header_body();
         let g1_end = self.current().span;
         self.expect(TokenKind::RightParenthesis);
 
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
         // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
         // instance side is not optional, however empty.
-        let (lazy_slots, methods, nested_classes, g2_end) = if self.at(TokenKind::LeftParenthesis) {
-            self.bump(); // `(`
-            let (lazy, methods, nested) = self.parse_side_body();
-            let end = self.current().span;
-            self.expect(TokenKind::RightParenthesis);
-            (lazy, methods, nested, end)
-        } else {
-            self.push_error(
-                self.current().span,
-                "expected the instance side's `( ... )` after the class header (§6.3)",
-            );
-            (Vec::new(), Vec::new(), Vec::new(), g1_end)
-        };
+        let (lazy_slots, methods, nested_classes, g2_end, instance_close) =
+            if self.at(TokenKind::LeftParenthesis) {
+                self.bump(); // `(`
+                let (lazy, methods, nested) = self.parse_side_body();
+                let end = self.current().span;
+                let close = self.expect(TokenKind::RightParenthesis);
+                (lazy, methods, nested, end, close)
+            } else {
+                self.push_error(
+                    self.current().span,
+                    "expected the instance side's `( ... )` after the class header (§6.3)",
+                );
+                (Vec::new(), Vec::new(), Vec::new(), g1_end, None)
+            };
 
         let mut slots = header_slots;
         slots.extend(lazy_slots);
@@ -507,16 +531,25 @@ impl<'a> Parser<'a> {
             initializer_expressions,
             methods,
             nested_classes,
+            delimiters: instance_open.map(|open| Delimiters {
+                open: open.span,
+                close: instance_close.map(|token| token.span),
+            }),
+            slot_delimiters,
             span: g1_span.merge(g2_end),
         };
 
         // --- G3: classSideDecl body `: ( methodDecl* )` ---
         let class_side = if self.eat(TokenKind::Colon) {
-            self.expect(TokenKind::LeftParenthesis);
+            let open = self.expect(TokenKind::LeftParenthesis);
             // A class-side comment is allowed but not retained.
             let _ = self.take_class_comment();
-            let body = self.parse_class_side_body();
-            self.expect(TokenKind::RightParenthesis);
+            let mut body = self.parse_class_side_body();
+            let close = self.expect(TokenKind::RightParenthesis);
+            body.delimiters = open.map(|open| Delimiters {
+                open: open.span,
+                close: close.map(|token| token.span),
+            });
             Some(body)
         } else {
             None
@@ -660,12 +693,19 @@ impl<'a> Parser<'a> {
     /// zero or more `Dot`-separated/terminated initializer expressions, until `)` or
     /// end of input. Methods, nested classes and a second slot section are NOT
     /// accepted here — they belong to G2.
-    fn parse_header_body(&mut self) -> (Vec<SlotDeclaration>, Vec<Statement>, crate::span::Span) {
+    fn parse_header_body(
+        &mut self,
+    ) -> (
+        Vec<SlotDeclaration>,
+        Option<Delimiters>,
+        Vec<Statement>,
+        crate::span::Span,
+    ) {
         let start = self.current().span;
-        let slots = if self.at(TokenKind::Bar) || self.at(TokenKind::DoubleBar) {
+        let (slots, slot_delimiters) = if self.at(TokenKind::Bar) || self.at(TokenKind::DoubleBar) {
             self.parse_slot_declarations()
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         let mut initializer_expressions = Vec::new();
         loop {
@@ -706,7 +746,12 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.current().span;
-        (slots, initializer_expressions, start.merge(end))
+        (
+            slots,
+            slot_delimiters,
+            initializer_expressions,
+            start.merge(end),
+        )
     }
 
     /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
@@ -835,6 +880,8 @@ impl<'a> Parser<'a> {
             initializer_expressions: Vec::new(),
             methods,
             nested_classes: Vec::new(),
+            delimiters: None,
+            slot_delimiters: None,
             span: start.merge(end),
         }
     }
@@ -1026,7 +1073,7 @@ impl<'a> Parser<'a> {
     }
 
     pub(crate) fn parse_slot_declarations_for_test(&mut self) -> Vec<SlotDeclaration> {
-        self.parse_slot_declarations()
+        self.parse_slot_declarations().0
     }
 
     pub(crate) fn parse_module_for_test(&mut self) -> Module {
@@ -1104,6 +1151,7 @@ mod slot_tests {
 #[cfg(test)]
 mod class_tests {
     use super::*;
+    use crate::span::Span;
     use indoc::indoc;
 
     fn module(source: &str) -> Module {
@@ -1111,6 +1159,60 @@ mod class_tests {
             Ok(module) => module,
             Err(diagnostics) => panic!("parse errors: {diagnostics:#?}"),
         }
+    }
+
+    /// The editor folds from an opening token to its closing one, so the
+    /// AST records both for every construct that folds.
+    #[test]
+    fn every_folding_construct_records_its_brackets() {
+        let source = indoc! {"
+            class Module = (
+                | first second |
+            ) (
+                run = (
+                    | temporary |
+                    ^[:each | each]
+                )
+            ) : (
+                make = ( ^self new )
+            )
+        "};
+        let module = module(source);
+        let text_of = |delimiters: Option<Delimiters>| {
+            let delimiters = delimiters.expect("the brackets are recorded");
+            let close = delimiters.close.expect("the closing token is there");
+            Span::new(delimiters.open.start, close.end)
+                .text(source)
+                .to_string()
+        };
+        let root = &module.root_class;
+        let instance = text_of(root.instance_side.delimiters);
+        assert!(
+            instance.starts_with("(\n    | first second |\n) ("),
+            "{instance}"
+        );
+        assert!(
+            instance.ends_with("^[:each | each]\n    )\n)"),
+            "{instance}"
+        );
+        assert_eq!(
+            text_of(root.instance_side.slot_delimiters),
+            "| first second |"
+        );
+        let class_side = root.class_side.as_ref().expect("a class side");
+        assert_eq!(
+            text_of(class_side.delimiters),
+            "(\n    make = ( ^self new )\n)"
+        );
+        let run = &root.instance_side.methods[0];
+        let body = text_of(run.body_delimiters);
+        assert!(body.starts_with("(\n        | temporary |"), "{body}");
+        assert!(body.ends_with("each]\n    )"), "{body}");
+        assert_eq!(text_of(run.body.temporaries_delimiters), "| temporary |");
+        let Statement::Return(Expression::Block(block)) = &run.body.statements[0] else {
+            panic!("a returned block");
+        };
+        assert_eq!(text_of(block.delimiters), "[:each | each]");
     }
 
     // Parse a module keeping the (possibly partial) AST *and* the diagnostics,

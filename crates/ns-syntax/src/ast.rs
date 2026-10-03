@@ -34,12 +34,29 @@ pub struct ClassDeclaration {
     pub span: Span,
 }
 
+/// The opening and closing token of a bracketed construct, which an
+/// editor folds between. `close` is `None` when the source has no closing
+/// token there and the parser recovered without one; the construct then
+/// ends where its node's span ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delimiters {
+    pub open: Span,
+    pub close: Option<Span>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassBody {
     pub slots: Vec<SlotDeclaration>,
     pub initializer_expressions: Vec<Statement>, // instance side only; empty on class side
     pub methods: Vec<MethodDeclaration>,
     pub nested_classes: Vec<ClassDeclaration>,
+    /// The instance side's first `(` (the header's) and last `)` (the
+    /// members'), or the class side's `( )`; `None` for a mixin
+    /// application ended by `.`.
+    pub delimiters: Option<Delimiters>,
+    /// The header's slot section, `| |` or `|| ||`; `None` without one and
+    /// on a class side.
+    pub slot_delimiters: Option<Delimiters>,
     pub span: Span,
 }
 
@@ -91,6 +108,8 @@ pub struct MethodDeclaration {
     pub access: Option<AccessModifier>,
     pub pattern: MessagePattern,
     pub body: CodeBody,
+    /// The body's `( )`.
+    pub body_delimiters: Option<Delimiters>,
     pub span: Span,
 }
 
@@ -111,6 +130,8 @@ pub enum MessagePattern {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeBody {
     pub temporaries: Vec<SlotDeclaration>,
+    /// The temporaries' `| |`; `None` without any.
+    pub temporaries_delimiters: Option<Delimiters>,
     pub statements: Vec<Statement>,
     pub span: Span,
 }
@@ -177,6 +198,8 @@ pub enum Selector {
 pub struct BlockExpression {
     pub parameters: Vec<Identifier>,
     pub body: CodeBody,
+    /// The block's `[ ]`; `None` for a block the compiler builds.
+    pub delimiters: Option<Delimiters>,
     pub span: Span,
 }
 

@@ -86,6 +86,15 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `eat`, answering the token consumed.
+    fn eat_token(&mut self, kind: TokenKind) -> Option<Token> {
+        if self.at(kind) {
+            Some(self.bump())
+        } else {
+            None
+        }
+    }
+
     fn expect(&mut self, kind: TokenKind) -> Option<Token> {
         if self.at(kind) {
             Some(self.bump())

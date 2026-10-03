@@ -328,13 +328,17 @@ impl<'a> Parser<'a> {
             self.expect(TokenKind::Bar);
         }
         let body = self.parse_code_body();
-        let right_bracket = self
-            .expect(TokenKind::RightBracket)
-            .unwrap_or(self.current());
-        let span = left_bracket.span.merge(right_bracket.span);
+        let right_bracket = self.expect(TokenKind::RightBracket);
+        let span = left_bracket
+            .span
+            .merge(right_bracket.unwrap_or(self.current()).span);
         Expression::Block(Box::new(BlockExpression {
             parameters,
             body,
+            delimiters: Some(Delimiters {
+                open: left_bracket.span,
+                close: right_bracket.map(|token| token.span),
+            }),
             span,
         }))
     }
