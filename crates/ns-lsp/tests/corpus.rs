@@ -172,6 +172,33 @@ fn no_truncated_module_declares_an_empty_name() {
     }
 }
 
+/// Every symbol's selection lies inside its range, on every module and every
+/// cut of one: a client refuses the whole answer otherwise.
+#[test]
+fn every_symbol_selection_lies_inside_its_range() {
+    fn check(symbols: &[ns_lsp::document_symbols::Symbol], context: &str) {
+        for symbol in symbols {
+            assert!(
+                symbol.span.start <= symbol.selection.start
+                    && symbol.selection.end <= symbol.span.end,
+                "{context}: {} {:?} outside {:?}",
+                symbol.name,
+                symbol.selection,
+                symbol.span
+            );
+            check(&symbol.children, context);
+        }
+    }
+    for path in modules() {
+        let text = read(&path);
+        for end in cut_points(&path, &text, false) {
+            let module = ns_syntax::parse_for_editor(&text[..end]).module;
+            let context = format!("{} cut at byte {end}", path.display());
+            check(&ns_lsp::document_symbols::symbols(&module), &context);
+        }
+    }
+}
+
 fn declared_names_of_class(class: &ast::ClassDeclaration, names: &mut Vec<String>) {
     names.push(class.name.name.clone());
     if let Some(factory) = &class.factory {

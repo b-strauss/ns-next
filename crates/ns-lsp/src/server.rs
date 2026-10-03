@@ -11,17 +11,20 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, LogMessage,
     Notification as NotificationKind, PublishDiagnostics,
 };
-use lsp_types::request::{FoldingRangeRequest, Request as RequestKind, SemanticTokensFullRequest};
+use lsp_types::request::{
+    DocumentSymbolRequest, FoldingRangeRequest, Request as RequestKind, SemanticTokensFullRequest,
+};
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, FoldingRangeParams, FoldingRangeProviderCapability,
-    LogMessageParams, MessageType, PublishDiagnosticsParams, Range, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    Diagnostic, DiagnosticSeverity, DocumentSymbolParams, DocumentSymbolResponse,
+    FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams, MessageType, OneOf,
+    PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use ns_syntax::Severity;
 
 use crate::analysis::{analyze, Analysis};
+use crate::document_symbols;
 use crate::documents::LineIndex;
 use crate::folding;
 use crate::semantic_tokens;
@@ -59,6 +62,7 @@ fn capabilities() -> ServerCapabilities {
             },
         )),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -104,6 +108,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
     match request.method.as_str() {
         SemanticTokensFullRequest::METHOD => semantic_tokens_of(documents, request),
         FoldingRangeRequest::METHOD => folding_ranges_of(documents, request),
+        DocumentSymbolRequest::METHOD => document_symbols_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -136,6 +141,32 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
         })
         .unwrap_or_default();
     Response::new_ok(request.id, ranges)
+}
+
+/// A document's symbol tree; none for a document the client never opened or
+/// has closed, as for its folds.
+fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: DocumentSymbolParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let symbols = documents
+        .get(params.text_document.uri.as_str())
+        .map(|document| {
+            document_symbols::encode(
+                &document.analysis.symbols,
+                &document.text,
+                &document.line_index,
+            )
+        })
+        .unwrap_or_default();
+    Response::new_ok(request.id, DocumentSymbolResponse::Nested(symbols))
 }
 
 fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -> Response {

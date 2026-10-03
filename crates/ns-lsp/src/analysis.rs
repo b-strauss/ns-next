@@ -5,6 +5,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use ns_syntax::{Diagnostic, Severity, Span};
 
+use crate::document_symbols::{self, Symbol};
 use crate::folding::{self, Fold};
 use crate::semantic_tokens::{self, Classified};
 
@@ -29,6 +30,7 @@ pub struct Analysis {
     pub findings: Vec<Finding>,
     pub classified: Vec<Classified>,
     pub folds: Vec<Fold>,
+    pub symbols: Vec<Symbol>,
 }
 
 /// Every error `ns-next run` would refuse `text` for before running it --
@@ -64,6 +66,7 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                 }],
                 classified: Vec::new(),
                 folds: Vec::new(),
+                symbols: Vec::new(),
             }
         }
     }
@@ -83,6 +86,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
     let resolution = ns_runtime::resolve_for_editor(module);
     let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
     let folds = folding::folds(&resolution.module, &comments, text);
+    let symbols = document_symbols::symbols(&resolution.module);
     let mut findings: Vec<Finding> = diagnostics.into_iter().map(Finding::from).collect();
     findings.extend(resolution.errors.into_iter().map(|error| Finding {
         span: error.span,
@@ -93,6 +97,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
         findings,
         classified,
         folds,
+        symbols,
     }
 }
 
