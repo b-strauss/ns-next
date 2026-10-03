@@ -912,16 +912,25 @@ fn names_a_builtin(data: &ClassData<'_>) -> bool {
 /// (`CLASS_METACLASS`), for the same reason: it exists because its class
 /// does, before the graph is decoded. Every other class object is a record,
 /// a metaclass of a class record included (`OBJECT_METACLASS`).
+///
+/// A metaclass is asked about its class alone, beside the path that may name
+/// it: it is never a builtin (every metaclass is made with none, by
+/// `attach_metaclass` or the decoder) nor a module class (`ModuleClasses`
+/// holds roots and levels), so asking it would scan the module classes for
+/// nothing.
 fn is_class_tag<'gc>(
     heap: &Heap<'gc>,
     object: ObjectReference<'gc>,
     modules: &ModuleClasses<'gc>,
     paths: &PlatformPaths<'gc>,
 ) -> bool {
-    is_prebuilt_class(heap, object, modules, paths)
-        || heap
-            .class_this_class(object)
-            .is_some_and(|this_class| is_prebuilt_class(heap, this_class, modules, paths))
+    match heap.class_this_class(object) {
+        Some(this_class) => {
+            paths.id_of(heap, object).is_some()
+                || is_prebuilt_class(heap, this_class, modules, paths)
+        }
+        None => is_prebuilt_class(heap, object, modules, paths),
+    }
 }
 
 /// `object` described, when it is a class object an image may not name:
