@@ -472,6 +472,22 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Open design questions
 
+- **The resolver as a crate of its own.** It lives in `ns-runtime`
+  (`resolver/`). A crate of its own would separate the front end from the VM
+  and let a tool that needs only bindings — a lighter language server, the
+  formatter — leave the runtime unlinked. It is not worth it yet: the
+  resolver uses the runtime's symbol interner, `Binding`, `ResolvedModule`,
+  `SourceOrigin`, `instantiate::method_name`, `mixin`'s `RootClauseDefect`
+  and `CLAUSE_INDEX_LIMIT`, and `nested::superclass_clause_message`, which
+  would all move with it; and the VM mirror's first lock (`CLAUDE.md`, "The
+  VM mirror is a capability") rests on `resolve_kernel` being `pub(crate)` —
+  in a crate of its own it would turn public, and any Rust host could resolve
+  a module with `Binding::MirrorSend`. No tool today would gain: the analyzer
+  links the runtime for `disasm` and `inspect`, and `ns-tooling` resolves
+  through it. Revisit when a tool must run without the runtime or compile
+  times show it, deciding first how the mirror's lock survives the split —
+  for example the runtime setting `MirrorSend` into the bindings after
+  resolving, instead of the resolver recording it.
 - **The class side's own scope.** Instance-side methods and class-side
   declarations share one member set; canonical Newspeak scopes the class side
   apart (`compileClassSide:`). The specification is silent; left as is until a
