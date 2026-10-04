@@ -20,17 +20,24 @@
           marked static as in Java, and sticky lines — kept while a file has syntax errors.</li>
       <li>Completion and validation in <code>newspeak.json</code>, ns-next's project file, from
           its schema.</li>
+      <li>Running and benchmarking a project from its <code>newspeak.json</code>: a play button
+          beside <code>main</code> and beside each script opens Run and Benchmark, which create a
+          "Newspeak" run configuration starting <code>ns-next run</code> or <code>ns-next bench</code>.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with
     <code>cargo build -p ns-analyzer --release</code> and set its path under
     <em>Settings | Languages &amp; Frameworks | Newspeak</em>.</p>
+    <p>The runtime, <code>ns-next</code>, is not bundled. Build it with
+    <code>cargo build -p ns-cli --release</code> and set the ns-next path in the same settings;
+    a Newspeak run configuration refuses to start without it.</p>
     ]]></description>
 
     <change-notes><![CDATA[
     <p>0.1.0: highlighting, errors as you type, semantic colouring, code folding, and a
     structure view with breadcrumbs. Completion and validation in <code>newspeak.json</code>
-    from the project file's schema.</p>
+    from the project file's schema. Running and benchmarking a project from its
+    <code>newspeak.json</code>, with the ns-next path setting.</p>
     ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
