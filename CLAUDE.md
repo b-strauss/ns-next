@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, five crates:
+Rust 1.98.0, edition 2021, six crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
   `parse` refuses a source with errors, `parse_for_editor` answers a
