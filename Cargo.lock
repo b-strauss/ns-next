@@ -334,7 +334,6 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "indoc",
- "insta",
  "libtest-mimic",
  "ns-runtime",
  "ns-syntax",
