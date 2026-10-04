@@ -929,9 +929,7 @@ text and `to:by:do:`'s zero step.
   survivor's age, and that it places the past survivor space's survivors
   before eden's; a stale canonical-symbol entry refused by the scavenge's
   check (`Heap::forward_weak_symbols`); and a disagreement of the
-  remembered set and the remembered bits, which
-  `Heap::verify_remembered_set` asserts by comparing their counts only, so
-  a set and bits that differ in membership but not in number pass.
+  remembered set and the remembered bits.
 
 ## Code quality follow-ups
 
@@ -993,10 +991,7 @@ Small, deliberately left, none affecting an outcome.
 
 - Road step 4's leftovers (noted 2026-10-04): `Heap::scavenge` and
   `Heap::move_everything` hand `out_of_memory` an end offset, not a byte
-  count; `Heap::verify_remembered_set`'s comment cites Strongtalk's
-  `rSet::verify` (`prior-art/strongtalk/vm/memory/rSet.cpp:275`), which in
-  the prior art is a stub that answers `true`, where `VerifyBeforeScavenge`
-  (`universe_more.cpp:98`) is the precedent; `interpreter/safepoint.rs`'s
+  count; `interpreter/safepoint.rs`'s
   module comment has one line not rewrapped; and `tests/collector.rs`'s
   `every_kind_of_stored_word_survives_moves_and_collections` runs a
   scavenge at every safepoint too, which its name does not say.

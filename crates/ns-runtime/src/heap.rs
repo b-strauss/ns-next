@@ -4239,16 +4239,26 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Asserts that every old object naming a young one is remembered, and
-    /// that the remembered set and the bits agree -- what a store that missed
-    /// the write barrier breaks, found before the scavenge that would lose the
-    /// young object, as Strongtalk's `rSet::verify`
-    /// (`prior-art/strongtalk/vm/memory/rSet.cpp:275`) and HotSpot's
+    /// that the remembered set and the bits agree in membership -- every
+    /// entry names an old object whose bit is set, none twice, and every
+    /// object whose bit is set is an entry. That is what a store that missed
+    /// the write barrier, or an entry at a wrong offset, breaks, found before
+    /// the scavenge that would lose the young object, as Strongtalk's
+    /// `VerifyBeforeScavenge`
+    /// (`prior-art/strongtalk/vm/memory/universe_more.cpp:98`) and HotSpot's
     /// `VerifyBeforeGC` find it. A walk of the old space, so only the scavenge
     /// stress mode runs it.
     #[cfg(debug_assertions)]
     pub(crate) fn verify_remembered_set(&self) {
+        let entries: std::collections::HashSet<NonZeroU64> =
+            self.remembered.iter().copied().collect();
+        assert_eq!(
+            entries.len(),
+            self.remembered.len(),
+            "internal: the remembered set holds an offset twice"
+        );
         let words = self.space.words();
-        let mut remembered_bits = 0;
+        let mut remembered_headers = std::collections::HashSet::new();
         let old = self.space.region(RegionName::Old);
         let mut position = old.start / 8;
         while position < old.top / 8 {
@@ -4270,14 +4280,22 @@ impl<'gc> Heap<'gc> {
                 !names_young || remembered,
                 "internal: an old object names a young one without being remembered: a store missed the write barrier"
             );
-            remembered_bits += usize::from(remembered);
+            if remembered {
+                let offset = 8 * header as u64;
+                assert!(
+                    NonZeroU64::new(offset).is_some_and(|offset| entries.contains(&offset)),
+                    "internal: an object carries the remembered bit but the remembered set lacks its offset"
+                );
+                remembered_headers.insert(offset);
+            }
             position = next;
         }
-        assert_eq!(
-            remembered_bits,
-            self.remembered.len(),
-            "internal: the remembered set and the remembered bits disagree"
-        );
+        for entry in &entries {
+            assert!(
+                !space::is_young(*entry) && remembered_headers.contains(&entry.get()),
+                "internal: the remembered set holds an offset that is not an old object carrying the remembered bit"
+            );
+        }
     }
 
     /// Sets eden's occupied bytes at which an allocation asks for a
@@ -7315,6 +7333,30 @@ mod tests {
         // What a store that bypassed the barrier would leave behind.
         heap.remembered.clear();
         heap.set_header(holder, heap.header(holder).with_remembered(false));
+        heap.verify_remembered_set();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "the remembered set lacks its offset")]
+    fn the_verification_finds_a_remembered_set_entry_at_a_wrong_offset() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let young = heap.allocate_instance(class, 0);
+        let holder = old_instance(&mut heap, class);
+        let other = old_instance(&mut heap, class);
+        heap.instance_set_field(holder, 0, Value::object(young));
+        // One entry and one bit, as the counts need, but the entry names
+        // another old object than the one carrying the bit.
+        heap.set_header(other, heap.header(other).with_remembered(false));
+        heap.remembered.clear();
+        heap.remembered.push(other.offset);
+        heap.set_header(holder, heap.header(holder).with_remembered(true));
+        let bits = [holder, other]
+            .into_iter()
+            .filter(|object| heap.header(*object).remembered())
+            .count();
+        assert_eq!(bits, heap.remembered.len(), "the counts agree");
         heap.verify_remembered_set();
     }
 
