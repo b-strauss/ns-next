@@ -449,7 +449,7 @@ upstream commit, recorded with its URL in `corpus/PROVENANCE.md`. It is a manual
 snapshot rather than a submodule or subtree: refreshing it is a deliberate,
 reviewed action, and the upstream license travels with the files.
 
-`ns-next parse-corpus corpus/modules` must report **parsed 211, failed 0**,
+`ns-next-analyzer parse-corpus corpus/modules` must report **parsed 211, failed 0**,
 and `crates/ns-syntax/tests/corpus.rs` holds every module to the same. There
 is no list of exceptions (removed 2026-09-27 with its last entry, decided
 with the user): the corpus is real Newspeak and the parser follows the
@@ -486,7 +486,7 @@ them.
   of the file. A source longer than a span can address answers a root class
   with an empty name and nothing in it, and the one `source_too_long`
   diagnostic. On a source without errors both entries answer the same
-  module, which `ns-lsp`'s `the_editor_parse_agrees_with_parse` checks over
+  module, which `ns-analyzer`'s `the_editor_parse_agrees_with_parse` checks over
   every corpus module, golden and the kernel.
 
 **Resynchronisation.** Two means:
@@ -625,7 +625,7 @@ them.
    method's statement taking the rest of the run. So the tree is never
    taken apart by recursion along a receiver: `Send`'s `Drop` takes the
    chain link by link, the resolver's walk does too (`resolve_send`), and
-   the editor's (`ns-lsp`'s semantic tokens and folds) takes each chain
+   the editor's (`ns-analyzer`'s semantic tokens and folds) takes each chain
    from `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain
    of a million messages, parse and are analysed on the server's 8 MiB, and
    on 1 MiB. The compiler, and the AST's derived `Clone`, `PartialEq` and

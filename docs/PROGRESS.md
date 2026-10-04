@@ -27,6 +27,7 @@ first.
 | Road step 3a — the object representation | Complete | 2026-10-03 | [object-representation](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md) |
 | Road step 3b — the object space | Complete | 2026-10-03 | [object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md) |
 | Editor support: code folding, the structure view with breadcrumbs and sticky lines, and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md), [editor-structure-view](superpowers/plans/2026-10-04-0134-editor-structure-view.md) |
+| One binary for looking at Newspeak without running it: `ns-next-analyzer`, the crate `ns-tooling`, one test suite | Complete | 2026-10-04 | [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md) |
 | Road step 4 — generations | Not started | — | — |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
@@ -45,7 +46,7 @@ that date use the old numbering.
 ## M1 — Frontend (2026-09-01)
 
 `ns-syntax`: hand-written lexer, recursive-descent and Pratt parser, and AST for
-the official Newspeak3 textual syntax, plus `ns-next parse` and `parse-corpus`.
+the official Newspeak3 textual syntax, plus the `parse` and `parse-corpus` commands.
 Validated against the vendored corpus at 210 of 211 files; the last one
 parses since "The syntax is the specification's grammar" (2026-09-27).
 
@@ -63,7 +64,7 @@ A register-based bytecode compiler and VM, with the M1 tree-walker kept
 permanently as `--engine=tree-walk` — a byte-for-byte differential oracle over
 stdout, stderr and exit status. Adds baseline control-flow inlining, each
 occurrence guarded at run time with a fallback to a real virtual send;
-`ns-next disasm`; and the first image format, exposed as `snapshot` and `load`.
+a `disasm` command; and the first image format, exposed as `snapshot` and `load`.
 Carries the statement→program-counter safepoint table and a reserved inert inline-cache slot
 per send from the start, so Milestone 4 needs no bytecode format break.
 
@@ -108,7 +109,7 @@ format would otherwise open.
 
 An artifact is also readable as text, which it was not before. `disasm` accepts
 one in place of a `.ns` file, decoding rather than compiling — the path a
-deployed binary needs, since it ships no source. `ns-next inspect` prints the
+deployed binary needs, since it ships no source. An `inspect` command prints the
 file: header flags, section offsets, the symbol table, the code table with
 every body attributed to the declaration that owns it, and the mixin table.
 `--full` prints everything, in the sense `javap -v` does — mixin rows expanded
@@ -3106,7 +3107,7 @@ before, with `push_past_the_limit` out of line.
 
 ## Editor support: the language server and the JetBrains plugin (2026-09-26)
 
-**Built:** `crates/ns-lsp/` (the `ns-next-lsp` binary)
+**Built:** the language server, a crate of its own with a binary of its own
 ([editor-support-language-server](superpowers/plans/2026-09-26-0030-editor-support-language-server.md))
 and `editors/jetbrains/` (the JetBrains plugin), across seven tasks
 ([editor-support-jetbrains-plugin](superpowers/plans/2026-09-26-0031-editor-support-jetbrains-plugin.md));
@@ -3117,7 +3118,7 @@ now marked **Built**.
 so one resolver pass serves both diagnostics and semantic tokens even when the
 module has an error; it never records `Binding::MirrorSend`, so the VM
 mirror's capability invariant (`CLAUDE.md`, "The VM mirror is a capability")
-is untouched. `ns-next-lsp` speaks `initialize`, `didOpen`, `didChange`,
+is untouched. The server speaks `initialize`, `didOpen`, `didChange`,
 `didClose`, `publishDiagnostics`, `semanticTokens/full`, `shutdown` and `exit`
 over `lsp-server`, synchronously on one thread, and runs every analysis under
 `catch_unwind` so a panic becomes one diagnostic rather than taking the
@@ -3129,12 +3130,12 @@ Gradle Plugin, the wrapper committed) building a plugin whose Kotlin lexer
 mirrors `crates/ns-syntax/src/lexer.rs` function by function — reviewed side
 by side rather than generated, so `LexerComparisonTest` can hold the two to
 the same tokens, kind and span, over `corpus/modules`, `goldens/` and
-`Kernel.ns` (`ns-next-lsp dump-tokens`, batched at 100 files for Windows'
+`Kernel.ns` (the server binary's `dump-tokens`, batched at 100 files for Windows'
 command-line length limit, over the repository's close to 400 `.ns` files).
 Highlighting and the editor features (brace matching, commenting, quote
 handling, TODO markers via `NewspeakIndexPatternBuilder` — no dedicated
 `todoIndexer` was needed) run off that lexer alone, with no server involved;
-semantic tokens from `ns-next-lsp`, reached through the platform's native LSP
+semantic tokens from the language server, reached through the platform's native LSP
 API (`LspIntegrationProvider`, `ProjectWideLspClientDescriptor`,
 `LspCustomization.semanticTokensCustomizer`), are layered over them once the
 server answers. Spell checking is an optional dependency
@@ -3142,9 +3143,9 @@ server answers. Spell checking is an optional dependency
 com.intellij.modules.spellchecker</depends>`), so an IDE built without that
 module still loads the plugin.
 
-The plugin bundles `ns-next-lsp`, built `--release` from the same commit as
+The plugin bundles the server's binary, built `--release` from the same commit as
 the Kotlin lexer, for Windows x64; `THIRD-PARTY-NOTICES.txt` covers the
-crates linked into that binary (`cargo tree -p ns-lsp -e normal,no-proc-macro`),
+crates linked into that binary (`cargo tree` of the server crate, `-e normal,no-proc-macro`),
 excluding build-time-only proc macros. `verifyPlugin` checked the plugin
 against the lowest supported and the current release of four commercial
 IDEs — IntelliJ IDEA 2026.1.4 and 2026.2.3, RustRover 2026.1.4 and 2026.2.3,
@@ -3173,7 +3174,7 @@ evidence that Java 21 bytecode runs fine on the newer JBR too.
 
 `CLAUDE.md`, `docs/design/README.md` and this file now name
 `editors/jetbrains/` and its gates: `./gradlew -p editors/jetbrains check`
-before every commit that touches it, `crates/ns-lsp/` or
+before every commit that touches it, the server crate or
 `crates/ns-syntax/`, and `./gradlew -p editors/jetbrains verifyPlugin
 buildPlugin` once at the end of a batch.
 
@@ -3610,7 +3611,7 @@ and `stderr` unchanged, and `goldens/tool/manifest/` pins the manifest.
 
 All thirteen tasks were reviewed, with fix rounds until each review was
 clean. The end-of-batch gates passed: the three stress modes, 2625 of 2625
-each; `ns-lsp`, 40 of 40; `run-corpus` "ran 6, failed 0, skipped 205" plain and
+each; the language server's tests, 40 of 40; `run-corpus` "ran 6, failed 0, skipped 205" plain and
 under each stress mode; the release suite, 2364 passed. The review of the whole
 branch found no code defect; its text findings were fixed in the two commits
 after `088cd6c`. What the batch leaves open is in [OPEN-WORK.md](OPEN-WORK.md).
@@ -4029,7 +4030,7 @@ measured program reaches.
   two `CompiledCode`s are equal when they mean the same, a float literal
   by its bits; loading decodes each body once; and a source of more than
   `u32::MAX` bytes is refused by `ns_syntax::lex`, which `parse` and
-  `ns-lsp`'s analysis go through, before it is lexed.
+  the language server's analysis go through, before it is lexed.
 
 **The gate.** Before anything was built, a throwaway copy ran `vm::run` on
 the eight-byte slots and was measured against `master` by the protocol of
@@ -4270,3 +4271,30 @@ program, and the AST's derived `Clone`, `PartialEq` and `Debug`, which
 recurse the same way; under "Known defects and gaps", four limits of the
 recovery, the structure view's stale tree after a timeout and duplicate
 requests, and the agreement test's assumption that no warning exists.
+
+## ns-next-analyzer: one binary for looking at Newspeak without running it (2026-10-04)
+
+Plan: [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md);
+[editor-support.md](design/editor-support.md), "The editor tooling, `crates/ns-analyzer`" and
+"Testing".
+
+`ns-next` runs programs -- `run`, `run-corpus`, `load`, `bench`, `build` --
+and `ns-next-analyzer` looks at them without running any: `lsp`,
+`dump-tokens`, `parse`, `parse-corpus`, `disasm` and `inspect`. The crate
+The editor tooling is the crate `ns-analyzer`, and it holds the commands that
+only read (`parse`, `parse-corpus`, `disasm`, `inspect`), with the arguments,
+output and exit statuses they always had. What both binaries need --
+loading and resolving a source file, collecting `.ns` files, printing
+diagnostics -- is the library crate `ns-tooling`, which depends on `ns-syntax`
+and `ns-runtime` only, so the language server's dependencies never reach
+`ns-next`.
+
+There is one test suite for every commit and every stress mode:
+`ns-analyzer`'s tests, the disassembly snapshots and the image tests among
+them, run with the workspace's, where the language server's had been a group
+of their own. The JetBrains plugin starts `ns-next-analyzer lsp`, and its
+third-party notices cover `clap`, its dependencies and `windows-sys`.
+
+Commits: `71f282e8` the rename, `578dc9cd` `ns-tooling`, `3aac3339` and
+`d3c6ecff` the moved commands and one suite, `542f316b`, `37cb029f` the
+documents.

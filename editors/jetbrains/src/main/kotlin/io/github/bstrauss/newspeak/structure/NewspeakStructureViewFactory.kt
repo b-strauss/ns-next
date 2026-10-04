@@ -54,7 +54,7 @@ class NewspeakStructureViewFactory : PsiStructureViewFactory {
  * With no client yet, no answer within the timeout, or an empty answer, the
  * tree stays as it was (empty the first time) and the model tells the view to
  * ask again a little later. The server answers at least the root class for
- * every document it has opened (`crates/ns-lsp/src/document_symbols.rs`), so
+ * every document it has opened (`crates/ns-analyzer/src/document_symbols.rs`), so
  * an empty answer means the file's `didOpen` has not reached it yet -- the
  * race of a file opened with the Structure tool window already showing, or of
  * editors restored at IDE start. The platform refreshes its own structure

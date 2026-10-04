@@ -15,7 +15,7 @@ import javax.swing.Icon
 
 /**
  * What a row of the structure view shows for one of the server's symbols
- * (`crates/ns-lsp/src/document_symbols.rs`): its name, `lazy` beside a lazy
+ * (`crates/ns-analyzer/src/document_symbols.rs`): its name, `lazy` beside a lazy
  * slot, the icon of its kind and the icon of its access.
  */
 data class SymbolPresentation(

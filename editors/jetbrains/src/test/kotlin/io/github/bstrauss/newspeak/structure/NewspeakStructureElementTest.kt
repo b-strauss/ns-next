@@ -10,7 +10,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
 
-/** A row of the structure view, from one symbol as the server sends it (`crates/ns-lsp/src/document_symbols.rs`). */
+/** A row of the structure view, from one symbol as the server sends it (`crates/ns-analyzer/src/document_symbols.rs`). */
 class NewspeakStructureElementTest {
     private fun symbol(name: String, kind: SymbolKind, detail: String?): DocumentSymbol {
         val range = Range(Position(0, 0), Position(0, name.length))

@@ -18,8 +18,8 @@ object MissingServerNotification {
             is ServerLocation.ConfiguredPathMissing ->
                 "The configured language server does not exist: ${location.path}"
             is ServerLocation.NotBundledForPlatform ->
-                "No ns-next-lsp is bundled for ${location.platform ?: "this platform"}. Build it with " +
-                    "<code>cargo build -p ns-lsp --release</code> and set its path."
+                "No ns-next-analyzer is bundled for ${location.platform ?: "this platform"}. Build it with " +
+                    "<code>cargo build -p ns-analyzer --release</code> and set its path."
             is ServerLocation.PluginDirectoryUnknown ->
                 "The plugin could not locate its own installation directory, so it cannot find its bundled " +
                     "language server. Set the server path in the Newspeak settings."

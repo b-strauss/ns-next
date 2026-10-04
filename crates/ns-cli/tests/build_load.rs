@@ -34,8 +34,15 @@ fn build_writes_a_started_image_that_inspect_recognizes() {
     ]);
     assert!(ok, "{error}");
 
-    let (ok, listing, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
-    assert!(ok, "{error}");
+    // Read through `ns-runtime`'s inspector, the listing
+    // `ns-next-analyzer inspect` prints, because a test starts only its own
+    // crate's binary.
+    let bytes = std::fs::read(&out).expect("read the image");
+    let report = match ns_runtime::image::inspect::inspect(&bytes) {
+        Ok(report) => report,
+        Err(error) => panic!("{error}"),
+    };
+    let listing = ns_runtime::image::inspect::render(&report);
     assert!(listing.contains("start: yes"), "{listing}");
     assert!(!listing.contains("stateless"), "{listing}");
     assert!(listing.contains("main:args:"), "{listing}");

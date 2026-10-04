@@ -1,5 +1,8 @@
 #![warn(clippy::all)]
 
+//! `ns-next`, the binary that runs Newspeak; what it offers is `Cli`'s
+//! description below, which `--help` shows.
+
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -9,8 +12,12 @@ mod commands;
 mod entry;
 mod program;
 mod project;
-mod source;
 
+/// Runs Newspeak: a program from source (`run`), a corpus against its
+/// recorded outcomes (`run-corpus`), an image (`load`), a timed entry send
+/// (`bench`), and an application written as an image (`build`). What looks
+/// at Newspeak without running it -- parsing, disassembly, image inspection,
+/// the language server -- is `ns-next-analyzer`.
 #[derive(Parser)]
 #[command(name = "ns-next", version)]
 struct Cli {
@@ -38,14 +45,6 @@ impl From<LoweringArgument> for ns_runtime::Lowering {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Parse a single .ns file.
-    Parse {
-        file: PathBuf,
-        #[arg(long)]
-        ast: bool,
-    },
-    /// Parse every .ns file under a directory.
-    ParseCorpus { directory: PathBuf },
     /// Run every whitelisted .ns file under a directory, from source and as
     /// a built binary, and check each against its recorded expected output.
     RunCorpus {
@@ -116,37 +115,6 @@ enum Command {
         #[arg(last = true)]
         arguments: Vec<String>,
     },
-    /// Print one compiled body: a method, or with --initializer the target
-    /// class's instance initializer. Takes either a .ns file, which is
-    /// compiled first, or a serialized artifact, whose bodies are decoded
-    /// rather than compiled. Nothing is instantiated or run either way.
-    Disasm {
-        file: PathBuf,
-        /// The method selector, e.g. `main:args:`.
-        selector: Option<String>,
-        /// Disassemble the target's compiled instance initializer instead.
-        #[arg(long)]
-        initializer: bool,
-        /// A dot-separated mixin path rooted at the module's own class
-        /// name, e.g. `Outer.Inner` for a nested class or `Outer.class`
-        /// for a class side. Defaults to the root class itself.
-        #[arg(long)]
-        class: Option<String>,
-        /// The lowering to compile a .ns source with; optimized when absent.
-        /// Refused for an artifact, which carries the code it was built with.
-        #[arg(long, value_enum)]
-        lowering: Option<LoweringArgument>,
-    },
-    /// Print an artifact's structure: header flags, section offsets, the
-    /// symbol table, the code table with every body named, the mixin table,
-    /// and -- for an image -- its object graph, read record by record.
-    Inspect {
-        artifact: PathBuf,
-        /// Render everything: the mixin rows expanded, and every compiled
-        /// body disassembled. The default is a table of contents.
-        #[arg(long)]
-        full: bool,
-    },
     /// Assemble the application exactly as `run` does -- its factory and
     /// every initializer run, with no platform in existence -- and write it
     /// just before `main:args:`, as an image whose one root is the
@@ -192,8 +160,6 @@ fn main() -> ExitCode {
 
 fn execute(command: Command) -> ExitCode {
     match command {
-        Command::Parse { file, ast } => commands::parse::execute(&file, ast),
-        Command::ParseCorpus { directory } => commands::parse_corpus::execute(&directory),
         Command::RunCorpus {
             directory,
             whitelist,
@@ -222,20 +188,6 @@ fn execute(command: Command) -> ExitCode {
             collector_statistics,
             &arguments,
         ),
-        Command::Disasm {
-            file,
-            selector,
-            initializer,
-            class,
-            lowering,
-        } => commands::disasm::execute(
-            &file,
-            selector.as_deref(),
-            initializer,
-            class.as_deref(),
-            lowering.map(Into::into),
-        ),
-        Command::Inspect { artifact, full } => commands::inspect::execute(&artifact, full),
         Command::Build {
             file,
             out,

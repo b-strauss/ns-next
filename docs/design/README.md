@@ -86,7 +86,7 @@ guarantee it gives up or the complexity it adds.
 | Serialization: the packaged application | [image-format.md](image-format.md) | Built: one artifact, an application packaged just before `main:args:`, carrying every module of a project; frames are object records, and the decoder sizes every record from its own bytes before it allocates any ("Two passes") | The image under generations ("Planned: the image under generations"); suspend and resume ("Planned: suspend and resume") |
 | Builtins and the platform | [core-library.md](core-library.md) | **Partial:** `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is Newspeak in `crates/ns-runtime/core-library/Kernel.ns` -- a forwarder to one of the mirror's `MIRROR` rows, which are the leaves, or a quick method or ordinary method that reaches no leaf, as all of `True`'s, `False`'s and the nil protocol's are. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them, and `Behavior` over `Class` and `Metaclass` — and `Value` derives `=`, `==` and `hash` from an instance's state. Every class object's class is its own metaclass, its class side applied to `Class`, and every metaclass's class is `Metaclass`; a class object is a value when its enclosing object is. `Object` carries §3.2's accessors for the predefined classes, so a bare `String` is a send answered without an activation. §8.6's exceptions are Newspeak over kernel-private activation objects: `Exception`, `Error`, `MessageNotUnderstood`, `Halt` and `Message`, reached through `platform kernel`, with ANSI's `on:do:`, `ensure:`, `ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`; every VM error and every message nothing understands is signalled, and the depth limit keeps a reserve for signalling its own. The platform is an instance of the nested `Platform` of the shipped module `crates/ns-runtime/core-library/PlatformFactory.ns`, whose root is booted with the mirror and the kernel instance from the table of shipped modules (`interpreter/core_library.rs`) and never handed out (the factory pattern); its transcript, `collections`, `kernel` and `time` members are lazy slots, its module's classes are handed out by class accessors, and an image names all of them by their platform paths. `collections` is the facet of a second shipped module, `CollectionsFactory.ns`, whose root `PlatformFactory`'s builds once through the mirror's `moduleNamed:`; its `List`, `Map` and `Set` are Newspeak. A `String` is its code points, one byte or four each ("Strings are code points in two widths"), and a NaN equals a NaN. Integers are unbounded, as §5.1.1 requires: one that does not fit a `SmallInteger`'s 61 bits is a `LargeInteger`, a kernel subclass of `Integer` whose arithmetic (`crates/ns-runtime/src/arbitrary_integer/`) is adapted from `num-bigint` and `num-integer` ("Large integers") | real bodies for `whileTrue:`, `whileFalse:` and `do:` before the baseline JIT (road step 8); settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
-| Editor support: the language server and the JetBrains plugin | [editor-support.md](editor-support.md) | Built — highlighting, errors as you type, code folding and a structure view with breadcrumbs in every commercial JetBrains IDE from 2026.1.4, kept through syntax errors; the server bundled for Windows x64 | formatting, go to definition and find usages, more platforms |
+| Editor support and the analyzer: the language server, the JetBrains plugin, `ns-next-analyzer` | [editor-support.md](editor-support.md) | Built — highlighting, errors as you type, code folding and a structure view with breadcrumbs in every commercial JetBrains IDE from 2026.1.4, kept through syntax errors; the server bundled for Windows x64. The server is `ns-next-analyzer lsp`; the same binary parses (`parse`, `parse-corpus`), prints a compiled body (`disasm`, [compiler.md](compiler.md)) and an image's structure (`inspect`, [image-format.md](image-format.md)), and never runs a program | formatting (`ns-next-analyzer fmt`), go to definition and find usages, more platforms; a heap dump and inspection of JIT-compiled code as further analyzer commands |
 
 Real programs to measure the runtime on, beside the microbenchmarks under
 `goldens/tool/bench/`, live in `benchmarks/`: today
@@ -97,7 +97,7 @@ Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which
 
 ## Architecture
 
-Five crates, with the name-resolution pass as the seam the bytecode compiler
+Six crates, with the name-resolution pass as the seam the bytecode compiler
 plugs into, and the JetBrains plugin beside them:
 
 ```
@@ -106,14 +106,19 @@ crates/
                 parse_for_editor: a recovered module and its comments' spans
   ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
                 core-library/Kernel.ns, the core library in Newspeak
-  ns-cli/       the `ns-next` binary
-  ns-lsp/       the `ns-next-lsp` binary: the editor's language server --
-                diagnostics, semantic tokens, fold ranges, document symbols
+  ns-cli/       the `ns-next` binary, which runs programs: run, run-corpus,
+                load, bench, build
+  ns-tooling/   what both binaries share: loading a source, collecting `.ns`
+                files, printing diagnostics
+  ns-analyzer/  the `ns-next-analyzer` binary, which looks without running:
+                lsp (the language server: diagnostics, semantic tokens,
+                fold ranges, document symbols), dump-tokens, parse,
+                parse-corpus, disasm, inspect
   ns-memory/    reserved, committed and protected memory; the only crate with unsafe
 editors/
   jetbrains/    the JetBrains plugin: a Kotlin lexer mirroring ns-syntax's,
                 highlighting, a structure view, and the connection to
-                ns-next-lsp over the native LSP API
+                ns-next-analyzer over the native LSP API
 ```
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
@@ -176,18 +181,26 @@ assembled application instead; `load` rebuilds that world without running
 the front end at all and sends it `main: platform args:`. See
 [image-format.md](image-format.md), "The artifact" and "Packaging".
 
-### The `ns-next` binary
+### The binaries
 
-`parse`, `parse-corpus`, `run-corpus`, `run`, `load`, `bench`, `disasm`,
-`inspect`, `build` — one module each under
-`crates/ns-cli/src/commands/`. `main.rs` holds only the argument parser, the
-dispatch to them and the thread every command runs on — a thread of its own
-because the symbol interner is thread-local, spawned with the stack the front
-end needs ([execution.md](execution.md), "The depth limit"). What several
-commands share lives beside it: `source.rs` loads one source file,
-`project.rs` reads a JSON project file and its path rules, `program.rs`
-reads a program -- one source file or a project, its modules in module
-order -- compiles it and assembles its application with `new` or
+`ns-next` runs programs: `run`, `run-corpus`, `load`, `bench`, `build` — one
+module each under `crates/ns-cli/src/commands/`. `ns-next-analyzer` looks at
+Newspeak without running it: `lsp`, `dump-tokens`, `parse`, `parse-corpus`,
+`disasm` and `inspect`, one module each under
+`crates/ns-analyzer/src/commands/`; `disasm` compiles or decodes and `inspect`
+reads an image without loading it, and neither runs the program's code
+([editor-support.md](editor-support.md),
+"The editor tooling, `crates/ns-analyzer`"). Each `main.rs` holds only the
+argument parser, the dispatch to the commands and the thread every command
+runs on — a thread of its own because the symbol interner is thread-local,
+spawned with the stack the front end needs ([execution.md](execution.md),
+"The depth limit"). What both binaries share is the crate `ns-tooling`:
+`source.rs` loads and resolves one source file, collects the `.ns` files under
+a directory and prints diagnostics; it is a crate of its own so the language
+server's dependencies never reach `ns-next`. What `ns-next`'s commands share
+lives beside them: `project.rs` reads a JSON project file and its path rules,
+`program.rs` reads a program -- one source file or a project, its modules in
+module order -- compiles it and assembles its application with `new` or
 `packageUsing:` a manifest, and `entry.rs` sends `main: platform args:` and
 reports its outcome.
 
@@ -323,18 +336,18 @@ These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo nextest run --workspace --exclude ns-lsp   # includes every golden, under both lowerings
-cargo test --workspace --exclude ns-lsp --doc    # the doctests, which nextest does not run
-NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-lsp   # the same, moving everything at the run loop's safepoints
-NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-lsp  # the same, vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp # the same, collecting at every safepoint
-NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace --exclude ns-lsp    # the same, every instruction in its wide form
+cargo nextest run --workspace            # includes every golden, under both lowerings
+cargo test --workspace --doc             # the doctests, which nextest does not run
+NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace   # the same, moving everything at the run loop's safepoints
+NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace  # the same, vacating every inline cache at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace # the same, collecting at every safepoint
+NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace    # the same, every instruction in its wide form
 # (the finishing-a-batch skill runs the four stress modes at once, each into its own log)
-cargo nextest run -p ns-lsp             # the editor's language server: never starts the VM, so excluded above
+# the suite above is every crate's, ns-analyzer's included: its disasm and inspect tests guard the compiler's output and the image format
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
-cargo fmt --all                 # before every commit
-cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 211, failed 0
-cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
+cargo fmt --all                          # before every commit
+cargo run -p ns-analyzer -- parse-corpus corpus/modules   # parsed 211, failed 0
+cargo run -p ns-cli -- run-corpus corpus/modules          # ran 6, failed 0, skipped 205 -- every row under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report
 NS_NEXT_STRESS_COLLECT=1 cargo run -p ns-cli -- run-corpus corpus/modules # the same report

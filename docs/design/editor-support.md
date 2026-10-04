@@ -1,6 +1,6 @@
 # Editor support — the language server and the JetBrains plugin
 
-> **Status:** **Built:** the language server (`crates/ns-lsp/`: `analysis.rs`,
+> **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
 > `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
@@ -50,9 +50,11 @@ completion and formatting. Each is described under
 ## Architecture
 
 ```
-crates/ns-lsp/          binary `ns-next-lsp`: diagnostics, semantic tokens, fold
-                        ranges and document symbols over LSP, and `dump-tokens`
-                        for the lexer comparison
+crates/ns-analyzer/     binary `ns-next-analyzer`: its `lsp` command serves
+                        diagnostics, semantic tokens, fold ranges and document
+                        symbols over LSP; `dump-tokens` is for the lexer
+                        comparison; `parse`, `parse-corpus`, `disasm` and
+                        `inspect` look at a module or an image from the shell
 crates/ns-syntax/       + an editor entry, `parse_for_editor`: a module for
                         every source, recovered, with its comments' spans
 crates/ns-runtime/      + a resolver entry answering bindings and errors together
@@ -115,22 +117,35 @@ compared token by token.
   the same bundled binary, but gives nothing to other editors and would have
   to be replaced by a server for navigation.
 
-## The language server, `crates/ns-lsp`
+## The editor tooling, `crates/ns-analyzer`
 
-A crate of its own with a binary of its own, `ns-next-lsp`, so that its
-dependencies never reach the `ns-next` binary: `lsp-server` (rust-analyzer's
-transport), `lsp-types` and `serde_json`, on top of `ns-syntax` and
-`ns-runtime`. It never starts the VM; from `ns-runtime` it uses only the
-resolver.
+The editor tooling is a crate of its own with a binary of its own,
+`ns-next-analyzer`: everything that looks at Newspeak without running it. Its
+commands are `lsp`, the language server; `dump-tokens`, for the lexer
+comparison; `parse` and `parse-corpus` ([frontend.md](frontend.md)); `disasm`,
+which prints one compiled body ([compiler.md](compiler.md)); and `inspect`,
+which prints an image's structure ([image-format.md](image-format.md),
+"Reading an artifact"). It never runs a program: `disasm` compiles a module or
+decodes an image, `inspect` reads an image without loading it, and neither
+runs the program's code -- the only Newspeak that runs is the shipped core
+library's instantiation in the interpreter `disasm` bootstraps, and no other
+command starts an interpreter. Running is the `ns-next` binary's. Being a
+binary of its own keeps the server's dependencies out of `ns-next` and out of
+`ns-runtime`: `lsp-server` (rust-analyzer's transport), `lsp-types` and
+`serde_json`, on top of `ns-syntax`, `ns-runtime` and `ns-tooling`, the crate
+both binaries share (loading and resolving a source, collecting `.ns` files,
+printing diagnostics).
 
 Modules:
 
-- `main.rs` — with no argument it speaks LSP on stdin and stdout; with
-  `dump-tokens <files…>` it prints each file's tokens as JSON, for the lexer
-  comparison. `dump-tokens` prints UTF-16 offsets, the unit the plugin's
-  documents use, and refuses a file longer than a span can address
-  (`ns_syntax::source_too_long`) on stderr with a failing exit status, as it
-  does an unreadable one.
+- `main.rs` — the command dispatch onto `commands/`, one module per
+  command. With no command, an unknown one or arguments after `lsp` it prints
+  its usage on stderr and exits with status 2; it never starts the server
+  without `lsp`. `lsp` speaks LSP on stdin and stdout. `dump-tokens <files…>`
+  prints each file's tokens as JSON (`token_dump.rs`), for the lexer
+  comparison: UTF-16 offsets, the unit the plugin's documents use. It refuses
+  a file longer than a span can address (`ns_syntax::source_too_long`) on
+  stderr with a failing exit status, as it does an unreadable one.
 - `server.rs` — the message loop over `lsp-server`, synchronous on one thread.
   Lexing, parsing and resolving one file takes milliseconds, so neither a
   debounce nor a worker pool buys anything. Open documents are keyed by the
@@ -425,7 +440,11 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 
 ### Testing
 
-`cargo nextest run -p ns-lsp`:
+`cargo nextest run -p ns-analyzer`. Besides the language server's tests, the
+crate's suite holds the command-line tests (`command_line.rs`: the usage, exit
+status 2 for no command or an unknown one, `lsp` taking no argument) and the
+tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
+`inspect`:
 
 - positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
   (surrogate pairs), at line ends and at the end of the file;
@@ -563,17 +582,17 @@ Components:
   `NewspeakStructureElement`, over the server's document symbols, with
   `NewspeakSymbolKinds` and `NewspeakDocumentSymbols` in the client
   descriptor's customization ("Structure").
-- **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
-  default, typed or chosen with a file picker, and a "Restart server" action.
-  Stored at application level: the path is specific to a machine, so it does
-  not belong in `.idea/`.
+- **Settings** — *Languages & Frameworks → Newspeak*: an "ns-next-analyzer
+  path", the server binary, empty by default, typed or chosen with a file
+  picker, and a "Restart server" action. Stored at application level: the
+  path is specific to a machine, so it does not belong in `.idea/`.
 
 ### Which binary runs
 
 1. The path from the settings, when set — for working on `ns-syntax` or the
    resolver and seeing the change in the editor at once, pointed at
-   `target/debug/ns-next-lsp.exe`.
-2. Otherwise `<plugin directory>/bin/<os>-<arch>/ns-next-lsp[.exe]`, beside the
+   `target/debug/ns-next-analyzer.exe`.
+2. Otherwise `<plugin directory>/bin/<os>-<arch>/ns-next-analyzer[.exe]`, beside the
    plugin's jars rather than inside one, so it can be started without
    extracting it first. On Unix the executable bit is set on first start,
    because the zip format does not carry it.
@@ -604,7 +623,7 @@ plugin's code.
   resolver provisions, so the build does not depend on which JDK happens to
   run Gradle.
 - **Rust from Gradle.** `buildLanguageServerDebug` and `buildLanguageServerRelease`
-  each run `cargo build -p ns-lsp` at the repository root, debug and `--release`
+  each run `cargo build -p ns-analyzer` at the repository root, debug and `--release`
   respectively; `tasks.test` depends on the debug build and points the tests at
   it. Every sandbox an IDE starts from depends on the release build and gets
   the binary in `bin/<os>-<arch>/` for the host it runs on, the directory
@@ -628,8 +647,8 @@ plugin's code.
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,
 name, vendor, description, change notes, `sinceBuild` and the dependency on
 `com.intellij.modules.lsp`. The bundled binary contains third-party crates —
-those `cargo tree -p ns-lsp -e normal,no-proc-macro` shows compiled into
-`ns-next-lsp` itself, excluding build-time-only proc macros — whose licence
+those `cargo tree -p ns-analyzer -e normal,no-proc-macro` shows compiled into
+`ns-next-analyzer` itself, excluding build-time-only proc macros — whose licence
 texts go into a hand-maintained `THIRD-PARTY-NOTICES` in the plugin; the list
 is short enough that a generator such as `cargo-about` would be one more tool
 for no gain. `verifyPlugin` checks the lowest supported and the current
@@ -679,7 +698,7 @@ The server's own tests are described under its section, above ("Testing").
 
 **Kotlin, `./gradlew -p editors/jetbrains check`:**
 
-- the lexer comparison (`LexerComparisonTest`) — `ns-next-lsp dump-tokens`
+- the lexer comparison (`LexerComparisonTest`) — `ns-next-analyzer dump-tokens`
   against the Kotlin lexer over `corpus/modules`, `goldens/` and `Kernel.ns`:
   kind and span of every token must agree, and the Kotlin lexer's whitespace
   and comment tokens must fill exactly the gaps between the Rust tokens.
@@ -706,24 +725,24 @@ The server's own tests are described under its section, above ("Testing").
   innermost symbol around it, and a member with an access shows the kind's
   and the access icon in one row under the platform's own `IconManager`.
 
-**Gates.** The runtime's per-commit suite is `cargo nextest run --workspace
---exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide
-tests, with `cargo nextest run -p ns-lsp` its own per-commit gate for a change that
-touches `crates/ns-lsp/` or `crates/ns-syntax/`; `cargo clippy --workspace
---all-targets` still compiles `ns-lsp` on every commit, so a resolver or
-`ns-syntax` change that breaks its API fails at the commit even when its tests
-only run at the end of the batch (`CLAUDE.md`, "Working in this repository").
-The stress-mode runs exclude `ns-lsp` too: it never starts the VM. The
+**Gates.** There is one suite: `cargo nextest run --workspace` runs
+`ns-analyzer`'s tests before every commit and under every stress mode, like
+every other crate's (`CLAUDE.md`, "Working in this repository"). Besides the
+language server's, they are the tests of `disasm` and `inspect`, which guard
+the compiler's output (the disassembly snapshots) and the image format (an
+image decoded and listed, its bodies matching the source's); under the wide
+stress mode the analyzer's subprocess compiles every instruction wide, so they
+also check that disassembly and decoding do not depend on the form. The
 plugin's own gate joins this:
 
-- **Before every commit** that touches `editors/jetbrains/`, `crates/ns-lsp/`
+- **Before every commit** that touches `editors/jetbrains/`, `crates/ns-analyzer/`
   or `crates/ns-syntax/` — `./gradlew -p editors/jetbrains check`, besides the
   usual `fmt` and `clippy`. A change to `crates/ns-syntax/src/lexer.rs` must be
   mirrored in `NewspeakLexer.kt` in the same commit, or the comparison fails.
-- **Once at the end of a batch**, whether runtime or editor work, both test
-  groups; and, for a batch that touched `editors/jetbrains/`,
-  `./gradlew -p editors/jetbrains verifyPlugin buildPlugin` — which
-  downloads several IDEs, and so is not a per-commit gate. A resolver
+- **Once at the end of a batch**, whether runtime or editor work, the full
+  suite under the four stress modes; and, for a batch that touched
+  `editors/jetbrains/`, `./gradlew -p editors/jetbrains verifyPlugin buildPlugin`
+  — which downloads several IDEs, and so is not a per-commit gate. A resolver
   change that shifts the semantic tokens is then noticed within one batch.
 
 ## Known gaps
@@ -753,8 +772,9 @@ and resolves cleanly in a JetBrains IDE today.
   work is in Rust. A formatter must keep each comment where it was; the
   comments' spans exist (`parse_for_editor`'s `comments`, beside the AST),
   and what remains is attaching each to the nodes around it, and the
-  formatter itself: one module that an `ns-next fmt` command shares, so the
-  editor, the command line and any later formatting gate use one formatter.
+  formatter itself: one module that an `ns-next-analyzer fmt` command shares,
+  so the editor, the command line and any later formatting gate use one
+  formatter.
   It would not touch a file with a syntax error.
 - **Navigation.** Go to definition and find usages need an AST for a file
   that does not parse, while it is typed; the fault-tolerant parse exists

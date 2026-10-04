@@ -19,9 +19,9 @@
           instance side and class side, its slots and methods with their access shown as in
           Java, and sticky lines — kept while a file has syntax errors.</li>
     </ul>
-    <p>The language server, <code>ns-next-lsp</code>, is bundled for the platform the plugin was
+    <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with
-    <code>cargo build -p ns-lsp --release</code> and set its path under
+    <code>cargo build -p ns-analyzer --release</code> and set its path under
     <em>Settings | Languages &amp; Frameworks | Newspeak</em>.</p>
     ]]></description>
 

@@ -7,7 +7,7 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The kinds the server's document symbols carry (`crates/ns-lsp/src/document_symbols.rs`, `encode`) onto icons. */
+/** The kinds the server's document symbols carry (`crates/ns-analyzer/src/document_symbols.rs`, `encode`) onto icons. */
 class NewspeakSymbolKindsTest {
     @Test fun aSlotShowsItsAccessors() {
         // A slot with a getter only, then a slot with a getter and a setter.

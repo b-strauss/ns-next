@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crate::program::selector_of;
-use crate::source::collect_ns_files;
+use ns_tooling::source::collect_ns_files;
 
 /// One row of `corpus/runnable.toml`: a corpus module that is expected to
 /// run, with everything needed to check that it still does.

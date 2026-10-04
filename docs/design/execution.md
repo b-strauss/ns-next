@@ -1244,7 +1244,7 @@ allocations (the `Rc<RefCell<Frame>>` block and the `arguments` vector `collect`
 builds), reference-count traffic on `sender`, `method`, `bindings` and the
 defining class, and a `HashMap` lookup per invocation just to find the compiled
 body. A method with temporaries also allocated a `temporaries` vector. Row two's
-`^x` has none (`ns-next disasm` gives `tick:` one register, its argument, where
+`^x` has none (`ns-next-analyzer disasm` gives `tick:` one register, its argument, where
 row three's has three), so its `temporaries` vector stayed empty and never allocated,
 and row three's allocation landed in the ~97 ns attributed to `+`. On top of
 that, every register read and write in the VM took a `RefCell` borrow, which
@@ -3419,7 +3419,7 @@ something isolated; no profile was taken of this step.
 
 **What the ordering does track is the share of a source's per-iteration
 sends the step removed, discounted by how expensive the sends left behind
-are.** Counting the send instructions `ns-next disasm` prints in each
+are.** Counting the send instructions `ns-next-analyzer disasm` prints in each
 source's loop, on the path an iteration actually takes:
 
 | Source | sends per iteration before | after | share removed | measured |
@@ -5381,9 +5381,10 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the
   captured-frame condition like any other.
-- **The CLI runs every command on a thread it spawns** with an explicit stack
-  (`std::thread::Builder`, `INTERPRETER_STACK_BYTES` in
-  `crates/ns-cli/src/main.rs`): 8 MiB, four times the 2 MiB libtest threads
+- **`ns-next` runs every command on a thread it spawns** with an explicit
+  stack (`std::thread::Builder`, `INTERPRETER_STACK_BYTES` in
+  `crates/ns-cli/src/main.rs`; `ns-next-analyzer`, which runs the same front
+  end and compiler, does the same with `ANALYZER_STACK_BYTES`): 8 MiB, four times the 2 MiB libtest threads
   the suite runs the deepest nesting the parser accepts on, since what still
   recurses on the Rust stack is the front end and the compiler, bounded by the
   parser's nesting ceiling ("What the trampoline moved" above) but for a

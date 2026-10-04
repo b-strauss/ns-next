@@ -99,4 +99,4 @@ fun platformDirectory(operatingSystemName: String, operatingSystemArchitecture: 
 }
 
 private fun executableName(operatingSystemName: String): String =
-    if (isWindows(operatingSystemName)) "ns-next-lsp.exe" else "ns-next-lsp"
+    if (isWindows(operatingSystemName)) "ns-next-analyzer.exe" else "ns-next-analyzer"

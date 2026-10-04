@@ -411,11 +411,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **A decompiler** for exporting an image back to `.ns`, and the other image
   questions below. [image-format.md](design/image-format.md), "Open questions".
 
-## Planned: editor support
+## Planned: editor support and the analyzer
 
 - **Formatting**, through `textDocument/formatting`, which needs comments
   attached to AST nodes -- their spans are kept, beside the AST
-  (`parse_for_editor`) -- and an `ns-next fmt` command.
+  (`parse_for_editor`) -- and an `ns-next-analyzer fmt` command sharing the
+  formatter.
 - **Navigation** — go to definition, find usages —
   `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
@@ -423,6 +424,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
+- **Further `ns-next-analyzer` commands**, each looking without running: a
+  heap dump, a deeper inspection of an image, and inspection of the JIT's
+  compiled code once the JIT tiers exist (road steps 8 and 9 above).
 
 [editor-support.md](design/editor-support.md), "Planned later".
 
@@ -620,7 +624,7 @@ value objects are never copied across an actor boundary (§3.1.1).
   does: only `Send`'s `Drop` and `Send::receiver_chain` take a chain link by
   link. The compiler clones a slot's initializer for a simultaneous slot's
   future (`compiler/simultaneous.rs`, `future_block`), so a long chain there
-  overflows in the clone too. `ns-lsp`'s `the_editor_parse_agrees_with_parse`
+  overflows in the clone too. `ns-analyzer`'s `the_editor_parse_agrees_with_parse`
   compares modules with `==`, and the snapshot tests print them with
   `{:?}`; both are safe only because no fixture holds such a chain.
   Hand-written impls that take the chain link by link would close it.
@@ -670,7 +674,7 @@ text and `to:by:do:`'s zero step.
   an artifact".
 - **`disasm` of an artifact reaches module 0 only**: `--class` is rooted at
   the application's root class, so a project's other modules, the
-  manifest's included, have no path (`crates/ns-cli/src/commands/disasm.rs`);
+  manifest's included, have no path (`crates/ns-analyzer/src/commands/disasm.rs`);
   `inspect --full` disassembles every body. A module selector, by name or
   index, would close it. [image-format.md](design/image-format.md),
   "Reading an artifact".
@@ -783,7 +787,7 @@ text and `to:by:do:`'s zero step.
   [editor-support.md](design/editor-support.md), "Structure" ("Known
   behaviours"). Noted 2026-10-04.
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
-  (`crates/ns-lsp/tests/corpus.rs`) assumes `parse` accepts no module with
+  (`crates/ns-analyzer/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
 
 ## Missing tests
@@ -912,7 +916,7 @@ Small, deliberately left, none affecting an outcome.
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
 
-- `crates/ns-lsp/src/document_symbols.rs` (noted 2026-10-04): `effective`
+- `crates/ns-analyzer/src/document_symbols.rs` (noted 2026-10-04): `effective`
   answers an `Option` that is always `Some`, so `detail`'s `(None, true)` arm
   is unreachable; and `SymbolCategory` has no doc comment of its own.
 

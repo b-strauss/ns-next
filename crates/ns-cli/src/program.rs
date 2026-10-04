@@ -7,7 +7,9 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::{project, source};
+use ns_tooling::source;
+
+use crate::project;
 
 pub(crate) enum Assembly {
     New,

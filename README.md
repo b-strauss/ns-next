@@ -48,7 +48,8 @@ dependencies.
 ## Build and test
 
 ```bash
-# build every crate; the ns-next binary lands in target/debug
+# build every crate; the ns-next and ns-next-analyzer binaries land in
+# target/debug
 cargo build --workspace
 # the full suite, including every golden under both lowerings, each golden a
 # test of its own; nextest runs the tests of every binary in parallel
@@ -66,7 +67,7 @@ cargo fmt --all
 # lints, must be warning-free
 cargo clippy --workspace --all-targets
 # parser corpus gate: must report "parsed 211, failed 0"
-cargo run -p ns-cli -- parse-corpus corpus/modules
+cargo run -p ns-analyzer -- parse-corpus corpus/modules
 # runnable corpus gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
@@ -80,8 +81,9 @@ cargo build --workspace --release
 ```
 
 On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
-`ns-next.exe` is one self-contained file: it needs no Rust installation and no VC++
-redistributable on the machine that runs it.
+`ns-next.exe` and `ns-next-analyzer.exe` are each one self-contained file: they
+need no Rust installation and no VC++ redistributable on the machine that runs
+them.
 
 `goldens/` holds end-to-end programs, each a `.ns` source or a `.json` project file
 and a `.toml` beside it recording the exit status, stdout and stderr that program must
@@ -124,17 +126,22 @@ cargo run -p ns-cli -- run goldens/tool/manifest/a_project_reaches_its_modules_t
 The program's arguments follow `--` (`run app.ns -- first second`) and reach
 `main:args:` as an `Array` of `String`s; `load` and `bench` take them the
 same way. `--lowering reference` compiles with the naive reference lowering
-instead of the optimized one; `run`, `build` and `disasm` take it.
+instead of the optimized one; `run` and `build` take it, as does `ns-next-analyzer disasm`.
+
+`ns-next` runs programs; `ns-next-analyzer` looks at them without running
+any: it parses, compiles a body to print it, decodes an image to show its
+structure, and is the language server behind the editor plugin.
 
 ```bash
-# print one compiled body; nothing is instantiated or run. Takes a .ns file,
-# which it compiles, or an artifact, whose bodies it decodes instead
-cargo run -p ns-cli -- disasm goldens/language/block/blocks_and_return.ns find:in:
+# print one compiled body; nothing of the program is instantiated or run.
+# Takes a .ns file, which it compiles, or an artifact, whose bodies it decodes
+# instead
+cargo run -p ns-analyzer -- disasm goldens/language/block/blocks_and_return.ns find:in:
 ```
 
 ```bash
 # check that a file parses; --ast prints the syntax tree
-cargo run -p ns-cli -- parse goldens/library/platform/hello.ns
+cargo run -p ns-analyzer -- parse goldens/library/platform/hello.ns
 ```
 
 ```bash
@@ -151,10 +158,10 @@ cargo run -p ns-cli -- load app.img
 # look inside an artifact without loading or running it: header flags,
 # section offsets, the symbol table, every body in the code table, the mixin
 # table and the modules
-cargo run -p ns-cli -- inspect app.img
+cargo run -p ns-analyzer -- inspect app.img
 # everything, the way `javap -v` renders a class file: mixin rows expanded,
 # every body disassembled, and the object graph read record by record
-cargo run -p ns-cli -- inspect app.img --full
+cargo run -p ns-analyzer -- inspect app.img --full
 ```
 
 ```bash
@@ -178,17 +185,19 @@ cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/are-we-fast-yet.
 cargo nextest run -p ns-cli --profile benchmarks
 ```
 
-`ns-next <command> --help` documents the remaining flags.
+`ns-next <command> --help` and `ns-next-analyzer <command> --help` document the
+remaining flags.
 
 ## Repository layout
 
 ```
 crates/ns-syntax     lexer, parser, AST, spans
 crates/ns-runtime    resolver, object model, dispatch, compiler, VM, core library, image format
-crates/ns-cli        the `ns-next` binary
-crates/ns-lsp        the `ns-next-lsp` binary: a language server for `.ns` files
+crates/ns-cli        the `ns-next` binary: runs, packages and times programs
+crates/ns-analyzer   the `ns-next-analyzer` binary: the language server, parse, disasm, inspect; never runs a program
+crates/ns-tooling    what both binaries share: loading and resolving a source, collecting `.ns` files, diagnostics
 crates/ns-memory     reserved, committed and protected memory: the only crate with unsafe
-editors/jetbrains/   the JetBrains plugin, over ns-next-lsp (see its README.md)
+editors/jetbrains/   the JetBrains plugin, over ns-next-analyzer (see its README.md)
 corpus/              vendored Newspeak modules used as a parser corpus
 goldens/             end-to-end programs, each with its recorded outcome
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)

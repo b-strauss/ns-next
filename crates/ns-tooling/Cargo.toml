@@ -1,0 +1,13 @@
+[package]
+name = "ns-tooling"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ns-syntax = { path = "../ns-syntax" }
+ns-runtime = { path = "../ns-runtime" }
+
+[lints]
+workspace = true

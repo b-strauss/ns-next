@@ -46,9 +46,9 @@ val executableSuffix = if (System.getProperty("os.name").startsWith("Windows")) 
 
 /** The debug build is what the tests use: the release profile's fat LTO makes that build slow. */
 val buildLanguageServerDebug by tasks.registering(Exec::class) {
-    description = "Builds ns-next-lsp (debug) with Cargo for the tests."
+    description = "Builds ns-next-analyzer (debug) with Cargo for the tests."
     workingDir = repositoryRoot
-    commandLine("cargo", "build", "-p", "ns-lsp")
+    commandLine("cargo", "build", "-p", "ns-analyzer")
 }
 
 tasks.test {
@@ -56,13 +56,13 @@ tasks.test {
     systemProperty("nsNext.repositoryRoot", repositoryRoot.absolutePath)
     systemProperty(
         "nsNext.languageServer",
-        repositoryRoot.resolve("target/debug/ns-next-lsp$executableSuffix").absolutePath,
+        repositoryRoot.resolve("target/debug/ns-next-analyzer$executableSuffix").absolutePath,
     )
     // The tests read these through the system properties above, which Gradle
     // sees only as strings. Declared as inputs, a change to the Rust lexer
     // (through the rebuilt server), the kernel, a corpus module or a golden
     // reruns the lexer comparison instead of leaving `check` up to date.
-    inputs.file(repositoryRoot.resolve("target/debug/ns-next-lsp$executableSuffix"))
+    inputs.file(repositoryRoot.resolve("target/debug/ns-next-analyzer$executableSuffix"))
         .withPropertyName("languageServer")
     inputs.dir(repositoryRoot.resolve("corpus/modules")).withPropertyName("corpusModules")
     inputs.dir(repositoryRoot.resolve("goldens")).withPropertyName("goldens")
@@ -115,9 +115,9 @@ val hostPlatform: Provider<String> = providers
     }
 
 val buildLanguageServerRelease by tasks.registering(Exec::class) {
-    description = "Builds ns-next-lsp (release) with Cargo for the plugin distribution."
+    description = "Builds ns-next-analyzer (release) with Cargo for the plugin distribution."
     workingDir = repositoryRoot
-    commandLine("cargo", "build", "-p", "ns-lsp", "--release")
+    commandLine("cargo", "build", "-p", "ns-analyzer", "--release")
 }
 
 // Every sandbox an IDE is started from gets the server: `prepareSandbox`, which
@@ -130,7 +130,7 @@ tasks.withType<PrepareSandboxTask>()
     .configureEach {
         dependsOn(buildLanguageServerRelease)
         // Beside the jars rather than inside one, so it starts without being extracted.
-        from(repositoryRoot.resolve("target/release/ns-next-lsp$executableSuffix")) {
+        from(repositoryRoot.resolve("target/release/ns-next-analyzer$executableSuffix")) {
             into(pluginName.zip(hostPlatform) { name, platform -> "$name/bin/$platform" })
         }
         from(layout.projectDirectory.file("THIRD-PARTY-NOTICES.txt")) {

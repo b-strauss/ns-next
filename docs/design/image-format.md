@@ -13,7 +13,7 @@
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
 > `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
 > `crates/ns-runtime/core-library/Manifest.ns`. CLI: `ns-next build`,
-> `ns-next load`, `ns-next inspect`, and `ns-next disasm` on an artifact;
+> `ns-next load`, `ns-next-analyzer inspect`, and `ns-next-analyzer disasm` on an artifact;
 > `crates/ns-cli/src/project.rs` (the project file) and `program.rs`
 > (reading, compiling and assembling a program).
 
@@ -1265,7 +1265,7 @@ name, so the bodies of a project's other modules, the manifest's included,
 are not reachable through `disasm` of the artifact (`inspect --full` shows
 them).
 
-`ns-next inspect <artifact>` prints the file itself. Its default is a table of
+`ns-next-analyzer inspect <artifact>` prints the file itself. Its default is a table of
 contents — header flags, section offsets, the symbol table, **the code table
 with every body named**, the mixin table, and the module section, each
 module's origin, whether it carries source and its root section — and
@@ -1365,7 +1365,7 @@ the application's factory and initializers run with no platform in
 existence.
 
 **The project file** is JSON (the user's choice; it brings `serde_json` into
-`ns-cli`, which `ns-lsp` already used):
+`ns-cli`, which `ns-analyzer` already used):
 
 ```json
 {
@@ -1621,7 +1621,7 @@ builtins.
   member of every object is refused before anything runs, since the
   manifest could never answer it.
 - **The project file is JSON** (the user's choice), read with `serde_json`,
-  which `ns-lsp` already depended on, so no new crate entered the lock file.
+  which `ns-analyzer` already depended on, so no new crate entered the lock file.
   Unknown fields are refused, so a misspelt key is a message rather than a
   module silently missing.
 - **Module order is fixed: root, the project's modules as written, then

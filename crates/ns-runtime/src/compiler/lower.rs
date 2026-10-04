@@ -3358,7 +3358,7 @@ mod tests {
         // Emission order: `size` 0; the `do:` block's `printString` 1; the inner
         // block's `foo` 2, lowered when its literal is reached; `value:` 3;
         // `do:` 4, after its block literal; `isEmpty` 5. Verified against
-        // `ns-next disasm` on START when the plan was written.
+        // `ns-next-analyzer disasm` on START when the plan was written.
         assert_eq!(numbers(&code), vec![0, 4, 5]);
         assert_eq!(code.family_size, 6);
         let block = first_block(&code);

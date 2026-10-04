@@ -1,0 +1,18 @@
+---
+source: crates/ns-analyzer/tests/disasm_snapshots.rs
+expression: "disasm(\"language/instance_init\", &[\"--initializer\"])"
+---
+initializer InstanceInit (args 0, registers 3)
+   0   stmt 0  LoadLiteral r0, 'hi'
+   1   stmt 0  InitSlot own 0 <- r0
+   2   stmt 1  LoadLiteral r0, 0
+   3   stmt 1  InitSlot own 1 <- r0
+   4   stmt 2  LoadLiteral r0, false
+   5   stmt 2  InitSlot own 2 <- r0
+   6   stmt 3  SendLexical r0 <- depth 0 #greeting () @0
+   7   stmt 3  SendPublic r1 <- r0 #size () @1
+   8   stmt 3  SendLexical r2 <- depth 0 #count: (r1) @2
+   9   stmt 4  LoadLiteral r0, true
+  10   stmt 4  SendLexical r1 <- depth 0 #initialized: (r0) @3
+  11        -  LoadSelf r2
+  12        -  ImplicitReturn r2

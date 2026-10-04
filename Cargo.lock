@@ -314,30 +314,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "ns-cli"
+name = "ns-analyzer"
 version = "0.1.0"
 dependencies = [
  "clap",
  "indoc",
  "insta",
- "libtest-mimic",
- "ns-runtime",
- "ns-syntax",
- "serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "ns-lsp"
-version = "0.1.0"
-dependencies = [
- "indoc",
  "lsp-server",
  "lsp-types",
  "ns-runtime",
  "ns-syntax",
+ "ns-tooling",
  "serde_json",
+]
+
+[[package]]
+name = "ns-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "indoc",
+ "libtest-mimic",
+ "ns-runtime",
+ "ns-syntax",
+ "ns-tooling",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -363,6 +366,14 @@ version = "0.1.0"
 dependencies = [
  "indoc",
  "insta",
+]
+
+[[package]]
+name = "ns-tooling"
+version = "0.1.0"
+dependencies = [
+ "ns-runtime",
+ "ns-syntax",
 ]
 
 [[package]]

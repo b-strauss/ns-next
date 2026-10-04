@@ -9,7 +9,7 @@
 > ahead of the optimized lowering), `compiler/control_flow.rs`
 > (inlining, and `recognize_mirror_send`), `compiler/primitive_method.rs`
 > (which kernel methods are primitive methods), `compiler/reference.rs` (the
-> reference lowering). CLI: `ns-next disasm`.
+> reference lowering). CLI: `ns-next-analyzer disasm`.
 
 This is the producer side. How the bytecode is then run — activations, the VM,
 the dispatch loop — is [execution.md](execution.md).
@@ -702,7 +702,7 @@ runs uncached ([dispatch.md](dispatch.md), "Code families" and
 no family reaches, and the reference lowering emits it on every send, so
 everything it compiles runs the full lookup on every send, records nothing,
 and is the uncached oracle the cached optimized lowering is checked against
-("The reference lowering" below). Its `family_size` is 0. `ns-next disasm`
+("The reference lowering" below). Its `family_size` is 0. `ns-next-analyzer disasm`
 prints a send's number as `@N`, and `UNCACHED` as `@-`.
 
 ## Compilation cannot fail
@@ -786,14 +786,15 @@ on it.
 
 ## Reading the output
 
-`ns-next disasm <file.ns> <selector>` prints one body's instructions, compiling
-only — nothing is instantiated or run — and addressing code through mixins,
+`ns-next-analyzer disasm <file.ns> <selector>` prints one body's instructions, compiling
+only — nothing of the program is instantiated or run; the interpreter it compiles
+on instantiates only the shipped core library — and addressing code through mixins,
 since that is what code lives on. It also accepts an artifact in place of a
 `.ns` file, decoding rather than compiling; a deployed binary ships no source
 at all, so that path is what makes `disasm` usable on one. See
 [image-format.md](image-format.md)'s "Reading an artifact".
 
-For every body at once rather than one, `ns-next inspect <artifact> --full`
+For every body at once rather than one, `ns-next-analyzer inspect <artifact> --full`
 disassembles the whole code table with each body attributed to the declaration
 that owns it. `disasm` is the way in when you know which body you want;
 `inspect` is the way in when you do not.
@@ -927,18 +928,20 @@ which lowering produced that code, because nothing would read it.
 defaulting to optimized. `disasm` of one method under both is the first tool to
 reach for when the oracle fires. `bench` does not take it, since timing the
 oracle means nothing, and `load` and `inspect` decode rather than compile.
-The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs`, converted
-into `ns_runtime::Lowering` and passed to `program::load_program`, which
-`run` and `build` go through for every module of a program, the manifest
-included; `disasm` compiles one source file through
+The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs` and,
+for `disasm`, its copy in `crates/ns-analyzer/src/main.rs`, each converted
+into `ns_runtime::Lowering`. `ns-next` passes it to `program::load_program`,
+which `run` and `build` go through for every module of a program, the
+manifest included; `ns-next-analyzer disasm` compiles one source file through
 `Interpreter::compile_module` on an interpreter bootstrapped with the switch,
 takes the switch as an `Option` and refuses it for an artifact, which
 carries the code it was built with.
 
 A command that dropped the switch would compare the optimized lowering with
-itself, and no program's output would show it. `crates/ns-cli/tests/lowering.rs`
-therefore reads the code instead: `disasm`'s listing, and `inspect --full` of an
-artifact `build` wrote, have no branch under the reference
+itself, and no program's output would show it. The tests therefore read the
+code instead: `disasm`'s listing (`crates/ns-analyzer/tests/lowering.rs`), and
+the inspector's full listing of an artifact `build` wrote
+(`crates/ns-cli/tests/lowering.rs`), have no branch under the reference
 lowering and one under the optimized. `run` writes nothing to read; it is
 covered by handing the switch to the same `program::load_program` call.
 
@@ -1191,7 +1194,7 @@ as an operand is across a send. The design is
 Compiled code lives on a module's mixin tree, so what reads only the code
 takes mixins, never a class object. `image::encode_code_table`,
 `image::mixins::plan` and `image::mixins::encode` take the module roots'
-mixins and no `Heap`. `ns-next disasm` takes the root declaration from
+mixins and no `Heap`. `ns-next-analyzer disasm` takes the root declaration from
 `Interpreter::compile_module` for a source -- compiled with the chosen
 lowering exactly as `load_module` compiles it, but applied to nothing -- or
 from `LoadedModule::declaration` for an artifact. None of them holds a

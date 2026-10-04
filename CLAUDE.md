@@ -2,7 +2,7 @@
 
 A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, parser,
 resolver, bytecode compiler and register VM, and a versioned image format.
-Rust 1.98.0, edition 2021, five crates:
+Rust 1.98.0, edition 2021, six crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
   `parse` refuses a source with errors, `parse_for_editor` answers a
@@ -33,23 +33,32 @@ Rust 1.98.0, edition 2021, five crates:
   `heap/world.rs` and reached only through `Interpreter::enter`) and the image
   format (`image/`).
   `docs/design/README.md`, "The map", says which document covers each part.
-- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
-  `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
-  JSON project file of several modules (`project.rs`, `program.rs`).
-- `crates/ns-lsp` — the `ns-next-lsp` binary: a language server for `.ns` files
-  (diagnostics, semantic tokens, fold ranges, document symbols) and
-  `dump-tokens`, which the JetBrains plugin's lexer is checked against. It never starts the VM; its server dependencies
-  (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime`,
-  and `serde_json` is shared by `ns-lsp` and `ns-cli` (the project file is JSON)
-  (`docs/design/editor-support.md`).
+- `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
+  `load`, `bench`, `build`. A program is one `.ns` file or a JSON project file of
+  several modules (`project.rs`, `program.rs`).
+- `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
+  Newspeak without running it: `lsp`, a language server for `.ns` files
+  (diagnostics, semantic tokens, fold ranges, document symbols); `dump-tokens`,
+  which the JetBrains plugin's lexer is checked against; `parse`, `parse-corpus`,
+  `disasm` and `inspect`. It never runs a program: `disasm` compiles a module or
+  decodes an image, `inspect` reads an image without loading it, and neither runs
+  the program's code (the interpreter `disasm` bootstraps instantiates only the
+  shipped core library). Its server dependencies
+  (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime` or
+  `ns-next`; `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project
+  file is JSON) (`docs/design/editor-support.md`).
+- `crates/ns-tooling` — what `ns-next` and `ns-next-analyzer` share: loading and
+  resolving a source file, collecting `.ns` files, printing diagnostics. It is a crate
+  of its own so the analyzer's server dependencies never reach `ns-next`; it depends
+  on `ns-syntax` and `ns-runtime` only.
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
-  POSIX). The only crate with `unsafe`; `ns-runtime` and `ns-lsp` forbid it.
+  POSIX). The only crate with `unsafe`; `ns-runtime`, `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
-module (`LexerComparisonTest`), the connection to `ns-next-lsp`, and a
+module (`LexerComparisonTest`), the connection to `ns-next-analyzer`, and a
 structure view of its own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
@@ -236,17 +245,16 @@ Before every commit:
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets          # must be warning-free
-cargo nextest run --workspace --exclude ns-lsp  # every golden, both lowerings
-cargo test --workspace --exclude ns-lsp --doc   # nextest runs no doctests
-cargo run -p ns-cli -- parse-corpus corpus/modules   # "parsed 211, failed 0"
+cargo nextest run --workspace                   # every golden, both lowerings
+cargo test --workspace --doc                    # nextest runs no doctests
+cargo run -p ns-analyzer -- parse-corpus corpus/modules   # "parsed 211, failed 0"
 ```
 
 Plus, per commit touching them:
 
-- `crates/ns-lsp` or `crates/ns-syntax` → `cargo nextest run -p ns-lsp`
 - `crates/ns-memory` → `cargo clippy -p ns-memory --all-targets --target x86_64-unknown-linux-gnu`
   and the same for `aarch64-apple-darwin`
-- `editors/jetbrains`, `crates/ns-lsp` or `crates/ns-syntax` →
+- `editors/jetbrains`, `crates/ns-analyzer` or `crates/ns-syntax` →
   `./editors/jetbrains/gradlew -p editors/jetbrains check` (when unsure whether
   a change reaches the plugin, run it)
 
