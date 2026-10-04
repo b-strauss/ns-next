@@ -24,6 +24,7 @@ import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.InvalidPathException
 import java.nio.file.Path
 
 /** The ns-next subcommand a Newspeak run configuration starts. */
@@ -99,8 +100,8 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         if (runtime !is RuntimeLocation.Found) {
             throw RuntimeConfigurationError(runtimeProblem(runtime), ::openNewspeakSettings)
         }
-        val projectFile = projectFile?.trim().orEmpty()
-        if (projectFile.isEmpty() || !Files.isRegularFile(Path.of(projectFile))) {
+        val projectPath = projectFilePath(this)
+        if (projectPath == null || !Files.isRegularFile(projectPath)) {
             throw RuntimeConfigurationError(NO_PROJECT_FILE)
         }
         if (command == NewspeakCommand.BENCH && iterations < 1) {
@@ -134,12 +135,24 @@ private const val NO_PROJECT_FILE = "Choose the project's newspeak.json"
 
 /**
  * The directory ns-next is given: the project file's, made absolute first, as
- * a relative path has no parent of its own. Null without a project file, or
- * for one naming a root, which has no parent; `getState` refuses both before
- * anything is started.
+ * a relative path has no parent of its own. Null without a project file, for
+ * one naming a root, which has no parent, and for text that is no path;
+ * `getState` refuses all three before anything is started.
  */
-fun projectDirectory(configuration: NewspeakRunConfiguration): Path? =
-    configuration.projectFile?.trim()?.takeIf(String::isNotEmpty)?.let { file -> Path.of(file).toAbsolutePath().parent }
+fun projectDirectory(configuration: NewspeakRunConfiguration): Path? = projectFilePath(configuration)?.toAbsolutePath()?.parent
+
+/**
+ * The project file as a path; null when none is set or the text is no valid
+ * path (a `"` or `<` on Windows, say), which is refused as a missing one is.
+ */
+private fun projectFilePath(configuration: NewspeakRunConfiguration): Path? {
+    val file = configuration.projectFile?.trim()?.takeIf(String::isNotEmpty) ?: return null
+    return try {
+        Path.of(file)
+    } catch (_: InvalidPathException) {
+        null
+    }
+}
 
 /** Why the runtime cannot be started, in the same words whether the check or the start finds it. */
 private fun runtimeProblem(location: RuntimeLocation): String = when (location) {

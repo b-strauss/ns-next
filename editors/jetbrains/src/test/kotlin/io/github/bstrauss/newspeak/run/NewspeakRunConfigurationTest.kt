@@ -134,6 +134,16 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         configuration().apply { this.projectFile = projectFile }.checkConfiguration()
     }
 
+    // A NUL is invalid in a path on every platform, so this holds beyond Windows' `"` and `<`.
+    fun testAnInvalidProjectPathIsRefusedLikeAMissingOne() {
+        val directory = Files.createTempDirectory("ns-next-run-configuration")
+        NewspeakSettings.getInstance().state.runtimePath = Files.createFile(directory.resolve("ns-next")).toString()
+        val invalid = configuration().apply { projectFile = "/work/a\u0000b/newspeak.json" }
+        val error = Assert.assertThrows(RuntimeConfigurationError::class.java) { invalid.checkConfiguration() }
+        assertEquals("Choose the project's newspeak.json", error.localizedMessage)
+        assertNull(projectDirectory(invalid))
+    }
+
     fun testAMissingRuntimeFileIsAnError() {
         NewspeakSettings.getInstance().state.runtimePath = "/no/such/ns-next"
         val run = configuration().apply { projectFile = "/work/app/newspeak.json" }
