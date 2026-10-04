@@ -440,7 +440,11 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 
 ### Testing
 
-`cargo nextest run -p ns-analyzer`:
+`cargo nextest run -p ns-analyzer`. Besides the language server's tests, the
+crate's suite holds the command-line tests (`command_line.rs`: the usage, exit
+status 2 for no command or an unknown one, `lsp` taking no argument) and the
+tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
+`inspect`:
 
 - positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
   (surrogate pairs), at line ends and at the end of the file;
@@ -735,10 +739,10 @@ plugin's own gate joins this:
   or `crates/ns-syntax/` — `./gradlew -p editors/jetbrains check`, besides the
   usual `fmt` and `clippy`. A change to `crates/ns-syntax/src/lexer.rs` must be
   mirrored in `NewspeakLexer.kt` in the same commit, or the comparison fails.
-- **Once at the end of a batch**, whether runtime or editor work, both test
-  groups; and, for a batch that touched `editors/jetbrains/`,
-  `./gradlew -p editors/jetbrains verifyPlugin buildPlugin` — which
-  downloads several IDEs, and so is not a per-commit gate. A resolver
+- **Once at the end of a batch**, whether runtime or editor work, the full
+  suite under the four stress modes; and, for a batch that touched
+  `editors/jetbrains/`, `./gradlew -p editors/jetbrains verifyPlugin buildPlugin`
+  — which downloads several IDEs, and so is not a per-commit gate. A resolver
   change that shifts the semantic tokens is then noticed within one batch.
 
 ## Known gaps

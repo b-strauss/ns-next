@@ -27,6 +27,7 @@ first.
 | Road step 3a — the object representation | Complete | 2026-10-03 | [object-representation](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md) |
 | Road step 3b — the object space | Complete | 2026-10-03 | [object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md) |
 | Editor support: code folding, the structure view with breadcrumbs and sticky lines, and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md), [editor-structure-view](superpowers/plans/2026-10-04-0134-editor-structure-view.md) |
+| One binary for looking at Newspeak without running it: `ns-next-analyzer`, the crate `ns-tooling`, one test suite | Complete | 2026-10-04 | [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md) |
 | Road step 4 — generations | Not started | — | — |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
@@ -4270,3 +4271,30 @@ program, and the AST's derived `Clone`, `PartialEq` and `Debug`, which
 recurse the same way; under "Known defects and gaps", four limits of the
 recovery, the structure view's stale tree after a timeout and duplicate
 requests, and the agreement test's assumption that no warning exists.
+
+## ns-next-analyzer: one binary for looking at Newspeak without running it (2026-10-04)
+
+Plan: [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md);
+[editor-support.md](design/editor-support.md), "The editor tooling, `crates/ns-analyzer`" and
+"Testing".
+
+`ns-next` runs programs -- `run`, `run-corpus`, `load`, `bench`, `build` --
+and `ns-next-analyzer` looks at them without running any: `lsp`,
+`dump-tokens`, `parse`, `parse-corpus`, `disasm` and `inspect`. The crate
+The editor tooling is the crate `ns-analyzer`, and it holds the commands that
+only read (`parse`, `parse-corpus`, `disasm`, `inspect`), with the arguments,
+output and exit statuses they always had. What both binaries need --
+loading and resolving a source file, collecting `.ns` files, printing
+diagnostics -- is the library crate `ns-tooling`, which depends on `ns-syntax`
+and `ns-runtime` only, so the language server's dependencies never reach
+`ns-next`.
+
+There is one test suite for every commit and every stress mode:
+`ns-analyzer`'s tests, the disassembly snapshots and the image tests among
+them, run with the workspace's, where the language server's had been a group
+of their own. The JetBrains plugin starts `ns-next-analyzer lsp`, and its
+third-party notices cover `clap`, its dependencies and `windows-sys`.
+
+Commits: `71f282e8` the rename, `578dc9cd` `ns-tooling`, `3aac3339` and
+`d3c6ecff` the moved commands and one suite, `542f316b`, `37cb029f` the
+documents.

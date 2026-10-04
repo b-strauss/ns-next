@@ -126,7 +126,7 @@ cargo run -p ns-cli -- run goldens/tool/manifest/a_project_reaches_its_modules_t
 The program's arguments follow `--` (`run app.ns -- first second`) and reach
 `main:args:` as an `Array` of `String`s; `load` and `bench` take them the
 same way. `--lowering reference` compiles with the naive reference lowering
-instead of the optimized one; `run`, `build` and `disasm` take it.
+instead of the optimized one; `run` and `build` take it, as does `ns-next-analyzer disasm`.
 
 `ns-next` runs programs; `ns-next-analyzer` looks at them without running
 any: it parses, compiles a body to print it, decodes an image to show its
