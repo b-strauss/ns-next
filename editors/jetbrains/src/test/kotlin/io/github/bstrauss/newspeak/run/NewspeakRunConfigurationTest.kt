@@ -101,6 +101,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         val run = configuration().apply { projectFile = "/work/app/newspeak.json" }
         val error = Assert.assertThrows(RuntimeConfigurationError::class.java) { run.checkConfiguration() }
         assertTrue(error.localizedMessage, error.localizedMessage.contains("ns-next path"))
+        assertNotNull("the error offers to open the settings", error.configurationQuickFix)
     }
 
     fun testWithARuntimeTheProjectFileAndIterationsAreChecked() {
@@ -128,5 +129,6 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         val run = configuration().apply { projectFile = "/work/app/newspeak.json" }
         val error = Assert.assertThrows(RuntimeConfigurationError::class.java) { run.checkConfiguration() }
         assertTrue(error.localizedMessage, error.localizedMessage.contains("/no/such/ns-next"))
+        assertNotNull("the error offers to open the settings", error.configurationQuickFix)
     }
 }
