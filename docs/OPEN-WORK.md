@@ -181,8 +181,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   below the old space's top, so a stale offset into the tail a compaction
   vacated already finds no word, one below the top is caught by the
   debug build's epoch check, and a word naming the nursery a scavenge
-  vacated reads the debug build's poison. Generated code that loads through base plus
-  handle bypasses the slice, and protecting what a compaction or a
+  vacated reads the debug build's poison. Generated code that loads through
+  base plus handle bypasses the slice, and protecting what a compaction or a
   scavenge vacates is what turns its stale load into a fault
   (deferred with the user on 2026-10-03; `ns-memory` already supplies
   `Protection::NoAccess`). [memory.md](design/memory.md), "The object
@@ -989,8 +989,7 @@ Small, deliberately left, none affecting an outcome.
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
 
-- Road step 4's leftovers (noted 2026-10-04): `interpreter/safepoint.rs`'s
-  module comment has one line not rewrapped; and `tests/collector.rs`'s
+- Road step 4's leftover (noted 2026-10-04): `tests/collector.rs`'s
   `every_kind_of_stored_word_survives_moves_and_collections` runs a
   scavenge at every safepoint too, which its name does not say.
 - `crates/ns-analyzer/src/document_symbols.rs` (noted 2026-10-04): `effective`

@@ -1504,8 +1504,9 @@ old space's bytes relocated on load, is the model this does not take.
   pass** (decided with the user on 2026-10-04). A load runs in three phases
   (`image::load`): the first bootstraps an interpreter
   (`Interpreter::bootstrap`), then, in an entry of its own, decodes
-  everything up to and including the platform path section and rebuilds every module's root class
-  (`modules::build_module_classes`), rooting the classes as `Root`s; the
+  everything up to and including the platform path section and rebuilds
+  every module's root class (`modules::build_module_classes`), rooting the
+  classes as `Root`s; the
   second follows the platform paths, sending each step to the loading
   platform as an ordinary run, which may scavenge or collect at its
   safepoints like any run; the third decodes the graph. Between the second

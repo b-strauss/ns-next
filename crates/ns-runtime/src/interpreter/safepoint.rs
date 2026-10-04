@@ -6,12 +6,12 @@
 //! gates the collector needs") -- the mode that catches a root the marking
 //! does not know about, since the move stress mode alone treats everything
 //! as live -- and a scavenge at the safepoints a third schedule picks, each
-//! after a check of the remembered set, the mode that catches a store
-//! that missed the write barrier. The step state's side of a move -- its own roots, forwarded
-//! after the heap's, and the state that must hold no handle when one
-//! happens -- is
-//! `World::move_everything` and `World::check_quiescent_state`, in
-//! `heap/world.rs`; a collection's is `World::collect`, in the same file.
+//! after a check of the remembered set, the mode that catches a store that
+//! missed the write barrier. The step state's side of a move -- its own
+//! roots, forwarded after the heap's, and the state that must hold no handle
+//! when one happens -- is `World::move_everything` and
+//! `World::check_quiescent_state`, in `heap/world.rs`; a collection's is
+//! `World::collect`, in the same file.
 
 use super::Interpreter;
 
