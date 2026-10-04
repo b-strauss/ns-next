@@ -105,24 +105,33 @@ A program is one `.ns` file, whose root class is instantiated with `new`, or
 a project of several modules, whose root is instantiated with `packageUsing:`
 a manifest of the others. Either way the application is then sent `main:
 platform args:`, the only way the platform reaches it. A project is a
-directory holding a `newspeak.json`, which names its root and its other
-modules; paths are relative to it, with either separator. `run`, `bench` and
-`build` take the directory or its `newspeak.json`, and `run` and `bench` the
-current directory when given no program:
+directory holding a `newspeak.json`, which names its application module,
+`main`, and its other modules; paths are relative to it, with either
+separator. `run`, `bench` and `build` take the directory or its
+`newspeak.json`, and `run` and `bench` the current directory when given no
+program:
 
 ```json
 {
-  "root": "App.ns",
-  "modules": ["Greeting.ns", "Counter.ns"]
+  "main": "App.ns",
+  "modules": ["Greeting.ns", "Counter.ns"],
+  "scripts": {
+    "loud": ["--loud", "World"]
+  }
 }
 ```
 
-The root declares `class App packageUsing: manifest = (...)` and reaches each
+`App.ns` declares `class App packageUsing: manifest = (...)` and reaches each
 module by the name its source declares, `manifest Greeting`
-(`goldens/tool/manifest/` has three such projects).
+(`goldens/tool/manifest/` has three such projects). A script names
+arguments for `main:args:`: `ns-next run --script loud` hands it `--loud`
+and `World`, and arguments after `--` follow them; `bench` takes `--script`
+too. The file's schema is `schemas/newspeak.schema.json`; the JetBrains
+plugin gives it to every `newspeak.json`, and an editor without the plugin
+finds it through a `"$schema"` key, which `ns-next` does not follow.
 
 ```bash
-cargo run -p ns-cli -- run goldens/tool/manifest/a_project_reaches_its_modules_through_the_manifest.json
+cargo run -p ns-cli -- run goldens/tool/manifest/a_project_reaches_its_modules_through_the_manifest
 ```
 
 The program's arguments follow `--` (`run app.ns -- first second`) and reach

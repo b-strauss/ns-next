@@ -29,6 +29,7 @@ first.
 | Editor support: code folding, the structure view with breadcrumbs and sticky lines, and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md), [editor-structure-view](superpowers/plans/2026-10-04-0134-editor-structure-view.md) |
 | One binary for looking at Newspeak without running it: `ns-next-analyzer`, the crate `ns-tooling`, one test suite | Complete | 2026-10-04 | [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md) |
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
+| The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4399,3 +4400,36 @@ show why Havlak still collects in full; the constants the plan chose for
 the user to confirm; and the tests and comments its reviews deferred. The
 next session starts at road step 5, `become:` through forwarders
 ([OPEN-WORK.md](OPEN-WORK.md), "Next").
+
+## `newspeak.json`, its schema and running projects (2026-10-05)
+
+Plan: [ns-next-project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md);
+[image-format.md](design/image-format.md), "Packaging";
+[editor-support.md](design/editor-support.md), "The project file and
+running projects".
+
+A project is the directory its `newspeak.json` describes. The application
+module's key is `main`; `modules` is optional, `scripts` names argument lists
+that `ns-next run --script <name>` and `ns-next bench --script <name>` hand
+to `main:args:`, before any given after `--`, and every other key is
+ignored. The rules are in `crates/ns-cli/src/project.rs`, each with a
+message of its own, and `schemas/newspeak.schema.json` states them for
+editors; no validator crate was added, and
+`crates/ns-cli/tests/project_schema.rs` holds the reader and the schema to
+one another over a table of files. The JetBrains plugin bundles the schema
+for every `newspeak.json`, takes an "ns-next path" in its settings, and
+runs or benchmarks a project from a "Newspeak" run configuration, created
+by a play button beside `main` and each script.
+
+- `54c021d6` -- a project is the directory its `newspeak.json` describes;
+  `df35eef8` -- its key is `main`, other keys are ignored.
+- `578c746c`, `f0613878` -- the schema, and a reader held to it.
+- `911d0ba6`, `1fdca499` -- `scripts` and `--script` for `run` and `bench`.
+- `e5deace7` -- the plugin gives every `newspeak.json` the schema.
+- `881639bf`, `685a4fe2`, `15669b3e`, `b22497d4` -- the ns-next path setting
+  and the "Newspeak" run configuration.
+- `6dd09d8f`, `ae7cdb6c`, `d54d32f4`, `c7c641b1` -- the play buttons.
+- The documentation commit after them.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
+recorded into an image, so that `load` could start one with it.

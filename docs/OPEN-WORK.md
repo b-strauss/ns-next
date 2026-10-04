@@ -420,6 +420,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   time still needs design. [liveness-and-reflection.md](design/liveness-and-reflection.md).
 - **A decompiler** for exporting an image back to `.ns`, and the other image
   questions below. [image-format.md](design/image-format.md), "Open questions".
+- **A script recorded into an image.** `ns-next build` takes no `--script`:
+  it sends no `main:args:`, and `load` takes only the arguments after `--`.
+  Recording a project's script, or its `scripts`, so that `load --script`
+  could start an image with them would need a section of the image format of
+  its own. Noted 2026-10-05.
+  [image-format.md](design/image-format.md), "Packaging".
 
 ## Planned: editor support and the analyzer
 

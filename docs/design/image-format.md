@@ -563,10 +563,10 @@ record at all and allocates nothing.
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
 per module, in module order, its origin, its source text when the header
-sets `FLAG_HAS_SOURCE`, and its root section. **Module order** is the root
-module first, then a project file's modules in the order written, then the
-embedded `Manifest.ns` ("Packaging" below); a source file's program is its
-one module. The count is bounded by the bytes left before anything is
+sets `FLAG_HAS_SOURCE`, and its root section. **Module order** is the
+application module (a project file's `main`) first, then a project file's
+modules in the order written, then the embedded `Manifest.ns` ("Packaging"
+below); a source file's program is its one module. The count is bounded by the bytes left before anything is
 reserved for it.
 
 The **origin** is a tag from `opcodes.rs`, `ORIGIN_FILE` (0) followed by the
@@ -1262,8 +1262,8 @@ in `crates/ns-runtime/tests/image.rs`.
 and `disasm` formats a decoded body's `Instruction`s exactly as it does a freshly
 compiled one's. Like every load, it refuses an artifact `verify_mixins` finds
 inconsistent before printing anything. It addresses module 0 alone, the
-application's root module: `--class` is a path rooted at that module's class
-name, so the bodies of a project's other modules, the manifest's included,
+application module (a project's `main`): `--class` is a path rooted at that
+module's class name, so the bodies of a project's other modules, the manifest's included,
 are not reachable through `disasm` of the artifact (`inspect --full` shows
 them).
 
@@ -1378,14 +1378,26 @@ existence.
 
 ```json
 {
-  "root": "Harness.ns",
-  "modules": ["Sieve.ns", "../shared/RedBlackTree.ns"]
+  "$schema": "../../schemas/newspeak.schema.json",
+  "main": "Harness.ns",
+  "modules": ["Sieve.ns", "../shared/RedBlackTree.ns"],
+  "scripts": {
+    "sieve": ["Sieve", "10"],
+    "timed": ["--timed"]
+  }
 }
 ```
 
-- `root` is the application's source file; `modules` the other modules the
-  manifest holds. `modules` may be absent or empty. The root module is not in
-  the manifest.
+- `main` is the application module's source file, whose root class is sent
+  `packageUsing:`; `modules` the other modules the manifest holds.
+  `modules` may be absent or empty. `main`'s module is not in the manifest.
+- `scripts` is optional: named argument lists for `--script` ("Scripts"
+  below).
+- Every other key is ignored, so a file may carry what an editor or another
+  tool wants beside what ns-next reads. `$schema` is one of them: it tells
+  an editor without the plugin where the schema is, and the reader never
+  follows it. The reader does check that it is a string when present, as the
+  schema describes it, so that no file the schema refuses is run.
 - A module's name in the manifest is the name its source file declares for
   its class, as in both upstream systems (Primordial Soup's
   `namespace at: klass name put: klass`; Squeak's `Root` namespace).
@@ -1396,22 +1408,93 @@ existence.
   rewritten to the host's and the platform's own path parsing does the rest,
   which keeps drive letters, UNC and verbatim prefixes intact
   (`resolve_written_path`).
-- Refused before anything runs: an unknown field, a missing root, a missing
-  or unreadable file, a module that does not parse or resolve, two modules
-  declaring the same name, and a root whose factory is not `packageUsing:`.
-  A module whose name is a public member of every object -- `Array`,
-  `String` or any other predefined class `Object` has an accessor for -- is
-  refused too, once the manifest exists and before the root is sent
-  `packageUsing:`: the member would answer the send before the manifest's
-  `doesNotUnderstand:` could (`Interpreter::responds_publicly`,
-  `a_module_shadowed_by_an_object_member_is_refused`).
-- A module may declare the root's name, or be named `Manifest`: the root is
-  not in the manifest, and an image names a module by its index, never by
-  its name, so neither collides with anything.
+- A module may declare the name of `main`'s root class, or be named
+  `Manifest`: `main`'s module is not in the manifest, and an image names a
+  module by its index, never by its name, so neither collides with
+  anything.
+
+**The rules** (`project::read_project`). Each is refused before anything
+runs, with `error: <project file>: ` and a message of its own:
+
+| Refused | Message |
+|---|---|
+| text that is no JSON | serde's syntax error, with its line and column |
+| a file that is no JSON object (an array, a string) | `` a project file is a JSON object, of `main` and `modules` `` |
+| no `main` (a file that still says `root` included, which is not singled out) | serde's `` missing field `main` `` |
+| `$schema`, `main`, `modules` or `scripts` of the wrong type (a `$schema` of `null` included) | serde's `invalid type: …, expected …` |
+| one of those four keys written twice | serde's `` duplicate field `main` `` |
+| an empty path in `main` or `modules` | `` `main` holds an empty path `` |
+| a path not ending in `.ns`, matched case-sensitively | `` `modules` names `B`, which is no `.ns` file `` |
+| a module path equal to `main`'s | `` `modules` names `main`'s module `./App.ns` again `` |
+| a module path written twice | `` `modules` names `lib\A.ns` twice `` |
+
+Two paths are the same when their components are: either separator, a
+doubled one and a `./` all name one path. The file system is not asked, so
+a `..` that comes back, a symbolic link and a difference of letter case on a
+case-insensitive file system are not seen through; two such modules declare
+one name, and are refused by the next check. Ignored keys are not checked
+for duplicates, and a script name written twice keeps its last list, as
+`serde_json` reads a map.
+
+After the file, `program::read_program` refuses, also before anything runs:
+a missing or unreadable module file, a module that does not parse or
+resolve, two modules declaring the same name, and a root whose factory is
+not `packageUsing:`. A module whose name is a public member of every
+object -- `Array`, `String` or any other predefined class `Object` has an
+accessor for -- is refused too, once the manifest exists and before the root
+is sent `packageUsing:`: the member would answer the send before the
+manifest's `doesNotUnderstand:` could (`Interpreter::responds_publicly`,
+`a_module_shadowed_by_an_object_member_is_refused`).
+
+**The schema** is `schemas/newspeak.schema.json` (JSON Schema 2020-12), the
+one copy: it describes `$schema`, `main`, `modules` and `scripts` with the
+rules above that JSON Schema can state (`type`, `required`, `minLength`,
+`pattern: "\\.ns$"`, `uniqueItems`, `additionalProperties` for a script's
+list) and leaves every other key allowed. No validator crate reads it, so
+the project file brings no dependency beyond `serde_json`: the reader states
+each rule itself, with a message of its own, and
+`crates/ns-cli/tests/project_schema.rs` holds the two together. That test
+interprets the schema with exactly the keywords it uses -- a keyword it does
+not know fails the test, so the schema cannot gain a rule nothing checks the
+reader against -- and runs `ns-next run` on a table of files, each of which
+the schema and the reader must both accept or both refuse. The reader's
+stricter half, one of its four keys written twice and one module path in
+two spellings, cannot be stated in JSON Schema (a schema sees only the last of a key
+written twice, and `uniqueItems` compares strings as written); it stays out
+of the table and `project.rs`'s own tests pin it. The JetBrains plugin
+bundles the same file and gives it to every `newspeak.json`
+([editor-support.md](editor-support.md), "The project file and running
+projects").
+
+**Scripts**, as Node's are. `scripts` maps a name to an array of strings.
+`ns-next run --script <name>` and `ns-next bench --script <name>` hand that
+array to `main:args:`, each element one argument, exactly as if it were
+written after `--`; arguments after `--` are still taken and follow the
+script's, so `ns-next run --script timed -- Sieve` hands `--timed` and then
+`Sieve`, as `npm run timed -- Sieve` does (`program::entry_arguments`;
+`a_script_hands_its_arguments_to_main_and_the_command_line_follows`,
+`crates/ns-cli/tests/run.rs`). A script's name is any key and its arguments
+any strings, empty ones included, since an empty argument is a valid
+command-line argument too. Arguments stay strings everywhere, from a script
+as from the command line or an image, so a program sees one form however it
+is started. Refused before anything runs: `--script` with a source file
+rather than a project ("--script names a script of a project's
+newspeak.json, and the program given is a source file"), and a name the
+project's `scripts` does not hold ("`<project file>` has no script `zz`;
+its scripts are sieve, timed", or "it has none";
+`an_unknown_script_is_refused_naming_the_scripts_there_are`,
+`a_script_with_a_source_file_is_refused`).
+
+`build` takes no `--script`. It does not send `main:args:`, so it has no
+arguments to take, and `load` takes its arguments after `--` like any
+start; a script recorded into an image would need a section of the image
+format of its own ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: images,
+liveness and reflection").
 
 **Module order** is fixed and shared by everything that loads or writes
-modules: the root module first, then the project file's `modules` in the
-order written, then the embedded `Manifest.ns` (only for a project).
+modules: the application module first (a source file, or a project's
+`main`), then the project file's `modules` in the order written, then the
+embedded `Manifest.ns` (only for a project).
 `load_program` compiles them into one interpreter in that order, `build`
 writes them in it, and `load` rebuilds their classes in it, which is what
 keeps every identity hash the bootstrap draws the same across `run`, `build`
@@ -1465,12 +1548,13 @@ the runtime needs to know it was invoked from a terminal.
 object (8.3) as its first parameter, and a list of any environment-specific
 (e.g., command line) arguments as its second". `crates/ns-cli/src/entry.rs`'s
 `send_main` -- the one entry send every started program receives, from
-`run`, `load` and `bench` alike -- supplies the platform and then the words
-after `--` on the command line, each a `String`, in an `Array`
-(`main_arguments`; `ns-next run app.ns -- a b`, `ns-next load app.img -- a
-b`), empty when there are none. They are the CLI's, not the format's:
-nothing in an image records them, so one artifact runs with whatever
-arguments each `load` is given.
+`run`, `load` and `bench` alike -- supplies the platform and then the program's
+arguments, each a `String`, in an `Array` (`main_arguments`; `ns-next run
+app.ns -- a b`, `ns-next load app.img -- a b`), empty when there are none:
+for `run` and `bench` a script's arguments followed by the words after `--`
+("Scripts" above), for `load` the words after `--`. They are the CLI's, not
+the format's: nothing in an image records them, so one artifact runs with
+whatever arguments each `load` is given.
 
 **`bench`** assembles a fresh application for every sample, as `run` does
 and untimed, and times `main:args:` alone. **`run-corpus`** starts each
@@ -1490,7 +1574,9 @@ project goldens included (`crates/ns-cli/tests/golden_round_trips.rs`, one
 test per golden and lowering, `build_load::<lowering>::<path>`);
 two modules draw the same identity hashes under `run` and `load`
 (`crates/ns-cli/tests/build_load.rs`); the CLI refusals above
-(`crates/ns-cli/tests/run.rs`, and `project.rs`'s own tests for the paths);
+(`crates/ns-cli/tests/run.rs`, and `project.rs`'s own tests for the rules
+and the paths); the schema and the reader in agreement
+(`crates/ns-cli/tests/project_schema.rs`);
 and mutation and truncation tests for the module section, the module class
 and hash tags, `FLAG_START` and the retired tags and flag
 (`crates/ns-runtime/tests/image.rs`).
@@ -1652,11 +1738,44 @@ builtins.
   manifest could never answer it.
 - **The project file is JSON** (the user's choice), read with `serde_json`,
   which `ns-analyzer` already depended on, so no new crate entered the lock file.
-  Unknown fields are refused, so a misspelt key is a message rather than a
-  module silently missing.
-- **Module order is fixed: root, the project's modules as written, then
-  `Manifest.ns`.** `run`, `build` and `load` compile or rebuild the modules
-  in the same order, so every identity hash the bootstrap draws is the same
+- **A project is the directory its `newspeak.json` describes** (decided with
+  the user on 2026-10-05). The file is recognised by its name alone, as a
+  Node package's `package.json` is, so a command given a directory finds it
+  and no other JSON file is taken for one.
+- **The application module's key is `main`** (decided with the user on
+  2026-10-05). A file that still says `root` is refused for the missing
+  `main`, as any file without one is; `root` is not singled out.
+- **Other keys are allowed and ignored, by the reader and by the schema**
+  (decided with the user on 2026-10-05), so a file may carry what an editor
+  or another tool wants. `$schema` is one of them, described by the schema as
+  a string so that an editor without the plugin finds the schema and
+  completes it; the reader checks only that type. The rules are: `main`
+  required, it and every entry of `modules` a non-empty path ending in
+  `.ns`; `modules` optional, with no path in it twice or equal to `main`.
+- **Validation is strict in the reader, held to the schema by a test**
+  (decided with the user on 2026-10-05). No JSON Schema validator crate is
+  added, so no dependency comes with the schema: the reader states each rule
+  with a message of its own, and `project_schema.rs` keeps the two in
+  agreement. Chosen beside it: `.ns` is matched case-sensitively, as
+  the schema's `pattern` and the plugin's file type match it; the reader
+  compares duplicate paths by their components, which JSON Schema cannot
+  state, so that half is pinned on the reader alone.
+- **The schema lives at `schemas/newspeak.schema.json`, the one copy**
+  (decided with the user on 2026-10-05). The plugin's build copies it into
+  its resources, and the plugin maps it to every file named `newspeak.json`.
+- **Scripts, as Node's are** (decided with the user on 2026-10-05). A script
+  is an array of strings handed to `main:args:` as if written after `--`, and
+  arguments after `--` follow it, as `npm run timed -- Sieve` does.
+  Arguments stay strings from every source, so a program sees one form
+  however it is started. `--script` is for `run` and `bench` only: `build`
+  sends no `main:args:`, and a script recorded into an image would need a
+  section of the format of its own. Chosen beside it: `--script` with a
+  source file, and a name the project lacks, are refused, the latter listing
+  the names there are; a script's name is any key and its arguments any
+  strings, empty ones included.
+- **Module order is fixed: the application module, the project's modules
+  as written, then `Manifest.ns`.** `run`, `build` and `load` compile or
+  rebuild the modules in the same order, so every identity hash the bootstrap draws is the same
   under all three, and an image names a module by its index, so two modules
   may share a name without either becoming unreachable to the format.
 - **A module is named by index, and the one-root tags retire.** `CLASS_USER_ROOT`
