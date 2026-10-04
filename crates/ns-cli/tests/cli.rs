@@ -317,6 +317,12 @@ fn benchmark_collector_statistics_reports_to_stderr() {
         .arg("--iterations")
         .arg("1")
         .arg("--collector-statistics")
+        // The trigger under test is the plain run's; a stress mode collects or moves on its own schedule.
+        .env_remove("NS_NEXT_STRESS_MOVES")
+        .env_remove("NS_NEXT_STRESS_CACHES")
+        .env_remove("NS_NEXT_STRESS_COLLECT")
+        .env_remove("NS_NEXT_STRESS_SCAVENGE")
+        .env_remove("NS_NEXT_STRESS_WIDE")
         .output()
         .unwrap();
     assert_eq!(
