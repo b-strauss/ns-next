@@ -56,6 +56,11 @@
                                  displayName="Newspeak"/>
         <notificationGroup id="Newspeak" displayType="BALLOON"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
+        <!-- Asked before the platform's LSP structure view, which is registered for every
+             language; that one is also turned off for the Newspeak client
+             (NewspeakDocumentSymbols). -->
+        <lang.psiStructureViewFactory language="Newspeak"
+                                      implementationClass="io.github.bstrauss.newspeak.structure.NewspeakStructureViewFactory"/>
     </extensions>
 
     <actions>
