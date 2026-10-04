@@ -13,6 +13,7 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.Pair
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClient
 import com.intellij.platform.lsp.api.LspClientManager
@@ -83,6 +84,9 @@ class NewspeakStructureViewModel(
     @Volatile private var answer: Answer? = null
     @Volatile private var disposed = false
     private val retryPending = AtomicBoolean(false)
+
+    /** Whether a question is scheduled to be asked again; set before `symbols()` returns. */
+    internal val asksAgain: Boolean get() = retryPending.get()
     private val retries = AtomicInteger(0)
     private val root = NewspeakStructureRoot(psiFile, this)
 
@@ -116,14 +120,15 @@ class NewspeakStructureViewModel(
         val known = answer
         if (known != null && known.documentStamp == stamp) return known.symbols
         // The Structure tool window builds a new model each time it shows the
-        // file (selected anew in the Project view, the window reopened), and a
-        // model that started empty showed an empty tree until the server had
-        // answered: a flicker on every rebuild. The last answer is kept on the
-        // file, so a new model of an unchanged document shows it at once.
+        // file (selected anew in the Project view, the window reopened); a
+        // model that starts empty would show an empty tree until the server
+        // has answered, then the tree, a flicker on every rebuild. The last
+        // answer is kept on the file, so a new model of an unchanged document
+        // shows it at once.
         val shared = file.getUserData(LAST_ANSWER)
-        if (shared != null && shared.documentStamp == stamp) {
-            answer = shared
-            return shared.symbols
+        if (shared != null && shared.second == stamp) {
+            answer = Answer(shared.first, shared.second)
+            return shared.first
         }
         if (ApplicationManager.getApplication().isDispatchThread) {
             askAgainLater()
@@ -135,9 +140,8 @@ class NewspeakStructureViewModel(
             return known?.symbols.orEmpty()
         }
         retries.set(0)
-        val fresh = Answer(fetched, stamp)
-        answer = fresh
-        file.putUserData(LAST_ANSWER, fresh)
+        answer = Answer(fetched, stamp)
+        file.putUserData(LAST_ANSWER, Pair.create(fetched, stamp))
         return fetched
     }
 
@@ -193,8 +197,14 @@ class NewspeakStructureViewModel(
 /** What the server answered for a file, and the document stamp it answered for. */
 private class Answer(val symbols: List<DocumentSymbol>, val documentStamp: Long)
 
-/** The last answer for a file, shared by every model of it. */
-private val LAST_ANSWER = Key.create<Answer>("io.github.bstrauss.newspeak.structure.answer")
+/**
+ * The last answer for a file and its document stamp, shared by every model
+ * of it. It lives on the `VirtualFile` for the session, so it holds platform
+ * types only (the platform's `Pair` and lsp4j's symbols, both loaded by the
+ * platform): a plugin class there would keep the plugin's class loader
+ * reachable and stop the plugin from unloading without a restart.
+ */
+private val LAST_ANSWER = Key.create<Pair<List<DocumentSymbol>, Long>>("io.github.bstrauss.newspeak.structure.answer")
 
 /** The file, above the module's root class; not shown (`isRootNodeShown`). */
 private class NewspeakStructureRoot(

@@ -72,16 +72,14 @@ fn path_text_of(uri: &Uri, style: PathStyle) -> Option<String> {
         PathStyle::Windows => {
             if !local {
                 // `file://server/share/Module.ns` -> `\\server\share\Module.ns`.
-                return Some(format!("\\\\{host}{}", path.replace('/', "\\")));
+                return names_a_server(&host)
+                    .then(|| format!("\\\\{host}{}", path.replace('/', "\\")));
             }
             if let Some(share_path) = path.strip_prefix("//") {
                 // `file:////server/share/Module.ns`, the form Java's
                 // `File.toURI()` writes for a UNC path: the server is the
-                // path's first segment, which must not be empty.
-                let has_server = share_path
-                    .split('/')
-                    .next()
-                    .is_some_and(|server| !server.is_empty());
+                // path's first segment.
+                let has_server = share_path.split('/').next().is_some_and(names_a_server);
                 return has_server.then(|| format!("\\\\{}", share_path.replace('/', "\\")));
             }
             // `/C:/work/Module.ns` -> `C:\work\Module.ns`. Without a drive
@@ -96,6 +94,14 @@ fn path_text_of(uri: &Uri, style: PathStyle) -> Option<String> {
             has_drive.then(|| drive_path.replace('/', "\\"))
         }
     }
+}
+
+/// Whether `server`, decoded, can be the server of a UNC path. `.` and `?`
+/// are Win32's device namespaces (`\\.\pipe\…`, `\\?\…`): a named pipe or a
+/// COM port may pass for a regular file and then block the one thread the
+/// server runs on when read, so neither names a file here.
+fn names_a_server(server: &str) -> bool {
+    !server.is_empty() && server != "." && server != "?"
 }
 
 #[cfg(test)]
@@ -190,6 +196,19 @@ mod tests {
             None,
             "a share needs its server"
         );
+    }
+
+    #[test]
+    fn a_device_namespace_is_no_server() {
+        for uri in [
+            "file://./pipe/Module.ns",
+            "file:////./pipe/Module.ns",
+            "file://%3F/C:/Module.ns",
+            "file:////%3F/C:/Module.ns",
+            "file:////?/C:/Module.ns",
+        ] {
+            assert_eq!(path_of(uri, PathStyle::Windows), None, "{uri}");
+        }
     }
 
     #[test]

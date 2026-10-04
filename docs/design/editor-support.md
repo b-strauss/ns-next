@@ -162,9 +162,11 @@ Modules:
   → `\\server\share\…`, the host percent-decoded) or the four-slash form
   Java's `File.toURI()` writes (`file:////server/share/…`) made a Windows
   path; an empty host or `localhost` is this machine. A query, a fragment, a
-  user or port, an IP literal in brackets or a separator as the host, a path
-  that is not UTF-8 once decoded or holds a NUL, a Windows path without a
-  drive and a host on POSIX name no file. `lsp-types` 0.97's `Uri` wraps
+  user or port, an IP literal in brackets or a separator as the host, a UNC
+  server of `.` or `?` (Win32's device namespaces, `\\.\pipe\…` and `\\?\…`,
+  whose pipes and ports could pass for a file and block the server's one
+  thread on reading), a path that is not UTF-8 once decoded or holds a NUL, a
+  Windows path without a drive and a host on POSIX name no file. `lsp-types` 0.97's `Uri` wraps
   `fluent_uri::Uri`, which parses and decodes but knows no file paths, so the
   conversion is here; `fluent-uri` is a direct dependency only to tell a
   host's kind apart (`HostData`), on the version `lsp-types` uses.
@@ -550,15 +552,21 @@ therefore fills the tree without an edit.
 
 **One answer per document stamp.** The Structure tool window builds a new
 model each time it shows a file -- selected anew in the Project view, the
-window reopened -- and a model that started empty showed an empty tree until
-the server had answered, then the tree: a flicker on every rebuild, seen for
-files not open in an editor. The last usable answer is therefore kept on the
-`VirtualFile` (user data) with the document stamp it was given for, and every
-model of the file answers an unchanged document from it at once, on the EDT
-too, without a request; the server is asked again only once the stamp
-changes. A row is equal to another for an equal `DocumentSymbol` in the same
-place (`NewspeakStructureElement.equals`), so a refresh bringing the same
-answer keeps the tree's nodes, their expansion and selection.
+window reopened -- and a model that starts empty would show an empty tree
+until the server has answered, then the tree: a flicker on every rebuild.
+The last usable answer is therefore kept on the `VirtualFile` (user data)
+with the document stamp it was given for, and every model of the file answers
+an unchanged document from it at once, on the EDT too, without a request; the
+server is asked again only once the stamp changes. The user data holds
+platform types only -- the platform's `Pair` of lsp4j's symbols and the stamp
+-- since a plugin class kept there for the session would hold the plugin's
+class loader and stop the plugin from unloading without a restart. A file
+with no open document that changes on disk keeps its old structure until the
+IDE's VFS notices the change (on regaining focus, or through the file
+watcher); its stamp moves then and the server is asked again. A row is equal
+to another for an equal `DocumentSymbol` in the same place
+(`NewspeakStructureElement.equals`), so a refresh bringing the same answer
+keeps the tree's nodes, their expansion and selection.
 
 **Known behaviours.** After a timeout following an edit the tree keeps its
 last answer, and its positions are stale until the next answer. Two views of
@@ -671,8 +679,9 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   host: drive letters (`file:///C:/…`, `file:///c%3A/…`,
   `file://localhost/D:/…`), percent-decoding, POSIX paths, a host as a UNC
   share on Windows (IPv4 included, a percent-encoded name decoded) and no
-  file on POSIX, the four-slash UNC form, an IP literal and a separator in
-  the host refused, and the URIs that name no file.
+  file on POSIX, the four-slash UNC form, an IP literal, a separator and the
+  device namespaces `.` and `?` (as host, encoded, or in the four-slash form)
+  refused, and the URIs that name no file.
 
 ## The plugin, `editors/jetbrains/`
 

@@ -1,6 +1,8 @@
 package io.github.bstrauss.newspeak.structure
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.command.WriteCommandAction
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import org.eclipse.lsp4j.DocumentSymbol
@@ -11,9 +13,10 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The Structure tool window builds a new model each time it shows a file --
- * selected anew in the Project view, the window reopened -- so a model that
- * starts empty shows an empty tree until the server has answered, then the
- * tree: a flicker on every rebuild for a file not open in an editor.
+ * selected anew in the Project view, the window reopened -- and a model that
+ * starts empty would show an empty tree until the server has answered, then
+ * the tree, a flicker on every rebuild. A new model of an unchanged file must
+ * therefore answer at once from the file's last answer.
  */
 class NewspeakStructureViewRefreshTest : BasePlatformTestCase() {
     private val range = Range(Position(0, 0), Position(0, 20))
@@ -46,22 +49,20 @@ class NewspeakStructureViewRefreshTest : BasePlatformTestCase() {
 
         // A rebuilt view: its first question, even on the EDT, finds the answer.
         val rebuilt = modelOf(fetches)
-        val updates = AtomicInteger()
-        rebuilt.addModelListener { updates.incrementAndGet() }
         assertEquals(moduleSymbols(), rebuilt.symbols())
         offTheEdt { assertEquals(moduleSymbols(), rebuilt.symbols()) }
         assertEquals("no second request", 1, fetches.get())
-        Thread.sleep(1500)
-        com.intellij.testFramework.PlatformTestUtil.dispatchAllEventsInIdeEventQueue()
-        assertEquals("no refresh scheduled", 0, updates.get())
+        // A retry is scheduled before `symbols()` returns, so none is pending
+        // now means none will come; no waiting needed.
+        assertFalse("no refresh scheduled", rebuilt.asksAgain)
     }
 
     fun testAChangedFileIsAskedAgain() {
         val fetches = AtomicInteger()
         val first = modelOf(fetches)
         offTheEdt { first.symbols() }
-        val document = com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(psiFile.virtualFile)!!
-        com.intellij.openapi.command.WriteCommandAction.runWriteCommandAction(project) {
+        val document = FileDocumentManager.getInstance().getDocument(psiFile.virtualFile)!!
+        WriteCommandAction.runWriteCommandAction(project) {
             document.insertString(0, " ")
         }
         val second = modelOf(fetches)
