@@ -5,8 +5,8 @@
 //! number of words after the header (255: the count is in an overflow word).
 //! The collector sets the mark bit while a collection runs and clears it as
 //! it compacts, so that outside a collection no object is marked. The age
-//! and the remembered bit belong to the generational collector of road
-//! step 4; nothing writes them yet, so they stay 0.
+//! and the remembered bit belong to the generational collector and are
+//! written by it; `Debug` prints both.
 
 use crate::mixin::DispatchId;
 
@@ -16,6 +16,16 @@ pub(crate) const IDENTITY_HASH_LIMIT: u32 = 1 << 22;
 const GUARD_MASK: u64 = (1 << 22) - 1;
 const FORMAT_SHIFT: u32 = 22;
 const FORMAT_MASK: u64 = 0b1_1111;
+const AGE_SHIFT: u32 = 27;
+const AGE_MASK: u64 = 0b1111;
+const REMEMBERED_BIT: u64 = 1 << 31;
+/// The widest age the header's four bits hold: an object this old is
+/// tenured at its next scavenge whatever the threshold says.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "a later task of this road step uses it")
+)]
+pub(super) const MAX_AGE: u8 = 15;
 const NEGATIVE_BIT: u64 = 1 << 32;
 const MARK_BIT: u64 = 1 << 33;
 const HASH_SHIFT: u32 = 34;
@@ -131,6 +141,47 @@ impl Header {
         )
     }
 
+    /// How many scavenges this object has survived in the nursery, at most
+    /// `MAX_AGE`; 0 for a new object and meaningless for an old one.
+    pub(super) fn age(self) -> u8 {
+        ((self.0 >> AGE_SHIFT) & AGE_MASK) as u8
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a later task of this road step uses it")
+    )]
+    pub(super) fn with_age(self, age: u8) -> Header {
+        debug_assert!(age <= MAX_AGE);
+        Header((self.0 & !(AGE_MASK << AGE_SHIFT)) | ((u64::from(age) & AGE_MASK) << AGE_SHIFT))
+    }
+
+    /// Whether this old object is in the remembered set; never set on a
+    /// young one.
+    pub(super) fn remembered(self) -> bool {
+        self.0 & REMEMBERED_BIT != 0
+    }
+
+    pub(super) fn with_remembered(self, remembered: bool) -> Header {
+        if remembered {
+            Header(self.0 | REMEMBERED_BIT)
+        } else {
+            Header(self.0 & !REMEMBERED_BIT)
+        }
+    }
+
+    /// The header with `format`'s code and no unused units: what a scavenge
+    /// leaves at a copied object's old place, the forwarded format, keeping
+    /// the word count so the region stays walkable.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a later task of this road step uses it")
+    )]
+    pub(super) fn with_format(self, format: Format) -> Header {
+        debug_assert_eq!(format.unused_limit(), 0);
+        Header((self.0 & !(FORMAT_MASK << FORMAT_SHIFT)) | ((format as u64) << FORMAT_SHIFT))
+    }
+
     /// A `LargeInteger`'s sign; clear for every other object.
     pub(super) fn negative(self) -> bool {
         self.0 & NEGATIVE_BIT != 0
@@ -172,6 +223,8 @@ impl std::fmt::Debug for Header {
             .field("guard", &self.guard())
             .field("format", &self.format())
             .field("unused", &self.unused())
+            .field("age", &self.age())
+            .field("remembered", &self.remembered())
             .field("negative", &self.negative())
             .field("marked", &self.marked())
             .field("identity_hash", &self.identity_hash())
@@ -196,11 +249,29 @@ mod tests {
         assert_eq!(header.word_count(), 254);
         assert_eq!(header.identity_hash(), IDENTITY_HASH_LIMIT - 1);
         assert!(header.negative());
-        assert_eq!(
-            header.0 >> 27 & 0b1111,
-            0,
-            "age and the remembered bit stay 0"
-        );
+    }
+
+    #[test]
+    fn the_age_and_the_remembered_bit_are_bits_twenty_seven_to_thirty_one() {
+        let header =
+            Header::new(DispatchId::NONE, Format::FixedPointers, 0, 3).with_identity_hash(9);
+        assert_eq!((header.age(), header.remembered()), (0, false));
+        let aged = header.with_age(MAX_AGE).with_remembered(true);
+        assert_eq!(aged.0, header.0 | 0b1111 << 27 | 1 << 31);
+        assert_eq!((aged.age(), aged.remembered()), (MAX_AGE, true));
+        assert_eq!(aged.with_age(0).with_remembered(false), header);
+    }
+
+    #[test]
+    fn a_forwarder_keeps_every_field_but_its_format() {
+        let header = Header::new(DispatchId::from_counter(7), Format::Closure, 0, 300)
+            .with_identity_hash(42)
+            .with_age(3);
+        let forwarded = header.with_format(Format::Forwarded);
+        assert_eq!(forwarded.format(), Format::Forwarded);
+        assert_eq!(forwarded.word_count(), 255);
+        assert_eq!(forwarded.identity_hash(), 42);
+        assert_eq!(forwarded.age(), 3);
     }
 
     #[test]

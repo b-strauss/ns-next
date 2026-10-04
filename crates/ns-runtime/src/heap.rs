@@ -433,6 +433,23 @@ struct ActivationStack<'gc> {
 /// trigger and the growth policy").
 const COLLECTION_FLOOR: usize = 512 << 10;
 
+/// From this size on an object is allocated old: copying it through the
+/// survivor spaces would buy nothing (Primordial Soup's
+/// `kLargeAllocationSize`, `prior-art/primordialsoup/vm/heap.h:111`).
+const LARGE_OBJECT_BYTES: usize = 32 << 10;
+
+/// Past this many entries the remembered set asks for a scavenge that
+/// tenures everything, which empties it (Soup's
+/// `kRememberedSetOverflowSize`, `heap.h:112`, `heap.cc:279-283`).
+const REMEMBERED_SET_LIMIT: usize = 8 << 10;
+
+/// What eden keeps free past the point where it asks for a scavenge: what
+/// a stretch of the run loop allocates before its safepoint serves the
+/// request. An allocation past it goes old instead
+/// (`docs/design/memory.md`, "Planned: inline allocation", which road step
+/// 6 builds on).
+const EDEN_RESERVE: usize = 512 << 10;
+
 pub struct Heap<'gc> {
     /// The next identity hash to hand out. Hashes are assigned lazily, the
     /// first time `object_ensure_identity_hash` is asked for one, and never derived
@@ -461,6 +478,27 @@ pub struct Heap<'gc> {
     /// as allocation and compaction go, since the space has no length to
     /// read it from.
     object_count: usize,
+    /// How many of `object_count`'s objects lie in eden or a survivor space.
+    young_objects: usize,
+    /// Every old object that may name a young one, each once, its header's
+    /// remembered bit set; the roots a scavenge adds to the activation
+    /// stack's and the host's.
+    remembered: Vec<NonZeroU64>,
+    /// Whether a small allocation goes to eden; off outside the heap's own
+    /// tests until the run loop scavenges (Task 5 of the generations plan
+    /// removes it).
+    young_allocation: bool,
+    /// Whether every allocation goes old: the image decoder's graph pass
+    /// sets it (`set_allocating_old`).
+    allocating_old: bool,
+    /// Whether a scavenge has been asked for and not yet run; the run loop's
+    /// next safepoint serves it.
+    scavenge_requested: bool,
+    /// Whether the requested scavenge must tenure every survivor, as the
+    /// remembered set's overflow demands.
+    tenure_all_requested: bool,
+    /// Eden's occupied bytes at which an allocation asks for a scavenge.
+    scavenge_threshold: usize,
     /// The kernel-private `Activation` class, every frame object's class
     /// (`set_activation_class`). A handle the heap holds, so a collection
     /// marks it as a root and forwards it.
@@ -782,6 +820,13 @@ impl<'gc> Heap<'gc> {
             space: Space::new(space::DEFAULT_RESERVATION)
                 .unwrap_or_else(|_| out_of_memory(space::DEFAULT_RESERVATION)),
             object_count: 0,
+            young_objects: 0,
+            remembered: Vec::new(),
+            young_allocation: false,
+            allocating_old: false,
+            scavenge_requested: false,
+            tenure_all_requested: false,
+            scavenge_threshold: space::EDEN_BYTES - EDEN_RESERVE,
             activation_class: None,
             canonical_symbols: Vec::new(),
             symbol_of: IdentityMap::default(),
@@ -1198,6 +1243,9 @@ impl<'gc> Heap<'gc> {
     ) -> bool {
         self.check_object_origin(object);
         let fields = self.class_fixed_words(record);
+        for word in fields {
+            self.debug_assert_tenured(word);
+        }
         let placeholder = self.fields_mut(object);
         if placeholder.len() != class_field::COUNT {
             return false;
@@ -1243,6 +1291,7 @@ impl<'gc> Heap<'gc> {
         value: Value<'gc>,
     ) -> bool {
         let word = self.store(value);
+        self.debug_assert_tenured(word);
         match self.fields_mut(object).get_mut(index) {
             Some(slot) => {
                 *slot = word.bits();
@@ -1290,6 +1339,7 @@ impl<'gc> Heap<'gc> {
         self.check_frame_origin(captured_frame);
         let code_word = count_word(self.code_id(code).index());
         let frame_word = self.store(Value::object(self.frame_object(captured_frame)));
+        self.debug_assert_tenured(frame_word);
         let base_word = count_word(FeedbackBase::NOT_ASSIGNED.raw() as usize);
         self.rewrite_placeholder_header(object, class, identity_hash, Format::Closure, 0);
         let fields = self.fields_mut(object);
@@ -1312,6 +1362,7 @@ impl<'gc> Heap<'gc> {
         self.check_object_origin(object);
         self.check_object_origin(class);
         let class_word = self.store(Value::object(class));
+        self.debug_assert_tenured(class_word);
         let block = self.block_mut(object);
         let header = Header::new(DispatchId::NONE, format, unused, block.len() - CLASS)
             .with_negative(false)
@@ -1341,8 +1392,36 @@ impl<'gc> Heap<'gc> {
     ) -> (ObjectReference<'gc>, Range<usize>) {
         let word_count = field_count.saturating_add(1);
         let allocation = allocation_words(word_count);
-        let Some(start) = self.space.allocate_old(allocation) else {
-            out_of_memory(allocation.saturating_mul(8))
+        let bytes = allocation.saturating_mul(8);
+        let young = self.young_allocation && !self.allocating_old && bytes < LARGE_OBJECT_BYTES;
+        let start = match young
+            .then(|| self.space.allocate_young(allocation))
+            .flatten()
+        {
+            Some(start) => {
+                self.young_objects += 1;
+                let eden = self.space.region(RegionName::Eden);
+                if eden.top - eden.start >= self.scavenge_threshold {
+                    self.request_scavenge(false);
+                }
+                start
+            }
+            None => {
+                // Eden spent: the scavenge is asked for and the object goes
+                // old until it runs, as Strongtalk's `allocate_tenured` does
+                // when a scavenge cannot run
+                // (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
+                if young {
+                    self.request_scavenge(false);
+                }
+                let Some(start) = self.space.allocate_old(allocation) else {
+                    out_of_memory(bytes)
+                };
+                if self.old_occupied() >= self.next_collection {
+                    self.request_collection();
+                }
+                start
+            }
         };
         let words = self.space.words_mut();
         let mut header = start / 8;
@@ -1357,13 +1436,16 @@ impl<'gc> Heap<'gc> {
         let fields = header + FIELDS..header + FIELDS + field_count;
         words[fields.clone()].fill(Word::NIL.bits());
         self.object_count += 1;
-        if self.space.occupied_bytes() >= self.next_collection {
-            self.request_collection();
+        let Some(offset) = NonZeroU64::new(8 * header as u64) else {
+            unreachable!("internal: an object lies past the first object")
+        };
+        // Its initializing stores took no barrier, so an old object that may
+        // be filled with young values joins the remembered set at birth; the
+        // decoder's never does, since the load tenured everything it names.
+        if self.young_allocation && !space::is_young(offset) && !self.allocating_old {
+            self.remember(offset);
         }
-        match NonZeroU64::new(8 * header as u64) {
-            Some(offset) => (self.object_handle(offset), fields),
-            None => unreachable!("internal: an object lies past the first object"),
-        }
+        (self.object_handle(offset), fields)
     }
 
     /// The one place an `ObjectReference` is built, so the `cfg` on `origin`
@@ -1972,6 +2054,7 @@ impl<'gc> Heap<'gc> {
         {
             Some(slot) => {
                 *slot = word.bits();
+                self.write_barrier(object.offset, word);
                 true
             }
             None => false,
@@ -2937,6 +3020,7 @@ impl<'gc> Heap<'gc> {
         let block = self.block_mut(object);
         block[CLASS] = class_word.bits();
         block[HEADER] = header.0;
+        self.write_barrier(object.offset, class_word);
         true
     }
 
@@ -3490,6 +3574,9 @@ impl<'gc> Heap<'gc> {
             uncontinuable,
         });
         let object = self.frame_object(frame);
+        for word in words {
+            self.debug_assert_tenured(word);
+        }
         for (slot, word) in self.fields_mut(object).iter_mut().zip(words) {
             *slot = word.bits();
         }
@@ -3623,6 +3710,17 @@ impl<'gc> Heap<'gc> {
             words[frame_field::SENDER] = Word::NIL.bits();
             words[frame_field::UNCONTINUABLE] = Value::boolean(true).word().bits();
             words[frame_field::MARRIED] = Word::NIL.bits();
+            // The divorce copied registers into an object the stack's roots
+            // no longer cover: an old frame that now holds a young value is
+            // remembered like any other old holder.
+            if entry.retains_registers
+                && !space::is_young(frame.offset)
+                && self.stack.values[base..]
+                    .iter()
+                    .any(|word| word.object_offset().is_some_and(space::is_young))
+            {
+                self.remember(frame.offset);
+            }
         }
         self.stack.values.truncate(base);
         self.stack.counted -= usize::from(entry.counted);
@@ -4004,6 +4102,7 @@ impl<'gc> Heap<'gc> {
                     .get_mut(frame_field::COUNT + index as usize)
                 {
                     *slot = word.bits();
+                    self.write_barrier(frame.offset, word);
                 }
             }
         }
@@ -4035,6 +4134,75 @@ impl<'gc> Heap<'gc> {
         self.safepoint_requested = requested;
     }
 
+    /// The write barrier: `holder` now stores `word`. An old object that
+    /// comes to name a young one joins the remembered set, so the next
+    /// scavenge finds the reference without walking the old space -- per
+    /// object, as Spur's `storePointer:ofObject:withValue:` and Soup's
+    /// `HeapObject::Store` remember, rather than Strongtalk's cards. Every
+    /// store into an existing object comes through here, so the interpreter,
+    /// the reference lowering and a JIT share one rule
+    /// (`docs/design/memory.md`, "The write barrier").
+    #[inline(always)]
+    fn write_barrier(&mut self, holder: NonZeroU64, word: Word) {
+        if !space::is_young(holder) && word.object_offset().is_some_and(space::is_young) {
+            self.remember(holder);
+        }
+    }
+
+    /// The decoder's fills take no barrier: the load tenures everything the
+    /// graph names before the graph pass, so no word they store is young.
+    fn debug_assert_tenured(&self, word: Word) {
+        debug_assert!(
+            !self.allocating_old || !word.object_offset().is_some_and(space::is_young),
+            "the load tenures everything the graph names before the graph pass"
+        );
+    }
+
+    /// Adds `holder`, an old object, to the remembered set unless its bit
+    /// says it is in it already.
+    fn remember(&mut self, holder: NonZeroU64) {
+        let index = header_index(holder);
+        let words = self.space.words_mut();
+        let header = Header(words[index]);
+        if header.remembered() {
+            return;
+        }
+        words[index] = header.with_remembered(true).0;
+        self.remembered.push(holder);
+        if self.remembered.len() > REMEMBERED_SET_LIMIT {
+            self.request_scavenge(true);
+        }
+    }
+
+    /// Only `allocate_block` and the remembered set's overflow ask, and only
+    /// flags are set: the run loop's next safepoint scavenges.
+    fn request_scavenge(&mut self, tenure_all: bool) {
+        self.scavenge_requested = true;
+        self.tenure_all_requested |= tenure_all;
+        self.safepoint_requested = true;
+    }
+
+    /// The image decoder's graph pass allocates old: everything it names was
+    /// tenured before it began (`image::load`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a later task of this road step uses it")
+    )]
+    pub(crate) fn set_allocating_old(&mut self, allocating_old: bool) {
+        self.allocating_old = allocating_old;
+    }
+
+    #[cfg(test)]
+    fn enable_young_allocation_for_test(&mut self) {
+        self.young_allocation = true;
+    }
+
+    /// The bytes the old space holds.
+    fn old_occupied(&self) -> usize {
+        let old = self.space.region(RegionName::Old);
+        old.top - old.start
+    }
+
     /// An allocation never collects; it asks, and the run loop's next
     /// safepoint serves the request (decided 2026-09-13). Setting
     /// `safepoint_requested` is what makes the poll take its slow path.
@@ -4062,7 +4230,7 @@ impl<'gc> Heap<'gc> {
     /// (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
         self.collection_requested = false;
-        self.next_collection = collection_limit(self.collection_floor, self.space.occupied_bytes());
+        self.next_collection = collection_limit(self.collection_floor, self.old_occupied());
     }
 
     /// Sets the floor and the next limit to `floor` bytes.
@@ -6620,5 +6788,188 @@ mod tests {
         let after = heap.heap_statistics();
         assert!(after.committed_bytes < grown);
         assert!(after.committed_bytes >= space::NURSERY_END + heap.next_collection);
+    }
+
+    /// A bare heap whose small objects go to eden, as every heap's will from
+    /// Task 5 on.
+    fn young_heap<'gc>() -> Heap<'gc> {
+        let mut heap = Heap::new();
+        heap.enable_young_allocation_for_test();
+        heap
+    }
+
+    /// An old instance of `class` with `field_count` nil fields: large objects
+    /// go old, so one past the threshold is old by construction.
+    fn old_instance<'gc>(heap: &mut Heap<'gc>, class: ClassReference<'gc>) -> ObjectReference<'gc> {
+        heap.allocate_instance(class, LARGE_OBJECT_BYTES / 8)
+    }
+
+    #[test]
+    fn a_small_object_is_young_and_a_large_one_old_and_born_remembered() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        let small = heap.allocate_instance(class, 2);
+        let large = old_instance(&mut heap, class);
+        assert!(space::is_young(small.offset));
+        assert!(!space::is_young(large.offset));
+        assert!(
+            heap.header(large).remembered(),
+            "it may be filled with young values"
+        );
+        assert_eq!(heap.remembered, vec![large.offset]);
+    }
+
+    #[test]
+    fn every_store_of_a_young_value_into_an_old_object_remembers_it_once() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        let young = heap.allocate_instance(class, 0);
+        let holder = old_instance(&mut heap, class);
+        heap.remembered.clear();
+        heap.set_header(holder, heap.header(holder).with_remembered(false));
+
+        assert!(heap.instance_set_field(holder, 0, Value::small_integer(1)));
+        assert!(heap.remembered.is_empty(), "an immediate is never young");
+        assert!(heap.instance_set_field(holder, 1, Value::object(young)));
+        assert!(heap.instance_set_field(holder, 2, Value::object(young)));
+        assert_eq!(heap.remembered, vec![holder.offset], "remembered once");
+        assert!(heap.header(holder).remembered());
+    }
+
+    #[test]
+    fn a_store_into_a_young_object_or_of_an_old_value_remembers_nothing() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        let young = heap.allocate_instance(class, 1);
+        let old = old_instance(&mut heap, class);
+        heap.remembered.clear();
+        heap.set_header(old, heap.header(old).with_remembered(false));
+        assert!(heap.instance_set_field(young, 0, Value::object(old)));
+        assert!(heap.instance_set_field(old, 0, Value::object(old)));
+        assert!(heap.remembered.is_empty());
+    }
+
+    /// Takes `holder` out of the remembered set, as if nothing young had ever
+    /// been stored into it.
+    fn forget<'gc>(heap: &mut Heap<'gc>, holder: ObjectReference<'gc>) {
+        heap.remembered.retain(|offset| *offset != holder.offset);
+        heap.set_header(holder, heap.header(holder).with_remembered(false));
+    }
+
+    #[test]
+    fn an_array_element_a_class_word_and_a_class_field_each_remember_their_old_holder() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        let young = heap.allocate_instance(class, 0);
+
+        let array = heap.allocate_array(class, &vec![Value::nil(); LARGE_OBJECT_BYTES / 8]);
+        forget(&mut heap, array);
+        assert!(heap.array_set_element(array, 0, Value::object(young)));
+        assert!(heap.header(array).remembered());
+
+        let young_class = named_class(&mut heap, "Young");
+        assert!(space::is_young(young_class.offset));
+        let instance = old_instance(&mut heap, class);
+        forget(&mut heap, instance);
+        assert!(heap.object_set_class(instance, young_class));
+        assert!(heap.header(instance).remembered());
+
+        heap.set_allocating_old(true);
+        let old_class = named_class(&mut heap, "Old");
+        heap.set_allocating_old(false);
+        assert!(!heap.header(old_class).remembered());
+        assert!(heap.class_set_superclass(old_class, young_class));
+        assert!(heap.header(old_class).remembered());
+    }
+
+    #[test]
+    fn a_dead_old_frame_s_register_and_a_divorce_into_an_old_frame_each_remember_it() {
+        let mut heap = frame_heap();
+        heap.enable_young_allocation_for_test();
+        let class = heap.allocate_self_referential(0);
+        let young = heap.allocate_instance(class, 0);
+
+        // A frame is old when its register file makes it large.
+        let dead = top_level_frame(&mut heap, LARGE_OBJECT_BYTES / 8);
+        let dead_object = heap.frame_object(dead);
+        assert!(!space::is_young(dead_object.offset));
+        forget(&mut heap, dead_object);
+        heap.frame_set_local(dead, 0, Value::object(young));
+        assert!(heap.header(dead_object).remembered());
+
+        let activation = heap.push_activation(header(), &[], LARGE_OBJECT_BYTES / 8);
+        let frame = heap.reify(activation);
+        let frame_object = heap.frame_object(frame);
+        assert!(!space::is_young(frame_object.offset));
+        forget(&mut heap, frame_object);
+        heap.retain_registers(activation);
+        heap.activation_set_local(activation, 0, Value::object(young));
+        assert!(
+            !heap.header(frame_object).remembered(),
+            "a married frame's registers are the stack's, a root"
+        );
+        heap.pop_activation(activation);
+        assert!(
+            heap.header(frame_object).remembered(),
+            "the divorce copied a young register in"
+        );
+    }
+
+    #[test]
+    fn the_decoder_s_allocations_go_old_and_are_not_remembered() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        heap.set_allocating_old(true);
+        let decoded = heap.allocate_placeholder(class, 2);
+        heap.set_allocating_old(false);
+        assert!(!space::is_young(decoded.offset));
+        assert!(
+            !heap.header(decoded).remembered(),
+            "the load tenured everything it names"
+        );
+        assert!(space::is_young(heap.allocate_instance(class, 0).offset));
+    }
+
+    #[test]
+    fn an_allocation_that_finds_eden_spent_goes_old_born_remembered_and_asks_for_a_scavenge() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        // One young object just under the large-object threshold at a time:
+        // its header, its overflow word, its class word and `fill` fields.
+        let fill = LARGE_OBJECT_BYTES / 8 - 4;
+        let allocation = 8 * space::allocation_words(fill + 1);
+        assert!(allocation < LARGE_OBJECT_BYTES);
+        while heap.space.region(RegionName::Eden).top + allocation
+            <= space::NURSERY_END - space::REGION_SLACK
+        {
+            assert!(space::is_young(heap.allocate_instance(class, fill).offset));
+        }
+        assert!(
+            heap.scavenge_requested,
+            "eden passed its reserve long before it was spent"
+        );
+        let spill = heap.allocate_instance(class, fill);
+        assert!(!space::is_young(spill.offset));
+        assert!(heap.header(spill).remembered());
+    }
+
+    #[test]
+    fn a_remembered_set_past_its_limit_asks_for_a_scavenge_that_tenures_everything() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        let young = heap.allocate_instance(class, 0);
+        // Small old objects, as the decoder makes them, so none is born
+        // remembered: each joins the set through the barrier alone.
+        heap.set_allocating_old(true);
+        let holders: Vec<_> = (0..=REMEMBERED_SET_LIMIT)
+            .map(|_| heap.allocate_instance(class, 1))
+            .collect();
+        heap.set_allocating_old(false);
+        assert!(!heap.scavenge_requested);
+        for holder in holders {
+            heap.instance_set_field(holder, 0, Value::object(young));
+        }
+        assert_eq!(heap.remembered.len(), REMEMBERED_SET_LIMIT + 1);
+        assert!(heap.scavenge_requested && heap.tenure_all_requested);
     }
 }

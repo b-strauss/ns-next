@@ -39,18 +39,10 @@ pub(in crate::heap) const NURSERY_END: usize = EDEN_START + EDEN_BYTES;
 /// What every nursery region keeps free past what it fills: the move
 /// stress mode shifts a region's objects by up to `8 * (2 + 30)` bytes
 /// within it, and the room for that must exist before the shift is asked.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "a later task of this road step uses it")
-)]
 pub(in crate::heap) const REGION_SLACK: usize = 8 * 33;
 
 /// Whether the object at `offset` is young: one comparison, the one the
 /// write barrier makes on every store.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "a later task of this road step uses it")
-)]
 #[inline(always)]
 pub(in crate::heap) fn is_young(offset: NonZeroU64) -> bool {
     offset.get() < NURSERY_END as u64
@@ -220,10 +212,6 @@ impl Space {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     #[inline]
     pub(in crate::heap) fn allocate_young(&mut self, words: usize) -> Option<usize> {
         let limit = self.eden.end - REGION_SLACK;
