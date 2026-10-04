@@ -4,6 +4,7 @@ import com.intellij.openapi.extensions.PluginAware
 import com.intellij.openapi.extensions.PluginDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.platform.lsp.api.LspClientManager
 import com.intellij.platform.lsp.api.LspIntegrationProvider
 import com.intellij.platform.lsp.api.LspIntegrationProvider.LspClientStarter
 import io.github.bstrauss.newspeak.NewspeakFileType
@@ -29,10 +30,35 @@ class NewspeakLspIntegrationProvider : LspIntegrationProvider, PluginAware {
 
     override fun fileOpened(project: Project, file: VirtualFile, clientStarter: LspClientStarter) {
         if (file.fileType != NewspeakFileType) return
+        descriptorFor(project)?.let(clientStarter::ensureClientStarted)
+    }
+
+    /**
+     * Starts the client with no file open in an editor. The platform starts
+     * it through `fileOpened` only, for a file opened in an editor, so a
+     * Newspeak file merely selected in the project view would otherwise find
+     * no server to ask for its structure. `LspClientManager.startClientsIfNeeded`
+     * is no help there: it calls `fileOpened` for the files open in editors
+     * only. Starting a client already running does nothing.
+     */
+    fun startClient(project: Project) {
+        val descriptor = descriptorFor(project) ?: return
+        LspClientManager.getInstance(project).ensureClientStarted(NewspeakLspIntegrationProvider::class.java, descriptor)
+    }
+
+    private fun descriptorFor(project: Project): NewspeakLspClientDescriptor? =
         when (val location = locateServer(pluginDescriptor?.pluginPath)) {
-            is ServerLocation.Found -> clientStarter.ensureClientStarted(NewspeakLspClientDescriptor(project, location.path))
-            else -> MissingServerNotification.showOnce(project, location)
+            is ServerLocation.Found -> NewspeakLspClientDescriptor(project, location.path)
+            else -> {
+                MissingServerNotification.showOnce(project, location)
+                null
+            }
         }
+
+    companion object {
+        /** The registered instance, which alone knows the plugin's directory (`setPluginDescriptor`). */
+        fun registered(): NewspeakLspIntegrationProvider? =
+            LspIntegrationProvider.EP_NAME.findExtension(NewspeakLspIntegrationProvider::class.java)
     }
 }
 

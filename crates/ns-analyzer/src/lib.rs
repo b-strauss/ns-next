@@ -17,6 +17,7 @@
 pub mod analysis;
 pub mod document_symbols;
 pub mod documents;
+pub mod file_uri;
 pub mod folding;
 pub mod semantic_tokens;
 pub mod server;

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::Read;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
@@ -26,6 +27,7 @@ use ns_syntax::Severity;
 use crate::analysis::{analyze, Analysis};
 use crate::document_symbols;
 use crate::documents::LineIndex;
+use crate::file_uri::file_path_of;
 use crate::folding;
 use crate::semantic_tokens;
 
@@ -118,7 +120,9 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
 }
 
 /// A document's folds; none for a document the client never opened or has
-/// closed, as for its tokens.
+/// closed, as for its tokens. Unlike its symbols, neither is read from disk:
+/// the platform asks for folds and tokens only of a file open in an editor,
+/// which it has opened with the server first.
 fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) -> Response {
     let params: FoldingRangeParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
@@ -143,8 +147,14 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
     Response::new_ok(request.id, ranges)
 }
 
-/// A document's symbol tree; none for a document the client never opened or
-/// has closed, as for its folds.
+/// A document's symbol tree. An open document is answered from its cache: it
+/// may hold text not yet saved. A document the client has not opened is read
+/// from disk, when its URI names a file, and analysed afresh each time: the
+/// platform sends `didOpen` only for a file open in an editor, but the
+/// plugin's structure view asks for a file merely selected in the project
+/// view. The server keeps nothing of it, since without `didOpen` it hears of
+/// no change. A URI that names no file, or a file that cannot be read, has no
+/// symbols.
 fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) -> Response {
     let params: DocumentSymbolParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
@@ -156,17 +166,66 @@ fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) 
             )
         }
     };
-    let symbols = documents
-        .get(params.text_document.uri.as_str())
-        .map(|document| {
-            document_symbols::encode(
-                &document.analysis.symbols,
-                &document.text,
-                &document.line_index,
-            )
-        })
-        .unwrap_or_default();
+    let uri = &params.text_document.uri;
+    let encode = |document: &Document| {
+        document_symbols::encode(
+            &document.analysis.symbols,
+            &document.text,
+            &document.line_index,
+        )
+    };
+    let symbols = match documents.get(uri.as_str()) {
+        Some(document) => encode(document),
+        None => document_on_disk(uri)
+            .map(|document| encode(&document))
+            .unwrap_or_default(),
+    };
     Response::new_ok(request.id, DocumentSymbolResponse::Nested(symbols))
+}
+
+/// The file `uri` names, read and analysed as `didOpen` would have it, or
+/// `None` when it names no file or the file cannot be read.
+fn document_on_disk(uri: &Uri) -> Option<Document> {
+    let path = file_path_of(uri)?;
+    // Asked of the path before it is opened: opening a FIFO blocks until a
+    // writer comes, and reading a device such as `/dev/zero` never ends,
+    // either of which would stall the one thread every document is served
+    // on. A file longer than a source may be is refused before it is read.
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !readable_as_source(metadata.is_file(), metadata.len()) {
+        return None;
+    }
+    // Bounded again while reading, for a file that grew since it was asked.
+    let limit = u64::from(u32::MAX) + 1;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .ok()?
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if !readable_as_source(true, bytes.len() as u64) {
+        return None;
+    }
+    // UTF-8, as every Newspeak source of the project is; lossy rather than
+    // refused, so a stray invalid byte costs one character of the tree, not
+    // all of it, as the editor still shows the file. Only invalid text is
+    // copied.
+    let mut text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    // The editor's document has no byte-order mark; with one, every position
+    // on the first line would be one unit off from the editor's.
+    if text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Some(Document::new(text))
+}
+
+/// Whether a file of `length` bytes, a regular file or not, may be read as a
+/// source: a regular file no longer than `ns_syntax::source_too_long`
+/// accepts, so that nothing is read that the parse would refuse anyway.
+fn readable_as_source(is_file: bool, length: u64) -> bool {
+    is_file
+        && usize::try_from(length).is_ok_and(|length| ns_syntax::source_too_long(length).is_none())
 }
 
 fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -> Response {
@@ -298,5 +357,23 @@ fn diagnostics_of(uri: &Uri, document: Option<&Document>) -> PublishDiagnosticsP
         uri: uri.clone(),
         diagnostics,
         version: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::readable_as_source;
+
+    #[test]
+    fn only_a_regular_file_a_source_may_hold_is_read() {
+        assert!(readable_as_source(true, 0));
+        assert!(readable_as_source(true, u64::from(u32::MAX)));
+        // A four-gigabyte file is not written to test this; the bound is
+        // checked on the length the file's metadata answers.
+        assert!(!readable_as_source(true, u64::from(u32::MAX) + 1));
+        assert!(
+            !readable_as_source(false, 10),
+            "a directory, FIFO or device"
+        );
     }
 }

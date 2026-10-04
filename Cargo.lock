@@ -318,6 +318,7 @@ name = "ns-analyzer"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fluent-uri",
  "indoc",
  "insta",
  "lsp-server",

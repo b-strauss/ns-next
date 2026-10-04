@@ -1,5 +1,6 @@
 //! The server end to end over an in-memory connection, as an editor drives it.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use indoc::indoc;
@@ -310,4 +311,211 @@ fn an_unknown_request_is_method_not_found() {
     request(&client, 3, "shutdown", Value::Null);
     notify(&client, "exit", Value::Null);
     assert!(server_thread.join().expect("no panic").is_ok());
+}
+
+/// A server on its own thread, initialized, and the client end to drive it.
+fn initialized_server() -> (Connection, std::thread::JoinHandle<Result<(), String>>) {
+    let (server, client) = Connection::memory();
+    let server_thread = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || ns_analyzer::server::run(server).map_err(|error| error.to_string()))
+        .expect("spawn the server");
+    request(&client, 1, "initialize", json!({ "capabilities": {} }));
+    notify(&client, "initialized", json!({}));
+    (client, server_thread)
+}
+
+fn shut_down(client: &Connection, server_thread: std::thread::JoinHandle<Result<(), String>>) {
+    request(client, 1000, "shutdown", Value::Null);
+    notify(client, "exit", Value::Null);
+    let outcome = server_thread
+        .join()
+        .expect("the server thread does not panic");
+    assert!(outcome.is_ok(), "{outcome:?}");
+}
+
+/// A directory of its own under the system's temporary directory, empty.
+fn scratch_directory(name: &str) -> PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "ns-analyzer-protocol-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("create the scratch directory");
+    directory
+}
+
+/// The `file` URI of an absolute path, as an editor writes it: `/`
+/// separators, a Windows drive letter after a third slash, and every byte
+/// outside the unreserved set percent-encoded -- so a name with a space or
+/// a non-ASCII letter reaches the server encoded.
+fn file_uri_of(path: &Path) -> String {
+    let text = path.to_str().expect("a UTF-8 path").replace('\\', "/");
+    let mut uri = String::from("file://");
+    if !text.starts_with('/') {
+        uri.push('/');
+    }
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/:".contains(&byte) {
+            uri.push(byte as char);
+        } else {
+            uri.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    uri
+}
+
+fn root_names(symbols: &Value) -> Vec<&str> {
+    symbols
+        .as_array()
+        .expect("an array of symbols")
+        .iter()
+        .map(|symbol| symbol["name"].as_str().expect("a name"))
+        .collect()
+}
+
+/// The platform sends `didOpen` only for a file open in an editor; a file
+/// selected in the project view and never opened is read from disk.
+#[test]
+fn a_file_never_opened_answers_its_symbols_from_disk() {
+    let directory = scratch_directory("never-opened");
+    let path = directory.join("Grüße Module.ns");
+    std::fs::write(
+        &path,
+        indoc! {"
+            class Module = Object new () (
+                public run = ( ^1 )
+            ) : ( make = ( ^self new ) )
+        "},
+    )
+    .expect("write the module");
+    let uri = file_uri_of(&path);
+    assert!(uri.contains("%20") && uri.contains("%C3%BC"), "{uri}");
+
+    let (client, server_thread) = initialized_server();
+    let symbols = request(
+        &client,
+        2,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert_eq!(root_names(&symbols), ["Module"]);
+    let children: Vec<&str> = symbols[0]["children"]
+        .as_array()
+        .expect("the class's children")
+        .iter()
+        .map(|child| child["name"].as_str().expect("a name"))
+        .collect();
+    assert_eq!(children, ["new", "run", "make"]);
+
+    // The editor's document has no byte-order mark, so a file saved with
+    // one must not shift the positions on its first line.
+    let marked = directory.join("Marked.ns");
+    std::fs::write(&marked, "\u{feff}class Marked = Object new () ()\n").expect("write the module");
+    let symbols = request(
+        &client,
+        3,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": file_uri_of(&marked) } }),
+    );
+    assert_eq!(root_names(&symbols), ["Marked"]);
+    assert_eq!(
+        symbols[0]["selectionRange"]["start"],
+        json!({ "line": 0, "character": 6 })
+    );
+    shut_down(&client, server_thread);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// An open document may hold text not yet saved, so it is answered over
+/// the file on disk; once closed, the file on disk is answered again.
+#[test]
+fn an_open_document_wins_over_the_file_on_disk() {
+    let directory = scratch_directory("open-wins");
+    let path = directory.join("Module.ns");
+    std::fs::write(&path, "class OnDisk = Object new () ()\n").expect("write the module");
+    let uri = file_uri_of(&path);
+
+    let (client, server_thread) = initialized_server();
+    notify(
+        &client,
+        "textDocument/didOpen",
+        json!({ "textDocument": { "uri": uri, "languageId": "newspeak", "version": 1, "text": "class Unsaved = Object new () ()\n" } }),
+    );
+    let _ = next_diagnostics(&client);
+    let symbols = request(
+        &client,
+        2,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert_eq!(root_names(&symbols), ["Unsaved"]);
+
+    notify(
+        &client,
+        "textDocument/didClose",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    let _ = next_diagnostics(&client);
+    let symbols = request(
+        &client,
+        3,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": uri } }),
+    );
+    assert_eq!(root_names(&symbols), ["OnDisk"]);
+    shut_down(&client, server_thread);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// A file that cannot be read, or a URI that names no file, has no
+/// symbols, as before: the answer is empty, not an error.
+#[test]
+fn an_unreadable_file_or_a_uri_that_names_no_file_answers_no_symbols() {
+    let directory = scratch_directory("unreadable");
+    let (client, server_thread) = initialized_server();
+    for (id, uri) in [
+        file_uri_of(&directory.join("Missing.ns")),
+        // A directory exists but is no file to read.
+        file_uri_of(&directory),
+        "untitled:Module.ns".to_string(),
+        "https://example.org/Module.ns".to_string(),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let symbols = request(
+            &client,
+            2 + id as i32,
+            "textDocument/documentSymbol",
+            json!({ "textDocument": { "uri": uri } }),
+        );
+        assert_eq!(symbols, json!([]), "{uri}");
+    }
+    shut_down(&client, server_thread);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// Opening a FIFO blocks until a writer comes; the server, serving every
+/// document on one thread, must answer without opening it.
+#[cfg(unix)]
+#[test]
+fn a_fifo_answers_no_symbols_without_blocking() {
+    let directory = scratch_directory("fifo");
+    let fifo = directory.join("Module.ns");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success());
+    let (client, server_thread) = initialized_server();
+    let symbols = request(
+        &client,
+        2,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": file_uri_of(&fifo) } }),
+    );
+    assert_eq!(symbols, json!([]));
+    shut_down(&client, server_thread);
+    let _ = std::fs::remove_dir_all(&directory);
 }

@@ -12,6 +12,8 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.util.Key
+import com.intellij.openapi.util.Pair
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClient
 import com.intellij.platform.lsp.api.LspClientManager
@@ -47,17 +49,23 @@ class NewspeakStructureViewFactory : PsiStructureViewFactory {
 
 /**
  * Asks the server lazily, when the tree asks for the file's children, and
- * again only once the document has changed. The tree computes its children
- * off the EDT; asked on the EDT, the model answers what it already has rather
- * than block the UI on the server.
+ * again only once the document has changed. The answer is kept on the file
+ * with the document stamp it was given for, so every model of the file --
+ * the tool window rebuilds its model each time it shows the file -- answers
+ * an unchanged document at once, without asking. The tree computes its
+ * children off the EDT; asked on the EDT, the model answers what it already
+ * has rather than block the UI on the server.
  *
  * With no client yet, no answer within the timeout, or an empty answer, the
  * tree stays as it was (empty the first time) and the model tells the view to
- * ask again a little later. The server answers at least the root class for
- * every document it has opened (`crates/ns-analyzer/src/document_symbols.rs`), so
- * an empty answer means the file's `didOpen` has not reached it yet -- the
- * race of a file opened with the Structure tool window already showing, or of
- * editors restored at IDE start. The platform refreshes its own structure
+ * ask again a little later. With no client it starts one, since the platform
+ * starts the server only for a file opened in an editor. The server answers
+ * at least the root class for every document it has opened
+ * (`crates/ns-analyzer/src/document_symbols.rs`), and for a file not open in an
+ * editor it reads the file from disk, so an empty answer means a file the
+ * server cannot read, or one whose `didOpen` it has not had yet -- the race of
+ * a file opened with the Structure tool window already showing, or of editors
+ * restored at IDE start. The platform refreshes its own structure
  * view when a client starts through a listener that is internal API, which
  * the plugin may not use; asking again reaches the same tree once the server
  * is up. It asks every second for about a minute, then every ten seconds for
@@ -70,12 +78,15 @@ class NewspeakStructureViewModel(
     psiFile: PsiFile,
     private val file: VirtualFile,
     editor: Editor?,
+    /** Asks for the file's symbols in place of the language server; for tests. */
+    private val fetcher: ((VirtualFile) -> List<DocumentSymbol>?)? = null,
 ) : TextEditorBasedStructureViewModel(editor, psiFile), StructureViewModel.ElementInfoProvider {
-    private class Answer(val symbols: List<DocumentSymbol>, val documentStamp: Long)
-
     @Volatile private var answer: Answer? = null
     @Volatile private var disposed = false
     private val retryPending = AtomicBoolean(false)
+
+    /** Whether a question is scheduled to be asked again; set before `symbols()` returns. */
+    internal val asksAgain: Boolean get() = retryPending.get()
     private val retries = AtomicInteger(0)
     private val root = NewspeakStructureRoot(psiFile, this)
 
@@ -108,6 +119,17 @@ class NewspeakStructureViewModel(
         val stamp = documentStamp()
         val known = answer
         if (known != null && known.documentStamp == stamp) return known.symbols
+        // The Structure tool window builds a new model each time it shows the
+        // file (selected anew in the Project view, the window reopened); a
+        // model that starts empty would show an empty tree until the server
+        // has answered, then the tree, a flicker on every rebuild. The last
+        // answer is kept on the file, so a new model of an unchanged document
+        // shows it at once.
+        val shared = file.getUserData(LAST_ANSWER)
+        if (shared != null && shared.second == stamp) {
+            answer = Answer(shared.first, shared.second)
+            return shared.first
+        }
         if (ApplicationManager.getApplication().isDispatchThread) {
             askAgainLater()
             return known?.symbols.orEmpty()
@@ -119,17 +141,28 @@ class NewspeakStructureViewModel(
         }
         retries.set(0)
         answer = Answer(fetched, stamp)
+        file.putUserData(LAST_ANSWER, Pair.create(fetched, stamp))
         return fetched
     }
 
     private fun documentStamp(): Long =
         FileDocumentManager.getInstance().getDocument(file)?.modificationStamp ?: file.modificationStamp
 
-    /** Null when there is no client yet or no answer in time. */
+    /**
+     * Null when there is no client yet or no answer in time. With no client,
+     * it starts one: the platform starts the server only for a file opened in
+     * an editor, and this file may be merely selected in the project view.
+     */
     private fun fetch(): List<DocumentSymbol>? {
-        val client = LspClientManager.getInstance(psiFile.project)
+        fetcher?.let { fetchSymbols -> return fetchSymbols(file) }
+        val project = psiFile.project
+        val client = LspClientManager.getInstance(project)
             .getClients(NewspeakLspIntegrationProvider::class.java)
-            .firstOrNull() ?: return null
+            .firstOrNull()
+        if (client == null) {
+            NewspeakLspIntegrationProvider.registered()?.startClient(project)
+            return null
+        }
         val parameters = DocumentSymbolParams(client.getDocumentIdentifier(file))
         val response = client.sendRequestSync(LspClient.DEFAULT_REQUEST_TIMEOUT_MS) { server ->
             server.textDocumentService.documentSymbol(parameters)
@@ -161,6 +194,18 @@ class NewspeakStructureViewModel(
     }
 }
 
+/** What the server answered for a file, and the document stamp it answered for. */
+private class Answer(val symbols: List<DocumentSymbol>, val documentStamp: Long)
+
+/**
+ * The last answer for a file and its document stamp, shared by every model
+ * of it. It lives on the `VirtualFile` for the session, so it holds platform
+ * types only (the platform's `Pair` and lsp4j's symbols, both loaded by the
+ * platform): a plugin class there would keep the plugin's class loader
+ * reachable and stop the plugin from unloading without a restart.
+ */
+private val LAST_ANSWER = Key.create<Pair<List<DocumentSymbol>, Long>>("io.github.bstrauss.newspeak.structure.answer")
+
 /** The file, above the module's root class; not shown (`isRootNodeShown`). */
 private class NewspeakStructureRoot(
     private val psiFile: PsiFile,
@@ -182,8 +227,9 @@ private class NewspeakStructureRoot(
 
 /**
  * The symbols to show, or null to keep the tree and ask again: an empty answer
- * is a file the server has not opened yet, never a file without symbols, since
- * every opened document answers at least its root class.
+ * is a file the server has not opened yet or could not read, never a file
+ * without symbols, since every document it opens or reads answers at least
+ * its root class.
  */
 fun usableAnswer(symbols: List<DocumentSymbol>?): List<DocumentSymbol>? = symbols?.takeIf { answer -> answer.isNotEmpty() }
 

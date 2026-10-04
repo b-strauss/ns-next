@@ -152,9 +152,24 @@ Modules:
   URI's string form, not by `lsp_types::Uri` itself: `Uri` wraps a
   `fluent_uri::Uri<String>` that caches parsed components behind a `Cell`, so
   clippy's `mutable_key_type` refuses it as a map key even though its
-  `Hash`/`Eq` only ever read the string. A `semanticTokens/full`,
-  `foldingRange` or `documentSymbol` request for a URI the server never
-  opened, or has since closed, answers an empty set rather than an error.
+  `Hash`/`Eq` only ever read the string. A `semanticTokens/full` or
+  `foldingRange` request for a URI the server never opened, or has since
+  closed, answers an empty set rather than an error; a `documentSymbol`
+  request for one reads the file from disk ("Structure").
+- `file_uri.rs` — the file a `file` URI names: the scheme checked, the path
+  percent-decoded as a whole (so `file:///c%3A/…` is a drive), and on Windows
+  a drive letter (`file:///C:/…` → `C:\…`), a host (`file://server/share/…`
+  → `\\server\share\…`, the host percent-decoded) or the four-slash form
+  Java's `File.toURI()` writes (`file:////server/share/…`) made a Windows
+  path; an empty host or `localhost` is this machine. A query, a fragment, a
+  user or port, an IP literal in brackets or a separator as the host, a UNC
+  server of `.` or `?` (Win32's device namespaces, `\\.\pipe\…` and `\\?\…`,
+  whose pipes and ports could pass for a file and block the server's one
+  thread on reading), a path that is not UTF-8 once decoded or holds a NUL, a
+  Windows path without a drive and a host on POSIX name no file. `lsp-types` 0.97's `Uri` wraps
+  `fluent_uri::Uri`, which parses and decodes but knows no file paths, so the
+  conversion is here; `fluent-uri` is a direct dependency only to tell a
+  host's kind apart (`HostData`), on the version `lsp-types` uses.
 - `documents.rs` — the open text per URI with its version, and a line index
   converting a `Span`'s byte offsets to LSP positions in UTF-16 code units,
   the one encoding every LSP client must accept.
@@ -175,8 +190,9 @@ text on every change), `didClose`, `publishDiagnostics` (push, supported by
 the platform since 2023.2), `textDocument/semanticTokens/full`,
 `textDocument/foldingRange` (the `foldingRangeProvider` capability,
 announced as `true`), `textDocument/documentSymbol` (the
-`documentSymbolProvider` capability, announced as `true`), `shutdown` and
-`exit`. Nothing else. A request the server does not implement is answered
+`documentSymbolProvider` capability, announced as `true`; answered also for a
+`file` URI never opened, read from disk), `shutdown` and `exit`. Nothing
+else. A request the server does not implement is answered
 `MethodNotFound`. A document notification whose params do not match the
 schema has no response to carry an error, so the server writes it to stderr
 and sends the client a `window/logMessage` of type `Error` -- the client's
@@ -325,8 +341,26 @@ the analysis, from the module the editor parse recovered;
 `textDocument/documentSymbol` answers them from the cache, in the nested form
 (`DocumentSymbol`), never as flat `SymbolInformation`. The answer is one root,
 the module's class, and it is never empty for a document the server has
-opened, however broken its text; a document it never opened, or has closed,
-is answered `[]`.
+opened, however broken its text.
+
+**A file not open in an editor.** The platform sends `didOpen` only for a file
+open in an editor, but the plugin's structure view also asks for a file merely
+selected in the Project view. For a URI it has not opened (or has closed), the
+server reads the file the URI names (`file_uri.rs`) and analyses it as
+`didOpen` would -- `analysis::analyze` and the line index; the text decoded
+as UTF-8, as the project's sources are, invalid bytes replaced rather than
+the file refused; a leading byte-order mark dropped as the editor's document
+drops it -- answers its symbols and keeps nothing, since without `didOpen`
+it hears of no change; each request reads the file again. Only a regular
+file no longer than a source may be (`ns_syntax::source_too_long`) is read,
+asked of its metadata before it is opened: a FIFO would block the opening
+and a device such as `/dev/zero` the reading, stalling the one thread every
+document is served on.
+An open document always wins over the file on disk: it may hold text not yet
+saved. A URI that names no file, or a file that cannot be read, is answered
+`[]`. Fold ranges and semantic tokens are not read from disk: the platform
+asks for them only of a file open in an editor, which it has opened with the
+server first.
 
 **The tree.**
 
@@ -406,7 +440,19 @@ access. The plugin registers `NewspeakStructureViewFactory`
 (`lang.psiStructureViewFactory` for `Newspeak`), built over the public LSP
 API alone: it finds the client with
 `LspClientManager.getInstance(project).getClients(NewspeakLspIntegrationProvider::class.java)`
-and asks `textDocument/documentSymbol` through `sendRequestSync`. The
+and asks `textDocument/documentSymbol` through `sendRequestSync`. With no
+client it starts one: the platform starts the server only through the
+provider's `fileOpened`, for a file opened in an editor, so with no `.ns`
+file opened in the session a file selected in the Project view would find no
+server. `LspClientManager.startClientsIfNeeded` does not help, since it calls
+`fileOpened` for the files open in editors only; the model takes the
+registered provider (`LspIntegrationProvider.EP_NAME.findExtension`, the one
+instance that holds the plugin's directory) and its `startClient` hands the
+same descriptor `fileOpened` would build to
+`LspClientManager.ensureClientStarted(NewspeakLspIntegrationProvider::class.java, descriptor)`,
+which does nothing for a client already running; a missing binary raises the
+same one-time notification. `getClients`, `ensureClientStarted` and
+`EP_NAME` are public, not internal, in 2026.1.4 and 2026.2.3. The
 platform's own structure view is switched off for the client by
 `NewspeakDocumentSymbols`, an `LspDocumentSymbolSupport` with
 `structureViewSupport = false`, declared beside the client descriptor in
@@ -489,20 +535,43 @@ range holds the caret.
 **When it asks.** The model asks the server for the file's children, off the
 EDT, and again only once the document's modification stamp has changed; asked
 on the EDT it answers what it already has. A usable answer is a non-empty one:
-the server always answers the root class for a document it has opened, so no
-client, no answer in time or an empty answer means the file has not reached
-the server yet (a file opened with the tool window already showing, or an
-editor restored at IDE start). The platform refreshes its own view when a
-client starts through a listener that is internal API, which the plugin may
-not use, so while no usable answer exists the view asks again: every second
-for 60 tries, then every ten seconds for as long as it lives, and fast again
-after an answer; a new model (another file, the view reopened) starts fast. A
-server that starts late, or is restarted, therefore fills the tree without an
-edit.
+the server always answers the root class for a document it has opened or read
+from disk, so no client, no answer in time or an empty answer means the server
+is not up yet (it starts the client itself when there is none, above), the
+file has not reached it yet (a file opened with the tool window already
+showing, or an editor restored at IDE start), or the file cannot be read. A
+file selected in the Project view and not open in an editor is answered from
+disk, so its tree shows the file as last saved; one whose document holds
+unsaved changes while no editor shows it is shown as saved. The platform
+refreshes its own view when a client starts through a listener that is
+internal API, which the plugin may not use, so while no usable answer exists
+the view asks again: every second for 60 tries, then every ten seconds for as
+long as it lives, and fast again after an answer; a new model (another file,
+the view reopened) starts fast. A server that starts late, or is restarted,
+therefore fills the tree without an edit.
+
+**One answer per document stamp.** The Structure tool window builds a new
+model each time it shows a file -- selected anew in the Project view, the
+window reopened -- and a model that starts empty would show an empty tree
+until the server has answered, then the tree: a flicker on every rebuild.
+The last usable answer is therefore kept on the `VirtualFile` (user data)
+with the document stamp it was given for, and every model of the file answers
+an unchanged document from it at once, on the EDT too, without a request; the
+server is asked again only once the stamp changes. The user data holds
+platform types only -- the platform's `Pair` of lsp4j's symbols and the stamp
+-- since a plugin class kept there for the session would hold the plugin's
+class loader and stop the plugin from unloading without a restart. A file
+with no open document that changes on disk keeps its old structure until the
+IDE's VFS notices the change (on regaining focus, or through the file
+watcher); its stamp moves then and the server is asked again. A row is equal
+to another for an equal `DocumentSymbol` in the same place
+(`NewspeakStructureElement.equals`), so a refresh bringing the same answer
+keeps the tree's nodes, their expansion and selection.
 
 **Known behaviours.** After a timeout following an edit the tree keeps its
 last answer, and its positions are stale until the next answer. Two views of
-one file asking at once (the tool window and the popup) each send a request.
+one file asking at once (the tool window and the popup) before either has an
+answer each send a request.
 A question on the EDT that finds no current answer schedules a retry too, and
 counts against the sixty fast ones.
 
@@ -592,9 +661,27 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   `documentSymbolProvider` included, `didOpen`, the expected
   `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
   `textDocument/documentSymbol` (the class, its three children, and `[]` for
-  a document never opened), `shutdown`; a malformed notification, reported
-  as a `window/logMessage` error while the next request is still answered;
-  an unknown request, answered `MethodNotFound`.
+  a document never opened and no file on disk), `shutdown`; a malformed
+  notification, reported as a `window/logMessage` error while the next
+  request is still answered; an unknown request, answered `MethodNotFound`;
+  `documentSymbol` for a file
+  written to a temporary directory and never opened (its name with a space
+  and a non-ASCII letter, so it arrives percent-encoded; and one saved with a
+  byte-order mark, its root class still selected at character 6), for an open
+  document with other text than the file on disk (the open text wins, the
+  file again once closed), and for a missing file, a directory, an
+  `untitled:` and an `https:` URI (`[]`), and on POSIX for a FIFO (`[]`,
+  without blocking);
+- `server.rs`'s unit test — only a regular file no longer than a source may
+  be is read, tested on the predicate the metadata feeds, since no test
+  writes a four-gigabyte file;
+- `file_uri.rs`'s unit tests — the conversion in both path styles on every
+  host: drive letters (`file:///C:/…`, `file:///c%3A/…`,
+  `file://localhost/D:/…`), percent-decoding, POSIX paths, a host as a UNC
+  share on Windows (IPv4 included, a percent-encoded name decoded) and no
+  file on POSIX, the four-slash UNC form, an IP literal, a separator and the
+  device namespaces `.` and `?` (as host, encoded, or in the four-slash form)
+  refused, and the URIs that name no file.
 
 ## The plugin, `editors/jetbrains/`
 
@@ -821,7 +908,15 @@ The server's own tests are described under its section, above ("Testing").
   nested value classes included, and `class` read together with the access
   word and `lazy`) and `NewspeakStructureViewModelTest` (no answer and an
   empty answer make the model ask again, an answer with symbols is shown);
-  and on `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a
+  on `BasePlatformTestCase`, `NewspeakStructureViewRefreshTest` (over a file
+  never opened in an editor and a stand-in for the server: a new model of an
+  unchanged file answers at once, on the EDT too, with no second request and
+  no refresh scheduled; a changed file is asked again; rows of equal symbols
+  are equal) and `NewspeakLspIntegrationProviderTest` (the
+  structure view finds the registered provider it starts the client
+  through; starting a client needs the server binary and a running IDE, so
+  no test starts one); and on `BasePlatformTestCase`,
+  `NewspeakStructureViewFactoryTest`: a
   Newspeak file gets the plugin's view rather than the platform's, the caret
   selects the innermost symbol around it, a member with an access shows the
   kind's and the access icon in one row, a class-side method shows its

@@ -15,8 +15,9 @@ class NewspeakStructureViewModelTest {
     }
 
     @Test fun anEmptyAnswerMakesTheModelAskAgain() {
-        // Every document the server has opened answers at least its root class,
-        // so an empty answer is a `didOpen` that has not reached it yet.
+        // Every document the server has opened or read from disk answers at
+        // least its root class, so an empty answer is a `didOpen` that has not
+        // reached it yet, or a file it could not read.
         assertNull(usableAnswer(emptyList()))
     }
 
