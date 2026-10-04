@@ -13,6 +13,11 @@
           running a module, with ns-next's own message.</li>
       <li>Semantic colouring from ns-next's resolver: parameters, locals, slots, nested classes
           and sends.</li>
+      <li>Code folding from ns-next's parser: comments, class bodies and class sides, method
+          bodies, closures and slot sections — kept while a file has syntax errors.</li>
+      <li>A structure view and breadcrumbs from ns-next's parser: each class with its factory,
+          instance side and class side, its slots and methods with their access shown as in
+          Java, and sticky lines — kept while a file has syntax errors.</li>
     </ul>
     <p>The language server, <code>ns-next-lsp</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with
@@ -21,7 +26,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-    <p>0.1.0: highlighting, errors as you type and semantic colouring.</p>
+    <p>0.1.0: highlighting, errors as you type, semantic colouring, code folding, and a
+    structure view with breadcrumbs.</p>
     ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
@@ -54,6 +60,11 @@
                                  displayName="Newspeak"/>
         <notificationGroup id="Newspeak" displayType="BALLOON"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
+        <!-- Asked before the platform's LSP structure view, which is registered for every
+             language; that one is also turned off for the Newspeak client
+             (NewspeakDocumentSymbols). -->
+        <lang.psiStructureViewFactory language="Newspeak"
+                                      implementationClass="io.github.bstrauss.newspeak.structure.NewspeakStructureViewFactory"/>
     </extensions>
 
     <actions>

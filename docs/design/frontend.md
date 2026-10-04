@@ -2,11 +2,16 @@
 
 > **Status:** built.
 > **Code:** `crates/ns-syntax/` — lexer, tokens, AST, recursive-descent and
-> Pratt parser, `Span`, diagnostics.
+> Pratt parser, `Span`, diagnostics; for an editor, `parse_for_editor`
+> (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
+> `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop
+> and `receiver_chain` (`ast.rs`); the recovery's tests in
+> `tests/recovery.rs`.
 
 Turns source bytes into a `Module` AST with source spans, and reports lexer and
-parser diagnostics. It has no dependency on `ns-runtime`, and nothing here should
-change for runtime work.
+parser diagnostics; for an editor, it answers a recovered module for any
+source ("Recovery"). It has no dependency on `ns-runtime`, and nothing here
+should change for runtime work.
 
 ## What a source file looks like
 
@@ -249,7 +254,13 @@ whatever code points it is given and does not depend on it.
   2026-09-27). Its image literal tag, 7, is retired
   ([image-format.md](image-format.md)).
 
-Comments are retained as tokens for tooling and skipped by the parser.
+**Comments are trivia.** The lexer skips them with the whitespace, so no
+token stands for one and the parser never sees one. `Lexer::run_keeping_comments`
+also answers their spans, for an editor (`parse_for_editor`, "Recovery"): one
+span per outermost comment, from its outer `(*` to its outer `*)`, so a nested
+comment is inside its enclosing one's span; an unterminated one runs to the
+end of the source, beside its diagnostic. `run`, and with it `lex` and
+`parse`, drops the list, and the token stream is the same either way.
 
 ## AST
 
@@ -263,6 +274,18 @@ Comments are retained as tokens for tooling and skipped by the parser.
 how errors point at source, and how provenance is recorded. The compiler looks
 each binding up by its node's span once and bakes the resolution into an
 instruction, so nothing at run time consults a span to find a binding.
+
+**`Delimiters { open, close }` records a bracketed construct's opening and
+closing token**, for an editor's folds ([editor-support.md](editor-support.md),
+"Folding"): `close` is `None` where recovery ended the construct without one,
+which then ends where its node's span does. Five fields carry it:
+`ClassBody::delimiters` (the instance side's first `(`, the header's, and its
+last `)`, the members'; a class side's `( )`; `None` for a mixin application
+ended by `.`), `ClassBody::slot_delimiters` (the header's `| |` or `|| ||`),
+`MethodDeclaration::body_delimiters` (the body's `( )`),
+`CodeBody::temporaries_delimiters` (the temporaries' `| |`) and
+`BlockExpression::delimiters` (the `[ ]`; `None` for a block the compiler
+builds). Nothing in the runtime reads them.
 
 ## What is parsed and dropped
 
@@ -438,3 +461,202 @@ take and record here, not a file to set aside.
 
 Lexer and parser collect `Diagnostic { span, message, severity }` and report all
 of them. Malformed input is never a panic.
+
+## Recovery
+
+An editor shows a file while it is typed, and so mostly while it has syntax
+errors; its colours, resolver errors and folds
+([editor-support.md](editor-support.md)) need a module all the same. There
+is one parser for both, and no concrete syntax tree: recovery is part of the
+parser `ns-next run` uses, and every rule below acts only where an error is
+reported, so a source without errors parses exactly as it would without
+them.
+
+**Two entries.**
+
+- `ns_syntax::parse` answers `Err` on any error-severity diagnostic; a lexer
+  error stops it before the parser runs. Everything that compiles uses it,
+  so nothing compiled ever sees a recovered module.
+- `ns_syntax::parse_for_editor` always answers an `EditorParse`: `tokens`,
+  the lexer's, before the parser splits any; `module`, recovered where the
+  source has errors; `comments`, every comment's span in source order
+  ("Lexer"); and `diagnostics`, the lexer's, then the parser's. A lexer
+  error does not stop the parse: the lexer answers a complete token stream
+  beside its errors, an unterminated string or comment running to the end
+  of the file. A source longer than a span can address answers a root class
+  with an empty name and nothing in it, and the one `source_too_long`
+  diagnostic. On a source without errors both entries answer the same
+  module, which `ns-lsp`'s `the_editor_parse_agrees_with_parse` checks over
+  every corpus module, golden and the kernel.
+
+**Resynchronisation.** Two means:
+
+- *Balanced skipping* (`Parser::skip_balanced`): `( )`, `[ ]` and `{ }` are
+  skipped whole, each closer matching the group it closes, never to the
+  first closing bracket of any kind. A skip stops at a token it was asked to
+  stop at outside every group, at a closer no skipped group opened -- an
+  owner's -- at a member start (once rule 1's budget is spent, only a
+  nested class or a lazy slot), or at the end of input.
+- *A member start* (`Parser::at_member_start`): what opens a member of a
+  class side, an access modifier before it included -- a nested class,
+  `class` and a name (`at_nested_class`); a lazy slot's modifiers and name
+  (`at_lazy_slot_prefix`); a method, a message pattern, `=` and `(`
+  (`looks_like_method`). A bare `= (` has no pattern and starts no method. A
+  category string starts no member: the grammar has a category only at a
+  module's head.
+
+**The rules.**
+
+1. **Method body.** A body ends at its `)`, at a `]` or the end of input,
+   and at a member start after a statement. A missing `)` is reported once;
+   what is left is skipped, balanced, up to a member start or the method's
+   `)`, which the method then takes. So the method being typed, `foo = (`
+   with its body unfinished, keeps every member after it and the class side.
+
+   A half-typed body usually runs on into the next member as one
+   expression: `^1` above `second = ( ^2 )` parses as `1 second = ( … )`,
+   and the error, the `^` inside the parenthesis, comes after `second` was
+   consumed. So a statement that reported an error is looked at again
+   (`parse_statement`). It swallowed a member when, from its first token up
+   to its first error, a member starts that holds that error
+   (`member_holding_error`): one that parses on its own without an error
+   through its `)`, or with a clean body up to where an unclosed body ends,
+   and ends past the error (`speculative_member_end`); and that stands
+   inside no block or tuple the statement opened (`inside_block_or_tuple`)
+   -- in `[:each | each = ( ^each ) ]` the `|` starts no binary method, and
+   the member is the block's content. The statement is then parsed again,
+   its first diagnostics dropped, with that member start read as the end of
+   input: the token is replaced by `EndOfInput` for the one call and its
+   span pushed on the parser's `bounds` stack, and `bump` never passes an
+   end of input, so nothing parsed under the bound reaches past it. A block
+   in the statement bounds its own statements the same way, inside it. A
+   diagnostic at a bound says it found "the start of the next member"
+   (`Parser::found`), not an end of input the source does not have. When
+   the member starts at the statement's first token there is no statement,
+   and the body ends there. A statement without an error is never looked at
+   again, and the speculative parses run under the depth guard (rule 7).
+
+   Whether the member stands inside a block or a tuple is answered without
+   walking the tokens after it: the first closer after a token that closes
+   nothing opened after it -- its free closer -- is computed once per parse,
+   the first time the question is asked (`FreeClosers`), and the groups the
+   statement opened before the member are kept as the scan moves on
+   (`OpenGroups`). Each statement of a run of consecutive unclosed methods
+   asks again for every method after it, so the end a speculative parse
+   found is kept, keyed by the member's offset and the bound it ran under
+   (`member_ends`); an answer the depth guard or a spent budget cut short is
+   not kept.
+
+   The recovery's work has one budget, `RECOVERY_WORK_PER_TOKEN` (256)
+   steps per token of the source, never refilled. It pays for every token a
+   speculative member parse or a re-parse consumes, every position the scan
+   for a member passes, each look up of a free closer, and each member-start
+   check the scan or a recovery skip (rules 2 and 3) makes at a token it
+   passes, the check's lookahead included -- a method pattern is read to its
+   end, and one begins at every keyword of a long keyword message. A
+   speculative member can hold another, and without the budget the work
+   grows exponentially with the nesting of half-typed members. Once it is
+   spent no statement is looked at again, and a skip stops only at the
+   member starts that take a fixed look, a nested class and a lazy slot:
+   the file folds worse, never wrongly. The parse's work stays linear in the
+   source: the budget's, one pass besides, and the speculative parses in
+   flight when it ran out, which finish as plain passes over their part of
+   the source, no more of them than the depth guard lets nest.
+2. **Statements.** After an error in a statement the rest of it is
+   skipped, balanced, to its `.`, a stray `}` with it, and the body goes on
+   with the next statement rather than ending. What
+   follows a return is skipped to the body's close with one diagnostic,
+   unless a member starts there: then the body was never closed, which its
+   method reports. An expression that consumed nothing has reported its
+   token already and gets no second diagnostic for the `.` missing after it.
+3. **Class sides.** A run of tokens no member starts is skipped, balanced,
+   up to the next member start, `)` or the end of input, with one
+   diagnostic for the run.
+4. **Parenthesis, block, tuple, slot section, type annotation.** A missing
+   closer is looked for, balanced, and the search never takes an owner's:
+   - a parenthesis holds one expression; what follows it is skipped to its
+     `)` but stops at a `.`, which means the parenthesis was never closed;
+   - a block's body ends at a `)` or `]`; without its `]` the block ends at
+     its last token and leaves the method's `)` to the method;
+   - a tuple skips junk after an element to the next `.`, keeping the
+     elements after it, and stops at its own `}` and at an enclosing body's
+     close;
+   - a slot section ends at its bar or at a closing bracket, which no slot
+     holds at its top level; a slot without its name is skipped to its `.`
+     or the bar;
+   - a type annotation's nested groups are each closed by their own closer;
+     a closer the annotation did not open, `=`, `::=` or the end of input
+     ends it with one diagnostic, so in `| a <Foo |` then `)` the header's
+     `)` stays the header's.
+
+   A parenthesis or a tuple element whose expression consumed nothing gets
+   one diagnostic, not a second for the closer or the `.` missing after it.
+5. **No invented declarations.** A declaration whose name is missing is left
+   out rather than given an empty name (`Parser::declared_identifier`
+   answers `None`): a block parameter, a lazy slot, a superclass or `<:`
+   clause whose receiver or `outer` name is missing -- a `<:` clause left
+   out still lets the class end at its `.`. A nested class always has its
+   name, since `class` and a name are what start one. A message pattern
+   missing its selector or a parameter is left out whole, its tokens
+   consumed: a method with it, and a class's factory pattern becomes `None`.
+   A cascade message that is not there is left out. The one exception is a
+   root class with no name: it stays, with an empty name, because without it
+   there is no module, and as no class's member it collides with nothing.
+   Placeholder nodes exist only for expressions (`Literal::Nil`). So the
+   resolver can run on a recovered module: recovery declares nothing the
+   source does not contain, so it causes no duplicate or clashing
+   declaration the resolver would report, and an unbound name is a send in
+   Newspeak, not an error.
+6. **Spans.** A node recovery ended early ends at the last token it consumed
+   (`Parser::previous_span`), never at an unrelated token after it: a
+   method, a code body, a block, a tuple, a slot, a lazy slot without its
+   `.`, and a class's groups. An editor's folds end there.
+7. **Depth guards.** One depth counter, `MAX_DEPTH` (128), guards every
+   recursion malformed source controls: `parse_primary`,
+   `parse_class_declaration`, a chain of setter keywords (`x:: x:: …`),
+   nested pattern literals, and the speculative member parses of rule 1.
+   Past it the parser reports one diagnostic and skips to a structural
+   token, so hostile input answers diagnostics, never a stack overflow.
+
+   A chain of messages, `a b c + d …`, is not guarded: it is built in a
+   loop, but each send holds the one before it as its receiver, so the
+   tree nests as deep as the chain is long, and every length is valid. A
+   run of unclosed methods past the guard makes one too, the first
+   method's statement taking the rest of the run. So the tree is never
+   taken apart by recursion along a receiver: `Send`'s `Drop` takes the
+   chain link by link, the resolver's walk does too (`resolve_send`), and
+   the editor's (`ns-lsp`'s semantic tokens and folds) takes each chain
+   from `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain
+   of a million messages, parse and are analysed on the server's 8 MiB, and
+   on 1 MiB. The compiler, and the AST's derived `Clone`, `PartialEq` and
+   `Debug`, still recurse along a chain ([OPEN-WORK.md](../OPEN-WORK.md),
+   "Defects that change a correct program's output").
+
+**Left as it is.** An unfinished body whose next line is a valid expression
+is read as that expression: in `first = ( x foo. bar = ( 2 )` followed by
+`baz = ( ^3 )`, `bar = ( 2 )` is a comparison, so `bar` is no method and
+the missing `)` is reported at `baz`. It is a valid parse; a heuristic over
+indentation or lines is rejected. (With `bar = ( ^2 )` the `^` is an error
+inside a member, and rule 1 keeps `bar`.) Half a keyword pattern, `foo:`
+above `bar = ( … )`, is the valid method `foo: bar`. A half-typed send whose
+selector reads, with the member after it, as a member is that member: `^1 +`
+or `^dict at:` above `second = ( ^2 )` makes the method `+ second` or
+`at: second` -- the source is ambiguous, and
+`a_half_typed_send_before_a_member_starts_the_member_with_its_selector`
+pins the reading. A nested class missing its `)` takes the members after it
+as its own, since nothing but indentation could say otherwise; they
+survive, with their spans. An editor folds such a file worse, never
+wrongly. The recovery's known limits are in [OPEN-WORK.md](../OPEN-WORK.md),
+"Known defects and gaps".
+
+`crates/ns-syntax/tests/recovery.rs` holds one test per typical in-progress
+edit -- half a method, a statement after `^`, an unclosed block, a nested
+class missing its `)`, an unclosed slot section, `| a <Foo |`, half a
+keyword message -- each asserting that the members after the error
+survive, with their names and spans, most of them also how many
+diagnostics the fault gives. Each case left as it is, above, is pinned
+there too, with the methods and the diagnostics it gives;
+`parser::declaration`'s unit tests pin the depth guards, and its
+`recovery_work_tests` hold the recovery to its budget, counted in steps per
+token rather than timed; `ast.rs`'s
+`a_long_chain_of_sends_drops_on_a_small_stack` pins the link-by-link drop.

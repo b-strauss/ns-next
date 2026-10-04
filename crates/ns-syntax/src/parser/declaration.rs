@@ -2,7 +2,7 @@
 
 use super::Parser;
 use crate::ast::*;
-use crate::token::TokenKind;
+use crate::token::{Token, TokenKind};
 
 impl<'a> Parser<'a> {
     /// `codeBody → [temporaries] statements` (§5.1.8, and §7.2 for the return), where
@@ -13,7 +13,7 @@ impl<'a> Parser<'a> {
     /// dot that ends no statement. Stops at `]`, `)` or the end of input.
     pub(crate) fn parse_code_body(&mut self) -> CodeBody {
         let start = self.current().span;
-        let temporaries = self.parse_temporaries();
+        let (temporaries, temporaries_delimiters) = self.parse_temporaries();
         let mut statements = Vec::new();
         loop {
             match self.peek() {
@@ -21,30 +21,327 @@ impl<'a> Parser<'a> {
                     break
                 }
                 TokenKind::Caret => {
-                    self.bump(); // `^`
-                    let expression = self.parse_expression();
+                    let caret = self.bump();
+                    let expression = self.parse_statement().unwrap_or_else(|| {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!("expected an expression, found {}", self.found(token)),
+                        );
+                        Expression::Literal(Literal::Nil { span: caret.span })
+                    });
                     statements.push(Statement::Return(expression));
                     self.eat(TokenKind::Dot); // optional trailing dot
-                    break; // nothing after a return
+
+                    // Nothing follows a return (§7.2). What does is skipped to
+                    // the body's end, unless a member starts there: then the
+                    // body was never closed, which its owner reports.
+                    if !self.at_body_close() && !self.at_member_start() {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!(
+                                "expected the end of the body after a return (§7.2), found {}",
+                                self.found(token)
+                            ),
+                        );
+                        self.skip_rest_of_body();
+                    }
+                    break;
                 }
                 TokenKind::Dot => {
                     let dot = self.bump();
                     self.push_error(dot.span, "a `.` ends a statement, and none is here");
                 }
                 _ => {
-                    let expression = self.parse_expression();
+                    let before = self.position;
+                    let Some(expression) = self.parse_statement() else {
+                        break;
+                    };
                     statements.push(Statement::Expression(expression));
-                    if !self.eat(TokenKind::Dot) {
+                    if self.eat(TokenKind::Dot) || self.at_body_close() {
+                        continue;
+                    }
+                    if self.at_member_start() {
                         break;
                     }
+                    // A statement the expression did not end: skip to the next
+                    // one, so one error does not end the body. An expression
+                    // that consumed nothing has reported its token already.
+                    if self.position != before {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!(
+                                "expected `.` between statements, found {}",
+                                self.found(token)
+                            ),
+                        );
+                    }
+                    self.skip_rest_of_statement();
                 }
             }
         }
-        let end = self.current().span;
+        let end = if self.at_body_close() && !self.at(TokenKind::EndOfInput) {
+            self.current().span
+        } else {
+            self.previous_span()
+        };
         CodeBody {
             temporaries,
+            temporaries_delimiters,
             statements,
             span: start.merge(end),
+        }
+    }
+
+    /// A statement's expression. When it reported an error inside a member
+    /// that starts in what it consumed, the body was never closed and the
+    /// member is the next one in the class: the expression is parsed again
+    /// up to that member start, its first diagnostics dropped, so the member
+    /// is read as one and the half-typed method keeps the class around it. A
+    /// statement without an error is never parsed again, so a valid parse
+    /// stays as it is. Answers `None` when the member starts at the
+    /// statement's first token: there is no statement.
+    fn parse_statement(&mut self) -> Option<Expression> {
+        let checkpoint = self.checkpoint();
+        let expression = self.parse_expression();
+        let first_error = self.diagnostics[checkpoint.1..]
+            .iter()
+            .find(|diagnostic| diagnostic.severity == crate::diagnostic::Severity::Error)
+            .map(|diagnostic| diagnostic.span.start);
+        let Some(first_error) = first_error else {
+            return Some(expression);
+        };
+        let reached = self.position;
+        let reached_offset = self.current().span.start;
+        let member_start = self.member_holding_error(checkpoint.0, first_error);
+        // Found by its offset: a negative literal the speculative parses
+        // split in two moves the index on.
+        self.position = (reached..self.tokens.len())
+            .find(|index| self.tokens[*index].span.start == reached_offset)
+            .unwrap_or(reached);
+        let Some(member_start) = member_start else {
+            return Some(expression);
+        };
+        self.restore(checkpoint);
+        if member_start == checkpoint.0 {
+            return None;
+        }
+        // The member start reads as the end of input while the expression is
+        // parsed again: `bump` never passes one, so nothing reaches past it.
+        // Set and lifted around one call, whatever it parses -- a block's
+        // body bounds its own statements the same way, inside this bound.
+        let bound = self.tokens[member_start];
+        self.tokens[member_start].kind = TokenKind::EndOfInput;
+        self.bounds.push(bound.span);
+        self.recovering += 1;
+        let expression = self.parse_expression();
+        self.recovering -= 1;
+        self.bounds.pop();
+        // A negative literal split in two before the bound moves it on.
+        let index = (member_start..self.tokens.len()).find(|index| {
+            self.tokens[*index].span == bound.span
+                && self.tokens[*index].kind == TokenKind::EndOfInput
+        });
+        debug_assert!(index.is_some(), "the bound left the token stream");
+        if let Some(index) = index {
+            self.tokens[index] = bound;
+        }
+        Some(expression)
+    }
+
+    /// The first position, from `first` up to the statement's first error,
+    /// at which a member starts that holds that error: one that parses
+    /// without an error of its own through its `)`, or, its body clean, up to
+    /// where an unclosed body ends. An ordinary comparison such as `size =
+    /// (limit + 1)` reads as a member too, so one that ends before the error,
+    /// or fails itself, is no member the statement swallowed. `None` too once
+    /// the recovery's work is spent (`RECOVERY_WORK_PER_TOKEN`): the
+    /// statement then stays as it was parsed.
+    fn member_holding_error(&mut self, first: usize, first_error: u32) -> Option<usize> {
+        let mut position = first;
+        // The groups the statement opened before `position`, kept as the
+        // scan moves on rather than gathered again for each member.
+        let mut opened = OpenGroups::default();
+        while self.tokens.get(position).is_some_and(|token| {
+            token.span.start <= first_error && token.kind != TokenKind::EndOfInput
+        }) {
+            if self.recovery_work_left == 0 {
+                return None;
+            }
+            self.recovery_work_left -= 1;
+            self.count_step();
+            if self.member_starts_at(position)
+                && self.speculative_member_end(position).is_some_and(|end| {
+                    first_error < end && !self.inside_block_or_tuple(&opened, end)
+                })
+            {
+                return Some(position);
+            }
+            opened.take(self.tokens[position].kind);
+            position += 1;
+        }
+        None
+    }
+
+    /// Whether a member that ends at `end` stands inside a block or a
+    /// tuple: a `]` or a `}` after it closes a group the statement `opened`
+    /// before the member. No member stands there -- `| each = ( ^each )` in
+    /// `[:each | each = ( ^each ) ]` is the block's content. A `)` that
+    /// closes a parenthesis the statement opened leaves the question open;
+    /// a closer that closes nothing the statement opened is the owner's,
+    /// and a `)` there -- a method body's or a class side's -- leaves the
+    /// member one. What stands between the member and such a closer is
+    /// passed over in one step ([`FreeClosers`]): walked token by token, it
+    /// is the rest of the class for every member found, and a run of
+    /// members spent the recovery's budget on walking instead of on finding
+    /// them.
+    fn inside_block_or_tuple(&mut self, opened: &OpenGroups, end: u32) -> bool {
+        // The walk ends at an end of input: the real one, or the member a
+        // recovering re-parse around this statement reads as one.
+        let stop = self
+            .bounds
+            .iter()
+            .map(|bound| bound.start)
+            .filter(|start| *start >= end)
+            .min()
+            .unwrap_or(u32::MAX);
+        let free_closers = self
+            .free_closers
+            .get_or_insert_with(|| FreeClosers::new(&self.tokens));
+        let from = free_closers.first_at(end);
+        let (inside, steps) = closes_an_opened_block_or_tuple(opened, free_closers, from, stop);
+        // One step per parenthesis of the statement's that closes after the
+        // member: few, but as many as the statement opened, so paid for.
+        self.recovery_work_left = self.recovery_work_left.saturating_sub(steps);
+        for _ in 0..steps {
+            self.count_step();
+        }
+        inside
+    }
+
+    /// Where a member parsed from `position` ends, if it parses cleanly: see
+    /// `member_holding_error`. Nothing of the parse is kept, and the cursor
+    /// stays; the answer is kept (`member_ends`). Asked again, it is answered
+    /// without the parse: in a run of consecutive unclosed methods every
+    /// statement asks for each method after it, and parsed afresh each
+    /// time the run costs work cubic in its length.
+    fn speculative_member_end(&mut self, position: usize) -> Option<u32> {
+        let start = self.tokens[position].span.start;
+        // The parse ends at the innermost bound after the member at the
+        // latest, so that bound is part of the question.
+        let bound = self
+            .bounds
+            .iter()
+            .map(|bound| bound.start)
+            .filter(|bound| *bound > start)
+            .min()
+            .unwrap_or(u32::MAX);
+        if let Some(end) = self.member_ends.get(&(start, bound)) {
+            return *end;
+        }
+        let depth_refusals = self.depth_refusals;
+        let cursor = self.position;
+        self.position = position;
+        let checkpoint = self.checkpoint();
+        // Each speculative member can hold another: the depth guard bounds
+        // the chain a run of half-typed members makes.
+        self.recovering += 1;
+        let end = if self.enter() {
+            self.clean_member_end()
+        } else {
+            None
+        };
+        self.leave();
+        self.recovering -= 1;
+        self.restore(checkpoint);
+        self.position = cursor;
+        // An answer the depth guard or a spent budget cut short is not the
+        // member's: asked again elsewhere, it could be another.
+        if self.recovery_work_left > 0 && self.depth_refusals == depth_refusals {
+            self.member_ends.insert((start, bound), end);
+        }
+        end
+    }
+
+    /// `speculative_member_end`'s parse, at the member start.
+    fn clean_member_end(&mut self) -> Option<u32> {
+        let diagnostics = self.diagnostics.len();
+        if self.at_nested_class() {
+            let _ = self.parse_class_declaration();
+            return (self.diagnostics.len() == diagnostics).then(|| self.previous_span().end);
+        }
+        if self.at_lazy_slot() {
+            let _ = self.parse_lazy_slot_declaration();
+            self.eat(TokenKind::Dot);
+            return (self.diagnostics.len() == diagnostics).then(|| self.previous_span().end);
+        }
+        if !self.looks_like_method() {
+            return None;
+        }
+        let _ = self.parse_access_modifier();
+        let _ = self.parse_message_pattern();
+        self.expect(TokenKind::Equals);
+        self.expect(TokenKind::LeftParenthesis);
+        let _ = self.parse_code_body();
+        if self.diagnostics.len() != diagnostics {
+            return None;
+        }
+        if self.at(TokenKind::RightParenthesis) {
+            return Some(self.bump().span.end);
+        }
+        (self.at(TokenKind::EndOfInput) || self.at_member_start()).then(|| self.previous_span().end)
+    }
+
+    /// `recovery_at_member_start` at another position, the cursor left
+    /// where it was.
+    fn member_starts_at(&mut self, position: usize) -> bool {
+        let cursor = self.position;
+        self.position = position;
+        let starts = self.recovery_at_member_start();
+        self.position = cursor;
+        starts
+    }
+
+    /// `at_member_start` where the recovery asks it at every token it
+    /// passes: rule 1's scan and a recovery skip. Its lookahead is the
+    /// recovery's work -- a method pattern is read to its end, and one
+    /// begins at every keyword of a long keyword message, so unpaid, the
+    /// checks along one are quadratic in its length. Once the budget is
+    /// spent only the members whose start takes a fixed look are found: a
+    /// nested class and a lazy slot.
+    fn recovery_at_member_start(&mut self) -> bool {
+        self.count_step();
+        if self.recovery_work_left == 0 {
+            return self.at_nested_class() || self.at_lazy_slot_prefix();
+        }
+        self.recovery_work_left -= 1;
+        self.recovering += 1;
+        let starts = self.at_member_start();
+        self.recovering -= 1;
+        starts
+    }
+
+    /// After an error in a statement: skip to the `.` that ends it and past
+    /// it. A stray `}` that closes nothing is skipped as well, so the body
+    /// always moves on.
+    fn skip_rest_of_statement(&mut self) {
+        if !self.skip_balanced(&[TokenKind::Dot]) && self.at(TokenKind::RightBrace) {
+            self.bump();
+        }
+        self.eat(TokenKind::Dot);
+    }
+
+    /// After a statement nothing may follow: skip to the body's close, or to
+    /// a member start, stray `}` included.
+    fn skip_rest_of_body(&mut self) {
+        loop {
+            self.skip_balanced(&[]);
+            if !self.at(TokenKind::RightBrace) {
+                break;
+            }
+            self.bump();
         }
     }
 
@@ -59,9 +356,9 @@ impl<'a> Parser<'a> {
     /// `parse_lazy_slot_declaration`. A code body never
     /// legitimately starts with a binary `|` send (there is no left operand),
     /// so a leading `Bar` / `DoubleBar` is unambiguously a temporary section.
-    fn parse_temporaries(&mut self) -> Vec<SlotDeclaration> {
+    fn parse_temporaries(&mut self) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
         if !self.at(TokenKind::Bar) && !self.at(TokenKind::DoubleBar) {
-            return Vec::new();
+            return (Vec::new(), None);
         }
         self.parse_slot_declarations()
     }
@@ -103,7 +400,10 @@ impl<'a> Parser<'a> {
         ) && super::is_name(self.peek2())
     }
 
-    pub(crate) fn parse_message_pattern(&mut self) -> MessagePattern {
+    /// A message pattern, or `None` when its selector or a parameter is
+    /// missing: a pattern without one is left out whole, after its tokens
+    /// are consumed as a whole one's would be.
+    pub(crate) fn parse_message_pattern(&mut self) -> Option<MessagePattern> {
         // Declarations may carry `<Type>` annotations after each parameter name,
         // and a `^<Type>` return annotation before the `=`; Milestone 1 discards
         // them via `skip_type_annotation` / `skip_return_type_annotation`.
@@ -111,16 +411,17 @@ impl<'a> Parser<'a> {
             let selector = self.identifier_from_bump();
             let parameter = self.declared_identifier("name a parameter");
             self.skip_type_annotation();
-            MessagePattern::Binary {
+            parameter.map(|parameter| MessagePattern::Binary {
                 selector,
                 parameter,
-            }
+            })
         } else {
             match self.peek() {
                 // `keywordMsgPattern → (keyword slotDecl)+` (§6.3.4): a setter
                 // keyword `name::` is not a keyword.
                 TokenKind::Keyword => {
                     let mut parts = Vec::new();
+                    let mut missing = false;
                     while self.at(TokenKind::Keyword) {
                         let keyword = self.bump();
                         let key = Identifier {
@@ -129,9 +430,12 @@ impl<'a> Parser<'a> {
                         };
                         let parameter = self.declared_identifier("name a parameter");
                         self.skip_type_annotation();
-                        parts.push((key, parameter));
+                        match parameter {
+                            Some(parameter) => parts.push((key, parameter)),
+                            None => missing = true,
+                        }
                     }
-                    MessagePattern::Keyword { parts }
+                    (!missing).then_some(MessagePattern::Keyword { parts })
                 }
                 _ => {
                     let selector = self.declared_identifier("be a message selector");
@@ -140,7 +444,7 @@ impl<'a> Parser<'a> {
                     // selector itself. Dropped in Milestone 1.
                     self.skip_type_arguments();
                     self.skip_type_annotation();
-                    MessagePattern::Unary { selector }
+                    selector.map(|selector| MessagePattern::Unary { selector })
                 }
             }
         };
@@ -190,21 +494,47 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub(crate) fn parse_method_declaration(&mut self) -> MethodDeclaration {
+    /// A method, parsed whole; `None` when its pattern is missing a name,
+    /// so no method the source does not name is declared.
+    pub(crate) fn parse_method_declaration(&mut self) -> Option<MethodDeclaration> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
         let pattern = self.parse_message_pattern();
         self.expect(TokenKind::Equals);
-        self.expect(TokenKind::LeftParenthesis);
+        let open = self.expect(TokenKind::LeftParenthesis);
         let body = self.parse_code_body();
-        let end = self.current().span;
-        self.expect(TokenKind::RightParenthesis);
-        MethodDeclaration {
+        let close = self.close_method_body();
+        let end = close.map_or_else(|| self.previous_span(), |token| token.span);
+        pattern.map(|pattern| MethodDeclaration {
             access,
             pattern,
             body,
+            body_delimiters: open.map(|open| Delimiters {
+                open: open.span,
+                close: close.map(|token| token.span),
+            }),
             span: start.merge(end),
+        })
+    }
+
+    /// A method body's `)`. When it is missing and a member starts here, the
+    /// method ends where its body did, so the member after it is read as
+    /// one -- the method being typed keeps the class around it. Otherwise
+    /// what is left is skipped, balanced, up to the method's `)`.
+    fn close_method_body(&mut self) -> Option<Token> {
+        if self.at(TokenKind::RightParenthesis) {
+            return Some(self.bump());
         }
+        let token = self.current();
+        self.push_error(
+            token.span,
+            &format!(
+                "expected `)` to end the method body, found {}",
+                self.found(token)
+            ),
+        );
+        self.skip_rest_of_body();
+        self.eat_token(TokenKind::RightParenthesis)
     }
 
     /// `slotDecls → seqSlotDecls | simSlotDecls` (§6.3.2), `| slotDef* |` or
@@ -215,27 +545,36 @@ impl<'a> Parser<'a> {
     /// section and a statement -- and so does this. (The specification lists
     /// `seqSlotDecls` first, which would read every `||` as the empty
     /// section and leave `simSlotDecls` unreachable.)
-    pub(crate) fn parse_slot_declarations(&mut self) -> Vec<SlotDeclaration> {
+    pub(crate) fn parse_slot_declarations(&mut self) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
         if self.at(TokenKind::DoubleBar) {
             let checkpoint = self.checkpoint();
-            let slots = self.parse_slot_section(TokenKind::DoubleBar);
+            let section = self.parse_slot_section(TokenKind::DoubleBar);
             if self.diagnostics.len() == checkpoint.1 {
-                return slots;
+                return section;
             }
             self.restore(checkpoint);
-            self.bump(); // the empty sequential section
-            return Vec::new();
+            let empty = self.bump(); // the empty sequential section
+            return (
+                Vec::new(),
+                Some(Delimiters {
+                    open: empty.span,
+                    close: Some(empty.span),
+                }),
+            );
         }
         self.parse_slot_section(TokenKind::Bar)
     }
 
     /// One section, between two `close` tokens.
-    fn parse_slot_section(&mut self, close: TokenKind) -> Vec<SlotDeclaration> {
-        if !self.eat(close) {
-            return Vec::new();
-        }
+    fn parse_slot_section(
+        &mut self,
+        close: TokenKind,
+    ) -> (Vec<SlotDeclaration>, Option<Delimiters>) {
+        let Some(open) = self.eat_token(close) else {
+            return (Vec::new(), None);
+        };
         let mut slots = Vec::new();
-        while !self.at(close) && !self.at(TokenKind::EndOfInput) {
+        while !self.at_slot_section_end(close) {
             let start = self.current().span;
             // `slotDef → [accessModifier] slotDecl ...` (§6.3.2), a PEG: an
             // access modifier's word is taken as the modifier whenever it
@@ -244,13 +583,22 @@ impl<'a> Parser<'a> {
             // `| public public |` declares a public slot named `public`.
             let access = self.parse_access_modifier();
             if !self.at_name() {
-                // recovery: skip to next '.' or close
-                let token = self.bump();
+                let token = self.current();
                 self.push_error(token.span, "expected a slot name");
-                self.recover_to_dot(close);
+                // The section's close stays for `expect` below, and an
+                // owner's bracket for its owner; a token the skip refuses
+                // that is neither is taken, so the loop always moves on.
+                let before = self.position;
+                self.skip_balanced(&[TokenKind::Dot, close]);
+                if self.position == before && !self.at_slot_section_end(close) {
+                    self.bump();
+                }
+                self.eat(TokenKind::Dot);
                 continue;
             }
-            let name = self.declared_identifier("name a slot or a temporary");
+            // A name stands here (`at_name` above).
+            let name = self.identifier();
+            self.refuse_reserved_word(&name.name, name.span, "name a slot or a temporary");
             // `slotName <Type>` — the annotation is dropped in Milestone 1.
             self.skip_type_annotation();
             let (mutability, initializer) = match self.peek() {
@@ -267,7 +615,17 @@ impl<'a> Parser<'a> {
                 }
                 _ => (SlotMutability::MutableBare, None),
             };
-            let end = self.current().span;
+            // A slot ends at its `.`, or a bare one at what follows it: the
+            // section's close or the next slot. Anything else is an error,
+            // and the slot then ends at its own last token, never at an
+            // unrelated one after it -- an owner's `)` among them.
+            let end = if self.at(TokenKind::Dot)
+                || (initializer.is_none() && (self.at(close) || self.at_name()))
+            {
+                self.current().span
+            } else {
+                self.previous_span()
+            };
             // §6.3.2: "The trailing dot is mandatory after an initializer
             // and optional after an uninitialized slot".
             if !self.eat(TokenKind::Dot) && initializer.is_some() {
@@ -286,15 +644,28 @@ impl<'a> Parser<'a> {
                 span: start.merge(end),
             });
         }
-        self.expect(close);
-        slots
+        let closing = self.expect(close);
+        (
+            slots,
+            Some(Delimiters {
+                open: open.span,
+                close: closing.map(|token| token.span),
+            }),
+        )
     }
 
-    fn recover_to_dot(&mut self, close: TokenKind) {
-        while !self.at(TokenKind::Dot) && !self.at(close) && !self.at(TokenKind::EndOfInput) {
-            self.bump();
-        }
-        self.eat(TokenKind::Dot);
+    /// What ends a slot section's loop: its closing bar, or a closing
+    /// bracket, which no slot declaration holds at its top level -- the
+    /// section was never closed, and the bracket is its owner's.
+    fn at_slot_section_end(&self, close: TokenKind) -> bool {
+        self.at(close)
+            || matches!(
+                self.peek(),
+                TokenKind::RightParenthesis
+                    | TokenKind::RightBracket
+                    | TokenKind::RightBrace
+                    | TokenKind::EndOfInput
+            )
     }
 
     fn identifier_from_bump(&mut self) -> Identifier {
@@ -410,7 +781,15 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
         self.expect(TokenKind::Class);
-        let name = self.declared_identifier("name a class");
+        // The root class is kept without a name: without it there is no
+        // module. A nested one always has its name (`at_nested_class`).
+        let name = self.declared_identifier("name a class").unwrap_or_else(|| {
+            let offset = self.current().span.start;
+            Identifier {
+                name: String::new(),
+                span: crate::span::Span::new(offset, offset),
+            }
+        });
         // A generic class's type parameters, dropped: §6's
         // `typeParameterDecl`, `class Map <[K, V]> ...`, and the canonical
         // grammar's `class List[E] ...` (`NewspeakGrammar.ns:465`).
@@ -425,13 +804,13 @@ impl<'a> Parser<'a> {
         let factory = if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
             None
         } else {
-            Some(self.parse_message_pattern())
+            self.parse_message_pattern()
         };
         self.expect(TokenKind::Equals);
         let superclass = if self.at(TokenKind::LeftParenthesis) {
             None
         } else {
-            Some(self.parse_superclass_clause())
+            self.parse_superclass_clause()
         };
         // §6.2's mixin application, `class C = S someMessage <: M otherMessage`:
         //
@@ -447,14 +826,18 @@ impl<'a> Parser<'a> {
         // only follow an explicit superclass clause, which is why it is parsed
         // here and not where an implicit `Object` superclass is assumed.
         let mut mixin_applications = Vec::new();
+        // Whether a `<:` was written, a clause left out for its missing name
+        // included: the `.` that ends the application is its, not an error.
+        let mut applies_mixin = false;
         while self.eat(TokenKind::MixinOperator) {
-            mixin_applications.push(self.parse_superclass_clause());
+            applies_mixin = true;
+            mixin_applications.extend(self.parse_superclass_clause());
         }
         // `(dot | classBody)`: a mixin application may end at a `.` instead of
         // carrying a body. It then declares no slots, no methods, no nested
         // classes, no class side and no class comment — the applied mixin
         // supplies all of its behaviour.
-        if !mixin_applications.is_empty() && self.at(TokenKind::Dot) {
+        if applies_mixin && self.at(TokenKind::Dot) {
             let dot = self.bump();
             let span = start.merge(dot.span);
             return ClassDeclaration {
@@ -469,6 +852,8 @@ impl<'a> Parser<'a> {
                     initializer_expressions: Vec::new(),
                     methods: Vec::new(),
                     nested_classes: Vec::new(),
+                    delimiters: None,
+                    slot_delimiters: None,
                     span,
                 },
                 class_side: None,
@@ -477,28 +862,30 @@ impl<'a> Parser<'a> {
         }
 
         // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
-        self.expect(TokenKind::LeftParenthesis);
+        let instance_open = self.expect(TokenKind::LeftParenthesis);
         let class_comment = self.take_class_comment();
-        let (header_slots, initializer_expressions, g1_span) = self.parse_header_body();
-        let g1_end = self.current().span;
+        let (header_slots, slot_delimiters, initializer_expressions, g1_span) =
+            self.parse_header_body();
+        let g1_end = self.end_of_group();
         self.expect(TokenKind::RightParenthesis);
 
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
         // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
         // instance side is not optional, however empty.
-        let (lazy_slots, methods, nested_classes, g2_end) = if self.at(TokenKind::LeftParenthesis) {
-            self.bump(); // `(`
-            let (lazy, methods, nested) = self.parse_side_body();
-            let end = self.current().span;
-            self.expect(TokenKind::RightParenthesis);
-            (lazy, methods, nested, end)
-        } else {
-            self.push_error(
-                self.current().span,
-                "expected the instance side's `( ... )` after the class header (§6.3)",
-            );
-            (Vec::new(), Vec::new(), Vec::new(), g1_end)
-        };
+        let (lazy_slots, methods, nested_classes, g2_end, instance_close) =
+            if self.at(TokenKind::LeftParenthesis) {
+                self.bump(); // `(`
+                let (lazy, methods, nested) = self.parse_side_body();
+                let end = self.end_of_group();
+                let close = self.expect(TokenKind::RightParenthesis);
+                (lazy, methods, nested, end, close)
+            } else {
+                self.push_error(
+                    self.current().span,
+                    "expected the instance side's `( ... )` after the class header (§6.3)",
+                );
+                (Vec::new(), Vec::new(), Vec::new(), g1_end, None)
+            };
 
         let mut slots = header_slots;
         slots.extend(lazy_slots);
@@ -507,16 +894,25 @@ impl<'a> Parser<'a> {
             initializer_expressions,
             methods,
             nested_classes,
+            delimiters: instance_open.map(|open| Delimiters {
+                open: open.span,
+                close: instance_close.map(|token| token.span),
+            }),
+            slot_delimiters,
             span: g1_span.merge(g2_end),
         };
 
         // --- G3: classSideDecl body `: ( methodDecl* )` ---
         let class_side = if self.eat(TokenKind::Colon) {
-            self.expect(TokenKind::LeftParenthesis);
+            let open = self.expect(TokenKind::LeftParenthesis);
             // A class-side comment is allowed but not retained.
             let _ = self.take_class_comment();
-            let body = self.parse_class_side_body();
-            self.expect(TokenKind::RightParenthesis);
+            let mut body = self.parse_class_side_body();
+            let close = self.expect(TokenKind::RightParenthesis);
+            body.delimiters = open.map(|open| Delimiters {
+                open: open.span,
+                close: close.map(|token| token.span),
+            });
             Some(body)
         } else {
             None
@@ -558,8 +954,9 @@ impl<'a> Parser<'a> {
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
     /// name and at most one message to it (`Object new`, `superclass
-    /// subclassMixin: m`).
-    pub(crate) fn parse_superclass_clause(&mut self) -> SuperclassClause {
+    /// subclassMixin: m`). `None` when the receiver or the `outer` name is
+    /// missing: the clause is left out rather than naming nothing.
+    pub(crate) fn parse_superclass_clause(&mut self) -> Option<SuperclassClause> {
         let start = self.current().span;
         let prefix = match self.peek() {
             TokenKind::Identifier => match self.text(self.current()) {
@@ -574,7 +971,7 @@ impl<'a> Parser<'a> {
                 "outer" => {
                     self.bump();
                     Some(SuperclassPrefix::Outer(
-                        self.declared_identifier("name an enclosing class"),
+                        self.declared_identifier("name an enclosing class")?,
                     ))
                 }
                 _ => None,
@@ -584,7 +981,7 @@ impl<'a> Parser<'a> {
         // §6.1's `inheritanceClause → [inheritancePrefix] unarySelector
         // [message]`: the receiver is a unary selector, an identifier, never
         // a literal or a reserved word.
-        let receiver = self.declared_identifier("name a superclass");
+        let receiver = self.declared_identifier("name a superclass")?;
         // `Collection[E] new` — type arguments on the superclass receiver.
         self.skip_type_arguments();
         let mut messages = Vec::new();
@@ -593,12 +990,12 @@ impl<'a> Parser<'a> {
             .last()
             .map(|module| module.span)
             .unwrap_or(receiver.span);
-        SuperclassClause {
+        Some(SuperclassClause {
             prefix,
             receiver,
             messages,
             span: start.merge(end),
-        }
+        })
     }
 
     /// The clause's `[message]` (§6.1's `inheritanceClause → [inheritancePrefix]
@@ -660,12 +1057,19 @@ impl<'a> Parser<'a> {
     /// zero or more `Dot`-separated/terminated initializer expressions, until `)` or
     /// end of input. Methods, nested classes and a second slot section are NOT
     /// accepted here — they belong to G2.
-    fn parse_header_body(&mut self) -> (Vec<SlotDeclaration>, Vec<Statement>, crate::span::Span) {
+    fn parse_header_body(
+        &mut self,
+    ) -> (
+        Vec<SlotDeclaration>,
+        Option<Delimiters>,
+        Vec<Statement>,
+        crate::span::Span,
+    ) {
         let start = self.current().span;
-        let slots = if self.at(TokenKind::Bar) || self.at(TokenKind::DoubleBar) {
+        let (slots, slot_delimiters) = if self.at(TokenKind::Bar) || self.at(TokenKind::DoubleBar) {
             self.parse_slot_declarations()
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         let mut initializer_expressions = Vec::new();
         loop {
@@ -706,7 +1110,12 @@ impl<'a> Parser<'a> {
             }
         }
         let end = self.current().span;
-        (slots, initializer_expressions, start.merge(end))
+        (
+            slots,
+            slot_delimiters,
+            initializer_expressions,
+            start.merge(end),
+        )
     }
 
     /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
@@ -769,22 +1178,26 @@ impl<'a> Parser<'a> {
                 // full before the next, so `private lazy = ( ^1 )`, which is
                 // no lazy slot, is a method named `lazy`.
                 _ if self.at_lazy_slot() => {
-                    lazy_slots.push(self.parse_lazy_slot_declaration());
+                    lazy_slots.extend(self.parse_lazy_slot_declaration());
                 }
                 _ if self.looks_like_method() => {
-                    methods.push(self.parse_method_declaration());
+                    methods.extend(self.parse_method_declaration());
                 }
                 // Neither matched in full: a declaration that starts as a lazy
                 // slot is reported as one, so its error names what is missing.
                 _ if self.at_lazy_slot_prefix() => {
-                    lazy_slots.push(self.parse_lazy_slot_declaration());
+                    lazy_slots.extend(self.parse_lazy_slot_declaration());
                 }
                 _ => {
-                    let token = self.bump();
+                    let token = self.current();
                     self.push_error(
                         token.span,
                         "expected a method, nested class, or lazy slot declaration",
                     );
+                    // One error for the whole run, up to the next member.
+                    if !self.skip_balanced(&[]) && !self.at(TokenKind::RightParenthesis) {
+                        self.bump(); // a stray `]` or `}`
+                    }
                 }
             }
             if self.position == before {
@@ -817,11 +1230,15 @@ impl<'a> Parser<'a> {
                     );
                 }
                 _ if self.looks_like_method() => {
-                    methods.push(self.parse_method_declaration());
+                    methods.extend(self.parse_method_declaration());
                 }
                 _ => {
-                    let token = self.bump();
+                    let token = self.current();
                     self.push_error(token.span, "expected a method declaration");
+                    // One error for the whole run, up to the next method.
+                    if !self.skip_balanced(&[]) && !self.at(TokenKind::RightParenthesis) {
+                        self.bump(); // a stray `]` or `}`
+                    }
                 }
             }
             if self.position == before {
@@ -829,13 +1246,25 @@ impl<'a> Parser<'a> {
                 self.push_error(token.span, "unexpected token on the class side");
             }
         }
-        let end = self.current().span;
+        let end = self.end_of_group();
         ClassBody {
             slots: Vec::new(),
             initializer_expressions: Vec::new(),
             methods,
             nested_classes: Vec::new(),
+            delimiters: None,
+            slot_delimiters: None,
             span: start.merge(end),
+        }
+    }
+
+    /// Where a class's `( … )` group ends: its `)`, or, when recovery found
+    /// none, the last token it consumed.
+    fn end_of_group(&self) -> crate::span::Span {
+        if self.at(TokenKind::RightParenthesis) {
+            self.current().span
+        } else {
+            self.previous_span()
         }
     }
 
@@ -929,8 +1358,9 @@ impl<'a> Parser<'a> {
 
     /// Parse a lazy slot declaration (§6.3.3), in either order of `lazy` and
     /// the access modifier. The caller has checked that the declaration
-    /// starts as one (`at_lazy_slot_prefix`).
-    fn parse_lazy_slot_declaration(&mut self) -> SlotDeclaration {
+    /// starts as one (`at_lazy_slot_prefix`). `None` when its name is
+    /// missing: the slot is left out, after its initializer is parsed.
+    fn parse_lazy_slot_declaration(&mut self) -> Option<SlotDeclaration> {
         let start = self.current().span;
         let access = self.lazy_slot_modifiers().flatten();
         let name = self.declared_identifier("name a slot or a temporary");
@@ -942,14 +1372,19 @@ impl<'a> Parser<'a> {
             SlotMutability::Immutable
         };
         let initializer = Some(self.parse_expression());
-        let end = self.current().span;
+        // Without its `.` the slot ends at its own last token.
+        let end = if self.at(TokenKind::Dot) {
+            self.current().span
+        } else {
+            self.previous_span()
+        };
         if !self.eat(TokenKind::Dot) {
             self.push_error(
                 self.current().span,
                 "expected `.` after a lazy slot's initializer (§6.3.3)",
             );
         }
-        SlotDeclaration {
+        name.map(|name| SlotDeclaration {
             access,
             name,
             mutability,
@@ -957,7 +1392,60 @@ impl<'a> Parser<'a> {
             lazy: true,
             simultaneous: false,
             span: start.merge(end),
+        })
+    }
+
+    /// Whether a member of a class side starts at the cursor -- a nested
+    /// class, a lazy slot or a method, an access modifier before it
+    /// included. A recovery skip stops here, so the member after an error is
+    /// read as one rather than swallowed.
+    pub(super) fn at_member_start(&mut self) -> bool {
+        self.at_nested_class() || self.at_lazy_slot_prefix() || self.looks_like_method()
+    }
+
+    /// Skips what is left of a construct after an error, each bracketed
+    /// group whole, so a recovery never stops at a bracket inside a group nor
+    /// takes a bracket that closes an enclosing one. Stops -- consuming
+    /// nothing more -- at a token of `stops` outside every group, at a
+    /// closing bracket no skipped group opened, at a member start
+    /// (`recovery_at_member_start`), or at the end of input. Answers whether
+    /// it skipped anything.
+    pub(super) fn skip_balanced(&mut self, stops: &[TokenKind]) -> bool {
+        let start = self.position;
+        let mut expected_closers: Vec<TokenKind> = Vec::new();
+        loop {
+            let kind = self.peek();
+            if kind == TokenKind::EndOfInput || self.recovery_at_member_start() {
+                break;
+            }
+            match kind {
+                TokenKind::LeftParenthesis => expected_closers.push(TokenKind::RightParenthesis),
+                TokenKind::LeftBracket => expected_closers.push(TokenKind::RightBracket),
+                TokenKind::LeftBrace => expected_closers.push(TokenKind::RightBrace),
+                TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace => {
+                    match expected_closers
+                        .iter()
+                        .rposition(|expected| *expected == kind)
+                    {
+                        Some(index) => expected_closers.truncate(index),
+                        None => break,
+                    }
+                }
+                _ if expected_closers.is_empty() && stops.contains(&kind) => break,
+                _ => {}
+            }
+            self.bump();
         }
+        self.position != start
+    }
+
+    /// Whether the cursor is at what ends a code body: its `)` or `]`, or
+    /// the end of input.
+    pub(super) fn at_body_close(&self) -> bool {
+        matches!(
+            self.peek(),
+            TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::EndOfInput
+        )
     }
 
     /// Speculative lookahead: does the cursor sit at `accessModifier?
@@ -965,8 +1453,9 @@ impl<'a> Parser<'a> {
     fn looks_like_method(&mut self) -> bool {
         let checkpoint = self.checkpoint();
         self.parse_access_modifier();
-        let _ = self.try_parse_message_pattern();
-        let is_method = self.at(TokenKind::Equals)
+        // A bare `= (` starts no method: without a pattern there is none.
+        let is_method = self.try_parse_message_pattern().is_some()
+            && self.at(TokenKind::Equals)
             && self.tokens.get(self.position + 1).map(|token| token.kind)
                 == Some(TokenKind::LeftParenthesis);
         self.restore(checkpoint);
@@ -1012,6 +1501,163 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// The groups a statement's tokens opened and left open before a member,
+/// innermost last, matched as a recovery skip matches them: a closer closes
+/// the innermost open group of its kind and every group inside it, and one
+/// that closes no group is passed over.
+#[derive(Default)]
+struct OpenGroups {
+    /// How many groups are open.
+    depth: usize,
+    /// For each closer (`closer_slot`), the depths at which the open groups
+    /// it closes were opened, innermost last.
+    opened_at: [Vec<usize>; 3],
+}
+
+impl OpenGroups {
+    /// The groups after one more token of the statement.
+    fn take(&mut self, kind: TokenKind) {
+        if let Some(closer) = closer_of(kind) {
+            self.opened_at[closer_slot(closer)].push(self.depth);
+            self.depth += 1;
+        } else if is_closer(kind) {
+            if let Some(&group) = self.opened_at[closer_slot(kind)].last() {
+                self.depth = group;
+                for depths in &mut self.opened_at {
+                    while depths.last().is_some_and(|depth| *depth >= group) {
+                        depths.pop();
+                    }
+                }
+            }
+        }
+    }
+
+    /// The depth of the innermost group `closer` closes among the
+    /// outermost `below` open ones.
+    fn innermost_below(&self, closer: TokenKind, below: usize) -> Option<usize> {
+        let depths = &self.opened_at[closer_slot(closer)];
+        let count = depths.partition_point(|depth| *depth < below);
+        count.checked_sub(1).map(|index| depths[index])
+    }
+}
+
+/// `inside_block_or_tuple`'s question, from the token at `from` on, the
+/// tokens from `stop` on read as the end of input: whether a `]` or a `}`
+/// closes one of the groups `opened` before `from`, a `)` that closes one
+/// passed over. Answers how many free closers it looked at, too.
+fn closes_an_opened_block_or_tuple(
+    opened: &OpenGroups,
+    free_closers: &FreeClosers,
+    mut from: usize,
+    stop: u32,
+) -> (bool, usize) {
+    let mut open_below = opened.depth;
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        let Some((kind, start, closer)) = free_closers.free_closer_of(from) else {
+            return (false, steps);
+        };
+        if start >= stop {
+            return (false, steps);
+        }
+        match opened.innermost_below(kind, open_below) {
+            None => return (kind != TokenKind::RightParenthesis, steps),
+            Some(_) if kind != TokenKind::RightParenthesis => return (true, steps),
+            Some(group) => {
+                open_below = group;
+                from = closer + 1;
+            }
+        }
+    }
+}
+
+/// For each token, the first closer at or after it that closes no group
+/// opened at or after it -- its free closer, which closes a group opened
+/// before the token, or none. Groups are matched as `OpenGroups` matches
+/// them. Built once, it answers for every member the walk past whatever
+/// stands between the member and the closer that decides it.
+pub(super) struct FreeClosers {
+    /// Each token's start. A query names its token by offset: splitting a
+    /// negative number or a run of `>` inserts or shortens tokens after the
+    /// table is built, but never a bracket.
+    starts: Vec<u32>,
+    kinds: Vec<TokenKind>,
+    /// For each token, the index of its free closer, the token count when
+    /// it has none; one more entry, past the last token.
+    free_closer: Vec<usize>,
+}
+
+impl FreeClosers {
+    fn new(tokens: &[Token]) -> FreeClosers {
+        let count = tokens.len();
+        let mut free_closer = vec![count; count + 1];
+        for index in (0..count).rev() {
+            let kind = tokens[index].kind;
+            free_closer[index] = if is_closer(kind) {
+                index
+            } else if let Some(closer) = closer_of(kind) {
+                // The group this token opens ends at the first closer free
+                // of everything opened inside it. Its own kind closes the
+                // group, and the token's free closer is the one after it;
+                // another kind closes nothing opened from here on.
+                let end = free_closer[index + 1];
+                if end < count && tokens[end].kind == closer {
+                    free_closer[end + 1]
+                } else {
+                    end
+                }
+            } else {
+                free_closer[index + 1]
+            };
+        }
+        FreeClosers {
+            starts: tokens.iter().map(|token| token.span.start).collect(),
+            kinds: tokens.iter().map(|token| token.kind).collect(),
+            free_closer,
+        }
+    }
+
+    /// The index of the first token that starts at or after `offset`.
+    fn first_at(&self, offset: u32) -> usize {
+        self.starts.partition_point(|start| *start < offset)
+    }
+
+    /// The free closer of the token at `index`: its kind, its start and its
+    /// index.
+    fn free_closer_of(&self, index: usize) -> Option<(TokenKind, u32, usize)> {
+        let closer = *self.free_closer.get(index)?;
+        (closer < self.kinds.len()).then(|| (self.kinds[closer], self.starts[closer], closer))
+    }
+}
+
+/// Whether `kind` closes a group.
+fn is_closer(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace
+    )
+}
+
+/// Where `OpenGroups` keeps the groups `closer` closes.
+fn closer_slot(closer: TokenKind) -> usize {
+    match closer {
+        TokenKind::RightParenthesis => 0,
+        TokenKind::RightBracket => 1,
+        _ => 2,
+    }
+}
+
+/// The bracket that closes a group `kind` opens, if it opens one.
+fn closer_of(kind: TokenKind) -> Option<TokenKind> {
+    match kind {
+        TokenKind::LeftParenthesis => Some(TokenKind::RightParenthesis),
+        TokenKind::LeftBracket => Some(TokenKind::RightBracket),
+        TokenKind::LeftBrace => Some(TokenKind::RightBrace),
+        _ => None,
+    }
+}
+
 /// Contents of a `'...'` string lexeme with `''` unescaped. Safe on a
 /// truncated lexeme (returns the input unchanged rather than panicking) via
 /// the shared [`super::lexeme_body`] helper.
@@ -1021,12 +1667,12 @@ fn string_lexeme_body(raw: &str) -> String {
 
 #[cfg(test)]
 impl<'a> Parser<'a> {
-    pub(crate) fn parse_method_declaration_for_test(&mut self) -> MethodDeclaration {
+    pub(crate) fn parse_method_declaration_for_test(&mut self) -> Option<MethodDeclaration> {
         self.parse_method_declaration()
     }
 
     pub(crate) fn parse_slot_declarations_for_test(&mut self) -> Vec<SlotDeclaration> {
-        self.parse_slot_declarations()
+        self.parse_slot_declarations().0
     }
 
     pub(crate) fn parse_module_for_test(&mut self) -> Module {
@@ -1104,6 +1750,7 @@ mod slot_tests {
 #[cfg(test)]
 mod class_tests {
     use super::*;
+    use crate::span::Span;
     use indoc::indoc;
 
     fn module(source: &str) -> Module {
@@ -1111,6 +1758,60 @@ mod class_tests {
             Ok(module) => module,
             Err(diagnostics) => panic!("parse errors: {diagnostics:#?}"),
         }
+    }
+
+    /// The editor folds from an opening token to its closing one, so the
+    /// AST records both for every construct that folds.
+    #[test]
+    fn every_folding_construct_records_its_brackets() {
+        let source = indoc! {"
+            class Module = (
+                | first second |
+            ) (
+                run = (
+                    | temporary |
+                    ^[:each | each]
+                )
+            ) : (
+                make = ( ^self new )
+            )
+        "};
+        let module = module(source);
+        let text_of = |delimiters: Option<Delimiters>| {
+            let delimiters = delimiters.expect("the brackets are recorded");
+            let close = delimiters.close.expect("the closing token is there");
+            Span::new(delimiters.open.start, close.end)
+                .text(source)
+                .to_string()
+        };
+        let root = &module.root_class;
+        let instance = text_of(root.instance_side.delimiters);
+        assert!(
+            instance.starts_with("(\n    | first second |\n) ("),
+            "{instance}"
+        );
+        assert!(
+            instance.ends_with("^[:each | each]\n    )\n)"),
+            "{instance}"
+        );
+        assert_eq!(
+            text_of(root.instance_side.slot_delimiters),
+            "| first second |"
+        );
+        let class_side = root.class_side.as_ref().expect("a class side");
+        assert_eq!(
+            text_of(class_side.delimiters),
+            "(\n    make = ( ^self new )\n)"
+        );
+        let run = &root.instance_side.methods[0];
+        let body = text_of(run.body_delimiters);
+        assert!(body.starts_with("(\n        | temporary |"), "{body}");
+        assert!(body.ends_with("each]\n    )"), "{body}");
+        assert_eq!(text_of(run.body.temporaries_delimiters), "| temporary |");
+        let Statement::Return(Expression::Block(block)) = &run.body.statements[0] else {
+            panic!("a returned block");
+        };
+        assert_eq!(text_of(block.delimiters), "[:each | each]");
     }
 
     // Parse a module keeping the (possibly partial) AST *and* the diagnostics,
@@ -1457,6 +2158,38 @@ mod class_tests {
         assert!(crate::parse(&"(".repeat(10_000)).is_err());
     }
 
+    /// A chain of setter keywords recurses once per keyword; past the
+    /// nesting limit it is a diagnostic, never a stack overflow.
+    #[test]
+    fn a_long_setter_chain_does_not_overflow() {
+        let source = format!(
+            "class Module = () ( run = ( {}1 ) ) : ()",
+            "x:: ".repeat(100_000)
+        );
+        let Err(diagnostics) = crate::parse(&source) else {
+            panic!("a chain past the limit is refused");
+        };
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "expression nested too deeply"));
+    }
+
+    /// Nested pattern literals recurse once per level, past the limit a
+    /// diagnostic as well.
+    #[test]
+    fn deeply_nested_pattern_literals_do_not_overflow() {
+        let source = format!(
+            "class Module = () ( run = ( ^{}1 ) ) : ()",
+            "<a: ".repeat(100_000)
+        );
+        let Err(diagnostics) = crate::parse(&source) else {
+            panic!("nesting past the limit is refused");
+        };
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "pattern nested too deeply"));
+    }
+
     #[test]
     fn deeply_nested_open_brackets_do_not_overflow() {
         assert!(crate::parse(&"[".repeat(10_000)).is_err());
@@ -1503,7 +2236,9 @@ mod method_tests {
     fn method(source: &str) -> MethodDeclaration {
         let tokens = crate::lex(source).unwrap();
         let mut parser = Parser::new(source, tokens);
-        let method = parser.parse_method_declaration_for_test();
+        let method = parser
+            .parse_method_declaration_for_test()
+            .expect("a method");
         assert!(
             parser.diagnostics_is_empty(),
             "{:?}",
@@ -2464,5 +3199,187 @@ mod specification_tests {
         refused("class Map <[K V]> = Object new () ()");
         refused("class Map <[K,]> = Object new () ()");
         refused("class Map <[]> = Object new () ()");
+    }
+}
+
+/// The recovery's work, counted rather than timed: a test holds a parse to
+/// a number of steps per token, which a debug build and a loaded machine
+/// reach as surely as a release build.
+#[cfg(test)]
+mod recovery_work_tests {
+    use super::*;
+    use crate::parser::{Parser, RECOVERY_WORK_PER_TOKEN};
+    use crate::span::Span;
+    use indoc::formatdoc;
+
+    /// The steps a parse of `source` took per token, and the module.
+    fn steps_per_token(source: &str) -> (usize, Module) {
+        let tokens = crate::lex(source).unwrap();
+        let count = tokens.len();
+        let mut parser = Parser::new(source, tokens);
+        let module = parser.parse_module_for_test();
+        (parser.steps / count, module)
+    }
+
+    fn method_names(module: &Module) -> Vec<String> {
+        module
+            .root_class
+            .instance_side
+            .methods
+            .iter()
+            .map(|method| match &method.pattern {
+                MessagePattern::Unary { selector } => selector.name.clone(),
+                pattern => format!("{pattern:?}"),
+            })
+            .collect()
+    }
+
+    /// The budget, and what a parse that spends it does besides: it runs
+    /// on through the tokens, a recovery skip checks each for a member at a
+    /// fixed cost, and every speculative parse in flight finishes. It holds
+    /// the work to linear, not to an exact count: the messages below take
+    /// 257 to 259 steps per token, and twice the budget leaves room for
+    /// the passes besides it, while the quadratic work it rules out takes
+    /// thousands per token -- 64 million steps over their 16,000 tokens.
+    const STEPS_PER_TOKEN_AT_MOST: usize = 2 * RECOVERY_WORK_PER_TOKEN;
+
+    /// A keyword message of eight thousand parts with an error at its end.
+    /// Each of its keywords starts a pattern that reads to the end of the
+    /// message, so rule 1's scan for the member holding the error, unpaid
+    /// for its lookahead, is quadratic in the message: 64 million steps.
+    #[test]
+    fn a_scan_through_a_long_keyword_message_is_paid_for() {
+        let source = formatdoc! {"
+            class Module = () (
+                run = ( x {parts}key: (1 + ) )
+                after = ( ^2 )
+            ) : ()
+            ",
+            parts = "key: y ".repeat(8_000),
+        };
+        let (steps, module) = steps_per_token(&source);
+        assert!(steps <= STEPS_PER_TOKEN_AT_MOST, "{steps} steps per token");
+        assert_eq!(method_names(&module), ["run", "after"]);
+    }
+
+    /// The same message after an error a recovery skip passes over: the
+    /// skip asks at each token whether a member starts there, and unpaid
+    /// for its lookahead it too is quadratic in the message.
+    #[test]
+    fn a_recovery_skip_through_a_long_keyword_message_is_paid_for() {
+        let source = formatdoc! {"
+            class Module = () (
+                run = ( x key: (1 + ] {parts})
+                after = ( ^2 )
+            ) : ()
+            ",
+            parts = "key: y ".repeat(8_000),
+        };
+        let (steps, module) = steps_per_token(&source);
+        assert!(steps <= STEPS_PER_TOKEN_AT_MOST, "{steps} steps per token");
+        assert_eq!(method_names(&module)[0], "run");
+    }
+
+    /// The walk `inside_block_or_tuple` once took token by token over the
+    /// statement's tokens `before` the member and every token `after` it,
+    /// an end of input included: the oracle the free closers are held to.
+    fn block_or_tuple_around(before: &[Token], after: &[Token]) -> bool {
+        let mut expected_closers: Vec<TokenKind> = Vec::new();
+        for token in before {
+            if let Some(closer) = closer_of(token.kind) {
+                expected_closers.push(closer);
+            } else if let Some(index) = expected_closers
+                .iter()
+                .rposition(|expected| *expected == token.kind)
+            {
+                expected_closers.truncate(index);
+            }
+        }
+        // How many of the open groups the statement opened before the member.
+        let mut opened_before = expected_closers.len();
+        for token in after {
+            if token.kind == TokenKind::EndOfInput {
+                return false;
+            }
+            if let Some(closer) = closer_of(token.kind) {
+                expected_closers.push(closer);
+                continue;
+            }
+            if !is_closer(token.kind) {
+                continue;
+            }
+            let Some(index) = expected_closers
+                .iter()
+                .rposition(|expected| *expected == token.kind)
+            else {
+                return token.kind != TokenKind::RightParenthesis;
+            };
+            if index < opened_before && token.kind != TokenKind::RightParenthesis {
+                return true;
+            }
+            expected_closers.truncate(index);
+            opened_before = opened_before.min(index);
+        }
+        false
+    }
+
+    /// Every sequence of up to five brackets and names, split at every
+    /// member start and member end, under every bound after the end: the
+    /// free closers answer what the walk answered.
+    #[test]
+    fn the_free_closers_answer_as_the_walk_did() {
+        const KINDS: [TokenKind; 7] = [
+            TokenKind::LeftParenthesis,
+            TokenKind::RightParenthesis,
+            TokenKind::LeftBracket,
+            TokenKind::RightBracket,
+            TokenKind::LeftBrace,
+            TokenKind::RightBrace,
+            TokenKind::Identifier,
+        ];
+        let token = |kind, start: usize| Token {
+            kind,
+            span: Span::new(start as u32, start as u32 + 1),
+        };
+        for length in 0..=5u32 {
+            for code in 0..KINDS.len().pow(length) {
+                let mut tokens: Vec<Token> = (0..length as usize)
+                    .map(|index| {
+                        token(
+                            KINDS[code / KINDS.len().pow(index as u32) % KINDS.len()],
+                            index,
+                        )
+                    })
+                    .collect();
+                tokens.push(token(TokenKind::EndOfInput, length as usize));
+                let free_closers = FreeClosers::new(&tokens);
+                for position in 0..=tokens.len() - 1 {
+                    let mut opened = OpenGroups::default();
+                    for before in &tokens[..position] {
+                        opened.take(before.kind);
+                    }
+                    for after in position..tokens.len() {
+                        for bound in after..tokens.len() {
+                            let mut bounded = tokens.clone();
+                            bounded[bound].kind = TokenKind::EndOfInput;
+                            let expected =
+                                block_or_tuple_around(&bounded[..position], &bounded[after..]);
+                            let (answer, _) = closes_an_opened_block_or_tuple(
+                                &opened,
+                                &free_closers,
+                                after,
+                                bound as u32,
+                            );
+                            assert_eq!(
+                                answer,
+                                expected,
+                                "{:?}, member from {position} to {after}, bound {bound}",
+                                tokens.iter().map(|token| token.kind).collect::<Vec<_>>()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

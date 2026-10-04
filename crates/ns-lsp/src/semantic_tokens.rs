@@ -544,7 +544,26 @@ impl Classifier<'_> {
         }
     }
 
+    /// A chain of messages is walked link by link, in the order a
+    /// recursion into each receiver would take -- every selector from the
+    /// outermost in, the first receiver, then the arguments from the
+    /// innermost out -- since it nests as deep as the source is long.
     fn send(&mut self, send: &ast::Send, chain: &[&SideMembers]) {
+        let (links, receiver) = send.receiver_chain();
+        for link in &links {
+            self.send_selector(link, chain);
+        }
+        // Visiting a `self`, `super` or `outer N` receiver emits nothing: the
+        // resolver records no binding inside one.
+        self.expression(receiver, chain);
+        for link in links.iter().rev() {
+            for argument in &link.message.arguments {
+                self.expression(argument, chain);
+            }
+        }
+    }
+
+    fn send_selector(&mut self, send: &ast::Send, chain: &[&SideMembers]) {
         match self.bindings.get(&send.span).copied() {
             Some(Binding::LexicalSend { depth }) => {
                 let (category, readonly) =
@@ -567,12 +586,6 @@ impl Classifier<'_> {
                 expression_span(&send.receiver),
                 &send.message,
             ),
-        }
-        // Visiting a `self`, `super` or `outer N` receiver emits nothing: the
-        // resolver records no binding inside one.
-        self.expression(&send.receiver, chain);
-        for argument in &send.message.arguments {
-            self.expression(argument, chain);
         }
     }
 
@@ -607,9 +620,12 @@ impl Classifier<'_> {
             .chain(message.arguments.iter().map(expression_span))
             .collect();
         let message = message.span;
+        // The selector follows the receiver, so the search starts past it:
+        // started at the message, every link of a chain of messages would
+        // pass the whole chain before it, quadratic in the chain's length.
         let first = self
             .tokens
-            .partition_point(|token| token.span.start < message.start);
+            .partition_point(|token| token.span.start < message.start.max(receiver.end));
         let selector_spans: Vec<Span> = self.tokens[first..]
             .iter()
             .take_while(|token| token.span.end <= message.end)

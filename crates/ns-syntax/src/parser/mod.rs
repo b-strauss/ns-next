@@ -9,11 +9,29 @@ use crate::token::{Token, TokenKind};
 
 /// Maximum nesting depth for the recursive parser productions guarded by
 /// [`Parser::enter`] / [`Parser::leave`] (`parse_primary`,
-/// `parse_class_declaration`). The deepest real corpus
+/// `parse_class_declaration`, a chain of setter keywords in `parse_expression`,
+/// `parse_pattern_literal`). The deepest real corpus
 /// program nests in the single digits; 128 is far past any genuine program
 /// and well short of the (uncatchable) debug-build stack-overflow point at
 /// roughly 250 frames.
 const MAX_DEPTH: u32 = 128;
+
+/// How many steps the recovery (`docs/design/frontend.md`, "Recovery") may
+/// take per token of the source: each token a speculative member parse or
+/// a recovering re-parse consumes, each position rule 1's scan passes, each
+/// free closer it looks up, and each member-start check the scan or a
+/// recovery skip makes, with its lookahead. Each speculative member parse
+/// can hold another, and the re-parse of a statement repeats the work of
+/// the statements nested in it, so without a bound the work grows
+/// exponentially with the nesting of half-typed members: 197 bytes nested
+/// twelve deep took 0.6 s. Spent, the recovery stops looking for a member a
+/// statement swallowed, and a skip stops only at a nested class or a lazy
+/// slot: a file folds worse, never wrongly. The parse's work stays linear
+/// in the source -- the budget's, one pass, and the speculative parses in
+/// flight finishing. Ordinary edits spend little of it: twenty `)` removed
+/// from `KernelTests.ns` spend 17,000 of 9.8 million, while a keyword
+/// message of 8,000 parts holding an error spends it all, in 5 ms.
+const RECOVERY_WORK_PER_TOKEN: usize = 256;
 
 pub struct Parser<'a> {
     source: &'a str,
@@ -23,16 +41,62 @@ pub struct Parser<'a> {
     /// Current recursion depth across the guarded productions. Incremented by
     /// [`Parser::enter`], decremented by [`Parser::leave`].
     depth: u32,
+    /// The member starts a recovering re-parse reads as the end of input
+    /// (`parse_statement`), innermost last: a diagnostic there names the
+    /// member, not an end of input the source does not have.
+    bounds: Vec<crate::span::Span>,
+    /// How many more steps the recovery may take
+    /// ([`RECOVERY_WORK_PER_TOKEN`]): spent by every token bumped while
+    /// `recovering`, every position `member_holding_error` scans, every
+    /// free closer `inside_block_or_tuple` looks up and every
+    /// `recovery_at_member_start`. Never refilled, so the whole parse is
+    /// bounded, not each statement.
+    recovery_work_left: usize,
+    /// How many speculative member parses, recovering re-parses and
+    /// member-start checks of the recovery are running, nested. Raised and
+    /// lowered around one call each, so it is zero between statements.
+    recovering: u32,
+    /// The free closers `inside_block_or_tuple` asks for, built the first
+    /// time it asks, so a source without errors never builds them.
+    free_closers: Option<declaration::FreeClosers>,
+    /// The end `speculative_member_end` answered for a member, keyed by
+    /// the offset it starts at and the bound the parse ran under. The
+    /// answer depends on the depth it was asked at and on the budget left
+    /// as well; those are kept out of the key by not keeping an answer the
+    /// depth guard or a spent budget cut short, so every answer kept is
+    /// the member's own. Reused at a depth or with a budget that would
+    /// have refused, it is better than the refusal would have been, never
+    /// wrong. Each statement of a run of half-typed members asks again for
+    /// the members after it.
+    member_ends: std::collections::HashMap<(u32, u32), Option<u32>>,
+    /// How many times [`Parser::enter`] refused to go deeper: an answer
+    /// the depth guard cut short depends on the depth it was asked at, so
+    /// `member_ends` does not keep it.
+    depth_refusals: usize,
+    /// Every step the parse takes -- each token bumped, each position the
+    /// recovery scans or checks for a member, each closer it looks up -- so
+    /// a test can hold the parse's work to a bound without timing it.
+    #[cfg(test)]
+    steps: usize,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str, tokens: Vec<Token>) -> Parser<'a> {
+        let recovery_work_left = tokens.len().saturating_mul(RECOVERY_WORK_PER_TOKEN);
         Parser {
             source,
             tokens,
             position: 0,
             diagnostics: Vec::new(),
             depth: 0,
+            bounds: Vec::new(),
+            recovery_work_left,
+            recovering: 0,
+            free_closers: None,
+            member_ends: std::collections::HashMap::new(),
+            depth_refusals: 0,
+            #[cfg(test)]
+            steps: 0,
         }
     }
 
@@ -43,7 +107,11 @@ impl<'a> Parser<'a> {
     /// `true` and the `false` branch), so the count never leaks.
     fn enter(&mut self) -> bool {
         self.depth += 1;
-        self.depth <= MAX_DEPTH
+        let allowed = self.depth <= MAX_DEPTH;
+        if !allowed {
+            self.depth_refusals += 1;
+        }
+        allowed
     }
 
     fn leave(&mut self) {
@@ -69,12 +137,45 @@ impl<'a> Parser<'a> {
         self.peek() == kind
     }
 
+    /// Consumes the current token, never an end of input: neither the real
+    /// one nor the bound a recovering re-parse sets (`parse_statement`), so
+    /// nothing parsed under that bound reaches past it.
     fn bump(&mut self) -> Token {
         let token = self.current();
-        if self.position < self.tokens.len() - 1 {
+        if self.position < self.tokens.len() - 1 && token.kind != TokenKind::EndOfInput {
             self.position += 1;
+            self.count_step();
+            if self.recovering > 0 {
+                self.recovery_work_left = self.recovery_work_left.saturating_sub(1);
+            }
         }
         token
+    }
+
+    /// A step of the parse's work, which only the tests count (`steps`).
+    fn count_step(&mut self) {
+        #[cfg(test)]
+        {
+            self.steps += 1;
+        }
+    }
+
+    /// The span of the last token consumed: where a node that recovery ended
+    /// early ends, so its span never reaches an unrelated token after it.
+    pub(super) fn previous_span(&self) -> crate::span::Span {
+        match self.position.checked_sub(1) {
+            Some(index) => self.tokens[index].span,
+            None => self.current().span,
+        }
+    }
+
+    /// What a diagnostic says it found at `token`.
+    fn found(&self, token: Token) -> String {
+        if token.kind == TokenKind::EndOfInput && self.bounds.contains(&token.span) {
+            "the start of the next member".to_string()
+        } else {
+            format!("{:?}", token.kind)
+        }
     }
 
     fn eat(&mut self, kind: TokenKind) -> bool {
@@ -86,6 +187,15 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `eat`, answering the token consumed.
+    fn eat_token(&mut self, kind: TokenKind) -> Option<Token> {
+        if self.at(kind) {
+            Some(self.bump())
+        } else {
+            None
+        }
+    }
+
     fn expect(&mut self, kind: TokenKind) -> Option<Token> {
         if self.at(kind) {
             Some(self.bump())
@@ -93,7 +203,7 @@ impl<'a> Parser<'a> {
             let token = self.current();
             self.diagnostics.push(Diagnostic::error(
                 token.span,
-                format!("expected {kind:?}, found {:?}", token.kind),
+                format!("expected {kind:?}, found {}", self.found(token)),
             ));
             None
         }
@@ -136,22 +246,21 @@ impl<'a> Parser<'a> {
     }
 
     /// `identifier`, refused if it is a reserved word (`refuse_reserved_word`)
-    /// or no name at all -- then nothing is consumed, and the name is empty.
-    fn declared_identifier(&mut self, role: &str) -> Identifier {
+    /// or no name at all -- then nothing is consumed and there is none: a
+    /// declaration without its name is left out, never given an empty one
+    /// the resolver would call a duplicate.
+    fn declared_identifier(&mut self, role: &str) -> Option<Identifier> {
         if !self.at_name() {
             let token = self.current();
             self.push_error(
                 token.span,
-                &format!("expected a name to {role}, found {:?}", token.kind),
+                &format!("expected a name to {role}, found {}", self.found(token)),
             );
-            return Identifier {
-                name: String::new(),
-                span: token.span,
-            };
+            return None;
         }
         let identifier = self.identifier();
         self.refuse_reserved_word(&identifier.name, identifier.span, role);
-        identifier
+        Some(identifier)
     }
 
     fn push_error(&mut self, span: crate::span::Span, message: &str) {
@@ -249,18 +358,20 @@ impl<'a> Parser<'a> {
     /// Milestone 1 has no AST type node, so — consistent with the
     /// `<T>`-as-`Literal::Pattern` stance in expression position
     /// (`parser::expression::parse_pattern_literal`) — the annotation is parsed and
-    /// dropped here. Balanced `<`/`[` pairs are consumed until the matching
-    /// `>`; the `<:` bound operator is one token, so it is not a nesting open.
-    /// The scan never runs past a declaration boundary
-    /// (`= ::= ) .` at depth 0) or `EndOfInput`: on a malformed / unterminated
-    /// `<...>` it pushes a diagnostic and returns without panicking. Every
-    /// branch consumes a token or returns, so the loop always terminates.
+    /// dropped here. Nested `<`, `[`, `{` and `(` groups are consumed until
+    /// the `>` that closes the annotation, each closer matching the group it
+    /// closes; the `<:` bound operator is one token, so it is not a nesting
+    /// open. The scan never runs past a declaration boundary (`=`, `::=`, a
+    /// closer the annotation did not open) or `EndOfInput`: on a malformed /
+    /// unterminated `<...>` it pushes a diagnostic and returns without
+    /// panicking. Every branch consumes a token or returns, so the loop
+    /// always terminates.
     fn skip_type_annotation(&mut self) {
         if !self.at(TokenKind::LessThan) {
             return;
         }
         let open = self.bump(); // `<`
-        let mut depth: u32 = 1;
+        let mut expected_closers = vec![TokenKind::GreaterThan];
         loop {
             match self.peek() {
                 TokenKind::EndOfInput => {
@@ -268,24 +379,39 @@ impl<'a> Parser<'a> {
                     return;
                 }
                 TokenKind::LessThan => {
-                    depth += 1;
+                    expected_closers.push(TokenKind::GreaterThan);
                     self.bump();
                 }
                 // The bound operator `<:` inside a type body (`<Foo <: Bar>`)
                 // lexes as one token, so it never opens a nesting level; it
                 // falls through to the default arm below and is discarded with
                 // the rest of the annotation.
-                TokenKind::LeftBracket | TokenKind::LeftBrace | TokenKind::LeftParenthesis => {
-                    depth += 1;
+                TokenKind::LeftBracket => {
+                    expected_closers.push(TokenKind::RightBracket);
                     self.bump();
                 }
-                TokenKind::GreaterThan
+                TokenKind::LeftBrace => {
+                    expected_closers.push(TokenKind::RightBrace);
+                    self.bump();
+                }
+                TokenKind::LeftParenthesis => {
+                    expected_closers.push(TokenKind::RightParenthesis);
+                    self.bump();
+                }
+                kind @ (TokenKind::GreaterThan
                 | TokenKind::RightBracket
                 | TokenKind::RightBrace
-                | TokenKind::RightParenthesis => {
+                | TokenKind::RightParenthesis) => {
+                    // A closer the annotation did not open belongs to the
+                    // declaration around it: `| a <Foo |` then `)` must leave
+                    // the header's `)` to the header.
+                    if expected_closers.last() != Some(&kind) {
+                        self.push_error(open.span, "unterminated `<...>` type annotation");
+                        return;
+                    }
                     self.bump();
-                    depth -= 1;
-                    if depth == 0 {
+                    expected_closers.pop();
+                    if expected_closers.is_empty() {
                         return;
                     }
                 }
@@ -293,8 +419,8 @@ impl<'a> Parser<'a> {
                 // an annotation — bail rather than eat the declaration. `.` is a legal
                 // tuple-type separator (`<{String. Namespace}>`) and `(` `)`
                 // wrap arrow-type groups (`<[:(E | X) :E | X def]>`), so those
-                // are not boundaries; a malformed `<...>` instead runs to
-                // `EndOfInput`.
+                // are not boundaries; a malformed `<...>` instead runs to a
+                // closer it did not open or to `EndOfInput`.
                 TokenKind::Equals | TokenKind::ColonColonEquals => {
                     self.push_error(open.span, "unterminated `<...>` type annotation");
                     return;

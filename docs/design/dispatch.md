@@ -41,6 +41,14 @@ identity".
 Input a `Module`, output a `ResolvedModule` — the same tree with each `Identifier`
 annotated with a `Binding`, plus per-scope slot layout metadata.
 
+The walk takes a chain of messages, `a b c + d …`, link by link
+(`resolver/mod.rs`, `resolve_send`), recording the bindings in the order a
+recursion into each receiver would, because the chain nests as deep as the
+source is long and no depth guard bounds it ([frontend.md](frontend.md),
+"Recovery", rule 7). The compiler still recurses along one
+([OPEN-WORK.md](../OPEN-WORK.md), "Defects that change a correct program's
+output").
+
 Newspeak's algorithm is two-phase, not a single linear scope walk:
 
 1. **Local names are static, resolved purely lexically**, walking the activation

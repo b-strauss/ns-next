@@ -118,6 +118,7 @@ Module {
                     },
                     body: CodeBody {
                         temporaries: [],
+                        temporaries_delimiters: None,
                         statements: [
                             Expression(
                                 Send(
@@ -164,6 +165,20 @@ Module {
                             end: 154,
                         },
                     },
+                    body_delimiters: Some(
+                        Delimiters {
+                            open: Span {
+                                start: 118,
+                                end: 119,
+                            },
+                            close: Some(
+                                Span {
+                                    start: 153,
+                                    end: 154,
+                                },
+                            ),
+                        },
+                    ),
                     span: Span {
                         start: 98,
                         end: 154,
@@ -171,6 +186,34 @@ Module {
                 },
             ],
             nested_classes: [],
+            delimiters: Some(
+                Delimiters {
+                    open: Span {
+                        start: 38,
+                        end: 39,
+                    },
+                    close: Some(
+                        Span {
+                            start: 155,
+                            end: 156,
+                        },
+                    ),
+                },
+            ),
+            slot_delimiters: Some(
+                Delimiters {
+                    open: Span {
+                        start: 44,
+                        end: 45,
+                    },
+                    close: Some(
+                        Span {
+                            start: 88,
+                            end: 89,
+                        },
+                    ),
+                },
+            ),
             span: Span {
                 start: 44,
                 end: 156,
@@ -182,6 +225,21 @@ Module {
                 initializer_expressions: [],
                 methods: [],
                 nested_classes: [],
+                delimiters: Some(
+                    Delimiters {
+                        open: Span {
+                            start: 159,
+                            end: 160,
+                        },
+                        close: Some(
+                            Span {
+                                start: 160,
+                                end: 161,
+                            },
+                        ),
+                    },
+                ),
+                slot_delimiters: None,
                 span: Span {
                     start: 160,
                     end: 161,

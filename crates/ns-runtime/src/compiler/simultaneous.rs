@@ -21,9 +21,11 @@ pub(crate) fn future_block(declaration: &ast::SlotDeclaration) -> Option<ast::Ex
         parameters: Vec::new(),
         body: ast::CodeBody {
             temporaries: Vec::new(),
+            temporaries_delimiters: None,
             statements: vec![ast::Statement::Expression(initializer.clone())],
             span: declaration.span,
         },
+        delimiters: None,
         span: declaration.span,
     })))
 }

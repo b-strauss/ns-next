@@ -47,8 +47,27 @@ impl<'a> Parser<'a> {
         match self.peek() {
             TokenKind::LeftParenthesis => {
                 self.bump();
+                let before = self.position;
                 let expression = self.parse_expression();
-                self.expect(TokenKind::RightParenthesis);
+                if !self.eat(TokenKind::RightParenthesis) {
+                    // An expression that consumed nothing has reported its
+                    // token already: one diagnostic for one fault.
+                    if self.position != before {
+                        let token = self.current();
+                        self.push_error(
+                            token.span,
+                            &format!(
+                                "expected `)` to close the parenthesis, found {}",
+                                self.found(token)
+                            ),
+                        );
+                    }
+                    // A parenthesis holds one expression and no `.`: a `.`
+                    // means it was never closed, so the skip stops there and
+                    // leaves an enclosing body's `)` alone.
+                    self.skip_balanced(&[TokenKind::Dot]);
+                    self.eat(TokenKind::RightParenthesis);
+                }
                 expression
             }
             TokenKind::LeftBracket => self.parse_block(),
@@ -121,7 +140,7 @@ impl<'a> Parser<'a> {
                 let token = self.current();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
                     token.span,
-                    format!("expected an expression, found {:?}", token.kind),
+                    format!("expected an expression, found {}", self.found(token)),
                 ));
                 Expression::Literal(Literal::Nil { span: token.span })
             }
@@ -211,6 +230,19 @@ impl<'a> Parser<'a> {
     /// variablePattern → "?" id
     /// ```
     fn parse_pattern_literal(&mut self) -> Literal {
+        if !self.enter() {
+            self.leave();
+            let token = self.current();
+            self.push_error(token.span, "pattern nested too deeply");
+            self.skip_to_structural();
+            return Literal::Nil { span: token.span };
+        }
+        let literal = self.parse_pattern_literal_inner();
+        self.leave();
+        literal
+    }
+
+    fn parse_pattern_literal_inner(&mut self) -> Literal {
         let start = self.bump(); // `<`
         if self.at(TokenKind::Keyword) {
             while self.at(TokenKind::Keyword) {
@@ -316,25 +348,31 @@ impl<'a> Parser<'a> {
             .unwrap_or(self.current());
         let mut parameters = Vec::new();
         // `blockParameters → blockParameter+ vbar`, `blockParameter → colon
-        // slotDecl` (§5.1.8).
+        // slotDecl` (§5.1.8). A parameter without its name is left out, and
+        // the `|` is still the parameters' end, not a temporaries section.
+        let mut has_parameters = false;
         while self.at(TokenKind::Colon) {
             self.bump();
-            parameters.push(self.declared_identifier("name a block parameter"));
+            has_parameters = true;
+            parameters.extend(self.declared_identifier("name a block parameter"));
             // `[:x <T> :y <T> | ...]` — block parameters carry the same
             // declaration-position `<Type>` annotations as method parameters.
             self.skip_type_annotation();
         }
-        if !parameters.is_empty() {
+        if has_parameters {
             self.expect(TokenKind::Bar);
         }
         let body = self.parse_code_body();
-        let right_bracket = self
-            .expect(TokenKind::RightBracket)
-            .unwrap_or(self.current());
-        let span = left_bracket.span.merge(right_bracket.span);
+        let right_bracket = self.expect(TokenKind::RightBracket);
+        let end = right_bracket.map_or_else(|| self.previous_span(), |token| token.span);
+        let span = left_bracket.span.merge(end);
         Expression::Block(Box::new(BlockExpression {
             parameters,
             body,
+            delimiters: Some(Delimiters {
+                open: left_bracket.span,
+                close: right_bracket.map(|token| token.span),
+            }),
             span,
         }))
     }
@@ -342,16 +380,36 @@ impl<'a> Parser<'a> {
     fn parse_dynamic_array(&mut self) -> Expression {
         let left_brace = self.bump(); // {
         let mut elements = Vec::new();
-        while !self.at(TokenKind::RightBrace) && !self.at(TokenKind::EndOfInput) {
+        while !self.at(TokenKind::RightBrace) && !self.at_body_close() {
+            let before = self.position;
             elements.push(self.parse_expression());
-            if !self.eat(TokenKind::Dot) {
+            if self.eat(TokenKind::Dot) || self.at(TokenKind::RightBrace) {
+                continue;
+            }
+            // An element that consumed nothing has reported its token
+            // already: one diagnostic for one fault.
+            if self.position != before {
+                let token = self.current();
+                self.push_error(
+                    token.span,
+                    &format!(
+                        "expected `.` between a tuple's elements, found {}",
+                        self.found(token)
+                    ),
+                );
+            }
+            // The skip stops at the tuple's own `}`, which closes no group it
+            // skipped, and at an enclosing body's close: the tuple keeps the
+            // elements after the junk and never takes its owner's bracket.
+            if !self.skip_balanced(&[TokenKind::Dot]) || !self.eat(TokenKind::Dot) {
                 break;
             }
         }
-        let right_brace = self.expect(TokenKind::RightBrace).unwrap_or(self.current());
+        let right_brace = self.expect(TokenKind::RightBrace);
+        let end = right_brace.map_or_else(|| self.previous_span(), |token| token.span);
         Expression::DynamicArray {
             elements,
-            span: left_brace.span.merge(right_brace.span),
+            span: left_brace.span.merge(end),
         }
     }
 }
@@ -367,6 +425,13 @@ impl<'a> Parser<'a> {
     /// `x::`, so the name is split off the lexeme here.
     pub(crate) fn parse_expression(&mut self) -> Expression {
         if self.at(TokenKind::SetterKeyword) {
+            if !self.enter() {
+                self.leave();
+                let token = self.current();
+                self.push_error(token.span, "expression nested too deeply");
+                self.skip_to_structural();
+                return Expression::Literal(Literal::Nil { span: token.span });
+            }
             let keyword = self.bump();
             let name = self.text(keyword).trim_end_matches(':');
             let target = Identifier {
@@ -378,6 +443,7 @@ impl<'a> Parser<'a> {
             };
             self.refuse_reserved_word(&target.name, target.span, "be assigned");
             let value = self.parse_expression();
+            self.leave();
             let span = target.span.merge(expression_span(&value));
             return Expression::Assign {
                 target,
@@ -437,14 +503,11 @@ impl<'a> Parser<'a> {
             }
             return first;
         };
-        let Send {
-            receiver,
-            message,
-            span: first_span,
-        } = *boxed;
+        let first_span = boxed.span;
+        let (receiver, message) = boxed.into_receiver_and_message();
         let mut rest = Vec::new();
         while self.eat(TokenKind::Semicolon) {
-            rest.push(self.parse_cascade_message());
+            rest.extend(self.parse_cascade_message());
         }
         let last = rest
             .last()
@@ -602,37 +665,38 @@ impl<'a> Parser<'a> {
     }
 
     /// `cascadeMsg → semicolon (keywordMsg | binaryMsg | unarySelector)`,
-    /// the cursor after the `;`.
-    fn parse_cascade_message(&mut self) -> MessageSend {
+    /// the cursor after the `;`. `None` when no message is there: a cascade
+    /// message the source does not have is left out.
+    fn parse_cascade_message(&mut self) -> Option<MessageSend> {
         let start = self.current().span;
         self.eat_eventual_send_operator(|parser| {
             parser.at(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
         });
         if self.at(TokenKind::Keyword) {
             let (selector, arguments, end) = self.parse_keyword_parts(start);
-            return MessageSend {
+            return Some(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
                 span: start.merge(end),
-            };
+            });
         }
         if self.at_binary_operator() {
             let (operator, argument) = self.parse_binary_operator_and_argument();
-            return MessageSend {
+            return Some(MessageSend {
                 selector: Selector::Binary(operator),
                 span: start.merge(expression_span(&argument)),
                 arguments: vec![argument],
-            };
+            });
         }
         if self.at_name() {
             let selector_token = self.bump();
             let selector_name = self.text(selector_token).to_string();
             self.refuse_reserved_word(&selector_name, selector_token.span, "be a message selector");
-            return MessageSend {
+            return Some(MessageSend {
                 selector: Selector::Unary(selector_name),
                 arguments: Vec::new(),
                 span: selector_token.span,
-            };
+            });
         }
         let token = self.current();
         if token.kind == TokenKind::SetterKeyword {
@@ -640,11 +704,7 @@ impl<'a> Parser<'a> {
         } else {
             self.push_error(token.span, "expected a message after `;`");
         }
-        MessageSend {
-            selector: Selector::Unary(String::new()),
-            arguments: Vec::new(),
-            span: token.span,
-        }
+        None
     }
 
     /// Whether a message -- unary, binary or keyword, or `<-:` before one --

@@ -9,7 +9,9 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-03 when they were written.
+Code references of the items dated before 2026-09-30 were checked against
+the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-04
+when they were written.
 
 ## Next
 
@@ -412,10 +414,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 ## Planned: editor support
 
 - **Formatting**, through `textDocument/formatting`, which needs comments
-  kept in `ns-syntax`'s AST as tokens or trivia, and an `ns-next fmt` command.
-- **Navigation** — go to definition, find usages, structure view — which
-  needs a fault-tolerant parser in `ns-syntax`; that would also keep semantic
-  tokens alive through syntax errors.
+  attached to AST nodes -- their spans are kept, beside the AST
+  (`parse_for_editor`) -- and an `ns-next fmt` command.
+- **Navigation** — go to definition, find usages —
+  `definition` and `references` in the server, on the
+  fault-tolerant parse that exists ([frontend.md](design/frontend.md),
+  "Recovery").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -599,6 +603,28 @@ value objects are never copied across an actor boundary (§3.1.1).
   at once without a rule for `Stopwatch`. Pinned today only within one
   process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_path_named_class`).
   [core-library.md](design/core-library.md), "The platform".
+- **A valid method whose body is one long chain of messages aborts `ns-next
+  run`.** A chain, `1 + 1 + …`, nests a send per message through its
+  receivers, as deep as the source is long, and no depth guard bounds it,
+  since every length is valid. The parser, the AST's drop, the resolver and
+  the language server take a chain link by link, but the compiler's walks
+  (`crates/ns-runtime/src/compiler/`) recurse into each receiver: a body
+  that is one chain of 20,000 `+ 1` overflows the interpreter thread's 8 MiB
+  and aborts the process (release; 10,000 compile and run), where the
+  program should run. Walking the chain from `Send::receiver_chain`, as the
+  language server does, would close it. [frontend.md](design/frontend.md),
+  "Recovery", rule 7; [execution.md](design/execution.md), "What the
+  trampoline moved". Noted 2026-10-04.
+- **The AST's derived `Clone`, `PartialEq` and `Debug` recurse along a
+  chain of messages** (`crates/ns-syntax/src/ast.rs`), as the compiler
+  does: only `Send`'s `Drop` and `Send::receiver_chain` take a chain link by
+  link. The compiler clones a slot's initializer for a simultaneous slot's
+  future (`compiler/simultaneous.rs`, `future_block`), so a long chain there
+  overflows in the clone too. `ns-lsp`'s `the_editor_parse_agrees_with_parse`
+  compares modules with `==`, and the snapshot tests print them with
+  `{:?}`; both are safe only because no fixture holds such a chain.
+  Hand-written impls that take the chain link by link would close it.
+  Noted 2026-10-04.
 
 ## Known defects and gaps
 
@@ -723,9 +749,48 @@ text and `to:by:do:`'s zero step.
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
   branch.
+- **Editor recovery: a run of more than 128 consecutive unclosed methods
+  keeps only its first.** Each method's statement parses the method after
+  it speculatively, and that one the next, so the speculative parses nest
+  one per method of the run and reach `MAX_DEPTH`. Measured in a file of
+  nothing else (release): a run of up to 128 keeps every method, one
+  diagnostic each, in at most 7 ms; from 129 on only the first survives,
+  the rest inside its body, in 8 ms at 200 and 60 ms at 1,000. Nothing is
+  invented. [frontend.md](design/frontend.md), "Recovery". Noted
+  2026-10-04.
+- **Editor recovery: the work budget is the whole parse's.** Once input
+  has spent it, no later statement of the file is looked at again (rule
+  1), so the members after an unclosed body there stay inside it, and a
+  recovery skip stops only at a nested class or a lazy slot, so a method
+  after junk is skipped with it. What spends it is pathological rather
+  than typed: a keyword message of thousands of parts holding an error
+  (8,000 parts spend it in 5 ms), or half-typed members nested forty deep.
+  Unclosed methods do not: twenty `)` removed from `KernelTests.ns` spend
+  17,000 of its 9.8 million. Noted 2026-10-04.
+- **Editor recovery: `class Module () (` gives two diagnostics for its one
+  missing `=`** -- a missing message selector, then the missing `=`. Noted
+  2026-10-04.
+- **Editor recovery: one token can be described two ways at one span**,
+  "found the start of the next member" by a diagnostic under a re-parse's
+  bound and "found Bar" (the token's kind) by another. Noted 2026-10-04.
+- **Structure view: a stale tree after a timeout, and duplicate requests.**
+  After an edit whose request times out, the plugin's structure view keeps
+  its last answer, positions stale until the next one; two views of one file
+  (the tool window and the popup) each send their own request; and a
+  question on the EDT counts against the sixty fast retries
+  (`NewspeakStructureViewModel` in the plugin's
+  `structure/NewspeakStructureViewFactory.kt`).
+  [editor-support.md](design/editor-support.md), "Structure" ("Known
+  behaviours"). Noted 2026-10-04.
+- **Editor parse: `the_editor_parse_agrees_with_parse`**
+  (`crates/ns-lsp/tests/corpus.rs`) assumes `parse` accepts no module with
+  a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
 
 ## Missing tests
 
+- `ns_syntax::parse_for_editor`'s answer to a source too long for a span --
+  an empty module and the one `source_too_long` diagnostic -- has no test,
+  since it needs a source past 4 GiB.
 - Road step 3a's (noted 2026-10-03): the application cache's key in its
   three cases (a root, two superclasses, sharing); the resolver's push of
   the clause-count error, of which only the pure function is tested; a
@@ -769,7 +834,8 @@ text and `to:by:do:`'s zero step.
   `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
-  `runIde`), and `dump-tokens` on an unreadable file, a block comment over a
+  `runIde`: folding, and the structure view's tree, navigation, breadcrumbs,
+  sticky lines and first open against a running server), and `dump-tokens` on an unreadable file, a block comment over a
   whole-line selection and TODO markers through the project-wide index are
   untested. [editor-support.md](design/editor-support.md), "Known gaps".
 - The packaged artifact (2026-09-30): the refusal of a module set of which
@@ -845,6 +911,10 @@ Small, deliberately left, none affecting an outcome.
   ([execution.md](design/execution.md), "What the object
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
+
+- `crates/ns-lsp/src/document_symbols.rs` (noted 2026-10-04): `effective`
+  answers an `Option` that is always `Some`, so `detail`'s `(None, true)` arm
+  is unreachable; and `SymbolCategory` has no doc comment of its own.
 
 ## Goldens and documentation
 

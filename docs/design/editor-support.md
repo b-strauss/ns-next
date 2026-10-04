@@ -1,19 +1,25 @@
 # Editor support — the language server and the JetBrains plugin
 
-> **Status:** **Built:** the language server (`crates/ns-lsp/`, and
-> `resolve_for_editor` in `crates/ns-runtime/src/resolver/mod.rs`) and the
-> JetBrains plugin (`editors/jetbrains/`) both exist: highlighting and errors
-> as you type, in every commercial JetBrains IDE from 2026.1.4. Formatting,
-> navigation and further platforms are planned ("Planned later").
+> **Status:** **Built:** the language server (`crates/ns-lsp/`: `analysis.rs`,
+> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`; on
+> `ns_syntax::parse_for_editor` and `resolve_for_editor` in
+> `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
+> (`editors/jetbrains/`, its structure view in the `structure` package and
+> `lsp/NewspeakSymbolKinds.kt`) both exist: highlighting, errors as you
+> type, code folding and a structure view with breadcrumbs, in every
+> commercial JetBrains IDE from 2026.1.4, kept while a file has syntax
+> errors. Formatting, go to definition, find usages and further platforms
+> are planned ("Planned later").
 
-Editing `.ns` files in a JetBrains IDE today means editing plain text. This
-document describes the editor support that replaces it: syntax highlighting as
-you type, and the errors `ns-next` would report before running a module, shown
-in the editor at the place they occur.
+Without a plugin, editing `.ns` files in a JetBrains IDE means editing plain
+text. This document describes the editor support that replaces it: syntax
+highlighting as you type, the errors `ns-next` would report before running a
+module, shown in the editor at the place they occur, code folding, and a
+structure view of each file's classes and members.
 
 ## Scope
 
-**In scope.** Two capabilities, in every commercial JetBrains IDE:
+**In scope.** Four capabilities, in every commercial JetBrains IDE:
 
 1. **Highlighting** — keywords, strings, symbols, numbers, comments,
    selectors, and, once the server has analysed the file, what the resolver
@@ -21,6 +27,13 @@ in the editor at the place they occur.
    method, `self` / `super` / `outer`.
 2. **Errors as you type** — every lexer, parser and resolver diagnostic, with
    the message `ns-next` itself produces.
+3. **Folding** — comments, class bodies, class sides, method bodies, closures
+   and slot sections collapse and expand, from fold ranges the server
+   computes from the AST ("Folding").
+4. **Structure** — the Structure tool window, the File Structure popup, the
+   breadcrumbs and the sticky lines show a file's classes and their members,
+   each with its access, from document symbols the server computes from the
+   AST ("Structure").
 
 **Target IDEs.** Every commercial JetBrains IDE that carries JetBrains' own
 LSP API: IntelliJ IDEA, WebStorm, PhpStorm, PyCharm, DataSpell, RubyMine,
@@ -30,18 +43,21 @@ can be published to the JetBrains Marketplace at any time, even while it has
 one user: complete metadata, a verifier-clean build, third-party notices, and
 no machine-specific paths.
 
-**Out of scope, for now.** Navigation (go to definition, find usages, the
-structure view), completion and formatting. Each is described under
+**Out of scope, for now.** Navigation (go to definition, find usages),
+completion and formatting. Each is described under
 "Planned later", with what it would need.
 
 ## Architecture
 
 ```
-crates/ns-lsp/          binary `ns-next-lsp`: diagnostics and semantic tokens
-                        over LSP, and `dump-tokens` for the lexer comparison
+crates/ns-lsp/          binary `ns-next-lsp`: diagnostics, semantic tokens, fold
+                        ranges and document symbols over LSP, and `dump-tokens`
+                        for the lexer comparison
+crates/ns-syntax/       + an editor entry, `parse_for_editor`: a module for
+                        every source, recovered, with its comments' spans
 crates/ns-runtime/      + a resolver entry answering bindings and errors together
 editors/jetbrains/      Gradle project: file type, Kotlin lexer, highlighter,
-                        LSP client, settings
+                        LSP client, structure view, settings
 ```
 
 Colour comes in two layers:
@@ -57,7 +73,8 @@ Colour comes in two layers:
    slot, a nested class — its colour wins.
 
 Errors travel separately, pushed by the server as `publishDiagnostics` after
-every change.
+every change. The IDE asks for fold ranges and document symbols, as it asks
+for semantic tokens.
 
 ### Why a Kotlin lexer, when the rest avoids a second implementation
 
@@ -120,25 +137,37 @@ Modules:
   URI's string form, not by `lsp_types::Uri` itself: `Uri` wraps a
   `fluent_uri::Uri<String>` that caches parsed components behind a `Cell`, so
   clippy's `mutable_key_type` refuses it as a map key even though its
-  `Hash`/`Eq` only ever read the string. A `semanticTokens/full` request for a
-  URI the server never opened, or has since closed, answers an empty token
-  set rather than an error.
+  `Hash`/`Eq` only ever read the string. A `semanticTokens/full`,
+  `foldingRange` or `documentSymbol` request for a URI the server never
+  opened, or has since closed, answers an empty set rather than an error.
 - `documents.rs` — the open text per URI with its version, and a line index
   converting a `Span`'s byte offsets to LSP positions in UTF-16 code units,
   the one encoding every LSP client must accept.
-- `analysis.rs` — `lex`, `parse` and the resolver entry below, run once per
-  document version and cached.
+- `analysis.rs` — run once per document version and cached:
+  `ns_syntax::parse_for_editor`, then the resolver entry below on its module
+  whether or not it was recovered, then the classification over the editor
+  parse's tokens and the folds over its module and comment spans. Its
+  findings are every diagnostic together -- the lexer's, then the parser's,
+  then the resolver's -- so a lexer error does not hide a parser error after
+  it.
 - `semantic_tokens.rs` — classification and the LSP encoding.
+- `folding.rs` — the fold ranges and their LSP encoding ("Folding").
+- `document_symbols.rs` — the document symbols and their LSP encoding
+  ("Structure").
 
 **Protocol surface.** `initialize`, `textDocument/didOpen`, `didChange` (full
 text on every change), `didClose`, `publishDiagnostics` (push, supported by
-the platform since 2023.2), `textDocument/semanticTokens/full`, `shutdown`
-and `exit`. Nothing else. A request the server does not implement is answered
+the platform since 2023.2), `textDocument/semanticTokens/full`,
+`textDocument/foldingRange` (the `foldingRangeProvider` capability,
+announced as `true`), `textDocument/documentSymbol` (the
+`documentSymbolProvider` capability, announced as `true`), `shutdown` and
+`exit`. Nothing else. A request the server does not implement is answered
 `MethodNotFound`. A document notification whose params do not match the
 schema has no response to carry an error, so the server writes it to stderr
 and sends the client a `window/logMessage` of type `Error` -- the client's
-log for the server, not a `window/showMessage` popup, since the defect is the
-client's, not the user's text -- and keeps serving the documents already open.
+log for the server, not a `window/showMessage` popup, since the defect is
+the client's, not the user's text -- and keeps serving the documents already
+open.
 
 ### The resolver entry
 
@@ -146,10 +175,14 @@ client's, not the user's text -- and keeps serving the documents already open.
 both. The server needs both at once, so that a file with one resolver error
 still gets semantic tokens everywhere else. `ns_runtime::resolve_for_editor`
 answers both together as an `EditorResolution` (module, bindings, errors);
-`resolve` remains the entry everything that compiles uses. `resolve_for_editor`
-never records `Binding::MirrorSend` — it goes through the same walk as
-`resolve`, never through `resolve_kernel` — so the VM mirror's capability
-invariant (`CLAUDE.md`, "The VM mirror is a capability") is not touched, and
+`resolve` remains the entry everything that compiles uses.
+`resolve_for_editor` runs on a recovered module as on any other: recovery
+declares nothing the source does not name ([frontend.md](frontend.md),
+"Recovery"), so it causes no duplicate or clashing member, and an unbound
+name is a send in Newspeak, not an error. `resolve_for_editor` never records
+`Binding::MirrorSend` — it goes through the same walk as `resolve`, never
+through `resolve_kernel` — so the VM mirror's capability invariant
+(`CLAUDE.md`, "The VM mirror is a capability") is not touched, and
 `Kernel.ns`, opened in the editor, shows its `vmMirror` sends as ordinary
 sends.
 
@@ -216,9 +249,169 @@ excluded when the selector's tokens are found.
   applying declaration's own binding names, never a lookup through the
   enclosing chain.
 
-While a file does not parse there is no AST and so no semantic tokens: the
-colours fall back to the lexer's until it parses again. A fault-tolerant parser
-("Planned later") would change that.
+A file with syntax errors is analysed as recovered ([frontend.md](frontend.md),
+"Recovery"), so its colours, its resolver errors and its folds survive the
+errors a file passes through while it is typed. A construct recovery cannot
+place -- an unfinished body whose next line is a valid expression, which is
+read as that expression -- folds worse there, never wrongly.
+
+### Folding
+
+`folding.rs` computes a document's fold ranges once per version, with the
+analysis, from the AST and the comment spans `parse_for_editor` answers
+beside it; `textDocument/foldingRange` answers them from the cache. A code
+fold runs from the opening token to the closing one inclusive, read off the
+AST's `Delimiters` ([frontend.md](frontend.md), "AST"), so a fold names what
+it folds:
+
+| Range | From — to | Collapsed text | `kind` |
+|---|---|---|---|
+| Class body (instance side) | the header's `(` to the instance side's last `)`, header and members together | `(…)` | none |
+| Class side | the `(` after `:` to its `)` | `(…)` | none |
+| Method body | `(` to `)` | `(…)` | none |
+| Closure | `[` to `]` | `[…]`, or `[:x :y \| …]` with its parameters | none |
+| Slot section -- a class header's, or a body's temporaries | `\|` to `\|`, or `\|\|` to `\|\|` | `\|…\|` | none |
+| Comment | `(*` to `*)`, an unterminated one to the end of the file | `(* `, the first non-blank line cut to 60 characters, ` …*)`; `(*…*)` for a blank one | `comment` |
+
+- **Only a range over more than one line** is answered: a fold on one line
+  hides nothing.
+- **A construct recovery closed without its closing token** folds to where
+  its node ends, the last token recovery gave it; a slot section without its
+  closing bar, to its last slot.
+- **A code fold carries no kind.** LSP's kinds are `comment`, `imports` and
+  `region`, and `region` names `#region` markers, which Newspeak has not.
+  The server collapses nothing: whether a range starts collapsed is the
+  platform's decision, from the kind and the IDE's folding settings.
+- A parenthesized expression and a tuple do not fold.
+- Positions are a line and a UTF-16 character at each end, through the line
+  index; the ranges are ordered by start, an enclosing one before those
+  inside it.
+
+**The plugin needs no code for it.** The platform registers its
+`LspFoldingBuilder` for every language (`lang.foldingBuilder language=""` in
+`intellij.platform.lsp.impl.xml`), and `LspCustomization`'s default
+`foldingRangeCustomizer` is `LspFoldingRangeSupport`, in 2026.1.4 as in
+2026.2.3, so the server's ranges reach a `.ns` file as they are. Checked by
+hand under `runIde` (2026-10-04): fold markers on comments, class bodies,
+class sides, methods, closures and slot sections; a folded method shows
+`(…)`; and typing an unclosed `foo = (` inside a class keeps the folds of
+the methods after it. Were the platform ever to need folding enabled for a
+language with a parser definition of its own, as semantic tokens do
+(`shouldAskServerForSemanticTokens`, below), it would go into
+`NewspeakLspClientDescriptor`'s `lspCustomization`.
+
+### Structure
+
+`document_symbols.rs` computes a document's symbols once per version, with
+the analysis, from the module the editor parse recovered;
+`textDocument/documentSymbol` answers them from the cache, in the nested form
+(`DocumentSymbol`), never as flat `SymbolInformation`. The answer is one root,
+the module's class, and it is never empty for a document the server has
+opened, however broken its text; a document it never opened, or has closed,
+is answered `[]`.
+
+**The tree.**
+
+- A class has three kinds of child, in this order: its **factory**, its
+  **instance side** and, when it declares one, its **class side**. A side is
+  named `instance side` or `class side`.
+- The instance side holds the header's slots, the lazy slots, the nested
+  classes (each a class with the same children) and the methods, in source
+  order. The class side holds its methods in source order.
+- A method has its temporaries as children; nothing else but a class and a
+  side has children.
+- The factory is named by its pattern as written (`usingPlatform: platform`);
+  a class without one is answered `new`, which §6 gives it, placed at the
+  class's name. A pattern is written `foo`, `+ other` or
+  `at: index put: value`.
+- A nameless root class, which recovery keeps ([frontend.md](frontend.md),
+  "Recovery"), is named `(unnamed)`. Recovery leaves any other declaration
+  without a name out, so no other symbol has an empty one.
+
+**Kinds.** LSP has no kind for a read-only property, so a slot with a getter
+only (declared with `=`) is a `Constant` and a slot with a getter and a setter
+(`::=`, or a bare one) a `Property`, the nearest two kinds any client knows.
+A class is a `Class`, a factory a `Constructor`, an instance or class side a
+`Namespace` (a named group of members, not a package), a method a `Method`
+and a temporary a `Variable`.
+
+**`detail`** is the effective access word, then ` lazy` for a lazy slot
+(`protected lazy`); a side and a temporary have neither, so no `detail`.
+The access is what the member declares, else protected (§6.3.1: "If no access
+modifier is declared, the default is protected"); the root class is public
+(§6.3.1: the access level of a top-level class is always public); a factory is
+public whatever the default says, because the runtime enters every primary
+factory as public (`ns_runtime::mixin::factory_entry`).
+
+**Ranges.** A class's `range` runs from its declaration's start to its end,
+and its `selectionRange` is its name. A method's range is its declaration;
+its selection is its pattern, from the first name to the last. A slot or
+temporary is selected at its name. A side runs from its `(` to its `)` (or to
+where recovery ended it) and is selected at its `(`, or at the class's name
+when recovery found no brackets. A factory's range and selection are its
+pattern, or the class's name for `new`. Every selection lies inside its
+range, which a client requires of the whole answer; positions are UTF-16
+through the line index.
+
+**Why the plugin has a structure view of its own.** The platform's structure
+view for a language server (`LspStructureViewFactory`, registered for every
+language) takes its icons per `SymbolKind` only, so it cannot show a member's
+access. The plugin registers `NewspeakStructureViewFactory`
+(`lang.psiStructureViewFactory` for `Newspeak`), built over the public LSP
+API alone: it finds the client with
+`LspClientManager.getInstance(project).getClients(NewspeakLspIntegrationProvider::class.java)`
+and asks `textDocument/documentSymbol` through `sendRequestSync`. The
+platform's own structure view is switched off for the client by
+`NewspeakDocumentSymbols`, an `LspDocumentSymbolSupport` with
+`structureViewSupport = false`, declared beside the client descriptor in
+`NewspeakLspClientDescriptor.kt` and handed to the platform as
+`NewspeakLspCustomization`'s `documentSymbolCustomizer`; its breadcrumbs stay
+on, and with them the sticky lines, which the platform draws from the same
+symbols (`LspFileBreadcrumbsCollector.computeStickyLineInfos`).
+
+**The rows.** A row's text is the symbol's name, with `lazy` beside a lazy
+slot. Its icon is the kind's icon beside the access icon: `C_public`,
+`C_protected` or `C_private` for the first word of `detail`, joined to the
+kind's with `IconManager.createRowIcon` as Java's structure view joins them,
+so the "show visibility icons" setting behaves as for Java. A `detail` whose
+first word is no access word, and a side or temporary, shows the kind's icon
+alone. `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives the
+kinds their icons, for the breadcrumbs as for the tree: `Constant` is
+`PropertyRead` and `Property` is `PropertyReadWrite` (a slot is always reached
+through its accessors, which those icons say), `Namespace` is `CustomRegion`
+(the icon the platform gives a group of members, not the package's), and every
+other kind keeps the platform's. A pick moves the caret to the start of the
+symbol's `selectionRange`, in the document's UTF-16 columns; the view selects
+the innermost symbol whose range holds the caret.
+
+**When it asks.** The model asks the server for the file's children, off the
+EDT, and again only once the document's modification stamp has changed; asked
+on the EDT it answers what it already has. A usable answer is a non-empty one:
+the server always answers the root class for a document it has opened, so no
+client, no answer in time or an empty answer means the file has not reached
+the server yet (a file opened with the tool window already showing, or an
+editor restored at IDE start). The platform refreshes its own view when a
+client starts through a listener that is internal API, which the plugin may
+not use, so while no usable answer exists the view asks again: every second
+for 60 tries, then every ten seconds for as long as it lives, and fast again
+after an answer; a new model (another file, the view reopened) starts fast. A
+server that starts late, or is restarted, therefore fills the tree without an
+edit.
+
+**Known behaviours.** After a timeout following an edit the tree keeps its
+last answer, and its positions are stale until the next answer. Two views of
+one file asking at once (the tool window and the popup) each send a request.
+A question on the EDT that finds no current answer schedules a retry too, and
+counts against the sixty fast ones.
+
+**Checked by hand under `runIde` (2026-10-04)** on `Kernel.ns`: the Structure
+tool window and the File Structure popup show the tree, with the factory, the
+instance side, the class side, the members in source order and the
+temporaries under their methods; Java-like access icons (a member without a
+modifier shows protected), the read-only and read-write property icons and
+`lazy`; picking a symbol jumps to its name; breadcrumbs show the class and
+method at the caret, and IntelliJ's sticky lines follow; the tree survives a
+half-typed method; and it fills on first open.
 
 ### Robustness
 
@@ -237,7 +430,20 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 - positions — byte offset to UTF-16 with non-ASCII text, umlauts and emoji
   (surrogate pairs), at line ends and at the end of the file;
 - diagnostics — one `indoc!` module each with a lexer, a parser and a resolver
-  error, checking range and message;
+  error, checking range and message; a lexer error's findings come first, the
+  parser's after them, and a syntax error keeps the names around it
+  classified;
+- folding — a class body and a class side, a method with its temporaries and
+  a closure, a comment folded to its first line, an unterminated comment to
+  the end of the file, single-line constructs answering no range, the folds
+  after a half-typed method, and a fold's UTF-16 encoding on CRLF lines;
+- document symbols — the tree of a class with a factory, a nested class,
+  slots, methods and a class side, in source order; a half-typed method
+  keeping the symbols after it; an empty file answering an unnamed class;
+  every selection inside its range, also over every module of the corpus and
+  every cut of one (`every_symbol_selection_lies_inside_its_range`); a
+  symbol's UTF-16 encoding on CRLF lines; a slot's kind and `lazy`; and a
+  member's effective access;
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
   a receiver inside a keyword message's span, a lazy slot in both
@@ -250,16 +456,30 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
 - the resolver entry — for every module in `corpus/modules`, `goldens/` and
   `Kernel.ns`, the same bindings and errors as `resolve`, so the two cannot
   drift;
+- the editor parse — over that same set, every module `parse` accepts gets
+  the same module from `parse_for_editor`, and no diagnostic, so the editor
+  never reads a clean file differently from `ns-next run`;
 - robustness — no analysis over that same set produces an "internal error",
-  nor over truncations of each file at token boundaries, which is what a file
-  looks like while it is being typed: every token boundary of every golden and
-  of the kernel, and 64 evenly spaced token boundaries of each corpus module,
-  since every prefix of every corpus module is quadratic in its size;
+  through the parse, the resolver, the classification and the folding alike,
+  nor over truncations of each file, which is what a file looks like while it
+  is being typed: at every token boundary of every golden and of the kernel
+  and in the middle of each of their tokens -- a string, a comment or a
+  keyword half typed -- and at the end and in the middle of 64 evenly spaced
+  tokens of each corpus module, since every prefix of every corpus module is
+  quadratic in its size; and a chain of messages as long as the source,
+  valid or a run of unclosed methods, analysed on a 1 MiB stack
+  (`a_chain_as_long_as_the_source_is_analysed_on_a_small_stack`);
+- no empty name — on the token-boundary truncations, no declaration in the
+  recovered module has an empty name but the root class's, which recovery
+  keeps ([frontend.md](frontend.md), "Recovery");
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
-  `initialize`, `didOpen`, the expected `publishDiagnostics`,
-  `semanticTokens/full`, `shutdown`; a malformed notification, reported as a
-  `window/logMessage` error while the next request is still answered; an
-  unknown request, answered `MethodNotFound`.
+  `initialize` and its announced capabilities, `foldingRangeProvider` and
+  `documentSymbolProvider` included, `didOpen`, the expected
+  `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
+  `textDocument/documentSymbol` (the class, its three children, and `[]` for
+  a document never opened), `shutdown`; a malformed notification, reported
+  as a `window/logMessage` error while the next request is still answered;
+  an unknown request, answered `MethodNotFound`.
 
 ## The plugin, `editors/jetbrains/`
 
@@ -337,7 +557,12 @@ Components:
   `bundledModule("intellij.spellchecker")` supplies, since the module has no
   plugin descriptor of its own to depend on at compile time.
 - **LSP client** — an `LspIntegrationProvider` for `.ns` files, one server per
-  project.
+  project. Folding needs nothing of its own: the platform's `LspFoldingBuilder`
+  asks the server ("Folding").
+- **Structure view** — `NewspeakStructureViewFactory`, its model and
+  `NewspeakStructureElement`, over the server's document symbols, with
+  `NewspeakSymbolKinds` and `NewspeakDocumentSymbols` in the client
+  descriptor's customization ("Structure").
 - **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
   default, typed or chosen with a file picker, and a "Restart server" action.
   Stored at application level: the path is specific to a machine, so it does
@@ -395,8 +620,9 @@ plugin's code.
   the tests use the debug build.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand. It has
   been tried end to end: the server starts from `plugins_runIde/`, the
-  semantic colours land over the lexer's, and a resolver error
-  (`^outer Missing foo`) is underlined with ns-next's message.
+  semantic colours land over the lexer's, a resolver error
+  (`^outer Missing foo`) is underlined with ns-next's message, and the folds
+  are there, through a syntax error too ("Folding").
 - `editors/jetbrains/build/` and `.gradle/` are ignored.
 
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,
@@ -469,7 +695,16 @@ The server's own tests are described under its section, above ("Testing").
   brace matching, commenting; `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
-  which cover the binary lookup order and the semantic-token classification.
+  which cover the binary lookup order and the semantic-token classification;
+- the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
+  per kind), `NewspeakStructureElementTest` (a row's name, `lazy`, kind icon
+  and access icon from a `DocumentSymbol`) and
+  `NewspeakStructureViewModelTest` (no answer and an empty answer make the
+  model ask again, an answer with symbols is shown); and on
+  `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a Newspeak file
+  gets the plugin's view rather than the platform's, the caret selects the
+  innermost symbol around it, and a member with an access shows the kind's
+  and the access icon in one row under the platform's own `IconManager`.
 
 **Gates.** The runtime's per-commit suite is `cargo nextest run --workspace
 --exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide
@@ -499,11 +734,12 @@ and resolves cleanly in a JetBrains IDE today.
 - **The IDE path has no automated test.** It was checked by hand under
   `runIde` (see "Build and packaging"); nothing but that check covers the
   platform handing `NewspeakLspIntegrationProvider` its descriptor
-  (`PluginAware`) or the sandbox layout `runIde` starts from. The sandbox
+  (`PluginAware`), the sandbox layout `runIde` starts from, the
+  platform's `LspFoldingBuilder` reaching a `.ns` file, or the structure
+  view against a running server: its asking again until the server has
+  opened the file, navigation, the breadcrumbs and the sticky lines
+  ("Structure"). The sandbox
   also disables the ultimate marker plugin for `runIde`, not only for tests.
-- **Warning-severity diagnostics.** `ns_syntax::parse` answers a module or
-  errors, so a lexer or parser warning on a module that parses is not shown.
-  None exists today.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file.
@@ -514,16 +750,15 @@ and resolves cleanly in a JetBrains IDE today.
   2023.3; once the server announces it, the IDE's Reformat Code uses it with no
   change to the plugin. A platform-native formatter (`FormattingModelBuilder`)
   would need a PSI tree, which is the second parser this design avoids. The
-  work is in Rust: the AST drops comments today, and a formatter must keep
-  each one where it was, so `ns-syntax` would have to hand out comments with
-  their spans, as tokens or as trivia attached to neighbouring tokens. The
-  formatter would be one module that an `ns-next fmt` command shares, so the
+  work is in Rust. A formatter must keep each comment where it was; the
+  comments' spans exist (`parse_for_editor`'s `comments`, beside the AST),
+  and what remains is attaching each to the nodes around it, and the
+  formatter itself: one module that an `ns-next fmt` command shares, so the
   editor, the command line and any later formatting gate use one formatter.
   It would not touch a file with a syntax error.
-- **Navigation.** Go to definition, find usages and the structure view need an
-  AST for a file that does not parse, while it is typed: a fault-tolerant
-  parser in `ns-syntax`, then `definition`, `references` and `documentSymbol`
-  in the server. The same parser would keep semantic tokens alive through a
-  syntax error.
+- **Navigation.** Go to definition and find usages need an AST for a file
+  that does not parse, while it is typed; the fault-tolerant parse exists
+  ([frontend.md](frontend.md), "Recovery"). What remains is `definition` and
+  `references` in the server.
 - **More platforms.** A CI build producing the other five binaries into
   `bin/<os>-<arch>/`. The repository has no CI yet.

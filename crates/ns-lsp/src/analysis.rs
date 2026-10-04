@@ -5,6 +5,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use ns_syntax::{Diagnostic, Severity, Span};
 
+use crate::document_symbols::{self, Symbol};
+use crate::folding::{self, Fold};
 use crate::semantic_tokens::{self, Classified};
 
 /// One error to show, with the message `ns-next` itself produces.
@@ -27,11 +29,15 @@ impl From<Diagnostic> for Finding {
 pub struct Analysis {
     pub findings: Vec<Finding>,
     pub classified: Vec<Classified>,
+    pub folds: Vec<Fold>,
+    pub symbols: Vec<Symbol>,
 }
 
-/// The errors `ns-next run` would refuse `text` for before running it -- the
-/// lexer's, else the parser's, else the resolver's -- and, when it parses,
-/// every name the resolver can place. Never panics: see `guarded`.
+/// Every error `ns-next run` would refuse `text` for before running it --
+/// the lexer's, the parser's and the resolver's, together -- and every name
+/// the resolver can place. A source with errors is analysed as recovered,
+/// so the colours survive while a file is typed. Never panics: see
+/// `guarded`.
 pub fn analyze(text: &str) -> Analysis {
     guarded(text, analyze_unguarded)
 }
@@ -59,47 +65,39 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                     severity: Severity::Error,
                 }],
                 classified: Vec::new(),
+                folds: Vec::new(),
+                symbols: Vec::new(),
             }
         }
     }
 }
 
 fn analyze_unguarded(text: &str) -> Analysis {
-    // The lexer runs on its own first because `ns_syntax::parse` refuses a
-    // token stream with lexer errors before parsing, and because the
-    // classification needs the tokens themselves. `lex` also refuses a
-    // source longer than a span can address before lexing it.
-    let tokens = match ns_syntax::lex(text) {
-        Ok(tokens) => tokens,
-        Err(lexer_diagnostics) => {
-            return Analysis {
-                findings: lexer_diagnostics.into_iter().map(Finding::from).collect(),
-                classified: Vec::new(),
-            }
-        }
-    };
-    let module = match ns_syntax::parse(text) {
-        Ok(module) => module,
-        Err(diagnostics) => {
-            return Analysis {
-                findings: diagnostics.into_iter().map(Finding::from).collect(),
-                classified: Vec::new(),
-            }
-        }
-    };
+    let ns_syntax::EditorParse {
+        tokens,
+        module,
+        comments,
+        diagnostics,
+    } = ns_syntax::parse_for_editor(text);
+    // The resolver runs on a recovered module too. Recovery adds no
+    // declaration the source does not contain, so it causes no duplicate or
+    // clashing-member error; an unbound name is a send in Newspeak, not an
+    // error (`docs/design/frontend.md`, "Recovery").
     let resolution = ns_runtime::resolve_for_editor(module);
     let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
+    let folds = folding::folds(&resolution.module, &comments, text);
+    let symbols = document_symbols::symbols(&resolution.module);
+    let mut findings: Vec<Finding> = diagnostics.into_iter().map(Finding::from).collect();
+    findings.extend(resolution.errors.into_iter().map(|error| Finding {
+        span: error.span,
+        message: error.message,
+        severity: Severity::Error,
+    }));
     Analysis {
-        findings: resolution
-            .errors
-            .into_iter()
-            .map(|error| Finding {
-                span: error.span,
-                message: error.message,
-                severity: Severity::Error,
-            })
-            .collect(),
+        findings,
         classified,
+        folds,
+        symbols,
     }
 }
 
@@ -129,12 +127,32 @@ mod tests {
             class Module = Object new () ( public broken = ( ^'unterminated ) ) : ()
         "};
         let analysis = analyze(text);
-        assert_eq!(analysis.findings.len(), 1);
+        // The lexer's findings come first; the parser's follow, since the
+        // string runs to the end of the file.
         assert_eq!(analysis.findings[0].message, "unterminated string literal");
         assert_eq!(
             analysis.findings[0].span.start as usize,
             text.find("'unterminated").expect("the literal")
         );
+    }
+
+    /// A syntax error no longer takes the semantic colours with it.
+    #[test]
+    fn a_syntax_error_keeps_the_names_classified() {
+        let text = indoc::indoc! {"
+            class Module = () (
+                broken = (
+                    ^1
+                echo: argument = ( ^argument )
+            ) : ()
+        "};
+        let analysis = analyze(text);
+        assert!(!analysis.findings.is_empty());
+        let parameter_use = text.rfind("argument").expect("the use") as u32;
+        assert!(analysis
+            .classified
+            .iter()
+            .any(|classified| classified.span.start == parameter_use));
     }
 
     #[test]
@@ -182,6 +200,48 @@ mod tests {
             (finding.span.start as usize, finding.span.end as usize),
             (start, start + "Array new".len())
         );
+    }
+
+    /// A chain of messages nests a send per message through its receivers,
+    /// as deep as the source is long, valid or not: `1 + 1 abs + …`, and a
+    /// run of unclosed methods past the parser's depth limit, which the
+    /// first method's statement takes as one chain. Walked by recursion, a
+    /// valid 40,000-message chain overflowed the server's 8 MiB.
+    #[test]
+    fn a_chain_as_long_as_the_source_is_analysed_on_a_small_stack() {
+        const STACK_BYTES: usize = 1024 * 1024;
+        let valid = indoc::formatdoc! {"
+            class Module = () (
+                sum = ( ^1{links} )
+            ) : ()
+            ",
+            links = " + 1 abs".repeat(50_000),
+        };
+        let unclosed = indoc::formatdoc! {"
+            class Module = () (
+            {methods}",
+            methods = "    m = ( ^1\n".repeat(10_000),
+        };
+        let (valid_findings, unclosed_findings) = std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(move || {
+                let findings = |text: &str| -> Vec<String> {
+                    analyze(text)
+                        .findings
+                        .into_iter()
+                        .map(|finding| finding.message)
+                        .collect()
+                };
+                (findings(&valid), findings(&unclosed))
+            })
+            .expect("spawn the analysing thread")
+            .join()
+            .expect("the analysis answers on a small stack");
+        assert!(valid_findings.is_empty(), "{:?}", valid_findings.first());
+        assert_eq!(unclosed_findings.len(), 10_001);
+        assert!(unclosed_findings
+            .iter()
+            .all(|message| !message.contains("internal error")));
     }
 
     #[test]

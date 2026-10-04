@@ -166,7 +166,9 @@ enum Command {
 /// The native stack the interpreter runs on. Nothing re-enters the run loop
 /// from Rust (`docs/design/execution.md`, "No re-entry from Rust"), so what
 /// recurses on it is the front end and the compiler, whose depth the parser's
-/// nesting ceiling bounds. The test suite runs the deepest nesting the parser
+/// nesting ceiling bounds -- except along a chain of messages, which nests as
+/// deep as the source is long and which the compiler still walks by
+/// recursion (`docs/OPEN-WORK.md`). The test suite runs the deepest nesting the parser
 /// accepts through every stage on libtest's default 2 MiB threads in a debug
 /// build; this is four times that. Reserved, not committed: only what a
 /// program uses is backed by memory. The thread itself is needed regardless,

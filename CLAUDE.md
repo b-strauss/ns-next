@@ -4,7 +4,10 @@ A native Rust runtime for [Newspeak](https://newspeaklanguage.org/): lexer, pars
 resolver, bytecode compiler and register VM, and a versioned image format.
 Rust 1.98.0, edition 2021, five crates:
 
-- `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`.
+- `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
+  `parse` refuses a source with errors, `parse_for_editor` answers a
+  recovered module for the editor, its recovery bounded by a work budget
+  (`docs/design/frontend.md`, "Recovery").
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
@@ -34,8 +37,8 @@ Rust 1.98.0, edition 2021, five crates:
   `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
   JSON project file of several modules (`project.rs`, `program.rs`).
 - `crates/ns-lsp` — the `ns-next-lsp` binary: a language server for `.ns` files
-  (diagnostics, semantic tokens) and `dump-tokens`, which the JetBrains plugin's
-  lexer is checked against. It never starts the VM; its server dependencies
+  (diagnostics, semantic tokens, fold ranges, document symbols) and
+  `dump-tokens`, which the JetBrains plugin's lexer is checked against. It never starts the VM; its server dependencies
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime`,
   and `serde_json` is shared by `ns-lsp` and `ns-cli` (the project file is JSON)
   (`docs/design/editor-support.md`).
@@ -46,7 +49,8 @@ Rust 1.98.0, edition 2021, five crates:
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
-module (`LexerComparisonTest`), and the connection to `ns-next-lsp`.
+module (`LexerComparisonTest`), the connection to `ns-next-lsp`, and a
+structure view of its own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
@@ -217,6 +221,12 @@ primitive's payload check and a method's `MethodFastPath`. Add such a read and i
 it. A lazy slot's getter has no fast path (`Instruction::ReturnSlotIfFilled`
 instead). The reference lowering runs every send uncached and is the oracle
 (`dispatch.md`, "Primitive methods", "3b — The caches").
+
+**A chain of messages is walked link by link.** `a b + c …` is a left-nested
+`Send` as deep as the chain is long, and every chain length is valid
+Newspeak, so no depth guard bounds it: never recurse along a receiver —
+walk `Send::receiver_chain`; `Send` drops itself iteratively. The compiler
+still recurses (`OPEN-WORK.md`) (`frontend.md`, "Recovery", rule 7).
 
 ## Working in this repository
 

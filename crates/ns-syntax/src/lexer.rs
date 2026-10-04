@@ -9,7 +9,16 @@ pub struct Lexer<'a> {
     bytes: &'a [u8],
     position: usize,
     tokens: Vec<Token>,
+    comments: Vec<Span>,
     diagnostics: Vec<Diagnostic>,
+}
+
+/// A source's tokens with its comments kept, for an editor: the parser and
+/// the runtime never see a comment, so `run` drops them.
+pub struct Lexed {
+    pub tokens: Vec<Token>,
+    pub comments: Vec<Span>,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 /// §4.2's `specialCharacter`. `-` is not one: `binSel → (specialCharacter |
@@ -29,11 +38,17 @@ impl<'a> Lexer<'a> {
             bytes: source.as_bytes(),
             position: 0,
             tokens: Vec::new(),
+            comments: Vec::new(),
             diagnostics: Vec::new(),
         }
     }
 
-    pub fn run(mut self) -> (Vec<Token>, Vec<Diagnostic>) {
+    pub fn run(self) -> (Vec<Token>, Vec<Diagnostic>) {
+        let lexed = self.run_keeping_comments();
+        (lexed.tokens, lexed.diagnostics)
+    }
+
+    pub fn run_keeping_comments(mut self) -> Lexed {
         while self.position < self.bytes.len() {
             self.skip_trivia();
             if self.position >= self.bytes.len() {
@@ -42,7 +57,11 @@ impl<'a> Lexer<'a> {
             self.lex_one();
         }
         self.push(TokenKind::EndOfInput, self.position, self.position);
-        (self.tokens, self.diagnostics)
+        Lexed {
+            tokens: self.tokens,
+            comments: self.comments,
+            diagnostics: self.diagnostics,
+        }
     }
 
     fn skip_trivia(&mut self) {
@@ -68,6 +87,10 @@ impl<'a> Lexer<'a> {
                 (Some(b'*'), Some(b')')) => {
                     self.position += 2;
                     depth -= 1;
+                    if depth == 0 {
+                        self.comments
+                            .push(Span::new(start as u32, self.position as u32));
+                    }
                 }
                 (Some(_), _) => self.position += 1,
                 (None, _) => {
@@ -75,6 +98,8 @@ impl<'a> Lexer<'a> {
                         Span::new(start as u32, self.position as u32),
                         "unterminated comment",
                     ));
+                    self.comments
+                        .push(Span::new(start as u32, self.position as u32));
                     return;
                 }
             }
@@ -469,6 +494,21 @@ mod tests {
             "unexpected diagnostics: {diagnostics:?}"
         );
         tokens.into_iter().map(|token| token.kind).collect()
+    }
+
+    /// A nested comment is one span, outer `(*` to outer `*)`; a `(*` in a
+    /// string opens none; an unterminated one runs to the end.
+    #[test]
+    fn comment_spans_are_kept_on_request() {
+        let source = "a (* outer (* inner *) still *) 'not (* a comment' (* open";
+        let lexed = Lexer::new(source).run_keeping_comments();
+        let texts: Vec<&str> = lexed
+            .comments
+            .iter()
+            .map(|span| span.text(source))
+            .collect();
+        assert_eq!(texts, ["(* outer (* inner *) still *)", "(* open"]);
+        assert_eq!(lexed.diagnostics.len(), 1, "the unterminated comment");
     }
 
     #[test]

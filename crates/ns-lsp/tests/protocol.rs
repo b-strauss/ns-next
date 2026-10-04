@@ -84,6 +84,8 @@ fn an_editor_session() {
             "keyword"
         ])
     );
+    assert_eq!(capabilities["capabilities"]["foldingRangeProvider"], true);
+    assert_eq!(capabilities["capabilities"]["documentSymbolProvider"], true);
     notify(&client, "initialized", json!({}));
 
     // Non-ASCII text before the error on its line, so a position counted in
@@ -143,6 +145,63 @@ fn an_editor_session() {
         "an unknown document has no tokens"
     );
 
+    let folded = indoc! {"
+        class Module = Object new () (
+            public run = (
+                ^1
+            )
+        ) : ()
+    "};
+    notify(
+        &client,
+        "textDocument/didChange",
+        json!({ "textDocument": { "uri": URI, "version": 3 }, "contentChanges": [{ "text": folded }] }),
+    );
+    let _ = next_diagnostics(&client);
+    let ranges = request(
+        &client,
+        5,
+        "textDocument/foldingRange",
+        json!({ "textDocument": { "uri": URI } }),
+    );
+    let lines: Vec<(u64, u64)> = ranges
+        .as_array()
+        .expect("an array of ranges")
+        .iter()
+        .map(|range| {
+            (
+                range["startLine"].as_u64().expect("a start line"),
+                range["endLine"].as_u64().expect("an end line"),
+            )
+        })
+        .collect();
+    assert_eq!(lines, [(0, 4), (1, 3)]);
+
+    let symbols = request(
+        &client,
+        6,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": URI } }),
+    );
+    let roots = symbols.as_array().expect("an array of symbols");
+    assert_eq!(roots.len(), 1, "one root: the module's class");
+    assert_eq!(roots[0]["name"], "Module");
+    let names: Vec<&str> = roots[0]["children"]
+        .as_array()
+        .expect("the class's children")
+        .iter()
+        .map(|child| child["name"].as_str().expect("a name"))
+        .collect();
+    assert_eq!(names, ["new", "instance side", "class side"]);
+
+    let unopened = request(
+        &client,
+        7,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": "file:///never/opened.ns" } }),
+    );
+    assert_eq!(unopened, json!([]), "an unknown document has no symbols");
+
     notify(
         &client,
         "textDocument/didClose",
@@ -155,7 +214,7 @@ fn an_editor_session() {
         "closing clears the errors"
     );
 
-    request(&client, 4, "shutdown", Value::Null);
+    request(&client, 8, "shutdown", Value::Null);
     notify(&client, "exit", Value::Null);
     let outcome = server_thread
         .join()

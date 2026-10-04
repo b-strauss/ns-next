@@ -11,17 +11,22 @@ use lsp_types::notification::{
     DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, LogMessage,
     Notification as NotificationKind, PublishDiagnostics,
 };
-use lsp_types::request::{Request as RequestKind, SemanticTokensFullRequest};
+use lsp_types::request::{
+    DocumentSymbolRequest, FoldingRangeRequest, Request as RequestKind, SemanticTokensFullRequest,
+};
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, LogMessageParams, MessageType, PublishDiagnosticsParams, Range,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
-    TextDocumentSyncKind, Uri,
+    Diagnostic, DiagnosticSeverity, DocumentSymbolParams, DocumentSymbolResponse,
+    FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams, MessageType, OneOf,
+    PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 use ns_syntax::Severity;
 
 use crate::analysis::{analyze, Analysis};
+use crate::document_symbols;
 use crate::documents::LineIndex;
+use crate::folding;
 use crate::semantic_tokens;
 
 pub type ServerResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -56,6 +61,8 @@ fn capabilities() -> ServerCapabilities {
                 ..SemanticTokensOptions::default()
             },
         )),
+        folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+        document_symbol_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -98,13 +105,71 @@ pub fn run(connection: Connection) -> ServerResult<()> {
 }
 
 fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
-    if request.method != SemanticTokensFullRequest::METHOD {
-        return Response::new_err(
+    match request.method.as_str() {
+        SemanticTokensFullRequest::METHOD => semantic_tokens_of(documents, request),
+        FoldingRangeRequest::METHOD => folding_ranges_of(documents, request),
+        DocumentSymbolRequest::METHOD => document_symbols_of(documents, request),
+        _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
             format!("ns-next-lsp does not implement {}", request.method),
-        );
+        ),
     }
+}
+
+/// A document's folds; none for a document the client never opened or has
+/// closed, as for its tokens.
+fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: FoldingRangeParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let ranges = documents
+        .get(params.text_document.uri.as_str())
+        .map(|document| {
+            folding::encode(
+                &document.analysis.folds,
+                &document.text,
+                &document.line_index,
+            )
+        })
+        .unwrap_or_default();
+    Response::new_ok(request.id, ranges)
+}
+
+/// A document's symbol tree; none for a document the client never opened or
+/// has closed, as for its folds.
+fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: DocumentSymbolParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let symbols = documents
+        .get(params.text_document.uri.as_str())
+        .map(|document| {
+            document_symbols::encode(
+                &document.analysis.symbols,
+                &document.text,
+                &document.line_index,
+            )
+        })
+        .unwrap_or_default();
+    Response::new_ok(request.id, DocumentSymbolResponse::Nested(symbols))
+}
+
+fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -> Response {
     let params: SemanticTokensParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
         Err(error) => {

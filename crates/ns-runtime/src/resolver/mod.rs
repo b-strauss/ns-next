@@ -469,17 +469,59 @@ impl Resolver {
             .insert(id.span, Binding::LexicalSend { depth });
     }
 
+    /// A chain of messages is resolved link by link, in the order a
+    /// recursion into each receiver would take -- the links from the
+    /// outermost in, down to the first whose receiver is resolved with it
+    /// or is no send, then the arguments from the innermost link out --
+    /// since it nests as deep as the source is long.
     fn resolve_send(&mut self, send: &ast::Send, scope: &mut ScopeStack, chain: &[EnclosingClass]) {
+        let mut explicit_receivers = Vec::new();
+        let mut link = send;
+        loop {
+            if self.resolve_send_to_a_named_receiver(link, scope, chain) {
+                break;
+            }
+            // Ordinary explicit-receiver send: resolve the receiver
+            // sub-expression on its own merits; the send itself needs no
+            // binding (dispatch.rs's lookupPublic runs on the receiver's
+            // actual runtime class). In shipped source, a send to `vmMirror` is
+            // marked for the recognizers that inline a mirror send.
+            if self.kernel && is_the_mirror_slot(&link.receiver, scope, chain) {
+                self.bindings.insert(link.span, Binding::MirrorSend);
+            }
+            explicit_receivers.push(link);
+            match &link.receiver {
+                Expression::Send(receiver) => link = receiver,
+                receiver => {
+                    self.resolve_expression(receiver, scope, chain);
+                    break;
+                }
+            }
+        }
+        for link in explicit_receivers.iter().rev() {
+            self.resolve_message_send(&link.message, scope, chain);
+        }
+    }
+
+    /// A send to `super`, `self`, the implicit receiver or `outer N`, its
+    /// arguments included, and whether `send` was one: its receiver is
+    /// part of the binding, not an expression of its own.
+    fn resolve_send_to_a_named_receiver(
+        &mut self,
+        send: &ast::Send,
+        scope: &mut ScopeStack,
+        chain: &[EnclosingClass],
+    ) -> bool {
         if sends::is_explicit_super(&send.receiver) {
             self.bindings.insert(send.span, Binding::SuperSend);
             self.resolve_message_send(&send.message, scope, chain);
-            return;
+            return true;
         }
         if sends::is_explicit_self(&send.receiver) {
             self.bindings
                 .insert(send.span, Binding::LexicalSend { depth: 0 });
             self.resolve_message_send(&send.message, scope, chain);
-            return;
+            return true;
         }
         if sends::is_synthesized_implicit_receiver(&send.receiver) {
             let selector_name = member_name_of_message(&send.message);
@@ -487,7 +529,7 @@ impl Resolver {
             self.bindings
                 .insert(send.span, Binding::LexicalSend { depth });
             self.resolve_message_send(&send.message, scope, chain);
-            return;
+            return true;
         }
         if let Some(class_name) = sends::bare_outer_class_name(send) {
             let name = Symbol::intern(class_name);
@@ -503,7 +545,7 @@ impl Resolver {
                     ),
                 }),
             }
-            return;
+            return true;
         }
         if let Some(class_name) = sends::outer_class_name(&send.receiver) {
             let name = Symbol::intern(class_name);
@@ -520,18 +562,9 @@ impl Resolver {
                 }),
             }
             self.resolve_message_send(&send.message, scope, chain);
-            return;
+            return true;
         }
-        // Ordinary explicit-receiver send: resolve the receiver
-        // sub-expression on its own merits; the send itself needs no
-        // binding (dispatch.rs's lookupPublic runs on the receiver's
-        // actual runtime class). In shipped source, a send to `vmMirror` is
-        // marked for the recognizers that inline a mirror send.
-        if self.kernel && is_the_mirror_slot(&send.receiver, scope, chain) {
-            self.bindings.insert(send.span, Binding::MirrorSend);
-        }
-        self.resolve_expression(&send.receiver, scope, chain);
-        self.resolve_message_send(&send.message, scope, chain);
+        false
     }
 
     /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
