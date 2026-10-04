@@ -791,8 +791,6 @@ text and `to:by:do:`'s zero step.
 - **The image encoder does not refuse a module class handed twice** among
   the modules it writes; the artifact it writes then fails to load. No
   command hands it one: `program.rs` hands each module once.
-- **A project file with an empty `root`** is accepted by `read_project` and
-  fails later, as reading a directory (`crates/ns-cli/src/project.rs`).
 - **`ns-next run` panics when its stdout pipe closes early** (`ns-next run
   … | head`): the transcript's `print!` reports "failed printing to
   stdout" (os error 232 on Windows) instead of ending quietly

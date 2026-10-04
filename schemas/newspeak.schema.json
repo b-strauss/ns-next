@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ns-next project",
+  "description": "A Newspeak program of several modules, run by ns-next: `main` is the application's module, instantiated with `packageUsing:` a manifest of the others. Paths are relative to this file, with either separator.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Where an editor finds this schema; ns-next ignores it.",
+      "type": "string"
+    },
+    "main": {
+      "description": "The application's module: its root class is instantiated with `packageUsing:` the manifest, then sent `main: platform args:`.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\.ns$"
+    },
+    "modules": {
+      "description": "The other modules the manifest holds, each reached as `manifest <Name>` by the name its source declares.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\.ns$"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": ["main"]
+}

@@ -1,7 +1,9 @@
 //! The project file: a program of several modules, named in JSON. `main` is
 //! the application module's source; `modules` are the other modules its
-//! manifest holds (`docs/design/image-format.md`, "Packaging"). Every project file is
-//! named `newspeak.json`, so a project is its directory.
+//! manifest holds (`docs/design/image-format.md`, "Packaging"). Every
+//! project file is named `newspeak.json`, so a project is its directory. Its
+//! schema is `schemas/newspeak.schema.json`, and `read_project` enforces the
+//! same rules with messages of its own.
 
 use std::path::{Path, PathBuf};
 
@@ -58,10 +60,20 @@ pub(crate) fn locate_program(path: &Path) -> Result<ProgramPath, String> {
 /// an editor or another tool wants beside what ns-next reads.
 #[derive(serde::Deserialize)]
 struct ProjectFile {
+    /// Where an editor finds the schema. Never read, but held to the
+    /// schema's type for it, so that a file the schema refuses is not run.
+    #[serde(rename = "$schema", default, deserialize_with = "a_string")]
+    _schema: Option<String>,
     /// The application module's source.
     main: String,
     #[serde(default)]
     modules: Vec<String>,
+}
+
+/// A string where the key is present. `Option<String>` alone would also take
+/// `null`, which the schema refuses.
+fn a_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    <String as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
 pub(crate) struct Project {
@@ -74,15 +86,51 @@ pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
         .map_err(|error| format!("reading {}: {error}", path.display()))?;
     let file: ProjectFile =
         serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
+    let in_file = |error: String| format!("{}: {error}", path.display());
+    check_module_path("main", &file.main).map_err(in_file)?;
+    for written in &file.modules {
+        check_module_path("modules", written).map_err(in_file)?;
+    }
     let directory = path.parent().unwrap_or(Path::new(""));
-    Ok(Project {
-        main: resolve_written_path(directory, &file.main),
-        modules: file
-            .modules
-            .iter()
-            .map(|written| resolve_written_path(directory, written))
-            .collect(),
-    })
+    let main = resolve_written_path(directory, &file.main);
+    let mut modules: Vec<PathBuf> = Vec::with_capacity(file.modules.len());
+    for written in &file.modules {
+        let module = resolve_written_path(directory, written);
+        if same_path(&module, &main) {
+            return Err(in_file(format!(
+                "`modules` names `main`'s module `{written}` again"
+            )));
+        }
+        if modules.iter().any(|earlier| same_path(earlier, &module)) {
+            return Err(in_file(format!("`modules` names `{written}` twice")));
+        }
+        modules.push(module);
+    }
+    Ok(Project { main, modules })
+}
+
+/// Refuses a path that is empty or names no `.ns` file, naming the key it
+/// was written under; the schema's `minLength` and `pattern` say the same.
+fn check_module_path(key: &str, written: &str) -> Result<(), String> {
+    if written.is_empty() {
+        return Err(format!("`{key}` holds an empty path"));
+    }
+    if !written.ends_with(".ns") {
+        return Err(format!("`{key}` names `{written}`, which is no `.ns` file"));
+    }
+    Ok(())
+}
+
+/// Whether two resolved paths name one file as written: `Path::components`
+/// folds a doubled separator, and a `.` component is dropped here, because
+/// the components keep a leading one. The file system is not asked, so a
+/// symbolic link or a `..` that returns is not seen through.
+fn same_path(first: &Path, second: &Path) -> bool {
+    fn significant(path: &Path) -> impl Iterator<Item = std::path::Component<'_>> {
+        path.components()
+            .filter(|component| *component != std::path::Component::CurDir)
+    }
+    significant(first).eq(significant(second))
 }
 
 /// A path as a project file writes it: either separator, relative to the
@@ -124,6 +172,48 @@ mod tests {
             Ok(_) => panic!("{} was accepted", path.display()),
             Err(error) => error,
         }
+    }
+
+    /// Writes `contents` as a project file in a fresh scratch directory and
+    /// answers the reader's refusal.
+    fn refusal_of(name: &str, contents: &str) -> String {
+        let directory = scratch(name);
+        let path = directory.join(PROJECT_FILE_NAME);
+        std::fs::write(&path, contents).unwrap_or_else(|error| panic!("{error}"));
+        refusal(&path)
+    }
+
+    #[test]
+    fn a_path_that_is_empty_or_names_no_ns_file_is_refused_naming_its_key() {
+        let error = refusal_of("empty-main", r#"{ "main": "" }"#);
+        assert!(
+            error.contains("`main`") && error.contains("empty"),
+            "{error}"
+        );
+        let error = refusal_of("main-not-ns", r#"{ "main": "App.txt" }"#);
+        assert!(error.contains("`main`") && error.contains(".ns"), "{error}");
+        let error = refusal_of(
+            "module-not-ns",
+            r#"{ "main": "App.ns", "modules": ["A.ns", "B"] }"#,
+        );
+        assert!(
+            error.contains("`modules`") && error.contains("B"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_module_named_twice_or_equal_to_main_is_refused_in_any_spelling() {
+        let error = refusal_of(
+            "duplicate-spellings",
+            r#"{ "main": "App.ns", "modules": ["lib/A.ns", "lib\\A.ns"] }"#,
+        );
+        assert!(error.contains("twice"), "{error}");
+        let error = refusal_of(
+            "module-is-main",
+            r#"{ "main": "App.ns", "modules": ["./App.ns"] }"#,
+        );
+        assert!(error.contains("`main`"), "{error}");
     }
 
     #[test]
@@ -237,6 +327,17 @@ mod tests {
         .unwrap_or_else(|error| panic!("{error}"));
         let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(project.main, directory.join("App.ns"));
+    }
+
+    #[test]
+    fn a_schema_reference_that_is_no_string_is_refused() {
+        for (name, contents) in [
+            ("schema-number", r#"{ "$schema": 1, "main": "App.ns" }"#),
+            ("schema-null", r#"{ "$schema": null, "main": "App.ns" }"#),
+        ] {
+            let error = refusal_of(name, contents);
+            assert!(error.contains("string"), "{error}");
+        }
     }
 
     #[test]
