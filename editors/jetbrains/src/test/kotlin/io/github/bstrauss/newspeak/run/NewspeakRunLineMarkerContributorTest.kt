@@ -17,6 +17,10 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
     override fun setUp() {
         super.setUp()
+        assertEmpty(
+            "a previous test left Newspeak run configurations behind",
+            RunManager.getInstance(project).getConfigurationSettingsList(NewspeakConfigurationType.getInstance()),
+        )
         // The schema provider of the same descriptor reads the schema from the
         // plugin's jar in the test sandbox once a newspeak.json is open, a root
         // the test framework's VFS guard does not allow by default.
@@ -24,6 +28,18 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
             "no jar or directory holds NewspeakRunAction"
         }
         VfsRootAccess.allowRootAccess(testRootDisposable, pluginJar)
+    }
+
+    // The light project, and its RunManager, outlive a test: without this a
+    // configuration one test created would be reused by the next.
+    override fun tearDown() {
+        try {
+            val runManager = RunManager.getInstance(project)
+            runManager.getConfigurationSettingsList(NewspeakConfigurationType.getInstance())
+                .forEach(runManager::removeConfiguration)
+        } finally {
+            super.tearDown()
+        }
     }
 
     private val projectJson = """
