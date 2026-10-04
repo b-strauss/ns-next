@@ -989,9 +989,7 @@ Small, deliberately left, none affecting an outcome.
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
 
-- Road step 4's leftovers (noted 2026-10-04): `Heap::scavenge` and
-  `Heap::move_everything` hand `out_of_memory` an end offset, not a byte
-  count; `interpreter/safepoint.rs`'s
+- Road step 4's leftovers (noted 2026-10-04): `interpreter/safepoint.rs`'s
   module comment has one line not rewrapped; and `tests/collector.rs`'s
   `every_kind_of_stored_word_survives_moves_and_collections` runs a
   scavenge at every safepoint too, which its name does not say.

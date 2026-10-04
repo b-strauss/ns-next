@@ -779,6 +779,8 @@ struct FrameFields<'gc> {
 /// system refused a commit. Aborts, as a failed allocation of the Rust
 /// allocator does, so that no allocation carries a `Result` (decided with
 /// the user on 2026-10-03; a Newspeak-level error is `docs/OPEN-WORK.md`'s).
+/// `bytes` is what the failed request asked for: an allocation's size, or
+/// what a commit asked for beyond what was committed.
 #[cold]
 fn out_of_memory(bytes: usize) -> ! {
     std::alloc::handle_alloc_error(
@@ -4331,7 +4333,7 @@ impl<'gc> Heap<'gc> {
         let [past, eden, _] = self.space.occupied();
         let worst = self.space.region(RegionName::Old).top + past.len() + eden.len();
         if self.space.ensure_committed(worst).is_none() {
-            out_of_memory(worst)
+            out_of_memory(worst - self.space.committed())
         }
         #[cfg(debug_assertions)]
         let (heap_id, from_epoch, to_epoch) =
@@ -4519,7 +4521,7 @@ impl<'gc> Heap<'gc> {
             if name == RegionName::Old
                 && self.space.ensure_committed(destination + length).is_none()
             {
-                out_of_memory(destination + length)
+                out_of_memory(destination + length - self.space.committed())
             }
             // Both ranges lie below the region's top while the objects are
             // copied.
@@ -4606,7 +4608,7 @@ impl<'gc> Heap<'gc> {
         }
         let new_top = NURSERY_END + 8 * live_words;
         if self.space.ensure_committed(new_top).is_none() {
-            out_of_memory(new_top)
+            out_of_memory(new_top - self.space.committed())
         }
         let old = self.space.region(RegionName::Old);
         // The words up to the new top must be lent while the nursery's
