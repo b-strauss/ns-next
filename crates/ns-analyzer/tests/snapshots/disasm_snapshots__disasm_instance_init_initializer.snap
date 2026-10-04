@@ -1,5 +1,5 @@
 ---
-source: crates/ns-cli/tests/disasm_snapshots.rs
+source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/instance_init\", &[\"--initializer\"])"
 ---
 initializer InstanceInit (args 0, registers 3)

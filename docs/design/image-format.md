@@ -13,7 +13,7 @@
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
 > `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
 > `crates/ns-runtime/core-library/Manifest.ns`. CLI: `ns-next build`,
-> `ns-next load`, `ns-next inspect`, and `ns-next disasm` on an artifact;
+> `ns-next load`, `ns-next-analyzer inspect`, and `ns-next-analyzer disasm` on an artifact;
 > `crates/ns-cli/src/project.rs` (the project file) and `program.rs`
 > (reading, compiling and assembling a program).
 
@@ -1265,7 +1265,7 @@ name, so the bodies of a project's other modules, the manifest's included,
 are not reachable through `disasm` of the artifact (`inspect --full` shows
 them).
 
-`ns-next inspect <artifact>` prints the file itself. Its default is a table of
+`ns-next-analyzer inspect <artifact>` prints the file itself. Its default is a table of
 contents — header flags, section offsets, the symbol table, **the code table
 with every body named**, the mixin table, and the module section, each
 module's origin, whether it carries source and its root section — and

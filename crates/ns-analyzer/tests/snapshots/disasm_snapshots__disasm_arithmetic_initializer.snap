@@ -1,5 +1,5 @@
 ---
-source: crates/ns-cli/tests/disasm_snapshots.rs
+source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/arithmetic\", &[\"--initializer\"])"
 ---
 initializer Arithmetic (args 0, registers 4)

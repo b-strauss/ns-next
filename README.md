@@ -66,7 +66,7 @@ cargo fmt --all
 # lints, must be warning-free
 cargo clippy --workspace --all-targets
 # parser corpus gate: must report "parsed 211, failed 0"
-cargo run -p ns-cli -- parse-corpus corpus/modules
+cargo run -p ns-analyzer -- parse-corpus corpus/modules
 # runnable corpus gate: must report "ran 6, failed 0, skipped 205"
 cargo run -p ns-cli -- run-corpus corpus/modules
 ```
@@ -129,12 +129,12 @@ instead of the optimized one; `run`, `build` and `disasm` take it.
 ```bash
 # print one compiled body; nothing is instantiated or run. Takes a .ns file,
 # which it compiles, or an artifact, whose bodies it decodes instead
-cargo run -p ns-cli -- disasm goldens/language/block/blocks_and_return.ns find:in:
+cargo run -p ns-analyzer -- disasm goldens/language/block/blocks_and_return.ns find:in:
 ```
 
 ```bash
 # check that a file parses; --ast prints the syntax tree
-cargo run -p ns-cli -- parse goldens/library/platform/hello.ns
+cargo run -p ns-analyzer -- parse goldens/library/platform/hello.ns
 ```
 
 ```bash
@@ -151,10 +151,10 @@ cargo run -p ns-cli -- load app.img
 # look inside an artifact without loading or running it: header flags,
 # section offsets, the symbol table, every body in the code table, the mixin
 # table and the modules
-cargo run -p ns-cli -- inspect app.img
+cargo run -p ns-analyzer -- inspect app.img
 # everything, the way `javap -v` renders a class file: mixin rows expanded,
 # every body disassembled, and the object graph read record by record
-cargo run -p ns-cli -- inspect app.img --full
+cargo run -p ns-analyzer -- inspect app.img --full
 ```
 
 ```bash

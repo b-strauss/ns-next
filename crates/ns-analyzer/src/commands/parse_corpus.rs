@@ -1,4 +1,4 @@
-//! `ns-next parse-corpus`.
+//! `ns-next-analyzer parse-corpus`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

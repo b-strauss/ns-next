@@ -1,4 +1,4 @@
-//! `ns-next disasm` snapshot tests -- one per representative code shape:
+//! `ns-next-analyzer disasm` snapshot tests -- one per representative code shape:
 //! plain keyword method, block with non-local return, inlined
 //! ifTrue:ifFalse:, inlined whileTrue:, the non-inlined fallback case, an
 //! instance initializer (`docs/design/compiler.md`, "Reading the output"),
@@ -13,12 +13,12 @@ use std::process::Command;
 
 fn disasm(golden: &str, arguments: &[&str]) -> String {
     let path = common::golden(golden);
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let output = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .args(arguments)
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(
         output.status.success(),
         "{}",
@@ -85,7 +85,7 @@ fn disasm_control_flow_fallback_main_under_the_reference_lowering() {
 #[test]
 fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
     let path = common::golden("library/platform/hello");
-    let missing = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let missing = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("nope")
@@ -93,7 +93,7 @@ fn disasm_rejects_an_unknown_selector_and_conflicting_arguments() {
         .unwrap();
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("no method `nope`"));
-    let both = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let both = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("main:args:")
@@ -121,12 +121,12 @@ fn disasm_reads_a_module_whose_language_id_is_the_image_magic_as_source() {
         "},
     )
     .expect("write temp source");
-    let output = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let output = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("value")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(
         output.status.success(),
         "{}",
@@ -158,14 +158,14 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     )
     .expect("write temp source");
 
-    let inner = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let inner = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("value")
         .arg("--class")
         .arg("Outer.Inner")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(
         inner.status.success(),
         "{}",
@@ -173,14 +173,14 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     );
     assert!(String::from_utf8_lossy(&inner.stdout).contains("method value"));
 
-    let class_side = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let class_side = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("marker")
         .arg("--class")
         .arg("Outer.class")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(
         class_side.status.success(),
         "{}",
@@ -188,14 +188,14 @@ fn disasm_addresses_a_nested_class_and_its_class_side_by_mixin_path() {
     );
     assert!(String::from_utf8_lossy(&class_side.stdout).contains("method marker"));
 
-    let unknown = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let unknown = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&path)
         .arg("value")
         .arg("--class")
         .arg("Outer.Nope")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(!unknown.status.success());
     assert!(String::from_utf8_lossy(&unknown.stderr).contains("has no nested class `Nope`"));
 
@@ -211,24 +211,18 @@ fn disasm_of_an_image_matches_disasm_of_its_source() {
     let directory = ScratchDirectory::new("disasm-bin");
     let image = directory.join("app.nsi");
 
-    let build = Command::new(env!("CARGO_BIN_EXE_ns-next"))
-        .arg("build")
-        .arg(&source)
-        .arg(&image)
-        .output()
-        .expect("run ns-next build");
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
+    std::fs::write(
+        &image,
+        common::build_image(&source, ns_runtime::Lowering::Optimized, false),
+    )
+    .expect("write the image");
 
-    let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let from_image = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&image)
         .arg("main:args:")
         .output()
-        .expect("run ns-next disasm on an image");
+        .expect("run ns-next-analyzer disasm on an image");
     assert!(
         from_image.status.success(),
         "{}",
@@ -299,12 +293,12 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
     let image = directory.join("bare.nsi");
     std::fs::write(&image, bytes).expect("write artifact");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let out = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&image)
         .arg("--initializer")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     let error = String::from_utf8_lossy(&out.stderr);
     assert!(!error.contains("panicked"), "disasm panicked: {error}");
     assert_eq!(out.status.code(), Some(1), "stderr: {error}");
@@ -315,12 +309,12 @@ fn disasm_refuses_an_initializer_an_artifact_does_not_carry() {
 
     // The same artifact still disassembles a method: only the missing body
     // is refused.
-    let method = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let method = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&image)
         .arg("main:args:")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(
         method.status.success(),
         "{}",
@@ -340,12 +334,12 @@ fn disasm_rejects_a_corrupt_artifact_with_a_message() {
     truncated.push(ns_runtime::image::encode::FORMAT_VERSION.to_le_bytes()[0]);
     std::fs::write(&bad, truncated).expect("write");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_ns-next"))
+    let out = Command::new(env!("CARGO_BIN_EXE_ns-next-analyzer"))
         .arg("disasm")
         .arg(&bad)
         .arg("main:args:")
         .output()
-        .expect("run ns-next disasm");
+        .expect("run ns-next-analyzer disasm");
     assert!(!out.status.success());
     let error = String::from_utf8_lossy(&out.stderr);
     assert!(error.starts_with("error:"), "unexpected stderr: {error}");

@@ -1,5 +1,5 @@
 ---
-source: crates/ns-cli/tests/disasm_snapshots.rs
+source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/while_loop\", &[\"main:args:\"])"
 ---
 method main:args: (args 2, registers 13)

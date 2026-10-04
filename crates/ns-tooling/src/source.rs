@@ -65,6 +65,9 @@ pub fn load_embedded(name: &str, source: &str) -> LoadedSource {
     }
 }
 
+/// Appends every `.ns` file below `directory`, at any depth, to `out`, in
+/// the order the file system lists them; a directory that cannot be read
+/// contributes nothing.
 pub fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
@@ -79,6 +82,8 @@ pub fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Prints each diagnostic to stderr as `file:line:column: level: message`,
+/// the line and column one-based and counted in characters of `source`.
 pub fn print_diagnostics(file: &Path, source: &str, diagnostics: &[Diagnostic]) {
     for diagnostic in diagnostics {
         let (line, column) = line_column(source, diagnostic.span.start);

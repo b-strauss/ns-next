@@ -1,5 +1,5 @@
 ---
-source: crates/ns-cli/tests/disasm_snapshots.rs
+source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"control_flow_fallback.ns\", &[\"main:args:\", \"--lowering\", \"reference\"])"
 ---
 method main:args: (args 2, registers 21)

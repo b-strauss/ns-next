@@ -1,4 +1,4 @@
-//! `ns-next disasm`.
+//! `ns-next-analyzer disasm`.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -68,7 +68,7 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
         && !bytes[4].is_ascii_whitespace()
 }
 
-/// `ns-next disasm`: for a `.ns` file, compile it, which compiles the
+/// `ns-next-analyzer disasm`: for a `.ns` file, compile it, which compiles the
 /// *whole* mixin tree onto its declarations; for a serialized artifact,
 /// decode it directly, which attaches its own code table's bodies instead of
 /// recompiling anything. Either way, the result is the root mixin, whose tree

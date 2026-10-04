@@ -1,4 +1,4 @@
-//! `ns-next parse`.
+//! `ns-next-analyzer parse`.
 
 use std::path::Path;
 use std::process::ExitCode;

@@ -243,7 +243,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets          # must be warning-free
 cargo nextest run --workspace --exclude ns-analyzer  # every golden, both lowerings
 cargo test --workspace --exclude ns-analyzer --doc   # nextest runs no doctests
-cargo run -p ns-cli -- parse-corpus corpus/modules   # "parsed 211, failed 0"
+cargo run -p ns-analyzer -- parse-corpus corpus/modules   # "parsed 211, failed 0"
 ```
 
 Plus, per commit touching them:

@@ -1244,7 +1244,7 @@ allocations (the `Rc<RefCell<Frame>>` block and the `arguments` vector `collect`
 builds), reference-count traffic on `sender`, `method`, `bindings` and the
 defining class, and a `HashMap` lookup per invocation just to find the compiled
 body. A method with temporaries also allocated a `temporaries` vector. Row two's
-`^x` has none (`ns-next disasm` gives `tick:` one register, its argument, where
+`^x` has none (`ns-next-analyzer disasm` gives `tick:` one register, its argument, where
 row three's has three), so its `temporaries` vector stayed empty and never allocated,
 and row three's allocation landed in the ~97 ns attributed to `+`. On top of
 that, every register read and write in the VM took a `RefCell` borrow, which
@@ -3419,7 +3419,7 @@ something isolated; no profile was taken of this step.
 
 **What the ordering does track is the share of a source's per-iteration
 sends the step removed, discounted by how expensive the sends left behind
-are.** Counting the send instructions `ns-next disasm` prints in each
+are.** Counting the send instructions `ns-next-analyzer disasm` prints in each
 source's loop, on the path an iteration actually takes:
 
 | Source | sends per iteration before | after | share removed | measured |

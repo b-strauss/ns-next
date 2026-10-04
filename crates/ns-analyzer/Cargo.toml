@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Editor tooling for Newspeak (language server, token dump), on ns-next's front end and resolver"
+description = "Tooling that looks at Newspeak without running it (language server, token dump, parse, disassembly, image inspection), on ns-next's front end, resolver and compiler"
 
 # A binary of its own, so that the LSP transport and JSON never reach the
 # `ns-next` binary: the editor pays for them, the runtime does not.
@@ -15,6 +15,8 @@ path = "src/main.rs"
 [dependencies]
 ns-syntax = { path = "../ns-syntax" }
 ns-runtime = { path = "../ns-runtime" }
+ns-tooling = { path = "../ns-tooling" }
+clap.workspace = true
 # The LSP protocol is large and still growing; writing its types and
 # transport by hand would be code with nothing to do with Newspeak, unlike
 # the image format, where owning every byte is the point.
@@ -24,6 +26,7 @@ serde_json = "1"
 
 [dev-dependencies]
 indoc.workspace = true
+insta.workspace = true
 
 [lints]
 workspace = true

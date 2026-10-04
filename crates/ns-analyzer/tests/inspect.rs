@@ -1,20 +1,23 @@
-//! `ns-next inspect` -- the structural listing of an artifact.
+//! `ns-next-analyzer inspect` -- the structural listing of an artifact.
 
 mod common;
-use common::{golden, ns_next, ScratchDirectory};
+use common::{build_image, golden, ns_next_analyzer, ScratchDirectory};
 
 #[test]
 fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
     let directory = ScratchDirectory::new("arithmetic");
     let image = directory.join("app.nsi");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("library/number/integer/arithmetic").as_os_str(),
-        image.as_os_str(),
-    ]);
-    assert!(ok, "{error}");
+    std::fs::write(
+        &image,
+        build_image(
+            &golden("library/number/integer/arithmetic"),
+            ns_runtime::Lowering::Optimized,
+            false,
+        ),
+    )
+    .expect("write the image");
 
-    let (ok, out, error) = ns_next(&["inspect".as_ref(), image.as_os_str()]);
+    let (ok, out, error) = ns_next_analyzer(&["inspect".as_ref(), image.as_os_str()]);
     assert!(ok, "{error}");
 
     assert!(out.contains("format version 1"), "{out}");
@@ -42,15 +45,17 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
 fn inspect_reports_a_debug_variants_source_blob() {
     let directory = ScratchDirectory::new("debug-source");
     let image = directory.join("app.nsi");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("library/number/integer/arithmetic").as_os_str(),
-        image.as_os_str(),
-        "--debug-source".as_ref(),
-    ]);
-    assert!(ok, "{error}");
+    std::fs::write(
+        &image,
+        build_image(
+            &golden("library/number/integer/arithmetic"),
+            ns_runtime::Lowering::Optimized,
+            true,
+        ),
+    )
+    .expect("write the image");
 
-    let (ok, out, error) = ns_next(&["inspect".as_ref(), image.as_os_str()]);
+    let (ok, out, error) = ns_next_analyzer(&["inspect".as_ref(), image.as_os_str()]);
     assert!(ok, "{error}");
     assert!(out.contains("source present"), "{out}");
 }
@@ -63,7 +68,7 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
     bytes.extend_from_slice(&[1, 0, 0, 0]);
     std::fs::write(&bad, bytes).expect("write");
 
-    let (ok, _, error) = ns_next(&["inspect".as_ref(), bad.as_os_str()]);
+    let (ok, _, error) = ns_next_analyzer(&["inspect".as_ref(), bad.as_os_str()]);
     assert!(!ok);
     assert!(error.starts_with("error:"), "{error}");
     assert!(!error.contains("panicked"), "{error}");
@@ -77,14 +82,17 @@ fn inspect_reports_a_corrupt_artifact_rather_than_panicking() {
 fn inspect_names_every_body_in_the_code_table() {
     let directory = ScratchDirectory::new("code-table");
     let out = directory.join("app.nsi");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("library/number/integer/arithmetic").as_os_str(),
-        out.as_os_str(),
-    ]);
-    assert!(ok, "{error}");
+    std::fs::write(
+        &out,
+        build_image(
+            &golden("library/number/integer/arithmetic"),
+            ns_runtime::Lowering::Optimized,
+            false,
+        ),
+    )
+    .expect("write the image");
 
-    let (ok, listing, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    let (ok, listing, error) = ns_next_analyzer(&["inspect".as_ref(), out.as_os_str()]);
     assert!(ok, "{error}");
 
     assert!(listing.contains("code table"), "{listing}");
@@ -109,16 +117,20 @@ fn inspect_names_every_body_in_the_code_table() {
 fn inspect_full_renders_every_mixin_and_every_body() {
     let directory = ScratchDirectory::new("full");
     let out = directory.join("app.nsi");
-    let (ok, _, error) = ns_next(&[
-        "build".as_ref(),
-        golden("library/number/integer/arithmetic").as_os_str(),
-        out.as_os_str(),
-    ]);
-    assert!(ok, "{error}");
+    std::fs::write(
+        &out,
+        build_image(
+            &golden("library/number/integer/arithmetic"),
+            ns_runtime::Lowering::Optimized,
+            false,
+        ),
+    )
+    .expect("write the image");
 
-    let (ok, brief, error) = ns_next(&["inspect".as_ref(), out.as_os_str()]);
+    let (ok, brief, error) = ns_next_analyzer(&["inspect".as_ref(), out.as_os_str()]);
     assert!(ok, "{error}");
-    let (ok, full, error) = ns_next(&["inspect".as_ref(), out.as_os_str(), "--full".as_ref()]);
+    let (ok, full, error) =
+        ns_next_analyzer(&["inspect".as_ref(), out.as_os_str(), "--full".as_ref()]);
     assert!(ok, "{error}");
 
     // The default is unchanged by the flag's existence.

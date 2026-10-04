@@ -1,9 +1,9 @@
-//! `ns-next inspect`.
+//! `ns-next-analyzer inspect`.
 
 use std::path::Path;
 use std::process::ExitCode;
 
-/// `ns-next inspect`: what is in this artifact. Read-only -- nothing is
+/// `ns-next-analyzer inspect`: what is in this artifact. Read-only -- nothing is
 /// bootstrapped, instantiated or run, so inspecting a hostile file exercises
 /// only the decoders.
 pub(crate) fn execute(artifact: &Path, full: bool) -> ExitCode {

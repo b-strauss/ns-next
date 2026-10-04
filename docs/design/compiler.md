@@ -9,7 +9,7 @@
 > ahead of the optimized lowering), `compiler/control_flow.rs`
 > (inlining, and `recognize_mirror_send`), `compiler/primitive_method.rs`
 > (which kernel methods are primitive methods), `compiler/reference.rs` (the
-> reference lowering). CLI: `ns-next disasm`.
+> reference lowering). CLI: `ns-next-analyzer disasm`.
 
 This is the producer side. How the bytecode is then run — activations, the VM,
 the dispatch loop — is [execution.md](execution.md).
@@ -702,7 +702,7 @@ runs uncached ([dispatch.md](dispatch.md), "Code families" and
 no family reaches, and the reference lowering emits it on every send, so
 everything it compiles runs the full lookup on every send, records nothing,
 and is the uncached oracle the cached optimized lowering is checked against
-("The reference lowering" below). Its `family_size` is 0. `ns-next disasm`
+("The reference lowering" below). Its `family_size` is 0. `ns-next-analyzer disasm`
 prints a send's number as `@N`, and `UNCACHED` as `@-`.
 
 ## Compilation cannot fail
@@ -786,14 +786,14 @@ on it.
 
 ## Reading the output
 
-`ns-next disasm <file.ns> <selector>` prints one body's instructions, compiling
+`ns-next-analyzer disasm <file.ns> <selector>` prints one body's instructions, compiling
 only — nothing is instantiated or run — and addressing code through mixins,
 since that is what code lives on. It also accepts an artifact in place of a
 `.ns` file, decoding rather than compiling; a deployed binary ships no source
 at all, so that path is what makes `disasm` usable on one. See
 [image-format.md](image-format.md)'s "Reading an artifact".
 
-For every body at once rather than one, `ns-next inspect <artifact> --full`
+For every body at once rather than one, `ns-next-analyzer inspect <artifact> --full`
 disassembles the whole code table with each body attributed to the declaration
 that owns it. `disasm` is the way in when you know which body you want;
 `inspect` is the way in when you do not.
@@ -1191,7 +1191,7 @@ as an operand is across a send. The design is
 Compiled code lives on a module's mixin tree, so what reads only the code
 takes mixins, never a class object. `image::encode_code_table`,
 `image::mixins::plan` and `image::mixins::encode` take the module roots'
-mixins and no `Heap`. `ns-next disasm` takes the root declaration from
+mixins and no `Heap`. `ns-next-analyzer disasm` takes the root declaration from
 `Interpreter::compile_module` for a source -- compiled with the chosen
 lowering exactly as `load_module` compiles it, but applied to nothing -- or
 from `LoadedModule::declaration` for an artifact. None of them holds a

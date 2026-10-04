@@ -336,7 +336,7 @@ NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace --exclude ns-analyzer    # t
 cargo nextest run -p ns-analyzer             # the editor's language server: never starts the VM, so excluded above
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
-cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 211, failed 0
+cargo run -p ns-analyzer -- parse-corpus corpus/modules   # parsed 211, failed 0
 cargo run -p ns-cli -- run-corpus corpus/modules     # ran 6, failed 0, skipped 205 -- every row under both lowerings
 NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules   # the same report
 NS_NEXT_STRESS_CACHES=1 cargo run -p ns-cli -- run-corpus corpus/modules  # the same report

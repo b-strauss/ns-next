@@ -449,7 +449,7 @@ upstream commit, recorded with its URL in `corpus/PROVENANCE.md`. It is a manual
 snapshot rather than a submodule or subtree: refreshing it is a deliberate,
 reviewed action, and the upstream license travels with the files.
 
-`ns-next parse-corpus corpus/modules` must report **parsed 211, failed 0**,
+`ns-next-analyzer parse-corpus corpus/modules` must report **parsed 211, failed 0**,
 and `crates/ns-syntax/tests/corpus.rs` holds every module to the same. There
 is no list of exceptions (removed 2026-09-27 with its last entry, decided
 with the user): the corpus is real Newspeak and the parser follows the

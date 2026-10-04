@@ -822,7 +822,7 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
         .unwrap_or(0)
 }
 
-/// A human-readable listing of `code` for `ns-next disasm`. Nested block
+/// A human-readable listing of `code` for `ns-next-analyzer disasm`. Nested block
 /// code is printed indented under its `MakeClosure`. Pure formatting.
 pub fn disassemble(code: &CompiledCode, name: &str) -> String {
     let mut out = String::new();

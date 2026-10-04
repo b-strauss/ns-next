@@ -1,5 +1,5 @@
 ---
-source: crates/ns-cli/tests/disasm_snapshots.rs
+source: crates/ns-analyzer/tests/disasm_snapshots.rs
 expression: "disasm(\"language/blocks_and_return\", &[\"find:in:\"])"
 ---
 method find:in: (args 2, registers 4)

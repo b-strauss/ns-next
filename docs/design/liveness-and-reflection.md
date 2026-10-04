@@ -315,7 +315,7 @@ layout, generations and inline allocation that compiled code builds on.
 
 Distinct from the Newspeak-level debugger, the implementation needs its own
 introspection — the equivalent of `d8`: bytecode disassembly, inline-cache
-transition traces, deoptimization reasons. `ns-next disasm` is the first piece of
+transition traces, deoptimization reasons. `ns-next-analyzer disasm` is the first piece of
 this and exists; the rest arrives with the mechanisms it would observe.
 
 ## Decisions
