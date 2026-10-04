@@ -84,9 +84,20 @@ pub(crate) struct Project {
 pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|error| format!("reading {}: {error}", path.display()))?;
-    let file: ProjectFile =
-        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     let in_file = |error: String| format!("{}: {error}", path.display());
+    // A derived `Deserialize` also takes a struct from an array of its fields
+    // in order, which the schema's `"type": "object"` refuses. The struct is
+    // still read from the text, not from this value: a `Value`'s map keeps
+    // the last of a key written twice, where the struct refuses it.
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|error| in_file(error.to_string()))?;
+    if !value.is_object() {
+        return Err(in_file(
+            "a project file is a JSON object, of `main` and `modules`".to_string(),
+        ));
+    }
+    let file: ProjectFile =
+        serde_json::from_str(&text).map_err(|error| in_file(error.to_string()))?;
     check_module_path("main", &file.main).map_err(in_file)?;
     for written in &file.modules {
         check_module_path("modules", written).map_err(in_file)?;
@@ -124,7 +135,10 @@ fn check_module_path(key: &str, written: &str) -> Result<(), String> {
 /// Whether two resolved paths name one file as written: `Path::components`
 /// folds a doubled separator, and a `.` component is dropped here, because
 /// the components keep a leading one. The file system is not asked, so a
-/// symbolic link or a `..` that returns is not seen through.
+/// symbolic link, a `..` that returns, and a difference of letter case on a
+/// case-insensitive file system are not seen through; two such modules are
+/// refused later, by `program.rs`'s check that no two modules declare the
+/// same name.
 fn same_path(first: &Path, second: &Path) -> bool {
     fn significant(path: &Path) -> impl Iterator<Item = std::path::Component<'_>> {
         path.components()
@@ -327,6 +341,18 @@ mod tests {
         .unwrap_or_else(|error| panic!("{error}"));
         let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(project.main, directory.join("App.ns"));
+    }
+
+    #[test]
+    fn a_file_that_is_no_json_object_is_refused_saying_so() {
+        let error = refusal_of("array", r#"["x", "App.ns"]"#);
+        assert!(error.contains("JSON object"), "{error}");
+    }
+
+    #[test]
+    fn a_key_written_twice_is_refused() {
+        let error = refusal_of("duplicate-key", r#"{ "main": "A.ns", "main": "App.ns" }"#);
+        assert!(error.contains("duplicate"), "{error}");
     }
 
     #[test]

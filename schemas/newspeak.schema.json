@@ -5,7 +5,7 @@
   "type": "object",
   "properties": {
     "$schema": {
-      "description": "Where an editor finds this schema; ns-next ignores it.",
+      "description": "Where an editor finds this schema; ns-next checks only that it is a string.",
       "type": "string"
     },
     "main": {

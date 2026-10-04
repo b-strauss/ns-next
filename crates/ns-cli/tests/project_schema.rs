@@ -4,6 +4,12 @@
 //! the keywords it uses, and a keyword this interpreter does not know fails
 //! the test rather than being skipped, so that the schema cannot gain a rule
 //! that nothing checks the reader against.
+//!
+//! Two rules belong to the reader alone, because JSON Schema cannot state
+//! them: a key written twice is refused (a schema sees only the last
+//! value, as `serde_json` parses it), and so is one module path written in
+//! two spellings, such as `lib/A.ns` and `lib\A.ns`. Neither is in the
+//! table; `project.rs`'s own tests pin both.
 
 mod common;
 
@@ -109,6 +115,7 @@ const FILES: &[(&str, bool)] = &[
     (r#"{ "$schema": 1, "main": "App.ns" }"#, false),
     (r#"{ "$schema": null, "main": "App.ns" }"#, false),
     (r#"[]"#, false),
+    (r#"["x", "App.ns"]"#, false),
 ];
 
 /// Whether `ns-next run` reads `contents` as a project file: a valid one
