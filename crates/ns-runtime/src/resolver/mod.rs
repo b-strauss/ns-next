@@ -5,7 +5,8 @@ mod classes;
 mod scope;
 pub(crate) mod sends;
 
-pub(crate) use classes::root_clause_defect;
+pub use classes::root_class_is_value;
+pub(crate) use classes::{root_clause_defect, root_shape};
 
 use std::collections::HashMap;
 use std::rc::Rc;

@@ -19,8 +19,17 @@ Create a todo for each item.
 1. **Decide which gates apply**, from `git diff --stat master...HEAD` (or the
    batch's commits):
    - Only Markdown changed → no gates; go to step 3.
-   - Anything else → the end-of-batch gates below.
-   - `editors/jetbrains/` changed → additionally
+   - Only `editors/jetbrains/` (and Markdown) changed → no Rust gate; only
+     `./editors/jetbrains/gradlew -p editors/jetbrains check verifyPlugin buildPlugin`.
+   - `crates/ns-analyzer/` changed, but none of `ns-runtime`, `ns-syntax`,
+     `ns-tooling`, `ns-cli` or `ns-memory` → `cargo nextest run --workspace`
+     once, plain, and `cargo run -p ns-analyzer -- parse-corpus corpus/modules`;
+     no stress mode, no `run-corpus`, no benchmarks. The stress modes test the
+     runtime's behaviour, and with the runtime unchanged they cannot reach the
+     analyzer otherwise than the plain run does.
+   - `ns-runtime`, `ns-syntax`, `ns-tooling`, `ns-cli` or `ns-memory` changed →
+     every end-of-batch gate below.
+   - `editors/jetbrains/` changed, in any of these cases → additionally
      `./editors/jetbrains/gradlew -p editors/jetbrains verifyPlugin buildPlugin`
      (downloads several IDEs). Otherwise skip it.
 2. **Run the gates** exactly as listed (Git Bash syntax; the stress modes act

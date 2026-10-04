@@ -1,11 +1,17 @@
 //! The symbols of one document, for an editor's structure view and
-//! breadcrumbs: each class with its factory, its instance side and its
-//! class side, each side's members in source order, each method's
-//! temporaries. They come from the AST `parse_for_editor` answers, so they
-//! survive while a file is typed. See `docs/design/editor-support.md`,
-//! "Structure".
+//! breadcrumbs: each class with its factory, then its instance-side members
+//! and then its class-side methods, each group in source order, each
+//! method's temporaries. No node stands for a side: a class-side method is
+//! told apart by its `detail` (`public class`), as Java tells a static member
+//! apart by a mark on its icon, so breadcrumbs and sticky lines go from a
+//! class straight to its method. They come from the AST `parse_for_editor`
+//! answers, so they survive while a file is typed. See
+//! `docs/design/editor-support.md`, "Structure".
+
+use std::collections::{HashMap, HashSet};
 
 use lsp_types::{DocumentSymbol, SymbolKind};
+use ns_runtime::Binding;
 use ns_syntax::ast::{self, AccessModifier, SlotMutability};
 use ns_syntax::Span;
 
@@ -15,13 +21,15 @@ use crate::documents::LineIndex;
 pub enum SymbolCategory {
     Class,
     Factory,
-    Side,
     /// A slot with a getter only.
     ReadOnlySlot,
     /// A slot with a getter and a setter.
     ReadWriteSlot,
     Method,
-    Temporary,
+    /// A method's temporary declared with `=`, which nothing assigns.
+    ImmutableTemporary,
+    /// A method's temporary declared with `::=`, or bare.
+    MutableTemporary,
 }
 
 /// One symbol, in byte offsets: `span` encloses it, `selection` is what an
@@ -32,18 +40,31 @@ pub struct Symbol {
     pub category: SymbolCategory,
     /// A slot declared `lazy`; never anything else.
     pub lazy: bool,
+    /// A method declared on the class side; never anything else.
+    pub class_side: bool,
+    /// A class that names `Value` in its superclass or `<:` clauses; never
+    /// anything else.
+    pub value: bool,
     /// The effective access of a class, factory, slot or method; `None` for
-    /// a side or a temporary, which have none.
+    /// a temporary, which has none.
     pub access: Option<AccessModifier>,
     pub span: Span,
     pub selection: Span,
     pub children: Vec<Symbol>,
 }
 
-/// The module's class and everything in it.
-pub fn symbols(module: &ast::Module) -> Vec<Symbol> {
+/// The module's class and everything in it. `bindings` are the resolver's
+/// for the same module (`ns_runtime::resolve_for_editor`); they tell which
+/// declaration a nested class's superclass or `<:` clause names.
+pub fn symbols(module: &ast::Module, bindings: &HashMap<Span, Binding>) -> Vec<Symbol> {
+    let value = value_classes(&module.root_class, bindings);
     // §6.3.1: "The access level of a top-level class is always public".
-    vec![class(&module.root_class, Some(AccessModifier::Public))]
+    vec![class(
+        &module.root_class,
+        Some(AccessModifier::Public),
+        &value,
+        true,
+    )]
 }
 
 /// The access a member answers to: what it declares, else protected
@@ -52,36 +73,126 @@ fn effective(declared: Option<AccessModifier>) -> Option<AccessModifier> {
     Some(declared.unwrap_or(AccessModifier::Protected))
 }
 
-fn class(declaration: &ast::ClassDeclaration, access: Option<AccessModifier>) -> Symbol {
+/// `value` holds the nested classes shown as value classes (`value_classes`);
+/// `root` marks the module's root class, whose answer is the root rule's.
+fn class(
+    declaration: &ast::ClassDeclaration,
+    access: Option<AccessModifier>,
+    value: &HashSet<Span>,
+    root: bool,
+) -> Symbol {
     let name = if declaration.name.name.is_empty() {
         "(unnamed)".to_string()
     } else {
         declaration.name.name.clone()
     };
     let mut children = vec![factory(declaration)];
-    children.push(side(
-        "instance side",
-        &declaration.instance_side,
-        instance_members(&declaration.instance_side),
-        declaration.name.span,
-    ));
+    children.extend(instance_members(&declaration.instance_side, value));
     if let Some(class_side) = &declaration.class_side {
-        children.push(side(
-            "class side",
-            class_side,
-            class_side.methods.iter().map(method).collect(),
-            declaration.name.span,
-        ));
+        children.extend(class_side.methods.iter().map(|declaration| Symbol {
+            class_side: true,
+            ..method(declaration)
+        }));
     }
     Symbol {
         name,
         category: SymbolCategory::Class,
         lazy: false,
+        class_side: false,
+        value: if root {
+            ns_runtime::root_class_is_value(declaration)
+        } else {
+            value.contains(&declaration.name.span)
+        },
         access,
         span: declaration.span.merge(declaration.name.span),
         selection: declaration.name.span,
         children,
     }
+}
+
+/// The nested classes shown as value classes, by the span of their names.
+/// Unlike a root class's, a nested class's clauses are expressions
+/// evaluated in the enclosing object at run time (§6.1), so the editor can
+/// only approximate: a clause whose receiver the resolver binds to a nested
+/// class declared in this module makes the class a value class when that
+/// class is one, or is the class named `Value` itself (as `Kernel.ns`
+/// declares it); any other receiver -- a slot, a method, a name only
+/// inherited, `super` -- counts when it is named `Value`. A class that
+/// reaches `Value` through a class from another module, or through a
+/// `Value` slot holding something else, is misread.
+///
+/// Each class's clauses are read once into edges to the classes they name,
+/// and value-ness is spread backwards along them from the classes that reach
+/// `Value` directly: a polynomial bound in the classes and clauses, no class
+/// decided twice, and the same whichever class is asked first, a cycle of
+/// clauses included.
+fn value_classes(root: &ast::ClassDeclaration, bindings: &HashMap<Span, Binding>) -> HashSet<Span> {
+    let mut value = HashSet::new();
+    let mut named_by: HashMap<Span, Vec<Span>> = HashMap::new();
+    let mut chain = vec![root];
+    collect_clauses(root, bindings, &mut chain, &mut value, &mut named_by);
+    let mut pending: Vec<Span> = value.iter().copied().collect();
+    while let Some(target) = pending.pop() {
+        for &naming in named_by.get(&target).into_iter().flatten() {
+            if value.insert(naming) {
+                pending.push(naming);
+            }
+        }
+    }
+    value
+}
+
+/// Reads the clauses of every class nested in `chain[0]`, `chain` being the
+/// class declaring them and then the classes enclosing it.
+fn collect_clauses<'a>(
+    declaring: &'a ast::ClassDeclaration,
+    bindings: &HashMap<Span, Binding>,
+    chain: &mut Vec<&'a ast::ClassDeclaration>,
+    value: &mut HashSet<Span>,
+    named_by: &mut HashMap<Span, Vec<Span>>,
+) {
+    for nested in &declaring.instance_side.nested_classes {
+        for clause in nested.superclass.iter().chain(&nested.mixin_applications) {
+            match clause_target(clause, bindings, chain) {
+                Some(target) if target.name.name == "Value" => {
+                    value.insert(nested.name.span);
+                }
+                Some(target) => named_by
+                    .entry(target.name.span)
+                    .or_default()
+                    .push(nested.name.span),
+                None if clause.receiver.name == "Value" => {
+                    value.insert(nested.name.span);
+                }
+                None => {}
+            }
+        }
+        chain.insert(0, nested);
+        collect_clauses(nested, bindings, chain, value, named_by);
+        chain.remove(0);
+    }
+}
+
+/// The nested class of this module a clause's receiver is bound to, if any.
+/// The clause runs in the declaring class (`chain[0]`), so a `LexicalSend`'s
+/// depth counts out from there; a nested class is declared on an instance
+/// side.
+fn clause_target<'a>(
+    clause: &ast::SuperclassClause,
+    bindings: &HashMap<Span, Binding>,
+    chain: &[&'a ast::ClassDeclaration],
+) -> Option<&'a ast::ClassDeclaration> {
+    let Some(Binding::LexicalSend { depth }) = bindings.get(&clause.receiver.span) else {
+        return None;
+    };
+    let depth = usize::from(*depth);
+    chain
+        .get(depth)?
+        .instance_side
+        .nested_classes
+        .iter()
+        .find(|nested| nested.name.name == clause.receiver.name)
 }
 
 /// The primary factory: the pattern as written, or `new`, which a class
@@ -98,6 +209,8 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
         name,
         category: SymbolCategory::Factory,
         lazy: false,
+        class_side: false,
+        value: false,
         access: Some(AccessModifier::Public),
         span,
         selection: span,
@@ -105,37 +218,13 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
     }
 }
 
-/// A side from its `(` to its `)`, or to where it ends when recovery found
-/// no `)`; selected at its `(`, or at the class's name when it has none.
-fn side(name: &str, body: &ast::ClassBody, members: Vec<Symbol>, class_name: Span) -> Symbol {
-    let (span, selection) = match body.delimiters {
-        Some(delimiters) => {
-            let end = delimiters.close.map_or(body.span.end, |close| close.end);
-            (
-                Span::new(delimiters.open.start, end.max(delimiters.open.end)),
-                delimiters.open,
-            )
-        }
-        None => (body.span.merge(class_name), class_name),
-    };
-    Symbol {
-        name: name.to_string(),
-        category: SymbolCategory::Side,
-        lazy: false,
-        access: None,
-        span,
-        selection,
-        children: members,
-    }
-}
-
 /// Header slots, lazy slots, nested classes and methods, in source order.
-fn instance_members(body: &ast::ClassBody) -> Vec<Symbol> {
+fn instance_members(body: &ast::ClassBody, value: &HashSet<Span>) -> Vec<Symbol> {
     let mut members: Vec<Symbol> = body.slots.iter().map(slot).collect();
     members.extend(
         body.nested_classes
             .iter()
-            .map(|nested| class(nested, effective(nested.access))),
+            .map(|nested| class(nested, effective(nested.access), value, false)),
     );
     members.extend(body.methods.iter().map(method));
     members.sort_by_key(|member| member.span.start);
@@ -148,6 +237,8 @@ fn method(declaration: &ast::MethodDeclaration) -> Symbol {
         name: pattern_text(&declaration.pattern),
         category: SymbolCategory::Method,
         lazy: false,
+        class_side: false,
+        value: false,
         access: effective(declaration.access),
         span: declaration.span.merge(selection),
         selection,
@@ -170,7 +261,13 @@ fn slot(declaration: &ast::SlotDeclaration) -> Symbol {
 }
 
 fn temporary(declaration: &ast::SlotDeclaration) -> Symbol {
-    variable(declaration, SymbolCategory::Temporary)
+    let category = match declaration.mutability {
+        SlotMutability::Immutable => SymbolCategory::ImmutableTemporary,
+        SlotMutability::MutableInitialized | SlotMutability::MutableBare => {
+            SymbolCategory::MutableTemporary
+        }
+    };
+    variable(declaration, category)
 }
 
 fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Symbol {
@@ -178,6 +275,8 @@ fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Sym
         name: declaration.name.name.clone(),
         category,
         lazy: false,
+        class_side: false,
+        value: false,
         access: None,
         span: declaration.span.merge(declaration.name.span),
         selection: declaration.name.span,
@@ -221,25 +320,31 @@ fn pattern_span(pattern: &ast::MessagePattern) -> Span {
     }
 }
 
-/// The access word, then ` lazy` for a lazy slot; `None` where a symbol has
-/// neither.
+/// The access word, then ` class` for a class-side method, ` value` for a
+/// value class and ` lazy` for a lazy slot (`public class`, `public value`,
+/// `protected lazy`); `None` where a symbol has none of them. `class` is how
+/// a client tells a class-side method from an instance-side one, since no
+/// node stands for a side.
 fn detail(symbol: &Symbol) -> Option<String> {
     let access = symbol.access.map(|access| match access {
         AccessModifier::Public => "public",
         AccessModifier::Protected => "protected",
         AccessModifier::Private => "private",
     });
-    match (access, symbol.lazy) {
-        (Some(access), true) => Some(format!("{access} lazy")),
-        (Some(access), false) => Some(access.to_string()),
-        (None, true) => Some("lazy".to_string()),
-        (None, false) => None,
-    }
+    let words: Vec<&str> = access
+        .into_iter()
+        .chain(symbol.class_side.then_some("class"))
+        .chain(symbol.value.then_some("value"))
+        .chain(symbol.lazy.then_some("lazy"))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
 }
 
 /// The LSP form, positions in UTF-16 units. LSP has no read-only property
 /// kind; a constant and a property are the nearest to a getter alone and to
-/// a getter with a setter.
+/// a getter with a setter. A temporary is a constant when declared with `=`
+/// and a variable otherwise; it has no `detail`, which is how a client tells
+/// an immutable temporary from a slot with a getter only.
 pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<DocumentSymbol> {
     symbols
         .iter()
@@ -257,11 +362,11 @@ pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<Doc
                 kind: match symbol.category {
                     SymbolCategory::Class => SymbolKind::CLASS,
                     SymbolCategory::Factory => SymbolKind::CONSTRUCTOR,
-                    SymbolCategory::Side => SymbolKind::NAMESPACE,
                     SymbolCategory::ReadOnlySlot => SymbolKind::CONSTANT,
                     SymbolCategory::ReadWriteSlot => SymbolKind::PROPERTY,
                     SymbolCategory::Method => SymbolKind::METHOD,
-                    SymbolCategory::Temporary => SymbolKind::VARIABLE,
+                    SymbolCategory::ImmutableTemporary => SymbolKind::CONSTANT,
+                    SymbolCategory::MutableTemporary => SymbolKind::VARIABLE,
                 },
                 tags: None,
                 deprecated: None,
@@ -277,16 +382,24 @@ pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<Doc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indoc::indoc;
+    use indoc::{formatdoc, indoc};
+
+    /// The symbols of a module with the resolver's bindings for it, as the
+    /// server computes them.
+    fn symbols_of(module: &ast::Module) -> Vec<Symbol> {
+        let resolution = ns_runtime::resolve_for_editor(module.clone());
+        symbols(&resolution.module, &resolution.bindings)
+    }
 
     fn outline(text: &str) -> String {
         fn render(symbol: &Symbol, depth: usize, lines: &mut Vec<String>) {
             lines.push(format!(
-                "{}{:?} {}{}",
+                "{}{:?} {}{}{}",
                 "  ".repeat(depth),
                 symbol.category,
                 symbol.name,
-                if symbol.lazy { " (lazy)" } else { "" }
+                if symbol.lazy { " (lazy)" } else { "" },
+                if symbol.class_side { " (class)" } else { "" }
             ));
             for child in &symbol.children {
                 render(child, depth + 1, lines);
@@ -294,14 +407,14 @@ mod tests {
         }
         let parsed = ns_syntax::parse_for_editor(text);
         let mut lines = Vec::new();
-        for symbol in symbols(&parsed.module) {
+        for symbol in symbols_of(&parsed.module) {
             render(&symbol, 0, &mut lines);
         }
         lines.join("\n")
     }
 
     #[test]
-    fn a_class_shows_its_factory_then_its_instance_side_then_its_class_side() {
+    fn a_class_shows_its_factory_then_its_instance_members_then_its_class_side_methods() {
         let text = indoc! {"
             class Module usingPlatform: platform = (
                 | first second |
@@ -317,6 +430,7 @@ mod tests {
                 + other = ( ^other )
             ) : (
                 make = ( ^self usingPlatform: nil )
+                public default = ( | made | ^self make )
             )
         "};
         assert_eq!(
@@ -324,19 +438,18 @@ mod tests {
             indoc! {"
                 Class Module
                   Factory usingPlatform: platform
-                  Side instance side
-                    ReadWriteSlot first
-                    ReadWriteSlot second
-                    Class Inner
-                      Factory new
-                      Side instance side
-                        Method run
-                    Method at: index put: value
-                      Temporary old
-                    ReadOnlySlot cache (lazy)
-                    Method + other
-                  Side class side
-                    Method make"}
+                  ReadWriteSlot first
+                  ReadWriteSlot second
+                  Class Inner
+                    Factory new
+                    Method run
+                  Method at: index put: value
+                    MutableTemporary old
+                  ReadOnlySlot cache (lazy)
+                  Method + other
+                  Method make (class)
+                  Method default (class)
+                    MutableTemporary made"}
         );
     }
 
@@ -356,20 +469,15 @@ mod tests {
             indoc! {"
                 Class Module
                   Factory new
-                  Side instance side
-                    Method broken
-                    Method second
-                  Side class side
-                    Method make"}
+                  Method broken
+                  Method second
+                  Method make (class)"}
         );
     }
 
     #[test]
     fn an_empty_file_answers_an_unnamed_class() {
-        assert_eq!(
-            outline(""),
-            "Class (unnamed)\n  Factory new\n  Side instance side"
-        );
+        assert_eq!(outline(""), "Class (unnamed)\n  Factory new");
     }
 
     /// Every selection lies inside its range; a client refuses a symbol
@@ -397,7 +505,7 @@ mod tests {
                 broken = (
             ) : ()
         "};
-        assert_selections_inside(&symbols(&ns_syntax::parse_for_editor(text).module));
+        assert_selections_inside(&symbols_of(&ns_syntax::parse_for_editor(text).module));
     }
 
     #[test]
@@ -405,9 +513,8 @@ mod tests {
         let text = "class Module = () (\r\n    (* Grüße 😀 *) run = ( ^1 )\r\n)\r\n";
         let parsed = ns_syntax::parse_for_editor(text);
         let line_index = crate::documents::LineIndex::new(text);
-        let encoded = encode(&symbols(&parsed.module), text, &line_index);
-        let side = &encoded[0].children.as_ref().expect("the class's children")[1];
-        let method = &side.children.as_ref().expect("the side's members")[0];
+        let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
+        let method = &encoded[0].children.as_ref().expect("the class's children")[1];
         let line_start = text.find("    (* Grüße").expect("line 1");
         let column = text[line_start..text.find("run").expect("the method")]
             .encode_utf16()
@@ -435,8 +542,8 @@ mod tests {
             )
         "};
         let parsed = ns_syntax::parse_for_editor(text);
-        let tree = symbols(&parsed.module);
-        let members = &tree[0].children[1].children;
+        let tree = symbols_of(&parsed.module);
+        let members = &tree[0].children[1..];
         let shape: Vec<(&str, SymbolCategory, bool)> = members
             .iter()
             .map(|member| (member.name.as_str(), member.category, member.lazy))
@@ -454,10 +561,7 @@ mod tests {
         );
         let line_index = LineIndex::new(text);
         let encoded = encode(&tree, text, &line_index);
-        let slots = encoded[0].children.as_ref().expect("children")[1]
-            .children
-            .as_ref()
-            .expect("members");
+        let slots = &encoded[0].children.as_ref().expect("children")[1..];
         let kinds: Vec<(SymbolKind, Option<&str>)> = slots
             .iter()
             .map(|slot| (slot.kind, slot.detail.as_deref()))
@@ -476,6 +580,235 @@ mod tests {
     }
 
     #[test]
+    fn a_temporary_shows_whether_it_is_immutable() {
+        let text = indoc! {"
+            class Module = () (
+                run = (
+                    | a = 1. b ::= 2. c |
+                    ^a
+                )
+            )
+        "};
+        let parsed = ns_syntax::parse_for_editor(text);
+        let tree = symbols_of(&parsed.module);
+        let temporaries = &tree[0].children[1].children;
+        let shape: Vec<(&str, SymbolCategory)> = temporaries
+            .iter()
+            .map(|temporary| (temporary.name.as_str(), temporary.category))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("a", SymbolCategory::ImmutableTemporary),
+                ("b", SymbolCategory::MutableTemporary),
+                ("c", SymbolCategory::MutableTemporary),
+            ]
+        );
+        let line_index = LineIndex::new(text);
+        let encoded = encode(&tree, text, &line_index);
+        let method = &encoded[0].children.as_ref().expect("children")[1];
+        let kinds: Vec<(SymbolKind, Option<&str>)> = method
+            .children
+            .as_ref()
+            .expect("temporaries")
+            .iter()
+            .map(|temporary| (temporary.kind, temporary.detail.as_deref()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (SymbolKind::CONSTANT, None),
+                (SymbolKind::VARIABLE, None),
+                (SymbolKind::VARIABLE, None),
+            ]
+        );
+    }
+
+    /// The details of a module's classes, by name, the root first, then
+    /// every nested class depth first in source order.
+    fn class_details(text: &str) -> Vec<(String, Option<String>)> {
+        fn collect(symbol: &DocumentSymbol, found: &mut Vec<(String, Option<String>)>) {
+            if symbol.kind == SymbolKind::CLASS {
+                found.push((symbol.name.clone(), symbol.detail.clone()));
+            }
+            for child in symbol.children.iter().flatten() {
+                collect(child, found);
+            }
+        }
+        let parsed = ns_syntax::parse_for_editor(text);
+        let line_index = LineIndex::new(text);
+        let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
+        let mut found = Vec::new();
+        collect(&encoded[0], &mut found);
+        found
+    }
+
+    fn named(found: &[(&str, &str)]) -> Vec<(String, Option<String>)> {
+        found
+            .iter()
+            .map(|(name, detail)| (name.to_string(), Some(detail.to_string())))
+            .collect()
+    }
+
+    /// A root class is a value class exactly when the root rule builds it
+    /// over `Value` (`ns_runtime::root_class_is_value`).
+    #[test]
+    fn a_root_class_is_a_value_class_as_the_root_rule_builds_it() {
+        for (header, detail) in [
+            ("class Module = Object <: Value ()", "public value"),
+            ("class Module = Value new ()", "public value"),
+            ("class Module = Object new ()", "public"),
+            ("class Module = ()", "public"),
+            // A defect: refused, so never built over `Value`.
+            ("class Module = Value <: Value ()", "public"),
+        ] {
+            let text = format!(
+                "{header} ()
+"
+            );
+            assert_eq!(
+                class_details(&text),
+                named(&[("Module", detail)]),
+                "{header}"
+            );
+        }
+    }
+
+    /// A nested class whose clause names `Value`, or a nested class of this
+    /// module that is a value class, is one; through a sibling declared later
+    /// and through an enclosing class's member too.
+    #[test]
+    fn a_nested_class_is_a_value_class_through_the_class_its_clause_names() {
+        let text = indoc! {"
+            class Module = (
+            ) (
+                class Derived = Point ()
+                public class Point = Value new () (
+                    class Inner = Derived ()
+                )
+                class Plain = () ()
+                class Mixed = Object <: Plain <: Value ()
+                class Named = Plain ()
+                class First = Second ()
+                class Second = First ()
+            )
+        "};
+        assert_eq!(
+            class_details(text),
+            named(&[
+                ("Module", "public"),
+                ("Derived", "protected value"),
+                ("Point", "public value"),
+                ("Inner", "protected value"),
+                ("Plain", "protected"),
+                ("Mixed", "protected value"),
+                ("Named", "protected"),
+                ("First", "protected"),
+                ("Second", "protected"),
+            ])
+        );
+    }
+
+    /// Whichever of two classes naming each other is reached first, both
+    /// are value classes when one of them applies `Value`.
+    #[test]
+    fn a_cycle_of_clauses_answers_the_same_in_either_order() {
+        for (first, second) in [("A", "B"), ("B", "A")] {
+            let text = formatdoc! {"
+                class Module = () (
+                    class {first} = {second} ()
+                    class {second} = {first} <: Value ()
+                )
+            "};
+            let found = class_details(&text);
+            assert_eq!(
+                found,
+                named(&[
+                    ("Module", "public"),
+                    (first, "protected value"),
+                    (second, "protected value"),
+                ]),
+                "{first} first"
+            );
+        }
+    }
+
+    /// Each class's verdict is decided once: a chain of forty classes, each
+    /// naming the next twice, would take 2^40 steps if every clause decided
+    /// its target afresh.
+    #[test]
+    fn a_long_chain_of_clauses_is_decided_quickly() {
+        let length = 40;
+        let mut classes = String::new();
+        for index in 0..length {
+            let next = index + 1;
+            classes.push_str(&format!(
+                "    class C{index} = C{next} <: C{next} ()
+"
+            ));
+        }
+        classes.push_str(&format!(
+            "    class C{length} = Object <: Value ()
+"
+        ));
+        let text = formatdoc! {"
+            class Module = () (
+            {classes})
+        "};
+        let started = std::time::Instant::now();
+        let found = class_details(&text);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(found.len(), length + 2);
+        assert!(found[1..]
+            .iter()
+            .all(|(_, detail)| detail.as_deref() == Some("protected value")));
+        let unvalued = text.replace("Object <: Value", "Object");
+        let started = std::time::Instant::now();
+        let found = class_details(&unvalued);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(found
+            .iter()
+            .all(|(_, detail)| !detail.as_deref().unwrap_or("").contains("value")));
+    }
+
+    /// A class declared as `Value`, as `Kernel.ns` declares it, makes the
+    /// classes over it value classes; a `Value` slot counts by its name, since
+    /// what it holds is decided at run time.
+    #[test]
+    fn a_receiver_named_value_counts_unless_it_names_a_class_of_this_module() {
+        let declared = indoc! {"
+            class Module = Object <: Value (
+            ) (
+                public class Value = Object new () ()
+                public class Number = Value new () ()
+            )
+        "};
+        assert_eq!(
+            class_details(declared),
+            named(&[
+                ("Module", "public value"),
+                ("Value", "public"),
+                ("Number", "public value"),
+            ])
+        );
+        let slot = indoc! {"
+            class Module usingPlatform: platform = (
+                | Value = platform Value. |
+            ) (
+                class Point = Value ()
+            )
+        "};
+        assert_eq!(
+            class_details(slot),
+            named(&[("Module", "public"), ("Point", "protected value")])
+        );
+    }
+
+    #[test]
     fn a_member_shows_its_effective_access() {
         let text = indoc! {"
             class Module = (
@@ -483,31 +816,34 @@ mod tests {
             ) (
                 public class Inner = () ()
                 private hidden = ( | scratch | ^1 )
+            ) : (
+                make = ( ^self new )
+                public default = ( ^self new )
             )
         "};
         let parsed = ns_syntax::parse_for_editor(text);
         let line_index = LineIndex::new(text);
-        let encoded = encode(&symbols(&parsed.module), text, &line_index);
+        let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
         let details = |symbol: &DocumentSymbol| symbol.detail.clone();
         let root = &encoded[0];
         assert_eq!(details(root).as_deref(), Some("public"));
         let children = root.children.as_ref().expect("children");
-        assert_eq!(details(&children[0]).as_deref(), Some("public"), "factory");
-        assert_eq!(details(&children[1]), None, "side");
-        let members = children[1].children.as_ref().expect("members");
-        let found: Vec<(&str, Option<String>)> = members
+        let found: Vec<(&str, Option<String>)> = children
             .iter()
             .map(|member| (member.name.as_str(), details(member)))
             .collect();
         assert_eq!(
             found,
             [
+                ("new", Some("public".to_string())),
                 ("held", Some("protected".to_string())),
                 ("Inner", Some("public".to_string())),
                 ("hidden", Some("private".to_string())),
+                ("make", Some("protected class".to_string())),
+                ("default", Some("public class".to_string())),
             ]
         );
-        let temporary = &members[2].children.as_ref().expect("temporaries")[0];
+        let temporary = &children[3].children.as_ref().expect("temporaries")[0];
         assert_eq!(temporary.name, "scratch");
         assert_eq!(details(temporary), None);
     }

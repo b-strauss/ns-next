@@ -4251,9 +4251,9 @@ The structure view, breadcrumbs and sticky lines
 ([editor-support.md](design/editor-support.md), "Structure"):
 
 - `9f6aab45` -- the server answers `textDocument/documentSymbol` from the
-  recovered AST: each class with its factory, instance side and class side,
-  the members in source order, the temporaries under their methods, each
-  member with its effective access.
+  recovered AST: each class with its factory and its members in source
+  order, the temporaries under their methods, each member with its
+  effective access.
 - `047ee35b`, `8140b558` -- the platform's structure view for a language
   server shows one icon per symbol kind and so cannot show access, so the
   plugin has a structure view of its own that draws the access icon beside
@@ -4263,6 +4263,35 @@ The structure view, breadcrumbs and sticky lines
   file, and keeps asking for a server that starts late.
 - `0bb1adeb` -- the design and the plugin's description. Checked by hand
   under `runIde`.
+- `58ab97c1`, `c995e5c1` -- the tree is flat: under each class its factory,
+  then its instance-side members, then its class-side methods, each in
+  source order, with no node for a side, so breadcrumbs and sticky lines go
+  from a class straight to its member. A class-side method carries `class`
+  in its `detail` (`public class`), and the plugin lays IntelliJ's static
+  mark over its kind's icon, as Java marks a static member; the icon the
+  plugin gave a side's symbol kind is gone with the sides.
+- `6bd452e3` -- each element of the plugin's structure view has a base
+  icon and a hover text: the root class `Root class`, a
+  nested class the class icon (`Public class`), a factory the function icon
+  (`Factory method`), a slot with a getter only or a temporary declared
+  with `=` the constant icon, a slot with a setter or any other temporary
+  the variable icon, a method `Protected method` or, on the class side,
+  `Public class method`. The server sends an immutable temporary as
+  `Constant`, a mutable one as `Variable`.
+- `e87f9bc2` -- the root class has an icon of its own, a blue `N`, and a
+  nested value class an orange `V`, drawn as the platform's new-UI node
+  icons, with hovers `Root class`, `Root value class` and `Public value
+  class`; the server adds `value` to a value class's `detail`. For the root
+  the answer is exact, the root rule's (`ns_runtime::root_class_is_value`,
+  which `load_root_class` now builds from too); for a nested class it
+  follows the resolver's binding of each clause's receiver, an
+  approximation.
+- `61a5d2eb`, `da553a54`, `ba3d312a` -- hovering a row's icon says what
+  hovering its text says, the row icon carrying the hover as its own
+  tooltip; only the module's class is the root; a nested class's
+  value-ness is decided in linear time and in any order; `load_root_class`
+  reads the root's shape once; fold placeholders are three ASCII dots, in
+  the editor's own font.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion

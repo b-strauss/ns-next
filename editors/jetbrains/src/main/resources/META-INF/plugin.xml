@@ -16,8 +16,8 @@
       <li>Code folding from ns-next's parser: comments, class bodies and class sides, method
           bodies, closures and slot sections — kept while a file has syntax errors.</li>
       <li>A structure view and breadcrumbs from ns-next's parser: each class with its factory,
-          instance side and class side, its slots and methods with their access shown as in
-          Java, and sticky lines — kept while a file has syntax errors.</li>
+          its slots and methods with their access shown as in Java, its class-side methods
+          marked static as in Java, and sticky lines — kept while a file has syntax errors.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with

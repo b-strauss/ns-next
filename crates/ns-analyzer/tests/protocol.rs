@@ -150,7 +150,7 @@ fn an_editor_session() {
             public run = (
                 ^1
             )
-        ) : ()
+        ) : ( make = ( ^self new ) )
     "};
     notify(
         &client,
@@ -186,13 +186,25 @@ fn an_editor_session() {
     let roots = symbols.as_array().expect("an array of symbols");
     assert_eq!(roots.len(), 1, "one root: the module's class");
     assert_eq!(roots[0]["name"], "Module");
-    let names: Vec<&str> = roots[0]["children"]
+    let children: Vec<(&str, &str)> = roots[0]["children"]
         .as_array()
         .expect("the class's children")
         .iter()
-        .map(|child| child["name"].as_str().expect("a name"))
+        .map(|child| {
+            (
+                child["name"].as_str().expect("a name"),
+                child["detail"].as_str().expect("a detail"),
+            )
+        })
         .collect();
-    assert_eq!(names, ["new", "instance side", "class side"]);
+    assert_eq!(
+        children,
+        [
+            ("new", "public"),
+            ("run", "public"),
+            ("make", "protected class")
+        ]
+    );
 
     let unopened = request(
         &client,

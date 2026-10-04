@@ -421,6 +421,18 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
   "Recovery").
+- **Project-aware analysis for the value-class marking.** The server
+  analyses one file at a time. With the project file -- every module, and
+  which root is instantiated with which arguments -- a whole-program
+  data-flow analysis could follow the class objects that flow into slots
+  and factory parameters (`Value = platform kernel Value.`) and make the
+  structure view's marking of nested value classes, an approximation today
+  ([editor-support.md](design/editor-support.md), "Structure"), right in
+  most real cases; navigation needs the same analysis. It cannot be exact
+  in general: a superclass clause is an expression evaluated in the
+  enclosing object and a module can be instantiated with different
+  arguments, so only running the instantiation knows, and the analyzer
+  never runs a program.
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -460,6 +472,22 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Open design questions
 
+- **The resolver as a crate of its own.** It lives in `ns-runtime`
+  (`resolver/`). A crate of its own would separate the front end from the VM
+  and let a tool that needs only bindings — a lighter language server, the
+  formatter — leave the runtime unlinked. It is not worth it yet: the
+  resolver uses the runtime's symbol interner, `Binding`, `ResolvedModule`,
+  `SourceOrigin`, `instantiate::method_name`, `mixin`'s `RootClauseDefect`
+  and `CLAUSE_INDEX_LIMIT`, and `nested::superclass_clause_message`, which
+  would all move with it; and the VM mirror's first lock (`CLAUDE.md`, "The
+  VM mirror is a capability") rests on `resolve_kernel` being `pub(crate)` —
+  in a crate of its own it would turn public, and any Rust host could resolve
+  a module with `Binding::MirrorSend`. No tool today would gain: the analyzer
+  links the runtime for `disasm` and `inspect`, and `ns-tooling` resolves
+  through it. Revisit when a tool must run without the runtime or compile
+  times show it, deciding first how the mirror's lock survives the split —
+  for example the runtime setting `MirrorSend` into the bindings after
+  resolving, instead of the resolver recording it.
 - **The class side's own scope.** Instance-side methods and class-side
   declarations share one member set; canonical Newspeak scopes the class side
   apart (`compileClassSide:`). The specification is silent; left as is until a
@@ -838,10 +866,12 @@ text and `to:by:do:`'s zero step.
   `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
-  `runIde`: folding, and the structure view's tree, navigation, breadcrumbs,
-  sticky lines and first open against a running server), and `dump-tokens` on an unreadable file, a block comment over a
-  whole-line selection and TODO markers through the project-wide index are
-  untested. [editor-support.md](design/editor-support.md), "Known gaps".
+  `runIde`: folding, with the `(...)` placeholder in the editor's font, and
+  the structure view's tree, navigation, breadcrumbs, sticky lines, its icons
+  in light and dark themes, the hovers on a row's text and on its icon (the
+  same), and first open against a running server), and `dump-tokens` on an
+  unreadable file, a block comment over a whole-line selection and TODO
+  markers through the project-wide index are untested. [editor-support.md](design/editor-support.md), "Known gaps".
 - The packaged artifact (2026-09-30): the refusal of a module set of which
   only some carry source (`modules::encode_modules`); a back-reference into
   an earlier tree, or a child shared between trees, in the mixin forest; a

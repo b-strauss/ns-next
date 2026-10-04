@@ -86,7 +86,7 @@ fn analyze_unguarded(text: &str) -> Analysis {
     let resolution = ns_runtime::resolve_for_editor(module);
     let classified = semantic_tokens::classify(&resolution.module, &resolution.bindings, &tokens);
     let folds = folding::folds(&resolution.module, &comments, text);
-    let symbols = document_symbols::symbols(&resolution.module);
+    let symbols = document_symbols::symbols(&resolution.module, &resolution.bindings);
     let mut findings: Vec<Finding> = diagnostics.into_iter().map(Finding::from).collect();
     findings.extend(resolution.errors.into_iter().map(|error| Finding {
         span: error.span,
