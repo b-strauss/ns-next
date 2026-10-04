@@ -2,4 +2,9 @@
     <extensions defaultExtensionNs="JavaScript.JsonSchema">
         <ProviderFactory implementation="io.github.bstrauss.newspeak.project.NewspeakJsonSchemaProviderFactory"/>
     </extensions>
+    <!-- Both read JSON PSI, so they live here; the run configuration type reads none, and stays in plugin.xml. -->
+    <extensions defaultExtensionNs="com.intellij">
+        <runLineMarkerContributor language="JSON" implementationClass="io.github.bstrauss.newspeak.run.NewspeakRunLineMarkerContributor"/>
+        <runConfigurationProducer implementation="io.github.bstrauss.newspeak.run.NewspeakRunConfigurationProducer"/>
+    </extensions>
 </idea-plugin>
