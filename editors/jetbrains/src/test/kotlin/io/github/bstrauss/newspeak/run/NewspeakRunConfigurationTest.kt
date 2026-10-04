@@ -14,9 +14,10 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         NewspeakConfigurationType.getInstance().factory.createTemplateConfiguration(project) as NewspeakRunConfiguration
 
     // Paths are compared as `Path.of` renders them, so the expectations hold on
-    // Windows, where it turns `/work/app` into `\work\app`.
+    // Windows, where it turns `/work/app` into `\work\app`; the project's
+    // directory is made absolute as well, which there adds the current drive.
     private val runtime: Path = Path.of("/bin/ns-next")
-    private val projectDirectory: String = Path.of("/work/app").toString()
+    private val projectDirectory: String = Path.of("/work/app").toAbsolutePath().toString()
 
     override fun tearDown() {
         try {
@@ -54,6 +55,19 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
     fun testTheProcessDecodesOutputAsUtf8() {
         val run = configuration().apply { projectFile = "/work/app/newspeak.json" }
         assertEquals(StandardCharsets.UTF_8, newspeakProcessCommandLine(runtime, run).charset)
+    }
+
+    fun testARelativeProjectFileNamesItsAbsoluteDirectory() {
+        val run = configuration().apply { projectFile = "newspeak.json" }
+        val directory = Path.of("newspeak.json").toAbsolutePath().parent.toString()
+        assertEquals(listOf(runtime.toString(), "run", directory), newspeakCommandLine(runtime, run))
+        assertEquals(directory, newspeakProcessCommandLine(runtime, run).workDirectory?.toString())
+    }
+
+    fun testNoProjectFileAndARootHaveNoDirectory() {
+        assertNull(projectDirectory(configuration()))
+        assertNull(projectDirectory(configuration().apply { projectFile = " " }))
+        assertNull(projectDirectory(configuration().apply { projectFile = "/" }))
     }
 
     fun testANewConfigurationRunsTenIterationsWhenBenchmarking() {

@@ -89,7 +89,7 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         }
         val projectFile = projectFile?.trim().orEmpty()
         if (projectFile.isEmpty() || !Files.isRegularFile(Path.of(projectFile))) {
-            throw RuntimeConfigurationError("Choose the project's newspeak.json")
+            throw RuntimeConfigurationError(NO_PROJECT_FILE)
         }
         if (command == NewspeakCommand.BENCH && iterations < 1) {
             throw RuntimeConfigurationError("A benchmark takes at least one iteration")
@@ -102,6 +102,7 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
             is RuntimeLocation.Found -> location.path
             else -> throw ExecutionException(runtimeProblem(location))
         }
+        if (projectDirectory(this) == null) throw ExecutionException(NO_PROJECT_FILE)
         val configuration = this
         return object : CommandLineState(environment) {
             override fun startProcess(): ProcessHandler {
@@ -117,6 +118,17 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
     }
 }
 
+private const val NO_PROJECT_FILE = "Choose the project's newspeak.json"
+
+/**
+ * The directory ns-next is given: the project file's, made absolute first, as
+ * a relative path has no parent of its own. Null without a project file, or
+ * for one naming a root, which has no parent; `getState` refuses both before
+ * anything is started.
+ */
+fun projectDirectory(configuration: NewspeakRunConfiguration): Path? =
+    configuration.projectFile?.trim()?.takeIf(String::isNotEmpty)?.let { file -> Path.of(file).toAbsolutePath().parent }
+
 /** Why the runtime cannot be started, in the same words whether the check or the start finds it. */
 private fun runtimeProblem(location: RuntimeLocation): String = when (location) {
     is RuntimeLocation.Found -> error("the runtime was found at ${location.path}")
@@ -128,7 +140,7 @@ private fun runtimeProblem(location: RuntimeLocation): String = when (location) 
 /** The process a Newspeak run configuration starts: [newspeakCommandLine], in the project's directory. */
 fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): GeneralCommandLine =
     GeneralCommandLine(newspeakCommandLine(runtime, configuration))
-        .withWorkDirectory(Path.of(configuration.projectFile.orEmpty()).parent?.toString())
+        .withWorkDirectory(projectDirectory(configuration)?.toFile())
         // ns-next writes UTF-8 whatever the platform; the default, Windows' code page, garbles anything past ASCII.
         .withCharset(StandardCharsets.UTF_8)
 
@@ -139,7 +151,7 @@ fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration):
     configuration.script?.takeIf(String::isNotEmpty)?.let { script -> addAll(listOf("--script", script)) }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))
     // ns-next takes the project's directory; the configuration names its newspeak.json, which is what the chooser picks.
-    add(Path.of(configuration.projectFile.orEmpty()).parent?.toString().orEmpty())
+    add(checkNotNull(projectDirectory(configuration)) { NO_PROJECT_FILE }.toString())
     val arguments = ParametersListUtil.parse(configuration.programArguments.orEmpty())
     if (arguments.isNotEmpty()) {
         add("--")
