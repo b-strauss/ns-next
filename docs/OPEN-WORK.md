@@ -725,19 +725,24 @@ text and `to:by:do:`'s zero step.
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
   branch.
-- **Editor recovery: a long run of consecutive unclosed methods loses
-  methods.** Each method's statement parses the rest of the run
-  speculatively, so the run costs work cubic in its length and spends the
-  recovery's budget (`RECOVERY_WORK_PER_TOKEN`). Measured in a file of
-  nothing else: a run of 26 keeps every method, one diagnostic each; from
-  27 on methods are lost -- 20 of 27, 6 of 50, 3 of 128 -- and from 129 on,
-  where the speculative parses reach `MAX_DEPTH`, only the first survives.
-  A lost method stays inside the body before it; nothing is invented.
-  [frontend.md](design/frontend.md), "Recovery". Noted 2026-10-04.
+- **Editor recovery: a run of more than 128 consecutive unclosed methods
+  keeps only its first.** Each method's statement parses the method after
+  it speculatively, and that one the next, so the speculative parses nest
+  one per method of the run and reach `MAX_DEPTH`. Measured in a file of
+  nothing else (release): a run of up to 128 keeps every method, one
+  diagnostic each, in at most 7 ms; from 129 on only the first survives,
+  the rest inside its body, in 8 ms at 200 and 60 ms at 1,000. Nothing is
+  invented. [frontend.md](design/frontend.md), "Recovery". Noted
+  2026-10-04.
 - **Editor recovery: the work budget is the whole parse's.** Once input
-  such as half-typed members nested deep has spent it, no later statement
-  of the file is looked at again (rule 1), so the members after an
-  unclosed body there stay inside it. Noted 2026-10-04.
+  has spent it, no later statement of the file is looked at again (rule
+  1), so the members after an unclosed body there stay inside it, and a
+  recovery skip stops only at a nested class or a lazy slot, so a method
+  after junk is skipped with it. What spends it is pathological rather
+  than typed: a keyword message of thousands of parts holding an error
+  (8,000 parts spend it in 5 ms), or half-typed members nested forty deep.
+  Unclosed methods do not: twenty `)` removed from `KernelTests.ns` spend
+  17,000 of its 9.8 million. Noted 2026-10-04.
 - **Editor recovery: `class Module () (` gives two diagnostics for its one
   missing `=`** -- a missing message selector, then the missing `=`. Noted
   2026-10-04.

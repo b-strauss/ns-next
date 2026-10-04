@@ -491,7 +491,8 @@ them.
   skipped whole, each closer matching the group it closes, never to the
   first closing bracket of any kind. A skip stops at a token it was asked to
   stop at outside every group, at a closer no skipped group opened -- an
-  owner's -- at a member start, or at the end of input.
+  owner's -- at a member start (once rule 1's budget is spent, only a
+  nested class or a lazy slot), or at the end of input.
 - *A member start* (`Parser::at_member_start`): what opens a member of a
   class side, an access modifier before it included -- a nested class,
   `class` and a name (`at_nested_class`); a lazy slot's modifiers and name
@@ -530,12 +531,33 @@ them.
    the member starts at the statement's first token there is no statement,
    and the body ends there. A statement without an error is never looked at
    again, and the speculative parses run under the depth guard (rule 7).
-   The speculative parses, the re-parses and the scans for a member start
-   share one budget, `RECOVERY_WORK_PER_TOKEN` (256) tokens per token of
-   the source, since a speculative member can hold another and the work
-   otherwise grows exponentially with the nesting of half-typed members.
-   Once it is spent no statement is looked at again: the file folds worse,
-   never wrongly, and the work stays linear in the source.
+
+   Whether the member stands inside a block or a tuple is answered without
+   walking the tokens after it: the first closer after a token that closes
+   nothing opened after it -- its free closer -- is computed once per parse,
+   the first time the question is asked (`FreeClosers`), and the groups the
+   statement opened before the member are kept as the scan moves on
+   (`OpenGroups`). Each statement of a run of consecutive unclosed methods
+   asks again for every method after it, so the end a speculative parse
+   found is kept, keyed by the member's offset and the bound it ran under
+   (`member_ends`); an answer the depth guard or a spent budget cut short is
+   not kept.
+
+   The recovery's work has one budget, `RECOVERY_WORK_PER_TOKEN` (256)
+   steps per token of the source, never refilled. It pays for every token a
+   speculative member parse or a re-parse consumes, every position the scan
+   for a member passes, each look up of a free closer, and each member-start
+   check the scan or a recovery skip (rules 2 and 3) makes at a token it
+   passes, the check's lookahead included -- a method pattern is read to its
+   end, and one begins at every keyword of a long keyword message. A
+   speculative member can hold another, and without the budget the work
+   grows exponentially with the nesting of half-typed members. Once it is
+   spent no statement is looked at again, and a skip stops only at the
+   member starts that take a fixed look, a nested class and a lazy slot:
+   the file folds worse, never wrongly. The parse's work stays linear in the
+   source: the budget's, one pass besides, and the speculative parses in
+   flight when it ran out, which finish as plain passes over their part of
+   the source, no more of them than the depth guard lets nest.
 2. **Statements.** After an error in a statement the rest of it is
    skipped, balanced, to its `.`, a stray `}` with it, and the body goes on
    with the next statement rather than ending. What
