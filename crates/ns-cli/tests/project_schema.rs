@@ -5,11 +5,13 @@
 //! the test rather than being skipped, so that the schema cannot gain a rule
 //! that nothing checks the reader against.
 //!
-//! Two rules belong to the reader alone, because JSON Schema cannot state
-//! them: a key written twice is refused (a schema sees only the last
-//! value, as `serde_json` parses it), and so is one module path written in
-//! two spellings, such as `lib/A.ns` and `lib\A.ns`. Neither is in the
-//! table; `project.rs`'s own tests pin both.
+//! Some duplicates are refused by the reader alone, because JSON Schema
+//! cannot state them: `$schema`, `main`, `modules` or `scripts` written
+//! twice, and a script name written twice (a schema sees only the last
+//! value of a key, as `serde_json` parses it); one module path written in
+//! two spellings, such as `lib/A.ns` and `lib\A.ns` (`uniqueItems` compares
+//! strings as written); and a `modules` entry naming `main`'s module. None is
+//! in the table; `project.rs`'s own tests pin them.
 
 mod common;
 

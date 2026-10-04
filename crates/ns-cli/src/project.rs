@@ -70,8 +70,43 @@ struct ProjectFile {
     #[serde(default)]
     modules: Vec<String>,
     /// Named argument lists, each element one argument, empty ones included.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "scripts_without_repeats")]
     scripts: BTreeMap<String, Vec<String>>,
+}
+
+/// The `scripts` object, refusing a name written twice: a map would keep the
+/// last list silently, so `--script` would run arguments other than the ones
+/// a reader of the file sees first, as a key of the file written twice would.
+fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, Vec<String>>, D::Error> {
+    struct ScriptsVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ScriptsVisitor {
+        type Value = BTreeMap<String, Vec<String>>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an object of scripts, each an array of strings")
+        }
+
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut access: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut scripts = BTreeMap::new();
+            while let Some((name, arguments)) = access.next_entry::<String, Vec<String>>()? {
+                if scripts.contains_key(&name) {
+                    return Err(serde::de::Error::custom(format!(
+                        "script `{name}` is written twice"
+                    )));
+                }
+                scripts.insert(name, arguments);
+            }
+            Ok(scripts)
+        }
+    }
+
+    deserializer.deserialize_map(ScriptsVisitor)
 }
 
 /// A string where the key is present. `Option<String>` alone would also take
@@ -363,6 +398,15 @@ mod tests {
     fn a_key_written_twice_is_refused() {
         let error = refusal_of("duplicate-key", r#"{ "main": "A.ns", "main": "App.ns" }"#);
         assert!(error.contains("duplicate"), "{error}");
+    }
+
+    #[test]
+    fn a_script_name_written_twice_is_refused_naming_the_script() {
+        let error = refusal_of(
+            "duplicate-script",
+            r#"{ "main": "App.ns", "scripts": { "timed": ["1"], "timed": ["2"] } }"#,
+        );
+        assert!(error.contains("script `timed` is written twice"), "{error}");
     }
 
     #[test]
