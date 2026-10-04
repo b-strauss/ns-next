@@ -6,6 +6,7 @@ import com.intellij.lang.LanguageStructureViewBuilder
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ide.projectView.PresentationData
 import com.intellij.ui.icons.CompositeIcon
 import com.intellij.ui.icons.RowIcon
 import org.eclipse.lsp4j.DocumentSymbol
@@ -77,5 +78,25 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         val layers = kind as CompositeIcon
         assertOrderedEquals((0 until layers.iconCount).map(layers::getIcon), AllIcons.Nodes.Method, AllIcons.Nodes.StaticMark)
         assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
+    }
+
+    /**
+     * The root class's row: the module icon with the public icon beside it,
+     * and its hover text, carried as `PresentationData`'s tooltip, which the
+     * structure view's tree copies from the element's presentation.
+     */
+    fun testTheRootClassShowsTheModuleIconAndItsHover() {
+        val file = myFixture.configureByText("Module.ns", "class Module = () ()").virtualFile
+        val range = Range(Position(0, 6), Position(0, 12))
+        val symbol = DocumentSymbol("Module", SymbolKind.Class, range, range, "public")
+        val presentation = NewspeakStructureElement(project, file, symbol, root = true).presentation
+        assertInstanceOf(presentation, PresentationData::class.java)
+        assertEquals("Root class", (presentation as PresentationData).tooltip)
+        assertEquals("Module", presentation.presentableText)
+        val row = presentation.getIcon(false) as RowIcon
+        assertSame(AllIcons.Nodes.JavaModule, row.getIcon(0))
+        assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
+        val child = NewspeakStructureElement(project, file, symbol).presentation as PresentationData
+        assertEquals("Public class", child.tooltip)
     }
 }

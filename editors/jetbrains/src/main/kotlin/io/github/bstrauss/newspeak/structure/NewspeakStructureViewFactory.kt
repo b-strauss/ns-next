@@ -98,7 +98,7 @@ class NewspeakStructureViewModel(
     }
 
     internal fun elementsOf(symbols: List<DocumentSymbol>): Array<StructureViewTreeElement> =
-        symbols.map { symbol -> NewspeakStructureElement(psiFile.project, file, symbol) }.toTypedArray()
+        symbols.map { symbol -> NewspeakStructureElement(psiFile.project, file, symbol, root = true) }.toTypedArray()
 
     internal fun symbols(): List<DocumentSymbol> {
         val stamp = documentStamp()

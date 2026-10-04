@@ -11,17 +11,23 @@ import javax.swing.Icon
  * sticky lines the platform draws from them and for the plugin's own
  * structure view.
  *
- * LSP has no kind for a read-only property, so the server sends a slot with a
- * getter only as `Constant` and a slot with a getter and a setter as
- * `Property`, the nearest two kinds any client knows. The platform's default
- * would draw them as a constant and a generic property; a Newspeak slot is
- * always reached through its accessors, which IntelliJ's read-only and
- * read-write property icons say exactly.
+ * The icons say what a symbol can do. LSP has no kind for a read-only
+ * property, so the server sends a slot with a getter only as `Constant` and a
+ * slot with a getter and a setter as `Property`, the nearest two kinds any
+ * client knows, and a method's temporary as `Constant` when declared with `=`
+ * and `Variable` otherwise. A slot or temporary that cannot be assigned shows
+ * as a constant, one that can as a variable. A factory shows as a function,
+ * which it is: a message answering a new instance. Every kind is named, so a
+ * change of the platform's defaults cannot change what the tree says.
  */
 object NewspeakSymbolKinds : LspSymbolKindCustomizer() {
     override fun getIcon(kind: SymbolKind): Icon? = when (kind) {
-        SymbolKind.Constant -> AllIcons.Nodes.PropertyRead
-        SymbolKind.Property -> AllIcons.Nodes.PropertyReadWrite
+        SymbolKind.Class -> AllIcons.Nodes.Class
+        SymbolKind.Constructor -> AllIcons.Nodes.Function
+        SymbolKind.Constant -> AllIcons.Nodes.Constant
+        SymbolKind.Property -> AllIcons.Nodes.Variable
+        SymbolKind.Variable -> AllIcons.Nodes.Variable
+        SymbolKind.Method -> AllIcons.Nodes.Method
         else -> super.getIcon(kind)
     }
 }

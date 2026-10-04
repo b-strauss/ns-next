@@ -23,7 +23,10 @@ pub enum SymbolCategory {
     /// A slot with a getter and a setter.
     ReadWriteSlot,
     Method,
-    Temporary,
+    /// A method's temporary declared with `=`, which nothing assigns.
+    ImmutableTemporary,
+    /// A method's temporary declared with `::=`, or bare.
+    MutableTemporary,
 }
 
 /// One symbol, in byte offsets: `span` encloses it, `selection` is what an
@@ -146,7 +149,13 @@ fn slot(declaration: &ast::SlotDeclaration) -> Symbol {
 }
 
 fn temporary(declaration: &ast::SlotDeclaration) -> Symbol {
-    variable(declaration, SymbolCategory::Temporary)
+    let category = match declaration.mutability {
+        SlotMutability::Immutable => SymbolCategory::ImmutableTemporary,
+        SlotMutability::MutableInitialized | SlotMutability::MutableBare => {
+            SymbolCategory::MutableTemporary
+        }
+    };
+    variable(declaration, category)
 }
 
 fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Symbol {
@@ -218,7 +227,9 @@ fn detail(symbol: &Symbol) -> Option<String> {
 
 /// The LSP form, positions in UTF-16 units. LSP has no read-only property
 /// kind; a constant and a property are the nearest to a getter alone and to
-/// a getter with a setter.
+/// a getter with a setter. A temporary is a constant when declared with `=`
+/// and a variable otherwise; it has no `detail`, which is how a client tells
+/// an immutable temporary from a slot with a getter only.
 pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<DocumentSymbol> {
     symbols
         .iter()
@@ -239,7 +250,8 @@ pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<Doc
                     SymbolCategory::ReadOnlySlot => SymbolKind::CONSTANT,
                     SymbolCategory::ReadWriteSlot => SymbolKind::PROPERTY,
                     SymbolCategory::Method => SymbolKind::METHOD,
-                    SymbolCategory::Temporary => SymbolKind::VARIABLE,
+                    SymbolCategory::ImmutableTemporary => SymbolKind::CONSTANT,
+                    SymbolCategory::MutableTemporary => SymbolKind::VARIABLE,
                 },
                 tags: None,
                 deprecated: None,
@@ -310,12 +322,12 @@ mod tests {
                     Factory new
                     Method run
                   Method at: index put: value
-                    Temporary old
+                    MutableTemporary old
                   ReadOnlySlot cache (lazy)
                   Method + other
                   Method make (class)
                   Method default (class)
-                    Temporary made"}
+                    MutableTemporary made"}
         );
     }
 
@@ -441,6 +453,51 @@ mod tests {
                 (SymbolKind::METHOD, Some("protected")),
                 (SymbolKind::CONSTANT, Some("protected lazy")),
                 (SymbolKind::PROPERTY, Some("protected lazy")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_temporary_shows_whether_it_is_immutable() {
+        let text = indoc! {"
+            class Module = () (
+                run = (
+                    | a = 1. b ::= 2. c |
+                    ^a
+                )
+            )
+        "};
+        let parsed = ns_syntax::parse_for_editor(text);
+        let tree = symbols(&parsed.module);
+        let temporaries = &tree[0].children[1].children;
+        let shape: Vec<(&str, SymbolCategory)> = temporaries
+            .iter()
+            .map(|temporary| (temporary.name.as_str(), temporary.category))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                ("a", SymbolCategory::ImmutableTemporary),
+                ("b", SymbolCategory::MutableTemporary),
+                ("c", SymbolCategory::MutableTemporary),
+            ]
+        );
+        let line_index = LineIndex::new(text);
+        let encoded = encode(&tree, text, &line_index);
+        let method = &encoded[0].children.as_ref().expect("children")[1];
+        let kinds: Vec<(SymbolKind, Option<&str>)> = method
+            .children
+            .as_ref()
+            .expect("temporaries")
+            .iter()
+            .map(|temporary| (temporary.kind, temporary.detail.as_deref()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (SymbolKind::CONSTANT, None),
+                (SymbolKind::VARIABLE, None),
+                (SymbolKind::VARIABLE, None),
             ]
         );
     }
