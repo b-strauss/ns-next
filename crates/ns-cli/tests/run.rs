@@ -31,22 +31,95 @@ const GREETER: &str = indoc! {"
     ) : ()
 "};
 
+/// A source file's root, started with `new`; its `main:args:` prints `hi`.
+const HELLO: &str = indoc! {"
+    class Hello = Object new (
+    ) (
+        public main: platform args: arguments = (
+            platform transcript show: 'hi'; newLine
+        )
+    ) : ()
+"};
+
+/// A root that prints each of `main:args:`'s arguments on its own line.
+const ECHO: &str = indoc! {"
+    class Echo packageUsing: manifest = Object new () (
+        public main: platform args: arguments = (
+            arguments do: [:argument | platform transcript show: argument; newLine]
+        )
+    ) : ()
+"};
+
+fn echo_project(name: &str) -> ScratchDirectory {
+    let directory = ScratchDirectory::new(name);
+    std::fs::write(directory.join("Echo.ns"), ECHO).unwrap();
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "Echo.ns", "scripts": { "two": ["first", "second word"], "none": [] } }"#,
+    )
+    .unwrap();
+    directory
+}
+
+#[test]
+fn a_script_hands_its_arguments_to_main_and_the_command_line_follows() {
+    let directory = echo_project("script-arguments");
+    let out = ns_next()
+        .args(["run", "--script", "two"])
+        .arg(directory.path())
+        .args(["--", "third"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "first
+second word
+third
+"
+    );
+}
+
+#[test]
+fn an_unknown_script_is_refused_naming_the_scripts_there_are() {
+    let directory = echo_project("script-unknown");
+    let out = ns_next()
+        .args(["run", "--script", "three"])
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "nothing runs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("three") && stderr.contains("none, two"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn a_script_with_a_source_file_is_refused() {
+    let directory = ScratchDirectory::new("script-source");
+    std::fs::write(directory.join("Hello.ns"), HELLO).unwrap();
+    let out = ns_next()
+        .args(["run", "--script", "two"])
+        .arg(directory.join("Hello.ns"))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "nothing runs");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--script"));
+}
+
 #[test]
 fn run_sends_main_arguments_and_prints_via_platform_transcript() {
     let directory = ScratchDirectory::new("hello");
     let file = directory.join("Hello.ns");
-    std::fs::write(
-        &file,
-        indoc! {"
-            class Hello = Object new (
-            ) (
-                public main: platform args: arguments = (
-                    platform transcript show: 'hi'; newLine
-                )
-            ) : ()
-        "},
-    )
-    .unwrap();
+    std::fs::write(&file, HELLO).unwrap();
 
     let out = run(&file);
     assert!(

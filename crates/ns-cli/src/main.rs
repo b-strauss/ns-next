@@ -68,6 +68,10 @@ enum Command {
         /// Print the inline caches' sizes to stderr after the run.
         #[arg(long)]
         cache_statistics: bool,
+        /// A script of the project's `newspeak.json`: its arguments go to
+        /// `main:args:` first, then any given after `--`.
+        #[arg(long)]
+        script: Option<String>,
         /// The program's arguments, after `--`: `main:args:` receives them
         /// as its second argument, an `Array` of `String`s (§8.4).
         #[arg(last = true)]
@@ -115,6 +119,10 @@ enum Command {
         /// timed runs.
         #[arg(long)]
         collector_statistics: bool,
+        /// A script of the project's `newspeak.json`: its arguments go to
+        /// `main:args:` first, then any given after `--`.
+        #[arg(long)]
+        script: Option<String>,
         /// The program's arguments, after `--`: `main:args:` receives them
         /// as its second argument, an `Array` of `String`s (§8.4).
         #[arg(last = true)]
@@ -174,8 +182,15 @@ fn execute(command: Command) -> ExitCode {
             program,
             lowering,
             cache_statistics,
+            script,
             arguments,
-        } => commands::run::execute(&program, lowering.into(), cache_statistics, &arguments),
+        } => commands::run::execute(
+            &program,
+            lowering.into(),
+            cache_statistics,
+            script.as_deref(),
+            &arguments,
+        ),
         Command::Load {
             image,
             print_source,
@@ -186,12 +201,14 @@ fn execute(command: Command) -> ExitCode {
             iterations,
             cache_statistics,
             collector_statistics,
+            script,
             arguments,
         } => commands::bench::execute(
             &program,
             iterations,
             cache_statistics,
             collector_statistics,
+            script.as_deref(),
             &arguments,
         ),
         Command::Build {

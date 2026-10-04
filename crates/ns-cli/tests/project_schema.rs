@@ -86,6 +86,17 @@ fn valid(schema: &Value, instance: &Value) -> bool {
                 );
                 instance.as_str().is_none_or(|text| text.ends_with(".ns"))
             }
+            "additionalProperties" => {
+                assert!(argument.is_object(), "only a schema is interpreted");
+                let Some(members) = instance.as_object() else {
+                    return true;
+                };
+                let named = keywords.get("properties").and_then(Value::as_object);
+                members
+                    .iter()
+                    .filter(|(name, _)| named.is_none_or(|named| !named.contains_key(*name)))
+                    .all(|(_, member)| valid(argument, member))
+            }
             other => panic!("the schema uses `{other}`, which this interpreter does not know"),
         })
 }
@@ -116,6 +127,20 @@ const FILES: &[(&str, bool)] = &[
     (r#"{ "$schema": null, "main": "App.ns" }"#, false),
     (r#"[]"#, false),
     (r#"["x", "App.ns"]"#, false),
+    (r#"{ "main": "App.ns", "scripts": {} }"#, true),
+    (
+        r#"{ "main": "App.ns", "scripts": { "start": [], "timed": ["--timed", ""] } }"#,
+        true,
+    ),
+    (r#"{ "main": "App.ns", "scripts": ["--timed"] }"#, false),
+    (
+        r#"{ "main": "App.ns", "scripts": { "timed": "--timed" } }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "scripts": { "timed": [1] } }"#,
+        false,
+    ),
 ];
 
 /// Whether `ns-next run` reads `contents` as a project file: a valid one

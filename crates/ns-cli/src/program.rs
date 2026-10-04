@@ -5,7 +5,8 @@
 //! `main:args:`'s first argument (`docs/design/image-format.md`,
 //! "Packaging").
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ns_tooling::source;
@@ -24,6 +25,9 @@ pub(crate) enum Assembly {
 pub(crate) struct Program {
     pub(crate) assembly: Assembly,
     pub(crate) sources: Vec<source::LoadedSource>,
+    /// The project file's path, for messages, and its scripts; `None` for a
+    /// source file.
+    pub(crate) scripts: Option<(PathBuf, BTreeMap<String, Vec<String>>)>,
 }
 
 pub(crate) struct Loaded {
@@ -41,6 +45,7 @@ pub(crate) fn read_program(path: &Path) -> Result<Program, ExitCode> {
             return Ok(Program {
                 assembly: Assembly::New,
                 sources: vec![source::load_source(&path)?],
+                scripts: None,
             });
         }
         project::ProgramPath::Project(path) => path,
@@ -75,7 +80,48 @@ pub(crate) fn read_program(path: &Path) -> Result<Program, ExitCode> {
     Ok(Program {
         assembly: Assembly::Package,
         sources,
+        scripts: Some((path, project.scripts)),
     })
+}
+
+/// What `main:args:` receives: the script's arguments, when `script` names
+/// one, then those given after `--`. A script is a project's, so naming one
+/// for a source file, or one the project lacks, is refused before anything
+/// runs.
+pub(crate) fn entry_arguments(
+    program: &Program,
+    script: Option<&str>,
+    arguments: &[String],
+) -> Result<Vec<String>, ExitCode> {
+    let Some(name) = script else {
+        return Ok(arguments.to_vec());
+    };
+    let Some((project_file, scripts)) = &program.scripts else {
+        eprintln!(
+            "error: --script names a script of a project's newspeak.json, and the program              given is a source file"
+        );
+        return Err(ExitCode::FAILURE);
+    };
+    let Some(script_arguments) = scripts.get(name) else {
+        let known = if scripts.is_empty() {
+            "it has none".to_string()
+        } else {
+            format!(
+                "its scripts are {}",
+                scripts
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        eprintln!(
+            "error: {} has no script `{name}`; {known}",
+            project_file.display()
+        );
+        return Err(ExitCode::FAILURE);
+    };
+    Ok(script_arguments.iter().chain(arguments).cloned().collect())
 }
 
 fn declared_name(loaded: &source::LoadedSource) -> &str {

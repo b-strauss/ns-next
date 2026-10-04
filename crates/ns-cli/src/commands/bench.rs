@@ -119,6 +119,7 @@ pub(crate) fn execute(
     iterations: u32,
     cache_statistics: bool,
     collector_statistics: bool,
+    script: Option<&str>,
     program_arguments: &[String],
 ) -> ExitCode {
     if cfg!(debug_assertions) {
@@ -135,6 +136,10 @@ pub(crate) fn execute(
         Ok(program) => program,
         Err(code) => return code,
     };
+    let arguments = match program::entry_arguments(&program, script, program_arguments) {
+        Ok(arguments) => arguments,
+        Err(code) => return code,
+    };
     println!(
         "timing: `main:args:` only, after assembling the application -- parsing, resolving, \
          bootstrapping, and compiling all happened once beforehand and are excluded. \
@@ -145,7 +150,7 @@ pub(crate) fn execute(
         iterations,
         cache_statistics,
         collector_statistics,
-        program_arguments,
+        &arguments,
     ) {
         Ok(statistics) => {
             println!(

@@ -248,6 +248,37 @@ fn benchmark_takes_a_project_file() {
     assert!(stdout.contains("median"), "{stdout}");
 }
 
+#[test]
+fn benchmark_runs_a_script_of_the_project() {
+    let directory = ScratchDirectory::new("bench-script");
+    std::fs::write(
+        directory.join("Echo.ns"),
+        "class Echo packageUsing: manifest = Object new () (
+    public main: platform args: arguments = ()
+) : ()
+",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "Echo.ns", "scripts": { "two": ["first", "second"] } }"#,
+    )
+    .unwrap();
+    let out = ns_next()
+        .args(["bench", "--script", "two"])
+        .arg(directory.path())
+        .args(["--iterations", "1"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr was: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("median"));
+}
+
 /// A program `bench` cannot instantiate is reported once, by the refusal
 /// that names why, with no second, generic line after it.
 #[test]

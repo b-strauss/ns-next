@@ -23,6 +23,14 @@
         "pattern": "\\.ns$"
       },
       "uniqueItems": true
+    },
+    "scripts": {
+      "description": "Named argument lists: `ns-next run --script <name>` and `ns-next bench --script <name>` hand one to `main:args:`, each element one argument, as if written after `--`; arguments after `--` follow it.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string" }
+      }
     }
   },
   "required": ["main"]

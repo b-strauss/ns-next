@@ -5,6 +5,7 @@
 //! schema is `schemas/newspeak.schema.json`, and `read_project` enforces the
 //! same rules with messages of its own.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The one name a project file has, as every Node package's is
@@ -68,6 +69,9 @@ struct ProjectFile {
     main: String,
     #[serde(default)]
     modules: Vec<String>,
+    /// Named argument lists, each element one argument, empty ones included.
+    #[serde(default)]
+    scripts: BTreeMap<String, Vec<String>>,
 }
 
 /// A string where the key is present. `Option<String>` alone would also take
@@ -79,6 +83,8 @@ fn a_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<
 pub(crate) struct Project {
     pub(crate) main: PathBuf,
     pub(crate) modules: Vec<PathBuf>,
+    /// Sorted by name, for the message that lists them.
+    pub(crate) scripts: BTreeMap<String, Vec<String>>,
 }
 
 pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
@@ -117,7 +123,11 @@ pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
         }
         modules.push(module);
     }
-    Ok(Project { main, modules })
+    Ok(Project {
+        main,
+        modules,
+        scripts: file.scripts,
+    })
 }
 
 /// Refuses a path that is empty or names no `.ns` file, naming the key it
