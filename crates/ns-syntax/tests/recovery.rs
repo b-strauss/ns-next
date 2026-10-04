@@ -1032,3 +1032,36 @@ fn half_a_keyword_pattern_above_a_method_is_a_keyword_method() {
     assert_eq!(method_names(class_side), ["make"]);
     assert!(messages.is_empty(), "{messages:?}");
 }
+
+/// A run of unclosed methods far longer than `MAX_DEPTH` keeps only its
+/// first method, whose statement takes the rest as one chain of sends, a
+/// link per method: `1 m = ( … ) m = ( … ) …`. The chain is built in a
+/// loop, but each link holds the one before it, so it nests as deep as the
+/// run is long, and the speculative member parses dropped such chains by
+/// recursion: 10,000 methods overflowed this stack, and 60,000 the
+/// language server's 8 MiB. The chain is dropped link by link now, so the
+/// stack the parse needs does not grow with the source.
+#[test]
+fn a_run_of_unclosed_methods_far_past_the_depth_limit_parses_on_a_small_stack() {
+    const METHODS: usize = 10_000;
+    const STACK_BYTES: usize = 512 * 1024;
+    let source = formatdoc! {"
+        class Module = () (
+        {unclosed}",
+        unclosed = "    m = ( ^1\n".repeat(METHODS),
+    };
+    let (names, message_count) = std::thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(move || {
+            let (module, messages) = recovered(&source);
+            (
+                method_names(&module.root_class.instance_side),
+                messages.len(),
+            )
+        })
+        .expect("spawn the parsing thread")
+        .join()
+        .expect("the parse answers on a small stack");
+    assert_eq!(names, ["m"]);
+    assert_eq!(message_count, METHODS + 1);
+}

@@ -174,12 +174,17 @@ impl Collector<'_> {
     fn expression(&mut self, expression: &ast::Expression) {
         match expression {
             ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
+            // A chain of messages is walked link by link: it nests as deep
+            // as the source is long.
             ast::Expression::Send(send) => {
-                self.expression(&send.receiver);
-                send.message
-                    .arguments
-                    .iter()
-                    .for_each(|argument| self.expression(argument));
+                let (links, receiver) = send.receiver_chain();
+                self.expression(receiver);
+                for link in links.iter().rev() {
+                    link.message
+                        .arguments
+                        .iter()
+                        .for_each(|argument| self.expression(argument));
+                }
             }
             ast::Expression::Cascade(cascade) => {
                 self.expression(&cascade.receiver);

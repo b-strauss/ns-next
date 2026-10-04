@@ -202,6 +202,48 @@ mod tests {
         );
     }
 
+    /// A chain of messages nests a send per message through its receivers,
+    /// as deep as the source is long, valid or not: `1 + 1 abs + …`, and a
+    /// run of unclosed methods past the parser's depth limit, which the
+    /// first method's statement takes as one chain. Walked by recursion, a
+    /// valid 40,000-message chain overflowed the server's 8 MiB.
+    #[test]
+    fn a_chain_as_long_as_the_source_is_analysed_on_a_small_stack() {
+        const STACK_BYTES: usize = 1024 * 1024;
+        let valid = indoc::formatdoc! {"
+            class Module = () (
+                sum = ( ^1{links} )
+            ) : ()
+            ",
+            links = " + 1 abs".repeat(50_000),
+        };
+        let unclosed = indoc::formatdoc! {"
+            class Module = () (
+            {methods}",
+            methods = "    m = ( ^1\n".repeat(10_000),
+        };
+        let (valid_findings, unclosed_findings) = std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(move || {
+                let findings = |text: &str| -> Vec<String> {
+                    analyze(text)
+                        .findings
+                        .into_iter()
+                        .map(|finding| finding.message)
+                        .collect()
+                };
+                (findings(&valid), findings(&unclosed))
+            })
+            .expect("spawn the analysing thread")
+            .join()
+            .expect("the analysis answers on a small stack");
+        assert!(valid_findings.is_empty(), "{:?}", valid_findings.first());
+        assert_eq!(unclosed_findings.len(), 10_001);
+        assert!(unclosed_findings
+            .iter()
+            .all(|message| !message.contains("internal error")));
+    }
+
     #[test]
     fn a_panic_becomes_one_internal_error_finding() {
         let analysis = guarded("anything", |_| panic!("the analyzer broke"));

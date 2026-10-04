@@ -734,6 +734,16 @@ text and `to:by:do:`'s zero step.
   the rest inside its body, in 8 ms at 200 and 60 ms at 1,000. Nothing is
   invented. [frontend.md](design/frontend.md), "Recovery". Noted
   2026-10-04.
+- **The compiler recurses along a chain of messages.** A chain, `1 + 1 +
+  …`, nests a send per message through its receivers, as deep as the
+  source is long, and no depth guard bounds it, since every length is
+  valid. The parser, the AST's drop, the resolver and the language server
+  take a chain link by link, but the compiler's walks recurse into each
+  receiver: `ns-next run` of a valid method whose body is one chain of
+  20,000 `+ 1` overflows the interpreter thread's 8 MiB and aborts the
+  process (release; 10,000 compile and run).
+  [frontend.md](design/frontend.md), "Recovery", rule 7;
+  [execution.md](design/execution.md). Noted 2026-10-04.
 - **Editor recovery: the work budget is the whole parse's.** Once input
   has spent it, no later statement of the file is looked at again (rule
   1), so the members after an unclosed body there stay inside it, and a

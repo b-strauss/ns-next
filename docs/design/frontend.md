@@ -614,6 +614,19 @@ them.
    Past it the parser reports one diagnostic and skips to a structural
    token, so hostile input answers diagnostics, never a stack overflow.
 
+   A chain of messages, `a b c + d …`, is not guarded: it is built in a
+   loop, but each send holds the one before it as its receiver, so the
+   tree nests as deep as the chain is long, and every length is valid. A
+   run of unclosed methods past the guard makes one too, the first
+   method's statement taking the rest of the run. So the tree is never
+   taken apart by recursion along a receiver: `Send`'s `Drop` takes the
+   chain link by link, and the resolver's walk and the editor's
+   (`ns-lsp`'s semantic tokens and folds) take each chain from
+   `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain of a
+   million messages, parse and are analysed on the server's 8 MiB, and
+   on 1 MiB. The compiler still recurses along a chain
+   ([OPEN-WORK.md](../OPEN-WORK.md)).
+
 **Left as it is.** An unfinished body whose next line is a valid expression
 is read as that expression: in `first = ( x foo. bar = ( 2 )` followed by
 `baz = ( ^3 )`, `bar = ( 2 )` is a comparison, so `bar` is no method and

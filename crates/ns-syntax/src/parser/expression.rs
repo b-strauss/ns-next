@@ -503,11 +503,8 @@ impl<'a> Parser<'a> {
             }
             return first;
         };
-        let Send {
-            receiver,
-            message,
-            span: first_span,
-        } = *boxed;
+        let first_span = boxed.span;
+        let (receiver, message) = boxed.into_receiver_and_message();
         let mut rest = Vec::new();
         while self.eat(TokenKind::Semicolon) {
             rest.extend(self.parse_cascade_message());

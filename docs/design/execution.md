@@ -1549,7 +1549,9 @@ The interpreter thread's stack, `INTERPRETER_STACK_BYTES = 8 MiB`
 (`crates/ns-cli/src/main.rs`), is sized for what still recurses on the Rust
 stack. Nothing re-enters the run loop from Rust ("No re-entry from Rust"
 below), so that is the front end and the compiler, whose depth the parser's
-nesting ceiling bounds. The suite runs the deepest nesting the parser accepts
+nesting ceiling bounds, except along a chain of messages: it nests a send
+per message through its receivers, as deep as the source is long, and the
+compiler walks it by recursion ([OPEN-WORK.md](../OPEN-WORK.md)). The suite runs the deepest nesting the parser accepts
 through every stage on libtest's default 2 MiB threads in a debug build —
 `the_deepest_module_the_parser_accepts_round_trips` and
 `the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` in
@@ -5383,7 +5385,8 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   `crates/ns-cli/src/main.rs`): 8 MiB, four times the 2 MiB libtest threads
   the suite runs the deepest nesting the parser accepts on, since what still
   recurses on the Rust stack is the front end and the compiler, bounded by the
-  parser's nesting ceiling ("What the trampoline moved" above). It is
+  parser's nesting ceiling ("What the trampoline moved" above) but for a
+  chain of messages, which the compiler still walks by recursion. It is
   reserved, not committed, so only what a program uses is backed by memory.
   The whole command runs there, not only its sends, because the symbol
   interner is thread-local (`symbol.rs`) and every symbol a command interns

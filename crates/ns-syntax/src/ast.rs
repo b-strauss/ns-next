@@ -172,6 +172,55 @@ pub struct Send {
     pub span: Span,
 }
 
+/// A chain of messages, `a b c + d …`, nests a send per message through
+/// its receivers, as deep as the source is long: the parser builds it in a
+/// loop, and no depth guard bounds it, since every length is valid. Each
+/// send's receiver chain is therefore dropped here link by link, so a
+/// dropped chain never recurses deeper than the bracketed nesting the
+/// depth guard does bound. An argument's own chain is its sends' to drop.
+impl Drop for Send {
+    fn drop(&mut self) {
+        let mut receiver = std::mem::replace(&mut self.receiver, placeholder(self.span));
+        while let Expression::Send(mut link) = receiver {
+            receiver = std::mem::replace(&mut link.receiver, placeholder(link.span));
+        }
+    }
+}
+
+impl Send {
+    /// The send's receiver and message, taken out of it: a send owns its
+    /// drop, so its fields cannot be moved out of it by a pattern.
+    pub fn into_receiver_and_message(mut self) -> (Expression, MessageSend) {
+        let receiver = std::mem::replace(&mut self.receiver, placeholder(self.span));
+        let message = MessageSend {
+            selector: std::mem::replace(&mut self.message.selector, Selector::Unary(String::new())),
+            arguments: std::mem::take(&mut self.message.arguments),
+            span: self.message.span,
+        };
+        (receiver, message)
+    }
+
+    /// This send and every send down its receivers, outermost first, and
+    /// the receiver the chain starts from, which is no send. A walk over
+    /// the tree takes a chain of messages from here rather than by
+    /// recursing into each receiver: the chain is as deep as the source is
+    /// long (see the `Drop` impl).
+    pub fn receiver_chain(&self) -> (Vec<&Send>, &Expression) {
+        let mut links = vec![self];
+        let mut receiver = &self.receiver;
+        while let Expression::Send(link) = receiver {
+            links.push(link);
+            receiver = &link.receiver;
+        }
+        (links, receiver)
+    }
+}
+
+/// What stands in a send's receiver while the chain is taken apart.
+fn placeholder(span: Span) -> Expression {
+    Expression::Literal(Literal::Nil { span })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MessageSend {
     pub selector: Selector,
@@ -254,5 +303,36 @@ mod tests {
             span: Span::new(0, 3),
         };
         assert_eq!(first, second);
+    }
+
+    /// `1 + 1 + …` is valid at any length, and its chain nests a send per
+    /// `+`: 20,000 of them overflowed a 1 MiB stack when dropped.
+    #[test]
+    fn a_long_chain_of_sends_drops_on_a_small_stack() {
+        const LINKS: u32 = 100_000;
+        const STACK_BYTES: usize = 256 * 1024;
+        std::thread::Builder::new()
+            .stack_size(STACK_BYTES)
+            .spawn(|| {
+                let mut chain = Expression::Literal(Literal::Nil {
+                    span: Span::new(0, 0),
+                });
+                for link in 0..LINKS {
+                    let span = Span::new(0, link);
+                    chain = Expression::Send(Box::new(Send {
+                        receiver: chain,
+                        message: MessageSend {
+                            selector: Selector::Unary("link".to_string()),
+                            arguments: Vec::new(),
+                            span,
+                        },
+                        span,
+                    }));
+                }
+                drop(chain);
+            })
+            .expect("spawn the dropping thread")
+            .join()
+            .expect("the chain drops on a small stack");
     }
 }

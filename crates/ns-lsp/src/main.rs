@@ -1,7 +1,9 @@
 use std::process::ExitCode;
 
 /// The stack the server runs on. It parses and resolves, which recurse; the
-/// parser's nesting ceiling bounds the depth, and `ns-cli` runs the same
+/// parser's nesting ceiling bounds the depth -- a chain of messages, which
+/// nests as deep as the source is long, is dropped and walked link by link
+/// (`ns_syntax::ast::Send::receiver_chain`) -- and `ns-cli` runs the same
 /// front end on 8 MiB for the same reason (`crates/ns-cli/src/main.rs`,
 /// `INTERPRETER_STACK_BYTES`). The thread is needed regardless: the symbol
 /// interner is thread-local, so everything that interns must run on one.
