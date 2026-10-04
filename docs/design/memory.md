@@ -2315,7 +2315,7 @@ Decided with the user on 2026-10-04:
 2. **The full collection marks both generations and compacts them into the
    old space**, as Strongtalk's full collection does -- the old generation
    compacted first, then the new one into it
-   (`prior-art/strongtalk/vm/memory/markSweep.cpp:255`, `:264`) -- and as
+   (`prior-art/strongtalk/vm/memory/markSweep.cpp:255`, `:265-266`) -- and as
    HotSpot's Serial and Parallel collectors do. One forwarding table covers
    both generations, so every handle is rewritten once. Rejected: Spur's
    mark, then scavenge-and-tenure, then compact the old space (`fullGC`,
@@ -2344,10 +2344,12 @@ Decided with the user on 2026-10-04:
    graph pass starts, and one tenure between two entries makes all three
    old. The decoder then allocates its graph old, as Soup's
    `AllocateSnapshot` does (`prior-art/primordialsoup/vm/heap.cc:228`).
-   Rejected: a tenure right after the bootstrap and another after the
-   paths, because the bootstrap's objects and `build_module_classes` are
-   made in one entry, with no point between them where a collection may
-   run.
+   Rejected: a second tenure right after the bootstrap, which
+   `image::load` could run between the bootstrap and the entry in which
+   `build_module_classes` runs. It would be redundant: the module classes
+   and what the platform paths answer are made young after it, so the
+   tenure before the graph pass is needed anyway, and that one tenure
+   covers the bootstrap's objects too.
 
 The plan also chose constants for the user to confirm, each one line to
 change and each stated where it is built above: eden's 512 KiB reserve,
@@ -2545,7 +2547,7 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   ([OPEN-WORK.md](../OPEN-WORK.md)).
 - **A missed write barrier is found by verification and poisoning, not by
   page protection** (decided with the user on 2026-10-04): the scavenge
-  stress mode verifies the remembered set before each scavenge, as
+  stress mode verifies the remembered set before each scavenge it runs, as
   Strongtalk's `VerifyBeforeScavenge` and HotSpot's `VerifyBeforeGC` do,
   and every debug-build scavenge poisons the nursery it vacated, as
   HotSpot's `ZapUnusedHeapArea` does, because the one slice the heap reads
@@ -2565,8 +2567,9 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 - **An image load tenures once, between the platform paths and the graph
   pass** (decided with the user on 2026-10-04), so that the graph pass
   allocates old into a heap that holds nothing young, as every reference
-  loads; the bootstrap and the module classes are made in one entry, with
-  no point between them where a tenure could run.
+  loads; a tenure right after the bootstrap would be redundant, since the
+  module classes and what the paths answer are made young after it and the
+  one tenure before the graph pass covers the bootstrap's objects too.
 - **A refused commit or an exhausted reservation aborts the process**, as a
   failed `Vec` push does, through `std::alloc::handle_alloc_error` (decided
   with the user on 2026-10-03). Allocation stays infallible, so no hot path

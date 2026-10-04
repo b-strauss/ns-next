@@ -4354,8 +4354,9 @@ objects naming young ones; objects of 32 KiB and more, and those that find
 eden spent, are allocated old and born remembered; the full collection
 marks both generations and compacts them into the old space; an image load
 tenures once before the graph pass, which allocates old; and a fifth stress
-mode, `NS_NEXT_STRESS_SCAVENGE`, verifies the remembered set before every
-scavenge while every debug-build scavenge poisons the nursery it vacated.
+mode, `NS_NEXT_STRESS_SCAVENGE`, scavenges at the safepoints its schedule
+picks and verifies the remembered set before each of those scavenges, while
+every debug-build scavenge poisons the nursery it vacated.
 Four decisions were taken with the user while planning: verification and
 poisoning, not page protection, to find a missed barrier; the full
 collection compacting both generations into the old space; the nursery's

@@ -148,7 +148,11 @@ objects and the remembered old ones, so a store that writes a word into an
 old object any other way leaves the young object it names unreachable to
 the next scavenge -- moved or reclaimed, silently, at exit status 0. Only an
 initializing store into an object just allocated skips the barrier, which
-is why every old allocation outside the image decoder is born remembered.
+is why every old allocation outside the image decoder is born remembered;
+besides those, only the collector's own rewrites (a scavenge, a
+compaction, a move), which keep the remembered set themselves, and the
+replacement of resolved futures, which runs only before a full collection
+empties the nursery, write words without it.
 `NS_NEXT_STRESS_SCAVENGE`'s verification of the remembered set, and a
 debug build's poison over the nursery a scavenge vacated, are what find a
 breach (`memory.md`, "Generations").

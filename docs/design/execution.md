@@ -434,8 +434,11 @@ its entry (`Leave::Safepoint`), and `run` calls `Interpreter::safepoint`
 (`interpreter/safepoint.rs`), out of line, which is where a scavenge or a
 collection runs ([memory.md](memory.md), "Where a collection can happen"),
 and enters again. A scavenge is requested by an allocation that fills eden
-to its threshold, a collection by one that takes the old space past its
-limit ([memory.md](memory.md), "Generations"), and the debug-build move,
+to its threshold or finds eden spent, and by a remembered set past its
+limit, through the barrier or after a scavenge; a full collection once the
+old space's occupancy reaches its limit, checked by an allocation that goes
+old and after every scavenge ([memory.md](memory.md), "Generations"); and
+the debug-build move,
 cache, collection and scavenge stress modes keep the flag set while they
 are on.
 That is sound because of what `run` carries across the safepoint, which the
@@ -1312,9 +1315,10 @@ included (`bench_new.ns` reports 220,116 against 4,176).
 
 **Where the gains come from.** An `xperf` profile (0.1221 ms sampling, one
 debug-info release build per tree, one trace per program) puts the gain in
-the full collector the sources no longer run, nothing else moving by more
-than about a point: `bench_block.ns`'s collector samples fall from 10.2%
-to 0.0% and CD's from 9.5% to 0.2%, all of it scavenging; Havlak's from
+the full collector the sources no longer run: `bench_block.ns`'s collector
+samples fall from 10.2% to 0.0% and CD's from 9.5% to 0.2%, all of it
+scavenging, with `vm::run`, `push_activation` and the rest within about a
+point of each other on those two; Havlak's from
 11.7% to 4.0% (1.4% of all samples in the scavenger) and DeltaBlue's from
 7.4% to 1.1% (0.5%). The per-iteration closures and frames now die young.
 
