@@ -4449,9 +4449,12 @@ impl<'gc> Heap<'gc> {
         forwarder
     }
 
-    /// Slides every object the finished marking reached down to the first
-    /// offset, in the order they lie, clearing each one's mark bit so that
-    /// no object leaves the collection marked; gives committed memory back
+    /// Compacts every object the finished marking reached, in both
+    /// generations, into the old space: the old survivors slide down to its
+    /// bottom in the order they lie, the nursery's follow them in address
+    /// order, and each one's mark bit and age are cleared, so that no object
+    /// leaves the collection marked. The nursery and the remembered set are
+    /// left empty, and no remembered bit set. Gives committed memory back
     /// past twice the next limit; and rewrites every handle the heap itself
     /// holds into the next epoch. What the heap does not hold, the caller
     /// forwards with the answer, exactly as for a move (`World::collect`).
@@ -4468,11 +4471,11 @@ impl<'gc> Heap<'gc> {
         {
             self.epoch = to_epoch;
         }
-        let old = self.space.region(RegionName::Old);
-        let mut table = ForwardingTable::with_words(old.top / 8, NURSERY_END / 8);
+        let [past, eden, old_range] = self.space.occupied();
+        let mut table = ForwardingTable::with_words(old_range.end / 8, NURSERY_END / 8);
         let mut live_objects = 0;
         let words = self.space.words();
-        for range in self.space.occupied() {
+        for range in [&past, &eden, &old_range] {
             let mut position = range.start / 8;
             while position < range.end / 8 {
                 let (header, next) = object_at(words, position);
@@ -4484,24 +4487,48 @@ impl<'gc> Heap<'gc> {
             }
         }
         let live_words = table.summarize(NURSERY_END / 8 / 64);
-        // Slide the old space: a survivor's destination is never above where
-        // it lies, so copying it down never overwrites an allocation the walk
-        // has yet to read.
-        let words = self.space.words_mut();
-        let mut position = old.start / 8;
-        while position < old.top / 8 {
-            let (header, next) = object_at(words, position);
-            if Header(words[header]).marked() {
-                let destination = table.destination(position);
-                words.copy_within(position..next, destination);
-                let moved = destination + (header - position);
-                words[moved] = Header(words[moved]).with_marked(false).0;
+        // The remembered bits go first, at the offsets the set holds now:
+        // once everything is old, nothing needs remembering.
+        for holder in std::mem::take(&mut self.remembered) {
+            let index = header_index(holder);
+            let words = self.space.words_mut();
+            words[index] = Header(words[index]).with_remembered(false).0;
+        }
+        let new_top = NURSERY_END + 8 * live_words;
+        if self.space.ensure_committed(new_top).is_none() {
+            out_of_memory(new_top)
+        }
+        let old = self.space.region(RegionName::Old);
+        // The words up to the new top must be lent while the nursery's
+        // survivors are copied above the old ones.
+        self.space
+            .set_region_extent(RegionName::Old, old.start, old.top.max(new_top));
+        // The old space slides down first: a destination there is never above
+        // its source. The nursery's survivors then go above every old
+        // survivor, into words no slide still has to read; a copy of one
+        // reads below `NURSERY_END` and writes above it, so the two never
+        // overlap.
+        for range in [old_range, past, eden] {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let words = self.space.words_mut();
+                let (header, next) = object_at(words, position);
+                if Header(words[header]).marked() {
+                    let destination = table.destination(position);
+                    words.copy_within(position..next, destination);
+                    let moved = destination + (header - position);
+                    words[moved] = Header(words[moved]).with_marked(false).with_age(0).0;
+                }
+                position = next;
             }
-            position = next;
         }
         self.space
-            .set_region_extent(RegionName::Old, NURSERY_END, NURSERY_END + 8 * live_words);
+            .set_region_extent(RegionName::Old, NURSERY_END, new_top);
+        self.space.empty_nursery();
         self.object_count = live_objects;
+        self.young_objects = 0;
+        self.scavenge_requested = false;
+        self.tenure_all_requested = false;
         // With hysteresis, so that a heap which oscillates does not decommit
         // and commit again at every collection: give back only past twice
         // the next limit, and keep the limit itself. Measured against the
@@ -7530,6 +7557,102 @@ mod tests {
         let class = old_instance_class(&mut heap);
         let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
         scavenge_bare(&mut heap, false, &mut []);
+        let _ = heap.str_value(kept);
+    }
+
+    #[test]
+    fn a_full_collection_compacts_the_nursery_s_survivors_after_the_old_ones() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let old_dead = old_instance(&mut heap, class);
+        let old_kept = old_instance(&mut heap, class);
+        let young_dead = heap.allocate_string(class, crate::CodePoints::from("dead"));
+        let young_kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        // Each generation reachable only through the other: the young string
+        // through the old instance's field, the old instance through a young
+        // array the root holds.
+        assert!(heap.instance_set_field(old_kept, 0, Value::object(young_kept)));
+        let holder = heap.allocate_array(class, &[Value::object(old_kept)]);
+        let _ = (old_dead, young_dead);
+        let mut root = Value::object(holder);
+
+        heap.collect_for_test(&mut [&mut root]);
+
+        let statistics = heap.heap_statistics();
+        assert_eq!(heap.young_objects, 0);
+        assert!(heap.remembered.is_empty());
+        let Some(holder) = root.as_object() else {
+            panic!("the root no longer holds an object")
+        };
+        assert!(!space::is_young(holder.offset));
+        let Some(old_kept) = heap
+            .array_element(holder, 0)
+            .and_then(|value| value.as_object())
+        else {
+            panic!("the array lost its element")
+        };
+        assert!(
+            !heap.header(old_kept).remembered(),
+            "nothing is young any more"
+        );
+        let Some(young_kept) = heap
+            .instance_field(old_kept, 0)
+            .and_then(|value| value.as_object())
+        else {
+            panic!("the instance lost its field")
+        };
+        assert_eq!(heap.str_value(young_kept), Some("kept".to_string()));
+        // The class handle from before the collection is stale.
+        let class = heap.object_class(holder);
+        let key = |object| heap.object_identity_key(object);
+        assert!(
+            key(class) < key(old_kept),
+            "the old survivors keep their order"
+        );
+        assert!(key(old_kept) < key(young_kept), "the nursery's follow them");
+        assert!(key(young_kept) < key(holder), "in address order");
+        // The class, the kept instance, the string and the array.
+        assert_eq!(statistics.live_objects, 4);
+    }
+
+    #[test]
+    fn a_full_collection_after_a_scavenge_finds_the_survivor_space() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let first = heap.allocate_string(class, crate::CodePoints::from("first"));
+        let mut first_root = Value::object(first);
+        scavenge_bare(&mut heap, false, &mut [&mut first_root]);
+        let past = heap.space.region(RegionName::PastSurvivor);
+        assert!(past.top > past.start, "the survivor is in a survivor space");
+        let class = heap.object_class(rooted(first_root));
+        let second = heap.allocate_string(class, crate::CodePoints::from("second"));
+        let mut second_root = Value::object(second);
+
+        heap.collect_for_test(&mut [&mut first_root, &mut second_root]);
+
+        assert_eq!(heap.young_objects, 0);
+        for region in [RegionName::PastSurvivor, RegionName::Eden] {
+            let region = heap.space.region(region);
+            assert_eq!(region.top, region.start);
+        }
+        for (root, text) in [(first_root, "first"), (second_root, "second")] {
+            let object = rooted(root);
+            assert!(!space::is_young(object.offset));
+            assert_eq!(heap.str_value(object), Some(text.to_string()));
+        }
+        // The class and the two strings.
+        assert_eq!(heap.heap_statistics().live_objects, 3);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale handle")]
+    fn a_young_handle_kept_across_a_full_collection_is_stale() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        let mut root = Value::object(kept);
+        heap.collect_for_test(&mut [&mut root]);
         let _ = heap.str_value(kept);
     }
 }

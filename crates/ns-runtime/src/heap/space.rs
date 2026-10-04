@@ -286,6 +286,15 @@ impl Space {
         self.eden = Region::empty(self.eden.base, self.eden.end);
     }
 
+    /// After a full collection, which compacted the nursery's survivors into
+    /// the old space: eden and both survivor spaces empty.
+    pub(in crate::heap) fn empty_nursery(&mut self) {
+        for survivor in &mut self.survivors {
+            *survivor = Region::empty(survivor.base, survivor.end);
+        }
+        self.eden = Region::empty(self.eden.base, self.eden.end);
+    }
+
     /// Gives back the committed memory above `keep`, rounded up to a page
     /// and never below the old top or the nursery. A refused decommit
     /// leaves the range recorded as not committed (`Reservation::decommit`),
