@@ -1,10 +1,12 @@
 package io.github.bstrauss.newspeak.structure
 
+import com.intellij.icons.AllIcons
 import com.intellij.ide.structureView.TreeBasedStructureViewBuilder
 import com.intellij.lang.LanguageStructureViewBuilder
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.icons.RowIcon
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
@@ -44,5 +46,17 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertSame(method, innermostSymbolAt(document, symbols, text.indexOf(")\n)") + 1))
         assertSame(module, innermostSymbolAt(document, symbols, text.indexOf("Module")))
         assertNull(innermostSymbolAt(document, symbols, text.length))
+    }
+
+    /** Under the platform's own `IconManager`, as the structure view draws it. */
+    fun testAMemberWithAnAccessShowsBothIconsInOneRow() {
+        val range = Range(Position(0, 0), Position(0, 3))
+        val presentation = presentationOf(DocumentSymbol("run", SymbolKind.Method, range, range, "private"))
+        val icon = rowIconOf(presentation)
+        assertInstanceOf(icon, RowIcon::class.java)
+        val row = icon as RowIcon
+        assertEquals(2, row.iconCount)
+        assertSame(AllIcons.Nodes.Method, row.getIcon(0))
+        assertSame(AllIcons.Nodes.C_private, row.getIcon(1))
     }
 }

@@ -51,12 +51,20 @@ class NewspeakStructureViewFactory : PsiStructureViewFactory {
  * off the EDT; asked on the EDT, the model answers what it already has rather
  * than block the UI on the server.
  *
- * With no client yet, or no answer within the timeout, the tree stays as it
- * was (empty the first time) and the model tells the view to ask again a
- * little later. The platform refreshes its own structure view when a client
- * starts through a listener that is internal API, which the plugin may not
- * use; asking again, a bounded number of times, reaches the same tree once
- * the server is up.
+ * With no client yet, no answer within the timeout, or an empty answer, the
+ * tree stays as it was (empty the first time) and the model tells the view to
+ * ask again a little later. The server answers at least the root class for
+ * every document it has opened (`crates/ns-lsp/src/document_symbols.rs`), so
+ * an empty answer means the file's `didOpen` has not reached it yet -- the
+ * race of a file opened with the Structure tool window already showing, or of
+ * editors restored at IDE start. The platform refreshes its own structure
+ * view when a client starts through a listener that is internal API, which
+ * the plugin may not use; asking again reaches the same tree once the server
+ * is up. It asks every second for about a minute, then every ten seconds for
+ * as long as the view lives, so a server that starts much later (its path
+ * set afterwards, or restarted by hand) still fills the tree without an edit;
+ * each new model (another file, the view reopened) starts at the fast pace
+ * again.
  */
 class NewspeakStructureViewModel(
     psiFile: PsiFile,
@@ -100,7 +108,7 @@ class NewspeakStructureViewModel(
             askAgainLater()
             return known?.symbols.orEmpty()
         }
-        val fetched = fetch()
+        val fetched = usableAnswer(fetch())
         if (fetched == null) {
             askAgainLater()
             return known?.symbols.orEmpty()
@@ -113,7 +121,7 @@ class NewspeakStructureViewModel(
     private fun documentStamp(): Long =
         FileDocumentManager.getInstance().getDocument(file)?.modificationStamp ?: file.modificationStamp
 
-    /** Null when there is no client yet or no answer in time; the server answers an empty list for a file it has not opened. */
+    /** Null when there is no client yet or no answer in time. */
     private fun fetch(): List<DocumentSymbol>? {
         val client = LspClientManager.getInstance(psiFile.project)
             .getClients(NewspeakLspIntegrationProvider::class.java)
@@ -127,22 +135,25 @@ class NewspeakStructureViewModel(
     }
 
     private fun askAgainLater() {
-        if (disposed || retries.get() >= MAXIMUM_RETRIES || !retryPending.compareAndSet(false, true)) return
-        retries.incrementAndGet()
+        if (disposed || !retryPending.compareAndSet(false, true)) return
+        val delay = if (retries.incrementAndGet() <= FAST_RETRIES) FAST_RETRY_DELAY_MILLISECONDS else SLOW_RETRY_DELAY_MILLISECONDS
         AppExecutorUtil.getAppScheduledExecutorService().schedule(
             {
                 retryPending.set(false)
                 ApplicationManager.getApplication().invokeLater({ fireModelUpdate() }, { disposed })
             },
-            RETRY_DELAY_MILLISECONDS,
+            delay,
             TimeUnit.MILLISECONDS,
         )
     }
 
     private companion object {
-        /** About a minute: long enough for a server to start, short enough not to poll a missing one forever. */
-        const val MAXIMUM_RETRIES = 60
-        const val RETRY_DELAY_MILLISECONDS = 1000L
+        /** About a minute at the fast pace: long enough for a server to start. */
+        const val FAST_RETRIES = 60
+        const val FAST_RETRY_DELAY_MILLISECONDS = 1000L
+
+        /** After that, a missing server costs one request every ten seconds while the view is open. */
+        const val SLOW_RETRY_DELAY_MILLISECONDS = 10_000L
     }
 }
 
@@ -164,6 +175,13 @@ private class NewspeakStructureRoot(
 
     override fun canNavigateToSource(): Boolean = psiFile.canNavigateToSource()
 }
+
+/**
+ * The symbols to show, or null to keep the tree and ask again: an empty answer
+ * is a file the server has not opened yet, never a file without symbols, since
+ * every opened document answers at least its root class.
+ */
+fun usableAnswer(symbols: List<DocumentSymbol>?): List<DocumentSymbol>? = symbols?.takeIf { answer -> answer.isNotEmpty() }
 
 /** The deepest symbol whose range holds `offset`, its end included, so a caret just past a `)` still selects it. */
 fun innermostSymbolAt(document: Document, symbols: List<DocumentSymbol>, offset: Int): DocumentSymbol? {
