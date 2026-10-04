@@ -202,8 +202,10 @@ impl<'space> Scavenger<'space> {
         }
     }
 
+    /// Refuses a handle from another heap or another epoch, and answers the
+    /// epoch the scavenge brands every handle it keeps with.
     #[cfg(debug_assertions)]
-    fn check_and_rebrand(&self, origin: u32, epoch: u32) -> u32 {
+    pub(in crate::heap) fn check_and_rebrand(&self, origin: u32, epoch: u32) -> u32 {
         assert_eq!(
             origin, self.heap_id,
             "a handle from another heap is stored in this one"

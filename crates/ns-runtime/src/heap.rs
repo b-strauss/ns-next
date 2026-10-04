@@ -4298,13 +4298,7 @@ impl<'gc> Heap<'gc> {
             }
         }
         scavenger.drain();
-        Self::forward_weak_symbols(
-            canonical_symbols,
-            symbol_of,
-            scavenger.space,
-            #[cfg(debug_assertions)]
-            to_epoch,
-        );
+        Self::forward_weak_symbols(canonical_symbols, symbol_of, &scavenger);
         let remembered = std::mem::take(&mut scavenger.remembered);
         let (survived, promoted, ages) = (scavenger.survived, scavenger.promoted, scavenger.ages);
         // Task 6 poisons `past` and `eden`, the ranges vacated, here.
@@ -4818,7 +4812,8 @@ impl<'gc> Heap<'gc> {
     /// The scavenge's pass over the weak symbol table, once the copying is
     /// done: a young entry the scavenge copied names the copy, one it did
     /// not is gone, an old one stays (`docs/design/memory.md`, "Weak
-    /// references"); `symbol_of` follows each entry. Every entry left is
+    /// references"); `symbol_of` follows each entry. Every entry is checked
+    /// as the scavenger checks a handle it traces, and every entry left is
     /// rebranded into the scavenge's epoch.
     #[cfg_attr(
         not(test),
@@ -4827,13 +4822,17 @@ impl<'gc> Heap<'gc> {
     fn forward_weak_symbols(
         canonical_symbols: &mut [Option<ObjectReference<'gc>>],
         symbol_of: &mut IdentityMap<u64, Symbol>,
-        space: &Space,
-        #[cfg(debug_assertions)] to_epoch: u32,
+        scavenger: &Scavenger<'_>,
     ) {
         for entry in canonical_symbols.iter_mut() {
             let Some(object) = entry else { continue };
+            // A stale entry panics here rather than being made fresh.
+            #[cfg(debug_assertions)]
+            {
+                object.epoch = scavenger.check_and_rebrand(object.origin, object.epoch);
+            }
             if space::is_young(object.offset) {
-                let words = space.words();
+                let words = scavenger.space.words();
                 let header = header_index(object.offset);
                 if Header(words[header]).format() != Format::Forwarded {
                     symbol_of.remove(&object.offset.get());
@@ -4847,10 +4846,6 @@ impl<'gc> Heap<'gc> {
                     symbol_of.insert(moved.get(), symbol);
                 }
                 object.offset = moved;
-            }
-            #[cfg(debug_assertions)]
-            {
-                object.epoch = to_epoch;
             }
         }
     }
