@@ -4,21 +4,38 @@ This list covers only what `cargo tree -p ns-analyzer -e normal,no-proc-macro`
 shows compiled into the `ns-next-analyzer` binary itself -- it excludes
 build-time-only proc-macro dependencies (such as `unicode-ident`, reached
 only through `serde_derive`/`serde_repr`, whose generated code never ships
-in the binary) and this repository's own `ns-analyzer`, `ns-runtime` and
-`ns-syntax` crates (MIT, see the repository's own LICENSE).
+in the binary) and this repository's own `ns-analyzer`, `ns-memory`,
+`ns-runtime`, `ns-syntax` and `ns-tooling` crates (MIT, see the repository's
+own LICENSE). It is the list for the Windows x64 build the plugin bundles;
+`anstyle-wincon`, `windows-link` and `windows-sys` are linked on Windows only.
 
+    anstream 1.0.0 -- MIT OR Apache-2.0
+    anstyle 1.0.14 -- MIT OR Apache-2.0
+    anstyle-parse 1.0.0 -- MIT OR Apache-2.0
+    anstyle-query 1.1.5 -- MIT OR Apache-2.0
+    anstyle-wincon 3.0.11 -- MIT OR Apache-2.0
     bitflags 1.3.2 -- MIT/Apache-2.0
+    clap 4.6.6 -- MIT OR Apache-2.0
+    clap_builder 4.6.6 -- MIT OR Apache-2.0
+    clap_lex 1.1.0 -- MIT OR Apache-2.0
+    colorchoice 1.0.5 -- MIT OR Apache-2.0
     crossbeam-channel 0.5.17 -- MIT OR Apache-2.0
     crossbeam-utils 0.8.23 -- MIT OR Apache-2.0
     fluent-uri 0.1.4 -- MIT
+    is_terminal_polyfill 1.70.2 -- MIT OR Apache-2.0
     itoa 1.0.18 -- MIT OR Apache-2.0
     log 0.4.34 -- MIT OR Apache-2.0
     lsp-server 0.10.0 -- MIT OR Apache-2.0
     lsp-types 0.97.0 -- MIT
     memchr 2.8.3 -- Unlicense OR MIT (this notice relies on the MIT branch)
+    once_cell_polyfill 1.70.2 -- MIT OR Apache-2.0
     serde 1.0.229 -- MIT OR Apache-2.0
     serde_core 1.0.229 -- MIT OR Apache-2.0
     serde_json 1.0.151 -- MIT OR Apache-2.0
+    strsim 0.11.1 -- MIT
+    utf8parse 0.2.2 -- Apache-2.0 OR MIT
+    windows-link 0.2.1 -- MIT OR Apache-2.0
+    windows-sys 0.61.2 -- MIT OR Apache-2.0
     zmij 1.0.23 -- MIT
 
 Every crate above is used here under its MIT option. The full text of the
@@ -244,8 +261,35 @@ Apache License, Version 2.0
 Per-crate copyright notices
 ================================================================================
 
+anstream 1.0.0:
+    Copyright (c) Individual contributors
+
+anstyle 1.0.14:
+    Copyright (c) Individual contributors
+
+anstyle-parse 1.0.0:
+    Copyright (c) Individual contributors
+
+anstyle-query 1.1.5:
+    Copyright (c) Individual contributors
+
+anstyle-wincon 3.0.11:
+    Copyright (c) Individual contributors
+
 bitflags 1.3.2:
     Copyright (c) 2014 The Rust Project Developers
+
+clap 4.6.6:
+    Copyright (c) Individual contributors
+
+clap_builder 4.6.6:
+    Copyright (c) Individual contributors
+
+clap_lex 1.1.0:
+    Copyright (c) Individual contributors
+
+colorchoice 1.0.5:
+    Copyright (c) Individual contributors
 
 crossbeam-channel 0.5.17:
     Copyright (c) 2019 The Crossbeam Project Developers
@@ -255,6 +299,9 @@ crossbeam-utils 0.8.23:
 
 fluent-uri 0.1.4 (from its own LICENSE file):
     Copyright (c) 2021 Scallop Ye
+
+is_terminal_polyfill 1.70.2:
+    Copyright (c) Individual contributors
 
 itoa 1.0.18 (its LICENSE-MIT carries no copyright line; from its Cargo.toml `authors`):
     Copyright (c) the itoa authors: David Tolnay <dtolnay@gmail.com>
@@ -272,6 +319,9 @@ lsp-types 0.97.0 (from its own LICENSE file):
 memchr 2.8.3:
     Copyright (c) 2015 Andrew Gallant
 
+once_cell_polyfill 1.70.2:
+    Copyright (c) Individual contributors
+
 serde 1.0.229 (its LICENSE-MIT carries no copyright line; from its Cargo.toml `authors`):
     Copyright (c) the serde authors: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>
 
@@ -280,6 +330,20 @@ serde_core 1.0.229 (its LICENSE-MIT carries no copyright line; from its Cargo.to
 
 serde_json 1.0.151 (its LICENSE-MIT carries no copyright line; from its Cargo.toml `authors`):
     Copyright (c) the serde_json authors: Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com>
+
+strsim 0.11.1:
+    Copyright (c) 2015 Danny Guo
+    Copyright (c) 2016 Titus Wormer <tituswormer@gmail.com>
+    Copyright (c) 2018 Akash Kurdekar
+
+utf8parse 0.2.2:
+    Copyright (c) 2016 Joe Wilm
+
+windows-link 0.2.1:
+    Copyright (c) Microsoft Corporation.
+
+windows-sys 0.61.2:
+    Copyright (c) Microsoft Corporation.
 
 zmij 1.0.23 (its LICENSE-MIT carries no copyright line; from its Cargo.toml `authors`):
     Copyright (c) the zmij authors: David Tolnay <dtolnay@gmail.com>
