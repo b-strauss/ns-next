@@ -52,7 +52,8 @@
 > and `World::scavenge`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
 > doctests that pin the brand), `trace.rs` (every root the collector
-> traces, marking, forwarding and scavenging alike, in every build), `interpreter/safepoint.rs`
+> traces, marking, forwarding and scavenging alike, in every build),
+> `interpreter/safepoint.rs`
 > (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
 > the switches of the five stress modes: moves, caches, collection,
 > scavenges, and every instruction wide),
@@ -1976,7 +1977,8 @@ objects lie end to end from the region's start up to its top.
   the block's `outer_reach`. The activation stack of running activations is
   unchanged until road step 7, the execution model for compiled code.
 - **The full collector is mark and sliding compaction** over the variably
-  sized objects of both generations, after Spur's planning compactor, which slides marked objects
+  sized objects of both generations, after Spur's planning compactor,
+  which slides marked objects
   down and plans their new addresses before moving any (`compact`,
   `planCompactSavingForwarders`,
   `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`).
@@ -2069,7 +2071,8 @@ generations moved".
   the old space above the nursery, as Spur lays its heap out
   (`setHeapBase:memoryLimit:endOfMemory:`,
   `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60020`) and
-  Strongtalk its generations (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`).
+  Strongtalk its generations
+  (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`).
   The first survivor space starts at `FIRST_OBJECT`, so it is 16 bytes
   smaller than the second. `NURSERY_END` is a multiple of 64 words, so no
   chunk of the forwarding table straddles the two generations.
@@ -2231,7 +2234,8 @@ object. The collector's own rewrites -- the scavenge, the compaction, the
 move -- keep the remembered set themselves; the replacement of resolved
 futures, which may store a young value into an old object, runs only
 before a full collection, which empties the nursery and the set; and the
-decoder's fills store old values into old objects. The debug check of the stored Rust-side value's
+decoder's fills store old values into old objects. The debug check of the
+stored Rust-side value's
 heap id and epoch, which every store makes (`Heap::store`; "The object
 space"), holds here too. A store that writes a word into an old object any
 other way leaves the young object it names unreachable to the next
@@ -2281,8 +2285,10 @@ safepoints its schedule picks -- every safepoint while the traced size is
 within `STRESS_MOVE_BUDGET`, as the move and the collect modes are paced
 (`StressSchedule`, `interpreter/safepoint.rs`) -- and verifies the
 remembered set before each of them (`Heap::verify_remembered_set`): a walk
-of the old space asserting that every old object naming a young one
-carries the remembered bit, and that the bits and the set agree in number.
+of the old space asserting that the set holds no offset twice, that every
+entry is the header of an old object carrying the remembered bit, that
+every old object carrying the bit is an entry, and that every old object
+naming a young one carries the bit.
 The verification runs only under the stress mode, since it walks the old
 space at every scavenge (chosen by the plan). It is Strongtalk's
 `VerifyBeforeScavenge` (`universe_more.cpp:98`) and HotSpot's

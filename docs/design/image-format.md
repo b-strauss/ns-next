@@ -1501,25 +1501,24 @@ Primordial Soup's snapshots are
 old space's bytes relocated on load, is the model this does not take.
 
 - **Every load tenures once, between the platform paths and the graph
-  pass** (decided with the user on 2026-10-04). A load runs in three phases
-  (`image::load`): the first bootstraps an interpreter
+  pass** (decided with the user on 2026-10-04). A load runs in three
+  phases (`image::load`): the first bootstraps an interpreter
   (`Interpreter::bootstrap`), then, in an entry of its own, decodes
   everything up to and including the platform path section and rebuilds
   every module's root class (`modules::build_module_classes`), rooting the
-  classes as `Root`s; the
-  second follows the platform paths, sending each step to the loading
-  platform as an ordinary run, which may scavenge or collect at its
-  safepoints like any run; the third decodes the graph. Between the second
-  and the third, outside any entry, where only roots hold values, one
-  scavenge that tenures everything (`Interpreter::tenure_now`) makes the
-  builtins, the module classes and everything the paths answered old.
-  Spur, Primordial Soup, Strongtalk and HotSpot's CDS all load into a heap
-  that holds nothing young; this makes the heap so before the graph is
-  decoded. One tenure suffices: a second right after the bootstrap, between
-  it and the first phase's entry, would be redundant, since the module
-  classes and what the paths answer are made young after it, so the tenure
-  before the graph pass is needed anyway, and it covers the bootstrap's
-  objects too.
+  classes as `Root`s; the second follows the platform paths, sending each
+  step to the loading platform as an ordinary run, which may scavenge or
+  collect at its safepoints like any run; the third decodes the graph.
+  Between the second and the third, outside any entry, where only roots
+  hold values, one scavenge that tenures everything
+  (`Interpreter::tenure_now`) makes the builtins, the module classes and
+  everything the paths answered old. Spur, Primordial Soup, Strongtalk and
+  HotSpot's CDS all load into a heap that holds nothing young; this makes
+  the heap so before the graph is decoded. One tenure suffices: a second
+  right after the bootstrap, between it and the first phase's entry, would
+  be redundant, since the module classes and what the paths answer are
+  made young after it, so the tenure before the graph pass is needed
+  anyway, and it covers the bootstrap's objects too.
 - **The graph pass allocates old.** It sets the heap allocating old
   (`Heap::set_allocating_old`) for its whole length, the refusal path
   included, so every placeholder -- the boxed floats and large integers it
