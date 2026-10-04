@@ -1,7 +1,7 @@
 #![warn(clippy::all)]
 #![forbid(unsafe_code)]
 
-//! The language server behind ns-next's editor support: diagnostics,
+//! The editor tooling behind ns-next's editor support, whose language server offers: diagnostics,
 //! semantic tokens, fold ranges and document symbols for `.ns` files. See
 //! `docs/design/editor-support.md`.
 

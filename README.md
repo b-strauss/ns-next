@@ -186,9 +186,9 @@ cargo nextest run -p ns-cli --profile benchmarks
 crates/ns-syntax     lexer, parser, AST, spans
 crates/ns-runtime    resolver, object model, dispatch, compiler, VM, core library, image format
 crates/ns-cli        the `ns-next` binary
-crates/ns-lsp        the `ns-next-lsp` binary: a language server for `.ns` files
+crates/ns-analyzer   the `ns-next-analyzer` binary: editor tooling, a language server for `.ns` files
 crates/ns-memory     reserved, committed and protected memory: the only crate with unsafe
-editors/jetbrains/   the JetBrains plugin, over ns-next-lsp (see its README.md)
+editors/jetbrains/   the JetBrains plugin, over ns-next-analyzer (see its README.md)
 corpus/              vendored Newspeak modules used as a parser corpus
 goldens/             end-to-end programs, each with its recorded outcome
 prior-art/           reference implementations as submodules, read but never built (see PROVENANCE.md)

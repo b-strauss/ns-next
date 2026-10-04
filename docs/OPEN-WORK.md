@@ -620,7 +620,7 @@ value objects are never copied across an actor boundary (§3.1.1).
   does: only `Send`'s `Drop` and `Send::receiver_chain` take a chain link by
   link. The compiler clones a slot's initializer for a simultaneous slot's
   future (`compiler/simultaneous.rs`, `future_block`), so a long chain there
-  overflows in the clone too. `ns-lsp`'s `the_editor_parse_agrees_with_parse`
+  overflows in the clone too. `ns-analyzer`'s `the_editor_parse_agrees_with_parse`
   compares modules with `==`, and the snapshot tests print them with
   `{:?}`; both are safe only because no fixture holds such a chain.
   Hand-written impls that take the chain link by link would close it.
@@ -783,7 +783,7 @@ text and `to:by:do:`'s zero step.
   [editor-support.md](design/editor-support.md), "Structure" ("Known
   behaviours"). Noted 2026-10-04.
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
-  (`crates/ns-lsp/tests/corpus.rs`) assumes `parse` accepts no module with
+  (`crates/ns-analyzer/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
 
 ## Missing tests
@@ -912,7 +912,7 @@ Small, deliberately left, none affecting an outcome.
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
 
-- `crates/ns-lsp/src/document_symbols.rs` (noted 2026-10-04): `effective`
+- `crates/ns-analyzer/src/document_symbols.rs` (noted 2026-10-04): `effective`
   answers an `Option` that is always `Some`, so `detail`'s `(None, true)` arm
   is unreachable; and `SymbolCategory` has no doc comment of its own.
 

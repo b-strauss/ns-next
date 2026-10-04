@@ -1365,7 +1365,7 @@ the application's factory and initializers run with no platform in
 existence.
 
 **The project file** is JSON (the user's choice; it brings `serde_json` into
-`ns-cli`, which `ns-lsp` already used):
+`ns-cli`, which `ns-analyzer` already used):
 
 ```json
 {
@@ -1621,7 +1621,7 @@ builtins.
   member of every object is refused before anything runs, since the
   manifest could never answer it.
 - **The project file is JSON** (the user's choice), read with `serde_json`,
-  which `ns-lsp` already depended on, so no new crate entered the lock file.
+  which `ns-analyzer` already depended on, so no new crate entered the lock file.
   Unknown fields are refused, so a misspelt key is a message rather than a
   module silently missing.
 - **Module order is fixed: root, the project's modules as written, then

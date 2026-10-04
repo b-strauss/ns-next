@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ns-syntax", "crates/ns-runtime", "crates/ns-cli", "crates/ns-lsp", "crates/ns-memory"]
+members = ["crates/ns-syntax", "crates/ns-runtime", "crates/ns-cli", "crates/ns-analyzer", "crates/ns-memory"]
 
 [workspace.package]
 edition = "2021"

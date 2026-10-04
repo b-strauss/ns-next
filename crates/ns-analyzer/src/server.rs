@@ -112,7 +112,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
-            format!("ns-next-lsp does not implement {}", request.method),
+            format!("ns-next-analyzer does not implement {}", request.method),
         ),
     }
 }

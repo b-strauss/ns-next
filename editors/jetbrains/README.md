@@ -1,8 +1,8 @@
 # Newspeak (ns-next) — JetBrains plugin
 
 Syntax highlighting, diagnostics, semantic tokens, code folding, and a
-structure view with breadcrumbs for `.ns` files, through the `ns-next-lsp`
-language server from `crates/ns-lsp`. The design, its components and the
+structure view with breadcrumbs for `.ns` files, through the `ns-next-analyzer`
+language server from `crates/ns-analyzer`. The design, its components and the
 platform version it targets are in `docs/design/editor-support.md`.
 
 ## Opening it in IntelliJ IDEA
@@ -21,11 +21,11 @@ tool window's **+** and pick `editors/jetbrains/build.gradle.kts`.
 From this directory (`gradlew.bat` on Windows outside Git Bash):
 
 ```bash
-# a sandbox IDE with the plugin and a release build of ns-next-lsp
+# a sandbox IDE with the plugin and a release build of ns-next-analyzer
 ./gradlew runIde
 
 # the tests, including LexerComparisonTest against the Rust lexer
-# (builds ns-next-lsp in debug first)
+# (builds ns-next-analyzer in debug first)
 ./gradlew check
 
 # the distributable archive: build/distributions/newspeak-jetbrains-<version>.zip
@@ -36,7 +36,7 @@ From this directory (`gradlew.bat` on Windows outside Git Bash):
 ./gradlew verifyPlugin
 ```
 
-Every task that prepares a sandbox builds `ns-next-lsp` with Cargo itself, so
+Every task that prepares a sandbox builds `ns-next-analyzer` with Cargo itself, so
 `cargo` must be on `PATH`; the binary is bundled for the platform the build
 runs on only, under the directory
 `src/main/resources/io/github/bstrauss/newspeak/lsp/platform-directories.properties`

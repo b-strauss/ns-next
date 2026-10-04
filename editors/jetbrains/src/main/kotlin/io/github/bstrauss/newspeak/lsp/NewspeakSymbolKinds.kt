@@ -7,7 +7,7 @@ import javax.swing.Icon
 
 /**
  * The icon of each kind the server's document symbols carry
- * (`crates/ns-lsp/src/document_symbols.rs`, `encode`), for the breadcrumbs and
+ * (`crates/ns-analyzer/src/document_symbols.rs`, `encode`), for the breadcrumbs and
  * sticky lines the platform draws from them and for the plugin's own
  * structure view.
  *

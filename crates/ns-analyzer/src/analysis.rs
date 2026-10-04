@@ -60,7 +60,7 @@ pub(crate) fn guarded(text: &str, analyzer: impl FnOnce(&str) -> Analysis) -> An
                 findings: vec![Finding {
                     span: Span::new(0, 0),
                     message: format!(
-                        "internal error in ns-next-lsp: {detail}; this is an ns-next defect, please report it"
+                        "internal error in ns-next-analyzer: {detail}; this is an ns-next defect, please report it"
                     ),
                     severity: Severity::Error,
                 }],

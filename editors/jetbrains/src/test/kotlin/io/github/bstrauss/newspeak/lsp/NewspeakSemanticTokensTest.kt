@@ -7,7 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.lang.reflect.Proxy
 
-/** The server's legend (`crates/ns-lsp/src/semantic_tokens.rs`, `legend`) onto the plugin's keys. */
+/** The server's legend (`crates/ns-analyzer/src/semantic_tokens.rs`, `legend`) onto the plugin's keys. */
 class NewspeakSemanticTokensTest {
     @Test fun everyTokenTypeOfTheLegendIsMapped() {
         assertEquals(NewspeakColors.PARAMETER, semanticAttributesFor("parameter", listOf("declaration")))

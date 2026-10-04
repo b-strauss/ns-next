@@ -486,7 +486,7 @@ them.
   of the file. A source longer than a span can address answers a root class
   with an empty name and nothing in it, and the one `source_too_long`
   diagnostic. On a source without errors both entries answer the same
-  module, which `ns-lsp`'s `the_editor_parse_agrees_with_parse` checks over
+  module, which `ns-analyzer`'s `the_editor_parse_agrees_with_parse` checks over
   every corpus module, golden and the kernel.
 
 **Resynchronisation.** Two means:
@@ -625,7 +625,7 @@ them.
    method's statement taking the rest of the run. So the tree is never
    taken apart by recursion along a receiver: `Send`'s `Drop` takes the
    chain link by link, the resolver's walk does too (`resolve_send`), and
-   the editor's (`ns-lsp`'s semantic tokens and folds) takes each chain
+   the editor's (`ns-analyzer`'s semantic tokens and folds) takes each chain
    from `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain
    of a million messages, parse and are analysed on the server's 8 MiB, and
    on 1 MiB. The compiler, and the AST's derived `Clone`, `PartialEq` and

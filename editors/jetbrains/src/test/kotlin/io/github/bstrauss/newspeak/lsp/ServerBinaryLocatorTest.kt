@@ -21,35 +21,35 @@ class ServerBinaryLocatorTest {
     }
 
     @Test fun theConfiguredPathWins() {
-        val plugin = pluginWithServer("windows-x64", "ns-next-lsp.exe")
-        val configured = temporary.newFile("my-ns-next-lsp.exe").toPath()
+        val plugin = pluginWithServer("windows-x64", "ns-next-analyzer.exe")
+        val configured = temporary.newFile("my-ns-next-analyzer.exe").toPath()
         val located = ServerBinaryLocator(configured.toString(), plugin, "Windows 11", "amd64").locate()
         assertEquals(ServerLocation.Found(configured), located)
     }
 
     @Test fun aConfiguredPathThatDoesNotExistIsReportedNotSkipped() {
-        val plugin = pluginWithServer("windows-x64", "ns-next-lsp.exe")
+        val plugin = pluginWithServer("windows-x64", "ns-next-analyzer.exe")
         val missing = temporary.root.toPath().resolve("absent.exe").toString()
         val located = ServerBinaryLocator(missing, plugin, "Windows 11", "amd64").locate()
         assertEquals(ServerLocation.ConfiguredPathMissing(missing), located)
     }
 
     @Test fun aBlankConfiguredPathFallsBackToTheBundledServer() {
-        val plugin = pluginWithServer("windows-x64", "ns-next-lsp.exe")
+        val plugin = pluginWithServer("windows-x64", "ns-next-analyzer.exe")
         val located = ServerBinaryLocator("  ", plugin, "Windows 11", "amd64").locate()
-        assertEquals(ServerLocation.Found(plugin.resolve("bin/windows-x64/ns-next-lsp.exe")), located)
+        assertEquals(ServerLocation.Found(plugin.resolve("bin/windows-x64/ns-next-analyzer.exe")), located)
     }
 
     @Test fun theBundledServerIsPerPlatform() {
-        val plugin = pluginWithServer("linux-arm64", "ns-next-lsp")
+        val plugin = pluginWithServer("linux-arm64", "ns-next-analyzer")
         assertEquals(
-            ServerLocation.Found(plugin.resolve("bin/linux-arm64/ns-next-lsp")),
+            ServerLocation.Found(plugin.resolve("bin/linux-arm64/ns-next-analyzer")),
             ServerBinaryLocator(null, plugin, "Linux", "aarch64").locate(),
         )
     }
 
     @Test fun noServerForThisPlatform() {
-        val plugin = pluginWithServer("windows-x64", "ns-next-lsp.exe")
+        val plugin = pluginWithServer("windows-x64", "ns-next-analyzer.exe")
         assertEquals(
             ServerLocation.NotBundledForPlatform("macos-arm64"),
             ServerBinaryLocator(null, plugin, "Mac OS X", "aarch64").locate(),

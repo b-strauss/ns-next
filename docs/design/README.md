@@ -107,13 +107,14 @@ crates/
   ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
                 core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
-  ns-lsp/       the `ns-next-lsp` binary: the editor's language server --
-                diagnostics, semantic tokens, fold ranges, document symbols
+  ns-analyzer/  the `ns-next-analyzer` binary: the editor tooling, whose `lsp`
+                command is the language server -- diagnostics, semantic
+                tokens, fold ranges, document symbols
   ns-memory/    reserved, committed and protected memory; the only crate with unsafe
 editors/
   jetbrains/    the JetBrains plugin: a Kotlin lexer mirroring ns-syntax's,
                 highlighting, a structure view, and the connection to
-                ns-next-lsp over the native LSP API
+                ns-next-analyzer over the native LSP API
 ```
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
@@ -323,14 +324,14 @@ These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo nextest run --workspace --exclude ns-lsp   # includes every golden, under both lowerings
-cargo test --workspace --exclude ns-lsp --doc    # the doctests, which nextest does not run
-NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-lsp   # the same, moving everything at the run loop's safepoints
-NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-lsp  # the same, vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-lsp # the same, collecting at every safepoint
-NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace --exclude ns-lsp    # the same, every instruction in its wide form
+cargo nextest run --workspace --exclude ns-analyzer   # includes every golden, under both lowerings
+cargo test --workspace --exclude ns-analyzer --doc    # the doctests, which nextest does not run
+NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-analyzer   # the same, moving everything at the run loop's safepoints
+NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-analyzer  # the same, vacating every inline cache at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-analyzer # the same, collecting at every safepoint
+NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace --exclude ns-analyzer    # the same, every instruction in its wide form
 # (the finishing-a-batch skill runs the four stress modes at once, each into its own log)
-cargo nextest run -p ns-lsp             # the editor's language server: never starts the VM, so excluded above
+cargo nextest run -p ns-analyzer             # the editor's language server: never starts the VM, so excluded above
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
 cargo run -p ns-cli -- parse-corpus corpus/modules   # parsed 211, failed 0

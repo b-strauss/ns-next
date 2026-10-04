@@ -75,7 +75,7 @@ fn the_editor_entry_agrees_with_resolve() {
 }
 
 fn assert_no_internal_error(text: &str, context: &str) {
-    for finding in ns_lsp::analysis::analyze(text).findings {
+    for finding in ns_analyzer::analysis::analyze(text).findings {
         assert!(
             !finding.message.contains("internal error"),
             "{context}: {}",
@@ -176,7 +176,7 @@ fn no_truncated_module_declares_an_empty_name() {
 /// cut of one: a client refuses the whole answer otherwise.
 #[test]
 fn every_symbol_selection_lies_inside_its_range() {
-    fn check(symbols: &[ns_lsp::document_symbols::Symbol], context: &str) {
+    fn check(symbols: &[ns_analyzer::document_symbols::Symbol], context: &str) {
         for symbol in symbols {
             assert!(
                 symbol.span.start <= symbol.selection.start
@@ -194,7 +194,7 @@ fn every_symbol_selection_lies_inside_its_range() {
         for end in cut_points(&path, &text, false) {
             let module = ns_syntax::parse_for_editor(&text[..end]).module;
             let context = format!("{} cut at byte {end}", path.display());
-            check(&ns_lsp::document_symbols::symbols(&module), &context);
+            check(&ns_analyzer::document_symbols::symbols(&module), &context);
         }
     }
 }

@@ -16,7 +16,7 @@ class NewspeakLspClientDescriptor(project: Project, private val server: Path) :
     ProjectWideLspClientDescriptor(project, "Newspeak") {
     override fun isSupportedFile(file: VirtualFile): Boolean = file.fileType == NewspeakFileType
 
-    override fun createCommandLine(): GeneralCommandLine = GeneralCommandLine(server.toString())
+    override fun createCommandLine(): GeneralCommandLine = GeneralCommandLine(server.toString(), "lsp")
 
     override val lspCustomization: LspCustomization = NewspeakLspCustomization
 }

@@ -65,7 +65,7 @@ fn an_editor_session() {
     let (server, client) = Connection::memory();
     let server_thread = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(move || ns_lsp::server::run(server).map_err(|error| error.to_string()))
+        .spawn(move || ns_analyzer::server::run(server).map_err(|error| error.to_string()))
         .expect("spawn the server");
 
     let capabilities = request(&client, 1, "initialize", json!({ "capabilities": {} }));
@@ -227,7 +227,7 @@ fn a_malformed_notification_is_reported_and_the_server_keeps_serving() {
     let (server, client) = Connection::memory();
     let server_thread = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(move || ns_lsp::server::run(server).map_err(|error| error.to_string()))
+        .spawn(move || ns_analyzer::server::run(server).map_err(|error| error.to_string()))
         .expect("spawn the server");
     request(&client, 1, "initialize", json!({ "capabilities": {} }));
     notify(&client, "initialized", json!({}));
@@ -276,7 +276,7 @@ fn an_unknown_request_is_method_not_found() {
     let (server, client) = Connection::memory();
     let server_thread = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
-        .spawn(move || ns_lsp::server::run(server).map_err(|error| error.to_string()))
+        .spawn(move || ns_analyzer::server::run(server).map_err(|error| error.to_string()))
         .expect("spawn the server");
     request(&client, 1, "initialize", json!({ "capabilities": {} }));
     notify(&client, "initialized", json!({}));

@@ -36,20 +36,21 @@ Rust 1.98.0, edition 2021, five crates:
 - `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
   `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
   JSON project file of several modules (`project.rs`, `program.rs`).
-- `crates/ns-lsp` — the `ns-next-lsp` binary: a language server for `.ns` files
-  (diagnostics, semantic tokens, fold ranges, document symbols) and
-  `dump-tokens`, which the JetBrains plugin's lexer is checked against. It never starts the VM; its server dependencies
+- `crates/ns-analyzer` — the editor tooling, the `ns-next-analyzer` binary: `lsp`, a
+  language server for `.ns` files (diagnostics, semantic tokens, fold ranges,
+  document symbols), and `dump-tokens`, which the JetBrains plugin's lexer is
+  checked against. It never starts the VM; its server dependencies
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime`,
-  and `serde_json` is shared by `ns-lsp` and `ns-cli` (the project file is JSON)
+  and `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project file is JSON)
   (`docs/design/editor-support.md`).
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
-  POSIX). The only crate with `unsafe`; `ns-runtime` and `ns-lsp` forbid it.
+  POSIX). The only crate with `unsafe`; `ns-runtime` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space").
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
-module (`LexerComparisonTest`), the connection to `ns-next-lsp`, and a
+module (`LexerComparisonTest`), the connection to `ns-next-analyzer`, and a
 structure view of its own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
@@ -236,17 +237,17 @@ Before every commit:
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets          # must be warning-free
-cargo nextest run --workspace --exclude ns-lsp  # every golden, both lowerings
-cargo test --workspace --exclude ns-lsp --doc   # nextest runs no doctests
+cargo nextest run --workspace --exclude ns-analyzer  # every golden, both lowerings
+cargo test --workspace --exclude ns-analyzer --doc   # nextest runs no doctests
 cargo run -p ns-cli -- parse-corpus corpus/modules   # "parsed 211, failed 0"
 ```
 
 Plus, per commit touching them:
 
-- `crates/ns-lsp` or `crates/ns-syntax` → `cargo nextest run -p ns-lsp`
+- `crates/ns-analyzer` or `crates/ns-syntax` → `cargo nextest run -p ns-analyzer`
 - `crates/ns-memory` → `cargo clippy -p ns-memory --all-targets --target x86_64-unknown-linux-gnu`
   and the same for `aarch64-apple-darwin`
-- `editors/jetbrains`, `crates/ns-lsp` or `crates/ns-syntax` →
+- `editors/jetbrains`, `crates/ns-analyzer` or `crates/ns-syntax` →
   `./editors/jetbrains/gradlew -p editors/jetbrains check` (when unsure whether
   a change reaches the plugin, run it)
 

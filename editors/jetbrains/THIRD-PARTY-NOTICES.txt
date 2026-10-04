@@ -1,10 +1,10 @@
-ns-next-lsp, bundled in this plugin, contains the following third-party crates.
+ns-next-analyzer, bundled in this plugin, contains the following third-party crates.
 
-This list covers only what `cargo tree -p ns-lsp -e normal,no-proc-macro`
-shows compiled into the `ns-next-lsp` binary itself -- it excludes
+This list covers only what `cargo tree -p ns-analyzer -e normal,no-proc-macro`
+shows compiled into the `ns-next-analyzer` binary itself -- it excludes
 build-time-only proc-macro dependencies (such as `unicode-ident`, reached
 only through `serde_derive`/`serde_repr`, whose generated code never ships
-in the binary) and this repository's own `ns-lsp`, `ns-runtime` and
+in the binary) and this repository's own `ns-analyzer`, `ns-runtime` and
 `ns-syntax` crates (MIT, see the repository's own LICENSE).
 
     bitflags 1.3.2 -- MIT/Apache-2.0
