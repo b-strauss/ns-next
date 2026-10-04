@@ -35,12 +35,23 @@ dependencies {
         // without the module still loads this plugin; this entry is only
         // what puts its classes on the compile and test classpath.
         bundledModule("intellij.spellchecker")
+        // The JSON plugin, for the schema it gives `newspeak.json`. plugin.xml
+        // declares the dependency optional, as the spellchecker's.
+        bundledPlugin("com.intellij.modules.json")
     }
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.opentest4j:opentest4j:1.3.0")
 }
 
 val repositoryRoot = layout.projectDirectory.dir("../..").asFile
+
+// The project file's schema has one copy, at the repository root, which
+// ns-next's reader is held to; the plugin bundles that copy.
+tasks.processResources {
+    from(repositoryRoot.resolve("schemas/newspeak.schema.json")) {
+        into("schemas")
+    }
+}
 
 val executableSuffix = if (System.getProperty("os.name").startsWith("Windows")) ".exe" else ""
 

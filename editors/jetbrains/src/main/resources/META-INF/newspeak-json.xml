@@ -1,0 +1,5 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="JavaScript.JsonSchema">
+        <ProviderFactory implementation="io.github.bstrauss.newspeak.project.NewspeakJsonSchemaProviderFactory"/>
+    </extensions>
+</idea-plugin>

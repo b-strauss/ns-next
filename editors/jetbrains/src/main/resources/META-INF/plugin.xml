@@ -18,6 +18,8 @@
       <li>A structure view and breadcrumbs from ns-next's parser: each class with its factory,
           its slots and methods with their access shown as in Java, its class-side methods
           marked static as in Java, and sticky lines — kept while a file has syntax errors.</li>
+      <li>Completion and validation in <code>newspeak.json</code>, ns-next's project file, from
+          its schema.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with
@@ -27,7 +29,8 @@
 
     <change-notes><![CDATA[
     <p>0.1.0: highlighting, errors as you type, semantic colouring, code folding, and a
-    structure view with breadcrumbs.</p>
+    structure view with breadcrumbs. Completion and validation in <code>newspeak.json</code>
+    from the project file's schema.</p>
     ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
@@ -35,6 +38,9 @@
     <!-- Optional: an IDE built without the spellchecker module still loads this
          plugin, with no spell checking in Newspeak comments and strings. -->
     <depends optional="true" config-file="newspeak-spellchecker.xml">com.intellij.modules.spellchecker</depends>
+    <!-- Optional: an IDE built without the JSON plugin still loads this plugin,
+         with no schema for newspeak.json. -->
+    <depends optional="true" config-file="newspeak-json.xml">com.intellij.modules.json</depends>
 
     <extensions defaultExtensionNs="com.intellij">
         <fileType name="Newspeak"
