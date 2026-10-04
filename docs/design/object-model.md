@@ -145,11 +145,11 @@ object's format says is a pointer ([memory.md](memory.md), "What the
 collector traces"). What still holds a Rust-side value or handle -- a stack
 entry's receiver, a continuation's state, a host's `Root` -- keeps its brand
 and its `Trace`.
-Under generations (road step 4) a scavenge walks only the young objects and
-the remembered ones, so an old object whose store missed the barrier would
-keep a stale young word; that is what `NS_NEXT_STRESS_SCAVENGE`, with the
-vacated survivor space and the vacated eden region made no-access, will catch
-([memory.md](memory.md), "Planned: generations").
+A scavenge walks only the young objects and the remembered ones, so an old
+object whose store missed the write barrier keeps a stale young word; that
+is what `NS_NEXT_STRESS_SCAVENGE`'s check of the remembered set before each
+scavenge, and a debug build's poison over the nursery a scavenge vacated,
+catch ([memory.md](memory.md), "Generations").
 
 A `String`'s words hold its code points in one of two widths and no handle
 ([core-library.md](core-library.md), "Strings are code points in two
@@ -1543,7 +1543,7 @@ own:
    inline, in two plans, both built: **3a, the representation** on the
    arena ("The object layout" below), and **3b, the space**
    ([memory.md](memory.md), "The object space").
-4. **Generations** ([memory.md](memory.md), "Planned: generations").
+4. **Generations** -- built ([memory.md](memory.md), "Generations").
 5. **`become:` through forwarders** ("Planned: `become:` through forwarders"
    below).
 6. **Inline allocation in the interpreter** ([memory.md](memory.md),
@@ -1593,8 +1593,8 @@ the lock bits into one 64-bit word:
 |---|---|
 | 0-21 | the application id -- the inline caches' guard ([dispatch.md](dispatch.md), "The dispatch id"); 0 is `NONE`, 1 `VACANT`, 2 the forwarder's, and the counter mints from 3 |
 | 22-26 | the format |
-| 27-30 | the age, for the generations (road step 4); 0 until then |
-| 31 | the remembered bit (road step 4); 0 until then |
+| 27-30 | the age: the scavenges a young object has survived, at most 15; 0 for a new object and meaningless for an old one ([memory.md](memory.md), "The age table and the tenuring threshold") |
+| 31 | the remembered bit: set on an old object in the remembered set, never on a young one ([memory.md](memory.md), "The remembered set and its limit") |
 | 32 | the negative bit of a `LargeInteger`, as Primordial Soup's `kNegativeBit` (`prior-art/primordialsoup/vm/object.h:48`) |
 | 33 | the mark bit, set while a collection runs and cleared as compaction moves the object ([memory.md](memory.md), "Marking") |
 | 34-55 | the identity hash, drawn lazily from the counter; 0 means none yet |
@@ -1698,8 +1698,8 @@ either layout open.
 | 2 | frame | a reified frame: ten fixed fields, then its registers |
 | 3 | closure | three fixed fields, then its copied values |
 | 4 | 64-bit-indexed | a `LargeInteger`'s magnitude (its sign in the header's negative bit), a boxed `Float` |
-| 5 | forwarded | a forwarder -- `become:`'s ("Planned: `become:` through forwarders") and the scavenger's for a young object it has copied -- whose class word holds the new location; none exists before road step 5 |
-| 6 | free | a gap a collector leaves, walkable like an object; none exists, since the sliding compaction leaves no gap |
+| 5 | forwarded | a forwarder -- `become:`'s ("Planned: `become:` through forwarders") and the scavenger's for a young object it has copied -- whose class word holds the new location; the scavenger's exist only while a scavenge runs, in the nursery it is vacating, and `become:`'s none before road step 5 |
+| 6 | free | a gap a collector leaves, walkable like an object; no object has it, since the sliding compaction and the scavenge leave no gap; a debug build writes it as the poison over the nursery a scavenge vacated, and `Heap::block` refuses it there ([memory.md](memory.md), "Finding a missed barrier: the scavenge stress mode") |
 | 7 | class | a class object: eight fixed fields |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
 | 16-23 | byte-indexed | a one-byte string or symbol |
@@ -1806,7 +1806,7 @@ So no frame object ever grows, and suspension, the debugger and
 edit-and-continue find room for the registers in every reified frame.
 Edit-and-continue adding locals will divorce the affected activation into a
 newly allocated, larger frame object -- allocated old and born remembered by
-the rule in [memory.md](memory.md), "Planned: generations" -- the VM
+the rule in [memory.md](memory.md), "Generations" -- the VM
 rewriting every reference to the old frame by a walk of every root the
 collector traces (`trace.rs`) and every heap object, since `become:` never
 forwards a frame; execution continues from the divorced frame, which needs a

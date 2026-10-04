@@ -943,7 +943,7 @@ plugin's own gate joins this:
   usual `fmt` and `clippy`. A change to `crates/ns-syntax/src/lexer.rs` must be
   mirrored in `NewspeakLexer.kt` in the same commit, or the comparison fails.
 - **Once at the end of a batch**, whether runtime or editor work, the full
-  suite under the four stress modes; and, for a batch that touched
+  suite under the five stress modes; and, for a batch that touched
   `editors/jetbrains/`, `./gradlew -p editors/jetbrains verifyPlugin buildPlugin`
   — which downloads several IDEs, and so is not a per-commit gate. A resolver
   change that shifts the semantic tokens is then noticed within one batch.

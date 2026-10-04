@@ -28,7 +28,7 @@ first.
 | Road step 3b — the object space | Complete | 2026-10-03 | [object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md) |
 | Editor support: code folding, the structure view with breadcrumbs and sticky lines, and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md), [editor-structure-view](superpowers/plans/2026-10-04-0134-editor-structure-view.md) |
 | One binary for looking at Newspeak without running it: `ns-next-analyzer`, the crate `ns-tooling`, one test suite | Complete | 2026-10-04 | [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md) |
-| Road step 4 — generations | Not started | — | — |
+| Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4335,3 +4335,66 @@ third-party notices cover `clap`, its dependencies and `windows-sys`.
 Commits: `71f282e8` the rename, `578dc9cd` `ns-tooling`, `3aac3339` and
 `d3c6ecff` the moved commands and one suite, `542f316b`, `37cb029f` the
 documents.
+
+## Generations (2026-10-04)
+
+Plan: [ns-next-generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md);
+[memory.md](design/memory.md), "Generations";
+[image-format.md](design/image-format.md), "The image under generations".
+
+Road step 4 ([OPEN-WORK.md](OPEN-WORK.md), "The road to a high-performance
+VM"), built in six stages, each green. The object space gains a young
+generation at the low end of its reservation: two survivor spaces of
+1 MiB and an eden of 8 MiB below the old space, young being one comparison
+against the nursery's end. A Cheney scavenger copies the nursery's
+survivors into a survivor space, or the old space once their age reaches a
+threshold that adapts by Strongtalk's age table under HotSpot's rule; a
+write barrier in `heap.rs`'s store accessors keeps a remembered set of old
+objects naming young ones; objects of 32 KiB and more, and those that find
+eden spent, are allocated old and born remembered; the full collection
+marks both generations and compacts them into the old space; an image load
+tenures once before the graph pass, which allocates old; and a fifth stress
+mode, `NS_NEXT_STRESS_SCAVENGE`, verifies the remembered set before every
+scavenge while every debug-build scavenge poisons the nursery it vacated.
+Four decisions were taken with the user while planning: verification and
+poisoning, not page protection, to find a missed barrier; the full
+collection compacting both generations into the old space; the nursery's
+sizes after HotSpot's ratio, with Primordial Soup's large-object and
+remembered-set limits; and one tenure per load, between the platform paths
+and the graph pass.
+
+- `a090bfb4` -- the object space is two survivor spaces, eden and the old
+  space; every allocation still goes old.
+- `e0166bc4` -- the header's age and remembered bits are written; a write
+  barrier and a remembered set behind the store accessors; large objects
+  and born-remembered allocations.
+- `99b1e581` -- the copying scavenger with age-based tenuring, built and
+  tested on bare heaps; `e66dae72` -- the move stress mode relocates the
+  remembered set; `b6ce9aa3` -- the scavenge checks a canonical symbol's
+  heap and epoch before it rebrands it.
+- `f9d11090` -- the full collection compacts both generations into the old
+  space.
+- `d4b0592f` -- the run loop's safepoint scavenges, an image load tenures,
+  and every heap allocates young; `133e4763` -- a release build expects the
+  past survivor space to go unnamed.
+- `24a4e0e0` -- the scavenge stress mode, which verifies the remembered set,
+  and the poison over vacated nursery memory.
+- The documentation commit after them -- the design documents describe the
+  built state and record the measurement.
+
+Measured against `664f5f07`, the tree the branch started from: six of the
+twenty-four sources are faster with separated ranges, by 5.1% to 9.9%
+(`bench_block.ns`), CD by 8.3% and Havlak by 7.7% among them; every
+source's full collections fell, Havlak's from 780 to 85 and CD's from
+18,844 to none; the barrier holds 0.1% to 0.3% of the samples. Sieve is
+6.8% slower, separated, and Permute, RichardsTon80 and the allocating
+microbenchmarks 1.5% to 4.5%, from the first touch of eden's pages in a
+short process ([execution.md](design/execution.md), "What generations
+moved").
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): eden's
+first-touch cost and the sizes that would trade it; statistics that cannot
+show why Havlak still collects in full; the constants the plan chose for
+the user to confirm; and the tests and comments its reviews deferred. The
+next session starts at road step 5, `become:` through forwarders
+([OPEN-WORK.md](OPEN-WORK.md), "Next").

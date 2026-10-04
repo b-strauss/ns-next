@@ -15,22 +15,25 @@ when they were written.
 
 ## Next
 
-**Road step 4, generations** ("Step 4, generations" below): eden and two
-survivor spaces at the low end of the object space's reservation, below the
-old space; a copying scavenger with age-based tenuring; a remembered bit and
-set behind the store accessors; large objects allocated old; and a load
-that tenures before the decoder allocates ([memory.md](design/memory.md),
-"Planned: generations"; [image-format.md](design/image-format.md),
-"Planned: the image under generations"), with the mark-compact of the
-object space as the old space's collector. Its design is in those sections;
-it has no implementation plan yet, so the next session starts by writing
-one. Everything before it on the road is built: road step 2's eight-byte
-value, the compact instruction encoding, road step 3a, the object
-representation, and road step 3b, the object space
-([memory.md](design/memory.md), "The object space"), which put every
-object -- a header word, a class word and its fields -- in one space in
-`ns-memory`'s reservation, named by a 64-bit byte offset. Each has its
-entry in [PROGRESS.md](PROGRESS.md); the whole road is below.
+**Road step 5, `become:` through forwarders** ("Step 5, `become:` through
+forwarders" below), after Spur: `become:` turns the old object into a
+forwarder -- the forwarded format, the target in its class word, a reserved
+application id that is never a send's guard -- and every send unforwards
+its receiver in one shared step before it resolves; with it come the
+recorded guard of an activation and the slot-access check, since `become:`
+is the first way a running activation's receiver can change shape, and the
+refusal of a program's `become:` on value objects and class objects
+([object-model.md](design/object-model.md), "Planned: `become:` through
+forwarders", "Planned with road step 5: what a slot access checks"). Its
+design is in those sections; it has no implementation plan yet, so the
+next session starts by writing one. Everything before it on the road is
+built, road step 4 last: generations
+([memory.md](design/memory.md), "Generations";
+[image-format.md](design/image-format.md), "The image under
+generations"), whose scavenger already follows a forwarder chain whatever
+made each link, and whose forwarded format is the one `become:` will
+write. Each step has its entry in [PROGRESS.md](PROGRESS.md); the whole
+road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree
@@ -122,10 +125,16 @@ and `prior-art/newspeak-benchmarks`.
   overflow word, the mark bit in the header and sliding compaction through
   a live-word bitmap. [memory.md](design/memory.md), "The object space";
   [execution.md](design/execution.md), "What the object space moved".
-- **Step 4, generations**: eden and two survivor spaces below the old space,
-  a copying scavenger with age-based tenuring, and a remembered bit and set
-  behind the store accessors. [memory.md](design/memory.md), "Planned:
-  generations".
+- **Step 4, generations -- built** (2026-10-04,
+  [its plan](superpowers/plans/2026-10-04-2030-ns-next-generations.md)):
+  eden and two survivor spaces below the old space, a Cheney scavenger with
+  age-based tenuring, a remembered bit and set behind the store accessors'
+  write barrier, large objects allocated old, a full collection that
+  compacts both generations into the old space, an image load that tenures
+  once before the graph pass allocates old, and a fifth stress mode that
+  verifies the remembered set and poisons the vacated nursery.
+  [memory.md](design/memory.md), "Generations";
+  [execution.md](design/execution.md), "What generations moved".
 - **Step 5, `become:` through forwarders**, after Spur. It brings the
   recorded guard of an activation and the slot-access check with it, since
   `become:` is the first way a running activation's receiver can change
@@ -169,11 +178,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **A debug build's no-access protection of vacated pages**, for when
   generated code dereferences addresses itself (road step 8, the baseline
   JIT). The heap protects no page today: its accessors lend only the words
-  below the space's top, so a stale offset into the tail a compaction
-  vacated already finds no word, and one below the top is caught by the
-  debug build's epoch check. Generated code that loads through base plus
-  handle bypasses the slice, and protecting what a compaction or, under
-  generations, a scavenge vacates is what turns its stale load into a fault
+  below the old space's top, so a stale offset into the tail a compaction
+  vacated already finds no word, one below the top is caught by the
+  debug build's epoch check, and a word naming the nursery a scavenge
+  vacated reads the debug build's poison. Generated code that loads through base plus
+  handle bypasses the slice, and protecting what a compaction or a
+  scavenge vacates is what turns its stale load into a fault
   (deferred with the user on 2026-10-03; `ns-memory` already supplies
   `Protection::NoAccess`). [memory.md](design/memory.md), "The object
   space", "The memory layer".
@@ -545,23 +555,47 @@ value objects are never copied across an actor boundary (§3.1.1).
 
 ## Unexplained measurements and unmeasured decisions
 
-- **About 1 ms per round of `bench_block.ns`'s collector cost is
-  unexplained.** The pause accounts for about 1.4 ms of the 2.46 ms the
-  collector added per round; on the four other collecting sources the pause
-  *exceeds* the measured difference, on `bench_block.ns` it falls 1.05 ms
-  short. What sets `bench_block.ns` apart: 269 collections against 26 to 107
-  at a similar live count, and, when measured, the only populated frame
-  arena. Three cheap experiments, none run: a fixture whose blocks capture nothing (separates
-  the reified frames from everything else); varying `COLLECTION_FLOOR`
-  (separates a cost that tracks the collection count from one that tracks
-  the pause); and `COLLECTION_FLOOR` raised above the whole allocation, so it
-  never collects but still pays the trigger's comparison. Not run either:
-  whether the max-over-median latency gap persists under the collector. The
-  allocator measurement put 16.9% of `bench_block.ns`'s samples in the
-  Windows heap ([memory.md](design/memory.md), "What owning the memory
-  gave"); the object space removed the per-object allocations and frees,
-  and `bench_block.ns` now makes 229 collections over `bench --iterations
-  10`, 12.0 ms of pause in all, but the residual was not measured afresh.
+- **Eden's first touch costs the short allocating programs 1.5% to 6.8%.**
+  Measured with road step 4 against its base, Sieve is 6.8% slower
+  (separated), Permute 4.5% and RichardsTon80 3.1% (separated in one
+  sitting), and the four allocating microbenchmarks 1.5% to 3.7%, under
+  `bench --iterations 10`. The measurement's reading: each scavenges at most
+  once, so nearly every allocation lands on a page of the 8 MiB eden the
+  process has never touched -- about 1,800 extra page faults per process and
+  their zeroing, the kernel's samples up by about 900 over sixty Sieve or
+  Permute processes -- while the barrier holds 0.1% to 0.3% of the samples
+  and `remember` none; at `--iterations 200` every one of them is faster
+  than before. A smaller eden (2 or 4 MiB) would touch fewer pages and
+  scavenge Havlak, CD and DeltaBlue roughly two to four times as often;
+  pre-faulting eden when the heap is made would move the cost into startup
+  and raise every program's peak working set by 8 MiB (`bench_loop.ns` from
+  6.5 to about 14.5 MB). Neither is measured: eden variants (2, 4 and
+  8 MiB, `EDEN_BYTES` in `heap/space.rs`, with `SURVIVOR_BYTES` at an
+  eighth) over all twenty-four sources would settle it. Noted 2026-10-04.
+  [execution.md](design/execution.md), "What generations moved";
+  [memory.md](design/memory.md), "Generations".
+- **Why Havlak still makes 85 full collections cannot be seen.** Road step 4
+  took it from 780 to 85, and its scavenges are the expensive ones, 0.65 ms
+  each; whether its survivors are tenured early -- by a full survivor space
+  or the adaptive threshold -- or its graph is long-lived and rightly
+  tenured, `--collector-statistics` cannot say, since it reports no promoted
+  bytes, no survivor occupancy and no tenuring threshold
+  (`crates/ns-cli/src/entry.rs`, `print_collector_statistics`;
+  `Heap::collector_statistics`). Recording the three per scavenge would
+  answer it before the survivor spaces' size or the threshold's rule is
+  revisited. Noted 2026-10-04. [execution.md](design/execution.md), "What
+  generations moved".
+- **Road step 4's constants chosen by its plan await the user's
+  confirmation**, each one line to change and none measured on its own:
+  eden's 512 KiB reserve (`EDEN_RESERVE`), the scavenge threshold of 7.5 MiB
+  it leaves; an allocation that finds eden spent going old, born
+  remembered; 264 bytes of slack in every nursery region (`REGION_SLACK`);
+  the old space's first 256 KiB committed past the nursery, which is
+  committed whole; a scavenge leaving resolved futures to the full
+  collection; and the remembered set's verification under
+  `NS_NEXT_STRESS_SCAVENGE` only. The measurement found nothing for or
+  against the reserve or the 32 KiB large-object limit.
+  [memory.md](design/memory.md), "Generations".
 - **Mandelbrot 2.5%, `bench_loop.ns` 1.9% and NBody 1.5% slower after the
   object space**, each with separated ranges against the tree road step 3b
   started from, `d3e9f6f`, while seventeen of the twenty-four sources got
@@ -887,6 +921,17 @@ text and `to:by:do:`'s zero step.
   `two_modules_draw_the_same_identity_hashes_under_run_and_load`'s comment
   claims it pins module order, which a review judged its fixture probably
   cannot tell apart from a load that merely draws no new hash.
+- Road step 4's unit tests leave out (noted in its reviews, 2026-10-04):
+  `Space::new`'s refusal of a reservation too small for the nursery and the
+  old space's first commit (`heap/space.rs`, `MemoryError::InvalidRange`);
+  the move's `Shift::apply` across several non-empty regions at once, which
+  only the stress runs exercise; that a full collection clears every
+  survivor's age, and that it places the past survivor space's survivors
+  before eden's; a stale canonical-symbol entry refused by the scavenge's
+  check (`Heap::forward_weak_symbols`); and a disagreement of the
+  remembered set and the remembered bits, which
+  `Heap::verify_remembered_set` asserts by comparing their counts only, so
+  a set and bits that differ in membership but not in number pass.
 
 ## Code quality follow-ups
 
@@ -946,6 +991,15 @@ Small, deliberately left, none affecting an outcome.
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
 
+- Road step 4's leftovers (noted 2026-10-04): `Heap::scavenge` and
+  `Heap::move_everything` hand `out_of_memory` an end offset, not a byte
+  count; `Heap::verify_remembered_set`'s comment cites Strongtalk's
+  `rSet::verify` (`prior-art/strongtalk/vm/memory/rSet.cpp:275`), which in
+  the prior art is a stub that answers `true`, where `VerifyBeforeScavenge`
+  (`universe_more.cpp:98`) is the precedent; `interpreter/safepoint.rs`'s
+  module comment has one line not rewrapped; and `tests/collector.rs`'s
+  `every_kind_of_stored_word_survives_moves_and_collections` runs a
+  scavenge at every safepoint too, which its name does not say.
 - `crates/ns-analyzer/src/document_symbols.rs` (noted 2026-10-04): `effective`
   answers an `Option` that is always `Some`, so `detail`'s `(None, true)` arm
   is unreachable; and `SymbolCategory` has no doc comment of its own.
