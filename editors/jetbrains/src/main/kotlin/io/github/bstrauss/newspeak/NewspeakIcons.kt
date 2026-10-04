@@ -8,11 +8,17 @@ object NewspeakIcons {
     @JvmField
     val FILE: Icon = IconLoader.getIcon("/icons/newspeak.svg", NewspeakIcons::class.java)
 
-    /** The module's one top-level class in the structure view; `root_class_dark.svg` for dark themes. */
+    /**
+     * The module's one top-level class in the structure view;
+     * `root_class_dark.svg` for dark themes.
+     */
     @JvmField
     val ROOT_CLASS: Icon = IconLoader.getIcon("/icons/nodes/root_class.svg", NewspeakIcons::class.java)
 
-    /** A nested value class in the structure view; `value_class_dark.svg` for dark themes. */
+    /**
+     * A nested value class in the structure view; `value_class_dark.svg` for
+     * dark themes.
+     */
     @JvmField
     val VALUE_CLASS: Icon = IconLoader.getIcon("/icons/nodes/value_class.svg", NewspeakIcons::class.java)
 }

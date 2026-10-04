@@ -21,7 +21,7 @@ class NewspeakSymbolKindsTest {
         assertSame(AllIcons.Nodes.Function, NewspeakSymbolKinds.getIcon(SymbolKind.Constructor))
     }
 
-    @Test fun everyOtherKindTheServerSendsKeepsThePlatformsIcon() {
+    @Test fun aClassAndAMethodShowTheClassAndMethodIcons() {
         assertSame(AllIcons.Nodes.Class, NewspeakSymbolKinds.getIcon(SymbolKind.Class))
         assertSame(AllIcons.Nodes.Method, NewspeakSymbolKinds.getIcon(SymbolKind.Method))
     }

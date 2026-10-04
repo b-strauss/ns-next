@@ -8,7 +8,7 @@
 //! answers, so they survive while a file is typed. See
 //! `docs/design/editor-support.md`, "Structure".
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lsp_types::{DocumentSymbol, SymbolKind};
 use ns_runtime::Binding;
@@ -57,12 +57,13 @@ pub struct Symbol {
 /// for the same module (`ns_runtime::resolve_for_editor`); they tell which
 /// declaration a nested class's superclass or `<:` clause names.
 pub fn symbols(module: &ast::Module, bindings: &HashMap<Span, Binding>) -> Vec<Symbol> {
+    let value = value_classes(&module.root_class, bindings);
     // §6.3.1: "The access level of a top-level class is always public".
     vec![class(
         &module.root_class,
         Some(AccessModifier::Public),
-        bindings,
-        &[],
+        &value,
+        true,
     )]
 }
 
@@ -72,13 +73,13 @@ fn effective(declared: Option<AccessModifier>) -> Option<AccessModifier> {
     Some(declared.unwrap_or(AccessModifier::Protected))
 }
 
-/// `enclosing` is the chain of classes declaring this one, innermost first;
-/// empty for the module's root class.
+/// `value` holds the nested classes shown as value classes (`value_classes`);
+/// `root` marks the module's root class, whose answer is the root rule's.
 fn class(
     declaration: &ast::ClassDeclaration,
     access: Option<AccessModifier>,
-    bindings: &HashMap<Span, Binding>,
-    enclosing: &[&ast::ClassDeclaration],
+    value: &HashSet<Span>,
+    root: bool,
 ) -> Symbol {
     let name = if declaration.name.name.is_empty() {
         "(unnamed)".to_string()
@@ -86,13 +87,7 @@ fn class(
         declaration.name.name.clone()
     };
     let mut children = vec![factory(declaration)];
-    let mut chain = vec![declaration];
-    chain.extend_from_slice(enclosing);
-    children.extend(instance_members(
-        &declaration.instance_side,
-        bindings,
-        &chain,
-    ));
+    children.extend(instance_members(&declaration.instance_side, value));
     if let Some(class_side) = &declaration.class_side {
         children.extend(class_side.methods.iter().map(|declaration| Symbol {
             class_side: true,
@@ -104,10 +99,10 @@ fn class(
         category: SymbolCategory::Class,
         lazy: false,
         class_side: false,
-        value: if enclosing.is_empty() {
+        value: if root {
             ns_runtime::root_class_is_value(declaration)
         } else {
-            nested_class_is_value(declaration, bindings, enclosing, &mut Vec::new())
+            value.contains(&declaration.name.span)
         },
         access,
         span: declaration.span.merge(declaration.name.span),
@@ -116,59 +111,87 @@ fn class(
     }
 }
 
-/// Whether a nested class is shown as a value class. Unlike a root class's,
-/// a nested class's clauses are expressions evaluated in the enclosing
-/// object at run time (§6.1), so the editor can only approximate: a clause
-/// whose receiver the resolver binds to a nested class declared in this
-/// module makes it a value class when that class is one, or is the class
-/// named `Value` itself (as `Kernel.ns` declares it); any other receiver --
-/// a slot, a method, a name only inherited, `super` -- counts when it is
-/// named `Value`. A class that reaches `Value` through a class from another
-/// module, or through a `Value` slot holding something else, is misread.
-/// `visiting` holds the classes whose verdict is being decided, so a cycle
-/// of clauses (`A = B`, `B = A`) answers no rather than recursing forever.
-fn nested_class_is_value(
-    declaration: &ast::ClassDeclaration,
-    bindings: &HashMap<Span, Binding>,
-    enclosing: &[&ast::ClassDeclaration],
-    visiting: &mut Vec<Span>,
-) -> bool {
-    if visiting.contains(&declaration.name.span) {
-        return false;
-    }
-    visiting.push(declaration.name.span);
-    let value = declaration
-        .superclass
-        .iter()
-        .chain(&declaration.mixin_applications)
-        .any(|clause| {
-            let named = match bindings.get(&clause.receiver.span) {
-                // The clause runs in the enclosing class, so depth 0 is
-                // `enclosing[0]`; a nested class is declared on its
-                // instance side.
-                Some(Binding::LexicalSend { depth }) => enclosing
-                    .get(usize::from(*depth))
-                    .map(|owner| (owner, usize::from(*depth)))
-                    .and_then(|(owner, depth)| {
-                        owner
-                            .instance_side
-                            .nested_classes
-                            .iter()
-                            .find(|nested| nested.name.name == clause.receiver.name)
-                            .map(|nested| (nested, depth))
-                    }),
-                _ => None,
-            };
-            match named {
-                Some((target, depth)) => {
-                    target.name.name == "Value"
-                        || nested_class_is_value(target, bindings, &enclosing[depth..], visiting)
-                }
-                None => clause.receiver.name == "Value",
+/// The nested classes shown as value classes, by the span of their names.
+/// Unlike a root class's, a nested class's clauses are expressions
+/// evaluated in the enclosing object at run time (§6.1), so the editor can
+/// only approximate: a clause whose receiver the resolver binds to a nested
+/// class declared in this module makes the class a value class when that
+/// class is one, or is the class named `Value` itself (as `Kernel.ns`
+/// declares it); any other receiver -- a slot, a method, a name only
+/// inherited, `super` -- counts when it is named `Value`. A class that
+/// reaches `Value` through a class from another module, or through a
+/// `Value` slot holding something else, is misread.
+///
+/// Each class's clauses are read once into edges to the classes they name,
+/// and value-ness is spread backwards along them from the classes that reach
+/// `Value` directly: linear in the classes and clauses, and the same
+/// whichever class is asked first, a cycle of clauses included.
+fn value_classes(root: &ast::ClassDeclaration, bindings: &HashMap<Span, Binding>) -> HashSet<Span> {
+    let mut value = HashSet::new();
+    let mut named_by: HashMap<Span, Vec<Span>> = HashMap::new();
+    let mut chain = vec![root];
+    collect_clauses(root, bindings, &mut chain, &mut value, &mut named_by);
+    let mut pending: Vec<Span> = value.iter().copied().collect();
+    while let Some(target) = pending.pop() {
+        for &naming in named_by.get(&target).into_iter().flatten() {
+            if value.insert(naming) {
+                pending.push(naming);
             }
-        });
-    visiting.pop();
+        }
+    }
     value
+}
+
+/// Reads the clauses of every class nested in `chain[0]`, `chain` being the
+/// class declaring them and then the classes enclosing it.
+fn collect_clauses<'a>(
+    declaring: &'a ast::ClassDeclaration,
+    bindings: &HashMap<Span, Binding>,
+    chain: &mut Vec<&'a ast::ClassDeclaration>,
+    value: &mut HashSet<Span>,
+    named_by: &mut HashMap<Span, Vec<Span>>,
+) {
+    for nested in &declaring.instance_side.nested_classes {
+        for clause in nested.superclass.iter().chain(&nested.mixin_applications) {
+            match clause_target(clause, bindings, chain) {
+                Some(target) if target.name.name == "Value" => {
+                    value.insert(nested.name.span);
+                }
+                Some(target) => named_by
+                    .entry(target.name.span)
+                    .or_default()
+                    .push(nested.name.span),
+                None if clause.receiver.name == "Value" => {
+                    value.insert(nested.name.span);
+                }
+                None => {}
+            }
+        }
+        chain.insert(0, nested);
+        collect_clauses(nested, bindings, chain, value, named_by);
+        chain.remove(0);
+    }
+}
+
+/// The nested class of this module a clause's receiver is bound to, if any.
+/// The clause runs in the declaring class (`chain[0]`), so a `LexicalSend`'s
+/// depth counts out from there; a nested class is declared on an instance
+/// side.
+fn clause_target<'a>(
+    clause: &ast::SuperclassClause,
+    bindings: &HashMap<Span, Binding>,
+    chain: &[&'a ast::ClassDeclaration],
+) -> Option<&'a ast::ClassDeclaration> {
+    let Some(Binding::LexicalSend { depth }) = bindings.get(&clause.receiver.span) else {
+        return None;
+    };
+    let depth = usize::from(*depth);
+    chain
+        .get(depth)?
+        .instance_side
+        .nested_classes
+        .iter()
+        .find(|nested| nested.name.name == clause.receiver.name)
 }
 
 /// The primary factory: the pattern as written, or `new`, which a class
@@ -195,17 +218,12 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
 }
 
 /// Header slots, lazy slots, nested classes and methods, in source order.
-/// `chain` is the class declaring them, then the classes enclosing it.
-fn instance_members(
-    body: &ast::ClassBody,
-    bindings: &HashMap<Span, Binding>,
-    chain: &[&ast::ClassDeclaration],
-) -> Vec<Symbol> {
+fn instance_members(body: &ast::ClassBody, value: &HashSet<Span>) -> Vec<Symbol> {
     let mut members: Vec<Symbol> = body.slots.iter().map(slot).collect();
     members.extend(
         body.nested_classes
             .iter()
-            .map(|nested| class(nested, effective(nested.access), bindings, chain)),
+            .map(|nested| class(nested, effective(nested.access), value, false)),
     );
     members.extend(body.methods.iter().map(method));
     members.sort_by_key(|member| member.span.start);
@@ -303,8 +321,9 @@ fn pattern_span(pattern: &ast::MessagePattern) -> Span {
 
 /// The access word, then ` class` for a class-side method, ` value` for a
 /// value class and ` lazy` for a lazy slot (`public class`, `public value`,
-/// `protected lazy`); `None` where a symbol has none of them. `class` is how a client tells a class-side method from an
-/// instance-side one, since no node stands for a side.
+/// `protected lazy`); `None` where a symbol has none of them. `class` is how
+/// a client tells a class-side method from an instance-side one, since no
+/// node stands for a side.
 fn detail(symbol: &Symbol) -> Option<String> {
     let access = symbol.access.map(|access| match access {
         AccessModifier::Public => "public",
@@ -362,7 +381,7 @@ pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<Doc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indoc::indoc;
+    use indoc::{formatdoc, indoc};
 
     /// The symbols of a module with the resolver's bindings for it, as the
     /// server computes them.
@@ -687,6 +706,73 @@ mod tests {
                 ("Second", "protected"),
             ])
         );
+    }
+
+    /// Whichever of two classes naming each other is reached first, both
+    /// are value classes when one of them applies `Value`.
+    #[test]
+    fn a_cycle_of_clauses_answers_the_same_in_either_order() {
+        for (first, second) in [("A", "B"), ("B", "A")] {
+            let text = formatdoc! {"
+                class Module = () (
+                    class {first} = {second} ()
+                    class {second} = {first} <: Value ()
+                )
+            "};
+            let found = class_details(&text);
+            assert_eq!(
+                found,
+                named(&[
+                    ("Module", "public"),
+                    (first, "protected value"),
+                    (second, "protected value"),
+                ]),
+                "{first} first"
+            );
+        }
+    }
+
+    /// Each class's verdict is decided once: a chain of forty classes, each
+    /// naming the next twice, would take 2^40 steps if every clause decided
+    /// its target afresh.
+    #[test]
+    fn a_long_chain_of_clauses_is_decided_in_linear_time() {
+        let length = 40;
+        let mut classes = String::new();
+        for index in 0..length {
+            let next = index + 1;
+            classes.push_str(&format!(
+                "    class C{index} = C{next} <: C{next} ()
+"
+            ));
+        }
+        classes.push_str(&format!(
+            "    class C{length} = Object <: Value ()
+"
+        ));
+        let text = format!(
+            "class Module = () (
+{classes})
+"
+        );
+        let started = std::time::Instant::now();
+        let found = class_details(&text);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(found.len(), length + 2);
+        assert!(found[1..]
+            .iter()
+            .all(|(_, detail)| detail.as_deref() == Some("protected value")));
+        let unvalued = text.replace("Object <: Value", "Object");
+        let started = std::time::Instant::now();
+        let found = class_details(&unvalued);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert!(found
+            .iter()
+            .all(|(_, detail)| !detail.as_deref().unwrap_or("").contains("value")));
     }
 
     /// A class declared as `Value`, as `Kernel.ns` declares it, makes the

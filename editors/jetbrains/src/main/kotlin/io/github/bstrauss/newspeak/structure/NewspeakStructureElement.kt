@@ -1,8 +1,8 @@
 package io.github.bstrauss.newspeak.structure
 
 import com.intellij.icons.AllIcons
-import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.ide.projectView.PresentationData
+import com.intellij.ide.structureView.StructureViewTreeElement
 import com.intellij.navigation.ItemPresentation
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
@@ -10,6 +10,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.util.getOffsetInDocument
 import com.intellij.ui.IconManager
+import com.intellij.ui.icons.IconWrapperWithToolTip
 import io.github.bstrauss.newspeak.NewspeakIcons
 import io.github.bstrauss.newspeak.lsp.NewspeakSymbolKinds
 import org.eclipse.lsp4j.DocumentSymbol
@@ -34,8 +35,9 @@ data class SymbolPresentation(
 /**
  * The server's `detail` is the effective access word, then ` class` for a
  * class-side method, ` value` for a value class and ` lazy` for a lazy slot
- * (`public class`, `public value`, `protected lazy`); a temporary has none. A first word that is no access word
- * shows no access icon rather than a guessed one.
+ * (`public class`, `public value`, `protected lazy`); a temporary has none.
+ * A first word that is no access word shows no access icon rather than a
+ * guessed one.
  *
  * The icons and hover texts follow what a member can do, not LSP's names for
  * the kinds: a slot with a getter only (`Constant`) and an immutable temporary
@@ -102,13 +104,25 @@ private fun withAccess(access: String?, noun: String): String =
  * layer flag of the platform's.
  */
 fun rowIconOf(presentation: SymbolPresentation): Icon? {
-    val kindIcon = presentation.kindIcon
-        ?.let { icon ->
-            if (presentation.classSide) IconManager.getInstance().createLayered(icon, AllIcons.Nodes.StaticMark) else icon
-        }
-        ?: return presentation.visibilityIcon
+    val baseIcon = presentation.kindIcon ?: return presentation.visibilityIcon
+    val kindIcon = if (presentation.classSide) {
+        IconManager.getInstance().createLayered(baseIcon, AllIcons.Nodes.StaticMark)
+    } else {
+        baseIcon
+    }
     val visibilityIcon = presentation.visibilityIcon ?: return kindIcon
     return IconManager.getInstance().createRowIcon(kindIcon, visibilityIcon)
+}
+
+/**
+ * The row icon with the hover text as its own tooltip, so that hovering the
+ * icon and hovering the text say the same. `IconWrapperWithToolTip` is a
+ * `RetrievableIcon` and keeps its tooltip when the tree replaces the icon
+ * inside it (a dark or selected variant).
+ */
+fun iconWithHover(icon: Icon?, tooltip: String?): Icon? {
+    if (icon == null || tooltip == null) return icon
+    return IconWrapperWithToolTip(icon) { tooltip }
 }
 
 /**
@@ -129,11 +143,16 @@ class NewspeakStructureElement(
     /**
      * A `PresentationData`, because a plain `ItemPresentation` has no
      * tooltip: the structure view's tree copies a `PresentationData`'s tooltip
-     * into its node (`PresentationData.updateFrom`) and shows it on hover.
+     * into its node (`PresentationData.updateFrom`) and shows it over the
+     * text. Over the icon the tree shows the icon's own tooltip instead
+     * (`SimpleColoredComponent.getIconToolTipText`), which a row icon composes
+     * from its parts -- `Public` from the access icon -- so the icon carries
+     * the same text (`iconWithHover`).
      */
     override fun getPresentation(): ItemPresentation {
         val presentation = presentationOf(symbol, root)
-        return PresentationData(presentation.name, presentation.locationString, rowIconOf(presentation), null).apply {
+        val icon = iconWithHover(rowIconOf(presentation), presentation.tooltip)
+        return PresentationData(presentation.name, presentation.locationString, icon, null).apply {
             tooltip = presentation.tooltip
         }
     }

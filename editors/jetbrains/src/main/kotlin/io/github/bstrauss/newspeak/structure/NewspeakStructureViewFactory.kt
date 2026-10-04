@@ -98,7 +98,11 @@ class NewspeakStructureViewModel(
     }
 
     internal fun elementsOf(symbols: List<DocumentSymbol>): Array<StructureViewTreeElement> =
-        symbols.map { symbol -> NewspeakStructureElement(psiFile.project, file, symbol, root = true) }.toTypedArray()
+        // The server answers one top-level symbol, the module's class; only
+        // that one is the root class.
+        symbols.mapIndexed { index, symbol ->
+            NewspeakStructureElement(psiFile.project, file, symbol, root = index == 0)
+        }.toTypedArray()
 
     internal fun symbols(): List<DocumentSymbol> {
         val stamp = documentStamp()

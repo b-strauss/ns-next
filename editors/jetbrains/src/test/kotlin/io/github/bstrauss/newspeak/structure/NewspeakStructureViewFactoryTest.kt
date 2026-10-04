@@ -1,13 +1,15 @@
 package io.github.bstrauss.newspeak.structure
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.projectView.PresentationData
 import com.intellij.ide.structureView.TreeBasedStructureViewBuilder
 import com.intellij.lang.LanguageStructureViewBuilder
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
-import com.intellij.ide.projectView.PresentationData
+import com.intellij.ui.RetrievableIcon
 import com.intellij.ui.icons.CompositeIcon
+import com.intellij.ui.icons.IconWithToolTip
 import com.intellij.ui.icons.RowIcon
 import io.github.bstrauss.newspeak.NewspeakIcons
 import org.eclipse.lsp4j.DocumentSymbol
@@ -49,7 +51,10 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertNull(innermostSymbolAt(document, symbols, text.length))
     }
 
-    /** Under the test framework's `IconManager`, which joins the two icons in a row as the IDE's does. */
+    /**
+     * Under the test framework's `IconManager`, which joins the two icons in
+     * a row as the IDE's does.
+     */
     fun testAMemberWithAnAccessShowsBothIconsInOneRow() {
         val range = Range(Position(0, 0), Position(0, 3))
         val presentation = presentationOf(DocumentSymbol("run", SymbolKind.Method, range, range, "private"))
@@ -93,7 +98,8 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
     /**
      * The root class's row: the root-class icon with the public icon beside it,
      * and its hover text, carried as `PresentationData`'s tooltip, which the
-     * structure view's tree copies from the element's presentation.
+     * structure view's tree copies from the element's presentation, and as the
+     * icon's own tooltip, which the tree shows over the icon.
      */
     fun testTheRootClassShowsItsIconAndItsHover() {
         val file = myFixture.configureByText("Module.ns", "class Module = () ()").virtualFile
@@ -103,10 +109,34 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertInstanceOf(presentation, PresentationData::class.java)
         assertEquals("Root class", (presentation as PresentationData).tooltip)
         assertEquals("Module", presentation.presentableText)
-        val row = presentation.getIcon(false) as RowIcon
+        val icon = presentation.getIcon(false)
+        assertInstanceOf(icon, IconWithToolTip::class.java)
+        assertEquals("Root class", (icon as IconWithToolTip).getToolTip(false))
+        assertEquals("Root class", icon.getToolTip(true))
+        val row = (icon as RetrievableIcon).retrieveIcon() as RowIcon
         assertSame(NewspeakIcons.ROOT_CLASS, row.getIcon(0))
         assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
         val child = NewspeakStructureElement(project, file, symbol).presentation as PresentationData
         assertEquals("Public class", child.tooltip)
+        assertEquals("Public class", (child.getIcon(false) as IconWithToolTip).getToolTip(false))
+    }
+
+    /** Only the first top-level symbol, the module's class, is the root class. */
+    fun testOnlyTheFirstTopLevelSymbolIsTheRoot() {
+        val file = myFixture.configureByText("Module.ns", "class Module = () ()")
+        val builder = LanguageStructureViewBuilder.getInstance().getStructureViewBuilder(file)
+        val model = (builder as TreeBasedStructureViewBuilder).createStructureViewModel(myFixture.editor)
+        try {
+            val range = Range(Position(0, 6), Position(0, 12))
+            val symbols = listOf(
+                DocumentSymbol("Module", SymbolKind.Class, range, range, "public"),
+                DocumentSymbol("Other", SymbolKind.Class, range, range, "public"),
+            )
+            val tooltips = (model as NewspeakStructureViewModel).elementsOf(symbols)
+                .map { element -> (element.presentation as PresentationData).tooltip }
+            assertEquals(listOf("Root class", "Public class"), tooltips)
+        } finally {
+            Disposer.dispose(model)
+        }
     }
 }
