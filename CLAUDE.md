@@ -33,16 +33,20 @@ Rust 1.98.0, edition 2021, six crates:
   `heap/world.rs` and reached only through `Interpreter::enter`) and the image
   format (`image/`).
   `docs/design/README.md`, "The map", says which document covers each part.
-- `crates/ns-cli` — the `ns-next` binary: `parse`, `parse-corpus`, `run-corpus`, `run`,
-  `load`, `bench`, `disasm`, `inspect`, `build`. A program is one `.ns` file or a
-  JSON project file of several modules (`project.rs`, `program.rs`).
-- `crates/ns-analyzer` — the editor tooling, the `ns-next-analyzer` binary: `lsp`, a
-  language server for `.ns` files (diagnostics, semantic tokens, fold ranges,
-  document symbols), and `dump-tokens`, which the JetBrains plugin's lexer is
-  checked against. It never starts the VM; its server dependencies
-  (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime`,
-  and `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project file is JSON)
-  (`docs/design/editor-support.md`).
+- `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
+  `load`, `bench`, `build`. A program is one `.ns` file or a JSON project file of
+  several modules (`project.rs`, `program.rs`).
+- `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
+  Newspeak without running it: `lsp`, a language server for `.ns` files
+  (diagnostics, semantic tokens, fold ranges, document symbols); `dump-tokens`,
+  which the JetBrains plugin's lexer is checked against; `parse`, `parse-corpus`,
+  `disasm` and `inspect`. It never runs a program: `disasm` compiles a module or
+  decodes an image, `inspect` reads an image without loading it, and neither runs
+  the program's code (the interpreter `disasm` compiles on instantiates only the
+  shipped core library). Its server dependencies
+  (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime` or
+  `ns-next`; `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project
+  file is JSON) (`docs/design/editor-support.md`).
 - `crates/ns-tooling` — what `ns-next` and `ns-next-analyzer` share: loading and
   resolving a source file, collecting `.ns` files, printing diagnostics. It is a crate
   of its own so the analyzer's server dependencies never reach `ns-next`; it depends

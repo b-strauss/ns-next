@@ -1,8 +1,8 @@
 # Newspeak (ns-next) — JetBrains plugin
 
 Syntax highlighting, diagnostics, semantic tokens, code folding, and a
-structure view with breadcrumbs for `.ns` files, through the `ns-next-analyzer`
-language server from `crates/ns-analyzer`. The design, its components and the
+structure view with breadcrumbs for `.ns` files, through the language server
+`ns-next-analyzer lsp` from `crates/ns-analyzer`. The design, its components and the
 platform version it targets are in `docs/design/editor-support.md`.
 
 ## Opening it in IntelliJ IDEA

@@ -5381,9 +5381,10 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the
   captured-frame condition like any other.
-- **The CLI runs every command on a thread it spawns** with an explicit stack
-  (`std::thread::Builder`, `INTERPRETER_STACK_BYTES` in
-  `crates/ns-cli/src/main.rs`): 8 MiB, four times the 2 MiB libtest threads
+- **`ns-next` runs every command on a thread it spawns** with an explicit
+  stack (`std::thread::Builder`, `INTERPRETER_STACK_BYTES` in
+  `crates/ns-cli/src/main.rs`; `ns-next-analyzer`, which runs the same front
+  end and compiler, does the same with `ANALYZER_STACK_BYTES`): 8 MiB, four times the 2 MiB libtest threads
   the suite runs the deepest nesting the parser accepts on, since what still
   recurses on the Rust stack is the front end and the compiler, bounded by the
   parser's nesting ceiling ("What the trampoline moved" above) but for a

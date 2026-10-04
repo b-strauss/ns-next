@@ -927,18 +927,20 @@ which lowering produced that code, because nothing would read it.
 defaulting to optimized. `disasm` of one method under both is the first tool to
 reach for when the oracle fires. `bench` does not take it, since timing the
 oracle means nothing, and `load` and `inspect` decode rather than compile.
-The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs`, converted
-into `ns_runtime::Lowering` and passed to `program::load_program`, which
-`run` and `build` go through for every module of a program, the manifest
-included; `disasm` compiles one source file through
+The switch itself is `LoweringArgument` in `crates/ns-cli/src/main.rs` and,
+for `disasm`, its copy in `crates/ns-analyzer/src/main.rs`, each converted
+into `ns_runtime::Lowering`. `ns-next` passes it to `program::load_program`,
+which `run` and `build` go through for every module of a program, the
+manifest included; `ns-next-analyzer disasm` compiles one source file through
 `Interpreter::compile_module` on an interpreter bootstrapped with the switch,
 takes the switch as an `Option` and refuses it for an artifact, which
 carries the code it was built with.
 
 A command that dropped the switch would compare the optimized lowering with
-itself, and no program's output would show it. `crates/ns-cli/tests/lowering.rs`
-therefore reads the code instead: `disasm`'s listing, and `inspect --full` of an
-artifact `build` wrote, have no branch under the reference
+itself, and no program's output would show it. The tests therefore read the
+code instead: `disasm`'s listing (`crates/ns-analyzer/tests/lowering.rs`), and
+the inspector's full listing of an artifact `build` wrote
+(`crates/ns-cli/tests/lowering.rs`), have no branch under the reference
 lowering and one under the optimized. `run` writes nothing to read; it is
 covered by handing the switch to the same `program::load_program` call.
 

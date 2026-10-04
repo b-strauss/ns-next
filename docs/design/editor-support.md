@@ -52,7 +52,9 @@ completion and formatting. Each is described under
 ```
 crates/ns-analyzer/     binary `ns-next-analyzer`: its `lsp` command serves
                         diagnostics, semantic tokens, fold ranges and document
-                        symbols over LSP; `dump-tokens` is for the lexer comparison
+                        symbols over LSP; `dump-tokens` is for the lexer
+                        comparison; `parse`, `parse-corpus`, `disasm` and
+                        `inspect` look at a module or an image from the shell
 crates/ns-syntax/       + an editor entry, `parse_for_editor`: a module for
                         every source, recovered, with its comments' spans
 crates/ns-runtime/      + a resolver entry answering bindings and errors together
@@ -118,22 +120,32 @@ compared token by token.
 ## The editor tooling, `crates/ns-analyzer`
 
 The editor tooling is a crate of its own with a binary of its own,
-`ns-next-analyzer`, whose `lsp` command is the language server (a formatter is
-planned as a `fmt` command), so that its
-dependencies never reach the `ns-next` binary: `lsp-server` (rust-analyzer's
-transport), `lsp-types` and `serde_json`, on top of `ns-syntax` and
-`ns-runtime`. It never starts the VM; from `ns-runtime` it uses only the
-resolver.
+`ns-next-analyzer`: everything that looks at Newspeak without running it. Its
+commands are `lsp`, the language server; `dump-tokens`, for the lexer
+comparison; `parse` and `parse-corpus` ([frontend.md](frontend.md));
+`disasm`, which prints one compiled body ([compiler.md](compiler.md)); and
+`inspect`, which prints an image's structure
+([image-format.md](image-format.md), "Reading an artifact"). It never runs
+a program: `disasm` compiles a module or decodes an image, `inspect` reads an
+image without loading it, and neither runs the program's code -- the only
+Newspeak that runs is the shipped core library's instantiation in the
+interpreter `disasm` compiles on, and `lsp` and `dump-tokens` start no
+interpreter at all. Running is the `ns-next` binary's. Being a binary of its own keeps the server's dependencies out of
+`ns-next` and out of `ns-runtime`: `lsp-server` (rust-analyzer's transport),
+`lsp-types` and `serde_json`, on top of `ns-syntax`, `ns-runtime` and
+`ns-tooling`, the crate both binaries share (loading and resolving a source,
+collecting `.ns` files, printing diagnostics).
 
 Modules:
 
-- `main.rs` — the command dispatch: `lsp` speaks LSP on stdin and stdout;
-  with no command, an unknown one or arguments after `lsp` it prints a usage
-  line on stderr and exits with status 2; `dump-tokens <files…>` prints each file's tokens as JSON, for the lexer
-  comparison. `dump-tokens` prints UTF-16 offsets, the unit the plugin's
-  documents use, and refuses a file longer than a span can address
-  (`ns_syntax::source_too_long`) on stderr with a failing exit status, as it
-  does an unreadable one.
+- `main.rs` — the command dispatch onto `commands/`, one module per
+  command. With no command, an unknown one or arguments after `lsp` it prints
+  its usage on stderr and exits with status 2; it never starts the server
+  without `lsp`. `lsp` speaks LSP on stdin and stdout. `dump-tokens <files…>`
+  prints each file's tokens as JSON (`token_dump.rs`), for the lexer
+  comparison: UTF-16 offsets, the unit the plugin's documents use. It refuses
+  a file longer than a span can address (`ns_syntax::source_too_long`) on
+  stderr with a failing exit status, as it does an unreadable one.
 - `server.rs` — the message loop over `lsp-server`, synchronous on one thread.
   Lexing, parsing and resolving one file takes milliseconds, so neither a
   debounce nor a worker pool buys anything. Open documents are keyed by the
@@ -566,10 +578,10 @@ Components:
   `NewspeakStructureElement`, over the server's document symbols, with
   `NewspeakSymbolKinds` and `NewspeakDocumentSymbols` in the client
   descriptor's customization ("Structure").
-- **Settings** — *Languages & Frameworks → Newspeak*: a server path, empty by
-  default, typed or chosen with a file picker, and a "Restart server" action.
-  Stored at application level: the path is specific to a machine, so it does
-  not belong in `.idea/`.
+- **Settings** — *Languages & Frameworks → Newspeak*: an "ns-next-analyzer
+  path", the server binary, empty by default, typed or chosen with a file
+  picker, and a "Restart server" action. Stored at application level: the
+  path is specific to a machine, so it does not belong in `.idea/`.
 
 ### Which binary runs
 
@@ -756,8 +768,9 @@ and resolves cleanly in a JetBrains IDE today.
   work is in Rust. A formatter must keep each comment where it was; the
   comments' spans exist (`parse_for_editor`'s `comments`, beside the AST),
   and what remains is attaching each to the nodes around it, and the
-  formatter itself: one module that an `ns-next fmt` command shares, so the
-  editor, the command line and any later formatting gate use one formatter.
+  formatter itself: one module that an `ns-next-analyzer fmt` command shares,
+  so the editor, the command line and any later formatting gate use one
+  formatter.
   It would not touch a file with a syntax error.
 - **Navigation.** Go to definition and find usages need an AST for a file
   that does not parse, while it is typed; the fault-tolerant parse exists

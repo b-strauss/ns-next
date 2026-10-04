@@ -411,11 +411,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **A decompiler** for exporting an image back to `.ns`, and the other image
   questions below. [image-format.md](design/image-format.md), "Open questions".
 
-## Planned: editor support
+## Planned: editor support and the analyzer
 
 - **Formatting**, through `textDocument/formatting`, which needs comments
   attached to AST nodes -- their spans are kept, beside the AST
-  (`parse_for_editor`) -- and an `ns-next fmt` command.
+  (`parse_for_editor`) -- and an `ns-next-analyzer fmt` command sharing the
+  formatter.
 - **Navigation** — go to definition, find usages —
   `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
@@ -423,6 +424,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
+- **Further `ns-next-analyzer` commands**, each looking without running: a
+  heap dump, a deeper inspection of an image, and inspection of the JIT's
+  compiled code once the JIT tiers exist (road steps 8 and 9 above).
 
 [editor-support.md](design/editor-support.md), "Planned later".
 
