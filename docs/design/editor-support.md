@@ -346,8 +346,10 @@ is answered `[]`.
 **Kinds.** LSP has no kind for a read-only property, so a slot with a getter
 only (declared with `=`) is a `Constant` and a slot with a getter and a setter
 (`::=`, or a bare one) a `Property`, the nearest two kinds any client knows.
-A class is a `Class`, a factory a `Constructor`, a method on either side a
-`Method` and a temporary a `Variable`.
+A class is a `Class`, a factory a `Constructor` and a method on either side a
+`Method`. A temporary declared with `=` is a `Constant` and any other a
+`Variable`; having no `detail` is what tells an immutable temporary from a
+slot with a getter only.
 
 **`detail`** is the effective access word, then ` class` for a class-side
 method (`public class`, `protected class`) and ` lazy` for a lazy slot
@@ -389,24 +391,56 @@ class-side method: their icons come from the symbol's kind alone, through
 the `symbolKindCustomizer`, which never sees `detail`.
 
 **The rows.** A row's text is the symbol's name, with `lazy` beside a lazy
-slot. Its icon is the kind's icon beside the access icon: `C_public`,
-`C_protected` or `C_private` for the first word of `detail`, joined to the
-kind's with `IconManager.createRowIcon` as Java's structure view joins them,
-so the "show visibility icons" setting behaves as for Java. A `detail` whose
-first word is no access word, and a temporary, shows the kind's icon alone. A
-class-side method -- `class` among `detail`'s words -- has IntelliJ's static
-mark (`AllIcons.Nodes.StaticMark`) laid over its kind's icon, which is how
-Java shows a static member: the structure view draws no separator between
-groups of rows, so the mark is what tells the two sides apart without a node
-for each. Java registers the mark as an icon layer and lays it over the base
-icon; the plugin builds the same layered icon with
-`IconManager.createLayered(kindIcon, AllIcons.Nodes.StaticMark)`, public API
-on 2026.1 and 2026.2, without claiming one of the platform's layer flags,
-and joins it with the access icon as above. `NewspeakSymbolKinds`, the
-client's `symbolKindCustomizer`, gives the kinds their icons, for the
-breadcrumbs as for the tree: `Constant` is `PropertyRead` and `Property` is
-`PropertyReadWrite` (a slot is always reached through its accessors, which
-those icons say), and every other kind keeps the platform's. A pick moves the caret to the start of the
+slot. Its icon is a base icon beside the access icon, and hovering over it
+shows what the element is:
+
+| Element | Server sends | Base icon | Hover |
+|---|---|---|---|
+| root class (the answer's top-level symbol) | `Class` | `AllIcons.Nodes.JavaModule` | `Root class` |
+| nested class | `Class` | `AllIcons.Nodes.Class` | `<Access> class` (`Public class`) |
+| factory | `Constructor` | `AllIcons.Nodes.Function` | `Factory method` |
+| slot with a getter only (`=`) | `Constant` with an access | `AllIcons.Nodes.Constant` | `<Access> constant` |
+| slot with a getter and a setter (`::=`, bare) | `Property` | `AllIcons.Nodes.Variable` | `<Access> variable` |
+| temporary declared with `=` | `Constant` without `detail` | `AllIcons.Nodes.Constant` | `Local constant` |
+| any other temporary | `Variable` | `AllIcons.Nodes.Variable` | `Local variable` |
+| method | `Method` | `AllIcons.Nodes.Method` | `<Access> method` |
+| class-side method | `Method`, `class` in `detail` | `AllIcons.Nodes.Method` with the static mark | `<Access> class method` |
+
+The icons say what the program can do with an element rather than LSP's
+names for the kinds: a slot is reached only through its accessors, so one
+with a getter alone is a constant to every client of it and one with a
+setter too is a variable, as a temporary declared with `=` or without one
+is. The root class is the module's one top-level class, shown as the module
+it is; a nested class is a class.
+
+The access icon is `C_public`, `C_protected` or `C_private` for the first
+word of `detail` -- the root class shows `C_public`, the access §6.3.1 gives
+it -- joined to the base icon with `IconManager.createRowIcon` as Java's
+structure view joins them, so the "show visibility icons" setting behaves as
+for Java. A `detail` whose first word is no access word, and a temporary,
+shows the base icon alone. A class-side method -- `class` among `detail`'s
+words -- has IntelliJ's static mark (`AllIcons.Nodes.StaticMark`) laid over
+its base icon, which is how Java shows a static member: the structure view
+draws no separator between groups of rows, so the mark is what tells the two
+sides apart without a node for each. Java registers the mark as an icon
+layer and lays it over the base icon; the plugin builds the same layered
+icon with `IconManager.createLayered(baseIcon, AllIcons.Nodes.StaticMark)`,
+public API on 2026.1 and 2026.2, without claiming one of the platform's
+layer flags, and joins it with the access icon as above.
+
+The hover is a `PresentationData`'s tooltip: an `ItemPresentation` has
+none, and the structure view's tree copies a `PresentationData`'s tooltip
+into its node (`PresentationData.updateFrom`), which `NodeRenderer` shows.
+That holds for the Structure tool window on 2026.1 and 2026.2 and for the
+File Structure popup on 2026.1. 2026.2 also carries a File Structure popup
+in a split frontend, which receives a presentation as `PresentationDataDto`;
+that carries no tooltip, so where the IDE uses that popup it shows no hover.
+
+`NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind
+the same base icon for the breadcrumbs and sticky lines as for the tree,
+every kind named rather than left to the platform's defaults; it sees the
+kind alone, so there a root class shows the class icon and a temporary
+declared with `=` the constant icon either way. A pick moves the caret to the start of the
 symbol's `selectionRange`, in the document's UTF-16 columns; the view selects
 the innermost symbol whose range holds the caret.
 
@@ -477,7 +511,8 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   keeping the symbols after it; an empty file answering an unnamed class;
   every selection inside its range, also over every module of the corpus and
   every cut of one (`every_symbol_selection_lies_inside_its_range`); a
-  symbol's UTF-16 encoding on CRLF lines; a slot's kind and `lazy`; and a
+  symbol's UTF-16 encoding on CRLF lines; a slot's kind and `lazy`; a
+  temporary's kind, `Constant` when declared with `=`; and a
   member's effective access;
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
@@ -732,17 +767,18 @@ The server's own tests are described under its section, above ("Testing").
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
 - the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
-  per kind), `NewspeakStructureElementTest` (a row's name, `lazy`, kind icon
-  and access icon from a `DocumentSymbol`, and `class` read together with
-  the access word and `lazy`) and
+  per kind, every kind the server sends named), `NewspeakStructureElementTest` (a row's name, `lazy`, access icon, and
+  the base icon and hover of each of the nine elements in "The rows", and
+  `class` read together with the access word and `lazy`) and
   `NewspeakStructureViewModelTest` (no answer and an empty answer make the
   model ask again, an answer with symbols is shown); and on
   `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a Newspeak file
   gets the plugin's view rather than the platform's, the caret selects the
   innermost symbol around it, a member with an access shows the kind's
-  and the access icon in one row, and a class-side method shows its kind's
-  icon layered with the static mark, then its access icon, in one row -- all
-  under the test framework's `IconManager`, which answers a row of icons
+  and the access icon in one row, a class-side method shows its kind's
+  icon layered with the static mark, then its access icon, in one row, and
+  the root class's row holds the module and public icons and its hover as
+  the `PresentationData`'s tooltip -- all under the test framework's `IconManager`, which answers a row of icons
   where the IDE's answers a `LayeredIcon`, both a `CompositeIcon` of the same
   icons.
 

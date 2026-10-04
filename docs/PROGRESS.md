@@ -4270,6 +4270,14 @@ The structure view, breadcrumbs and sticky lines
   in its `detail` (`public class`), and the plugin lays IntelliJ's static
   mark over its kind's icon, as Java marks a static member; the icon the
   plugin gave a side's symbol kind is gone with the sides.
+- `6bd452e3` -- each element of the plugin's structure view has a base
+  icon and a hover text: the root class the module icon (`Root class`), a
+  nested class the class icon (`Public class`), a factory the function icon
+  (`Factory method`), a slot with a getter only or a temporary declared
+  with `=` the constant icon, a slot with a setter or any other temporary
+  the variable icon, a method `Protected method` or, on the class side,
+  `Public class method`. The server sends an immutable temporary as
+  `Constant`, a mutable one as `Variable`.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion
