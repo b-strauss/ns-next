@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use fluent_uri::HostData;
 use lsp_types::Uri;
 
 /// How a URI's path becomes a file path; a parameter rather than a `cfg`
@@ -34,12 +35,20 @@ fn path_text_of(uri: &Uri, style: PathStyle) -> Option<String> {
         return None;
     }
     let host = match uri.authority() {
-        None => "",
+        None => String::new(),
         Some(authority) => {
             if authority.userinfo().is_some() || authority.port().is_some() {
                 return None;
             }
-            authority.host().as_str()
+            match authority.host().data() {
+                // A registered name may be percent-encoded like any other
+                // component; the share is reached by its decoded name.
+                HostData::RegName(name) => name.decode().into_string().ok()?.into_owned(),
+                HostData::Ipv4(..) => authority.host().as_str().to_string(),
+                // An IP literal in brackets (`[::1]`) is no server name a
+                // UNC path can hold.
+                _ => return None,
+            }
         }
     };
     // RFC 8089: an empty host and `localhost` both mean this machine.
@@ -53,28 +62,38 @@ fn path_text_of(uri: &Uri, style: PathStyle) -> Option<String> {
         .ok()?
         .into_owned();
     // A NUL ends a path at the operating system's boundary; a path with one
-    // would name a different file than the URI does.
-    if path.contains('\0') || !path.starts_with('/') {
+    // would name a different file than the URI does. A separator in the host
+    // would make the share's name a path of its own.
+    if path.contains('\0') || !path.starts_with('/') || host.contains(['/', '\\', '\0']) {
         return None;
     }
     match style {
         PathStyle::Posix => local.then_some(path),
         PathStyle::Windows => {
-            if local {
-                // `/C:/work/Module.ns` -> `C:\work\Module.ns`. Without a
-                // drive letter the path would hang off whichever drive is
-                // current, which is no file the client meant.
-                let drive_path = path.strip_prefix('/')?;
-                let bytes = drive_path.as_bytes();
-                let has_drive = bytes.len() >= 3
-                    && bytes[0].is_ascii_alphabetic()
-                    && bytes[1] == b':'
-                    && bytes[2] == b'/';
-                has_drive.then(|| drive_path.replace('/', "\\"))
-            } else {
+            if !local {
                 // `file://server/share/Module.ns` -> `\\server\share\Module.ns`.
-                Some(format!("\\\\{host}{}", path.replace('/', "\\")))
+                return Some(format!("\\\\{host}{}", path.replace('/', "\\")));
             }
+            if let Some(share_path) = path.strip_prefix("//") {
+                // `file:////server/share/Module.ns`, the form Java's
+                // `File.toURI()` writes for a UNC path: the server is the
+                // path's first segment, which must not be empty.
+                let has_server = share_path
+                    .split('/')
+                    .next()
+                    .is_some_and(|server| !server.is_empty());
+                return has_server.then(|| format!("\\\\{}", share_path.replace('/', "\\")));
+            }
+            // `/C:/work/Module.ns` -> `C:\work\Module.ns`. Without a drive
+            // letter the path would hang off whichever drive is current,
+            // which is no file the client meant.
+            let drive_path = path.strip_prefix('/')?;
+            let bytes = drive_path.as_bytes();
+            let has_drive = bytes.len() >= 3
+                && bytes[0].is_ascii_alphabetic()
+                && bytes[1] == b':'
+                && bytes[2] == b'/';
+            has_drive.then(|| drive_path.replace('/', "\\"))
         }
     }
 }
@@ -152,6 +171,41 @@ mod tests {
         assert_eq!(
             path_of("file://server/share/Module.ns", PathStyle::Posix),
             None
+        );
+        assert_eq!(
+            path_of("file://192.168.0.1/share/Module.ns", PathStyle::Windows).as_deref(),
+            Some("\\\\192.168.0.1\\share\\Module.ns")
+        );
+    }
+
+    /// Java's `File.toURI()` writes a UNC path with four slashes and no host.
+    #[test]
+    fn the_four_slash_form_is_a_unc_share_on_windows() {
+        assert_eq!(
+            path_of("file:////server/share/Module.ns", PathStyle::Windows).as_deref(),
+            Some("\\\\server\\share\\Module.ns")
+        );
+        assert_eq!(
+            path_of("file://///share/Module.ns", PathStyle::Windows),
+            None,
+            "a share needs its server"
+        );
+    }
+
+    #[test]
+    fn a_unc_host_is_decoded_and_an_ip_literal_refused() {
+        assert_eq!(
+            path_of("file://my%20server/share/Module.ns", PathStyle::Windows).as_deref(),
+            Some("\\\\my server\\share\\Module.ns")
+        );
+        assert_eq!(
+            path_of("file://[::1]/share/Module.ns", PathStyle::Windows),
+            None
+        );
+        assert_eq!(
+            path_of("file://a%2Fb/share/Module.ns", PathStyle::Windows),
+            None,
+            "a separator in the host"
         );
     }
 

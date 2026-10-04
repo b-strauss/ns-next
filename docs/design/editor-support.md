@@ -158,12 +158,16 @@ Modules:
   request for one reads the file from disk ("Structure").
 - `file_uri.rs` — the file a `file` URI names: the scheme checked, the path
   percent-decoded as a whole (so `file:///c%3A/…` is a drive), and on Windows
-  a drive letter (`file:///C:/…` → `C:\…`) or a host (`file://server/share/…`
-  → `\\server\share\…`) made a Windows path; an empty host or `localhost` is
-  this machine. A query, a fragment, a user or port, a path that is not UTF-8
-  once decoded or holds a NUL, a Windows path without a drive and a host on
-  POSIX name no file. `lsp-types` 0.97's `Uri` wraps `fluent_uri::Uri`, which
-  parses and decodes but knows no file paths, so the conversion is here.
+  a drive letter (`file:///C:/…` → `C:\…`), a host (`file://server/share/…`
+  → `\\server\share\…`, the host percent-decoded) or the four-slash form
+  Java's `File.toURI()` writes (`file:////server/share/…`) made a Windows
+  path; an empty host or `localhost` is this machine. A query, a fragment, a
+  user or port, an IP literal in brackets or a separator as the host, a path
+  that is not UTF-8 once decoded or holds a NUL, a Windows path without a
+  drive and a host on POSIX name no file. `lsp-types` 0.97's `Uri` wraps
+  `fluent_uri::Uri`, which parses and decodes but knows no file paths, so the
+  conversion is here; `fluent-uri` is a direct dependency only to tell a
+  host's kind apart (`HostData`), on the version `lsp-types` uses.
 - `documents.rs` — the open text per URI with its version, and a line index
   converting a `Span`'s byte offsets to LSP positions in UTF-16 code units,
   the one encoding every LSP client must accept.
@@ -341,10 +345,15 @@ opened, however broken its text.
 open in an editor, but the plugin's structure view also asks for a file merely
 selected in the Project view. For a URI it has not opened (or has closed), the
 server reads the file the URI names (`file_uri.rs`) and analyses it as
-`didOpen` would -- `analysis::analyze` and the line index, a leading
-byte-order mark dropped as the editor's document drops it, invalid UTF-8
-replaced rather than refused -- answers its symbols and keeps nothing, since
-without `didOpen` it hears of no change; each request reads the file again.
+`didOpen` would -- `analysis::analyze` and the line index; the text decoded
+as UTF-8, as the project's sources are, invalid bytes replaced rather than
+the file refused; a leading byte-order mark dropped as the editor's document
+drops it -- answers its symbols and keeps nothing, since without `didOpen`
+it hears of no change; each request reads the file again. Only a regular
+file no longer than a source may be (`ns_syntax::source_too_long`) is read,
+asked of its metadata before it is opened: a FIFO would block the opening
+and a device such as `/dev/zero` the reading, stalling the one thread every
+document is served on.
 An open document always wins over the file on disk: it may hold text not yet
 saved. A URI that names no file, or a file that cannot be read, is answered
 `[]`. Fold ranges and semantic tokens are not read from disk: the platform
@@ -531,9 +540,9 @@ file has not reached it yet (a file opened with the tool window already
 showing, or an editor restored at IDE start), or the file cannot be read. A
 file selected in the Project view and not open in an editor is answered from
 disk, so its tree shows the file as last saved; one whose document holds
-unsaved changes while no editor shows it is shown as saved. The platform refreshes its own view when a
-client starts through a listener that is internal API, which the plugin may
-not use, so while no usable answer exists the view asks again: every second
+unsaved changes while no editor shows it is shown as saved. The platform
+refreshes its own view when a client starts through a listener that is
+internal API, which the plugin may not use, so while no usable answer exists the view asks again: every second
 for 60 tries, then every ten seconds for as long as it lives, and fast again
 after an answer; a new model (another file, the view reopened) starts fast. A
 server that starts late, or is restarted, therefore fills the tree without an
@@ -632,18 +641,25 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
   `textDocument/documentSymbol` (the class, its three children, and `[]` for
   a document never opened and no file on disk), `shutdown`; a malformed
-  notification, reported as a `window/logMessage` error while the next request is still answered;
-  an unknown request, answered `MethodNotFound`; `documentSymbol` for a file
+  notification, reported as a `window/logMessage` error while the next
+  request is still answered; an unknown request, answered `MethodNotFound`;
+  `documentSymbol` for a file
   written to a temporary directory and never opened (its name with a space
   and a non-ASCII letter, so it arrives percent-encoded; and one saved with a
   byte-order mark, its root class still selected at character 6), for an open
   document with other text than the file on disk (the open text wins, the
   file again once closed), and for a missing file, a directory, an
-  `untitled:` and an `https:` URI (`[]`);
+  `untitled:` and an `https:` URI (`[]`), and on POSIX for a FIFO (`[]`,
+  without blocking);
+- `server.rs`'s unit test — only a regular file no longer than a source may
+  be is read, tested on the predicate the metadata feeds, since no test
+  writes a four-gigabyte file;
 - `file_uri.rs`'s unit tests — the conversion in both path styles on every
   host: drive letters (`file:///C:/…`, `file:///c%3A/…`,
   `file://localhost/D:/…`), percent-decoding, POSIX paths, a host as a UNC
-  share on Windows and no file on POSIX, and the URIs that name no file.
+  share on Windows (IPv4 included, a percent-encoded name decoded) and no
+  file on POSIX, the four-slash UNC form, an IP literal and a separator in
+  the host refused, and the URIs that name no file.
 
 ## The plugin, `editors/jetbrains/`
 

@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::error::Error;
+use std::io::Read;
 
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
@@ -185,15 +186,46 @@ fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) 
 /// The file `uri` names, read and analysed as `didOpen` would have it, or
 /// `None` when it names no file or the file cannot be read.
 fn document_on_disk(uri: &Uri) -> Option<Document> {
-    let bytes = std::fs::read(file_path_of(uri)?).ok()?;
-    // Lossy rather than refused: a stray invalid byte should cost one
-    // character of the tree, not all of it, as the editor still shows the
-    // file. A leading byte-order mark is dropped as the editor's document
-    // drops it, or every position on the first line would be one unit off
-    // from the editor's.
-    let text = String::from_utf8_lossy(&bytes);
-    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    Some(Document::new(text.to_string()))
+    let path = file_path_of(uri)?;
+    // Asked of the path before it is opened: opening a FIFO blocks until a
+    // writer comes, and reading a device such as `/dev/zero` never ends,
+    // either of which would stall the one thread every document is served
+    // on. A file longer than a source may be is refused before it is read.
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !readable_as_source(metadata.is_file(), metadata.len()) {
+        return None;
+    }
+    // Bounded again while reading, for a file that grew since it was asked.
+    let limit = u64::from(u32::MAX) + 1;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .ok()?
+        .take(limit)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if !readable_as_source(true, bytes.len() as u64) {
+        return None;
+    }
+    // UTF-8, as every Newspeak source of the project is; lossy rather than
+    // refused, so a stray invalid byte costs one character of the tree, not
+    // all of it, as the editor still shows the file. Only invalid text is
+    // copied.
+    let mut text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| String::from_utf8_lossy(error.as_bytes()).into_owned());
+    // The editor's document has no byte-order mark; with one, every position
+    // on the first line would be one unit off from the editor's.
+    if text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Some(Document::new(text))
+}
+
+/// Whether a file of `length` bytes, a regular file or not, may be read as a
+/// source: a regular file no longer than `ns_syntax::source_too_long`
+/// accepts, so that nothing is read that the parse would refuse anyway.
+fn readable_as_source(is_file: bool, length: u64) -> bool {
+    is_file
+        && usize::try_from(length).is_ok_and(|length| ns_syntax::source_too_long(length).is_none())
 }
 
 fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -> Response {
@@ -325,5 +357,23 @@ fn diagnostics_of(uri: &Uri, document: Option<&Document>) -> PublishDiagnosticsP
         uri: uri.clone(),
         diagnostics,
         version: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::readable_as_source;
+
+    #[test]
+    fn only_a_regular_file_a_source_may_hold_is_read() {
+        assert!(readable_as_source(true, 0));
+        assert!(readable_as_source(true, u64::from(u32::MAX)));
+        // A four-gigabyte file is not written to test this; the bound is
+        // checked on the length the file's metadata answers.
+        assert!(!readable_as_source(true, u64::from(u32::MAX) + 1));
+        assert!(
+            !readable_as_source(false, 10),
+            "a directory, FIFO or device"
+        );
     }
 }

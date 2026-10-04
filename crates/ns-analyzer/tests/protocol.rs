@@ -495,3 +495,27 @@ fn an_unreadable_file_or_a_uri_that_names_no_file_answers_no_symbols() {
     shut_down(&client, server_thread);
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+/// Opening a FIFO blocks until a writer comes; the server, serving every
+/// document on one thread, must answer without opening it.
+#[cfg(unix)]
+#[test]
+fn a_fifo_answers_no_symbols_without_blocking() {
+    let directory = scratch_directory("fifo");
+    let fifo = directory.join("Module.ns");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("run mkfifo");
+    assert!(status.success());
+    let (client, server_thread) = initialized_server();
+    let symbols = request(
+        &client,
+        2,
+        "textDocument/documentSymbol",
+        json!({ "textDocument": { "uri": file_uri_of(&fifo) } }),
+    );
+    assert_eq!(symbols, json!([]));
+    shut_down(&client, server_thread);
+    let _ = std::fs::remove_dir_all(&directory);
+}
