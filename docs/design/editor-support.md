@@ -312,7 +312,7 @@ it folds:
 2026.2.3, so the server's ranges reach a `.ns` file as they are. Checked by
 hand under `runIde` (2026-10-04): fold markers on comments, class bodies,
 class sides, methods, closures and slot sections; a folded method shows
-`(...)`; and typing an unclosed `foo = (` inside a class keeps the folds of
+`(...)`, in the editor's own font; and typing an unclosed `foo = (` inside a class keeps the folds of
 the methods after it. Were the platform ever to need folding enabled for a
 language with a parser definition of its own, as semantic tokens do
 (`shouldAskServerForSemanticTokens`, below), it would go into
@@ -387,8 +387,8 @@ module, or over a slot named `Value` holding something else, is misread.
 The class `Value` itself, as `Kernel.ns` declares it (`Object new`), shows
 as a plain class: what makes a class a value class is inheriting from it.
 The server reads each class's clauses once and spreads value-ness back
-from the classes that reach `Value` directly, so the cost is linear in the
-classes and clauses, and the answer is the same whichever class is asked
+from the classes that reach `Value` directly, so no class is decided twice and the
+cost is polynomial in the classes and clauses, and the answer is the same whichever class is asked
 first, a cycle of clauses (`A = B`, `B = A <: Value`) included.
 
 **Ranges.** A class's `range` runs from its declaration's start to its end,
@@ -511,7 +511,8 @@ window and the File Structure popup show the flat tree, the factory first,
 the members in source order, the class-side methods last with the static
 mark and the temporaries under their methods; the icons of "The rows" in
 light and dark themes, with Java-like access icons (a member without a
-modifier shows protected) and `lazy`; picking a symbol jumps to its name;
+modifier shows protected) and `lazy`; the hover on a row's text and the hover
+on its icon, which are the same; picking a symbol jumps to its name;
 breadcrumbs show the class and method at the caret, and IntelliJ's sticky
 lines follow; the tree survives a half-typed method; and it fills on first
 open.
@@ -735,8 +736,11 @@ plugin's code.
 - `runIde` starts a sandbox IDE with the plugin, for trying it by hand. It has
   been tried end to end: the server starts from `plugins_runIde/`, the
   semantic colours land over the lexer's, a resolver error
-  (`^outer Missing foo`) is underlined with ns-next's message, and the folds
-  are there, through a syntax error too ("Folding").
+  (`^outer Missing foo`) is underlined with ns-next's message, the folds
+  are there, through a syntax error too, with their `(...)` placeholder in the
+  editor's font ("Folding"), and the structure view's icons show in light and
+  dark themes, with the same hover on a row's text and on its icon
+  ("Structure").
 - `editors/jetbrains/build/` and `.gradle/` are ignored.
 
 **Marketplace readiness from the first commit.** `plugin.xml` carries the ID,

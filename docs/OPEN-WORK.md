@@ -850,11 +850,12 @@ text and `to:by:do:`'s zero step.
   `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
-  `runIde`: folding, and the structure view's tree, navigation, breadcrumbs,
-  sticky lines, its icons and hovers in light and dark themes, and first open
-  against a running server), and `dump-tokens` on an unreadable file, a
-  block comment over a whole-line selection and TODO markers through the project-wide index are
-  untested. [editor-support.md](design/editor-support.md), "Known gaps".
+  `runIde`: folding, with the `(...)` placeholder in the editor's font, and
+  the structure view's tree, navigation, breadcrumbs, sticky lines, its icons
+  in light and dark themes, the hovers on a row's text and on its icon (the
+  same), and first open against a running server), and `dump-tokens` on an
+  unreadable file, a block comment over a whole-line selection and TODO
+  markers through the project-wide index are untested. [editor-support.md](design/editor-support.md), "Known gaps".
 - The packaged artifact (2026-09-30): the refusal of a module set of which
   only some carry source (`modules::encode_modules`); a back-reference into
   an earlier tree, or a child shared between trees, in the mixin forest; a

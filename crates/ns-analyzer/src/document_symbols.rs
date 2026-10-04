@@ -124,8 +124,9 @@ fn class(
 ///
 /// Each class's clauses are read once into edges to the classes they name,
 /// and value-ness is spread backwards along them from the classes that reach
-/// `Value` directly: linear in the classes and clauses, and the same
-/// whichever class is asked first, a cycle of clauses included.
+/// `Value` directly: a polynomial bound in the classes and clauses, no class
+/// decided twice, and the same whichever class is asked first, a cycle of
+/// clauses included.
 fn value_classes(root: &ast::ClassDeclaration, bindings: &HashMap<Span, Binding>) -> HashSet<Span> {
     let mut value = HashSet::new();
     let mut named_by: HashMap<Span, Vec<Span>> = HashMap::new();
@@ -736,7 +737,7 @@ mod tests {
     /// naming the next twice, would take 2^40 steps if every clause decided
     /// its target afresh.
     #[test]
-    fn a_long_chain_of_clauses_is_decided_in_linear_time() {
+    fn a_long_chain_of_clauses_is_decided_quickly() {
         let length = 40;
         let mut classes = String::new();
         for index in 0..length {
@@ -750,11 +751,10 @@ mod tests {
             "    class C{length} = Object <: Value ()
 "
         ));
-        let text = format!(
-            "class Module = () (
-{classes})
-"
-        );
+        let text = formatdoc! {"
+            class Module = () (
+            {classes})
+        "};
         let started = std::time::Instant::now();
         let found = class_details(&text);
         assert!(
