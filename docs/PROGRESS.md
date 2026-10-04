@@ -4291,7 +4291,7 @@ The structure view, breadcrumbs and sticky lines
   tooltip; only the module's class is the root; a nested class's
   value-ness is decided in linear time and in any order; `load_root_class`
   reads the root's shape once; fold placeholders are three ASCII dots, in
-  the editor's own font. Checked under `runIde`.
+  the editor's own font.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion
