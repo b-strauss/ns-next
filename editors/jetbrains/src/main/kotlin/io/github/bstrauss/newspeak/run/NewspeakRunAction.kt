@@ -61,7 +61,7 @@ fun createConfigurationFromGutter(
         .firstOrNull { settings ->
             val configuration = settings.configuration as? NewspeakRunConfiguration
             configuration != null &&
-                configuration.projectFile == projectFile.path &&
+                configuration.namesProjectFile(projectFile) &&
                 configuration.script.orEmpty() == script.orEmpty() &&
                 configuration.command == command
         }

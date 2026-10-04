@@ -110,6 +110,22 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         assertEquals(file.parent.name, first.name)
     }
 
+    fun testAConfigurationStoredWithBackslashesIsReusedAndRecognised() {
+        myFixture.configureByText("newspeak.json", projectJson)
+        val file = myFixture.file.virtualFile
+        val runManager = RunManager.getInstance(project)
+        // As the editor's chooser stored a path on Windows before it stored system-independent ones.
+        val stored = runManager.createConfiguration("chosen by hand", NewspeakConfigurationType.getInstance().factory)
+        (stored.configuration as NewspeakRunConfiguration).apply {
+            projectFile = file.path.replace('/', '\\')
+            script = "sieve"
+        }
+        runManager.addConfiguration(stored)
+        assertSame(stored, createConfigurationFromGutter(project, file, "sieve", NewspeakCommand.RUN))
+        val onSieve = checkNotNull(myFixture.file.findElementAt(myFixture.editor.document.text.indexOf("\"sieve\"")))
+        assertTrue(producer.isConfigurationFromContext(stored.configuration as NewspeakRunConfiguration, contextAt(onSieve)))
+    }
+
     private fun contextAt(element: PsiElement): ConfigurationContext =
         ConfigurationContext.createEmptyContextForLocation(PsiLocation(element))
 

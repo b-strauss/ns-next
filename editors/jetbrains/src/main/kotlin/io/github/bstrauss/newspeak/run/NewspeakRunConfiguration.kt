@@ -17,6 +17,8 @@ import com.intellij.execution.runners.ExecutionEnvironment
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
@@ -79,6 +81,16 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         set(value) {
             options.iterations = value
         }
+
+    /**
+     * Whether the project file is `file`: compared system-independently, since
+     * a configuration stored by hand on Windows may hold backslashes, and with
+     * the file system's case sensitivity.
+     */
+    fun namesProjectFile(file: VirtualFile): Boolean {
+        val stored = projectFile?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        return FileUtil.pathsEqual(FileUtil.toSystemIndependentName(stored), file.path)
+    }
 
     override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> = NewspeakRunConfigurationEditor()
 

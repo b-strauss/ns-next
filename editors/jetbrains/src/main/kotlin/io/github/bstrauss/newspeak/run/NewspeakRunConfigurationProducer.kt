@@ -31,7 +31,7 @@ class NewspeakRunConfigurationProducer : LazyRunConfigurationProducer<NewspeakRu
 
     override fun isConfigurationFromContext(configuration: NewspeakRunConfiguration, context: ConfigurationContext): Boolean {
         val target = contextTarget(context) ?: return false
-        return configuration.projectFile == target.file.path &&
+        return configuration.namesProjectFile(target.file) &&
             configuration.script.orEmpty() == target.script.orEmpty() &&
             configuration.command == NewspeakCommand.RUN
     }

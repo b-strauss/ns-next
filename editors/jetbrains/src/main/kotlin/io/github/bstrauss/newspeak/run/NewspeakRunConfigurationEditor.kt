@@ -4,6 +4,7 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.ui.JBIntSpinner
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.components.fields.ExpandableTextField
@@ -65,7 +66,7 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
     override fun createEditor(): JComponent = form
 
     override fun resetEditorFrom(configuration: NewspeakRunConfiguration) {
-        projectFileField.text = configuration.projectFile.orEmpty()
+        projectFileField.text = FileUtil.toSystemDependentName(configuration.projectFile.orEmpty())
         commandBox.selectedItem = configuration.command
         scriptField.text = configuration.script.orEmpty()
         argumentsField.text = configuration.programArguments.orEmpty()
@@ -73,7 +74,8 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
     }
 
     override fun applyEditorTo(configuration: NewspeakRunConfiguration) {
-        configuration.projectFile = projectFileField.text.trim().ifEmpty { null }
+        // Stored system-independently, as the gutter stores it, whatever the chooser showed.
+        configuration.projectFile = FileUtil.toSystemIndependentName(projectFileField.text.trim()).ifEmpty { null }
         configuration.command = commandBox.selectedItem as? NewspeakCommand ?: NewspeakCommand.RUN
         configuration.script = scriptField.text.trim().ifEmpty { null }
         configuration.programArguments = argumentsField.text.ifBlank { null }

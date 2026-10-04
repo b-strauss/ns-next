@@ -94,6 +94,16 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         assertEquals(shown.iterations, applied.iterations)
     }
 
+    fun testTheEditorStoresASystemIndependentPath() {
+        val shown = configuration().apply { projectFile = """\work\app\newspeak.json""" }
+        val editor = NewspeakRunConfigurationEditor()
+        Disposer.register(testRootDisposable, editor)
+        editor.resetFrom(shown)
+        val applied = configuration()
+        editor.applyTo(applied)
+        assertEquals("/work/app/newspeak.json", applied.projectFile)
+    }
+
     // JUnit 4.13's assertThrows, qualified: UsefulTestCase's own overloads,
     // inherited here, answer nothing, and the first test reads the error.
     fun testNoRuntimeConfiguredIsAnErrorNamingTheSetting() {
