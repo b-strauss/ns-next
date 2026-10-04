@@ -4286,6 +4286,12 @@ The structure view, breadcrumbs and sticky lines
   which `load_root_class` now builds from too); for a nested class it
   follows the resolver's binding of each clause's receiver, an
   approximation.
+- `61a5d2eb`, `da553a54`, `ba3d312a` -- hovering a row's icon says what
+  hovering its text says, the row icon carrying the hover as its own
+  tooltip; only the module's class is the root; a nested class's
+  value-ness is decided in linear time and in any order; `load_root_class`
+  reads the root's shape once; fold placeholders are three ASCII dots, in
+  the editor's own font. Checked under `runIde`.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion

@@ -420,17 +420,19 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Navigation** — go to definition, find usages —
   `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
-  "Recovery"). The server analyses one file at a time; the same
-  project-aware analysis -- every module of the project file, and which
-  root is instantiated with which arguments -- would let a whole-program
-  data-flow analysis follow the class objects that flow into slots and
-  factory parameters (`Value = platform kernel Value.`) and so make the
-  structure view's value-class marking of nested classes, an approximation
-  today ([editor-support.md](design/editor-support.md), "Structure"),
-  right in most real cases. It cannot be exact in general: a superclass
-  clause is an expression evaluated in the enclosing object, and a module
-  can be instantiated with different arguments, so only running the
-  instantiation knows, and the analyzer never runs a program.
+  "Recovery").
+- **Project-aware analysis for the value-class marking.** The server
+  analyses one file at a time. With the project file -- every module, and
+  which root is instantiated with which arguments -- a whole-program
+  data-flow analysis could follow the class objects that flow into slots
+  and factory parameters (`Value = platform kernel Value.`) and make the
+  structure view's marking of nested value classes, an approximation today
+  ([editor-support.md](design/editor-support.md), "Structure"), right in
+  most real cases; navigation needs the same analysis. It cannot be exact
+  in general: a superclass clause is an expression evaluated in the
+  enclosing object and a module can be instantiated with different
+  arguments, so only running the instantiation knows, and the analyzer
+  never runs a program.
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -849,11 +851,9 @@ text and `to:by:do:`'s zero step.
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
   `runIde`: folding, and the structure view's tree, navigation, breadcrumbs,
-  sticky lines and first open against a running server -- the tree while it
-  still had a node per side; the flat tree, the class-side methods' static
-  mark, and breadcrumbs and sticky lines going from a class straight to its
-  member are not yet looked at), and `dump-tokens` on an unreadable file, a block comment over a
-  whole-line selection and TODO markers through the project-wide index are
+  sticky lines, its icons and hovers in light and dark themes, and first open
+  against a running server), and `dump-tokens` on an unreadable file, a
+  block comment over a whole-line selection and TODO markers through the project-wide index are
   untested. [editor-support.md](design/editor-support.md), "Known gaps".
 - The packaged artifact (2026-09-30): the refusal of a module set of which
   only some carry source (`modules::encode_modules`); a back-reference into

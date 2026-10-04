@@ -281,13 +281,16 @@ it folds:
 
 | Range | From — to | Collapsed text | `kind` |
 |---|---|---|---|
-| Class body (instance side) | the header's `(` to the instance side's last `)`, header and members together | `(…)` | none |
-| Class side | the `(` after `:` to its `)` | `(…)` | none |
-| Method body | `(` to `)` | `(…)` | none |
-| Closure | `[` to `]` | `[…]`, or `[:x :y \| …]` with its parameters | none |
-| Slot section -- a class header's, or a body's temporaries | `\|` to `\|`, or `\|\|` to `\|\|` | `\|…\|` | none |
-| Comment | `(*` to `*)`, an unterminated one to the end of the file | `(* `, the first non-blank line cut to 60 characters, ` …*)`; `(*…*)` for a blank one | `comment` |
+| Class body (instance side) | the header's `(` to the instance side's last `)`, header and members together | `(...)` | none |
+| Class side | the `(` after `:` to its `)` | `(...)` | none |
+| Method body | `(` to `)` | `(...)` | none |
+| Closure | `[` to `]` | `[...]`, or `[:x :y \| ...]` with its parameters | none |
+| Slot section -- a class header's, or a body's temporaries | `\|` to `\|`, or `\|\|` to `\|\|` | `\|...\|` | none |
+| Comment | `(*` to `*)`, an unterminated one to the end of the file | `(* `, the first non-blank line cut to 60 characters, ` ...*)`; `(*...*)` for a blank one | `comment` |
 
+- **Three ASCII dots** stand for what a fold hides, never the single
+  character `…`, which the editor draws in a fallback font beside the
+  editor's own.
 - **Only a range over more than one line** is answered: a fold on one line
   hides nothing.
 - **A construct recovery closed without its closing token** folds to where
@@ -309,7 +312,7 @@ it folds:
 2026.2.3, so the server's ranges reach a `.ns` file as they are. Checked by
 hand under `runIde` (2026-10-04): fold markers on comments, class bodies,
 class sides, methods, closures and slot sections; a folded method shows
-`(…)`; and typing an unclosed `foo = (` inside a class keeps the folds of
+`(...)`; and typing an unclosed `foo = (` inside a class keeps the folds of
 the methods after it. Were the platform ever to need folding enabled for a
 language with a parser definition of its own, as semantic tokens do
 (`shouldAskServerForSemanticTokens`, below), it would go into
@@ -357,6 +360,11 @@ method (`public class`, `protected class`), ` value` for a value class
 has none of them, so no `detail`. LSP has no field or kind for a static
 member or a value class, and `detail` is the one a client already reads for
 the access, so `class` and `value` go there.
+The access is what the member declares, else protected (§6.3.1: "If no access
+modifier is declared, the default is protected"); the root class is public
+(§6.3.1: the access level of a top-level class is always public); a factory is
+public whatever the default says, because the runtime enters every primary
+factory as public (`ns_runtime::mixin::factory_entry`).
 
 A value class is one whose "class inherits from class `Value`" (§3.1.1).
 For the **root class** the answer is exact: the root rule leaves a root two
@@ -371,17 +379,17 @@ cannot run. The server follows the resolver's binding of each clause's
 receiver (`LexicalSend { depth }`, as the semantic tokens do): a receiver
 bound to a nested class declared in this module makes the class a value
 class when that class is one -- found before or after it, in any enclosing
-class, a cycle of clauses answering no -- or when that class is named
-`Value`, as `Kernel.ns` declares the class itself. Any other receiver -- a
-slot, a method, a name only inherited, a `super` clause -- counts when it
-is named `Value`: the one case decided by the name alone. So a class over a
-value class of another module, or over a slot named `Value` holding
-something else, is misread.
-The access is what the member declares, else protected (§6.3.1: "If no access
-modifier is declared, the default is protected"); the root class is public
-(§6.3.1: the access level of a top-level class is always public); a factory is
-public whatever the default says, because the runtime enters every primary
-factory as public (`ns_runtime::mixin::factory_entry`).
+class -- or when that class is named `Value`, as `Kernel.ns` declares the
+class itself. Any other receiver -- a slot, a method, a name only
+inherited, a `super` clause -- counts when it is named `Value`: the one
+case decided by the name alone. So a class over a value class of another
+module, or over a slot named `Value` holding something else, is misread.
+The class `Value` itself, as `Kernel.ns` declares it (`Object new`), shows
+as a plain class: what makes a class a value class is inheriting from it.
+The server reads each class's clauses once and spreads value-ness back
+from the classes that reach `Value` directly, so the cost is linear in the
+classes and clauses, and the answer is the same whichever class is asked
+first, a cycle of clauses (`A = B`, `B = A <: Value`) included.
 
 **Ranges.** A class's `range` runs from its declaration's start to its end,
 and its `selectionRange` is its name. A method's range is its declaration;
@@ -462,14 +470,21 @@ That holds for the Structure tool window on 2026.1 and 2026.2 and for the
 File Structure popup on 2026.1. 2026.2 also carries a File Structure popup
 in a split frontend, which receives a presentation as `PresentationDataDto`;
 that carries no tooltip, so where the IDE uses that popup it shows no hover.
+Over the icon the tree shows the icon's own tooltip instead
+(`SimpleColoredComponent.getIconToolTipText`), which a row icon composes
+from its parts -- `Public` from the access icon. So the row icon is wrapped
+in an `IconWrapperWithToolTip` carrying the same hover text, public API on
+2026.1 and 2026.2; it is a `RetrievableIcon` and keeps its tooltip when the
+tree replaces the icon inside it for a dark or selected variant.
 
 `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind
 the same base icon for the breadcrumbs and sticky lines as for the tree,
 every kind named rather than left to the platform's defaults; it sees the
-kind alone, so there a root class and a value class show the class icon and a temporary
-declared with `=` the constant icon either way. A pick moves the caret to the start of the
-symbol's `selectionRange`, in the document's UTF-16 columns; the view selects
-the innermost symbol whose range holds the caret.
+kind alone, so there a root class and a value class show the class icon,
+and a temporary declared with `=` the constant icon either way. A pick
+moves the caret to the start of the symbol's `selectionRange`, in the
+document's UTF-16 columns; the view selects the innermost symbol whose
+range holds the caret.
 
 **When it asks.** The model asks the server for the file's children, off the
 EDT, and again only once the document's modification stamp has changed; asked
@@ -491,17 +506,15 @@ one file asking at once (the tool window and the popup) each send a request.
 A question on the EDT that finds no current answer schedules a retry too, and
 counts against the sixty fast ones.
 
-**Checked by hand under `runIde` (2026-10-04)** on `Kernel.ns`, while the
-tree still had a node per side: the Structure
-tool window and the File Structure popup show the tree, with the factory,
-the members in source order and the
-temporaries under their methods; Java-like access icons (a member without a
-modifier shows protected), the read-only and read-write property icons and
-`lazy`; picking a symbol jumps to its name; breadcrumbs show the class and
-method at the caret, and IntelliJ's sticky lines follow; the tree survives a
-half-typed method; and it fills on first open. The flat tree, the static
-mark and breadcrumbs and sticky lines without a side have not been looked at
-under `runIde` yet ([OPEN-WORK.md](../OPEN-WORK.md), "Missing tests").
+**Checked under `runIde` (2026-10-04)** on `Kernel.ns`: the Structure tool
+window and the File Structure popup show the flat tree, the factory first,
+the members in source order, the class-side methods last with the static
+mark and the temporaries under their methods; the icons of "The rows" in
+light and dark themes, with Java-like access icons (a member without a
+modifier shows protected) and `lazy`; picking a symbol jumps to its name;
+breadcrumbs show the class and method at the caret, and IntelliJ's sticky
+lines follow; the tree survives a half-typed method; and it fills on first
+open.
 
 ### Robustness
 
@@ -798,22 +811,23 @@ The server's own tests are described under its section, above ("Testing").
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
 - the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
-  per kind, every kind the server sends named), `NewspeakStructureElementTest` (a row's name, `lazy`, access icon, and
-  the base icon and hover of each of the nine elements in "The rows", and
-  `class` read together with the access word and `lazy`, the root, root
-  value and nested value classes' icons and hovers) and
-  `NewspeakStructureViewModelTest` (no answer and an empty answer make the
-  model ask again, an answer with symbols is shown); and on
-  `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a Newspeak file
-  gets the plugin's view rather than the platform's, the caret selects the
-  innermost symbol around it, a member with an access shows the kind's
-  and the access icon in one row, a class-side method shows its kind's
-  icon layered with the static mark, then its access icon, in one row, and
-  the plugin's two node icons load at 16 by 16, and
-  the root class's row holds the root-class and public icons and its hover as
-  the `PresentationData`'s tooltip -- all under the test framework's `IconManager`, which answers a row of icons
-  where the IDE's answers a `LayeredIcon`, both a `CompositeIcon` of the same
-  icons.
+  per kind, every kind the server sends named),
+  `NewspeakStructureElementTest` (a row's name, `lazy`, access icon, the
+  base icon and hover of each element in "The rows", root, root value and
+  nested value classes included, and `class` read together with the access
+  word and `lazy`) and `NewspeakStructureViewModelTest` (no answer and an
+  empty answer make the model ask again, an answer with symbols is shown);
+  and on `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a
+  Newspeak file gets the plugin's view rather than the platform's, the caret
+  selects the innermost symbol around it, a member with an access shows the
+  kind's and the access icon in one row, a class-side method shows its
+  kind's icon layered with the static mark, then its access icon, in one
+  row, the plugin's two node icons load at 16 by 16, the root class's row
+  holds the root-class and public icons and carries its hover both as the
+  `PresentationData`'s tooltip and as the icon's, and only the first
+  top-level symbol is the root -- all under the test framework's
+  `IconManager`, which answers a row of icons where the IDE's answers a
+  `LayeredIcon`, both a `CompositeIcon` of the same icons.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
 `ns-analyzer`'s tests before every commit and under every stress mode, like
