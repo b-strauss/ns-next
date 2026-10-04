@@ -122,19 +122,19 @@ compared token by token.
 The editor tooling is a crate of its own with a binary of its own,
 `ns-next-analyzer`: everything that looks at Newspeak without running it. Its
 commands are `lsp`, the language server; `dump-tokens`, for the lexer
-comparison; `parse` and `parse-corpus` ([frontend.md](frontend.md));
-`disasm`, which prints one compiled body ([compiler.md](compiler.md)); and
-`inspect`, which prints an image's structure
-([image-format.md](image-format.md), "Reading an artifact"). It never runs
-a program: `disasm` compiles a module or decodes an image, `inspect` reads an
-image without loading it, and neither runs the program's code -- the only
-Newspeak that runs is the shipped core library's instantiation in the
-interpreter `disasm` compiles on, and `lsp` and `dump-tokens` start no
-interpreter at all. Running is the `ns-next` binary's. Being a binary of its own keeps the server's dependencies out of
-`ns-next` and out of `ns-runtime`: `lsp-server` (rust-analyzer's transport),
-`lsp-types` and `serde_json`, on top of `ns-syntax`, `ns-runtime` and
-`ns-tooling`, the crate both binaries share (loading and resolving a source,
-collecting `.ns` files, printing diagnostics).
+comparison; `parse` and `parse-corpus` ([frontend.md](frontend.md)); `disasm`,
+which prints one compiled body ([compiler.md](compiler.md)); and `inspect`,
+which prints an image's structure ([image-format.md](image-format.md),
+"Reading an artifact"). It never runs a program: `disasm` compiles a module or
+decodes an image, `inspect` reads an image without loading it, and neither
+runs the program's code -- the only Newspeak that runs is the shipped core
+library's instantiation in the interpreter `disasm` bootstraps, and no other
+command starts an interpreter. Running is the `ns-next` binary's. Being a
+binary of its own keeps the server's dependencies out of `ns-next` and out of
+`ns-runtime`: `lsp-server` (rust-analyzer's transport), `lsp-types` and
+`serde_json`, on top of `ns-syntax`, `ns-runtime` and `ns-tooling`, the crate
+both binaries share (loading and resolving a source, collecting `.ns` files,
+printing diagnostics).
 
 Modules:
 

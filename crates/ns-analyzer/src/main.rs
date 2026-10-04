@@ -60,7 +60,8 @@ enum Command {
     /// Print one compiled body: a method, or with --initializer the target
     /// class's instance initializer. Takes either a .ns file, which is
     /// compiled first, or a serialized artifact, whose bodies are decoded
-    /// rather than compiled. Nothing is instantiated or run either way.
+    /// rather than compiled. Nothing of the program is instantiated or run
+    /// either way.
     Disasm {
         file: PathBuf,
         /// The method selector, e.g. `main:args:`.

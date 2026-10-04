@@ -74,9 +74,11 @@ fn looks_like_an_artifact(bytes: &[u8]) -> bool {
 /// recompiling anything. Either way, the result is the root mixin, whose tree
 /// carries the code, from which a `--class` path can address any mixin, then
 /// take exactly one method's body or the target mixin's initializer and print
-/// its bytecode listing. The source path never instantiates; the artifact
-/// path never instantiates either, since `image::load` only decodes the
-/// world. `lowering` chooses how a source is compiled; it is refused for an
+/// its bytecode listing. Neither path instantiates or runs anything of the
+/// program: the source path compiles on a bootstrapped interpreter, and the
+/// artifact path's `image::load` only decodes the world into one; the only
+/// Newspeak either runs is the shipped core library's instantiation in that
+/// bootstrap. `lowering` chooses how a source is compiled; it is refused for an
 /// artifact.
 pub(crate) fn execute(
     file: &Path,

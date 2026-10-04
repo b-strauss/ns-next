@@ -133,8 +133,9 @@ any: it parses, compiles a body to print it, decodes an image to show its
 structure, and is the language server behind the editor plugin.
 
 ```bash
-# print one compiled body; nothing is instantiated or run. Takes a .ns file,
-# which it compiles, or an artifact, whose bodies it decodes instead
+# print one compiled body; nothing of the program is instantiated or run.
+# Takes a .ns file, which it compiles, or an artifact, whose bodies it decodes
+# instead
 cargo run -p ns-analyzer -- disasm goldens/language/block/blocks_and_return.ns find:in:
 ```
 

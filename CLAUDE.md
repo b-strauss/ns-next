@@ -42,7 +42,7 @@ Rust 1.98.0, edition 2021, six crates:
   which the JetBrains plugin's lexer is checked against; `parse`, `parse-corpus`,
   `disasm` and `inspect`. It never runs a program: `disasm` compiles a module or
   decodes an image, `inspect` reads an image without loading it, and neither runs
-  the program's code (the interpreter `disasm` compiles on instantiates only the
+  the program's code (the interpreter `disasm` bootstraps instantiates only the
   shipped core library). Its server dependencies
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime` or
   `ns-next`; `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project

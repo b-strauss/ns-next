@@ -787,7 +787,8 @@ on it.
 ## Reading the output
 
 `ns-next-analyzer disasm <file.ns> <selector>` prints one body's instructions, compiling
-only — nothing is instantiated or run — and addressing code through mixins,
+only — nothing of the program is instantiated or run; the interpreter it compiles
+on instantiates only the shipped core library — and addressing code through mixins,
 since that is what code lives on. It also accepts an artifact in place of a
 `.ns` file, decoding rather than compiling; a deployed binary ships no source
 at all, so that path is what makes `disasm` usable on one. See

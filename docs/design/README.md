@@ -187,20 +187,20 @@ the front end at all and sends it `main: platform args:`. See
 module each under `crates/ns-cli/src/commands/`. `ns-next-analyzer` looks at
 Newspeak without running it: `lsp`, `dump-tokens`, `parse`, `parse-corpus`,
 `disasm` and `inspect`, one module each under
-`crates/ns-analyzer/src/commands/`; `disasm` compiles or decodes and
-`inspect` reads an image without loading it, and neither runs the program's
-code ([editor-support.md](editor-support.md), "The
-editor tooling, `crates/ns-analyzer`"). Each `main.rs` holds only the argument parser, the dispatch
-to the commands and the thread every command runs on — a thread of its own
-because the symbol interner is thread-local, spawned with the stack the front
-end needs ([execution.md](execution.md), "The depth limit"). What both
-binaries share is the crate `ns-tooling`: `source.rs` loads and resolves one
-source file, collects the `.ns` files under a directory and prints
-diagnostics; it is a crate of its own so the language server's dependencies
-never reach `ns-next`. What `ns-next`'s commands share lives beside them:
-`project.rs` reads a JSON project file and its path rules, `program.rs`
-reads a program -- one source file or a project, its modules in module
-order -- compiles it and assembles its application with `new` or
+`crates/ns-analyzer/src/commands/`; `disasm` compiles or decodes and `inspect`
+reads an image without loading it, and neither runs the program's code
+([editor-support.md](editor-support.md),
+"The editor tooling, `crates/ns-analyzer`"). Each `main.rs` holds only the
+argument parser, the dispatch to the commands and the thread every command
+runs on — a thread of its own because the symbol interner is thread-local,
+spawned with the stack the front end needs ([execution.md](execution.md),
+"The depth limit"). What both binaries share is the crate `ns-tooling`:
+`source.rs` loads and resolves one source file, collects the `.ns` files under
+a directory and prints diagnostics; it is a crate of its own so the language
+server's dependencies never reach `ns-next`. What `ns-next`'s commands share
+lives beside them: `project.rs` reads a JSON project file and its path rules,
+`program.rs` reads a program -- one source file or a project, its modules in
+module order -- compiles it and assembles its application with `new` or
 `packageUsing:` a manifest, and `entry.rs` sends `main: platform args:` and
 reports its outcome.
 

@@ -7,8 +7,10 @@
 //! the JetBrains plugin's lexer is checked against, `parse` and
 //! `parse-corpus`, `disasm`, which compiles a module or decodes an image and
 //! prints a body's bytecode, and `inspect`, which prints an image's
-//! structure. None of them starts the VM: a module is compiled and an image
-//! decoded, but no Newspeak runs. This library holds the language server and
+//! structure. None of them runs a program's code: a module is compiled and an
+//! image decoded, never instantiated or sent anything. Only `disasm`
+//! bootstraps an interpreter, which instantiates the shipped core library and
+//! nothing else. This library holds the language server and
 //! the token dump; the other commands live with the binary. See
 //! `docs/design/editor-support.md`.
 
