@@ -4445,6 +4445,12 @@ impl<'gc> Heap<'gc> {
             to_epoch,
             objects: Shift { regions },
         };
+        // The remembered set holds raw offsets, which no tracer reaches; the
+        // next scavenge reads each one as a header. A compaction empties the
+        // set instead.
+        for holder in &mut self.remembered {
+            *holder = forwarder.objects.apply(*holder);
+        }
         self.forward_everything(&mut forwarder);
         forwarder
     }
@@ -7488,6 +7494,37 @@ mod tests {
             assert!(!space::is_young(object.offset));
             assert_eq!(heap.str_value(object), Some(text.to_string()));
         }
+    }
+
+    /// A move relocates the remembered set with the objects: the next
+    /// scavenge finds the holder where it now lies, and so the young object
+    /// only the holder reaches.
+    #[test]
+    #[cfg(debug_assertions)]
+    fn a_move_relocates_the_remembered_set() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let holder = old_instance(&mut heap, class);
+        let held = heap.allocate_string(class, crate::CodePoints::from("held"));
+        assert!(heap.instance_set_field(holder, 0, Value::object(held)));
+        assert_eq!(heap.remembered, vec![holder.offset]);
+        let root = heap.stash(Value::object(holder));
+
+        move_bare_heap(&mut heap);
+
+        for offset in &heap.remembered {
+            assert!(
+                Header(heap.space.words()[header_index(*offset)]).remembered(),
+                "a remembered offset names a remembered object"
+            );
+        }
+        scavenge_bare(&mut heap, false, &mut []);
+        let holder = rooted(heap.fetch(&root));
+        let held = rooted(heap.instance_field(holder, 0).unwrap_or_else(Value::nil));
+        assert!(space::is_young(held.offset));
+        assert_eq!(heap.str_value(held), Some("held".to_string()));
+        assert_eq!(heap.remembered, vec![holder.offset]);
+        assert!(heap.header(holder).remembered());
     }
 
     #[test]
