@@ -1341,7 +1341,7 @@ into it. It is not in it.
 
 ## Packaging
 
-`ns-next build <file.ns | project.json> <out> [--debug-source] [--lowering
+`ns-next build <file.ns | project> <out> [--debug-source] [--lowering
 …]` assembles the application exactly as `run` does and writes it where `run`
 would send `main:args:`. `ns-next load <image> [-- args]` starts it. The CLI
 side is `crates/ns-cli/src/program.rs` (`read_program`, `load_program`,
@@ -1357,8 +1357,15 @@ side is `crates/ns-cli/src/program.rs` (`read_program`, `load_program`,
   (`a_source_file_whose_root_takes_the_platform_is_refused_before_anything_runs`,
   `crates/ns-cli/tests/run.rs`). The root is sent `new`, then `main:
   platform args:`.
-- **A project file**: `ns-next run app.json [-- args]`, recognized by its
-  `.json` extension. The root class's primary factory must be
+- **A project**: `ns-next run [app] [-- args]`, where `app` is a directory
+  holding a `newspeak.json`, or that file itself; with no program, the
+  current directory. A project file is recognized by its name alone, as a
+  Node package's `package.json` is, so a command given a directory finds it
+  and no other JSON file is mistaken for one: a directory without one, and a
+  `.json` file of any other name, are refused naming `newspeak.json`
+  (`project::locate_program`; decided with the user on 2026-10-05). `bench`
+  takes the same, `build` the same but always with its program written out,
+  since its output path follows. The root class's primary factory must be
   `packageUsing:`. Every module is parsed, resolved and compiled first; the
   root is sent `packageUsing: manifest`, then `main: platform args:`.
 
@@ -1382,7 +1389,7 @@ existence.
 - A module's name in the manifest is the name its source file declares for
   its class, as in both upstream systems (Primordial Soup's
   `namespace at: klass name put: klass`; Squeak's `Root` namespace).
-- The project file's own path, given to a command, is absolute or relative
+- The project's own path, given to a command, is absolute or relative
   to the working directory. A path inside it is absolute or relative to the
   project file. Either separator, `/` or `\`, is accepted in every path,
   relative or absolute, on every operating system: the foreign one is

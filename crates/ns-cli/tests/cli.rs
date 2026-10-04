@@ -232,7 +232,7 @@ fn benchmark_takes_a_project_file() {
             common::goldens_root()
                 .join("tool")
                 .join("manifest")
-                .join("a_project_reaches_its_modules_through_the_manifest.json"),
+                .join("a_project_reaches_its_modules_through_the_manifest"),
         )
         .arg("--iterations")
         .arg("2")

@@ -3648,7 +3648,7 @@ Bounce, Storage and List -- are runnable programs in
 `benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
 module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
-the root of the project `are-we-fast-yet.json`, which reaches each
+the root of the project in that directory, which reaches each
 benchmark as `manifest Sieve`. Without `--timed` the harness runs each
 benchmark once and prints `<Name>: ok`, which `goldens/tool/awfy/` pins under
 both lowerings and `ns-next bench` times; with `--timed` it prints each
@@ -3781,7 +3781,7 @@ modules is documented in place, and `CLAUDE.md`'s "Conventions" holds the
 rule. No wire tag changed. Of the existing goldens, only
 `goldens/tool/awfy/all_benchmarks_verify.toml` records a different outcome, a
 `<Name>: ok` line for each of the five new programs, and the four
-`goldens/tool/awfy/*.json` project files list the five new modules. Four
+`goldens/tool/awfy/*/newspeak.json` project files list the five new modules. Four
 other existing goldens' sources changed, their outcomes not: the comments of
 `goldens/library/collection/a_list_grows_past_its_first_array` and
 `a_list_index_error_is_caught_as_an_error` name the new growth;

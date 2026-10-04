@@ -53,12 +53,15 @@ enum Command {
         whitelist: Option<PathBuf>,
     },
     /// Run a program end to end: a `.ns` source file, whose root is
-    /// instantiated with `new`, or a `.json` project file, whose root is
-    /// instantiated with `packageUsing:` a manifest of its other modules.
-    /// Either way the application is sent `main: platform args:`.
+    /// instantiated with `new`, or a project -- a directory holding a
+    /// `newspeak.json`, or that file itself -- whose root is instantiated
+    /// with `packageUsing:` a manifest of its other modules. Either way the
+    /// application is sent `main: platform args:`.
     Run {
-        /// A `.ns` source file or a `.json` project file.
-        file: PathBuf,
+        /// A `.ns` source file, a project directory or its `newspeak.json`;
+        /// the current directory when omitted.
+        #[arg(default_value = ".")]
+        program: PathBuf,
         /// The lowering to compile the source with.
         #[arg(long, value_enum, default_value_t = LoweringArgument::Optimized)]
         lowering: LoweringArgument,
@@ -97,8 +100,10 @@ enum Command {
     /// numbers are not comparable to anything and this subcommand warns on
     /// stderr when it detects one.
     Bench {
-        /// A `.ns` file or a `.json` project file, assembled as `run` does.
-        file: PathBuf,
+        /// A `.ns` file, a project directory or its `newspeak.json`,
+        /// assembled as `run` does; the current directory when omitted.
+        #[arg(default_value = ".")]
+        program: PathBuf,
         /// How many timed runs to take the median of, after one discarded
         /// warm-up run.
         #[arg(long, default_value_t = 10)]
@@ -118,9 +123,10 @@ enum Command {
     /// Assemble the application exactly as `run` does -- its factory and
     /// every initializer run, with no platform in existence -- and write it
     /// just before `main:args:`, as an image whose one root is the
-    /// application. A `.ns` source file or a `.json` project file.
+    /// application. A `.ns` source file, a project directory or its
+    /// `newspeak.json`.
     Build {
-        file: PathBuf,
+        program: PathBuf,
         out: PathBuf,
         /// Store every module's source text in the image (the debug variant).
         #[arg(long)]
@@ -165,34 +171,34 @@ fn execute(command: Command) -> ExitCode {
             whitelist,
         } => commands::run_corpus::execute(&directory, whitelist.as_deref()),
         Command::Run {
-            file,
+            program,
             lowering,
             cache_statistics,
             arguments,
-        } => commands::run::execute(&file, lowering.into(), cache_statistics, &arguments),
+        } => commands::run::execute(&program, lowering.into(), cache_statistics, &arguments),
         Command::Load {
             image,
             print_source,
             arguments,
         } => commands::load::execute(&image, print_source, &arguments),
         Command::Bench {
-            file,
+            program,
             iterations,
             cache_statistics,
             collector_statistics,
             arguments,
         } => commands::bench::execute(
-            &file,
+            &program,
             iterations,
             cache_statistics,
             collector_statistics,
             &arguments,
         ),
         Command::Build {
-            file,
+            program,
             out,
             debug_source,
             lowering,
-        } => commands::build::execute(&file, &out, debug_source, lowering.into()),
+        } => commands::build::execute(&program, &out, debug_source, lowering.into()),
     }
 }

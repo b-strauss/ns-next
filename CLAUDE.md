@@ -38,8 +38,9 @@ Rust 1.98.0, edition 2021, six crates:
   format (`image/`).
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
-  `load`, `bench`, `build`. A program is one `.ns` file or a JSON project file of
-  several modules (`project.rs`, `program.rs`).
+  `load`, `bench`, `build`. A program is one `.ns` file or a project of several
+  modules: a directory whose `newspeak.json` names them, the current directory
+  when no program is given (`project.rs`, `program.rs`).
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols); `dump-tokens`,

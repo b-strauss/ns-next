@@ -647,7 +647,7 @@ NBody, Permute, Queens, Richards, Sieve, Storage and Towers -- and
 Primordial Soup's own Richards and DeltaBlue, `RichardsTon80`, derived from
 the Dart Ton80 version, and `DeltaBlueTon80`, beside them, and the
 harness that runs them, `AreWeFastYet.ns`, the root of the project
-`are-we-fast-yet.json`, which reaches each benchmark as `manifest Sieve`
+whose `newspeak.json` lies beside it, which reaches each benchmark as `manifest Sieve`
 ([image-format.md](image-format.md), "Packaging"). Every benchmark is one
 module: SOMns's CD loads a second module, `RedBlackTree.ns`, which here is
 folded into `CD.ns` as nested classes of `CD`, so CD too is reached as
@@ -720,7 +720,7 @@ alone or on no benchmark at all.
 
 There are two ways to measure, and they report different things:
 
-- **`ns-next bench benchmarks/are-we-fast-yet/are-we-fast-yet.json -- <Name>`**,
+- **`ns-next bench benchmarks/are-we-fast-yet -- <Name>`**,
   from the repository root, times the harness
   without `--timed`, which runs the benchmark named -- or, with no name,
   all sixteen in turn -- once and prints `<Name>: ok`. `bench` reports the
@@ -736,7 +736,7 @@ There are two ways to measure, and they report different things:
   interpreter keeps between sends: the inline caches and the platform's
   lazy members. The untimed run does the same work every time, which is
   what lets `goldens/tool/awfy/` pin its output and `bench` time it.
-- **`ns-next run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- --timed [<Name>]`**
+- **`ns-next run benchmarks/are-we-fast-yet -- --timed [<Name>]`**
   lets the
   harness measure itself, as Primordial Soup's does: for each benchmark, or
   the one named, it runs `bench` repeatedly for at least 3 ms to warm up,

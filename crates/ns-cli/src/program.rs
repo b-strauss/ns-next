@@ -1,8 +1,9 @@
 //! A program as the CLI starts it: one source file whose root is
-//! instantiated with `new`, or a project file whose root is instantiated
-//! with `packageUsing:` a manifest of the other modules. Either way the
-//! platform arrives only as `main:args:`'s first argument
-//! (`docs/design/image-format.md`, "Packaging").
+//! instantiated with `new`, or a project -- a directory, or its
+//! `newspeak.json` -- whose root is instantiated with `packageUsing:` a
+//! manifest of the other modules. Either way the platform arrives only as
+//! `main:args:`'s first argument (`docs/design/image-format.md`,
+//! "Packaging").
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -31,13 +32,20 @@ pub(crate) struct Loaded {
 }
 
 pub(crate) fn read_program(path: &Path) -> Result<Program, ExitCode> {
-    if !project::is_project_file(path) {
-        return Ok(Program {
-            assembly: Assembly::New,
-            sources: vec![source::load_source(path)?],
-        });
-    }
-    let project = project::read_project(path).map_err(|message| {
+    let located = project::locate_program(path).map_err(|message| {
+        eprintln!("error: {message}");
+        ExitCode::FAILURE
+    })?;
+    let path = match located {
+        project::ProgramPath::Source(path) => {
+            return Ok(Program {
+                assembly: Assembly::New,
+                sources: vec![source::load_source(&path)?],
+            });
+        }
+        project::ProgramPath::Project(path) => path,
+    };
+    let project = project::read_project(&path).map_err(|message| {
         eprintln!("error: {message}");
         ExitCode::FAILURE
     })?;

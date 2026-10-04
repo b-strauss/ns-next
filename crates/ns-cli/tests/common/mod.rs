@@ -23,9 +23,10 @@ pub fn goldens_root() -> PathBuf {
 /// The goldens are a tree of directories: one that holds files is a category
 /// and holds goldens only; one that holds none groups categories or further
 /// groups. Anything else is refused rather than skipped -- a file at the root,
-/// or a directory beside goldens. The one exception is the directory `<name>/`
-/// beside a project golden `<name>.json`, which holds that project's modules;
-/// its contents are not goldens and are not walked. A golden the walk does not
+/// or a directory beside goldens. The one exception is a project golden: the
+/// directory `<name>/` holding a `newspeak.json` and that project's modules,
+/// its recorded outcome `<name>.toml` beside it as every golden's is. Its
+/// contents are not goldens and are not walked (`golden_projects`). A golden the walk does not
 /// accept but silently drops is not a golden at all: no sweep runs it and the
 /// pairing check cannot see it, so a wrong recorded answer would pass
 /// unnoticed. The category is the organizing principle, so a file outside one
@@ -70,13 +71,12 @@ fn walk_golden_directory(directory: &Path, extension: &str, files: &mut Vec<Path
             walk_golden_directory(&path, extension, files);
         } else {
             assert!(
-                path.with_extension("json").is_file(),
-                "{} is a directory inside the category {} with no {}.json beside it -- \
-                 a category holds goldens, and only a project golden's modules may live \
+                is_project_golden(&path),
+                "{} is a directory inside the category {} with no {PROJECT_FILE} in it -- \
+                 a category holds goldens, and only a project golden's directory may live \
                  one level deeper",
                 path.display(),
                 directory.display(),
-                path.file_name().unwrap_or_default().to_string_lossy()
             );
         }
     }
@@ -94,10 +94,39 @@ pub fn golden_sources() -> Vec<PathBuf> {
     golden_files("ns")
 }
 
-/// Every golden program, a `.ns` source or a `.json` project file, sorted.
+/// The one name a project file has (`ns-cli`'s `project::PROJECT_FILE_NAME`).
+pub const PROJECT_FILE: &str = "newspeak.json";
+
+/// Whether `directory`, inside a category, is a project golden: it holds the
+/// project's `newspeak.json`.
+fn is_project_golden(directory: &Path) -> bool {
+    directory.join(PROJECT_FILE).is_file()
+}
+
+/// Every project golden: the directory of each `newspeak.json` one level
+/// below a category, which is what `ns-next` is given to run it, sorted. Its
+/// recorded outcome is the directory's path with `.toml`, so a project
+/// directory with no `.toml` beside it is found by the pairing check's other
+/// direction rather than here.
+pub fn golden_projects() -> Vec<PathBuf> {
+    let categories: std::collections::BTreeSet<PathBuf> = golden_files("toml")
+        .iter()
+        .filter_map(|expectation| expectation.parent().map(Path::to_path_buf))
+        .collect();
+    let mut projects: Vec<PathBuf> = categories
+        .iter()
+        .flat_map(|category| directory_entries(category))
+        .filter(|entry| entry.is_dir() && is_project_golden(entry))
+        .collect();
+    projects.sort();
+    projects
+}
+
+/// Every golden program, a `.ns` source or a project golden's directory,
+/// sorted.
 pub fn golden_programs() -> Vec<PathBuf> {
     let mut programs = golden_files("ns");
-    programs.extend(golden_files("json"));
+    programs.extend(golden_projects());
     programs.sort();
     programs
 }

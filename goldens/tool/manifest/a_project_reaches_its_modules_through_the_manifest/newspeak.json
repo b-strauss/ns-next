@@ -1,0 +1,7 @@
+{
+  "root": "App.ns",
+  "modules": [
+    "Greeting.ns",
+    "Counter.ns"
+  ]
+}

@@ -200,7 +200,8 @@ spawned with the stack the front end needs ([execution.md](execution.md),
 `source.rs` loads and resolves one source file, collects the `.ns` files under
 a directory and prints diagnostics; it is a crate of its own so the language
 server's dependencies never reach `ns-next`. What `ns-next`'s commands share
-lives beside them: `project.rs` reads a JSON project file and its path rules,
+lives beside them: `project.rs` finds a project's `newspeak.json` and reads it
+and its path rules,
 `program.rs` reads a program -- one source file or a project, its modules in
 module order -- compiles it and assembles its application with `new` or
 `packageUsing:` a manifest, and `entry.rs` sends `main: platform args:` and
@@ -209,8 +210,8 @@ reports its outcome.
 ## The goldens
 
 `goldens/` is this runtime's recorded behaviour. A golden is a `.ns` program
-or a `.json` project file ([image-format.md](image-format.md)), and a `.toml`
-beside it holding the outcome that program must produce:
+or a project golden, a directory holding a `newspeak.json`
+([image-format.md](image-format.md)), and a `.toml` beside it holding the outcome that program must produce:
 `status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
@@ -235,11 +236,12 @@ whose assembly fails must fail its `build` with `run`'s status and report.
 A golden's root class is instantiated with `new`, and a project golden's
 root with `packageUsing:` its manifest; either reaches the platform only as
 `main:args:`'s first argument (§8.4), as every program does
-([image-format.md](image-format.md), "Packaging"). A project golden's
-modules live in the directory `goldens/<category>/<name>/` beside its
-`<name>.json`, or in a tree several goldens share outside `goldens/`, which
-its project file names by relative paths: each `goldens/tool/awfy/` golden is a
-project file over `benchmarks/are-we-fast-yet/`. The modules are not
+([image-format.md](image-format.md), "Packaging"). A project golden is
+the directory `goldens/<category>/<name>/`, its `newspeak.json` in it and
+`<name>.toml` beside it; its modules live in the directory too, or in a tree
+several goldens share outside `goldens/`, which its `newspeak.json` names by
+relative paths: each `goldens/tool/awfy/` golden is a directory holding only a
+`newspeak.json` over `benchmarks/are-we-fast-yet/`. The modules are not
 goldens themselves, and `goldens/tool/manifest/` pins the manifest.
 
 A fifth key, `arguments`, lists the program's arguments, which every runner
@@ -306,10 +308,10 @@ The goldens are a tree. A directory that holds files is a category and holds
 goldens only; one that holds none groups categories or further groups. The
 set is found by walking it — no list, no count, so adding a golden needs no
 edit anywhere, and `cargo nextest run -p ns-cli --test run_goldens
-library/number` runs one subtree. A project golden's modules live in the
-directory named like it (`<name>.json` and `<name>/`), the one directory a
-category may hold, or in a shared tree outside `goldens/`, as `tool/awfy/`'s
-do; neither's contents are goldens, and neither is walked. A file at the
+library/number` runs one subtree. A project golden is a
+directory holding a `newspeak.json`, the one directory a category may hold;
+its modules live in it, or in a shared tree outside `goldens/`, as
+`tool/awfy/`'s do; neither's contents are goldens, and neither is walked. A file at the
 root, a directory beside goldens or an empty directory is refused by name
 rather than skipped, because a golden nothing discovers is not a golden at
 all. `every_golden_is_a_complete_pair` covers the other half: an orphan on
@@ -324,10 +326,10 @@ explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the
 harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which
 says what an untimed run prints and gives the usage line the refusals pin;
-their file names say which case each is. Every `goldens/tool/awfy/*.json` lists
-every module of `benchmarks/are-we-fast-yet/are-we-fast-yet.json`, because the
+their file names say which case each is. Every `goldens/tool/awfy/*/newspeak.json` lists
+every module of `benchmarks/are-we-fast-yet/newspeak.json`, because the
 harness names each benchmark when it is instantiated; a new benchmark is added
-to the harness tuple, the project file, each `awfy` golden `.json`,
+to the harness tuple, the project file, each `awfy` golden's `newspeak.json`,
 `all_benchmarks_verify.toml` and the name list in `crates/ns-cli/tests/run.rs`'s
 `a_timed_run_prints_a_score_for_every_benchmark`. The `.toml` holds the recorded
 answer and nothing else.

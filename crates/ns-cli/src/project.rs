@@ -1,8 +1,58 @@
 //! The project file: a program of several modules, named in JSON. `root` is
 //! the application's source; `modules` are the other modules its manifest
-//! holds (`docs/design/image-format.md`, "Packaging").
+//! holds (`docs/design/image-format.md`, "Packaging"). Every project file is
+//! named `newspeak.json`, so a project is its directory.
 
 use std::path::{Path, PathBuf};
+
+/// The one name a project file has, as every Node package's is
+/// `package.json`: a command given a directory finds the project in it, and
+/// no other JSON file is mistaken for one.
+pub(crate) const PROJECT_FILE_NAME: &str = "newspeak.json";
+
+/// What a command was given to run, once found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ProgramPath {
+    /// One source file, whose root is instantiated with `new`.
+    Source(PathBuf),
+    /// A project file, whose root is instantiated with `packageUsing:`.
+    Project(PathBuf),
+}
+
+/// The program `path` names: a directory's `newspeak.json`, a file of that
+/// name, or a source file. A directory without one, and a JSON file of any
+/// other name, are refused with the name a project file must have rather
+/// than read as a source.
+pub(crate) fn locate_program(path: &Path) -> Result<ProgramPath, String> {
+    if path.is_dir() {
+        let project = path.join(PROJECT_FILE_NAME);
+        if project.is_file() {
+            return Ok(ProgramPath::Project(project));
+        }
+        return Err(format!(
+            "{} holds no {PROJECT_FILE_NAME}: a directory is run as the project its \
+             {PROJECT_FILE_NAME} describes",
+            path.display()
+        ));
+    }
+    if path
+        .file_name()
+        .is_some_and(|name| name == PROJECT_FILE_NAME)
+    {
+        return Ok(ProgramPath::Project(path.to_path_buf()));
+    }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+    {
+        return Err(format!(
+            "{} is not a project file: a project file is named {PROJECT_FILE_NAME}",
+            path.display()
+        ));
+    }
+    Ok(ProgramPath::Source(path.to_path_buf()))
+}
 
 /// The file as written. Unknown fields are refused so that a misspelt key
 /// is a message rather than a module silently missing.
@@ -17,12 +67,6 @@ struct ProjectFile {
 pub(crate) struct Project {
     pub(crate) root: PathBuf,
     pub(crate) modules: Vec<PathBuf>,
-}
-
-pub(crate) fn is_project_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
 }
 
 pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
@@ -183,8 +227,44 @@ mod tests {
     }
 
     #[test]
-    fn only_a_json_extension_names_a_project_file() {
-        assert!(is_project_file(Path::new("a/Project.JSON")));
-        assert!(!is_project_file(Path::new("App.ns")));
+    fn a_directory_is_the_project_its_newspeak_json_describes() {
+        let directory = scratch("directory");
+        let project = directory.join(PROJECT_FILE_NAME);
+        std::fs::write(&project, r#"{ "root": "App.ns" }"#)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(
+            locate_program(&directory),
+            Ok(ProgramPath::Project(project.clone()))
+        );
+        assert_eq!(locate_program(&project), Ok(ProgramPath::Project(project)));
+    }
+
+    #[test]
+    fn a_directory_without_a_newspeak_json_is_refused_naming_the_file() {
+        let directory = scratch("no-project");
+        let error = match locate_program(&directory) {
+            Ok(found) => panic!("{} was accepted as {found:?}", directory.display()),
+            Err(error) => error,
+        };
+        assert!(error.contains(PROJECT_FILE_NAME), "{error}");
+    }
+
+    #[test]
+    fn a_json_file_of_another_name_is_refused_naming_the_file() {
+        for name in ["app.json", "Project.JSON"] {
+            let error = match locate_program(Path::new(name)) {
+                Ok(found) => panic!("{name} was accepted as {found:?}"),
+                Err(error) => error,
+            };
+            assert!(error.contains(PROJECT_FILE_NAME), "{error}");
+        }
+    }
+
+    #[test]
+    fn any_other_file_is_a_source() {
+        assert_eq!(
+            locate_program(Path::new("App.ns")),
+            Ok(ProgramPath::Source(PathBuf::from("App.ns")))
+        );
     }
 }

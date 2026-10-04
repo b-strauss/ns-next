@@ -105,7 +105,7 @@ fn a_project_assembles_its_root_with_the_manifest() {
     let directory = ScratchDirectory::new("project");
     std::fs::write(directory.join("App.ns"), APP).unwrap();
     std::fs::write(directory.join("Greeter.ns"), GREETER).unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         r#"{ "root": "App.ns", "modules": ["Greeter.ns"] }"#,
@@ -124,13 +124,64 @@ fn a_project_assembles_its_root_with_the_manifest() {
     );
 }
 
+/// A project is its directory: `run` takes the directory, its
+/// `newspeak.json`, or nothing at all in it, and answers alike.
+#[test]
+fn a_project_runs_from_its_directory_its_file_or_no_argument() {
+    let directory = ScratchDirectory::new("project-directory");
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    std::fs::write(directory.join("Greeter.ns"), GREETER).unwrap();
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "root": "App.ns", "modules": ["Greeter.ns"] }"#,
+    )
+    .unwrap();
+
+    let from_directory = run(directory.path());
+    let from_file = run(&directory.join("newspeak.json"));
+    let from_nothing = ns_next()
+        .arg("run")
+        .current_dir(directory.path())
+        .output()
+        .unwrap();
+    for out in [from_directory, from_file, from_nothing] {
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "hello from a module\n"
+        );
+    }
+}
+
+/// Only `newspeak.json` is a project file: a directory without one, and a
+/// JSON file of another name, are refused naming the file a project needs
+/// rather than run as something else.
+#[test]
+fn a_project_file_of_another_name_or_a_directory_without_one_is_refused() {
+    let directory = ScratchDirectory::new("project-misnamed");
+    std::fs::write(directory.join("App.ns"), APP).unwrap();
+    let misnamed = directory.join("app.json");
+    std::fs::write(&misnamed, r#"{ "root": "App.ns" }"#).unwrap();
+
+    for out in [run(&misnamed), run(directory.path())] {
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty(), "nothing runs");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains("newspeak.json"), "stderr: {stderr}");
+    }
+}
+
 #[test]
 fn a_project_module_is_reached_through_a_backslash_path() {
     let directory = ScratchDirectory::new("project-backslash");
     std::fs::create_dir_all(directory.join("lib")).unwrap();
     std::fs::write(directory.join("App.ns"), APP).unwrap();
     std::fs::write(directory.join("lib").join("Greeter.ns"), GREETER).unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         r#"{ "root": "App.ns", "modules": ["lib\\Greeter.ns"] }"#,
@@ -162,7 +213,7 @@ fn a_projects_root_must_take_the_manifest() {
     )
     .unwrap();
     std::fs::write(directory.join("Greeter.ns"), GREETER).unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         r#"{ "root": "App.ns", "modules": ["Greeter.ns"] }"#,
@@ -189,7 +240,7 @@ fn two_modules_of_one_name_are_refused() {
     std::fs::write(directory.join("App.ns"), APP).unwrap();
     std::fs::write(directory.join("A.ns"), twin).unwrap();
     std::fs::write(directory.join("B.ns"), twin).unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         r#"{ "root": "App.ns", "modules": ["A.ns", "B.ns"] }"#,
@@ -209,7 +260,7 @@ fn two_modules_of_one_name_are_refused() {
 fn a_missing_module_file_is_refused() {
     let directory = ScratchDirectory::new("project-missing");
     std::fs::write(directory.join("App.ns"), APP).unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         r#"{ "root": "App.ns", "modules": ["Nowhere.ns"] }"#,
@@ -242,7 +293,7 @@ fn a_module_shadowed_by_an_object_member_is_refused() {
         "},
     )
     .unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(&project, r#"{ "root": "App.ns", "modules": ["Array.ns"] }"#).unwrap();
 
     let out = run(&project);
@@ -268,7 +319,7 @@ fn a_never_used_module_breaking_the_root_rule_is_refused_by_run_and_build_alike(
         "},
     )
     .unwrap();
-    let project = directory.join("app.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         r#"{ "root": "App.ns", "modules": ["Greeter.ns", "Unused.ns"] }"#,
@@ -317,10 +368,10 @@ fn a_program_without_main_is_an_uncaught_does_not_understand() {
     );
 }
 
-/// The Are We Fast Yet harness's project file, reached from `goldens/`'s
+/// The Are We Fast Yet harness's project directory, reached from `goldens/`'s
 /// sibling so that no second way of finding the repository root exists.
 fn harness_project() -> std::path::PathBuf {
-    goldens_root().join("../benchmarks/are-we-fast-yet/are-we-fast-yet.json")
+    goldens_root().join("../benchmarks/are-we-fast-yet")
 }
 
 /// `--timed` prints `<Name>: <runs per second>` with one fraction digit,

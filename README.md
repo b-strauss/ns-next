@@ -85,8 +85,8 @@ On Windows the C runtime is linked statically (see `.cargo/config.toml`), so
 need no Rust installation and no VC++ redistributable on the machine that runs
 them.
 
-`goldens/` holds end-to-end programs, each a `.ns` source or a `.json` project file
-and a `.toml` beside it recording the exit status, stdout and stderr that program must
+`goldens/` holds end-to-end programs, each a `.ns` source or a project directory
+holding a `newspeak.json`, and a `.toml` beside it recording the exit status, stdout and stderr that program must
 produce, byte for byte —
 under both lowerings, the optimized one and the reference lowering it is checked
 against (`docs/design/README.md`, "The goldens"). The corpus is a vendored set of real
@@ -102,11 +102,13 @@ cargo run -p ns-cli -- run goldens/library/platform/hello.ns
 ```
 
 A program is one `.ns` file, whose root class is instantiated with `new`, or
-a `.json` project file naming several modules, whose root is instantiated
-with `packageUsing:` a manifest of the others. Either way the application is
-then sent `main: platform args:`, the only way the platform reaches it. A
-project file names its root and its other modules; paths are relative to the
-project file, with either separator:
+a project of several modules, whose root is instantiated with `packageUsing:`
+a manifest of the others. Either way the application is then sent `main:
+platform args:`, the only way the platform reaches it. A project is a
+directory holding a `newspeak.json`, which names its root and its other
+modules; paths are relative to it, with either separator. `run`, `bench` and
+`build` take the directory or its `newspeak.json`, and `run` and `bench` the
+current directory when given no program:
 
 ```json
 {
@@ -176,11 +178,11 @@ picks one, and without a name all sixteen run in turn
 
 ```bash
 # run each benchmark once and verify its result: prints `<Name>: ok`
-cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- Richards
+cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet -- Richards
 # time one run of the benchmark: median, minimum and maximum of ten
-cargo run --release -p ns-cli -- bench benchmarks/are-we-fast-yet/are-we-fast-yet.json -- Richards
+cargo run --release -p ns-cli -- bench benchmarks/are-we-fast-yet -- Richards
 # let the harness measure itself: runs per second after a warm-up
-cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet/are-we-fast-yet.json -- --timed
+cargo run --release -p ns-cli -- run benchmarks/are-we-fast-yet -- --timed
 # the same, as tests: every benchmark verified at its full size
 cargo nextest run -p ns-cli --profile benchmarks
 ```

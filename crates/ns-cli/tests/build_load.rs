@@ -421,7 +421,7 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
         "},
     )
     .expect("write the module");
-    let project = directory.join("project.json");
+    let project = directory.join("newspeak.json");
     std::fs::write(
         &project,
         indoc! {r#"
@@ -440,8 +440,8 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
 
 #[test]
 fn a_project_builds_and_loads_as_it_runs() {
-    let project = goldens_root()
-        .join("tool/manifest/a_project_reaches_its_modules_through_the_manifest.json");
+    let project =
+        goldens_root().join("tool/manifest/a_project_reaches_its_modules_through_the_manifest");
     let (ok, out, error) = assert_build_load_matches_run("project", &project);
     assert!(ok, "{error}");
     assert_eq!(out, "hello, modules\n2\n");
