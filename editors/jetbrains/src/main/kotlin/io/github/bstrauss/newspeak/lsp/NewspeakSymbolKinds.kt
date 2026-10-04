@@ -17,16 +17,11 @@ import javax.swing.Icon
  * would draw them as a constant and a generic property; a Newspeak slot is
  * always reached through its accessors, which IntelliJ's read-only and
  * read-write property icons say exactly.
- *
- * A `Namespace` is a class's instance side or class side: a named group of the
- * class's members, not a package, so it gets the icon the platform's structure
- * view gives such a group (a `//region`) rather than the default package icon.
  */
 object NewspeakSymbolKinds : LspSymbolKindCustomizer() {
     override fun getIcon(kind: SymbolKind): Icon? = when (kind) {
         SymbolKind.Constant -> AllIcons.Nodes.PropertyRead
         SymbolKind.Property -> AllIcons.Nodes.PropertyReadWrite
-        SymbolKind.Namespace -> AllIcons.Nodes.CustomRegion
         else -> super.getIcon(kind)
     }
 }

@@ -16,19 +16,22 @@ import javax.swing.Icon
 /**
  * What a row of the structure view shows for one of the server's symbols
  * (`crates/ns-analyzer/src/document_symbols.rs`): its name, `lazy` beside a lazy
- * slot, the icon of its kind and the icon of its access.
+ * slot, the icon of its kind, the static mark on it for a class-side method,
+ * and the icon of its access.
  */
 data class SymbolPresentation(
     val name: String,
     val locationString: String?,
     val kindIcon: Icon?,
     val visibilityIcon: Icon?,
+    val classSide: Boolean,
 )
 
 /**
- * The server's `detail` is the effective access word, then ` lazy` for a lazy
- * slot (`protected lazy`); a side and a temporary have none. A first word that
- * is no access word shows no access icon rather than a guessed one.
+ * The server's `detail` is the effective access word, then ` class` for a
+ * class-side method and ` lazy` for a lazy slot (`public class`,
+ * `protected lazy`); a temporary has none. A first word that is no access word
+ * shows no access icon rather than a guessed one.
  */
 fun presentationOf(symbol: DocumentSymbol): SymbolPresentation {
     val words = symbol.detail?.split(' ')?.filter { word -> word.isNotEmpty() }.orEmpty()
@@ -43,6 +46,7 @@ fun presentationOf(symbol: DocumentSymbol): SymbolPresentation {
         locationString = if ("lazy" in words) "lazy" else null,
         kindIcon = symbol.kind?.let(NewspeakSymbolKinds::getIcon),
         visibilityIcon = visibilityIcon,
+        classSide = "class" in words,
     )
 }
 
@@ -50,9 +54,20 @@ fun presentationOf(symbol: DocumentSymbol): SymbolPresentation {
  * The kind's icon with the access icon beside it, as Java's structure view
  * draws a member: Java's `ElementBase.buildRowIcon` joins the two with
  * `IconManager.createRowIcon`, and so does this.
+ *
+ * A class-side method has the static mark laid over its kind's icon, Java's
+ * idiom for a static member: the tree has no node for a side, and a structure
+ * view draws no separator, so the mark is what tells the two sides apart.
+ * Java registers the mark as an icon layer and lays it over the base icon;
+ * `IconManager.createLayered` builds the same layered icon without claiming a
+ * layer flag of the platform's.
  */
 fun rowIconOf(presentation: SymbolPresentation): Icon? {
-    val kindIcon = presentation.kindIcon ?: return presentation.visibilityIcon
+    val kindIcon = presentation.kindIcon
+        ?.let { icon ->
+            if (presentation.classSide) IconManager.getInstance().createLayered(icon, AllIcons.Nodes.StaticMark) else icon
+        }
+        ?: return presentation.visibilityIcon
     val visibilityIcon = presentation.visibilityIcon ?: return kindIcon
     return IconManager.getInstance().createRowIcon(kindIcon, visibilityIcon)
 }

@@ -6,8 +6,10 @@ import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
 import org.eclipse.lsp4j.SymbolKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** A row of the structure view, from one symbol as the server sends it (`crates/ns-analyzer/src/document_symbols.rs`). */
@@ -25,7 +27,6 @@ class NewspeakStructureElementTest {
         val expected = mapOf(
             SymbolKind.Class to AllIcons.Nodes.Class,
             SymbolKind.Constructor to AllIcons.Nodes.Method,
-            SymbolKind.Namespace to AllIcons.Nodes.CustomRegion,
             SymbolKind.Constant to AllIcons.Nodes.PropertyRead,
             SymbolKind.Property to AllIcons.Nodes.PropertyReadWrite,
             SymbolKind.Method to AllIcons.Nodes.Method,
@@ -53,11 +54,33 @@ class NewspeakStructureElementTest {
         assertNull(presentationOf(symbol("count", SymbolKind.Property, "protected")).locationString)
     }
 
-    @Test fun aSideAndATemporaryShowNoAccess() {
-        val side = presentationOf(symbol("instance side", SymbolKind.Namespace, null))
-        assertNull(side.visibilityIcon)
-        assertNull(side.locationString)
-        assertNull(presentationOf(symbol("old", SymbolKind.Variable, null)).visibilityIcon)
+    @Test fun aTemporaryShowsNoAccess() {
+        val temporary = presentationOf(symbol("old", SymbolKind.Variable, null))
+        assertNull(temporary.visibilityIcon)
+        assertNull(temporary.locationString)
+        assertFalse(temporary.classSide)
+    }
+
+    @Test fun aClassSideMethodIsToldByTheWordClass() {
+        val presentation = presentationOf(symbol("make", SymbolKind.Method, "public class"))
+        assertTrue(presentation.classSide)
+        assertSame(AllIcons.Nodes.C_public, presentation.visibilityIcon)
+        assertSame(AllIcons.Nodes.Method, presentation.kindIcon)
+        assertNull(presentation.locationString)
+    }
+
+    @Test fun anInstanceSideMemberIsNotClassSide() {
+        assertFalse(presentationOf(symbol("run", SymbolKind.Method, "protected")).classSide)
+        assertFalse(presentationOf(symbol("cache", SymbolKind.Constant, "protected lazy")).classSide)
+        // `class` is a word of `detail`, not a part of one.
+        assertFalse(presentationOf(symbol("run", SymbolKind.Method, "protected classy")).classSide)
+    }
+
+    @Test fun theWordsAreReadTogether() {
+        val presentation = presentationOf(symbol("cache", SymbolKind.Constant, "private class lazy"))
+        assertTrue(presentation.classSide)
+        assertEquals("lazy", presentation.locationString)
+        assertSame(AllIcons.Nodes.C_private, presentation.visibilityIcon)
     }
 
     @Test fun aDetailWithoutAnAccessWordShowsNoAccessIcon() {
@@ -68,7 +91,7 @@ class NewspeakStructureElementTest {
     }
 
     @Test fun theRowIconIsTheKindsIconAloneWithoutAnAccess() {
-        val side = presentationOf(symbol("class side", SymbolKind.Namespace, null))
-        assertSame(AllIcons.Nodes.CustomRegion, rowIconOf(side))
+        val temporary = presentationOf(symbol("old", SymbolKind.Variable, null))
+        assertSame(AllIcons.Nodes.Variable, rowIconOf(temporary))
     }
 }

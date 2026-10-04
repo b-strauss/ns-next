@@ -1,9 +1,12 @@
 //! The symbols of one document, for an editor's structure view and
-//! breadcrumbs: each class with its factory, its instance side and its
-//! class side, each side's members in source order, each method's
-//! temporaries. They come from the AST `parse_for_editor` answers, so they
-//! survive while a file is typed. See `docs/design/editor-support.md`,
-//! "Structure".
+//! breadcrumbs: each class with its factory, then its instance-side members
+//! and then its class-side methods, each group in source order, each
+//! method's temporaries. No node stands for a side: a class-side method is
+//! told apart by its `detail` (`public class`), as Java tells a static member
+//! apart by a mark on its icon, so breadcrumbs and sticky lines go from a
+//! class straight to its method. They come from the AST `parse_for_editor`
+//! answers, so they survive while a file is typed. See
+//! `docs/design/editor-support.md`, "Structure".
 
 use lsp_types::{DocumentSymbol, SymbolKind};
 use ns_syntax::ast::{self, AccessModifier, SlotMutability};
@@ -15,7 +18,6 @@ use crate::documents::LineIndex;
 pub enum SymbolCategory {
     Class,
     Factory,
-    Side,
     /// A slot with a getter only.
     ReadOnlySlot,
     /// A slot with a getter and a setter.
@@ -32,8 +34,10 @@ pub struct Symbol {
     pub category: SymbolCategory,
     /// A slot declared `lazy`; never anything else.
     pub lazy: bool,
+    /// A method declared on the class side; never anything else.
+    pub class_side: bool,
     /// The effective access of a class, factory, slot or method; `None` for
-    /// a side or a temporary, which have none.
+    /// a temporary, which has none.
     pub access: Option<AccessModifier>,
     pub span: Span,
     pub selection: Span,
@@ -59,24 +63,18 @@ fn class(declaration: &ast::ClassDeclaration, access: Option<AccessModifier>) ->
         declaration.name.name.clone()
     };
     let mut children = vec![factory(declaration)];
-    children.push(side(
-        "instance side",
-        &declaration.instance_side,
-        instance_members(&declaration.instance_side),
-        declaration.name.span,
-    ));
+    children.extend(instance_members(&declaration.instance_side));
     if let Some(class_side) = &declaration.class_side {
-        children.push(side(
-            "class side",
-            class_side,
-            class_side.methods.iter().map(method).collect(),
-            declaration.name.span,
-        ));
+        children.extend(class_side.methods.iter().map(|declaration| Symbol {
+            class_side: true,
+            ..method(declaration)
+        }));
     }
     Symbol {
         name,
         category: SymbolCategory::Class,
         lazy: false,
+        class_side: false,
         access,
         span: declaration.span.merge(declaration.name.span),
         selection: declaration.name.span,
@@ -98,34 +96,11 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
         name,
         category: SymbolCategory::Factory,
         lazy: false,
+        class_side: false,
         access: Some(AccessModifier::Public),
         span,
         selection: span,
         children: Vec::new(),
-    }
-}
-
-/// A side from its `(` to its `)`, or to where it ends when recovery found
-/// no `)`; selected at its `(`, or at the class's name when it has none.
-fn side(name: &str, body: &ast::ClassBody, members: Vec<Symbol>, class_name: Span) -> Symbol {
-    let (span, selection) = match body.delimiters {
-        Some(delimiters) => {
-            let end = delimiters.close.map_or(body.span.end, |close| close.end);
-            (
-                Span::new(delimiters.open.start, end.max(delimiters.open.end)),
-                delimiters.open,
-            )
-        }
-        None => (body.span.merge(class_name), class_name),
-    };
-    Symbol {
-        name: name.to_string(),
-        category: SymbolCategory::Side,
-        lazy: false,
-        access: None,
-        span,
-        selection,
-        children: members,
     }
 }
 
@@ -148,6 +123,7 @@ fn method(declaration: &ast::MethodDeclaration) -> Symbol {
         name: pattern_text(&declaration.pattern),
         category: SymbolCategory::Method,
         lazy: false,
+        class_side: false,
         access: effective(declaration.access),
         span: declaration.span.merge(selection),
         selection,
@@ -178,6 +154,7 @@ fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Sym
         name: declaration.name.name.clone(),
         category,
         lazy: false,
+        class_side: false,
         access: None,
         span: declaration.span.merge(declaration.name.span),
         selection: declaration.name.span,
@@ -221,20 +198,22 @@ fn pattern_span(pattern: &ast::MessagePattern) -> Span {
     }
 }
 
-/// The access word, then ` lazy` for a lazy slot; `None` where a symbol has
-/// neither.
+/// The access word, then ` class` for a class-side method and ` lazy` for a
+/// lazy slot (`public class`, `protected lazy`); `None` where a symbol has
+/// none of them. `class` is how a client tells a class-side method from an
+/// instance-side one, since no node stands for a side.
 fn detail(symbol: &Symbol) -> Option<String> {
     let access = symbol.access.map(|access| match access {
         AccessModifier::Public => "public",
         AccessModifier::Protected => "protected",
         AccessModifier::Private => "private",
     });
-    match (access, symbol.lazy) {
-        (Some(access), true) => Some(format!("{access} lazy")),
-        (Some(access), false) => Some(access.to_string()),
-        (None, true) => Some("lazy".to_string()),
-        (None, false) => None,
-    }
+    let words: Vec<&str> = access
+        .into_iter()
+        .chain(symbol.class_side.then_some("class"))
+        .chain(symbol.lazy.then_some("lazy"))
+        .collect();
+    (!words.is_empty()).then(|| words.join(" "))
 }
 
 /// The LSP form, positions in UTF-16 units. LSP has no read-only property
@@ -257,7 +236,6 @@ pub fn encode(symbols: &[Symbol], text: &str, line_index: &LineIndex) -> Vec<Doc
                 kind: match symbol.category {
                     SymbolCategory::Class => SymbolKind::CLASS,
                     SymbolCategory::Factory => SymbolKind::CONSTRUCTOR,
-                    SymbolCategory::Side => SymbolKind::NAMESPACE,
                     SymbolCategory::ReadOnlySlot => SymbolKind::CONSTANT,
                     SymbolCategory::ReadWriteSlot => SymbolKind::PROPERTY,
                     SymbolCategory::Method => SymbolKind::METHOD,
@@ -282,11 +260,12 @@ mod tests {
     fn outline(text: &str) -> String {
         fn render(symbol: &Symbol, depth: usize, lines: &mut Vec<String>) {
             lines.push(format!(
-                "{}{:?} {}{}",
+                "{}{:?} {}{}{}",
                 "  ".repeat(depth),
                 symbol.category,
                 symbol.name,
-                if symbol.lazy { " (lazy)" } else { "" }
+                if symbol.lazy { " (lazy)" } else { "" },
+                if symbol.class_side { " (class)" } else { "" }
             ));
             for child in &symbol.children {
                 render(child, depth + 1, lines);
@@ -301,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn a_class_shows_its_factory_then_its_instance_side_then_its_class_side() {
+    fn a_class_shows_its_factory_then_its_instance_members_then_its_class_side_methods() {
         let text = indoc! {"
             class Module usingPlatform: platform = (
                 | first second |
@@ -317,6 +296,7 @@ mod tests {
                 + other = ( ^other )
             ) : (
                 make = ( ^self usingPlatform: nil )
+                public default = ( | made | ^self make )
             )
         "};
         assert_eq!(
@@ -324,19 +304,18 @@ mod tests {
             indoc! {"
                 Class Module
                   Factory usingPlatform: platform
-                  Side instance side
-                    ReadWriteSlot first
-                    ReadWriteSlot second
-                    Class Inner
-                      Factory new
-                      Side instance side
-                        Method run
-                    Method at: index put: value
-                      Temporary old
-                    ReadOnlySlot cache (lazy)
-                    Method + other
-                  Side class side
-                    Method make"}
+                  ReadWriteSlot first
+                  ReadWriteSlot second
+                  Class Inner
+                    Factory new
+                    Method run
+                  Method at: index put: value
+                    Temporary old
+                  ReadOnlySlot cache (lazy)
+                  Method + other
+                  Method make (class)
+                  Method default (class)
+                    Temporary made"}
         );
     }
 
@@ -356,20 +335,15 @@ mod tests {
             indoc! {"
                 Class Module
                   Factory new
-                  Side instance side
-                    Method broken
-                    Method second
-                  Side class side
-                    Method make"}
+                  Method broken
+                  Method second
+                  Method make (class)"}
         );
     }
 
     #[test]
     fn an_empty_file_answers_an_unnamed_class() {
-        assert_eq!(
-            outline(""),
-            "Class (unnamed)\n  Factory new\n  Side instance side"
-        );
+        assert_eq!(outline(""), "Class (unnamed)\n  Factory new");
     }
 
     /// Every selection lies inside its range; a client refuses a symbol
@@ -406,8 +380,7 @@ mod tests {
         let parsed = ns_syntax::parse_for_editor(text);
         let line_index = crate::documents::LineIndex::new(text);
         let encoded = encode(&symbols(&parsed.module), text, &line_index);
-        let side = &encoded[0].children.as_ref().expect("the class's children")[1];
-        let method = &side.children.as_ref().expect("the side's members")[0];
+        let method = &encoded[0].children.as_ref().expect("the class's children")[1];
         let line_start = text.find("    (* Grüße").expect("line 1");
         let column = text[line_start..text.find("run").expect("the method")]
             .encode_utf16()
@@ -436,7 +409,7 @@ mod tests {
         "};
         let parsed = ns_syntax::parse_for_editor(text);
         let tree = symbols(&parsed.module);
-        let members = &tree[0].children[1].children;
+        let members = &tree[0].children[1..];
         let shape: Vec<(&str, SymbolCategory, bool)> = members
             .iter()
             .map(|member| (member.name.as_str(), member.category, member.lazy))
@@ -454,10 +427,7 @@ mod tests {
         );
         let line_index = LineIndex::new(text);
         let encoded = encode(&tree, text, &line_index);
-        let slots = encoded[0].children.as_ref().expect("children")[1]
-            .children
-            .as_ref()
-            .expect("members");
+        let slots = &encoded[0].children.as_ref().expect("children")[1..];
         let kinds: Vec<(SymbolKind, Option<&str>)> = slots
             .iter()
             .map(|slot| (slot.kind, slot.detail.as_deref()))
@@ -483,6 +453,9 @@ mod tests {
             ) (
                 public class Inner = () ()
                 private hidden = ( | scratch | ^1 )
+            ) : (
+                make = ( ^self new )
+                public default = ( ^self new )
             )
         "};
         let parsed = ns_syntax::parse_for_editor(text);
@@ -492,22 +465,22 @@ mod tests {
         let root = &encoded[0];
         assert_eq!(details(root).as_deref(), Some("public"));
         let children = root.children.as_ref().expect("children");
-        assert_eq!(details(&children[0]).as_deref(), Some("public"), "factory");
-        assert_eq!(details(&children[1]), None, "side");
-        let members = children[1].children.as_ref().expect("members");
-        let found: Vec<(&str, Option<String>)> = members
+        let found: Vec<(&str, Option<String>)> = children
             .iter()
             .map(|member| (member.name.as_str(), details(member)))
             .collect();
         assert_eq!(
             found,
             [
+                ("new", Some("public".to_string())),
                 ("held", Some("protected".to_string())),
                 ("Inner", Some("public".to_string())),
                 ("hidden", Some("private".to_string())),
+                ("make", Some("protected class".to_string())),
+                ("default", Some("public class".to_string())),
             ]
         );
-        let temporary = &members[2].children.as_ref().expect("temporaries")[0];
+        let temporary = &children[3].children.as_ref().expect("temporaries")[0];
         assert_eq!(temporary.name, "scratch");
         assert_eq!(details(temporary), None);
     }

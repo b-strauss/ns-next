@@ -15,10 +15,6 @@ class NewspeakSymbolKindsTest {
         assertSame(AllIcons.Nodes.PropertyReadWrite, NewspeakSymbolKinds.getIcon(SymbolKind.Property))
     }
 
-    @Test fun aSideShowsAsAGroupOfMembers() {
-        assertSame(AllIcons.Nodes.CustomRegion, NewspeakSymbolKinds.getIcon(SymbolKind.Namespace))
-    }
-
     @Test fun everyOtherKindTheServerSendsKeepsThePlatformsIcon() {
         assertSame(AllIcons.Nodes.Class, NewspeakSymbolKinds.getIcon(SymbolKind.Class))
         // Java shows a constructor with the method icon too.

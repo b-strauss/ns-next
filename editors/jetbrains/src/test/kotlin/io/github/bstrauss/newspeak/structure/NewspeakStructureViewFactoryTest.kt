@@ -6,6 +6,7 @@ import com.intellij.lang.LanguageStructureViewBuilder
 import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.intellij.ui.icons.CompositeIcon
 import com.intellij.ui.icons.RowIcon
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
@@ -35,10 +36,8 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         fun range(startLine: Int, startCharacter: Int, endLine: Int, endCharacter: Int) =
             Range(Position(startLine, startCharacter), Position(endLine, endCharacter))
         val method = DocumentSymbol("run", SymbolKind.Method, range(1, 4, 1, 16), range(1, 4, 1, 7), "protected")
-        val side = DocumentSymbol("instance side", SymbolKind.Namespace, range(0, 18, 2, 1), range(0, 18, 0, 19))
-        side.children = listOf(method)
         val module = DocumentSymbol("Module", SymbolKind.Class, range(0, 0, 2, 1), range(0, 6, 0, 12), "public")
-        module.children = listOf(side)
+        module.children = listOf(method)
         val symbols = listOf(module)
 
         assertSame(method, innermostSymbolAt(document, symbols, text.indexOf("^1")))
@@ -58,5 +57,25 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertEquals(2, row.iconCount)
         assertSame(AllIcons.Nodes.Method, row.getIcon(0))
         assertSame(AllIcons.Nodes.C_private, row.getIcon(1))
+    }
+
+    /**
+     * A class-side method shows the static mark on its kind's icon, as Java
+     * shows a static member, and its access beside it. The platform's
+     * `IconManager` answers a `LayeredIcon`, the test framework's a row of the
+     * same icons; both are a `CompositeIcon` of the kind's icon and the mark.
+     */
+    fun testAClassSideMethodShowsTheStaticMarkAndItsAccess() {
+        val range = Range(Position(0, 0), Position(0, 4))
+        val presentation = presentationOf(DocumentSymbol("make", SymbolKind.Method, range, range, "public class"))
+        val icon = rowIconOf(presentation)
+        assertInstanceOf(icon, RowIcon::class.java)
+        val row = icon as RowIcon
+        assertEquals(2, row.iconCount)
+        val kind = row.getIcon(0)
+        assertInstanceOf(kind, CompositeIcon::class.java)
+        val layers = kind as CompositeIcon
+        assertOrderedEquals((0 until layers.iconCount).map(layers::getIcon), AllIcons.Nodes.Method, AllIcons.Nodes.StaticMark)
+        assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
     }
 }
