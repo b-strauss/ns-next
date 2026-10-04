@@ -4412,7 +4412,8 @@ A project is the directory its `newspeak.json` describes. The application
 module's key is `main`; `modules` is optional, `scripts` names argument lists
 that `ns-next run --script <name>` and `ns-next bench --script <name>` hand
 to `main:args:`, before any given after `--`, and every other key is
-ignored. The rules are in `crates/ns-cli/src/project.rs`, each with a
+ignored. A script name written twice is refused, as a key written twice
+is. The rules are in `crates/ns-cli/src/project.rs`, each with a
 message of its own, and `schemas/newspeak.schema.json` states them for
 editors; no validator crate was added, and
 `crates/ns-cli/tests/project_schema.rs` holds the reader and the schema to
@@ -4429,7 +4430,9 @@ by a play button beside `main` and each script.
 - `881639bf`, `685a4fe2`, `15669b3e`, `b22497d4` -- the ns-next path setting
   and the "Newspeak" run configuration.
 - `6dd09d8f`, `ae7cdb6c`, `d54d32f4`, `c7c641b1` -- the play buttons.
-- The documentation commit after them.
+- `977e1d42` -- a script name written twice is refused.
+- `b0f0e321`, `a6423fec` and the review's fix after them -- the
+  documentation, and the plugin's description and change notes.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
 recorded into an image, so that `load` could start one with it.

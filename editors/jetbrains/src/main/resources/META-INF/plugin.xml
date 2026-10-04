@@ -46,7 +46,8 @@
          plugin, with no spell checking in Newspeak comments and strings. -->
     <depends optional="true" config-file="newspeak-spellchecker.xml">com.intellij.modules.spellchecker</depends>
     <!-- Optional: an IDE built without the JSON plugin still loads this plugin,
-         with no schema for newspeak.json. -->
+         with no schema, no play buttons and no context-menu Run for newspeak.json;
+         the Newspeak run configuration type stays. -->
     <depends optional="true" config-file="newspeak-json.xml">com.intellij.modules.json</depends>
 
     <extensions defaultExtensionNs="com.intellij">

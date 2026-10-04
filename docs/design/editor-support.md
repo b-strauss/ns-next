@@ -832,11 +832,10 @@ with `bundledPlugin("com.intellij.modules.json")`, a module of the IDE it
 targets, not a dependency fetched from anywhere.
 
 **The ns-next path.** The plugin runs a project with the `ns-next` the user
-chooses, the "ns-next path" in the settings, beside the analyzer's. It is
-not bundled: running a program wants the runtime of the tree the user works
-on, built with `cargo build -p ns-cli --release` as the field's comment
-says, where the bundled analyzer only has to match the plugin's own lexer.
-Every run reads the setting afresh, so a changed path needs no restart.
+chooses, the "ns-next path" in the settings, beside the analyzer's.
+`ns-next` is not bundled (decided with the user on 2026-10-05): the setting
+is the only source, and the field's comment says to build it with `cargo
+build -p ns-cli --release`. Every run reads the setting afresh, so a changed path needs no restart.
 With the path empty, or naming no file, a configuration refuses to start,
 with an error that says which ("The ns-next path is not set: …", "No file at
 the ns-next path …") and offers to open the settings as its quick fix

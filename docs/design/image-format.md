@@ -1423,6 +1423,7 @@ runs, with `error: <project file>: ` and a message of its own:
 | no `main` (a file that still says `root` included, which is not singled out) | serde's `` missing field `main` `` |
 | `$schema`, `main`, `modules` or `scripts` of the wrong type (a `$schema` of `null` included) | serde's `invalid type: …, expected …` |
 | one of those four keys written twice | serde's `` duplicate field `main` `` |
+| a script name written twice | `` script `timed` is written twice `` |
 | an empty path in `main` or `modules` | `` `main` holds an empty path `` |
 | a path not ending in `.ns`, matched case-sensitively | `` `modules` names `B`, which is no `.ns` file `` |
 | a module path equal to `main`'s | `` `modules` names `main`'s module `./App.ns` again `` |
@@ -1432,9 +1433,8 @@ Two paths are the same when their components are: either separator, a
 doubled one and a `./` all name one path. The file system is not asked, so
 a `..` that comes back, a symbolic link and a difference of letter case on a
 case-insensitive file system are not seen through; two such modules declare
-one name, and are refused by the next check. Ignored keys are not checked
-for duplicates, and a script name written twice keeps its last list, as
-`serde_json` reads a map.
+one name, and are refused by the next check. A key the reader ignores is
+not checked for duplicates.
 
 After the file, `program::read_program` refuses, also before anything runs:
 a missing or unreadable module file, a module that does not parse or
@@ -1447,21 +1447,27 @@ manifest's `doesNotUnderstand:` could (`Interpreter::responds_publicly`,
 `a_module_shadowed_by_an_object_member_is_refused`).
 
 **The schema** is `schemas/newspeak.schema.json` (JSON Schema 2020-12), the
-one copy: it describes `$schema`, `main`, `modules` and `scripts` with the
-rules above that JSON Schema can state (`type`, `required`, `minLength`,
-`pattern: "\\.ns$"`, `uniqueItems`, `additionalProperties` for a script's
-list) and leaves every other key allowed. No validator crate reads it, so
+one copy. It describes `$schema`, `main`, `modules` and `scripts` and states
+these rules: the file is an object (`type`) with a `main` (`required`);
+`$schema` is a string; `main` and every entry of `modules` a string of at
+least one character (`minLength`) ending in `.ns` (`pattern: "\\.ns$"`);
+`modules` an array whose entries are not written twice as the same string
+(`uniqueItems`); `scripts` an object whose every value
+(`additionalProperties`) is an array of strings. Every other key is
+allowed. No validator crate reads it, so
 the project file brings no dependency beyond `serde_json`: the reader states
 each rule itself, with a message of its own, and
 `crates/ns-cli/tests/project_schema.rs` holds the two together. That test
 interprets the schema with exactly the keywords it uses -- a keyword it does
 not know fails the test, so the schema cannot gain a rule nothing checks the
 reader against -- and runs `ns-next run` on a table of files, each of which
-the schema and the reader must both accept or both refuse. The reader's
-stricter half, one of its four keys written twice and one module path in
-two spellings, cannot be stated in JSON Schema (a schema sees only the last of a key
-written twice, and `uniqueItems` compares strings as written); it stays out
-of the table and `project.rs`'s own tests pin it. The JetBrains plugin
+the schema and the reader must both accept or both refuse. The rules the
+reader alone holds cannot be stated in JSON Schema: one of its four keys
+written twice and a script name written twice (a schema sees only the last
+value of a key), one module path in two spellings (`uniqueItems` compares
+strings as written), and a `modules` entry naming `main`'s module (no
+keyword compares one property with another). They stay out of the table,
+and `project.rs`'s own tests pin them. The JetBrains plugin
 bundles the same file and gives it to every `newspeak.json`
 ([editor-support.md](editor-support.md), "The project file and running
 projects").
@@ -1756,10 +1762,13 @@ builtins.
   (decided with the user on 2026-10-05). No JSON Schema validator crate is
   added, so no dependency comes with the schema: the reader states each rule
   with a message of its own, and `project_schema.rs` keeps the two in
-  agreement. Chosen beside it: `.ns` is matched case-sensitively, as
-  the schema's `pattern` and the plugin's file type match it; the reader
-  compares duplicate paths by their components, which JSON Schema cannot
-  state, so that half is pinned on the reader alone.
+  agreement. The reader alone refuses what JSON Schema cannot state: a key
+  it reads written twice, a script name written twice (decided with the user
+  on 2026-10-05, as a duplicate key is refused), one module path in two
+  spellings, and a `modules` entry equal to `main`'s path; `project.rs`'s
+  own tests pin them. Chosen beside it: `.ns` is matched case-sensitively,
+  as the schema's `pattern` and the plugin's file type match it; the reader
+  compares duplicate paths by their components.
 - **The schema lives at `schemas/newspeak.schema.json`, the one copy**
   (decided with the user on 2026-10-05). The plugin's build copies it into
   its resources, and the plugin maps it to every file named `newspeak.json`.
