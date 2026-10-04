@@ -357,6 +357,12 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
              image's own hashes were restored"
         );
     }
+    // Every object the graph will name is old from here on: the builtins,
+    // the module classes and what the paths answered (decided with the user
+    // on 2026-10-04; `docs/design/image-format.md`, "The image under
+    // generations"). The graph pass then allocates old, and its stores are
+    // old-to-old.
+    interpreter.tenure_now();
     let Described {
         symbols,
         table,
@@ -367,58 +373,22 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         paths: _,
     } = described;
     let roots = interpreter.enter(|mutator| -> Result<Vec<Root>, String> {
-        let class_of = |root: &Root| match mutator.fetch(root).as_object() {
-            Some(class) => class,
-            _ => unreachable!("internal: a module class is a class object"),
-        };
-        let module_classes = ModuleClasses {
-            roots: module_roots.iter().map(class_of).collect(),
-            levels: module_levels
-                .iter()
-                .map(|levels| levels.iter().map(class_of).collect())
-                .collect(),
-        };
-        let platform_paths: Vec<Value> = resolved.iter().map(|path| mutator.fetch(path)).collect();
-        let platform = mutator.platform_value();
-        let mut context = decode::DecodeContext {
+        mutator.heap.set_allocating_old(true);
+        let decoded = decode_graph_phase(
             mutator,
-            modules: &module_classes,
-            codes: &table.codes,
-            platform,
-            mixins: &mixins.mixins,
-            platform_paths: &platform_paths,
-        };
-        let graph = decode::decode_graph_section(&mut reader, &mut context, &symbols)
-            .map_err(|error| error.to_string())?;
-        if header.start && graph.roots.len() != 1 {
-            return Err(decode::DecodeError::StartedImageRootCount {
-                count: graph.roots.len(),
-            }
-            .to_string());
-        }
-        let tag_named_max =
-            decode::decode_tag_named_hashes(mutator, &mut reader, &module_classes, &platform_paths)
-                .map_err(|error| error.to_string())?;
-        decode::verify_graph(&mutator.heap, &graph, &table).map_err(|error| error.to_string())?;
-        mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
-        // A byte sequence past the last section is refused, not ignored: an
-        // unchecked tail would let a padded image load as something its author
-        // did not write.
-        if reader.remaining() != 0 {
-            return Err(decode::DecodeError::TrailingBytes {
-                count: reader.remaining(),
-            }
-            .to_string());
-        }
-        // Rooted only now, after every verification pass and the trailing-bytes
-        // check: nothing runs while the graph decodes, so nothing moves under
-        // the plain handles above, and a refused artifact answers nothing to
-        // root (`docs/design/image-format.md`, "Packaging").
-        Ok(graph
-            .roots
-            .into_iter()
-            .map(|root| mutator.stash(root))
-            .collect())
+            &mut reader,
+            header,
+            &symbols,
+            &table,
+            &mixins,
+            &module_roots,
+            &module_levels,
+            &resolved,
+        );
+        // Cleared on the refusal path too: the interpreter of a refused image
+        // is dropped, but nothing should rest on that.
+        mutator.heap.set_allocating_old(false);
+        decoded
     })?;
     let modules = module_roots
         .into_iter()
@@ -444,6 +414,74 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         roots,
         start: header.start,
     })
+}
+
+/// `load`'s third phase: the graph against what the paths answered, run
+/// with the heap allocating old.
+#[allow(clippy::too_many_arguments)]
+fn decode_graph_phase<'gc>(
+    mutator: &mut Mutator<'gc>,
+    reader: &mut decode::Reader<'_>,
+    header: decode::Header,
+    symbols: &symbols::Table,
+    table: &decode::DecodedCodeTable,
+    mixins: &mixins::Decoded,
+    module_roots: &[Root],
+    module_levels: &[Vec<Root>],
+    resolved: &[Root],
+) -> Result<Vec<Root>, String> {
+    let class_of = |root: &Root| match mutator.fetch(root).as_object() {
+        Some(class) => class,
+        _ => unreachable!("internal: a module class is a class object"),
+    };
+    let module_classes = ModuleClasses {
+        roots: module_roots.iter().map(class_of).collect(),
+        levels: module_levels
+            .iter()
+            .map(|levels| levels.iter().map(class_of).collect())
+            .collect(),
+    };
+    let platform_paths: Vec<Value> = resolved.iter().map(|path| mutator.fetch(path)).collect();
+    let platform = mutator.platform_value();
+    let mut context = decode::DecodeContext {
+        mutator,
+        modules: &module_classes,
+        codes: &table.codes,
+        platform,
+        mixins: &mixins.mixins,
+        platform_paths: &platform_paths,
+    };
+    let graph = decode::decode_graph_section(reader, &mut context, symbols)
+        .map_err(|error| error.to_string())?;
+    if header.start && graph.roots.len() != 1 {
+        return Err(decode::DecodeError::StartedImageRootCount {
+            count: graph.roots.len(),
+        }
+        .to_string());
+    }
+    let tag_named_max =
+        decode::decode_tag_named_hashes(mutator, reader, &module_classes, &platform_paths)
+            .map_err(|error| error.to_string())?;
+    decode::verify_graph(&mutator.heap, &graph, table).map_err(|error| error.to_string())?;
+    mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
+    // A byte sequence past the last section is refused, not ignored: an
+    // unchecked tail would let a padded image load as something its author
+    // did not write.
+    if reader.remaining() != 0 {
+        return Err(decode::DecodeError::TrailingBytes {
+            count: reader.remaining(),
+        }
+        .to_string());
+    }
+    // Rooted only now, after every verification pass and the trailing-bytes
+    // check: nothing runs while the graph decodes, so nothing moves under
+    // the plain handles above, and a refused artifact answers nothing to
+    // root (`docs/design/image-format.md`, "Packaging").
+    Ok(graph
+        .roots
+        .into_iter()
+        .map(|root| mutator.stash(root))
+        .collect())
 }
 
 /// What `load`'s first phase decoded, carried across the second, which runs

@@ -487,10 +487,6 @@ pub struct Heap<'gc> {
     /// remembered bit set; the roots a scavenge adds to the activation
     /// stack's and the host's.
     remembered: Vec<NonZeroU64>,
-    /// Whether a small allocation goes to eden; off outside the heap's own
-    /// tests until the run loop scavenges (Task 5 of the generations plan
-    /// removes it).
-    young_allocation: bool,
     /// Whether every allocation goes old: the image decoder's graph pass
     /// sets it (`set_allocating_old`).
     allocating_old: bool,
@@ -505,8 +501,12 @@ pub struct Heap<'gc> {
     /// The age at which the next scavenge tenures a survivor, set by each
     /// scavenge from its age table (`scavenge::tenuring_threshold`).
     tenuring_threshold: u8,
-    /// How many scavenges have run.
+    /// How many scavenges have run, and how long `World::scavenge` has
+    /// taken in total and at the longest (`record_scavenge`), as
+    /// `collections` and its two pauses count the full collections.
     scavenges: usize,
+    scavenge_pause: std::time::Duration,
+    longest_scavenge_pause: std::time::Duration,
     /// The kernel-private `Activation` class, every frame object's class
     /// (`set_activation_class`). A handle the heap holds, so a collection
     /// marks it as a root and forwards it.
@@ -730,24 +730,30 @@ impl crate::trace::Trace for StackEntry<'_> {
 
 /// The object space's occupancy, read without disturbing it
 /// (`Heap::heap_statistics`): `live_objects` is how many objects lie in it,
-/// a reified frame counting as one; `occupied_bytes` the bytes they take,
-/// overflow words included; `committed_bytes` the memory committed for the
-/// space -- the gap between the two is what the space can still fill
-/// before it commits more.
+/// a reified frame counting as one, and `young_objects` how many of them
+/// lie in the nursery; `occupied_bytes` the bytes they take in both
+/// generations, overflow words included; `committed_bytes` the memory
+/// committed for the space, the nursery included -- the gap between the
+/// two is what the space can still fill before it commits more.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeapStatistics {
     pub live_objects: usize,
+    pub young_objects: usize,
     pub occupied_bytes: usize,
     pub committed_bytes: usize,
 }
 
 /// The collector's counts and pauses, read without disturbing them
-/// (`Heap::collector_statistics`): `collections`, `total_pause` and
-/// `longest_pause` accumulate across every `World::collect` so far;
-/// `live_objects` is how many objects lie in the space right now, the same
-/// field `HeapStatistics` reports.
+/// (`Heap::collector_statistics`): `scavenges`, `scavenge_pause` and
+/// `longest_scavenge_pause` accumulate across every `World::scavenge` so
+/// far, `collections`, `total_pause` and `longest_pause` across every
+/// `World::collect`; `live_objects` is how many objects lie in the space
+/// right now, the same field `HeapStatistics` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CollectorStatistics {
+    pub scavenges: usize,
+    pub scavenge_pause: std::time::Duration,
+    pub longest_scavenge_pause: std::time::Duration,
     pub collections: usize,
     pub total_pause: std::time::Duration,
     pub longest_pause: std::time::Duration,
@@ -830,13 +836,14 @@ impl<'gc> Heap<'gc> {
             object_count: 0,
             young_objects: 0,
             remembered: Vec::new(),
-            young_allocation: false,
             allocating_old: false,
             scavenge_requested: false,
             tenure_all_requested: false,
             scavenge_threshold: space::EDEN_BYTES - EDEN_RESERVE,
             tenuring_threshold: MAX_AGE,
             scavenges: 0,
+            scavenge_pause: std::time::Duration::ZERO,
+            longest_scavenge_pause: std::time::Duration::ZERO,
             activation_class: None,
             canonical_symbols: Vec::new(),
             symbol_of: IdentityMap::default(),
@@ -1403,7 +1410,7 @@ impl<'gc> Heap<'gc> {
         let word_count = field_count.saturating_add(1);
         let allocation = allocation_words(word_count);
         let bytes = allocation.saturating_mul(8);
-        let young = self.young_allocation && !self.allocating_old && bytes < LARGE_OBJECT_BYTES;
+        let young = !self.allocating_old && bytes < LARGE_OBJECT_BYTES;
         let start = match young
             .then(|| self.space.allocate_young(allocation))
             .flatten()
@@ -1452,7 +1459,7 @@ impl<'gc> Heap<'gc> {
         // Its initializing stores took no barrier, so an old object that may
         // be filled with young values joins the remembered set at birth; the
         // decoder's never does, since the load tenured everything it names.
-        if self.young_allocation && !space::is_young(offset) && !self.allocating_old {
+        if !space::is_young(offset) && !self.allocating_old {
             self.remember(offset);
         }
         (self.object_handle(offset), fields)
@@ -4194,17 +4201,23 @@ impl<'gc> Heap<'gc> {
 
     /// The image decoder's graph pass allocates old: everything it names was
     /// tenured before it began (`image::load`).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(crate) fn set_allocating_old(&mut self, allocating_old: bool) {
         self.allocating_old = allocating_old;
     }
 
-    #[cfg(test)]
-    fn enable_young_allocation_for_test(&mut self) {
-        self.young_allocation = true;
+    pub(crate) fn scavenge_requested(&self) -> bool {
+        self.scavenge_requested
+    }
+
+    pub(crate) fn tenure_all_requested(&self) -> bool {
+        self.tenure_all_requested
+    }
+
+    /// Sets eden's occupied bytes at which an allocation asks for a
+    /// scavenge, so a test can reach the trigger without filling eden first.
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_scavenge_threshold(&mut self, bytes: usize) {
+        self.scavenge_threshold = bytes;
     }
 
     /// The bytes the old space holds.
@@ -4222,10 +4235,6 @@ impl<'gc> Heap<'gc> {
     ///
     /// Sound only where nothing outside the heap and the interpreter holds a
     /// handle: at a safepoint of the run loop, or between entries.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(crate) fn scavenge(
         &mut self,
         tenure_all: bool,
@@ -4312,6 +4321,11 @@ impl<'gc> Heap<'gc> {
         self.scavenge_requested = false;
         self.tenure_all_requested = false;
         self.scavenges += 1;
+        // The set rebuilt here is bounded as the barrier bounds it: past the
+        // limit, the next safepoint tenures everything, which empties it.
+        if self.remembered.len() > REMEMBERED_SET_LIMIT {
+            self.request_scavenge(true);
+        }
         if self.old_occupied() >= self.next_collection {
             self.request_collection();
         }
@@ -4622,6 +4636,7 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         crate::HeapStatistics {
             live_objects: self.object_count,
+            young_objects: self.young_objects,
             occupied_bytes: self.space.occupied_bytes(),
             committed_bytes: self.space.committed(),
         }
@@ -4638,11 +4653,22 @@ impl<'gc> Heap<'gc> {
         self.longest_pause = self.longest_pause.max(pause);
     }
 
+    /// Records one scavenge's pause (`World::scavenge`, the only caller),
+    /// as `record_collection` records a collection's; `Heap::scavenge`
+    /// itself counts it, so a bare heap's scavenge is counted too.
+    pub(crate) fn record_scavenge(&mut self, pause: std::time::Duration) {
+        self.scavenge_pause += pause;
+        self.longest_scavenge_pause = self.longest_scavenge_pause.max(pause);
+    }
+
     /// The collector's counts and pauses since the process started, plus the
     /// space's occupancy right now (`Interpreter::collector_statistics`,
     /// `--collector-statistics`).
     pub(crate) fn collector_statistics(&self) -> crate::CollectorStatistics {
         crate::CollectorStatistics {
+            scavenges: self.scavenges,
+            scavenge_pause: self.scavenge_pause,
+            longest_scavenge_pause: self.longest_scavenge_pause,
             collections: self.collections,
             total_pause: self.total_pause,
             longest_pause: self.longest_pause,
@@ -4842,10 +4868,6 @@ impl<'gc> Heap<'gc> {
     /// references"); `symbol_of` follows each entry. Every entry is checked
     /// as the scavenger checks a handle it traces, and every entry left is
     /// rebranded into the scavenge's epoch.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     fn forward_weak_symbols(
         canonical_symbols: &mut [Option<ObjectReference<'gc>>],
         symbol_of: &mut IdentityMap<u64, Symbol>,
@@ -6789,13 +6811,13 @@ mod tests {
     }
 
     #[test]
-    fn objects_lie_end_to_end_from_the_old_space_s_first_offset() {
+    fn objects_lie_end_to_end_from_eden_s_first_offset() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let first = heap.allocate_instance(class, 2);
         let second = heap.allocate_instance(class, 0);
         let key = |object| heap.object_identity_key(object);
-        assert_eq!(key(class), space::NURSERY_END);
+        assert_eq!(key(class), space::EDEN_START);
         assert_eq!(key(first), key(class) + 8 * 2);
         assert_eq!(key(second), key(first) + 8 * 4);
         assert_eq!(heap.heap_statistics().occupied_bytes, 8 * (2 + 4 + 2));
@@ -6957,8 +6979,11 @@ mod tests {
         heap.collection_floor = 64;
         heap.reset_collection_limits();
         assert_eq!(heap.next_collection, 64);
+        // Old, since the limit measures the old space alone.
+        heap.set_allocating_old(true);
         let class = heap.allocate_self_referential(0);
         heap.allocate_instance(class, 10);
+        heap.set_allocating_old(false);
         heap.reset_collection_limits();
         assert_eq!(heap.next_collection, 2 * 8 * (2 + 12));
     }
@@ -6978,14 +7003,6 @@ mod tests {
         assert!(after.committed_bytes >= space::NURSERY_END + heap.next_collection);
     }
 
-    /// A bare heap whose small objects go to eden, as every heap's will from
-    /// Task 5 on.
-    fn young_heap<'gc>() -> Heap<'gc> {
-        let mut heap = Heap::new();
-        heap.enable_young_allocation_for_test();
-        heap
-    }
-
     /// An old instance of `class` with `field_count` nil fields: large objects
     /// go old, so one past the threshold is old by construction.
     fn old_instance<'gc>(heap: &mut Heap<'gc>, class: ClassReference<'gc>) -> ObjectReference<'gc> {
@@ -6994,7 +7011,7 @@ mod tests {
 
     #[test]
     fn a_small_object_is_young_and_a_large_one_old_and_born_remembered() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let small = heap.allocate_instance(class, 2);
         let large = old_instance(&mut heap, class);
@@ -7009,7 +7026,7 @@ mod tests {
 
     #[test]
     fn every_store_of_a_young_value_into_an_old_object_remembers_it_once() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let young = heap.allocate_instance(class, 0);
         let holder = old_instance(&mut heap, class);
@@ -7026,7 +7043,7 @@ mod tests {
 
     #[test]
     fn a_store_into_a_young_object_or_of_an_old_value_remembers_nothing() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let young = heap.allocate_instance(class, 1);
         let old = old_instance(&mut heap, class);
@@ -7046,7 +7063,7 @@ mod tests {
 
     #[test]
     fn an_array_element_a_class_word_and_a_class_field_each_remember_their_old_holder() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let young = heap.allocate_instance(class, 0);
 
@@ -7073,7 +7090,6 @@ mod tests {
     #[test]
     fn a_dead_old_frame_s_register_and_a_divorce_into_an_old_frame_each_remember_it() {
         let mut heap = frame_heap();
-        heap.enable_young_allocation_for_test();
         let class = heap.allocate_self_referential(0);
         let young = heap.allocate_instance(class, 0);
 
@@ -7105,7 +7121,7 @@ mod tests {
 
     #[test]
     fn the_decoder_s_allocations_go_old_and_are_not_remembered() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         heap.set_allocating_old(true);
         let decoded = heap.allocate_placeholder(class, 2);
@@ -7120,7 +7136,7 @@ mod tests {
 
     #[test]
     fn an_allocation_that_finds_eden_spent_goes_old_born_remembered_and_asks_for_a_scavenge() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         // One young object just under the large-object threshold at a time:
         // its header, its overflow word, its class word and `fill` fields.
@@ -7143,7 +7159,7 @@ mod tests {
 
     #[test]
     fn a_remembered_set_past_its_limit_asks_for_a_scavenge_that_tenures_everything() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let young = heap.allocate_instance(class, 0);
         // Small old objects, as the decoder makes them, so none is born
@@ -7159,6 +7175,34 @@ mod tests {
         }
         assert_eq!(heap.remembered.len(), REMEMBERED_SET_LIMIT + 1);
         assert!(heap.scavenge_requested && heap.tenure_all_requested);
+    }
+
+    /// A scavenge that does not tenure everything rebuilds the remembered
+    /// set from what still names a young object; past the limit, it asks
+    /// for the tenuring scavenge as an overflowing barrier would.
+    #[test]
+    fn a_scavenge_that_leaves_the_remembered_set_past_its_limit_asks_for_one_that_tenures_everything(
+    ) {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        // One young object every holder names: it stays young through the
+        // scavenge, so every holder stays remembered.
+        let young = heap.allocate_instance(class, 0);
+        heap.set_allocating_old(true);
+        let holders: Vec<_> = (0..=REMEMBERED_SET_LIMIT)
+            .map(|_| heap.allocate_instance(class, 1))
+            .collect();
+        heap.set_allocating_old(false);
+        for holder in holders {
+            heap.instance_set_field(holder, 0, Value::object(young));
+        }
+        scavenge_bare(&mut heap, false, &mut []);
+        assert_eq!(heap.young_objects, 1, "the young object stayed young");
+        assert_eq!(heap.remembered.len(), REMEMBERED_SET_LIMIT + 1);
+        assert!(heap.scavenge_requested && heap.tenure_all_requested);
+        scavenge_bare(&mut heap, true, &mut []);
+        assert!(heap.remembered.is_empty());
+        assert!(!heap.scavenge_requested && !heap.tenure_all_requested);
     }
 
     /// Scavenges a bare heap with `roots` as the step state's roots.
@@ -7191,7 +7235,7 @@ mod tests {
 
     #[test]
     fn a_scavenge_copies_what_a_root_reaches_and_reclaims_eden() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
         heap.allocate_string(class, crate::CodePoints::from("dead"));
@@ -7223,7 +7267,7 @@ mod tests {
 
     #[test]
     fn an_object_reachable_only_through_the_remembered_set_survives_until_it_is_tenured() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let holder = old_instance(&mut heap, class);
         let string = heap.allocate_string(class, crate::CodePoints::from("kept"));
@@ -7254,7 +7298,7 @@ mod tests {
 
     #[test]
     fn a_promoted_object_naming_a_survivor_is_remembered_by_the_scavenge_that_promoted_it() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let array = heap.allocate_array(class, &[Value::nil()]);
         let mut root = Value::object(array);
@@ -7287,7 +7331,7 @@ mod tests {
     #[test]
     fn more_survivors_than_a_survivor_space_holds_are_promoted_and_nothing_is_lost() {
         const COUNT: usize = 300;
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         heap.set_allocating_old(true);
         let holder = heap.allocate_array(class, &vec![Value::nil(); COUNT]);
@@ -7326,7 +7370,7 @@ mod tests {
 
     #[test]
     fn a_young_class_is_copied_with_its_instances() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         assert!(space::is_young(class.offset));
         let class_offset = class.offset;
@@ -7353,7 +7397,6 @@ mod tests {
     #[test]
     fn a_married_frame_is_copied_and_its_entry_follows_it() {
         let mut heap = frame_heap();
-        heap.enable_young_allocation_for_test();
         let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
         let frame = heap.reify(activation);
         let before = heap.frame_object(frame).offset;
@@ -7387,7 +7430,6 @@ mod tests {
     #[test]
     fn the_divorce_into_a_tenured_frame_keeps_its_young_registers() {
         let mut heap = frame_heap();
-        heap.enable_young_allocation_for_test();
         let activation = heap.push_activation(header(), &[], 1);
         heap.reify(activation);
 
@@ -7417,7 +7459,7 @@ mod tests {
 
     #[test]
     fn a_symbol_held_only_by_young_garbage_is_pruned_and_a_kept_one_keeps_its_identity() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         heap.set_allocating_old(true);
         let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
         let string_class = named_class(&mut heap, "String");
@@ -7470,7 +7512,7 @@ mod tests {
 
     #[test]
     fn a_scavenge_that_tenures_everything_empties_the_nursery_and_the_remembered_set() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let holder = old_instance(&mut heap, class);
         let held = heap.allocate_string(class, crate::CodePoints::from("held"));
@@ -7524,7 +7566,7 @@ mod tests {
     #[test]
     #[cfg(debug_assertions)]
     fn a_move_relocates_the_remembered_set() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let holder = old_instance(&mut heap, class);
         let held = heap.allocate_string(class, crate::CodePoints::from("held"));
@@ -7553,7 +7595,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale handle")]
     fn a_handle_kept_across_a_scavenge_is_stale() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
         scavenge_bare(&mut heap, false, &mut []);
@@ -7562,7 +7604,7 @@ mod tests {
 
     #[test]
     fn a_full_collection_compacts_the_nursery_s_survivors_after_the_old_ones() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let old_dead = old_instance(&mut heap, class);
         let old_kept = old_instance(&mut heap, class);
@@ -7617,7 +7659,7 @@ mod tests {
 
     #[test]
     fn a_full_collection_after_a_scavenge_finds_the_survivor_space() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let first = heap.allocate_string(class, crate::CodePoints::from("first"));
         let mut first_root = Value::object(first);
@@ -7648,7 +7690,7 @@ mod tests {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stale handle")]
     fn a_young_handle_kept_across_a_full_collection_is_stale() {
-        let mut heap = young_heap();
+        let mut heap = Heap::new();
         let class = old_instance_class(&mut heap);
         let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
         let mut root = Value::object(kept);

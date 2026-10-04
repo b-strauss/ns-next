@@ -351,30 +351,84 @@ fn the_collect_stress_mode_does_not_change_an_answer() {
     );
 }
 
-/// Nothing asks for a collection until the space reaches its limit, and
-/// then the run loop's next safepoint serves it -- no allocation ever
+/// A module whose entry allocates a closure per iteration and keeps none
+/// of them: every closure dies young.
+const CHURN: &str = indoc! {"
+    class Churn = Object new () (
+      public run: count = (
+        | total remaining |
+        total:: 0.
+        remaining:: count.
+        [remaining > 0] whileTrue: [
+          | block = [:value | value + 1]. |
+          total:: block value: total.
+          remaining:: remaining - 1.
+        ].
+        ^total
+      )
+    ) : ()
+"};
+
+/// A module whose entry keeps every closure it makes in an `Array` that
+/// lives through the run: the closures survive scavenge after scavenge and
+/// are tenured, and the `Array` (40 KB for 5,000 elements) is old from
+/// birth.
+const KEEPER: &str = indoc! {"
+    class Keeper = Object new () (
+      public run: count = (
+        | kept index |
+        kept:: Array new: count.
+        index:: 1.
+        [index <= count] whileTrue: [
+          | captured = index. |
+          kept at: index put: [captured].
+          index:: index + 1.
+        ].
+        ^(kept at: count) value
+      )
+    ) : ()
+"};
+
+/// Eden reaching its threshold asks for a scavenge, and the run loop's next
+/// safepoint serves it: the closures die young and the run's answer stands.
+#[test]
+fn filling_eden_scavenges_during_the_run() {
+    let (mut interpreter, class) = load(CHURN);
+    // The trigger is what this pins; under `NS_NEXT_STRESS_COLLECT=1` a
+    // collection at every safepoint empties the nursery before eden ever
+    // reaches its threshold, so no scavenge would run.
+    interpreter.set_stress_collect(false);
+    interpreter.set_scavenge_threshold(16 * 1024);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]));
+    let count = interpreter.stash(Value::small_integer(5000));
+    let answer = expect_ok(interpreter.send(&instance, Symbol::intern("run:"), &[count]));
+    let answer_value = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
+    let collector = interpreter.collector_statistics();
+    assert_eq!(answer_value, 5000);
+    assert!(
+        collector.scavenges > 0,
+        "eden passed its threshold without a scavenge"
+    );
+    assert!(interpreter.heap_statistics().young_objects < 5000);
+}
+
+/// Nothing asks for a collection until the old space reaches its limit,
+/// and then the run loop's next safepoint serves it -- no allocation ever
 /// collects (`docs/design/memory.md`, "The trigger and the growth
-/// policy").
+/// policy"). Closures that die young never reach the old space, so the
+/// fixture keeps every one it makes: the scavenges promote what the
+/// survivor space cannot hold, the promotions reach the old space's limit,
+/// and the full collection runs at the next safepoint.
 #[test]
 fn allocating_past_the_limit_collects_during_the_run() {
-    let source = indoc! {"
-        class Churn = Object new () (
-          public run: count = (
-            | total remaining |
-            total:: 0.
-            remaining:: count.
-            [remaining > 0] whileTrue: [
-              | block = [:value | value + 1]. |
-              total:: block value: total.
-              remaining:: remaining - 1.
-            ].
-            ^total
-          )
-        ) : ()
-    "};
-    let (mut interpreter, class) = load(source);
-    // 16 KiB of objects: a few hundred closures, far fewer than the run
-    // makes, so the limit is reached many times over.
+    let (mut interpreter, class) = load(KEEPER);
+    // The triggers are what this pins; under `NS_NEXT_STRESS_COLLECT=1`
+    // the mode's own collections would count without either trigger
+    // firing, and empty the nursery before eden ever reaches its threshold.
+    interpreter.set_stress_collect(false);
+    // 16 KiB of eden and of old objects: a few hundred closures each, far
+    // fewer than the run keeps, so both limits are reached many times over.
+    interpreter.set_scavenge_threshold(16 * 1024);
     interpreter.set_collection_floor(16 * 1024);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let count = interpreter.stash(Value::small_integer(5000));
@@ -382,26 +436,20 @@ fn allocating_past_the_limit_collects_during_the_run() {
 
     let answer = expect_ok(interpreter.send(&instance, selector, &[count]));
     let answer_value = interpreter.enter(|mutator| integer_of(mutator.fetch(&answer)));
-    let after = interpreter.heap_statistics();
     let collector = interpreter.collector_statistics();
 
     assert_eq!(
         answer_value, 5000,
-        "a collection during the run must not disturb the program's own answer"
+        "a scavenge or a collection during the run must not disturb the program's own answer"
     );
+    // The answer alone would also pass an optimization that stops
+    // allocating a closure per iteration and so never reaches either limit:
+    // the honest witness is that both triggers actually fired.
     assert!(
-        after.live_objects < 5000,
-        "the run collected nothing: {} live objects after 5000 closures",
-        after.live_objects
-    );
-    // `after.live_objects < 5000` alone would also pass an optimization that
-    // stops allocating a closure per iteration and so never reaches the
-    // limit at all: fewer objects than 5000 with zero collections proves
-    // nothing was reclaimed, only that nothing needed to be. The honest
-    // witness is that the trigger actually fired.
-    assert!(
-        collector.collections > 0,
-        "the run reached 5000 closures without the trigger firing a single collection"
+        collector.scavenges > 0 && collector.collections > 0,
+        "the run kept 5000 closures with {} scavenges and {} collections",
+        collector.scavenges,
+        collector.collections
     );
 }
 

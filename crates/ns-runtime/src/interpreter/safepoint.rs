@@ -28,7 +28,9 @@ impl Interpreter {
     /// holds a handle, exactly the condition a safepoint of the run loop
     /// gives it, and an allocation only ever asks for one
     /// (`docs/design/memory.md`, "The trigger and the growth policy") --
-    /// this is the one place that request is served.
+    /// this is the one place that request is served. A pending scavenge is
+    /// served here too, for the same reason, unless a collection is pending
+    /// as well: the collection empties the nursery, which serves both.
     ///
     /// Otherwise the safepoint that took no request clears it. In a release
     /// build this is now real work rather than a debug-only convenience --
@@ -72,6 +74,15 @@ impl Interpreter {
             // `safepoint_requested` there instead. Harmless -- one
             // extra call to a `#[cold]` function per collection -- and
             // simpler than threading a second clear through this branch.
+            return;
+        }
+        // After the collection branch: a full collection empties the
+        // nursery as well, and clears a pending scavenge's flags with it.
+        if self.world.scavenge_requested() {
+            let tenure_all = self.world.tenure_all_requested();
+            self.world.scavenge(tenure_all);
+            // As after a collection: the next poll finds nothing pending and
+            // clears the safepoint request there.
             return;
         }
         #[cfg(debug_assertions)]
@@ -213,6 +224,16 @@ impl StressCollections {
     }
 }
 
+impl Interpreter {
+    /// Tenures everything now, between entries, where only roots hold
+    /// values: `image::load` makes the builtins, the module classes and what
+    /// the platform paths answered old before the graph pass allocates old.
+    pub(crate) fn tenure_now(&mut self) {
+        assert!(!self.running, "tenure_now is for between runs");
+        self.world.scavenge(true);
+    }
+}
+
 #[cfg(debug_assertions)]
 impl Interpreter {
     /// Moves everything now, between runs, where only roots hold values. For
@@ -227,6 +248,20 @@ impl Interpreter {
     pub fn collect_now(&mut self) {
         assert!(!self.running, "collect_now is for between runs");
         self.world.collect();
+    }
+
+    /// Scavenges now, between runs, where only roots hold values. For
+    /// tests; the run loop scavenges at a safepoint instead.
+    pub fn scavenge_now(&mut self) {
+        assert!(!self.running, "scavenge_now is for between runs");
+        self.world.scavenge(false);
+    }
+
+    /// Sets eden's occupied bytes at which an allocation asks for a
+    /// scavenge, so a test can reach the trigger without filling eden
+    /// first.
+    pub fn set_scavenge_threshold(&mut self, bytes: usize) {
+        self.world.set_scavenge_threshold(bytes);
     }
 
     /// Turns the stress mode on or off for this interpreter, whatever

@@ -275,10 +275,6 @@ impl Space {
 
     /// After a scavenge: the survivor space just filled holds the survivors,
     /// eden and the one they came from are empty.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(in crate::heap) fn flip_survivors(&mut self) {
         let past = self.past;
         self.survivors[past] = Region::empty(self.survivors[past].base, self.survivors[past].end);
