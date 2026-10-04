@@ -161,6 +161,9 @@ impl<'a> Parser<'a> {
     /// statement then stays as it was parsed.
     fn member_holding_error(&mut self, first: usize, first_error: u32) -> Option<usize> {
         let mut position = first;
+        // The groups the statement opened before `position`, kept as the
+        // scan moves on rather than gathered again for each member.
+        let mut opened = OpenGroups::default();
         while self.tokens.get(position).is_some_and(|token| {
             token.span.start <= first_error && token.kind != TokenKind::EndOfInput
         }) {
@@ -168,41 +171,77 @@ impl<'a> Parser<'a> {
                 return None;
             }
             self.recovery_work_left -= 1;
+            self.count_step();
             if self.member_starts_at(position)
                 && self.speculative_member_end(position).is_some_and(|end| {
-                    first_error < end && !self.inside_block_or_tuple(first, position, end)
+                    first_error < end && !self.inside_block_or_tuple(&opened, end)
                 })
             {
                 return Some(position);
             }
+            opened.take(self.tokens[position].kind);
             position += 1;
         }
         None
     }
 
-    /// Whether the member from `position` to `end` stands inside a block
-    /// or a tuple: a `]` or a `}` after it closes a group left open between
-    /// the statement's `first` token and the member. No member stands there
-    /// -- `| each = ( ^each )` in `[:each | each = ( ^each ) ]` is the
-    /// block's content. A `)` that closes a parenthesis the statement
-    /// opened leaves the question open; a closer that closes nothing the
-    /// statement or the scan opened is the owner's, and a `)` there -- a
-    /// method body's or a class side's -- leaves the member one.
-    fn inside_block_or_tuple(&mut self, first: usize, position: usize, end: u32) -> bool {
-        let after = self.tokens.partition_point(|token| token.span.start < end);
-        let (inside, walked) =
-            block_or_tuple_around(&self.tokens[first..position], &self.tokens[after..]);
-        // The walk is the recovery's work too: without its charge a run of
-        // members found again and again walks the source each time.
-        self.recovery_work_left = self
-            .recovery_work_left
-            .saturating_sub(position - first + walked);
+    /// Whether a member that ends at `end` stands inside a block or a
+    /// tuple: a `]` or a `}` after it closes a group the statement `opened`
+    /// before the member. No member stands there -- `| each = ( ^each )` in
+    /// `[:each | each = ( ^each ) ]` is the block's content. A `)` that
+    /// closes a parenthesis the statement opened leaves the question open;
+    /// a closer that closes nothing the statement opened is the owner's,
+    /// and a `)` there -- a method body's or a class side's -- leaves the
+    /// member one. What stands between the member and such a closer is
+    /// passed over in one step ([`FreeClosers`]): walked token by token, it
+    /// is the rest of the class for every member found, and a run of
+    /// members spent the recovery's budget on walking instead of on finding
+    /// them.
+    fn inside_block_or_tuple(&mut self, opened: &OpenGroups, end: u32) -> bool {
+        // The walk ends at an end of input: the real one, or the member a
+        // recovering re-parse around this statement reads as one.
+        let stop = self
+            .bounds
+            .iter()
+            .map(|bound| bound.start)
+            .filter(|start| *start >= end)
+            .min()
+            .unwrap_or(u32::MAX);
+        let free_closers = self
+            .free_closers
+            .get_or_insert_with(|| FreeClosers::new(&self.tokens));
+        let from = free_closers.first_at(end);
+        let (inside, steps) = closes_an_opened_block_or_tuple(opened, free_closers, from, stop);
+        // One step per parenthesis of the statement's that closes after the
+        // member: few, but as many as the statement opened, so paid for.
+        self.recovery_work_left = self.recovery_work_left.saturating_sub(steps);
+        for _ in 0..steps {
+            self.count_step();
+        }
         inside
     }
 
     /// Where a member parsed from `position` ends, if it parses cleanly: see
-    /// `member_holding_error`. Nothing is kept, and the cursor stays.
+    /// `member_holding_error`. Nothing of the parse is kept, and the cursor
+    /// stays; the answer is kept (`member_ends`). Asked again, it is answered
+    /// without the parse: in a run of consecutive unclosed methods every
+    /// statement asks for each method after it, and parsed afresh each
+    /// time the run costs work cubic in its length.
     fn speculative_member_end(&mut self, position: usize) -> Option<u32> {
+        let start = self.tokens[position].span.start;
+        // The parse ends at the innermost bound after the member at the
+        // latest, so that bound is part of the question.
+        let bound = self
+            .bounds
+            .iter()
+            .map(|bound| bound.start)
+            .filter(|bound| *bound > start)
+            .min()
+            .unwrap_or(u32::MAX);
+        if let Some(end) = self.member_ends.get(&(start, bound)) {
+            return *end;
+        }
+        let depth_refusals = self.depth_refusals;
         let cursor = self.position;
         self.position = position;
         let checkpoint = self.checkpoint();
@@ -218,6 +257,11 @@ impl<'a> Parser<'a> {
         self.recovering -= 1;
         self.restore(checkpoint);
         self.position = cursor;
+        // An answer the depth guard or a spent budget cut short is not the
+        // member's: asked again elsewhere, it could be another.
+        if self.recovery_work_left > 0 && self.depth_refusals == depth_refusals {
+            self.member_ends.insert((start, bound), end);
+        }
         end
     }
 
@@ -250,12 +294,32 @@ impl<'a> Parser<'a> {
         (self.at(TokenKind::EndOfInput) || self.at_member_start()).then(|| self.previous_span().end)
     }
 
-    /// `at_member_start` at another position, the cursor left where it was.
+    /// `recovery_at_member_start` at another position, the cursor left
+    /// where it was.
     fn member_starts_at(&mut self, position: usize) -> bool {
         let cursor = self.position;
         self.position = position;
-        let starts = self.at_member_start();
+        let starts = self.recovery_at_member_start();
         self.position = cursor;
+        starts
+    }
+
+    /// `at_member_start` where the recovery asks it at every token it
+    /// passes: rule 1's scan and a recovery skip. Its lookahead is the
+    /// recovery's work -- a method pattern is read to its end, and one
+    /// begins at every keyword of a long keyword message, so unpaid, the
+    /// checks along one are quadratic in its length. Once the budget is
+    /// spent only the members whose start takes a fixed look are found: a
+    /// nested class and a lazy slot.
+    fn recovery_at_member_start(&mut self) -> bool {
+        self.count_step();
+        if self.recovery_work_left == 0 {
+            return self.at_nested_class() || self.at_lazy_slot_prefix();
+        }
+        self.recovery_work_left -= 1;
+        self.recovering += 1;
+        let starts = self.at_member_start();
+        self.recovering -= 1;
         starts
     }
 
@@ -1343,14 +1407,15 @@ impl<'a> Parser<'a> {
     /// group whole, so a recovery never stops at a bracket inside a group nor
     /// takes a bracket that closes an enclosing one. Stops -- consuming
     /// nothing more -- at a token of `stops` outside every group, at a
-    /// closing bracket no skipped group opened, at a member start, or at the
-    /// end of input. Answers whether it skipped anything.
+    /// closing bracket no skipped group opened, at a member start
+    /// (`recovery_at_member_start`), or at the end of input. Answers whether
+    /// it skipped anything.
     pub(super) fn skip_balanced(&mut self, stops: &[TokenKind]) -> bool {
         let start = self.position;
         let mut expected_closers: Vec<TokenKind> = Vec::new();
         loop {
             let kind = self.peek();
-            if kind == TokenKind::EndOfInput || self.at_member_start() {
+            if kind == TokenKind::EndOfInput || self.recovery_at_member_start() {
                 break;
             }
             match kind {
@@ -1436,49 +1501,151 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// `inside_block_or_tuple`'s walk over the statement's tokens `before` the
-/// member and those `after` it, answering how many of `after` it read.
-fn block_or_tuple_around(before: &[Token], after: &[Token]) -> (bool, usize) {
-    let mut expected_closers: Vec<TokenKind> = Vec::new();
-    for token in before {
-        if let Some(closer) = closer_of(token.kind) {
-            expected_closers.push(closer);
-        } else if let Some(index) = expected_closers
-            .iter()
-            .rposition(|expected| *expected == token.kind)
-        {
-            expected_closers.truncate(index);
+/// The groups a statement's tokens opened and left open before a member,
+/// innermost last, matched as a recovery skip matches them: a closer closes
+/// the innermost open group of its kind and every group inside it, and one
+/// that closes no group is passed over.
+#[derive(Default)]
+struct OpenGroups {
+    /// How many groups are open.
+    depth: usize,
+    /// For each closer (`closer_slot`), the depths at which the open groups
+    /// it closes were opened, innermost last.
+    opened_at: [Vec<usize>; 3],
+}
+
+impl OpenGroups {
+    /// The groups after one more token of the statement.
+    fn take(&mut self, kind: TokenKind) {
+        if let Some(closer) = closer_of(kind) {
+            self.opened_at[closer_slot(closer)].push(self.depth);
+            self.depth += 1;
+        } else if is_closer(kind) {
+            if let Some(&group) = self.opened_at[closer_slot(kind)].last() {
+                self.depth = group;
+                for depths in &mut self.opened_at {
+                    while depths.last().is_some_and(|depth| *depth >= group) {
+                        depths.pop();
+                    }
+                }
+            }
         }
     }
-    // How many of the open groups the statement opened before the member.
-    let mut opened_before = expected_closers.len();
-    for (walked, token) in after.iter().enumerate() {
-        if token.kind == TokenKind::EndOfInput {
-            return (false, walked + 1);
-        }
-        if let Some(closer) = closer_of(token.kind) {
-            expected_closers.push(closer);
-            continue;
-        }
-        if !matches!(
-            token.kind,
-            TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace
-        ) {
-            continue;
-        }
-        let Some(index) = expected_closers
-            .iter()
-            .rposition(|expected| *expected == token.kind)
-        else {
-            return (token.kind != TokenKind::RightParenthesis, walked + 1);
+
+    /// The depth of the innermost group `closer` closes among the
+    /// outermost `below` open ones.
+    fn innermost_below(&self, closer: TokenKind, below: usize) -> Option<usize> {
+        let depths = &self.opened_at[closer_slot(closer)];
+        let count = depths.partition_point(|depth| *depth < below);
+        count.checked_sub(1).map(|index| depths[index])
+    }
+}
+
+/// `inside_block_or_tuple`'s question, from the token at `from` on, the
+/// tokens from `stop` on read as the end of input: whether a `]` or a `}`
+/// closes one of the groups `opened` before `from`, a `)` that closes one
+/// passed over. Answers how many free closers it looked at, too.
+fn closes_an_opened_block_or_tuple(
+    opened: &OpenGroups,
+    free_closers: &FreeClosers,
+    mut from: usize,
+    stop: u32,
+) -> (bool, usize) {
+    let mut open_below = opened.depth;
+    let mut steps = 0;
+    loop {
+        steps += 1;
+        let Some((kind, start, closer)) = free_closers.free_closer_of(from) else {
+            return (false, steps);
         };
-        if index < opened_before && token.kind != TokenKind::RightParenthesis {
-            return (true, walked + 1);
+        if start >= stop {
+            return (false, steps);
         }
-        expected_closers.truncate(index);
-        opened_before = opened_before.min(index);
+        match opened.innermost_below(kind, open_below) {
+            None => return (kind != TokenKind::RightParenthesis, steps),
+            Some(_) if kind != TokenKind::RightParenthesis => return (true, steps),
+            Some(group) => {
+                open_below = group;
+                from = closer + 1;
+            }
+        }
     }
-    (false, after.len())
+}
+
+/// For each token, the first closer at or after it that closes no group
+/// opened at or after it -- its free closer, which closes a group opened
+/// before the token, or none. Groups are matched as `OpenGroups` matches
+/// them. Built once, it answers for every member the walk past whatever
+/// stands between the member and the closer that decides it.
+pub(super) struct FreeClosers {
+    /// Each token's start. A query names its token by offset: splitting a
+    /// negative number or a run of `>` inserts or shortens tokens after the
+    /// table is built, but never a bracket.
+    starts: Vec<u32>,
+    kinds: Vec<TokenKind>,
+    /// For each token, the index of its free closer, the token count when
+    /// it has none; one more entry, past the last token.
+    free_closer: Vec<usize>,
+}
+
+impl FreeClosers {
+    fn new(tokens: &[Token]) -> FreeClosers {
+        let count = tokens.len();
+        let mut free_closer = vec![count; count + 1];
+        for index in (0..count).rev() {
+            let kind = tokens[index].kind;
+            free_closer[index] = if is_closer(kind) {
+                index
+            } else if let Some(closer) = closer_of(kind) {
+                // The group this token opens ends at the first closer free
+                // of everything opened inside it. Its own kind closes the
+                // group, and the token's free closer is the one after it;
+                // another kind closes nothing opened from here on.
+                let end = free_closer[index + 1];
+                if end < count && tokens[end].kind == closer {
+                    free_closer[end + 1]
+                } else {
+                    end
+                }
+            } else {
+                free_closer[index + 1]
+            };
+        }
+        FreeClosers {
+            starts: tokens.iter().map(|token| token.span.start).collect(),
+            kinds: tokens.iter().map(|token| token.kind).collect(),
+            free_closer,
+        }
+    }
+
+    /// The index of the first token that starts at or after `offset`.
+    fn first_at(&self, offset: u32) -> usize {
+        self.starts.partition_point(|start| *start < offset)
+    }
+
+    /// The free closer of the token at `index`: its kind, its start and its
+    /// index.
+    fn free_closer_of(&self, index: usize) -> Option<(TokenKind, u32, usize)> {
+        let closer = *self.free_closer.get(index)?;
+        (closer < self.kinds.len()).then(|| (self.kinds[closer], self.starts[closer], closer))
+    }
+}
+
+/// Whether `kind` closes a group.
+fn is_closer(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::RightParenthesis | TokenKind::RightBracket | TokenKind::RightBrace
+    )
+}
+
+/// Where `OpenGroups` keeps the groups `closer` closes.
+fn closer_slot(closer: TokenKind) -> usize {
+    match closer {
+        TokenKind::RightParenthesis => 0,
+        TokenKind::RightBracket => 1,
+        _ => 2,
+    }
 }
 
 /// The bracket that closes a group `kind` opens, if it opens one.
@@ -3032,5 +3199,183 @@ mod specification_tests {
         refused("class Map <[K V]> = Object new () ()");
         refused("class Map <[K,]> = Object new () ()");
         refused("class Map <[]> = Object new () ()");
+    }
+}
+
+/// The recovery's work, counted rather than timed: a test holds a parse to
+/// a number of steps per token, which a debug build and a loaded machine
+/// reach as surely as a release build.
+#[cfg(test)]
+mod recovery_work_tests {
+    use super::*;
+    use crate::parser::{Parser, RECOVERY_WORK_PER_TOKEN};
+    use crate::span::Span;
+    use indoc::formatdoc;
+
+    /// The steps a parse of `source` took per token, and the module.
+    fn steps_per_token(source: &str) -> (usize, Module) {
+        let tokens = crate::lex(source).unwrap();
+        let count = tokens.len();
+        let mut parser = Parser::new(source, tokens);
+        let module = parser.parse_module_for_test();
+        (parser.steps / count, module)
+    }
+
+    fn method_names(module: &Module) -> Vec<String> {
+        module
+            .root_class
+            .instance_side
+            .methods
+            .iter()
+            .map(|method| match &method.pattern {
+                MessagePattern::Unary { selector } => selector.name.clone(),
+                pattern => format!("{pattern:?}"),
+            })
+            .collect()
+    }
+
+    /// The budget, and what a parse that spends it does besides: it runs
+    /// on through the tokens, a recovery skip checks each for a member at a
+    /// fixed cost, and every speculative parse in flight finishes.
+    const STEPS_PER_TOKEN_AT_MOST: usize = RECOVERY_WORK_PER_TOKEN + 64;
+
+    /// A keyword message of eight thousand parts with an error at its end.
+    /// Each of its keywords starts a pattern that reads to the end of the
+    /// message, so rule 1's scan for the member holding the error, unpaid
+    /// for its lookahead, is quadratic in the message: 64 million steps.
+    #[test]
+    fn a_scan_through_a_long_keyword_message_is_paid_for() {
+        let source = formatdoc! {"
+            class Module = () (
+                run = ( x {parts}key: (1 + ) )
+                after = ( ^2 )
+            ) : ()
+            ",
+            parts = "key: y ".repeat(8_000),
+        };
+        let (steps, module) = steps_per_token(&source);
+        assert!(steps <= STEPS_PER_TOKEN_AT_MOST, "{steps} steps per token");
+        assert_eq!(method_names(&module), ["run", "after"]);
+    }
+
+    /// The same message after an error a recovery skip passes over: the
+    /// skip asks at each token whether a member starts there, and unpaid
+    /// for its lookahead it too is quadratic in the message.
+    #[test]
+    fn a_recovery_skip_through_a_long_keyword_message_is_paid_for() {
+        let source = formatdoc! {"
+            class Module = () (
+                run = ( x key: (1 + ] {parts})
+                after = ( ^2 )
+            ) : ()
+            ",
+            parts = "key: y ".repeat(8_000),
+        };
+        let (steps, module) = steps_per_token(&source);
+        assert!(steps <= STEPS_PER_TOKEN_AT_MOST, "{steps} steps per token");
+        assert_eq!(method_names(&module)[0], "run");
+    }
+
+    /// The walk `inside_block_or_tuple` once took token by token over the
+    /// statement's tokens `before` the member and every token `after` it,
+    /// an end of input included: the oracle the free closers are held to.
+    fn block_or_tuple_around(before: &[Token], after: &[Token]) -> bool {
+        let mut expected_closers: Vec<TokenKind> = Vec::new();
+        for token in before {
+            if let Some(closer) = closer_of(token.kind) {
+                expected_closers.push(closer);
+            } else if let Some(index) = expected_closers
+                .iter()
+                .rposition(|expected| *expected == token.kind)
+            {
+                expected_closers.truncate(index);
+            }
+        }
+        // How many of the open groups the statement opened before the member.
+        let mut opened_before = expected_closers.len();
+        for token in after {
+            if token.kind == TokenKind::EndOfInput {
+                return false;
+            }
+            if let Some(closer) = closer_of(token.kind) {
+                expected_closers.push(closer);
+                continue;
+            }
+            if !is_closer(token.kind) {
+                continue;
+            }
+            let Some(index) = expected_closers
+                .iter()
+                .rposition(|expected| *expected == token.kind)
+            else {
+                return token.kind != TokenKind::RightParenthesis;
+            };
+            if index < opened_before && token.kind != TokenKind::RightParenthesis {
+                return true;
+            }
+            expected_closers.truncate(index);
+            opened_before = opened_before.min(index);
+        }
+        false
+    }
+
+    /// Every sequence of up to five brackets and names, split at every
+    /// member start and member end, under every bound after the end: the
+    /// free closers answer what the walk answered.
+    #[test]
+    fn the_free_closers_answer_as_the_walk_did() {
+        const KINDS: [TokenKind; 7] = [
+            TokenKind::LeftParenthesis,
+            TokenKind::RightParenthesis,
+            TokenKind::LeftBracket,
+            TokenKind::RightBracket,
+            TokenKind::LeftBrace,
+            TokenKind::RightBrace,
+            TokenKind::Identifier,
+        ];
+        let token = |kind, start: usize| Token {
+            kind,
+            span: Span::new(start as u32, start as u32 + 1),
+        };
+        for length in 0..=5u32 {
+            for code in 0..KINDS.len().pow(length) {
+                let mut tokens: Vec<Token> = (0..length as usize)
+                    .map(|index| {
+                        token(
+                            KINDS[code / KINDS.len().pow(index as u32) % KINDS.len()],
+                            index,
+                        )
+                    })
+                    .collect();
+                tokens.push(token(TokenKind::EndOfInput, length as usize));
+                let free_closers = FreeClosers::new(&tokens);
+                for position in 0..=tokens.len() - 1 {
+                    let mut opened = OpenGroups::default();
+                    for before in &tokens[..position] {
+                        opened.take(before.kind);
+                    }
+                    for after in position..tokens.len() {
+                        for bound in after..tokens.len() {
+                            let mut bounded = tokens.clone();
+                            bounded[bound].kind = TokenKind::EndOfInput;
+                            let expected =
+                                block_or_tuple_around(&bounded[..position], &bounded[after..]);
+                            let (answer, _) = closes_an_opened_block_or_tuple(
+                                &opened,
+                                &free_closers,
+                                after,
+                                bound as u32,
+                            );
+                            assert_eq!(
+                                answer,
+                                expected,
+                                "{:?}, member from {position} to {after}, bound {bound}",
+                                tokens.iter().map(|token| token.kind).collect::<Vec<_>>()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

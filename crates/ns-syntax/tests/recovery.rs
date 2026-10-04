@@ -822,6 +822,152 @@ fn deeply_nested_lookalike_members_parse_in_bounded_time() {
     );
 }
 
+/// `NewspeakPrettyPrinter.ns` with the `)` of five consecutive methods
+/// removed. Each body's unfinished keyword message reads the pattern after
+/// it as its next part, so the methods up to the next error are the first
+/// one's statement; `emit:` holds that error and is a member. Recovery
+/// once spent its budget walking to the class's close for every member
+/// it found, and `emit:` was swallowed as well.
+#[test]
+fn five_unclosed_methods_keep_the_member_after_the_message_they_continue() {
+    let source = indoc! {"
+        class Module = () (
+            public keywordPatternNode: node = (
+                visitKeywordPattern: node
+
+            public literalPatternNode: node = (
+                visitLiteralPattern: node
+
+            public messageNode: node = (
+                visitMessage: node
+
+            public messagePatternNode: node = (
+                visitMessagePattern: node
+
+            public methodNode: node = (
+                visitMethod: node
+
+            public mixinApplication: node = (
+                visitMixinApplication: node
+            )
+            public mixinApplicationClass: node = (
+                visitMixinApplicationClass: node
+            )
+            emit: text = (
+                output add: text.
+                column:: column + text size
+            )
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    assert_eq!(
+        method_names(&module.root_class.instance_side),
+        ["keywordPatternNode:", "emit:"],
+        "{messages:?}"
+    );
+}
+
+/// A run of twenty unclosed methods, as `KernelTests.ns`'s `FloatTests`
+/// becomes with twenty `)` removed, before fifty methods more: every one
+/// is kept. Recovery once walked to the class's close for every member it
+/// found, and the class after the run decided how many survived.
+#[test]
+fn a_run_of_unclosed_methods_in_a_long_class_keeps_every_method() {
+    let unclosed: String = (0..20)
+        .map(|index| format!("    open{index} = ( ^{index}\n"))
+        .collect();
+    let closed: String = (0..50)
+        .map(|index| format!("    closed{index} = ( ^{index} )\n"))
+        .collect();
+    let source = formatdoc! {"
+        class Module = () (
+        {unclosed}{closed}) : ()
+    "};
+    let (module, messages) = recovered(&source);
+    let names = method_names(&module.root_class.instance_side);
+    assert_eq!(names.len(), 70, "{names:?}");
+    assert_eq!(names[19], "open19");
+    assert_eq!(names[69], "closed49");
+    assert_eq!(messages.len(), 20, "{messages:?}");
+}
+
+/// `MinitestTests.ns` with twenty `)` removed from its first nested test
+/// contexts on: a run of unclosed methods through a class side and into
+/// the next class. Its statements ask again and again for the same
+/// members, and parsed afresh each time the run cost work cubic in its
+/// length and spent the budget before `createFailureResultFor:description:`
+/// was found.
+#[test]
+fn a_run_of_unclosed_methods_through_a_class_side_keeps_its_members() {
+    let source = indoc! {"
+        class Module = () (
+            class Context = () (
+                public testErrorCreation = (
+                    assert: [ 1 zork ]
+
+                public testFailureCreation = (
+                    assert: false description: 'better not see this'
+
+                public testSuccess = (
+                    assert: true
+
+                public createFailureResultFor: testCase <TestCase> description: description <String> ^<TestFailure> = (
+                    ^TestFailure case: testCase description: 'created here'
+
+            ) : (
+                TEST_CONTEXT = (
+
+
+            public class ShouldShouldntTestContext new = TestContext new (
+            ) (
+                public testShouldFail = (
+                    [ should: [ TestException1 new signal ] signal: TestException2 ] on: TestException1
+                        do: [:exception | exception resume: nil ]
+
+                public testShouldFailWithDescription = (
+                    [
+                        should: [ TestException1 new signal ]
+                            signal: TestException2
+                            description: 'custom description'
+                    ] on: TestException1 do: [:exception | exception resume: nil ]
+
+                public testShouldPassExceptionSubclass = (
+                    should: [ TestException1 new signal ] signal: Exception
+
+                public testShouldPassSameExceptionClass = (
+                    should: [ TestException1 new signal ] signal: TestException1
+
+                public testShouldntFail = (
+                    shouldnt: [ TestException1 new signal ] signal: TestException1
+
+                public testShouldntFailWithDescription = (
+                    shouldnt: [ TestException1 new signal ]
+                        signal: TestException1
+                        description: 'custom description'
+
+                public testShouldntPass = (
+                    [ shouldnt: [ TestException1 new signal ] signal: TestException2 ] on: TestException1
+                        do: [:exception | exception resume: nil ]
+
+            ) : (
+                TEST_CONTEXT = (
+
+
+        ) : ()
+    "};
+    let (module, messages) = recovered(source);
+    let context = &module.root_class.instance_side.nested_classes[0];
+    assert_eq!(
+        method_names(&context.instance_side),
+        [
+            "testErrorCreation",
+            "createFailureResultFor:description:",
+            "TEST_CONTEXT"
+        ],
+        "{messages:?}"
+    );
+}
+
 /// A slot whose initializer lacks its `.` before the header's `)` ends at
 /// the initializer.
 #[test]

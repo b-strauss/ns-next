@@ -16,17 +16,21 @@ use crate::token::{Token, TokenKind};
 /// roughly 250 frames.
 const MAX_DEPTH: u32 = 128;
 
-/// How many tokens rule 1's recovery (`docs/design/frontend.md`,
-/// "Recovery") may parse or scan per token of the source. Each speculative
-/// member parse can hold another, and the re-parse of a statement repeats
-/// the work of the statements nested in it, so without a bound the work
-/// grows exponentially with the nesting of half-typed members: 186 bytes
-/// nested twelve deep took 0.6 s. Spent, the recovery stops looking for a
-/// member a statement swallowed, and a file folds worse, never wrongly; the
-/// work stays linear in the source. A run of consecutive unclosed methods
-/// costs work cubic in its length: in a file of nothing else, 256 keeps a
-/// run of 26 whole, and an exhausted budget costs a 12,500-token file
-/// under 0.1 s.
+/// How many steps the recovery (`docs/design/frontend.md`, "Recovery") may
+/// take per token of the source: each token a speculative member parse or
+/// a recovering re-parse consumes, each position rule 1's scan passes, each
+/// free closer it looks up, and each member-start check the scan or a
+/// recovery skip makes, with its lookahead. Each speculative member parse
+/// can hold another, and the re-parse of a statement repeats the work of
+/// the statements nested in it, so without a bound the work grows
+/// exponentially with the nesting of half-typed members: 197 bytes nested
+/// twelve deep took 0.6 s. Spent, the recovery stops looking for a member a
+/// statement swallowed, and a skip stops only at a nested class or a lazy
+/// slot: a file folds worse, never wrongly. The parse's work stays linear
+/// in the source -- the budget's, one pass, and the speculative parses in
+/// flight finishing. Ordinary edits spend little of it: twenty `)` removed
+/// from `KernelTests.ns` spend 17,000 of 9.8 million, while a keyword
+/// message of 8,000 parts holding an error spends it all, in 5 ms.
 const RECOVERY_WORK_PER_TOKEN: usize = 256;
 
 pub struct Parser<'a> {
@@ -41,16 +45,34 @@ pub struct Parser<'a> {
     /// (`parse_statement`), innermost last: a diagnostic there names the
     /// member, not an end of input the source does not have.
     bounds: Vec<crate::span::Span>,
-    /// How many more tokens rule 1's recovery may parse
+    /// How many more steps the recovery may take
     /// ([`RECOVERY_WORK_PER_TOKEN`]): spent by every token bumped while
-    /// `recovering` and every token `member_holding_error` and
-    /// `inside_block_or_tuple` scan. Never refilled, so the whole parse is
+    /// `recovering`, every position `member_holding_error` scans, every
+    /// free closer `inside_block_or_tuple` looks up and every
+    /// `recovery_at_member_start`. Never refilled, so the whole parse is
     /// bounded, not each statement.
     recovery_work_left: usize,
-    /// How many speculative member parses and recovering re-parses are
-    /// running, nested. Raised and lowered around one call each, so it is
-    /// zero between statements.
+    /// How many speculative member parses, recovering re-parses and
+    /// member-start checks of the recovery are running, nested. Raised and
+    /// lowered around one call each, so it is zero between statements.
     recovering: u32,
+    /// The free closers `inside_block_or_tuple` asks for, built the first
+    /// time it asks, so a source without errors never builds them.
+    free_closers: Option<declaration::FreeClosers>,
+    /// The end `speculative_member_end` answered for a member, keyed by
+    /// the offset it starts at and the bound the parse ran under, which
+    /// is all the answer depends on. Each statement of a run of half-typed
+    /// members asks again for the members after it.
+    member_ends: std::collections::HashMap<(u32, u32), Option<u32>>,
+    /// How many times [`Parser::enter`] refused to go deeper: an answer
+    /// the depth guard cut short depends on the depth it was asked at, so
+    /// `member_ends` does not keep it.
+    depth_refusals: usize,
+    /// Every step the parse takes -- each token bumped, each position the
+    /// recovery scans or checks for a member, each closer it looks up -- so
+    /// a test can hold the parse's work to a bound without timing it.
+    #[cfg(test)]
+    steps: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -65,6 +87,11 @@ impl<'a> Parser<'a> {
             bounds: Vec::new(),
             recovery_work_left,
             recovering: 0,
+            free_closers: None,
+            member_ends: std::collections::HashMap::new(),
+            depth_refusals: 0,
+            #[cfg(test)]
+            steps: 0,
         }
     }
 
@@ -75,7 +102,11 @@ impl<'a> Parser<'a> {
     /// `true` and the `false` branch), so the count never leaks.
     fn enter(&mut self) -> bool {
         self.depth += 1;
-        self.depth <= MAX_DEPTH
+        let allowed = self.depth <= MAX_DEPTH;
+        if !allowed {
+            self.depth_refusals += 1;
+        }
+        allowed
     }
 
     fn leave(&mut self) {
@@ -108,11 +139,20 @@ impl<'a> Parser<'a> {
         let token = self.current();
         if self.position < self.tokens.len() - 1 && token.kind != TokenKind::EndOfInput {
             self.position += 1;
+            self.count_step();
             if self.recovering > 0 {
                 self.recovery_work_left = self.recovery_work_left.saturating_sub(1);
             }
         }
         token
+    }
+
+    /// A step of the parse's work, which only the tests count (`steps`).
+    fn count_step(&mut self) {
+        #[cfg(test)]
+        {
+            self.steps += 1;
+        }
     }
 
     /// The span of the last token consumed: where a node that recovery ended
