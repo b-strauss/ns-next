@@ -65,6 +65,7 @@
                                  id="io.github.bstrauss.newspeak.settings"
                                  displayName="Newspeak"/>
         <notificationGroup id="Newspeak" displayType="BALLOON"/>
+        <configurationType implementation="io.github.bstrauss.newspeak.run.NewspeakConfigurationType"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client

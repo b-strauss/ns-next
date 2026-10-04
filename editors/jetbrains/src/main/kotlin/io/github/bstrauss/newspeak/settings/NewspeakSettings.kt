@@ -7,13 +7,16 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.service
 
-/** Application-level: the server path is specific to a machine and does not belong in `.idea/`. */
+/** Application-level: the server and runtime paths are specific to a machine and do not belong in `.idea/`. */
 @Service(Service.Level.APP)
 @State(name = "NewspeakSettings", storages = [Storage("newspeak.xml")])
 class NewspeakSettings : SimplePersistentStateComponent<NewspeakSettings.Settings>(Settings()) {
     class Settings : BaseState() {
         /** A language server to start instead of the bundled one; null for the bundled one. */
         var serverPath by string()
+
+        /** The ns-next runtime a Newspeak run configuration starts; null until the user chooses one. */
+        var runtimePath by string()
     }
 
     companion object {
