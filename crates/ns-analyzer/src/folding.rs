@@ -58,16 +58,18 @@ pub fn encode(folds: &[Fold], text: &str, line_index: &LineIndex) -> Vec<Folding
 }
 
 /// `(* ` and a comment's first non-blank line, cut to
-/// `COMMENT_PREVIEW_CHARACTERS`, then ` …*)`.
+/// `COMMENT_PREVIEW_CHARACTERS`, then ` ...*)`. Every placeholder writes
+/// three ASCII dots rather than `…`, which the editor would draw in a
+/// fallback font beside its own.
 fn comment_preview(comment: &str) -> String {
     let inner = comment.strip_prefix("(*").unwrap_or(comment);
     let inner = inner.strip_suffix("*)").unwrap_or(inner);
     match inner.lines().map(str::trim).find(|line| !line.is_empty()) {
         Some(line) => {
             let preview: String = line.chars().take(COMMENT_PREVIEW_CHARACTERS).collect();
-            format!("(* {preview} …*)")
+            format!("(* {preview} ...*)")
         }
-        None => "(*…*)".to_string(),
+        None => "(*...*)".to_string(),
     }
 }
 
@@ -103,7 +105,7 @@ impl Collector<'_> {
 
     fn class(&mut self, class: &ast::ClassDeclaration) {
         let instance = &class.instance_side;
-        self.bracketed(instance.delimiters, instance.span.end, "(…)");
+        self.bracketed(instance.delimiters, instance.span.end, "(...)");
         self.slot_section(instance.slot_delimiters, &instance.slots);
         for slot in &instance.slots {
             self.slot(slot);
@@ -126,7 +128,7 @@ impl Collector<'_> {
             self.class(nested);
         }
         if let Some(class_side) = &class.class_side {
-            self.bracketed(class_side.delimiters, class_side.span.end, "(…)");
+            self.bracketed(class_side.delimiters, class_side.span.end, "(...)");
             for method in &class_side.methods {
                 self.method(method);
             }
@@ -139,7 +141,7 @@ impl Collector<'_> {
                 .last()
                 .map_or(delimiters.open.end, |slot| slot.span.end)
         });
-        self.bracketed(delimiters, end, "|…|");
+        self.bracketed(delimiters, end, "|...|");
     }
 
     fn slot(&mut self, slot: &ast::SlotDeclaration) {
@@ -149,7 +151,7 @@ impl Collector<'_> {
     }
 
     fn method(&mut self, method: &ast::MethodDeclaration) {
-        self.bracketed(method.body_delimiters, method.span.end, "(…)");
+        self.bracketed(method.body_delimiters, method.span.end, "(...)");
         self.body(&method.body);
     }
 
@@ -198,14 +200,14 @@ impl Collector<'_> {
             ast::Expression::Assign { value, .. } => self.expression(value),
             ast::Expression::Block(block) => {
                 let collapsed = if block.parameters.is_empty() {
-                    "[…]".to_string()
+                    "[...]".to_string()
                 } else {
                     let parameters: Vec<String> = block
                         .parameters
                         .iter()
                         .map(|parameter| format!(":{}", parameter.name))
                         .collect();
-                    format!("[{} | …]", parameters.join(" "))
+                    format!("[{} | ...]", parameters.join(" "))
                 };
                 self.bracketed(block.delimiters, block.span.end, &collapsed);
                 self.body(&block.body);
@@ -255,7 +257,7 @@ mod tests {
                 make = ( ^self new )
             )
         "};
-        assert_eq!(lines_of(text), [fold(0, 4, "(…)"), fold(4, 6, "(…)")]);
+        assert_eq!(lines_of(text), [fold(0, 4, "(...)"), fold(4, 6, "(...)")]);
     }
 
     #[test]
@@ -273,10 +275,10 @@ mod tests {
         assert_eq!(
             lines_of(text),
             [
-                fold(0, 7, "(…)"),
-                fold(1, 6, "(…)"),
-                fold(2, 3, "|…|"),
-                fold(4, 5, "[:each | …]"),
+                fold(0, 7, "(...)"),
+                fold(1, 6, "(...)"),
+                fold(2, 3, "|...|"),
+                fold(4, 5, "[:each | ...]"),
             ]
         );
     }
@@ -291,7 +293,11 @@ mod tests {
         "};
         assert_eq!(
             lines_of(text),
-            [fold(0, 3, "(…)"), fold(1, 2, "(…)"), fold(1, 2, "[…]")]
+            [
+                fold(0, 3, "(...)"),
+                fold(1, 2, "(...)"),
+                fold(1, 2, "[...]")
+            ]
         );
     }
 
@@ -303,7 +309,7 @@ mod tests {
                   second |
             ) () : ()
         "};
-        assert_eq!(lines_of(text), [fold(0, 3, "(…)"), fold(1, 2, "|…|")]);
+        assert_eq!(lines_of(text), [fold(0, 3, "(...)"), fold(1, 2, "|...|")]);
     }
 
     /// Without its closer a slot section folds to its last slot and a
@@ -320,7 +326,11 @@ mod tests {
         "};
         assert_eq!(
             lines_of(slots),
-            [fold(0, 5, "(…)"), fold(1, 4, "(…)"), fold(2, 3, "|…|")]
+            [
+                fold(0, 5, "(...)"),
+                fold(1, 4, "(...)"),
+                fold(2, 3, "|...|")
+            ]
         );
         let closure = indoc! {"
             class Module = () (
@@ -333,9 +343,9 @@ mod tests {
         assert_eq!(
             lines_of(closure),
             [
-                fold(0, 5, "(…)"),
-                fold(1, 4, "(…)"),
-                fold(2, 3, "[:each | …]")
+                fold(0, 5, "(...)"),
+                fold(1, 4, "(...)"),
+                fold(2, 3, "[:each | ...]")
             ]
         );
     }
@@ -371,8 +381,8 @@ mod tests {
         assert_eq!(
             lines_of(text),
             [
-                (0, 1, "(* A module …*)".to_string(), true),
-                fold(2, 5, "(…)"),
+                (0, 1, "(* A module ...*)".to_string(), true),
+                fold(2, 5, "(...)"),
             ]
         );
     }
@@ -381,7 +391,7 @@ mod tests {
     fn an_unterminated_comment_folds_to_the_end() {
         let text = "class Module = () ()\n(* open\nstill open";
         let folds = lines_of(text);
-        assert_eq!(folds, [(1, 2, "(* open …*)".to_string(), true)]);
+        assert_eq!(folds, [(1, 2, "(* open ...*)".to_string(), true)]);
     }
 
     #[test]
@@ -409,11 +419,11 @@ mod tests {
         assert_eq!(
             lines_of(text),
             [
-                fold(0, 6, "(…)"),
-                fold(1, 2, "(…)"),
-                fold(3, 5, "(…)"),
-                fold(6, 10, "(…)"),
-                fold(7, 9, "(…)"),
+                fold(0, 6, "(...)"),
+                fold(1, 2, "(...)"),
+                fold(3, 5, "(...)"),
+                fold(6, 10, "(...)"),
+                fold(7, 9, "(...)"),
             ]
         );
     }
@@ -440,6 +450,6 @@ mod tests {
         );
         assert_eq!((method.end_line, method.end_character), (3, Some(5)));
         assert_eq!(method.kind, None);
-        assert_eq!(method.collapsed_text.as_deref(), Some("(…)"));
+        assert_eq!(method.collapsed_text.as_deref(), Some("(...)"));
     }
 }
