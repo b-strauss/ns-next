@@ -1,12 +1,15 @@
 # Editor support — the language server and the JetBrains plugin
 
-> **Status:** **Built:** the language server (`crates/ns-lsp/`, and
-> `resolve_for_editor` in `crates/ns-runtime/src/resolver/mod.rs`) and the
-> JetBrains plugin (`editors/jetbrains/`) both exist: highlighting, errors
-> as you type, code folding and a structure view with breadcrumbs, in every
-> commercial JetBrains IDE from 2026.1.4, kept while a file has syntax errors.
-> Formatting, go to definition, find usages and further platforms are planned
-> ("Planned later").
+> **Status:** **Built:** the language server (`crates/ns-lsp/`: `analysis.rs`,
+> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`; on
+> `ns_syntax::parse_for_editor` and `resolve_for_editor` in
+> `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
+> (`editors/jetbrains/`, its structure view in the `structure` package and
+> `lsp/NewspeakSymbolKinds.kt`) both exist: highlighting, errors as you
+> type, code folding and a structure view with breadcrumbs, in every
+> commercial JetBrains IDE from 2026.1.4, kept while a file has syntax
+> errors. Formatting, go to definition, find usages and further platforms
+> are planned ("Planned later").
 
 Without a plugin, editing `.ns` files in a JetBrains IDE means editing plain
 text. This document describes the editor support that replaces it: syntax
@@ -135,8 +138,8 @@ Modules:
   `fluent_uri::Uri<String>` that caches parsed components behind a `Cell`, so
   clippy's `mutable_key_type` refuses it as a map key even though its
   `Hash`/`Eq` only ever read the string. A `semanticTokens/full`,
-  `foldingRange` or `documentSymbol` request for a URI the server never opened, or has since
-  closed, answers an empty set rather than an error.
+  `foldingRange` or `documentSymbol` request for a URI the server never
+  opened, or has since closed, answers an empty set rather than an error.
 - `documents.rs` — the open text per URI with its version, and a line index
   converting a `Span`'s byte offsets to LSP positions in UTF-16 code units,
   the one encoding every LSP client must accept.
@@ -158,13 +161,13 @@ the platform since 2023.2), `textDocument/semanticTokens/full`,
 `textDocument/foldingRange` (the `foldingRangeProvider` capability,
 announced as `true`), `textDocument/documentSymbol` (the
 `documentSymbolProvider` capability, announced as `true`), `shutdown` and
-`exit`. Nothing else. A request the
-server does not implement is answered `MethodNotFound`. A document
-notification whose params do not match the schema has no response to carry
-an error, so the server writes it to stderr and sends the client a
-`window/logMessage` of type `Error` -- the client's
-log for the server, not a `window/showMessage` popup, since the defect is the
-client's, not the user's text -- and keeps serving the documents already open.
+`exit`. Nothing else. A request the server does not implement is answered
+`MethodNotFound`. A document notification whose params do not match the
+schema has no response to carry an error, so the server writes it to stderr
+and sends the client a `window/logMessage` of type `Error` -- the client's
+log for the server, not a `window/showMessage` popup, since the defect is
+the client's, not the user's text -- and keeps serving the documents already
+open.
 
 ### The resolver entry
 
@@ -358,11 +361,13 @@ access. The plugin registers `NewspeakStructureViewFactory`
 API alone: it finds the client with
 `LspClientManager.getInstance(project).getClients(NewspeakLspIntegrationProvider::class.java)`
 and asks `textDocument/documentSymbol` through `sendRequestSync`. The
-platform's own structure view is switched off for the client by an
-`LspDocumentSymbolSupport` subclass with `structureViewSupport = false`
-(`NewspeakDocumentSymbols`, in `NewspeakLspCustomization`); its breadcrumbs
-stay on, and with them the sticky lines, which the platform draws from the
-same symbols (`LspFileBreadcrumbsCollector.computeStickyLineInfos`).
+platform's own structure view is switched off for the client by
+`NewspeakDocumentSymbols`, an `LspDocumentSymbolSupport` with
+`structureViewSupport = false`, declared beside the client descriptor in
+`NewspeakLspClientDescriptor.kt` and handed to the platform as
+`NewspeakLspCustomization`'s `documentSymbolCustomizer`; its breadcrumbs stay
+on, and with them the sticky lines, which the platform draws from the same
+symbols (`LspFileBreadcrumbsCollector.computeStickyLineInfos`).
 
 **The rows.** A row's text is the symbol's name, with `lazy` beside a lazy
 slot. Its icon is the kind's icon beside the access icon: `C_public`,
@@ -396,6 +401,8 @@ edit.
 **Known behaviours.** After a timeout following an edit the tree keeps its
 last answer, and its positions are stale until the next answer. Two views of
 one file asking at once (the tool window and the popup) each send a request.
+A question on the EDT that finds no current answer schedules a retry too, and
+counts against the sixty fast ones.
 
 **Checked by hand under `runIde` (2026-10-04)** on `Kernel.ns`: the Structure
 tool window and the File Structure popup show the tree, with the factory, the
@@ -459,17 +466,20 @@ with it. The release profile unwinds (`Cargo.toml` deliberately does not set
   and in the middle of each of their tokens -- a string, a comment or a
   keyword half typed -- and at the end and in the middle of 64 evenly spaced
   tokens of each corpus module, since every prefix of every corpus module is
-  quadratic in its size;
+  quadratic in its size; and a chain of messages as long as the source,
+  valid or a run of unclosed methods, analysed on a 1 MiB stack
+  (`a_chain_as_long_as_the_source_is_analysed_on_a_small_stack`);
 - no empty name — on the token-boundary truncations, no declaration in the
   recovered module has an empty name but the root class's, which recovery
   keeps ([frontend.md](frontend.md), "Recovery");
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
-  `initialize` and its announced capabilities, `foldingRangeProvider`
-  and `documentSymbolProvider` included, `didOpen`, the expected `publishDiagnostics`,
-  `semanticTokens/full`, `textDocument/foldingRange`, `textDocument/documentSymbol` (the class, its
-  three children, and `[]` for a document never opened), `shutdown`; a malformed
-  notification, reported as a `window/logMessage` error while the next
-  request is still answered; an unknown request, answered `MethodNotFound`.
+  `initialize` and its announced capabilities, `foldingRangeProvider` and
+  `documentSymbolProvider` included, `didOpen`, the expected
+  `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
+  `textDocument/documentSymbol` (the class, its three children, and `[]` for
+  a document never opened), `shutdown`; a malformed notification, reported
+  as a `window/logMessage` error while the next request is still answered;
+  an unknown request, answered `MethodNotFound`.
 
 ## The plugin, `editors/jetbrains/`
 
@@ -686,11 +696,15 @@ The server's own tests are described under its section, above ("Testing").
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
-- the structure view, plain JUnit: `NewspeakSymbolKindsTest` (the icon per
-  kind), `NewspeakStructureElementTest` (a row's name, `lazy`, kind icon and
-  access icon from a `DocumentSymbol`), `NewspeakStructureViewModelTest` (no
-  answer and an empty answer make the model ask again, an answer with symbols
-  is shown) and `NewspeakStructureViewFactoryTest`.
+- the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
+  per kind), `NewspeakStructureElementTest` (a row's name, `lazy`, kind icon
+  and access icon from a `DocumentSymbol`) and
+  `NewspeakStructureViewModelTest` (no answer and an empty answer make the
+  model ask again, an answer with symbols is shown); and on
+  `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a Newspeak file
+  gets the plugin's view rather than the platform's, the caret selects the
+  innermost symbol around it, and a member with an access shows the kind's
+  and the access icon in one row under the platform's own `IconManager`.
 
 **Gates.** The runtime's per-commit suite is `cargo nextest run --workspace
 --exclude ns-lsp`, so runtime work does not pay for the editor's corpus-wide
@@ -720,8 +734,11 @@ and resolves cleanly in a JetBrains IDE today.
 - **The IDE path has no automated test.** It was checked by hand under
   `runIde` (see "Build and packaging"); nothing but that check covers the
   platform handing `NewspeakLspIntegrationProvider` its descriptor
-  (`PluginAware`), the sandbox layout `runIde` starts from, or the
-  platform's `LspFoldingBuilder` reaching a `.ns` file. The sandbox
+  (`PluginAware`), the sandbox layout `runIde` starts from, the
+  platform's `LspFoldingBuilder` reaching a `.ns` file, or the structure
+  view against a running server: its asking again until the server has
+  opened the file, navigation, the breadcrumbs and the sticky lines
+  ("Structure"). The sandbox
   also disables the ultimate marker plugin for `runIde`, not only for tests.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the

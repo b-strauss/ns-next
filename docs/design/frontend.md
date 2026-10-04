@@ -2,7 +2,11 @@
 
 > **Status:** built.
 > **Code:** `crates/ns-syntax/` — lexer, tokens, AST, recursive-descent and
-> Pratt parser, `Span`, diagnostics.
+> Pratt parser, `Span`, diagnostics; for an editor, `parse_for_editor`
+> (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
+> `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop
+> and `receiver_chain` (`ast.rs`); the recovery's tests in
+> `tests/recovery.rs`.
 
 Turns source bytes into a `Module` AST with source spans, and reports lexer and
 parser diagnostics; for an editor, it answers a recovered module for any
@@ -620,12 +624,13 @@ them.
    run of unclosed methods past the guard makes one too, the first
    method's statement taking the rest of the run. So the tree is never
    taken apart by recursion along a receiver: `Send`'s `Drop` takes the
-   chain link by link, and the resolver's walk and the editor's
-   (`ns-lsp`'s semantic tokens and folds) take each chain from
-   `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain of a
-   million messages, parse and are analysed on the server's 8 MiB, and
-   on 1 MiB. The compiler still recurses along a chain
-   ([OPEN-WORK.md](../OPEN-WORK.md)).
+   chain link by link, the resolver's walk does too (`resolve_send`), and
+   the editor's (`ns-lsp`'s semantic tokens and folds) takes each chain
+   from `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain
+   of a million messages, parse and are analysed on the server's 8 MiB, and
+   on 1 MiB. The compiler, and the AST's derived `Clone`, `PartialEq` and
+   `Debug`, still recurse along a chain ([OPEN-WORK.md](../OPEN-WORK.md),
+   "Defects that change a correct program's output").
 
 **Left as it is.** An unfinished body whose next line is a valid expression
 is read as that expression: in `first = ( x foo. bar = ( 2 )` followed by
@@ -651,4 +656,7 @@ keyword message -- each asserting that the members after the error
 survive, with their names and spans, most of them also how many
 diagnostics the fault gives. Each case left as it is, above, is pinned
 there too, with the methods and the diagnostics it gives;
-`parser::declaration`'s unit tests pin the depth guards.
+`parser::declaration`'s unit tests pin the depth guards, and its
+`recovery_work_tests` hold the recovery to its budget, counted in steps per
+token rather than timed; `ast.rs`'s
+`a_long_chain_of_sends_drops_on_a_small_stack` pins the link-by-link drop.

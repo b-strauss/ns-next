@@ -9,7 +9,9 @@ file records what is not.
 
 Keep it current: remove an item in the same batch that closes it, and add one
 whenever a review, a measurement or a design discussion leaves something open.
-Code references of the items dated before 2026-09-30 were checked against the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-04 when they were written.
+Code references of the items dated before 2026-09-30 were checked against
+the tree on 2026-09-28; those of the items dated 2026-09-30 to 2026-10-04
+when they were written.
 
 ## Next
 
@@ -601,6 +603,28 @@ value objects are never copied across an actor boundary (§3.1.1).
   at once without a rule for `Stopwatch`. Pinned today only within one
   process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_path_named_class`).
   [core-library.md](design/core-library.md), "The platform".
+- **A valid method whose body is one long chain of messages aborts `ns-next
+  run`.** A chain, `1 + 1 + …`, nests a send per message through its
+  receivers, as deep as the source is long, and no depth guard bounds it,
+  since every length is valid. The parser, the AST's drop, the resolver and
+  the language server take a chain link by link, but the compiler's walks
+  (`crates/ns-runtime/src/compiler/`) recurse into each receiver: a body
+  that is one chain of 20,000 `+ 1` overflows the interpreter thread's 8 MiB
+  and aborts the process (release; 10,000 compile and run), where the
+  program should run. Walking the chain from `Send::receiver_chain`, as the
+  language server does, would close it. [frontend.md](design/frontend.md),
+  "Recovery", rule 7; [execution.md](design/execution.md), "What the
+  trampoline moved". Noted 2026-10-04.
+- **The AST's derived `Clone`, `PartialEq` and `Debug` recurse along a
+  chain of messages** (`crates/ns-syntax/src/ast.rs`), as the compiler
+  does: only `Send`'s `Drop` and `Send::receiver_chain` take a chain link by
+  link. The compiler clones a slot's initializer for a simultaneous slot's
+  future (`compiler/simultaneous.rs`, `future_block`), so a long chain there
+  overflows in the clone too. `ns-lsp`'s `the_editor_parse_agrees_with_parse`
+  compares modules with `==`, and the snapshot tests print them with
+  `{:?}`; both are safe only because no fixture holds such a chain.
+  Hand-written impls that take the chain link by link would close it.
+  Noted 2026-10-04.
 
 ## Known defects and gaps
 
@@ -734,16 +758,6 @@ text and `to:by:do:`'s zero step.
   the rest inside its body, in 8 ms at 200 and 60 ms at 1,000. Nothing is
   invented. [frontend.md](design/frontend.md), "Recovery". Noted
   2026-10-04.
-- **The compiler recurses along a chain of messages.** A chain, `1 + 1 +
-  …`, nests a send per message through its receivers, as deep as the
-  source is long, and no depth guard bounds it, since every length is
-  valid. The parser, the AST's drop, the resolver and the language server
-  take a chain link by link, but the compiler's walks recurse into each
-  receiver: `ns-next run` of a valid method whose body is one chain of
-  20,000 `+ 1` overflows the interpreter thread's 8 MiB and aborts the
-  process (release; 10,000 compile and run).
-  [frontend.md](design/frontend.md), "Recovery", rule 7;
-  [execution.md](design/execution.md). Noted 2026-10-04.
 - **Editor recovery: the work budget is the whole parse's.** Once input
   has spent it, no later statement of the file is looked at again (rule
   1), so the members after an unclosed body there stay inside it, and a
@@ -759,6 +773,15 @@ text and `to:by:do:`'s zero step.
 - **Editor recovery: one token can be described two ways at one span**,
   "found the start of the next member" by a diagnostic under a re-parse's
   bound and "found Bar" (the token's kind) by another. Noted 2026-10-04.
+- **Structure view: a stale tree after a timeout, and duplicate requests.**
+  After an edit whose request times out, the plugin's structure view keeps
+  its last answer, positions stale until the next one; two views of one file
+  (the tool window and the popup) each send their own request; and a
+  question on the EDT counts against the sixty fast retries
+  (`NewspeakStructureViewModel` in the plugin's
+  `structure/NewspeakStructureViewFactory.kt`).
+  [editor-support.md](design/editor-support.md), "Structure" ("Known
+  behaviours"). Noted 2026-10-04.
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
   (`crates/ns-lsp/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
@@ -811,7 +834,8 @@ text and `to:by:do:`'s zero step.
   `a_signal_fits_in_the_niche_of_its_one_unboxed_error`) run in no gate
   `CLAUDE.md` lists; `cargo nextest run --workspace --release` runs them.
 - Editor: the IDE path has no automated test (checked by hand under
-  `runIde`), and `dump-tokens` on an unreadable file, a block comment over a
+  `runIde`: folding, and the structure view's tree, navigation, breadcrumbs,
+  sticky lines and first open against a running server), and `dump-tokens` on an unreadable file, a block comment over a
   whole-line selection and TODO markers through the project-wide index are
   untested. [editor-support.md](design/editor-support.md), "Known gaps".
 - The packaged artifact (2026-09-30): the refusal of a module set of which
@@ -887,6 +911,10 @@ Small, deliberately left, none affecting an outcome.
   ([execution.md](design/execution.md), "What the object
   representation moved"); packing straight from the two `PackedString`s, and UTF-8 straight
   from one, would leave out the copies.
+
+- `crates/ns-lsp/src/document_symbols.rs` (noted 2026-10-04): `effective`
+  answers an `Option` that is always `Some`, so `detail`'s `(None, true)` arm
+  is unreachable; and `SymbolCategory` has no doc comment of its own.
 
 ## Goldens and documentation
 

@@ -1551,8 +1551,9 @@ stack. Nothing re-enters the run loop from Rust ("No re-entry from Rust"
 below), so that is the front end and the compiler, whose depth the parser's
 nesting ceiling bounds, except along a chain of messages: it nests a send
 per message through its receivers, as deep as the source is long, and the
-compiler walks it by recursion ([OPEN-WORK.md](../OPEN-WORK.md)). The suite runs the deepest nesting the parser accepts
-through every stage on libtest's default 2 MiB threads in a debug build —
+compiler walks it by recursion ([OPEN-WORK.md](../OPEN-WORK.md)). The
+suite runs the deepest nesting the parser accepts through every stage on
+libtest's default 2 MiB threads in a debug build —
 `the_deepest_module_the_parser_accepts_round_trips` and
 `the_deepest_block_nesting_the_parser_accepts_builds_loads_and_runs` in
 `crates/ns-runtime/tests/image.rs` — and the thread gets four times that.

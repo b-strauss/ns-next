@@ -102,16 +102,18 @@ plugs into, and the JetBrains plugin beside them:
 
 ```
 crates/
-  ns-syntax/    lexer, tokens, AST, spans, diagnostics
+  ns-syntax/    lexer, tokens, AST, spans, diagnostics; for an editor,
+                parse_for_editor: a recovered module and its comments' spans
   ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
                 core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
-  ns-lsp/       the `ns-next-lsp` binary: the editor's language server
+  ns-lsp/       the `ns-next-lsp` binary: the editor's language server --
+                diagnostics, semantic tokens, fold ranges, document symbols
   ns-memory/    reserved, committed and protected memory; the only crate with unsafe
 editors/
   jetbrains/    the JetBrains plugin: a Kotlin lexer mirroring ns-syntax's,
-                highlighting, and the connection to ns-next-lsp over the
-                native LSP API
+                highlighting, a structure view, and the connection to
+                ns-next-lsp over the native LSP API
 ```
 
 Inside `ns-runtime`, one file cuts across every other: `heap.rs`. It owns the
