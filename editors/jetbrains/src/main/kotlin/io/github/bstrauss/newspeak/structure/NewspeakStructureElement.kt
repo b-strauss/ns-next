@@ -173,4 +173,14 @@ class NewspeakStructureElement(
     override fun canNavigate(): Boolean = true
 
     override fun canNavigateToSource(): Boolean = true
+
+    /**
+     * Equal for an equal symbol (lsp4j compares its fields) in the same
+     * place, so that a refresh bringing the same answer keeps the tree's
+     * nodes, their expansion and selection, rather than redrawing them.
+     */
+    override fun equals(other: Any?): Boolean =
+        other is NewspeakStructureElement && other.file == file && other.root == root && other.symbol == symbol
+
+    override fun hashCode(): Int = symbol.hashCode() * 31 + root.hashCode()
 }

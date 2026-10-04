@@ -4297,6 +4297,9 @@ The structure view, breadcrumbs and sticky lines
   `file` URI it never opened by reading the file from disk (an open
   document still wins), and the structure view starts the client when none
   is running, which the platform does only for a file opened in an editor.
+  The last answer is kept on the file per document stamp, so the tool
+  window's new model on every rebuild shows the tree at once rather than
+  empty first.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion

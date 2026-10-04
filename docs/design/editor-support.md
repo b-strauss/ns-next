@@ -542,15 +542,28 @@ file selected in the Project view and not open in an editor is answered from
 disk, so its tree shows the file as last saved; one whose document holds
 unsaved changes while no editor shows it is shown as saved. The platform
 refreshes its own view when a client starts through a listener that is
-internal API, which the plugin may not use, so while no usable answer exists the view asks again: every second
-for 60 tries, then every ten seconds for as long as it lives, and fast again
-after an answer; a new model (another file, the view reopened) starts fast. A
-server that starts late, or is restarted, therefore fills the tree without an
-edit.
+internal API, which the plugin may not use, so while no usable answer exists
+the view asks again: every second for 60 tries, then every ten seconds for as
+long as it lives, and fast again after an answer; a new model (another file,
+the view reopened) starts fast. A server that starts late, or is restarted,
+therefore fills the tree without an edit.
+
+**One answer per document stamp.** The Structure tool window builds a new
+model each time it shows a file -- selected anew in the Project view, the
+window reopened -- and a model that started empty showed an empty tree until
+the server had answered, then the tree: a flicker on every rebuild, seen for
+files not open in an editor. The last usable answer is therefore kept on the
+`VirtualFile` (user data) with the document stamp it was given for, and every
+model of the file answers an unchanged document from it at once, on the EDT
+too, without a request; the server is asked again only once the stamp
+changes. A row is equal to another for an equal `DocumentSymbol` in the same
+place (`NewspeakStructureElement.equals`), so a refresh bringing the same
+answer keeps the tree's nodes, their expansion and selection.
 
 **Known behaviours.** After a timeout following an edit the tree keeps its
 last answer, and its positions are stale until the next answer. Two views of
-one file asking at once (the tool window and the popup) each send a request.
+one file asking at once (the tool window and the popup) before either has an
+answer each send a request.
 A question on the EDT that finds no current answer schedules a retry too, and
 counts against the sixty fast ones.
 
@@ -886,7 +899,11 @@ The server's own tests are described under its section, above ("Testing").
   nested value classes included, and `class` read together with the access
   word and `lazy`) and `NewspeakStructureViewModelTest` (no answer and an
   empty answer make the model ask again, an answer with symbols is shown);
-  on `BasePlatformTestCase`, `NewspeakLspIntegrationProviderTest` (the
+  on `BasePlatformTestCase`, `NewspeakStructureViewRefreshTest` (over a file
+  never opened in an editor and a stand-in for the server: a new model of an
+  unchanged file answers at once, on the EDT too, with no second request and
+  no refresh scheduled; a changed file is asked again; rows of equal symbols
+  are equal) and `NewspeakLspIntegrationProviderTest` (the
   structure view finds the registered provider it starts the client
   through; starting a client needs the server binary and a running IDE, so
   no test starts one); and on `BasePlatformTestCase`,

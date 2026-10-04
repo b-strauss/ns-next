@@ -12,6 +12,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.util.Key
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.api.LspClient
 import com.intellij.platform.lsp.api.LspClientManager
@@ -47,9 +48,12 @@ class NewspeakStructureViewFactory : PsiStructureViewFactory {
 
 /**
  * Asks the server lazily, when the tree asks for the file's children, and
- * again only once the document has changed. The tree computes its children
- * off the EDT; asked on the EDT, the model answers what it already has rather
- * than block the UI on the server.
+ * again only once the document has changed. The answer is kept on the file
+ * with the document stamp it was given for, so every model of the file --
+ * the tool window rebuilds its model each time it shows the file -- answers
+ * an unchanged document at once, without asking. The tree computes its
+ * children off the EDT; asked on the EDT, the model answers what it already
+ * has rather than block the UI on the server.
  *
  * With no client yet, no answer within the timeout, or an empty answer, the
  * tree stays as it was (empty the first time) and the model tells the view to
@@ -73,9 +77,9 @@ class NewspeakStructureViewModel(
     psiFile: PsiFile,
     private val file: VirtualFile,
     editor: Editor?,
+    /** Asks for the file's symbols in place of the language server; for tests. */
+    private val fetcher: ((VirtualFile) -> List<DocumentSymbol>?)? = null,
 ) : TextEditorBasedStructureViewModel(editor, psiFile), StructureViewModel.ElementInfoProvider {
-    private class Answer(val symbols: List<DocumentSymbol>, val documentStamp: Long)
-
     @Volatile private var answer: Answer? = null
     @Volatile private var disposed = false
     private val retryPending = AtomicBoolean(false)
@@ -111,6 +115,16 @@ class NewspeakStructureViewModel(
         val stamp = documentStamp()
         val known = answer
         if (known != null && known.documentStamp == stamp) return known.symbols
+        // The Structure tool window builds a new model each time it shows the
+        // file (selected anew in the Project view, the window reopened), and a
+        // model that started empty showed an empty tree until the server had
+        // answered: a flicker on every rebuild. The last answer is kept on the
+        // file, so a new model of an unchanged document shows it at once.
+        val shared = file.getUserData(LAST_ANSWER)
+        if (shared != null && shared.documentStamp == stamp) {
+            answer = shared
+            return shared.symbols
+        }
         if (ApplicationManager.getApplication().isDispatchThread) {
             askAgainLater()
             return known?.symbols.orEmpty()
@@ -121,7 +135,9 @@ class NewspeakStructureViewModel(
             return known?.symbols.orEmpty()
         }
         retries.set(0)
-        answer = Answer(fetched, stamp)
+        val fresh = Answer(fetched, stamp)
+        answer = fresh
+        file.putUserData(LAST_ANSWER, fresh)
         return fetched
     }
 
@@ -134,6 +150,7 @@ class NewspeakStructureViewModel(
      * an editor, and this file may be merely selected in the project view.
      */
     private fun fetch(): List<DocumentSymbol>? {
+        fetcher?.let { fetchSymbols -> return fetchSymbols(file) }
         val project = psiFile.project
         val client = LspClientManager.getInstance(project)
             .getClients(NewspeakLspIntegrationProvider::class.java)
@@ -172,6 +189,12 @@ class NewspeakStructureViewModel(
         const val SLOW_RETRY_DELAY_MILLISECONDS = 10_000L
     }
 }
+
+/** What the server answered for a file, and the document stamp it answered for. */
+private class Answer(val symbols: List<DocumentSymbol>, val documentStamp: Long)
+
+/** The last answer for a file, shared by every model of it. */
+private val LAST_ANSWER = Key.create<Answer>("io.github.bstrauss.newspeak.structure.answer")
 
 /** The file, above the module's root class; not shown (`isRootNodeShown`). */
 private class NewspeakStructureRoot(
