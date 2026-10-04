@@ -1,8 +1,7 @@
 #![warn(clippy::all)]
 
-//! `ns-next`: runs Newspeak programs -- `run`, `run-corpus`, `load`, `bench`
-//! and `build`. Parsing, disassembly and image inspection are
-//! `ns-next-analyzer`'s (`crates/ns-analyzer`).
+//! `ns-next`, the binary that runs Newspeak; what it offers is `Cli`'s
+//! description below, which `--help` shows.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

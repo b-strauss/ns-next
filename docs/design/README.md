@@ -326,14 +326,14 @@ These are non-regression gates, not suggestions. Each has caught a real
 regression.
 
 ```bash
-cargo nextest run --workspace --exclude ns-analyzer   # includes every golden, under both lowerings
-cargo test --workspace --exclude ns-analyzer --doc    # the doctests, which nextest does not run
-NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace --exclude ns-analyzer   # the same, moving everything at the run loop's safepoints
-NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace --exclude ns-analyzer  # the same, vacating every inline cache at every safepoint
-NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace --exclude ns-analyzer # the same, collecting at every safepoint
-NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace --exclude ns-analyzer    # the same, every instruction in its wide form
+cargo nextest run --workspace   # includes every golden, under both lowerings
+cargo test --workspace --doc    # the doctests, which nextest does not run
+NS_NEXT_STRESS_MOVES=1 cargo nextest run --workspace   # the same, moving everything at the run loop's safepoints
+NS_NEXT_STRESS_CACHES=1 cargo nextest run --workspace  # the same, vacating every inline cache at every safepoint
+NS_NEXT_STRESS_COLLECT=1 cargo nextest run --workspace # the same, collecting at every safepoint
+NS_NEXT_STRESS_WIDE=1 cargo nextest run --workspace    # the same, every instruction in its wide form
 # (the finishing-a-batch skill runs the four stress modes at once, each into its own log)
-cargo nextest run -p ns-analyzer             # the editor's language server: never starts the VM, so excluded above
+# the suite above is every crate's, ns-analyzer's included: its disasm and inspect tests guard the compiler's output and the image format
 cargo clippy --workspace --all-targets   # must be warning-free, the naming lint included
 cargo fmt --all                 # before every commit
 cargo run -p ns-analyzer -- parse-corpus corpus/modules   # parsed 211, failed 0

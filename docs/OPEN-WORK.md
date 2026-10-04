@@ -670,7 +670,7 @@ text and `to:by:do:`'s zero step.
   an artifact".
 - **`disasm` of an artifact reaches module 0 only**: `--class` is rooted at
   the application's root class, so a project's other modules, the
-  manifest's included, have no path (`crates/ns-cli/src/commands/disasm.rs`);
+  manifest's included, have no path (`crates/ns-analyzer/src/commands/disasm.rs`);
   `inspect --full` disassembles every body. A module selector, by name or
   index, would close it. [image-format.md](design/image-format.md),
   "Reading an artifact".

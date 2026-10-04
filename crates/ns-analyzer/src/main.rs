@@ -1,6 +1,5 @@
-//! `ns-next-analyzer`: looks at Newspeak without running it -- `lsp`,
-//! `dump-tokens`, `parse`, `parse-corpus`, `disasm` and `inspect`. Nothing
-//! here starts the VM.
+//! `ns-next-analyzer`, the binary that looks at Newspeak without running
+//! it; what it offers is `Cli`'s description below, which `--help` shows.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -23,6 +22,8 @@ struct Cli {
 /// Which lowering compiles a source (`docs/design/compiler.md`, "The
 /// reference lowering"): `optimized` is what every program runs under,
 /// `reference` the naive lowering it is checked against.
+// A copy of `ns-next`'s: the one crate both binaries share, `ns-tooling`, has
+// no `clap`, and a command-line type is no reason to give it one.
 #[derive(Clone, Copy, clap::ValueEnum)]
 enum LoweringArgument {
     Optimized,
@@ -43,7 +44,11 @@ enum Command {
     /// Speak the Language Server Protocol on stdin and stdout.
     Lsp,
     /// Print each file's tokens as JSON, one document per file.
-    DumpTokens { files: Vec<String> },
+    DumpTokens {
+        /// Every argument is a file, one beginning with `-` included.
+        #[arg(allow_hyphen_values = true)]
+        files: Vec<String>,
+    },
     /// Parse a single .ns file.
     Parse {
         file: PathBuf,

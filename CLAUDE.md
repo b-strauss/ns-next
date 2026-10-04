@@ -241,14 +241,13 @@ Before every commit:
 ```bash
 cargo fmt --all
 cargo clippy --workspace --all-targets          # must be warning-free
-cargo nextest run --workspace --exclude ns-analyzer  # every golden, both lowerings
-cargo test --workspace --exclude ns-analyzer --doc   # nextest runs no doctests
+cargo nextest run --workspace                   # every golden, both lowerings
+cargo test --workspace --doc                    # nextest runs no doctests
 cargo run -p ns-analyzer -- parse-corpus corpus/modules   # "parsed 211, failed 0"
 ```
 
 Plus, per commit touching them:
 
-- `crates/ns-analyzer` or `crates/ns-syntax` → `cargo nextest run -p ns-analyzer`
 - `crates/ns-memory` → `cargo clippy -p ns-memory --all-targets --target x86_64-unknown-linux-gnu`
   and the same for `aarch64-apple-darwin`
 - `editors/jetbrains`, `crates/ns-analyzer` or `crates/ns-syntax` →

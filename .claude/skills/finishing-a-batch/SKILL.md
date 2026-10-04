@@ -36,9 +36,8 @@ Create a todo for each item.
 
    ```bash
    mkdir -p .temp && for mode in MOVES CACHES COLLECT WIDE; do
-     (env NS_NEXT_STRESS_$mode=1 cargo nextest run --workspace --exclude ns-analyzer      > .temp/stress-$mode.log 2>&1 || echo "stress $mode FAILED: .temp/stress-$mode.log") &
+     (env NS_NEXT_STRESS_$mode=1 cargo nextest run --workspace      > .temp/stress-$mode.log 2>&1 || echo "stress $mode FAILED: .temp/stress-$mode.log") &
    done; wait; grep -h Summary .temp/stress-*.log
-   cargo nextest run -p ns-analyzer
    # each must report "ran 6, failed 0, skipped 205"
    cargo run -p ns-cli -- run-corpus corpus/modules
    NS_NEXT_STRESS_MOVES=1 cargo run -p ns-cli -- run-corpus corpus/modules

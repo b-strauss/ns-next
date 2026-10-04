@@ -45,7 +45,7 @@ that date use the old numbering.
 ## M1 — Frontend (2026-09-01)
 
 `ns-syntax`: hand-written lexer, recursive-descent and Pratt parser, and AST for
-the official Newspeak3 textual syntax, plus `ns-next-analyzer parse` and `parse-corpus`.
+the official Newspeak3 textual syntax, plus the `parse` and `parse-corpus` commands.
 Validated against the vendored corpus at 210 of 211 files; the last one
 parses since "The syntax is the specification's grammar" (2026-09-27).
 
@@ -63,7 +63,7 @@ A register-based bytecode compiler and VM, with the M1 tree-walker kept
 permanently as `--engine=tree-walk` — a byte-for-byte differential oracle over
 stdout, stderr and exit status. Adds baseline control-flow inlining, each
 occurrence guarded at run time with a fallback to a real virtual send;
-`ns-next-analyzer disasm`; and the first image format, exposed as `snapshot` and `load`.
+a `disasm` command; and the first image format, exposed as `snapshot` and `load`.
 Carries the statement→program-counter safepoint table and a reserved inert inline-cache slot
 per send from the start, so Milestone 4 needs no bytecode format break.
 
@@ -108,7 +108,7 @@ format would otherwise open.
 
 An artifact is also readable as text, which it was not before. `disasm` accepts
 one in place of a `.ns` file, decoding rather than compiling — the path a
-deployed binary needs, since it ships no source. `ns-next-analyzer inspect` prints the
+deployed binary needs, since it ships no source. An `inspect` command prints the
 file: header flags, section offsets, the symbol table, the code table with
 every body attributed to the declaration that owns it, and the mixin table.
 `--full` prints everything, in the sense `javap -v` does — mixin rows expanded

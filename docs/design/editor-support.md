@@ -709,14 +709,14 @@ The server's own tests are described under its section, above ("Testing").
   innermost symbol around it, and a member with an access shows the kind's
   and the access icon in one row under the platform's own `IconManager`.
 
-**Gates.** The runtime's per-commit suite is `cargo nextest run --workspace
---exclude ns-analyzer`, so runtime work does not pay for the editor's corpus-wide
-tests, with `cargo nextest run -p ns-analyzer` its own per-commit gate for a change that
-touches `crates/ns-analyzer/` or `crates/ns-syntax/`; `cargo clippy --workspace
---all-targets` still compiles `ns-analyzer` on every commit, so a resolver or
-`ns-syntax` change that breaks its API fails at the commit even when its tests
-only run at the end of the batch (`CLAUDE.md`, "Working in this repository").
-The stress-mode runs exclude `ns-analyzer` too: it never starts the VM. The
+**Gates.** There is one suite: `cargo nextest run --workspace` runs
+`ns-analyzer`'s tests before every commit and under every stress mode, like
+every other crate's (`CLAUDE.md`, "Working in this repository"). Besides the
+language server's, they are the tests of `disasm` and `inspect`, which guard
+the compiler's output (the disassembly snapshots) and the image format (an
+image decoded and listed, its bodies matching the source's); under the wide
+stress mode the analyzer's subprocess compiles every instruction wide, so they
+also check that disassembly and decoding do not depend on the form. The
 plugin's own gate joins this:
 
 - **Before every commit** that touches `editors/jetbrains/`, `crates/ns-analyzer/`
