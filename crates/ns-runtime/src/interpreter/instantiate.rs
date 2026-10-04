@@ -230,10 +230,9 @@ impl<'gc> Mutator<'gc> {
         // over `Object` so that its class exists and can be inspected, and only
         // an instance is refused (`apply_mixin` carries the defect into the
         // application).
-        let shape = match &mixin.root_clause_defect {
-            Some(_) => None,
-            None => crate::resolver::root_shape(declaration),
-        };
+        let shape = crate::resolver::root_shape(declaration);
+        // The mixin's verdict was read from the same declaration.
+        debug_assert_eq!(shape.is_none(), mixin.root_clause_defect.is_some());
         let (superclass_kind, applies_value) = match shape {
             Some(shape) if shape.over_value => (BuiltinClass::Value, shape.applies_value),
             Some(shape) => (BuiltinClass::Object, shape.applies_value),
