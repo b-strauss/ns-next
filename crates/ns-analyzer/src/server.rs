@@ -26,6 +26,7 @@ use ns_syntax::Severity;
 use crate::analysis::{analyze, Analysis};
 use crate::document_symbols;
 use crate::documents::LineIndex;
+use crate::file_uri::file_path_of;
 use crate::folding;
 use crate::semantic_tokens;
 
@@ -118,7 +119,9 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
 }
 
 /// A document's folds; none for a document the client never opened or has
-/// closed, as for its tokens.
+/// closed, as for its tokens. Unlike its symbols, neither is read from disk:
+/// the platform asks for folds and tokens only of a file open in an editor,
+/// which it has opened with the server first.
 fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) -> Response {
     let params: FoldingRangeParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
@@ -143,8 +146,14 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
     Response::new_ok(request.id, ranges)
 }
 
-/// A document's symbol tree; none for a document the client never opened or
-/// has closed, as for its folds.
+/// A document's symbol tree. An open document is answered from its cache: it
+/// may hold text not yet saved. A document the client has not opened is read
+/// from disk, when its URI names a file, and analysed afresh each time: the
+/// platform sends `didOpen` only for a file open in an editor, but the
+/// plugin's structure view asks for a file merely selected in the project
+/// view. The server keeps nothing of it, since without `didOpen` it hears of
+/// no change. A URI that names no file, or a file that cannot be read, has no
+/// symbols.
 fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) -> Response {
     let params: DocumentSymbolParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
@@ -156,17 +165,35 @@ fn document_symbols_of(documents: &HashMap<String, Document>, request: Request) 
             )
         }
     };
-    let symbols = documents
-        .get(params.text_document.uri.as_str())
-        .map(|document| {
-            document_symbols::encode(
-                &document.analysis.symbols,
-                &document.text,
-                &document.line_index,
-            )
-        })
-        .unwrap_or_default();
+    let uri = &params.text_document.uri;
+    let encode = |document: &Document| {
+        document_symbols::encode(
+            &document.analysis.symbols,
+            &document.text,
+            &document.line_index,
+        )
+    };
+    let symbols = match documents.get(uri.as_str()) {
+        Some(document) => encode(document),
+        None => document_on_disk(uri)
+            .map(|document| encode(&document))
+            .unwrap_or_default(),
+    };
     Response::new_ok(request.id, DocumentSymbolResponse::Nested(symbols))
+}
+
+/// The file `uri` names, read and analysed as `didOpen` would have it, or
+/// `None` when it names no file or the file cannot be read.
+fn document_on_disk(uri: &Uri) -> Option<Document> {
+    let bytes = std::fs::read(file_path_of(uri)?).ok()?;
+    // Lossy rather than refused: a stray invalid byte should cost one
+    // character of the tree, not all of it, as the editor still shows the
+    // file. A leading byte-order mark is dropped as the editor's document
+    // drops it, or every position on the first line would be one unit off
+    // from the editor's.
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    Some(Document::new(text.to_string()))
 }
 
 fn semantic_tokens_of(documents: &HashMap<String, Document>, request: Request) -> Response {

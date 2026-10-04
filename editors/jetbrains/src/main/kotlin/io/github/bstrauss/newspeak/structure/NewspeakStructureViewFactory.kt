@@ -53,11 +53,14 @@ class NewspeakStructureViewFactory : PsiStructureViewFactory {
  *
  * With no client yet, no answer within the timeout, or an empty answer, the
  * tree stays as it was (empty the first time) and the model tells the view to
- * ask again a little later. The server answers at least the root class for
- * every document it has opened (`crates/ns-analyzer/src/document_symbols.rs`), so
- * an empty answer means the file's `didOpen` has not reached it yet -- the
- * race of a file opened with the Structure tool window already showing, or of
- * editors restored at IDE start. The platform refreshes its own structure
+ * ask again a little later. With no client it starts one, since the platform
+ * starts the server only for a file opened in an editor. The server answers
+ * at least the root class for every document it has opened
+ * (`crates/ns-analyzer/src/document_symbols.rs`), and for a file not open in an
+ * editor it reads the file from disk, so an empty answer means a file the
+ * server cannot read, or one whose `didOpen` it has not had yet -- the race of
+ * a file opened with the Structure tool window already showing, or of editors
+ * restored at IDE start. The platform refreshes its own structure
  * view when a client starts through a listener that is internal API, which
  * the plugin may not use; asking again reaches the same tree once the server
  * is up. It asks every second for about a minute, then every ten seconds for
@@ -125,11 +128,20 @@ class NewspeakStructureViewModel(
     private fun documentStamp(): Long =
         FileDocumentManager.getInstance().getDocument(file)?.modificationStamp ?: file.modificationStamp
 
-    /** Null when there is no client yet or no answer in time. */
+    /**
+     * Null when there is no client yet or no answer in time. With no client,
+     * it starts one: the platform starts the server only for a file opened in
+     * an editor, and this file may be merely selected in the project view.
+     */
     private fun fetch(): List<DocumentSymbol>? {
-        val client = LspClientManager.getInstance(psiFile.project)
+        val project = psiFile.project
+        val client = LspClientManager.getInstance(project)
             .getClients(NewspeakLspIntegrationProvider::class.java)
-            .firstOrNull() ?: return null
+            .firstOrNull()
+        if (client == null) {
+            NewspeakLspIntegrationProvider.registered()?.startClient(project)
+            return null
+        }
         val parameters = DocumentSymbolParams(client.getDocumentIdentifier(file))
         val response = client.sendRequestSync(LspClient.DEFAULT_REQUEST_TIMEOUT_MS) { server ->
             server.textDocumentService.documentSymbol(parameters)
@@ -182,8 +194,9 @@ private class NewspeakStructureRoot(
 
 /**
  * The symbols to show, or null to keep the tree and ask again: an empty answer
- * is a file the server has not opened yet, never a file without symbols, since
- * every opened document answers at least its root class.
+ * is a file the server has not opened yet or could not read, never a file
+ * without symbols, since every document it opens or reads answers at least
+ * its root class.
  */
 fun usableAnswer(symbols: List<DocumentSymbol>?): List<DocumentSymbol>? = symbols?.takeIf { answer -> answer.isNotEmpty() }
 
