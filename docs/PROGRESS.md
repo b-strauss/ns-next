@@ -4271,13 +4271,21 @@ The structure view, breadcrumbs and sticky lines
   mark over its kind's icon, as Java marks a static member; the icon the
   plugin gave a side's symbol kind is gone with the sides.
 - `6bd452e3` -- each element of the plugin's structure view has a base
-  icon and a hover text: the root class the module icon (`Root class`), a
+  icon and a hover text: the root class `Root class`, a
   nested class the class icon (`Public class`), a factory the function icon
   (`Factory method`), a slot with a getter only or a temporary declared
   with `=` the constant icon, a slot with a setter or any other temporary
   the variable icon, a method `Protected method` or, on the class side,
   `Public class method`. The server sends an immutable temporary as
   `Constant`, a mutable one as `Variable`.
+- `e87f9bc2` -- the root class has an icon of its own, a blue `N`, and a
+  nested value class an orange `V`, drawn as the platform's new-UI node
+  icons, with hovers `Root class`, `Root value class` and `Public value
+  class`; the server adds `value` to a value class's `detail`. For the root
+  the answer is exact, the root rule's (`ns_runtime::root_class_is_value`,
+  which `load_root_class` now builds from too); for a nested class it
+  follows the resolver's binding of each clause's receiver, an
+  approximation.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion

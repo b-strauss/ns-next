@@ -352,10 +352,31 @@ A class is a `Class`, a factory a `Constructor` and a method on either side a
 slot with a getter only.
 
 **`detail`** is the effective access word, then ` class` for a class-side
-method (`public class`, `protected class`) and ` lazy` for a lazy slot
-(`protected lazy`); a temporary has none of them, so no `detail`. LSP has no
-field or kind for a static member, and `detail` is the one a client already
-reads for the access, so `class` goes there.
+method (`public class`, `protected class`), ` value` for a value class
+(`public value`) and ` lazy` for a lazy slot (`protected lazy`); a temporary
+has none of them, so no `detail`. LSP has no field or kind for a static
+member or a value class, and `detail` is the one a client already reads for
+the access, so `class` and `value` go there.
+
+A value class is one whose "class inherits from class `Value`" (§3.1.1).
+For the **root class** the answer is exact: the root rule leaves a root two
+ways to reach `Value`, built over it (`Value new`) or with it applied over
+`Object` (`Object <: Value`), and `ns_runtime::root_class_is_value` -- read
+from the same clauses `resolver::root_clause_defect` checks and
+`interpreter::instantiate` builds the root from -- answers it; a root with a
+defect is never a value class. For a **nested class** it is an
+approximation: its clauses are expressions evaluated in the enclosing
+object at run time (§6.1; `interpreter/value_class.rs`), which the editor
+cannot run. The server follows the resolver's binding of each clause's
+receiver (`LexicalSend { depth }`, as the semantic tokens do): a receiver
+bound to a nested class declared in this module makes the class a value
+class when that class is one -- found before or after it, in any enclosing
+class, a cycle of clauses answering no -- or when that class is named
+`Value`, as `Kernel.ns` declares the class itself. Any other receiver -- a
+slot, a method, a name only inherited, a `super` clause -- counts when it
+is named `Value`: the one case decided by the name alone. So a class over a
+value class of another module, or over a slot named `Value` holding
+something else, is misread.
 The access is what the member declares, else protected (§6.3.1: "If no access
 modifier is declared, the default is protected"); the root class is public
 (§6.3.1: the access level of a top-level class is always public); a factory is
@@ -396,8 +417,9 @@ shows what the element is:
 
 | Element | Server sends | Base icon | Hover |
 |---|---|---|---|
-| root class (the answer's top-level symbol) | `Class` | `AllIcons.Nodes.JavaModule` | `Root class` |
+| root class (the answer's top-level symbol) | `Class` | `NewspeakIcons.ROOT_CLASS` | `Root class`, or `Root value class` with `value` in `detail` |
 | nested class | `Class` | `AllIcons.Nodes.Class` | `<Access> class` (`Public class`) |
+| nested value class | `Class`, `value` in `detail` | `NewspeakIcons.VALUE_CLASS` | `<Access> value class` |
 | factory | `Constructor` | `AllIcons.Nodes.Function` | `Factory method` |
 | slot with a getter only (`=`) | `Constant` with an access | `AllIcons.Nodes.Constant` | `<Access> constant` |
 | slot with a getter and a setter (`::=`, bare) | `Property` | `AllIcons.Nodes.Variable` | `<Access> variable` |
@@ -410,8 +432,13 @@ The icons say what the program can do with an element rather than LSP's
 names for the kinds: a slot is reached only through its accessors, so one
 with a getter alone is a constant to every client of it and one with a
 setter too is a variable, as a temporary declared with `=` or without one
-is. The root class is the module's one top-level class, shown as the module
-it is; a nested class is a class.
+is. The root class is the module's one top-level class and has an icon of
+its own, a blue `N` in a rounded square, and a nested value class an orange
+`V` in one; both are drawn as the platform's new-UI node icons are (the
+shape filled with a light tint of the colour and stroked with it, the letter
+in it), in the colours of its class icon and its constant icon, with
+`_dark` variants (`icons/nodes/`, loaded by `NewspeakIcons`). Any other
+class is a class.
 
 The access icon is `C_public`, `C_protected` or `C_private` for the first
 word of `detail` -- the root class shows `C_public`, the access §6.3.1 gives
@@ -439,7 +466,7 @@ that carries no tooltip, so where the IDE uses that popup it shows no hover.
 `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives each kind
 the same base icon for the breadcrumbs and sticky lines as for the tree,
 every kind named rather than left to the platform's defaults; it sees the
-kind alone, so there a root class shows the class icon and a temporary
+kind alone, so there a root class and a value class show the class icon and a temporary
 declared with `=` the constant icon either way. A pick moves the caret to the start of the
 symbol's `selectionRange`, in the document's UTF-16 columns; the view selects
 the innermost symbol whose range holds the caret.
@@ -511,7 +538,11 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   keeping the symbols after it; an empty file answering an unnamed class;
   every selection inside its range, also over every module of the corpus and
   every cut of one (`every_symbol_selection_lies_inside_its_range`); a
-  symbol's UTF-16 encoding on CRLF lines; a slot's kind and `lazy`; a
+  symbol's UTF-16 encoding on CRLF lines; a slot's kind and `lazy`; a root
+  class's `value` exactly as the root rule builds it, and a nested class's
+  through the class its clause binds to -- a later sibling, an enclosing
+  class's member, a class named `Value`, a `Value` slot, a cycle -- and a
+  class reaching `Value` nowhere; a
   temporary's kind, `Constant` when declared with `=`; and a
   member's effective access;
 - semantic tokens — a small module per category (parameter, local, slot with
@@ -769,7 +800,8 @@ The server's own tests are described under its section, above ("Testing").
 - the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
   per kind, every kind the server sends named), `NewspeakStructureElementTest` (a row's name, `lazy`, access icon, and
   the base icon and hover of each of the nine elements in "The rows", and
-  `class` read together with the access word and `lazy`) and
+  `class` read together with the access word and `lazy`, the root, root
+  value and nested value classes' icons and hovers) and
   `NewspeakStructureViewModelTest` (no answer and an empty answer make the
   model ask again, an answer with symbols is shown); and on
   `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a Newspeak file
@@ -777,7 +809,8 @@ The server's own tests are described under its section, above ("Testing").
   innermost symbol around it, a member with an access shows the kind's
   and the access icon in one row, a class-side method shows its kind's
   icon layered with the static mark, then its access icon, in one row, and
-  the root class's row holds the module and public icons and its hover as
+  the plugin's two node icons load at 16 by 16, and
+  the root class's row holds the root-class and public icons and its hover as
   the `PresentationData`'s tooltip -- all under the test framework's `IconManager`, which answers a row of icons
   where the IDE's answers a `LayeredIcon`, both a `CompositeIcon` of the same
   icons.
