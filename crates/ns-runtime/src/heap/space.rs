@@ -51,7 +51,17 @@ pub(in crate::heap) fn is_young(offset: NonZeroU64) -> bool {
 /// The regions that hold objects, as a caller names them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(in crate::heap) enum RegionName {
-    /// The survivor space holding the last scavenge's survivors.
+    /// The survivor space holding the last scavenge's survivors. A release
+    /// build reaches it through `occupied` and `future_survivor`, never by
+    /// name: only the move stress mode, which places each region's objects
+    /// itself, and the tests name it.
+    #[cfg_attr(
+        not(any(debug_assertions, test)),
+        expect(
+            dead_code,
+            reason = "named only by the debug-only move stress mode and the tests"
+        )
+    )]
     PastSurvivor,
     Eden,
     Old,
