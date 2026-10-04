@@ -32,6 +32,7 @@ mod header;
 pub(crate) mod mark;
 mod object;
 mod records;
+mod scavenge;
 mod space;
 mod tables;
 mod value;
@@ -40,14 +41,16 @@ use compaction::ForwardingTable;
 #[cfg(debug_assertions)]
 use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
-use header::{Format, Header, WORD_COUNT_OVERFLOW};
+use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
 use object::{
     class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, CLASS,
     FIELDS, HEADER,
 };
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
+use scavenge::Scavenger;
 use space::{
     allocation_words, block_range, object_at, overflow_word, RegionName, Space, NURSERY_END,
+    REGION_SLACK,
 };
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
@@ -499,6 +502,11 @@ pub struct Heap<'gc> {
     tenure_all_requested: bool,
     /// Eden's occupied bytes at which an allocation asks for a scavenge.
     scavenge_threshold: usize,
+    /// The age at which the next scavenge tenures a survivor, set by each
+    /// scavenge from its age table (`scavenge::tenuring_threshold`).
+    tenuring_threshold: u8,
+    /// How many scavenges have run.
+    scavenges: usize,
     /// The kernel-private `Activation` class, every frame object's class
     /// (`set_activation_class`). A handle the heap holds, so a collection
     /// marks it as a root and forwards it.
@@ -827,6 +835,8 @@ impl<'gc> Heap<'gc> {
             scavenge_requested: false,
             tenure_all_requested: false,
             scavenge_threshold: space::EDEN_BYTES - EDEN_RESERVE,
+            tenuring_threshold: MAX_AGE,
+            scavenges: 0,
             activation_class: None,
             canonical_symbols: Vec::new(),
             symbol_of: IdentityMap::default(),
@@ -4203,6 +4213,116 @@ impl<'gc> Heap<'gc> {
         old.top - old.start
     }
 
+    /// One scavenge (`scavenge.rs`): every young object the roots, the
+    /// remembered set and the copies themselves reach is copied, the rest of
+    /// the nursery is reclaimed, and every handle the heap holds is rewritten
+    /// into the next epoch. `step_roots` traces what the step state holds
+    /// beside the heap (`World::scavenge`). `tenure_all` sends every survivor
+    /// old, which empties the nursery and the remembered set.
+    ///
+    /// Sound only where nothing outside the heap and the interpreter holds a
+    /// handle: at a safepoint of the run loop, or between entries.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a later task of this road step uses it")
+    )]
+    pub(crate) fn scavenge(
+        &mut self,
+        tenure_all: bool,
+        step_roots: impl FnOnce(&mut Scavenger<'_>),
+    ) {
+        use crate::trace::{Trace, Tracer};
+        // Committed for the worst case first, so that a promotion never meets a
+        // refused commit halfway through (`docs/design/memory.md`).
+        let [past, eden, _] = self.space.occupied();
+        let worst = self.space.region(RegionName::Old).top + past.len() + eden.len();
+        if self.space.ensure_committed(worst).is_none() {
+            out_of_memory(worst)
+        }
+        #[cfg(debug_assertions)]
+        let (heap_id, from_epoch, to_epoch) =
+            (self.heap_id, self.epoch, self.epoch.wrapping_add(1));
+        #[cfg(debug_assertions)]
+        {
+            self.epoch = to_epoch;
+        }
+        let threshold = self.tenuring_threshold;
+        let old_remembered = std::mem::take(&mut self.remembered);
+        let Heap {
+            space,
+            stack,
+            activation_class,
+            host_roots,
+            canonical_symbols,
+            symbol_of,
+            ..
+        } = self;
+        let mut scavenger = Scavenger::new(
+            space,
+            tenure_all,
+            threshold,
+            #[cfg(debug_assertions)]
+            heap_id,
+            #[cfg(debug_assertions)]
+            from_epoch,
+            #[cfg(debug_assertions)]
+            to_epoch,
+        );
+        if let Some(class) = activation_class {
+            scavenger.object(class);
+        }
+        for entry in &mut stack.entries {
+            entry.trace(&mut scavenger);
+        }
+        for word in &mut stack.values {
+            scavenger.word(word);
+        }
+        let roots = host_roots.get_mut();
+        roots.sweep();
+        for slot in &roots.slots {
+            let mut value = slot.get();
+            scavenger.value(&mut value);
+            slot.set(value);
+        }
+        step_roots(&mut scavenger);
+        // The old remembered set: each entry leaves it, and joins the new one
+        // again only if it still names a young object.
+        for holder in old_remembered {
+            let header = header_index(holder);
+            let words = scavenger.space.words_mut();
+            words[header] = Header(words[header]).with_remembered(false).0;
+            if scavenger.scan_object(header) {
+                let words = scavenger.space.words_mut();
+                words[header] = Header(words[header]).with_remembered(true).0;
+                scavenger.remembered.push(holder);
+            }
+        }
+        scavenger.drain();
+        Self::forward_weak_symbols(
+            canonical_symbols,
+            symbol_of,
+            scavenger.space,
+            #[cfg(debug_assertions)]
+            to_epoch,
+        );
+        let remembered = std::mem::take(&mut scavenger.remembered);
+        let (survived, promoted, ages) = (scavenger.survived, scavenger.promoted, scavenger.ages);
+        // Task 6 poisons `past` and `eden`, the ranges vacated, here.
+        self.remembered = remembered;
+        self.object_count = self.object_count - self.young_objects + survived;
+        self.young_objects = survived - promoted;
+        self.space.flip_survivors();
+        let survivor = self.space.future_survivor();
+        let desired = (survivor.end - survivor.base - REGION_SLACK) / 8 / 2;
+        self.tenuring_threshold = scavenge::tenuring_threshold(&ages, desired);
+        self.scavenge_requested = false;
+        self.tenure_all_requested = false;
+        self.scavenges += 1;
+        if self.old_occupied() >= self.next_collection {
+            self.request_collection();
+        }
+    }
+
     /// An allocation never collects; it asks, and the run loop's next
     /// safepoint serves the request (decided 2026-09-13). Setting
     /// `safepoint_requested` is what makes the poll take its slow path.
@@ -4685,6 +4805,46 @@ impl<'gc> Heap<'gc> {
                     self.symbol_of.remove(&object.offset.get());
                     self.canonical_symbols[index] = None;
                 }
+            }
+        }
+    }
+
+    /// The scavenge's pass over the weak symbol table, once the copying is
+    /// done: a young entry the scavenge copied names the copy, one it did
+    /// not is gone, an old one stays (`docs/design/memory.md`, "Weak
+    /// references"); `symbol_of` follows each entry. Every entry left is
+    /// rebranded into the scavenge's epoch.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a later task of this road step uses it")
+    )]
+    fn forward_weak_symbols(
+        canonical_symbols: &mut [Option<ObjectReference<'gc>>],
+        symbol_of: &mut IdentityMap<u64, Symbol>,
+        space: &Space,
+        #[cfg(debug_assertions)] to_epoch: u32,
+    ) {
+        for entry in canonical_symbols.iter_mut() {
+            let Some(object) = entry else { continue };
+            if space::is_young(object.offset) {
+                let words = space.words();
+                let header = header_index(object.offset);
+                if Header(words[header]).format() != Format::Forwarded {
+                    symbol_of.remove(&object.offset.get());
+                    *entry = None;
+                    continue;
+                }
+                let Some(moved) = Word::from_bits(words[header + CLASS]).object_offset() else {
+                    unreachable!("internal: a forwarder names an object")
+                };
+                if let Some(symbol) = symbol_of.remove(&object.offset.get()) {
+                    symbol_of.insert(moved.get(), symbol);
+                }
+                object.offset = moved;
+            }
+            #[cfg(debug_assertions)]
+            {
+                object.epoch = to_epoch;
             }
         }
     }
@@ -6971,5 +7131,373 @@ mod tests {
         }
         assert_eq!(heap.remembered.len(), REMEMBERED_SET_LIMIT + 1);
         assert!(heap.scavenge_requested && heap.tenure_all_requested);
+    }
+
+    /// Scavenges a bare heap with `roots` as the step state's roots.
+    fn scavenge_bare<'gc>(heap: &mut Heap<'gc>, tenure_all: bool, roots: &mut [&mut Value<'gc>]) {
+        use crate::trace::Tracer;
+        heap.scavenge(tenure_all, |scavenger| {
+            for root in roots.iter_mut() {
+                scavenger.value(root);
+            }
+        });
+    }
+
+    /// A class object that is its own class, allocated old, so that the
+    /// young objects of a test name an old class unless the test means
+    /// otherwise.
+    fn old_instance_class<'gc>(heap: &mut Heap<'gc>) -> ClassReference<'gc> {
+        heap.set_allocating_old(true);
+        let class = heap.allocate_self_referential(0);
+        heap.set_allocating_old(false);
+        class
+    }
+
+    /// The object a root or a field holds after a scavenge.
+    fn rooted(value: Value<'_>) -> ObjectReference<'_> {
+        let Some(object) = value.as_object() else {
+            panic!("the value no longer holds an object")
+        };
+        object
+    }
+
+    #[test]
+    fn a_scavenge_copies_what_a_root_reaches_and_reclaims_eden() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        heap.allocate_string(class, crate::CodePoints::from("dead"));
+        let mut root = Value::object(kept);
+        let before = heap.heap_statistics();
+        let young_before = heap.young_objects;
+        let kept_offset = kept.offset;
+
+        scavenge_bare(&mut heap, false, &mut [&mut root]);
+
+        let moved = rooted(root);
+        assert_ne!(moved.offset, kept_offset, "the survivor was copied");
+        assert!(
+            space::is_young(moved.offset),
+            "age 1 is below the starting threshold"
+        );
+        assert_eq!(heap.str_value(moved), Some("kept".to_string()));
+        assert_eq!(heap.header(moved).age(), 1);
+        let after = heap.heap_statistics();
+        assert_eq!(young_before, 2);
+        assert_eq!(heap.young_objects, 1);
+        assert_eq!(after.live_objects, before.live_objects - 1);
+        assert_eq!(
+            heap.space.region(RegionName::Eden).top,
+            heap.space.region(RegionName::Eden).base
+        );
+        assert_eq!(heap.scavenges, 1);
+    }
+
+    #[test]
+    fn an_object_reachable_only_through_the_remembered_set_survives_until_it_is_tenured() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let holder = old_instance(&mut heap, class);
+        let string = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        assert!(heap.instance_set_field(holder, 0, Value::object(string)));
+        let mut holder_root = Value::object(holder);
+        let mut tenured_at = None;
+        for scavenge in 1..=16 {
+            scavenge_bare(&mut heap, false, &mut [&mut holder_root]);
+            let holder = rooted(holder_root);
+            let string = rooted(heap.instance_field(holder, 0).unwrap_or_else(Value::nil));
+            assert_eq!(heap.str_value(string), Some("kept".to_string()));
+            if space::is_young(string.offset) {
+                assert!(tenured_at.is_none(), "a tenured object stays old");
+                assert!(heap.header(holder).remembered());
+                assert_eq!(heap.remembered, vec![holder.offset]);
+            } else {
+                tenured_at.get_or_insert(scavenge);
+                assert!(!heap.header(holder).remembered());
+                assert!(heap.remembered.is_empty());
+            }
+        }
+        assert_eq!(
+            tenured_at,
+            Some(16),
+            "age 15 reaches the starting threshold at the sixteenth scavenge"
+        );
+    }
+
+    #[test]
+    fn a_promoted_object_naming_a_survivor_is_remembered_by_the_scavenge_that_promoted_it() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let array = heap.allocate_array(class, &[Value::nil()]);
+        let mut root = Value::object(array);
+        scavenge_bare(&mut heap, false, &mut [&mut root]);
+        let array = rooted(root);
+        assert_eq!(heap.header(array).age(), 1);
+        let class = heap.object_class(array);
+        let string = heap.allocate_string(class, crate::CodePoints::from("survivor"));
+        assert!(heap.array_set_element(array, 0, Value::object(string)));
+        assert!(
+            heap.remembered.is_empty(),
+            "a young holder is never remembered"
+        );
+
+        heap.tenuring_threshold = 1;
+        scavenge_bare(&mut heap, false, &mut [&mut root]);
+        let array = rooted(root);
+        assert!(!space::is_young(array.offset), "age 1 reaches threshold 1");
+        let string = rooted(heap.array_element(array, 0).unwrap_or_else(Value::nil));
+        assert!(space::is_young(string.offset), "age 0 is below it");
+        assert!(heap.header(array).remembered());
+        assert_eq!(heap.remembered, vec![array.offset]);
+
+        scavenge_bare(&mut heap, false, &mut [&mut root]);
+        let array = rooted(root);
+        let string = rooted(heap.array_element(array, 0).unwrap_or_else(Value::nil));
+        assert_eq!(heap.str_value(string), Some("survivor".to_string()));
+    }
+
+    #[test]
+    fn more_survivors_than_a_survivor_space_holds_are_promoted_and_nothing_is_lost() {
+        const COUNT: usize = 300;
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        heap.set_allocating_old(true);
+        let holder = heap.allocate_array(class, &vec![Value::nil(); COUNT]);
+        heap.set_allocating_old(false);
+        for index in 0..COUNT {
+            let mut elements = vec![Value::nil(); 512];
+            elements[0] = count_value(index);
+            let array = heap.allocate_array(class, &elements);
+            assert!(space::is_young(array.offset));
+            assert!(heap.array_set_element(holder, index, Value::object(array)));
+        }
+        let mut root = Value::object(holder);
+
+        scavenge_bare(&mut heap, false, &mut [&mut root]);
+
+        let holder = rooted(root);
+        let (mut young, mut old) = (0, 0);
+        for index in 0..COUNT {
+            let array = rooted(heap.array_element(holder, index).unwrap_or_else(Value::nil));
+            assert_eq!(
+                heap.array_element(array, 0)
+                    .and_then(|element| element.as_small_integer()),
+                count_value(index).as_small_integer()
+            );
+            assert_eq!(heap.array_element_count(array), Some(512));
+            if space::is_young(array.offset) {
+                young += 1;
+            } else {
+                old += 1;
+            }
+        }
+        assert!(young > 0 && old > 0, "{young} young, {old} old");
+        assert_eq!(heap.young_objects, young);
+        assert!(heap.header(holder).remembered());
+    }
+
+    #[test]
+    fn a_young_class_is_copied_with_its_instances() {
+        let mut heap = young_heap();
+        let class = heap.allocate_self_referential(0);
+        assert!(space::is_young(class.offset));
+        let class_offset = class.offset;
+        let instance = heap.allocate_instance(class, 1);
+        let mut root = Value::object(instance);
+
+        scavenge_bare(&mut heap, false, &mut [&mut root]);
+
+        let instance = rooted(root);
+        let moved_class = heap.object_class(instance);
+        assert_ne!(moved_class.offset, class_offset, "the class was copied");
+        assert!(space::is_young(moved_class.offset));
+        assert!(
+            heap.object_class(moved_class).same(moved_class),
+            "the copy is its own class"
+        );
+
+        let mut class_root = Value::object(moved_class);
+        scavenge_bare(&mut heap, false, &mut [&mut root, &mut class_root]);
+        let instance = rooted(root);
+        assert!(heap.object_class(instance).same(rooted(class_root)));
+    }
+
+    #[test]
+    fn a_married_frame_is_copied_and_its_entry_follows_it() {
+        let mut heap = frame_heap();
+        heap.enable_young_allocation_for_test();
+        let activation = heap.push_activation(header(), &[Value::small_integer(1)], 1);
+        let frame = heap.reify(activation);
+        let before = heap.frame_object(frame).offset;
+        assert!(space::is_young(before));
+
+        scavenge_bare(&mut heap, false, &mut []);
+
+        let Some(frame) = heap.activation_reified(activation) else {
+            panic!("the activation is still reified")
+        };
+        assert_ne!(
+            heap.frame_object(frame).offset,
+            before,
+            "the frame was copied"
+        );
+        assert_eq!(heap.frame_local(frame, 0).as_small_integer(), Some(1));
+        heap.frame_set_local(frame, 1, Value::small_integer(7));
+        assert_eq!(
+            heap.activation_local(activation, 1).as_small_integer(),
+            Some(7)
+        );
+        assert!(heap
+            .frame_activation(frame)
+            .is_some_and(|live| live.same(activation)));
+        heap.retain_registers(activation);
+        heap.pop_activation(activation);
+        assert!(heap.frame_activation(frame).is_none());
+        assert_eq!(heap.frame_local(frame, 1).as_small_integer(), Some(7));
+    }
+
+    #[test]
+    fn the_divorce_into_a_tenured_frame_keeps_its_young_registers() {
+        let mut heap = frame_heap();
+        heap.enable_young_allocation_for_test();
+        let activation = heap.push_activation(header(), &[], 1);
+        heap.reify(activation);
+
+        scavenge_bare(&mut heap, true, &mut []);
+
+        let Some(mut frame) = heap.activation_reified(activation) else {
+            panic!("the activation is still reified")
+        };
+        assert!(!space::is_young(heap.frame_object(frame).offset));
+        let class = old_instance_class(&mut heap);
+        let string = heap.allocate_string(class, crate::CodePoints::from("register"));
+        assert!(space::is_young(string.offset));
+        heap.activation_set_local(activation, 0, Value::object(string));
+        heap.retain_registers(activation);
+        heap.pop_activation(activation);
+        assert!(heap.header(heap.frame_object(frame)).remembered());
+
+        heap.scavenge(false, |scavenger| {
+            use crate::trace::Tracer;
+            scavenger.frame(&mut frame);
+        });
+
+        let string = rooted(heap.frame_local(frame, 0));
+        assert!(space::is_young(string.offset));
+        assert_eq!(heap.str_value(string), Some("register".to_string()));
+    }
+
+    #[test]
+    fn a_symbol_held_only_by_young_garbage_is_pruned_and_a_kept_one_keeps_its_identity() {
+        let mut heap = young_heap();
+        heap.set_allocating_old(true);
+        let symbol_class = builtin_named_class(&mut heap, "Symbol", Some(BuiltinClass::Symbol));
+        let string_class = named_class(&mut heap, "String");
+        heap.set_allocating_old(false);
+        let kept_symbol = Symbol::intern("kept:young:symbol:");
+        let pruned_symbol = Symbol::intern("pruned:young:symbol:");
+        let mut kept = Value::object(canonical_symbol_for_test(
+            &mut heap,
+            symbol_class,
+            kept_symbol,
+        ));
+        let pruned = canonical_symbol_for_test(&mut heap, symbol_class, pruned_symbol);
+        assert!(space::is_young(pruned.offset));
+        let mut string = Value::object(
+            heap.allocate_string(string_class, crate::CodePoints::from("kept:young:symbol:")),
+        );
+        let offset_before = rooted(kept).offset;
+
+        scavenge_bare(&mut heap, false, &mut [&mut kept, &mut string]);
+
+        let object = rooted(kept);
+        assert_ne!(
+            object.offset, offset_before,
+            "the scavenge copied the symbol"
+        );
+        assert_eq!(heap.symbol_value(object), Some(kept_symbol));
+        assert!(heap
+            .canonical_symbol(kept_symbol)
+            .is_some_and(|canonical| canonical.same(object)));
+        assert_eq!(heap.canonical_symbol(pruned_symbol).map(|_| ()), None);
+        let live = heap.canonical_symbols.iter().flatten().count();
+        assert_eq!(heap.symbol_of.len(), live);
+        assert_eq!(live, 1);
+        let string = rooted(string);
+        assert_eq!(heap.symbol_value(string), None);
+        #[cfg(debug_assertions)]
+        {
+            let roots = [
+                heap.stash(Value::object(object)),
+                heap.stash(Value::object(string)),
+            ];
+            move_bare_heap(&mut heap);
+            let object = rooted(heap.fetch(&roots[0]));
+            let string = rooted(heap.fetch(&roots[1]));
+            assert_eq!(heap.symbol_value(object), Some(kept_symbol));
+            assert_eq!(heap.symbol_value(string), None);
+            assert_eq!(heap.symbol_of.len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_scavenge_that_tenures_everything_empties_the_nursery_and_the_remembered_set() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let holder = old_instance(&mut heap, class);
+        let held = heap.allocate_string(class, crate::CodePoints::from("held"));
+        assert!(heap.instance_set_field(holder, 0, Value::object(held)));
+        let survivor = heap.allocate_string(class, crate::CodePoints::from("survivor"));
+        let mut survivor_root = Value::object(survivor);
+        let mut holder_root = Value::object(holder);
+        // One scavenge first, so that the survivor space holds something too.
+        scavenge_bare(
+            &mut heap,
+            false,
+            &mut [&mut survivor_root, &mut holder_root],
+        );
+        let class = heap.object_class(rooted(survivor_root));
+        let fresh = heap.allocate_string(class, crate::CodePoints::from("fresh"));
+        let mut fresh_root = Value::object(fresh);
+        assert!(
+            heap.space.region(RegionName::PastSurvivor).top
+                > heap.space.region(RegionName::PastSurvivor).start
+        );
+        assert!(!heap.remembered.is_empty());
+
+        scavenge_bare(
+            &mut heap,
+            true,
+            &mut [&mut survivor_root, &mut fresh_root, &mut holder_root],
+        );
+
+        assert_eq!(heap.young_objects, 0);
+        let past = heap.space.region(RegionName::PastSurvivor);
+        assert_eq!(past.top, past.start);
+        let eden = heap.space.region(RegionName::Eden);
+        assert_eq!(eden.top, eden.start);
+        assert!(heap.remembered.is_empty());
+        let holder = rooted(holder_root);
+        assert!(!heap.header(holder).remembered());
+        let held = rooted(heap.instance_field(holder, 0).unwrap_or_else(Value::nil));
+        for (object, text) in [
+            (held, "held"),
+            (rooted(survivor_root), "survivor"),
+            (rooted(fresh_root), "fresh"),
+        ] {
+            assert!(!space::is_young(object.offset));
+            assert_eq!(heap.str_value(object), Some(text.to_string()));
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "stale handle")]
+    fn a_handle_kept_across_a_scavenge_is_stale() {
+        let mut heap = young_heap();
+        let class = old_instance_class(&mut heap);
+        let kept = heap.allocate_string(class, crate::CodePoints::from("kept"));
+        scavenge_bare(&mut heap, false, &mut []);
+        let _ = heap.str_value(kept);
     }
 }

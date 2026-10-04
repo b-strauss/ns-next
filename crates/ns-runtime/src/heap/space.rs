@@ -166,10 +166,6 @@ impl Space {
     }
 
     /// The survivor space a scavenge copies into; empty outside one.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(in crate::heap) fn future_survivor(&self) -> Region {
         self.survivors[1 - self.past]
     }
@@ -218,10 +214,6 @@ impl Space {
         self.eden.bump(words, limit)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(in crate::heap) fn allocate_survivor(&mut self, words: usize) -> Option<usize> {
         let future = 1 - self.past;
         let limit = self.survivors[future].end - REGION_SLACK;
@@ -279,6 +271,19 @@ impl Space {
         debug_assert!(name != RegionName::Old || top <= self.committed);
         region.start = start;
         region.top = top;
+    }
+
+    /// After a scavenge: the survivor space just filled holds the survivors,
+    /// eden and the one they came from are empty.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "a later task of this road step uses it")
+    )]
+    pub(in crate::heap) fn flip_survivors(&mut self) {
+        let past = self.past;
+        self.survivors[past] = Region::empty(self.survivors[past].base, self.survivors[past].end);
+        self.past = 1 - past;
+        self.eden = Region::empty(self.eden.base, self.eden.end);
     }
 
     /// Gives back the committed memory above `keep`, rounded up to a page
@@ -358,6 +363,19 @@ pub(in crate::heap) fn block_range(words: &[u64], header: usize) -> std::ops::Ra
         count => count,
     };
     header..header + 1 + count
+}
+
+/// The words of the allocation whose header is word `header`: from its
+/// overflow word, when it has one, to its last field. What a scavenge
+/// copies.
+pub(in crate::heap) fn allocation_range(words: &[u64], header: usize) -> Range<usize> {
+    let block = block_range(words, header);
+    let first = if Header(words[header]).word_count() == WORD_COUNT_OVERFLOW {
+        header - 1
+    } else {
+        header
+    };
+    first..block.end
 }
 
 #[cfg(test)]

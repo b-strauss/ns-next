@@ -21,10 +21,6 @@ const AGE_MASK: u64 = 0b1111;
 const REMEMBERED_BIT: u64 = 1 << 31;
 /// The widest age the header's four bits hold: an object this old is
 /// tenured at its next scavenge whatever the threshold says.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "a later task of this road step uses it")
-)]
 pub(super) const MAX_AGE: u8 = 15;
 const NEGATIVE_BIT: u64 = 1 << 32;
 const MARK_BIT: u64 = 1 << 33;
@@ -147,10 +143,6 @@ impl Header {
         ((self.0 >> AGE_SHIFT) & AGE_MASK) as u8
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(super) fn with_age(self, age: u8) -> Header {
         debug_assert!(age <= MAX_AGE);
         Header((self.0 & !(AGE_MASK << AGE_SHIFT)) | ((u64::from(age) & AGE_MASK) << AGE_SHIFT))
@@ -173,10 +165,6 @@ impl Header {
     /// The header with `format`'s code and no unused units: what a scavenge
     /// leaves at a copied object's old place, the forwarded format, keeping
     /// the word count so the region stays walkable.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later task of this road step uses it")
-    )]
     pub(super) fn with_format(self, format: Format) -> Header {
         debug_assert_eq!(format.unused_limit(), 0);
         Header((self.0 & !(FORMAT_MASK << FORMAT_SHIFT)) | ((format as u64) << FORMAT_SHIFT))
