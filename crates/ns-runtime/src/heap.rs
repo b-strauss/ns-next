@@ -38,7 +38,7 @@ mod value;
 mod world;
 use compaction::ForwardingTable;
 #[cfg(debug_assertions)]
-use compaction::Shift;
+use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, WORD_COUNT_OVERFLOW};
 use object::{
@@ -46,7 +46,9 @@ use object::{
     FIELDS, HEADER,
 };
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
-use space::{allocation_words, block_range, object_at, overflow_word, Space, FIRST_OBJECT};
+use space::{
+    allocation_words, block_range, object_at, overflow_word, RegionName, Space, NURSERY_END,
+};
 pub use tables::{ApplicationIndex, CodeId, MixinId};
 pub(crate) use tables::{CodeEntry, Tables};
 pub(crate) use value::is_small_float_bits;
@@ -559,7 +561,7 @@ impl std::fmt::Debug for Heap<'_> {
             .field("next_identity_hash", &self.next_identity_hash)
             .field("activations", &self.stack.entries.len())
             .field("objects", &self.object_count)
-            .field("occupied bytes", &(self.space.top() - self.space.start()))
+            .field("occupied bytes", &self.space.occupied_bytes())
             .field("canonical_symbols.len()", &self.canonical_symbols.len())
             .field("host roots", host_roots)
             .finish()
@@ -1339,7 +1341,7 @@ impl<'gc> Heap<'gc> {
     ) -> (ObjectReference<'gc>, Range<usize>) {
         let word_count = field_count.saturating_add(1);
         let allocation = allocation_words(word_count);
-        let Some(start) = self.space.allocate(allocation) else {
+        let Some(start) = self.space.allocate_old(allocation) else {
             out_of_memory(allocation.saturating_mul(8))
         };
         let words = self.space.words_mut();
@@ -1355,7 +1357,7 @@ impl<'gc> Heap<'gc> {
         let fields = header + FIELDS..header + FIELDS + field_count;
         words[fields.clone()].fill(Word::NIL.bits());
         self.object_count += 1;
-        if self.space.top() - self.space.start() >= self.next_collection {
+        if self.space.occupied_bytes() >= self.next_collection {
             self.request_collection();
         }
         match NonZeroU64::new(8 * header as u64) {
@@ -3065,16 +3067,18 @@ impl<'gc> Heap<'gc> {
             return false;
         }
         let dispatch_id = self.header_dispatch_id(class);
-        let top = self.space.top() / 8;
-        let mut position = self.space.start() / 8;
+        let ranges = self.space.occupied();
         let words = self.space.words_mut();
-        while position < top {
-            let (header, next) = object_at(words, position);
-            let class_word = Word::from_bits(words[header + CLASS]);
-            if class_word.object_offset() == Some(class.offset) {
-                words[header] = Header(words[header]).with_guard(dispatch_id).0;
+        for range in ranges {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                let class_word = Word::from_bits(words[header + CLASS]);
+                if class_word.object_offset() == Some(class.offset) {
+                    words[header] = Header(words[header]).with_guard(dispatch_id).0;
+                }
+                position = next;
             }
-            position = next;
         }
         true
     }
@@ -4058,8 +4062,7 @@ impl<'gc> Heap<'gc> {
     /// (`collection_limit`).
     pub(crate) fn reset_collection_limits(&mut self) {
         self.collection_requested = false;
-        self.next_collection =
-            collection_limit(self.collection_floor, self.space.top() - self.space.start());
+        self.next_collection = collection_limit(self.collection_floor, self.space.occupied_bytes());
     }
 
     /// Sets the floor and the next limit to `floor` bytes.
@@ -4111,33 +4114,48 @@ impl<'gc> Heap<'gc> {
     fn move_everything(&mut self) -> Forwarder<Shift> {
         let from_epoch = self.epoch;
         let to_epoch = from_epoch.wrapping_add(1);
-        let source = self.space.start();
-        let length = self.space.top() - source;
-        // Varied by the epoch, so that moves do not all shift alike.
-        let destination = if source == FIRST_OBJECT {
-            FIRST_OBJECT + 8 * (2 + to_epoch as usize % 31)
-        } else {
-            FIRST_OBJECT
-        };
-        if self.space.ensure_committed(destination + length).is_none() {
-            out_of_memory(destination + length)
+        let mut regions = Vec::with_capacity(3);
+        for name in [RegionName::PastSurvivor, RegionName::Eden, RegionName::Old] {
+            let region = self.space.region(name);
+            let length = region.top - region.start;
+            // Varied by the epoch, so that moves do not all shift alike.
+            let destination = if region.start == region.base {
+                region.base + 8 * (2 + to_epoch as usize % 31)
+            } else {
+                region.base
+            };
+            if name == RegionName::Old
+                && self.space.ensure_committed(destination + length).is_none()
+            {
+                out_of_memory(destination + length)
+            }
+            // Both ranges lie below the region's top while the objects are
+            // copied.
+            self.space.set_region_extent(
+                name,
+                region.start,
+                region.start.max(destination) + length,
+            );
+            self.space.words_mut().copy_within(
+                region.start / 8..(region.start + length) / 8,
+                destination / 8,
+            );
+            self.space
+                .set_region_extent(name, destination, destination + length);
+            regions.push(ShiftedRegion {
+                source: region.start as u64..region.top as u64,
+                destination: destination as u64,
+            });
         }
-        // Both ranges lie below the top while the objects are copied.
-        self.space
-            .set_extent(source, source.max(destination) + length);
-        self.space
-            .words_mut()
-            .copy_within(source / 8..(source + length) / 8, destination / 8);
-        self.space.set_extent(destination, destination + length);
+        let Ok(regions) = <[ShiftedRegion; 3]>::try_from(regions) else {
+            unreachable!("internal: the space has three regions that hold objects")
+        };
         self.epoch = to_epoch;
         let mut forwarder = Forwarder {
             heap_id: self.heap_id,
             from_epoch,
             to_epoch,
-            objects: Shift {
-                source: source as u64,
-                destination: destination as u64,
-            },
+            objects: Shift { regions },
         };
         self.forward_everything(&mut forwarder);
         forwarder
@@ -4162,27 +4180,28 @@ impl<'gc> Heap<'gc> {
         {
             self.epoch = to_epoch;
         }
-        let start = self.space.start() / 8;
-        let top = self.space.top() / 8;
-        let mut table = ForwardingTable::with_words(top);
+        let old = self.space.region(RegionName::Old);
+        let mut table = ForwardingTable::with_words(old.top / 8, NURSERY_END / 8);
         let mut live_objects = 0;
         let words = self.space.words();
-        let mut position = start;
-        while position < top {
-            let (header, next) = object_at(words, position);
-            if Header(words[header]).marked() {
-                table.set_live(position..next);
-                live_objects += 1;
+        for range in self.space.occupied() {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                if Header(words[header]).marked() {
+                    table.set_live(position..next);
+                    live_objects += 1;
+                }
+                position = next;
             }
-            position = next;
         }
-        let live_words = table.summarize();
-        // Slide: a survivor's destination is never above where it lies, so
-        // copying it down never overwrites an allocation the walk has yet to
-        // read.
+        let live_words = table.summarize(NURSERY_END / 8 / 64);
+        // Slide the old space: a survivor's destination is never above where
+        // it lies, so copying it down never overwrites an allocation the walk
+        // has yet to read.
         let words = self.space.words_mut();
-        let mut position = start;
-        while position < top {
+        let mut position = old.start / 8;
+        while position < old.top / 8 {
             let (header, next) = object_at(words, position);
             if Header(words[header]).marked() {
                 let destination = table.destination(position);
@@ -4193,7 +4212,7 @@ impl<'gc> Heap<'gc> {
             position = next;
         }
         self.space
-            .set_extent(FIRST_OBJECT, FIRST_OBJECT + 8 * live_words);
+            .set_region_extent(RegionName::Old, NURSERY_END, NURSERY_END + 8 * live_words);
         self.object_count = live_objects;
         // With hysteresis, so that a heap which oscillates does not decommit
         // and commit again at every collection: give back only past twice
@@ -4203,8 +4222,8 @@ impl<'gc> Heap<'gc> {
         // back to the floor at every cycle (`docs/design/memory.md`, "The
         // trigger and the growth policy").
         let limit = collection_limit(self.collection_floor, 8 * live_words);
-        if self.space.committed() > FIRST_OBJECT + limit.saturating_mul(2) {
-            self.space.release_above(FIRST_OBJECT + limit);
+        if self.space.committed() > NURSERY_END + limit.saturating_mul(2) {
+            self.space.release_above(NURSERY_END + limit);
         }
         let mut forwarder = Forwarder {
             #[cfg(debug_assertions)]
@@ -4234,14 +4253,16 @@ impl<'gc> Heap<'gc> {
         // A married frame's registers are its entry's, traced below with
         // the stack; its married field is a stack index, and no stack entry
         // moves. Walks the objects where they lie now, after the move.
-        let top = self.space.top() / 8;
-        let mut position = self.space.start() / 8;
+        let ranges = self.space.occupied();
         let words = self.space.words_mut();
-        while position < top {
-            let (header, next) = object_at(words, position);
-            let range = block_range(words, header);
-            trace_block(&mut words[range], forwarder);
-            position = next;
+        for range in ranges {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                let block = block_range(words, header);
+                trace_block(&mut words[block], forwarder);
+                position = next;
+            }
         }
         if let Some(class) = &mut self.activation_class {
             forwarder.object(class);
@@ -4286,7 +4307,7 @@ impl<'gc> Heap<'gc> {
     pub(crate) fn heap_statistics(&self) -> crate::HeapStatistics {
         crate::HeapStatistics {
             live_objects: self.object_count,
-            occupied_bytes: self.space.top() - self.space.start(),
+            occupied_bytes: self.space.occupied_bytes(),
             committed_bytes: self.space.committed(),
         }
     }
@@ -4343,34 +4364,36 @@ impl<'gc> Heap<'gc> {
         // Words, not values: the replacement copies a stored word into
         // another field, so it needs no check and no epoch.
         let mut values: std::collections::HashMap<u64, Word> = std::collections::HashMap::new();
-        let top = self.space.top() / 8;
-        let mut position = self.space.start() / 8;
-        while position < top {
-            let words = self.space.words();
-            let (header, next) = object_at(words, position);
-            position = next;
-            let block = &words[block_range(words, header)];
-            if !self.block_class(block).same(future_class)
-                || Header(block[HEADER]).format() != Format::FixedPointers
-            {
-                continue;
-            }
-            let fields = &block[FIELDS..];
-            if let (Some(state), Some(value)) = (
-                fields
-                    .get(state_index)
-                    .and_then(|state| self.load(Word::from_bits(*state)).as_small_integer()),
-                fields.get(computation_index).copied().map(Word::from_bits),
-            ) {
-                // A "resolved" future whose value is a future is one crafted
-                // code corrupted (`FutureState::Malformed`): it is left in
-                // place, for a forcing to refuse.
-                let value_is_a_future = self
-                    .load(value)
-                    .as_object()
-                    .is_some_and(|target| self.object_class(target).same(future_class));
-                if state == resolved && !value_is_a_future {
-                    values.insert(8 * header as u64, value);
+        let ranges = self.space.occupied();
+        for range in &ranges {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let words = self.space.words();
+                let (header, next) = object_at(words, position);
+                position = next;
+                let block = &words[block_range(words, header)];
+                if !self.block_class(block).same(future_class)
+                    || Header(block[HEADER]).format() != Format::FixedPointers
+                {
+                    continue;
+                }
+                let fields = &block[FIELDS..];
+                if let (Some(state), Some(value)) = (
+                    fields
+                        .get(state_index)
+                        .and_then(|state| self.load(Word::from_bits(*state)).as_small_integer()),
+                    fields.get(computation_index).copied().map(Word::from_bits),
+                ) {
+                    // A "resolved" future whose value is a future is one
+                    // crafted code corrupted (`FutureState::Malformed`): it
+                    // is left in place, for a forcing to refuse.
+                    let value_is_a_future = self
+                        .load(value)
+                        .as_object()
+                        .is_some_and(|target| self.object_class(target).same(future_class));
+                    if state == resolved && !value_is_a_future {
+                        values.insert(8 * header as u64, value);
+                    }
                 }
             }
         }
@@ -4389,35 +4412,36 @@ impl<'gc> Heap<'gc> {
                 }
             }
         };
-        let top = self.space.top() / 8;
-        let mut position = self.space.start() / 8;
         let space_words = self.space.words_mut();
-        while position < top {
-            let (header, next) = object_at(space_words, position);
-            position = next;
-            let range = block_range(space_words, header);
-            let block = &mut space_words[range];
-            // The class word names a class object, never a future.
-            let format = Header(block[HEADER]).format();
-            let words = &mut block[FIELDS..];
-            // A number's digits are no `Value`s, and a reified frame's
-            // fields and registers are exempt, as the stack's are. A
-            // closure's code id, captured frame and feedback base are
-            // exempt too: only its copied values can hold one. So is every
-            // field of a class object: its enclosing object, declaring
-            // class, superclass and metaclass link are objects no future
-            // can stand in for, since a message to a future is answered by
-            // its value, and its value-class refusal is the runtime's own
-            // record.
-            let first_rewritable = match format {
-                Format::FixedPointers | Format::IndexablePointers => 0,
-                Format::Closure => closure_field::COUNT.min(words.len()),
-                _ => words.len(),
-            };
-            for field in &mut words[first_rewritable..] {
-                let mut word = [Word::from_bits(*field)];
-                replace(&mut word);
-                *field = word[0].bits();
+        for range in ranges {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(space_words, position);
+                position = next;
+                let block_words = block_range(space_words, header);
+                let block = &mut space_words[block_words];
+                // The class word names a class object, never a future.
+                let format = Header(block[HEADER]).format();
+                let words = &mut block[FIELDS..];
+                // A number's digits are no `Value`s, and a reified frame's
+                // fields and registers are exempt, as the stack's are. A
+                // closure's code id, captured frame and feedback base are
+                // exempt too: only its copied values can hold one. So is
+                // every field of a class object: its enclosing object,
+                // declaring class, superclass and metaclass link are objects
+                // no future can stand in for, since a message to a future is
+                // answered by its value, and its value-class refusal is the
+                // runtime's own record.
+                let first_rewritable = match format {
+                    Format::FixedPointers | Format::IndexablePointers => 0,
+                    Format::Closure => closure_field::COUNT.min(words.len()),
+                    _ => words.len(),
+                };
+                for field in &mut words[first_rewritable..] {
+                    let mut word = [Word::from_bits(*field)];
+                    replace(&mut word);
+                    *field = word[0].bits();
+                }
             }
         }
         replaced
@@ -4441,14 +4465,16 @@ impl<'gc> Heap<'gc> {
         #[cfg(debug_assertions)]
         {
             let words = self.space.words();
-            let mut position = self.space.start() / 8;
-            while position < self.space.top() / 8 {
-                let (header, next) = object_at(words, position);
-                assert!(
-                    !Header(words[header]).marked(),
-                    "internal: a mark bit survived the last collection"
-                );
-                position = next;
+            for range in self.space.occupied() {
+                let mut position = range.start / 8;
+                while position < range.end / 8 {
+                    let (header, next) = object_at(words, position);
+                    assert!(
+                        !Header(words[header]).marked(),
+                        "internal: a mark bit survived the last collection"
+                    );
+                    position = next;
+                }
             }
         }
         let mut marker = mark::Marker::new();
@@ -4528,13 +4554,15 @@ impl<'gc> Heap<'gc> {
     /// compacting and then goes on to collect.
     #[cfg(test)]
     fn clear_marks_for_test(&mut self) {
-        let top = self.space.top() / 8;
-        let mut position = self.space.start() / 8;
+        let ranges = self.space.occupied();
         let words = self.space.words_mut();
-        while position < top {
-            let (header, next) = object_at(words, position);
-            words[header] = Header(words[header]).with_marked(false).0;
-            position = next;
+        for range in ranges {
+            let mut position = range.start / 8;
+            while position < range.end / 8 {
+                let (header, next) = object_at(words, position);
+                words[header] = Header(words[header]).with_marked(false).0;
+                position = next;
+            }
         }
     }
 
@@ -5151,7 +5179,7 @@ mod tests {
         {
             let before = offset_of(&heap, &filler_root);
             assert!(
-                shaped_offset < heap.space.top(),
+                shaped_offset < heap.space.region(RegionName::Old).top,
                 "the digit still names an offset inside the space"
             );
             move_bare_heap(&mut heap);
@@ -6405,13 +6433,13 @@ mod tests {
     }
 
     #[test]
-    fn objects_lie_end_to_end_from_the_first_offset() {
+    fn objects_lie_end_to_end_from_the_old_space_s_first_offset() {
         let mut heap = Heap::new();
         let class = heap.allocate_self_referential(0);
         let first = heap.allocate_instance(class, 2);
         let second = heap.allocate_instance(class, 0);
         let key = |object| heap.object_identity_key(object);
-        assert_eq!(key(class), space::FIRST_OBJECT);
+        assert_eq!(key(class), space::NURSERY_END);
         assert_eq!(key(first), key(class) + 8 * 2);
         assert_eq!(key(second), key(first) + 8 * 4);
         assert_eq!(heap.heap_statistics().occupied_bytes, 8 * (2 + 4 + 2));
@@ -6513,7 +6541,7 @@ mod tests {
         heap.collect_for_test(&mut [kept_root, last_root]);
         let kept = roots[0].as_object().expect("kept");
         let last = roots[1].as_object().expect("kept");
-        assert_eq!(heap.object_identity_key(kept), space::FIRST_OBJECT + 8 * 2);
+        assert_eq!(heap.object_identity_key(kept), space::NURSERY_END + 8 * 2);
         assert_eq!(
             heap.object_identity_key(last),
             heap.object_identity_key(kept) + 8 * 4
@@ -6591,6 +6619,6 @@ mod tests {
         heap.collect_for_test(&mut [&mut root]);
         let after = heap.heap_statistics();
         assert!(after.committed_bytes < grown);
-        assert!(after.committed_bytes >= space::FIRST_OBJECT + heap.next_collection);
+        assert!(after.committed_bytes >= space::NURSERY_END + heap.next_collection);
     }
 }
