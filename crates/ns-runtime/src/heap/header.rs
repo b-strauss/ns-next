@@ -30,6 +30,16 @@ const WORD_COUNT_SHIFT: u32 = 56;
 /// The word count that says the count is in an overflow word.
 pub(super) const WORD_COUNT_OVERFLOW: usize = 255;
 
+/// What a debug build writes over the nursery memory a scavenge vacated:
+/// a header of the free format, which no object in the space has, so that
+/// a word left naming a reclaimed young object -- a store that missed the
+/// write barrier -- fails at its first read instead of answering whatever
+/// is allocated there next. HotSpot's `ZapUnusedHeapArea`, without its
+/// page protection, which a safe slice over the nursery rules out
+/// (decided with the user on 2026-10-04).
+#[cfg(debug_assertions)]
+pub(super) const POISON: u64 = ((Format::Free as u64) << FORMAT_SHIFT) | 0xBAD;
+
 /// What an object's words after the header hold, and so how the collector
 /// walks them and how many units the last word leaves unused.
 /// `ThirtyTwoBit` and `Bytes` take a range of codes: the low bits of the
@@ -276,6 +286,13 @@ mod tests {
     fn a_word_count_past_two_hundred_and_fifty_four_reads_as_the_overflow_mark() {
         let header = Header::new(DispatchId::NONE, Format::IndexablePointers, 0, 10_000);
         assert_eq!(header.word_count(), 255);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn the_poison_is_a_free_header_of_no_words() {
+        assert_eq!(Header(POISON).format(), Format::Free);
+        assert_eq!(Header(POISON).word_count(), 0);
     }
 
     #[test]

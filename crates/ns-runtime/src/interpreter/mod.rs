@@ -407,7 +407,14 @@ pub struct Interpreter {
     /// size too (`docs/design/memory.md`, "The gates the collector needs").
     /// Debug builds only.
     #[cfg(debug_assertions)]
-    stress_collect: Option<safepoint::StressCollections>,
+    stress_collect: Option<safepoint::StressSchedule>,
+    /// The scavenge stress mode's schedule, when it is on
+    /// (`NS_NEXT_STRESS_SCAVENGE`, or `set_stress_scavenge`): a check of the
+    /// remembered set and a scavenge at the safepoints its schedule picks,
+    /// paced like the collect stress mode since the check walks the old
+    /// space. Debug builds only.
+    #[cfg(debug_assertions)]
+    stress_scavenge: Option<safepoint::StressSchedule>,
     /// How many times the cache stress mode has invalidated the caches since
     /// it was turned on, for a test to pin that it actually ran
     /// (`cache_invalidations`). Debug builds only.
@@ -434,16 +441,15 @@ impl Interpreter {
             #[cfg(debug_assertions)]
             stress_caches: safepoint::stress_caches_from_env(),
             #[cfg(debug_assertions)]
-            stress_collect: safepoint::StressCollections::from_env(),
+            stress_collect: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_COLLECT"),
+            #[cfg(debug_assertions)]
+            stress_scavenge: safepoint::StressSchedule::from_env("NS_NEXT_STRESS_SCAVENGE"),
             #[cfg(debug_assertions)]
             cache_invalidations: 0,
         };
         #[cfg(debug_assertions)]
         {
-            let stress_enabled = interpreter.stress.is_some()
-                || interpreter.stress_caches
-                || interpreter.stress_collect.is_some();
-            interpreter.world.set_safepoint_requested(stress_enabled);
+            interpreter.hold_safepoints_for_stress();
             // A fixture run small enough that every insert contends for the
             // same group (`run_goldens.rs`); anything not twice a decimal
             // power of two is ignored rather than refused, since this reads
@@ -736,19 +742,10 @@ impl Interpreter {
 impl Interpreter {
     /// Turns the cache stress mode on or off for this interpreter, whatever
     /// `NS_NEXT_STRESS_CACHES` says. For tests. Keeps the safepoint request
-    /// set while either other stress mode is on, since any one alone must
-    /// keep every safepoint coming back to `safepoint`.
-    ///
-    /// Like `set_stress_moves`, this can drop `safepoint_requested` to
-    /// `false` while a collection is still pending, by the same
-    /// self-healing, debug-only path: the collection limits were never
-    /// reset, so the next allocation that reaches one re-requests every
-    /// flag.
+    /// set while any other stress mode is on (`hold_safepoints_for_stress`).
     pub fn set_stress_caches(&mut self, enabled: bool) {
         self.stress_caches = enabled;
-        self.world.set_safepoint_requested(
-            enabled || self.stress.is_some() || self.stress_collect.is_some(),
-        );
+        self.hold_safepoints_for_stress();
     }
 
     /// How many times the cache stress mode has invalidated the caches since

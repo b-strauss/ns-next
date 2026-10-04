@@ -196,9 +196,7 @@ impl World {
 
     /// Moves every object, every reified frame among them
     /// (`Heap::move_everything`), and forwards what the step state holds
-    /// beside the heap: the
-    /// bootstrap's builtin classes, the `platform` singleton, the VM
-    /// mirror and the kernel.
+    /// beside the heap (`StepRoots`).
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
         self.check_quiescent_state();
@@ -207,9 +205,8 @@ impl World {
         self.forward_step_state(&mut forwarder);
     }
 
-    /// Marks everything reachable: the heap's own roots, then the step state's
-    /// -- the bootstrap's builtin classes, the `platform` singleton, the VM
-    /// mirror, the kernel and the depth limit's reserve -- then the traversal.
+    /// Marks everything reachable: the heap's own roots, then the step
+    /// state's (`StepRoots`), then the traversal.
     pub(crate) fn mark_everything_reachable(&mut self) {
         use crate::trace::Trace;
         let (heap, mut roots) = split(&mut self.mutator);
@@ -233,7 +230,6 @@ impl World {
 
     /// Whether an allocation or the remembered set has asked for a
     /// scavenge since the last one (`Interpreter::safepoint`).
-    #[inline(always)]
     pub(crate) fn scavenge_requested(&self) -> bool {
         self.mutator.heap.scavenge_requested()
     }
@@ -241,6 +237,13 @@ impl World {
     /// Whether the requested scavenge must tenure every survivor.
     pub(crate) fn tenure_all_requested(&self) -> bool {
         self.mutator.heap.tenure_all_requested()
+    }
+
+    /// Asserts the remembered-set invariant (`Heap::verify_remembered_set`):
+    /// the scavenge stress mode's check before each of its scavenges.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_remembered_set(&self) {
+        self.mutator.heap.verify_remembered_set();
     }
 
     /// Sets eden's occupied bytes at which an allocation asks for a
@@ -251,9 +254,8 @@ impl World {
     }
 
     /// One collection: mark everything reachable, compact the space, and
-    /// forward what the step state holds beside the heap -- the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror and the
-    /// kernel -- exactly as a move does.
+    /// forward what the step state holds beside the heap (`StepRoots`)
+    /// exactly as a move does.
     ///
     /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
     /// `Heap`'s counters by `record_collection`. That timing call costs
@@ -291,11 +293,9 @@ impl World {
         self.mutator.heap.collector_statistics()
     }
 
-    /// Forwards what the step state holds beside the heap: the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror, the
-    /// kernel and the depth limit's reserve. Shared by `move_everything` and `collect`, which forward the
-    /// same roots after the heap has forwarded its own -- one copy so a root
-    /// added here later cannot land in one caller's walk and not the other's.
+    /// Forwards what the step state holds beside the heap (`StepRoots`).
+    /// Shared by `move_everything` and `collect`, which forward the same
+    /// roots after the heap has forwarded its own.
     fn forward_step_state<M: crate::heap::Relocation>(
         &mut self,
         forwarder: &mut crate::heap::Forwarder<M>,

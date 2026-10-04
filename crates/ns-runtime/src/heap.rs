@@ -1841,11 +1841,22 @@ impl<'gc> Heap<'gc> {
     /// accessors, private to the heap, so that every public accessor copies
     /// out (`docs/design/memory.md`, "The seam"). Ends where the header's
     /// count says, so that no accessor bounded by the block reaches the
-    /// next object.
+    /// next object. A debug build refuses a header no live object has --
+    /// the poison a scavenge leaves over the nursery it vacated, or a
+    /// forwarder -- since only a word that missed the write barrier still
+    /// names one.
     #[inline(always)]
     fn block(&self, object: ObjectReference<'gc>) -> &[u64] {
         self.check_object_origin(object);
         let words = self.space.words();
+        #[cfg(debug_assertions)]
+        {
+            let format = Header(words[header_index(object.offset)]).format();
+            assert!(
+                !matches!(format, Format::Free | Format::Forwarded),
+                "a handle names vacated nursery memory: a store missed the write barrier"
+            );
+        }
         let range = block_range(words, header_index(object.offset));
         &words[range]
     }
@@ -1855,6 +1866,14 @@ impl<'gc> Heap<'gc> {
     fn block_mut(&mut self, object: ObjectReference<'gc>) -> &mut [u64] {
         self.check_object_origin(object);
         let words = self.space.words_mut();
+        #[cfg(debug_assertions)]
+        {
+            let format = Header(words[header_index(object.offset)]).format();
+            assert!(
+                !matches!(format, Format::Free | Format::Forwarded),
+                "a handle names vacated nursery memory: a store missed the write barrier"
+            );
+        }
         let range = block_range(words, header_index(object.offset));
         &mut words[range]
     }
@@ -4205,12 +4224,60 @@ impl<'gc> Heap<'gc> {
         self.allocating_old = allocating_old;
     }
 
+    /// Whether an allocation past eden's threshold, a spent eden or the
+    /// remembered set's overflow has asked for a scavenge since the last
+    /// one (`Interpreter::safepoint`).
     pub(crate) fn scavenge_requested(&self) -> bool {
         self.scavenge_requested
     }
 
+    /// Whether the requested scavenge must tenure every survivor: the
+    /// remembered set outgrew its limit, and only emptying the nursery
+    /// empties it.
     pub(crate) fn tenure_all_requested(&self) -> bool {
         self.tenure_all_requested
+    }
+
+    /// Asserts that every old object naming a young one is remembered, and
+    /// that the remembered set and the bits agree -- what a store that missed
+    /// the write barrier breaks, found before the scavenge that would lose the
+    /// young object, as Strongtalk's `rSet::verify`
+    /// (`prior-art/strongtalk/vm/memory/rSet.cpp:275`) and HotSpot's
+    /// `VerifyBeforeGC` find it. A walk of the old space, so only the scavenge
+    /// stress mode runs it.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_remembered_set(&self) {
+        let words = self.space.words();
+        let mut remembered_bits = 0;
+        let old = self.space.region(RegionName::Old);
+        let mut position = old.start / 8;
+        while position < old.top / 8 {
+            let (header, next) = object_at(words, position);
+            let block = block_range(words, header);
+            let names_young = pointer_ranges(&words[block.clone()])
+                .into_iter()
+                .any(|range| {
+                    words[range.start + block.start..range.end + block.start]
+                        .iter()
+                        .any(|bits| {
+                            Word::from_bits(*bits)
+                                .object_offset()
+                                .is_some_and(space::is_young)
+                        })
+                });
+            let remembered = Header(words[header]).remembered();
+            assert!(
+                !names_young || remembered,
+                "internal: an old object names a young one without being remembered: a store missed the write barrier"
+            );
+            remembered_bits += usize::from(remembered);
+            position = next;
+        }
+        assert_eq!(
+            remembered_bits,
+            self.remembered.len(),
+            "internal: the remembered set and the remembered bits disagree"
+        );
     }
 
     /// Sets eden's occupied bytes at which an allocation asks for a
@@ -4310,7 +4377,18 @@ impl<'gc> Heap<'gc> {
         Self::forward_weak_symbols(canonical_symbols, symbol_of, &scavenger);
         let remembered = std::mem::take(&mut scavenger.remembered);
         let (survived, promoted, ages) = (scavenger.survived, scavenger.promoted, scavenger.ages);
-        // Task 6 poisons `past` and `eden`, the ranges vacated, here.
+        // Poisons every word the nursery's objects held before the scavenge
+        // (the survivors now live in the future survivor space or the old
+        // one), so that a word that missed the barrier reads poison rather
+        // than the next allocation. Only the occupied part, so that a
+        // scavenge at every safepoint stays cheap.
+        #[cfg(debug_assertions)]
+        {
+            let words = self.space.words_mut();
+            for range in [past, eden] {
+                words[range.start / 8..range.end / 8].fill(header::POISON);
+            }
+        }
         self.remembered = remembered;
         self.object_count = self.object_count - self.young_objects + survived;
         self.young_objects = survived - promoted;
@@ -7223,6 +7301,44 @@ mod tests {
         let class = heap.allocate_self_referential(0);
         heap.set_allocating_old(false);
         class
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "missed the write barrier")]
+    fn the_verification_finds_an_old_object_naming_a_young_one_unremembered() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let young = heap.allocate_instance(class, 0);
+        let holder = old_instance(&mut heap, class);
+        heap.instance_set_field(holder, 0, Value::object(young));
+        // What a store that bypassed the barrier would leave behind.
+        heap.remembered.clear();
+        heap.set_header(holder, heap.header(holder).with_remembered(false));
+        heap.verify_remembered_set();
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "vacated nursery")]
+    fn a_word_left_naming_a_reclaimed_young_object_reads_the_poison() {
+        let mut heap = Heap::new();
+        let class = old_instance_class(&mut heap);
+        let young = heap.allocate_instance(class, 0);
+        let holder = old_instance(&mut heap, class);
+        // The barrier is bypassed by writing the word as a missed store would.
+        let word = heap.store(Value::object(young));
+        heap.fields_mut(holder)[0] = word.bits();
+        heap.remembered.clear();
+        heap.set_header(holder, heap.header(holder).with_remembered(false));
+        // The holder is old, so the scavenge only carries its handle into
+        // the next epoch; the word it holds is left as the missed store
+        // left it.
+        let mut holder_root = Value::object(holder);
+        scavenge_bare(&mut heap, false, &mut [&mut holder_root]);
+        let holder = rooted(holder_root);
+        let stale = heap.load(Word::from_bits(heap.fields(holder)[0]));
+        let _ = stale.as_object().map(|object| heap.object_class(object));
     }
 
     /// The object a root or a field holds after a scavenge.

@@ -455,9 +455,9 @@ fn allocating_past_the_limit_collects_during_the_run() {
 
 /// Every kind of value a heap object stores -- a `SmallInteger`, a boxed
 /// float, a `LargeInteger`, `nil` and another object -- survives being
-/// stored as a bare word through a move and a collection at every
-/// safepoint: the collector rewrites each word by its offset, and every word
-/// reads back as the value that was stored.
+/// stored as a bare word through a move, a collection and a scavenge at
+/// every safepoint: the collector and the scavenger rewrite each word by
+/// its offset, and every word reads back as the value that was stored.
 #[test]
 fn every_kind_of_stored_word_survives_moves_and_collections() {
     let source = indoc! {"
@@ -500,6 +500,7 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
     let (mut interpreter, class) = load(source);
     interpreter.set_stress_moves(true);
     interpreter.set_stress_collect(true);
+    interpreter.set_stress_scavenge(true);
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let count = interpreter.stash(Value::small_integer(1000));
     let boxes = expect_ok(interpreter.send(&instance, Symbol::intern("build:"), &[count]));
@@ -521,5 +522,9 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
     assert!(
         interpreter.stress_collections() > 0,
         "the collect stress mode never collected"
+    );
+    assert!(
+        interpreter.stress_scavenges() > 0,
+        "the scavenge stress mode never scavenged"
     );
 }

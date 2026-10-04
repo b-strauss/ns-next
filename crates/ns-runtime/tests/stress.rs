@@ -83,20 +83,23 @@ fn run_sum(interpreter: &mut Interpreter, class: &Root) -> i64 {
 }
 
 /// `run`'s answer, how many times everything moved, and how many safepoints
-/// the stress mode took. The collect stress mode is turned off regardless of
-/// `NS_NEXT_STRESS_COLLECT`: a collection also moves everything (it compacts
-/// against the mark bits rather than merely shifting, but a debug build
-/// bumps the same move epoch either way, since a handle into the old
-/// arrangement is exactly as stale after one as after the other), so this
-/// comparison -- an exact count of the moves the *move* stress mode alone
-/// causes -- needs a baseline the collect stress mode cannot also move.
+/// the stress mode took. The collect and the scavenge stress modes are
+/// turned off regardless of `NS_NEXT_STRESS_COLLECT` and
+/// `NS_NEXT_STRESS_SCAVENGE`: a collection and a scavenge both move objects
+/// (a collection compacts against the mark bits, a scavenge copies the
+/// nursery's survivors, rather than merely shifting, but a debug build bumps
+/// the same move epoch for each, since a handle into the old arrangement is
+/// exactly as stale after one as after another), so this comparison -- an
+/// exact count of the moves the *move* stress mode alone causes -- needs a
+/// baseline neither of the other two can also move.
 fn run_every_continuation(stress: bool) -> (i64, u32, usize) {
     let (mut interpreter, class) = load(EVERY_CONTINUATION);
     interpreter.set_stress_moves(stress);
     interpreter.set_stress_collect(false);
+    interpreter.set_stress_scavenge(false);
     // Counted from here: the bootstrap runs shipped code of its own (the
     // platform's boot), which a stress mode set in the environment already
-    // moved under before either switch above was thrown.
+    // moved under before any switch above was thrown.
     let moves_before = interpreter.moves();
     let safepoints_before = interpreter.stress_safepoints();
     let sum = run_sum(&mut interpreter, &class);
@@ -140,6 +143,20 @@ fn every_continuation_survives_a_collection_at_every_safepoint() {
     assert!(
         interpreter.stress_collections() > 0,
         "the collect stress mode never collected"
+    );
+}
+
+/// The scavenge stress mode verifies the remembered set and scavenges at
+/// every safepoint; the program's answer must not change.
+#[test]
+fn every_continuation_survives_a_scavenge_at_every_safepoint() {
+    let (mut interpreter, class) = load(EVERY_CONTINUATION);
+    interpreter.set_stress_scavenge(true);
+    let sum = run_sum(&mut interpreter, &class);
+    assert_eq!(sum, 31);
+    assert!(
+        interpreter.stress_scavenges() > 0,
+        "the scavenge stress mode never scavenged"
     );
 }
 
