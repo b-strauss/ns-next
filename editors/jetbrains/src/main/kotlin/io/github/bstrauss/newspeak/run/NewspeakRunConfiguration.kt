@@ -20,6 +20,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.util.execution.ParametersListUtil
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -104,9 +105,7 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         val configuration = this
         return object : CommandLineState(environment) {
             override fun startProcess(): ProcessHandler {
-                val commandLine = GeneralCommandLine(newspeakCommandLine(runtime, configuration))
-                    .withWorkDirectory(Path.of(configuration.projectFile.orEmpty()).parent?.toString())
-                val handler = KillableColoredProcessHandler(commandLine)
+                val handler = KillableColoredProcessHandler(newspeakProcessCommandLine(runtime, configuration))
                 ProcessTerminatedListener.attach(handler)
                 return handler
             }
@@ -125,6 +124,13 @@ private fun runtimeProblem(location: RuntimeLocation): String = when (location) 
         "The ns-next path is not set: choose the ns-next runtime under Settings | Languages & Frameworks | Newspeak"
     is RuntimeLocation.ConfiguredPathMissing -> "No file at the ns-next path ${location.path}"
 }
+
+/** The process a Newspeak run configuration starts: [newspeakCommandLine], in the project's directory. */
+fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): GeneralCommandLine =
+    GeneralCommandLine(newspeakCommandLine(runtime, configuration))
+        .withWorkDirectory(Path.of(configuration.projectFile.orEmpty()).parent?.toString())
+        // ns-next writes UTF-8 whatever the platform; the default, Windows' code page, garbles anything past ASCII.
+        .withCharset(StandardCharsets.UTF_8)
 
 /** The command line a Newspeak run configuration starts; pure, so its shape is tested without starting anything. */
 fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): List<String> = buildList {

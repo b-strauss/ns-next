@@ -4,6 +4,7 @@ import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.openapi.util.Disposer
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert
@@ -48,6 +49,11 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
             listOf(runtime.toString(), "bench", "--iterations", "3", projectDirectory),
             newspeakCommandLine(runtime, bench),
         )
+    }
+
+    fun testTheProcessDecodesOutputAsUtf8() {
+        val run = configuration().apply { projectFile = "/work/app/newspeak.json" }
+        assertEquals(StandardCharsets.UTF_8, newspeakProcessCommandLine(runtime, run).charset)
     }
 
     fun testANewConfigurationRunsTenIterationsWhenBenchmarking() {
