@@ -4251,14 +4251,16 @@ The structure view, breadcrumbs and sticky lines
 ([editor-support.md](design/editor-support.md), "Structure"):
 
 - `9f6aab45` -- the server answers `textDocument/documentSymbol` from the
-  recovered AST: each class with its factory, instance side and class side,
-  the members in source order, the temporaries under their methods, each
-  member with its effective access.
+  recovered AST: each class with its factory, then its instance-side
+  members and its class-side methods, flat, each in source order, the
+  temporaries under their methods, each member with its effective access
+  and a class-side method with `class` in its `detail`.
 - `047ee35b`, `8140b558` -- the platform's structure view for a language
   server shows one icon per symbol kind and so cannot show access, so the
   plugin has a structure view of its own that draws the access icon beside
-  the kind's, as Java's does, and switches the platform's off for its
-  client; breadcrumbs and IntelliJ's sticky lines stay the platform's, from
+  the kind's, as Java's does, lays IntelliJ's static mark over a
+  class-side method's icon, as Java marks a static member, and switches the
+  platform's off for its client; breadcrumbs and IntelliJ's sticky lines stay the platform's, from
   the same symbols. The view asks again while the server has not opened the
   file, and keeps asking for a server that starts late.
 - `0bb1adeb` -- the design and the plugin's description. Checked by hand

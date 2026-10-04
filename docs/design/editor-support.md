@@ -327,14 +327,14 @@ is answered `[]`.
 
 **The tree.**
 
-- A class has three kinds of child, in this order: its **factory**, its
-  **instance side** and, when it declares one, its **class side**. A side is
-  named `instance side` or `class side`.
-- The instance side holds the header's slots, the lazy slots, the nested
+- A class's children are flat, in this order: its **factory**, then its
+  instance-side members -- the header's slots, the lazy slots, the nested
   classes (each a class with the same children) and the methods, in source
-  order. The class side holds its methods in source order.
-- A method has its temporaries as children; nothing else but a class and a
-  side has children.
+  order -- then its class-side methods, in source order. No node stands for
+  a side; a class-side method is told apart by its `detail` (below) and, in
+  the plugin's view, by its icon ("The rows").
+- A method has its temporaries as children; nothing else but a class has
+  children.
 - The factory is named by its pattern as written (`usingPlatform: platform`);
   a class without one is answered `new`, which §6 gives it, placed at the
   class's name. A pattern is written `foo`, `+ other` or
@@ -346,12 +346,14 @@ is answered `[]`.
 **Kinds.** LSP has no kind for a read-only property, so a slot with a getter
 only (declared with `=`) is a `Constant` and a slot with a getter and a setter
 (`::=`, or a bare one) a `Property`, the nearest two kinds any client knows.
-A class is a `Class`, a factory a `Constructor`, an instance or class side a
-`Namespace` (a named group of members, not a package), a method a `Method`
-and a temporary a `Variable`.
+A class is a `Class`, a factory a `Constructor`, a method on either side a
+`Method` and a temporary a `Variable`.
 
-**`detail`** is the effective access word, then ` lazy` for a lazy slot
-(`protected lazy`); a side and a temporary have neither, so no `detail`.
+**`detail`** is the effective access word, then ` class` for a class-side
+method (`public class`, `protected class`) and ` lazy` for a lazy slot
+(`protected lazy`); a temporary has none of them, so no `detail`. LSP has no
+field or kind for a static member, and `detail` is the one a client already
+reads for the access, so `class` goes there.
 The access is what the member declares, else protected (§6.3.1: "If no access
 modifier is declared, the default is protected"); the root class is public
 (§6.3.1: the access level of a top-level class is always public); a factory is
@@ -361,9 +363,7 @@ factory as public (`ns_runtime::mixin::factory_entry`).
 **Ranges.** A class's `range` runs from its declaration's start to its end,
 and its `selectionRange` is its name. A method's range is its declaration;
 its selection is its pattern, from the first name to the last. A slot or
-temporary is selected at its name. A side runs from its `(` to its `)` (or to
-where recovery ended it) and is selected at its `(`, or at the class's name
-when recovery found no brackets. A factory's range and selection are its
+temporary is selected at its name. A factory's range and selection are its
 pattern, or the class's name for `new`. Every selection lies inside its
 range, which a client requires of the whole answer; positions are UTF-16
 through the line index.
@@ -382,20 +382,29 @@ platform's own structure view is switched off for the client by
 `NewspeakLspClientDescriptor.kt` and handed to the platform as
 `NewspeakLspCustomization`'s `documentSymbolCustomizer`; its breadcrumbs stay
 on, and with them the sticky lines, which the platform draws from the same
-symbols (`LspFileBreadcrumbsCollector.computeStickyLineInfos`).
+symbols (`LspFileBreadcrumbsCollector.computeStickyLineInfos`). With no node
+for a side, both go from a class straight to its member (`Module › make`),
+and no sticky line stands for a side's bracket.
 
 **The rows.** A row's text is the symbol's name, with `lazy` beside a lazy
 slot. Its icon is the kind's icon beside the access icon: `C_public`,
 `C_protected` or `C_private` for the first word of `detail`, joined to the
 kind's with `IconManager.createRowIcon` as Java's structure view joins them,
 so the "show visibility icons" setting behaves as for Java. A `detail` whose
-first word is no access word, and a side or temporary, shows the kind's icon
-alone. `NewspeakSymbolKinds`, the client's `symbolKindCustomizer`, gives the
-kinds their icons, for the breadcrumbs as for the tree: `Constant` is
-`PropertyRead` and `Property` is `PropertyReadWrite` (a slot is always reached
-through its accessors, which those icons say), `Namespace` is `CustomRegion`
-(the icon the platform gives a group of members, not the package's), and every
-other kind keeps the platform's. A pick moves the caret to the start of the
+first word is no access word, and a temporary, shows the kind's icon alone. A
+class-side method -- `class` among `detail`'s words -- has IntelliJ's static
+mark (`AllIcons.Nodes.StaticMark`) laid over its kind's icon, which is how
+Java shows a static member: the structure view draws no separator between
+groups of rows, so the mark is what tells the two sides apart without a node
+for each. Java registers the mark as an icon layer and lays it over the base
+icon; the plugin builds the same layered icon with
+`IconManager.createLayered(kindIcon, AllIcons.Nodes.StaticMark)`, public API
+on 2026.1 and 2026.2, without claiming one of the platform's layer flags,
+and joins it with the access icon as above. `NewspeakSymbolKinds`, the
+client's `symbolKindCustomizer`, gives the kinds their icons, for the
+breadcrumbs as for the tree: `Constant` is `PropertyRead` and `Property` is
+`PropertyReadWrite` (a slot is always reached through its accessors, which
+those icons say), and every other kind keeps the platform's. A pick moves the caret to the start of the
 symbol's `selectionRange`, in the document's UTF-16 columns; the view selects
 the innermost symbol whose range holds the caret.
 
@@ -419,14 +428,17 @@ one file asking at once (the tool window and the popup) each send a request.
 A question on the EDT that finds no current answer schedules a retry too, and
 counts against the sixty fast ones.
 
-**Checked by hand under `runIde` (2026-10-04)** on `Kernel.ns`: the Structure
-tool window and the File Structure popup show the tree, with the factory, the
-instance side, the class side, the members in source order and the
+**Checked by hand under `runIde` (2026-10-04)** on `Kernel.ns`, while the
+tree still had a node per side: the Structure
+tool window and the File Structure popup show the tree, with the factory,
+the members in source order and the
 temporaries under their methods; Java-like access icons (a member without a
 modifier shows protected), the read-only and read-write property icons and
 `lazy`; picking a symbol jumps to its name; breadcrumbs show the class and
 method at the caret, and IntelliJ's sticky lines follow; the tree survives a
-half-typed method; and it fills on first open.
+half-typed method; and it fills on first open. The flat tree, the static
+mark and breadcrumbs and sticky lines without a side have not been looked at
+under `runIde` yet ([OPEN-WORK.md](../OPEN-WORK.md), "Missing tests").
 
 ### Robustness
 
@@ -456,8 +468,10 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   a closure, a comment folded to its first line, an unterminated comment to
   the end of the file, single-line constructs answering no range, the folds
   after a half-typed method, and a fold's UTF-16 encoding on CRLF lines;
-- document symbols — the tree of a class with a factory, a nested class,
-  slots, methods and a class side, in source order; a half-typed method
+- document symbols — the flat tree of a class with a factory, a nested
+  class, slots, methods and class-side methods, the instance side's members
+  before the class side's, each in source order; a class-side method's
+  `class` in `detail`; a half-typed method
   keeping the symbols after it; an empty file answering an unnamed class;
   every selection inside its range, also over every module of the corpus and
   every cut of one (`every_symbol_selection_lies_inside_its_range`); a
@@ -717,13 +731,18 @@ The server's own tests are described under its section, above ("Testing").
   which cover the binary lookup order and the semantic-token classification;
 - the structure view, in plain JUnit: `NewspeakSymbolKindsTest` (the icon
   per kind), `NewspeakStructureElementTest` (a row's name, `lazy`, kind icon
-  and access icon from a `DocumentSymbol`) and
+  and access icon from a `DocumentSymbol`, and `class` read together with
+  the access word and `lazy`) and
   `NewspeakStructureViewModelTest` (no answer and an empty answer make the
   model ask again, an answer with symbols is shown); and on
   `BasePlatformTestCase`, `NewspeakStructureViewFactoryTest`: a Newspeak file
   gets the plugin's view rather than the platform's, the caret selects the
-  innermost symbol around it, and a member with an access shows the kind's
-  and the access icon in one row under the platform's own `IconManager`.
+  innermost symbol around it, a member with an access shows the kind's
+  and the access icon in one row, and a class-side method shows its kind's
+  icon layered with the static mark, then its access icon, in one row -- all
+  under the test framework's `IconManager`, which answers a row of icons
+  where the IDE's answers a `LayeredIcon`, both a `CompositeIcon` of the same
+  icons.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
 `ns-analyzer`'s tests before every commit and under every stress mode, like
