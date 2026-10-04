@@ -384,7 +384,9 @@ platform's own structure view is switched off for the client by
 on, and with them the sticky lines, which the platform draws from the same
 symbols (`LspFileBreadcrumbsCollector.computeStickyLineInfos`). With no node
 for a side, both go from a class straight to its member (`Module › make`),
-and no sticky line stands for a side's bracket.
+and no sticky line stands for a side's bracket. They show no static mark on a
+class-side method: their icons come from the symbol's kind alone, through
+the `symbolKindCustomizer`, which never sees `detail`.
 
 **The rows.** A row's text is the symbol's name, with `lazy` beside a lazy
 slot. Its icon is the kind's icon beside the access icon: `C_public`,

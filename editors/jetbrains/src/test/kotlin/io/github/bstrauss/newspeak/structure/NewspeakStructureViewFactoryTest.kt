@@ -47,7 +47,7 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertNull(innermostSymbolAt(document, symbols, text.length))
     }
 
-    /** Under the platform's own `IconManager`, as the structure view draws it. */
+    /** Under the test framework's `IconManager`, which joins the two icons in a row as the IDE's does. */
     fun testAMemberWithAnAccessShowsBothIconsInOneRow() {
         val range = Range(Position(0, 0), Position(0, 3))
         val presentation = presentationOf(DocumentSymbol("run", SymbolKind.Method, range, range, "private"))

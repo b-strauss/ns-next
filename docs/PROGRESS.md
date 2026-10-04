@@ -4251,20 +4251,25 @@ The structure view, breadcrumbs and sticky lines
 ([editor-support.md](design/editor-support.md), "Structure"):
 
 - `9f6aab45` -- the server answers `textDocument/documentSymbol` from the
-  recovered AST: each class with its factory, then its instance-side
-  members and its class-side methods, flat, each in source order, the
-  temporaries under their methods, each member with its effective access
-  and a class-side method with `class` in its `detail`.
+  recovered AST: each class with its factory and its members in source
+  order, the temporaries under their methods, each member with its
+  effective access.
 - `047ee35b`, `8140b558` -- the platform's structure view for a language
   server shows one icon per symbol kind and so cannot show access, so the
   plugin has a structure view of its own that draws the access icon beside
-  the kind's, as Java's does, lays IntelliJ's static mark over a
-  class-side method's icon, as Java marks a static member, and switches the
-  platform's off for its client; breadcrumbs and IntelliJ's sticky lines stay the platform's, from
+  the kind's, as Java's does, and switches the platform's off for its
+  client; breadcrumbs and IntelliJ's sticky lines stay the platform's, from
   the same symbols. The view asks again while the server has not opened the
   file, and keeps asking for a server that starts late.
 - `0bb1adeb` -- the design and the plugin's description. Checked by hand
   under `runIde`.
+- `58ab97c1`, `c995e5c1` -- the tree is flat: under each class its factory,
+  then its instance-side members, then its class-side methods, each in
+  source order, with no node for a side, so breadcrumbs and sticky lines go
+  from a class straight to its member. A class-side method carries `class`
+  in its `detail` (`public class`), and the plugin lays IntelliJ's static
+  mark over its kind's icon, as Java marks a static member; the icon the
+  plugin gave a side's symbol kind is gone with the sides.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): under
 "Defects that change a correct program's output", the compiler's recursion
