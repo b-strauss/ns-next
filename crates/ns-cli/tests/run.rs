@@ -77,10 +77,7 @@ fn a_script_hands_its_arguments_to_main_and_the_command_line_follows() {
     );
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "first
-second word
-third
-"
+        "first\nsecond word\nthird\n"
     );
 }
 
@@ -112,7 +109,10 @@ fn a_script_with_a_source_file_is_refused() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty(), "nothing runs");
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--script"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains(
+            "--script names a script of a project's newspeak.json, and the program given is a source file"
+        )
+    );
 }
 
 #[test]

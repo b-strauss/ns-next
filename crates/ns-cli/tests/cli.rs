@@ -253,10 +253,11 @@ fn benchmark_runs_a_script_of_the_project() {
     let directory = ScratchDirectory::new("bench-script");
     std::fs::write(
         directory.join("Echo.ns"),
-        "class Echo packageUsing: manifest = Object new () (
-    public main: platform args: arguments = ()
-) : ()
-",
+        indoc! {"
+            class Echo packageUsing: manifest = Object new () (
+                public main: platform args: arguments = ()
+            ) : ()
+        "},
     )
     .unwrap();
     std::fs::write(

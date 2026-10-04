@@ -98,7 +98,8 @@ pub(crate) fn entry_arguments(
     };
     let Some((project_file, scripts)) = &program.scripts else {
         eprintln!(
-            "error: --script names a script of a project's newspeak.json, and the program              given is a source file"
+            "error: --script names a script of a project's newspeak.json, and the program \
+             given is a source file"
         );
         return Err(ExitCode::FAILURE);
     };
