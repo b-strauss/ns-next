@@ -43,8 +43,12 @@ Rust 1.98.0, edition 2021, five crates:
   (`lsp-server`, `lsp-types`) stay in this crate and never reach `ns-runtime`,
   and `serde_json` is shared by `ns-analyzer` and `ns-cli` (the project file is JSON)
   (`docs/design/editor-support.md`).
+- `crates/ns-tooling` — what `ns-next` and `ns-next-analyzer` share: loading and
+  resolving a source file, collecting `.ns` files, printing diagnostics. It is a crate
+  of its own so the analyzer's server dependencies never reach `ns-next`; it depends
+  on `ns-syntax` and `ns-runtime` only.
 - `crates/ns-memory` — the memory layer (page-range reservation on Windows and
-  POSIX). The only crate with `unsafe`; `ns-runtime` and `ns-analyzer` forbid it.
+  POSIX). The only crate with `unsafe`; `ns-runtime`, `ns-tooling` and `ns-analyzer` forbid it.
   The heap's object space is its user (`docs/design/memory.md`, "The memory
   layer", "The object space").
 

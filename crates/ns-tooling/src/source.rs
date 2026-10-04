@@ -9,15 +9,15 @@ use ns_syntax::{Diagnostic, Severity};
 
 /// A module read, parsed, and resolved -- everything `run`, `disasm`, and
 /// `build` share before an interpreter exists.
-pub(crate) struct LoadedSource {
-    pub(crate) source: String,
-    pub(crate) origin: ns_runtime::SourceOrigin,
-    pub(crate) resolved: ns_runtime::ResolvedModule,
+pub struct LoadedSource {
+    pub source: String,
+    pub origin: ns_runtime::SourceOrigin,
+    pub resolved: ns_runtime::ResolvedModule,
 }
 
 /// Reads, parses, and resolves `file`, reporting diagnostics the way every
 /// command does. `Err` carries the exit code to return.
-pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
+pub fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
     let source = match std::fs::read_to_string(file) {
         Ok(source) => source,
         Err(error) => {
@@ -52,7 +52,7 @@ pub(crate) fn load_source(file: &Path) -> Result<LoadedSource, ExitCode> {
 /// Parses and resolves a source compiled into the binary -- the manifest --
 /// exactly as a file's source, under an embedded origin. A shipped source
 /// that does not parse is a build defect of this binary, not input.
-pub(crate) fn load_embedded(name: &str, source: &str) -> LoadedSource {
+pub fn load_embedded(name: &str, source: &str) -> LoadedSource {
     let module = ns_syntax::parse(source)
         .unwrap_or_else(|_| panic!("internal: the embedded {name} does not parse"));
     let origin = ns_runtime::SourceOrigin::Embedded(name.to_string());
@@ -65,7 +65,7 @@ pub(crate) fn load_embedded(name: &str, source: &str) -> LoadedSource {
     }
 }
 
-pub(crate) fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
+pub fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return;
     };
@@ -79,7 +79,7 @@ pub(crate) fn collect_ns_files(directory: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-pub(crate) fn print_diagnostics(file: &Path, source: &str, diagnostics: &[Diagnostic]) {
+pub fn print_diagnostics(file: &Path, source: &str, diagnostics: &[Diagnostic]) {
     for diagnostic in diagnostics {
         let (line, column) = line_column(source, diagnostic.span.start);
         let level = match diagnostic.severity {

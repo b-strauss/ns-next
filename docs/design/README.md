@@ -97,7 +97,7 @@ Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, which
 
 ## Architecture
 
-Five crates, with the name-resolution pass as the seam the bytecode compiler
+Six crates, with the name-resolution pass as the seam the bytecode compiler
 plugs into, and the JetBrains plugin beside them:
 
 ```
@@ -107,6 +107,8 @@ crates/
   ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
                 core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary
+  ns-tooling/   what both binaries share: loading a source, collecting `.ns`
+                files, printing diagnostics
   ns-analyzer/  the `ns-next-analyzer` binary: the editor tooling, whose `lsp`
                 command is the language server -- diagnostics, semantic
                 tokens, fold ranges, document symbols

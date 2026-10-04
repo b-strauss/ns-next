@@ -9,7 +9,6 @@ mod commands;
 mod entry;
 mod program;
 mod project;
-mod source;
 
 #[derive(Parser)]
 #[command(name = "ns-next", version)]

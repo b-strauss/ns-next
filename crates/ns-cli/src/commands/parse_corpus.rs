@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::source::collect_ns_files;
+use ns_tooling::source::collect_ns_files;
 
 /// Parses every `.ns` file under `directory`. Every one must parse: the
 /// corpus is real Newspeak, and the parser follows the specification's

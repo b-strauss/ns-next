@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::source::print_diagnostics;
+use ns_tooling::source::print_diagnostics;
 
 pub(crate) fn execute(file: &Path, ast: bool) -> ExitCode {
     let source = match std::fs::read_to_string(file) {

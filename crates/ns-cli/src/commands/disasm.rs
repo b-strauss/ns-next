@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::rc::Rc;
 
-use crate::source;
+use ns_tooling::source;
 
 /// Resolves a dot-separated mixin path like `Outer.Inner` or `Outer.class`
 /// against `root`'s own mixin tree. `None` (no `--class` given) means the

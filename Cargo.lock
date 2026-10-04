@@ -335,6 +335,7 @@ dependencies = [
  "libtest-mimic",
  "ns-runtime",
  "ns-syntax",
+ "ns-tooling",
  "serde",
  "serde_json",
  "toml",
@@ -363,6 +364,14 @@ version = "0.1.0"
 dependencies = [
  "indoc",
  "insta",
+]
+
+[[package]]
+name = "ns-tooling"
+version = "0.1.0"
+dependencies = [
+ "ns-runtime",
+ "ns-syntax",
 ]
 
 [[package]]
