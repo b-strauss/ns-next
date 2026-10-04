@@ -1,7 +1,7 @@
 # Newspeak (ns-next) — JetBrains plugin
 
-Syntax highlighting, diagnostics, semantic tokens and code folding for `.ns`
-files, through the `ns-next-lsp` language server from `crates/ns-lsp`. The
+Syntax highlighting, diagnostics, semantic tokens, code folding, and a
+structure view with breadcrumbs for `.ns` files, through the `ns-next-lsp` language server from `crates/ns-lsp`. The
 design, its components and the platform version it targets are in
 `docs/design/editor-support.md`.
 

@@ -414,8 +414,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **Formatting**, through `textDocument/formatting`, which needs comments
   attached to AST nodes -- their spans are kept, beside the AST
   (`parse_for_editor`) -- and an `ns-next fmt` command.
-- **Navigation** — go to definition, find usages, structure view —
-  `definition`, `references` and `documentSymbol` in the server, on the
+- **Navigation** — go to definition, find usages —
+  `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
   "Recovery").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`

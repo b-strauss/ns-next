@@ -26,7 +26,7 @@ first.
 | After road step 2 — the compact instruction encoding | Complete | 2026-10-02 | [compact-instruction-encoding](superpowers/plans/2026-10-02-1910-ns-next-compact-instruction-encoding.md) |
 | Road step 3a — the object representation | Complete | 2026-10-03 | [object-representation](superpowers/plans/2026-10-03-1338-ns-next-object-representation.md) |
 | Road step 3b — the object space | Complete | 2026-10-03 | [object-space](superpowers/plans/2026-10-03-1934-ns-next-object-space.md) |
-| Editor support: code folding and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md) |
+| Editor support: code folding, the structure view with breadcrumbs and sticky lines, and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md) |
 | Road step 4 — generations | Not started | — | — |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
@@ -4198,7 +4198,7 @@ vacated pages, for road step 8's generated code; the encoder's 32-bit
 object ids, which abort past about four billion objects; and the three
 slower programs, not profiled.
 
-## Code folding and the fault-tolerant editor parse (2026-10-04)
+## Code folding, the structure view and the fault-tolerant editor parse (2026-10-04)
 
 Plan: [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md);
 [editor-support.md](design/editor-support.md), "Folding", and
@@ -4234,7 +4234,20 @@ tokens, the comments' spans and every diagnostic.
   design moved into [editor-support.md](design/editor-support.md) and
   [frontend.md](design/frontend.md).
 
-The plugin needed no code: the platform's `LspFoldingBuilder` serves every
-language, which `runIde` confirmed by hand. What the branch leaves open --
+The plugin needed no code for folding: the platform's `LspFoldingBuilder`
+serves every language, which `runIde` confirmed by hand.
+
+The branch also adds the structure view, breadcrumbs and sticky lines
+([editor-support.md](design/editor-support.md), "Structure"). The server
+answers `textDocument/documentSymbol` from the recovered AST: each class with
+its factory, instance side and class side, the members in source order, the
+temporaries under their methods, each with its effective access. The platform's
+structure view for a language server shows one icon per symbol kind and so
+cannot show access, so the plugin has a structure view of its own that draws
+the access icon beside the kind's, as Java's does, and switches the
+platform's off for its client; breadcrumbs and IntelliJ's sticky lines stay
+the platform's, from the same symbols. Checked by hand under `runIde`.
+
+What the branch leaves open --
 four known limits of the recovery and an assumption of the agreement test
 -- is in [OPEN-WORK.md](OPEN-WORK.md), "Known defects and gaps".
