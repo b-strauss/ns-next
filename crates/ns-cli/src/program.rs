@@ -49,7 +49,7 @@ pub(crate) fn read_program(path: &Path) -> Result<Program, ExitCode> {
         eprintln!("error: {message}");
         ExitCode::FAILURE
     })?;
-    let mut sources = vec![source::load_source(&project.root)?];
+    let mut sources = vec![source::load_source(&project.main)?];
     for module in &project.modules {
         sources.push(source::load_source(module)?);
     }

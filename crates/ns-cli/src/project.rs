@@ -1,6 +1,6 @@
-//! The project file: a program of several modules, named in JSON. `root` is
-//! the application's source; `modules` are the other modules its manifest
-//! holds (`docs/design/image-format.md`, "Packaging"). Every project file is
+//! The project file: a program of several modules, named in JSON. `main` is
+//! the application module's source; `modules` are the other modules its
+//! manifest holds (`docs/design/image-format.md`, "Packaging"). Every project file is
 //! named `newspeak.json`, so a project is its directory.
 
 use std::path::{Path, PathBuf};
@@ -54,18 +54,18 @@ pub(crate) fn locate_program(path: &Path) -> Result<ProgramPath, String> {
     Ok(ProgramPath::Source(path.to_path_buf()))
 }
 
-/// The file as written. Unknown fields are refused so that a misspelt key
-/// is a message rather than a module silently missing.
+/// The file as written. Other keys are ignored, so that a file may carry what
+/// an editor or another tool wants beside what ns-next reads.
 #[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ProjectFile {
-    root: String,
+    /// The application module's source.
+    main: String,
     #[serde(default)]
     modules: Vec<String>,
 }
 
 pub(crate) struct Project {
-    pub(crate) root: PathBuf,
+    pub(crate) main: PathBuf,
     pub(crate) modules: Vec<PathBuf>,
 }
 
@@ -76,7 +76,7 @@ pub(crate) fn read_project(path: &Path) -> Result<Project, String> {
         serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
     let directory = path.parent().unwrap_or(Path::new(""));
     Ok(Project {
-        root: resolve_written_path(directory, &file.root),
+        main: resolve_written_path(directory, &file.main),
         modules: file
             .modules
             .iter()
@@ -198,13 +198,13 @@ mod tests {
     fn modules_may_be_absent_or_empty() {
         let directory = scratch("optional-modules");
         let absent = directory.join("absent.json");
-        std::fs::write(&absent, r#"{ "root": "App.ns" }"#)
+        std::fs::write(&absent, r#"{ "main": "App.ns" }"#)
             .unwrap_or_else(|error| panic!("{error}"));
         let project = read_project(&absent).unwrap_or_else(|error| panic!("{error}"));
-        assert_eq!(project.root, directory.join("App.ns"));
+        assert_eq!(project.main, directory.join("App.ns"));
         assert!(project.modules.is_empty());
         let empty = directory.join("empty.json");
-        std::fs::write(&empty, r#"{ "root": "App.ns", "modules": [] }"#)
+        std::fs::write(&empty, r#"{ "main": "App.ns", "modules": [] }"#)
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(read_project(&empty)
             .unwrap_or_else(|error| panic!("{error}"))
@@ -213,24 +213,37 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_field_and_a_missing_root_are_refused() {
-        let directory = scratch("refusals");
-        let unknown = directory.join("unknown.json");
-        std::fs::write(&unknown, r#"{ "root": "App.ns", "entry": "main:args:" }"#)
-            .unwrap_or_else(|error| panic!("{error}"));
-        let error = refusal(&unknown);
-        assert!(error.contains("entry"), "{error}");
-        let missing = directory.join("missing.json");
-        std::fs::write(&missing, r#"{ "modules": [] }"#).unwrap_or_else(|error| panic!("{error}"));
-        let error = refusal(&missing);
-        assert!(error.contains("root"), "{error}");
+    fn a_file_without_main_is_refused_naming_main_whatever_else_it_holds() {
+        let directory = scratch("missing-main");
+        for (name, contents) in [
+            ("legacy.json", r#"{ "root": "App.ns" }"#),
+            ("empty.json", r#"{ "modules": [] }"#),
+        ] {
+            let path = directory.join(name);
+            std::fs::write(&path, contents).unwrap_or_else(|error| panic!("{error}"));
+            let error = refusal(&path);
+            assert!(error.contains("`main`"), "{error}");
+        }
+    }
+
+    #[test]
+    fn other_keys_are_ignored() {
+        let directory = scratch("other-keys");
+        let path = directory.join(PROJECT_FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{ "$schema": "../schemas/newspeak.schema.json", "main": "App.ns", "entry": "x" }"#,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(project.main, directory.join("App.ns"));
     }
 
     #[test]
     fn a_directory_is_the_project_its_newspeak_json_describes() {
         let directory = scratch("directory");
         let project = directory.join(PROJECT_FILE_NAME);
-        std::fs::write(&project, r#"{ "root": "App.ns" }"#)
+        std::fs::write(&project, r#"{ "main": "App.ns" }"#)
             .unwrap_or_else(|error| panic!("{error}"));
         assert_eq!(
             locate_program(&directory),

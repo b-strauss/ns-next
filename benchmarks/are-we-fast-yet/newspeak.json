@@ -1,5 +1,5 @@
 {
-  "root": "AreWeFastYet.ns",
+  "main": "AreWeFastYet.ns",
   "modules": [
     "Bounce.ns",
     "CD.ns",

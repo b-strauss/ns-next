@@ -426,7 +426,7 @@ fn two_modules_draw_the_same_identity_hashes_under_run_and_load() {
         &project,
         indoc! {r#"
             {
-              "root": "App.ns",
+              "main": "App.ns",
               "modules": ["Stamper.ns"]
             }
         "#},

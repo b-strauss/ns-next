@@ -1,5 +1,5 @@
 {
-  "root": "App.ns",
+  "main": "App.ns",
   "modules": [
     "Counter.ns"
   ]
