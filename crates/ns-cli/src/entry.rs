@@ -25,7 +25,11 @@ pub(crate) fn print_cache_statistics(statistics: &ns_runtime::CacheStatistics) {
 /// recorded stdout is untouched.
 pub(crate) fn print_collector_statistics(statistics: &ns_runtime::CollectorStatistics) {
     eprintln!(
-        "collector: {} collections, {:.3} ms total pause, {:.3} ms longest; {} live objects",
+        "collector: {} scavenges, {:.3} ms total pause, {:.3} ms longest; \
+         {} collections, {:.3} ms total pause, {:.3} ms longest; {} live objects",
+        statistics.scavenges,
+        statistics.scavenge_pause.as_secs_f64() * 1000.0,
+        statistics.longest_scavenge_pause.as_secs_f64() * 1000.0,
         statistics.collections,
         statistics.total_pause.as_secs_f64() * 1000.0,
         statistics.longest_pause.as_secs_f64() * 1000.0,

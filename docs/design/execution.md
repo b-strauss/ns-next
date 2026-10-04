@@ -431,11 +431,16 @@ jumping arm goes through), so every call and every loop iteration passes one,
 a loop that makes no send included; a forward jump does not test it. When the
 flag is set the stretch writes its frame back to `FrameRegisters` and leaves
 its entry (`Leave::Safepoint`), and `run` calls `Interpreter::safepoint`
-(`interpreter/safepoint.rs`), out of line, which is where a collection runs
-([memory.md](memory.md), "Where a collection can happen"), and enters again.
-A collection is requested by an allocation past the space's limit, and the
-debug-build move, cache and collection stress modes set the flag at every
-safepoint their schedule picks.
+(`interpreter/safepoint.rs`), out of line, which is where a scavenge or a
+collection runs ([memory.md](memory.md), "Where a collection can happen"),
+and enters again. A scavenge is requested by an allocation that fills eden
+to its threshold or finds eden spent, and by a remembered set past its
+limit, through the barrier or after a scavenge; a full collection once the
+old space's occupancy reaches its limit, checked by an allocation that goes
+old and after every scavenge ([memory.md](memory.md), "Generations"); and
+the debug-build move,
+cache, collection and scavenge stress modes keep the flag set while they
+are on.
 That is sound because of what `run` carries across the safepoint, which the
 compiler holds it to, since the stretch's entry has ended before it:
 `FrameRegisters` — the running `ActivationReference`, which indexes the
@@ -1208,6 +1213,178 @@ NBody and `bench_loop.ns` are slower, since none of the three was profiled
 after the fix; the profile, one trace per side from one debug-info build
 each; the working set of one build a side, measured once; and the commit
 charge, which the working set does not show.
+
+### What generations moved
+
+Measured on 2026-10-04 on the same machine (Windows 11 Pro 22631, Intel
+Core Ultra 9 285K, 24 cores): `master` at `664f5f07`, the tree road step 4
+started from ("before", one space under the mark-compact collector),
+against `feature/generations` at `24a4e0e0` ("after", the nursery, the
+scavenger and the barrier; [memory.md](memory.md), "Generations"). Three
+pinned release builds of each tree (`-C metadata=alpha`, `beta`, `gamma`,
+with `-C target-feature=+crt-static -C llvm-args=-align-all-functions=6`),
+built in throwaway worktrees, none importing `VCRUNTIME140.dll`, each
+checked to print `ok` for all sixteen programs and the expected output for
+the eight microbenchmark sources. Every program was timed with `bench`
+alone: `--iterations 3` for CD, Havlak, Mandelbrot, NBody and DeltaBlue,
+`--iterations 10` for the other eleven and for the eight microbenchmark
+sources. Two sittings of three rounds, the six binaries' order rotated by
+one from round to round, so each figure is the median of a tree's eighteen
+values (three builds, three rounds, two sittings), with their range;
+"separated" says the two ranges do not overlap. The machine was not idle:
+an IDE with its language server, a monitoring tool and the virus scanner
+ran beside it, at about a quarter of one core of twenty-four.
+
+| Source | Before, ms | Range | After, ms | Range | Change | Separated |
+|---|---|---|---|---|---|---|
+| Bounce | 1.12 | 1.09–1.28 | 1.11 | 1.09–1.16 | −0.6% | no |
+| CD | 4,305 | 4,281–4,397 | 3,947 | 3,924–3,996 | **−8.3%** | yes |
+| DeltaBlue | 731 | 727–741 | 684 | 671–725 | **−6.5%** | yes |
+| DeltaBlueTon80 | 7.55 | 7.48–7.74 | 7.67 | 7.55–8.30 | +1.5% | no |
+| Havlak | 3,787 | 3,743–3,813 | 3,495 | 3,460–3,553 | **−7.7%** | yes |
+| Json | 11.3 | 11.2–11.4 | 11.3 | 11.2–11.3 | 0.0% | no |
+| List | 1.04 | 1.02–1.09 | 1.04 | 1.02–1.13 | +0.1% | no |
+| Mandelbrot | 3,330 | 3,319–3,425 | 3,356 | 3,321–3,389 | +0.8% | no |
+| NBody | 2,460 | 2,445–2,479 | 2,439 | 2,413–2,452 | −0.9% | no |
+| Permute | 2.49 | 2.45–2.57 | 2.60 | 2.55–2.66 | +4.5% | no (yes in sitting 1) |
+| Queens | 2.15 | 2.11–2.25 | 2.16 | 2.13–2.20 | +0.7% | no |
+| Richards | 83.6 | 82.1–85.1 | 83.1 | 81.8–84.3 | −0.6% | no |
+| RichardsTon80 | 4.92 | 4.83–5.05 | 5.07 | 5.00–5.18 | +3.1% | no (yes in sitting 1) |
+| Sieve | 1.37 | 1.36–1.39 | 1.46 | 1.44–1.50 | **+6.8%** | yes |
+| Storage | 1.88 | 1.85–1.92 | 1.75 | 1.72–1.84 | **−6.9%** | yes |
+| Towers | 3.65 | 3.57–3.73 | 3.46 | 3.38–3.54 | **−5.1%** | yes |
+| `bench_loop.ns` | 2.49 | 2.48–2.50 | 2.49 | 2.47–2.64 | −0.1% | no |
+| `bench_send.ns` | 3.64 | 3.60–3.69 | 3.65 | 3.58–3.83 | +0.2% | no |
+| `bench_block.ns` | 10.4 | 10.2–10.9 | 9.37 | 9.27–9.95 | **−9.9%** | yes |
+| `bench_megamorphic.ns` | 5.34 | 5.23–5.39 | 5.36 | 5.27–5.44 | +0.4% | no |
+| `bench_do.ns` | 4.09 | 4.02–4.20 | 4.21 | 4.14–4.44 | +2.8% | no |
+| `bench_new.ns` | 3.07 | 3.03–3.57 | 3.14 | 3.09–3.20 | +2.3% | no |
+| `bench_new2.ns` | 4.05 | 3.99–4.24 | 4.20 | 4.14–4.27 | +3.7% | no |
+| `bench_newarg.ns` | 5.83 | 5.78–5.92 | 5.91 | 5.83–6.03 | +1.5% | no |
+
+**Six sources are faster with separated ranges**, by 5.1% (Towers) to 9.9%
+(`bench_block.ns`), each by about the same in both sittings: the two
+seconds-long allocating benchmarks CD and Havlak, DeltaBlue, Storage,
+Towers and `bench_block.ns`. **Sieve is the one source slower with
+separated ranges**, by 6.8%; Permute (+4.5%) and RichardsTon80 (+3.1%) are
+slower in both sittings and separated in the first; the four allocating
+microbenchmarks are 1.5% to 3.7% slower inside their ranges; the rest are
+level. The three after-builds lie within 2.6% of each other on every
+source.
+
+**The full collections fell on every source.** `--collector-statistics`
+over the same iteration counts, discarded warm-up run included, alpha build
+of each tree; before has full collections only:
+
+| Source | Before: collections, total / longest pause (ms) | After: scavenges, total / longest (ms) | After: full collections, total / longest (ms) |
+|---|---|---|---|
+| CD | 18,844, 1,715.7 / 0.279 | 913, 44.6 / 0.149 | 0 |
+| DeltaBlue | 183, 229.6 / 3.397 | 52, 20.0 / 1.796 | 9, 18.2 / 3.126 |
+| DeltaBlueTon80 | 15, 1.03 / 0.090 | 0 | 0 |
+| Havlak | 780, 1,880.0 / 6.588 | 412, 268.1 / 1.841 | 85, 378.4 / 6.302 |
+| Json | 10, 0.83 / 0.088 | 0 | 0 |
+| Mandelbrot | 1, 0.10 / 0.102 | 0 | 0 |
+| NBody | 2,649, 115.5 / 0.153 | 172, 0.37 / 0.024 | 0 |
+| Permute | 16, 0.74 / 0.061 | 1, 0.021 | 0 |
+| Queens | 4, 0.22 / 0.066 | 0 | 0 |
+| Richards | 283, 13.8 / 0.062 | 18, 0.16 / 0.025 | 0 |
+| RichardsTon80 | 21, 0.99 / 0.065 | 1, 0.022 | 0 |
+| Sieve | 28, 1.27 / 0.057 | 1, 0.039 | 0 |
+| Storage | 20, 2.96 / 0.217 | 0 | 0 |
+| Towers | 50, 2.43 / 0.071 | 3, 0.041 / 0.025 | 0 |
+| `bench_block.ns` | 229, 11.9 / 0.074 | 15, 0.052 / 0.017 | 0 |
+| `bench_do.ns` | 14, 0.87 / 0.102 | 0 | 0 |
+| `bench_new.ns` | 10, 0.56 / 0.064 | 0 | 0 |
+| `bench_new2.ns` | 13, 0.57 / 0.060 | 0 | 0 |
+| `bench_newarg.ns` | 23, 2.18 / 0.181 | 1, 0.022 | 0 |
+
+Bounce, List, `bench_loop.ns`, `bench_send.ns` and `bench_megamorphic.ns`
+collect in neither tree. Only Havlak (780 to 85) and DeltaBlue (183 to 9)
+still reach a full collection; Havlak's collector time falls from 1,880 ms
+to 646 ms, and it is the one program whose scavenges are expensive, 0.65 ms
+each and 1.84 ms at the longest, so its survivors are many. The longest
+full-collection pause is unchanged (Havlak 6.6 to 6.3 ms, DeltaBlue 3.4 to
+3.1 ms); the longest scavenge pause is 1.8 ms. Whether Havlak's remaining
+full collections come from survivors tenured early -- a full survivor space
+or the adaptive threshold -- or from a graph that is long-lived and rightly
+tenured, the statistics line cannot say: it reports no promoted bytes, no
+survivor occupancy and no threshold ([OPEN-WORK.md](../OPEN-WORK.md)). Its
+live-object count is not comparable across the trees either: after, it
+counts every object lying in the space, eden's dead ones not yet scavenged
+included (`bench_new.ns` reports 220,116 against 4,176).
+
+**Where the gains come from.** An `xperf` profile (0.1221 ms sampling, one
+debug-info release build per tree, one trace per program) puts the gain in
+the full collector the sources no longer run: `bench_block.ns`'s collector
+samples fall from 10.2% to 0.0% and CD's from 9.5% to 0.2%, all of it
+scavenging, with `vm::run`, `push_activation` and the rest within about a
+point of each other on those two; Havlak's from
+11.7% to 4.0% (1.4% of all samples in the scavenger) and DeltaBlue's from
+7.4% to 1.1% (0.5%). The per-iteration closures and frames now die young.
+
+**The barrier costs 0.1% to 0.3% of samples.** `write_barrier` is forced
+inline, so its compare sequence -- holder old, word young, the tag test, a
+call or tail jump to `remember` -- was located by hand in each store
+accessor's disassembly: about eight instructions after the store in
+`Heap::set_pointer_word`, `frame_set_local` and `object_set_class`, which
+stay out-of-line functions in both trees, and one more push/pop pair in
+`set_pointer_word` (114 instructions against 101). `vm::run` is 7,971
+instructions in both trees. Over the profiles of DeltaBlue, Richards,
+Havlak, CD, Sieve and `bench_block.ns`, the barrier's compares hold 0.08%
+to 0.28% of the samples and `remember` at most 0.02%; `set_pointer_word`
+as a whole gained 0.1 to 0.6 points, and on no profile is the barrier among
+the fifteen hottest functions.
+
+**The short allocating programs pay eden's first touch.** Sieve, Permute,
+RichardsTon80 and the four allocating microbenchmarks scavenge at most once
+in a `bench --iterations 10`, so nearly every allocation lands on a page of
+eden the process has never touched, where the before tree reused its small
+old space, resident and warm, at the price of 16 to 28 collections. Four
+measurements say the cost is the first touch, not the barrier and not the
+scavenger:
+
+- **Peak working set** (`PeakWorkingSetSize` and `PageFaultCount` through
+  `GetProcessMemoryInfo` on the still-open handle, all six builds, within
+  0.1 MB of each other): `bench_loop.ns` and `bench_send.ns`, which
+  allocate nothing per iteration, stay at 6.4–6.5 MB and about 1,800 page
+  faults in both trees, so the nursery's commit costs nothing untouched.
+  `bench --iterations 10` of `bench_block.ns` rises from 7.0 MB and 1,939
+  faults to 13.9–14.0 MB and 3,729–3,741, about 1,800 faults more, or 7 MiB
+  of 4 KiB pages; Sieve, Permute, RichardsTon80 and Storage rise from
+  14.9–15.0 MB to 21.5–22.7 MB, `bench_new2.ns` and `bench_do.ns` from
+  7.0 MB to 13.1–14.0 MB.
+- **Kernel time.** Sixty processes of `bench --iterations 10` each under
+  `xperf`, aggregated: Sieve's kernel samples inside `ns-next` rise from
+  2,496 to 3,401 and Permute's from 2,523 to 3,450 -- page faults and the
+  zeroing of demand-zero pages, the `System` process's samples rising with
+  them -- while their collector samples fall from 709 to 11 and from 445
+  to 3 and the rest is level. Sieve's net, +654 samples over sixty
+  processes, is about 0.12 ms a run against the 0.09–0.10 ms measured.
+- **The barrier** holds 0.14% (Sieve) and 0.03% (Permute) of those
+  samples, and `remember` none.
+- **Once eden has been cycled the regression is gone.** At
+  `--iterations 200`, one build a side, every one of them is faster after:
+  Sieve 1.356 to 1.268 ms (−6.5%), Permute 2.477 to 2.423 ms (−2.2%),
+  RichardsTon80 4.99 to 4.85 ms (−2.8%), `bench_new2.ns` 4.01 to 3.96 ms
+  (−1.3%), `bench_do.ns` 4.04 to 3.98 ms (−1.5%).
+
+So a program that allocates a few megabytes and stops pays once per process
+for faulting in up to 8 MiB of eden, about 2,000 soft faults and their
+zeroing, 1.5 to 2 ms on this machine, which a 1–5 ms program under `bench
+--iterations 10` shows as 3% to 7%; the full collections it no longer runs
+repay it only once it has cycled eden. A smaller eden or one pre-faulted
+when the heap is made would trade it differently, and neither was measured
+([OPEN-WORK.md](../OPEN-WORK.md)). Sieve's 5,000-element array, 40 KB, is
+allocated old under the 32 KiB rule, so a long Sieve run still collects in
+full, less often than before: over 1,500 runs `World::collect` holds 3.6%
+of the after tree's samples against 8.1% of the before tree's.
+
+What the measurement does not cover: one machine and one operating system;
+data layout, which `-C metadata` does not vary; one profile trace per
+program and tree; the background load above; the second sitting repeated
+the first's three build orders rather than continuing the rotation; and
+nothing measured argues for or against eden's 512 KiB reserve or the 32 KiB
+large-object limit.
 
 ### What a send costs, and where it goes
 
@@ -6238,7 +6415,7 @@ it always was. `read_local` and `write_local` remain for every caller
 outside the loop, the out-of-line arms among them. No `unsafe`.
 
 **What pins it.** The semantics are the suite's: every golden under both
-lowerings, the image round trips, the corpus, and the four stress modes,
+lowerings, the image round trips, the corpus, and the stress modes,
 of which the move and the collection modes catch a handle held across a
 safepoint because the stretch still leaves its entry there. `heap.rs`'s unit tests pin that a stale
 `RegisterBase` panics in a debug build and that one survives a deeper push.
@@ -6524,8 +6701,8 @@ took -- the compiler's own order ([compiler.md](compiler.md), "Safepoints and
 call-site identity").
 
 **The wide forms run under a stress mode** (2026-10-02):
-`NS_NEXT_STRESS_WIDE=1`, debug builds only like the move, cache and
-collection modes and read once per process
+`NS_NEXT_STRESS_WIDE=1`, debug builds only like the move, cache,
+collection and scavenge modes and read once per process
 (`interpreter/safepoint.rs`), makes `CodeBuilder::new` encode every
 instruction in a wide form, so that the whole golden suite runs through the
 `Wide` arm and the four wide send forms. It is one of the end-of-batch

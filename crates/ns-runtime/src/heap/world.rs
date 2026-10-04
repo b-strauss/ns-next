@@ -13,7 +13,73 @@ use crate::compiler::Lowering;
 use crate::hash::IdentityMap;
 use crate::heap::{Heap, Root};
 use crate::interpreter::Mutator;
-use crate::types::Value;
+use crate::types::{ClassReference, FrameReference, Value};
+
+/// What the step state holds beside the heap that names objects: the
+/// bootstrap's builtin classes, the `platform` singleton, the VM mirror,
+/// the kernel and the depth limit's reserve. Marking, forwarding and
+/// scavenging all trace it through this one `Trace` impl, so that a root
+/// added later is named once and reached by all three.
+pub(crate) struct StepRoots<'state, 'gc> {
+    builtin_classes: &'state mut Vec<ClassReference<'gc>>,
+    platform_singleton: &'state mut Option<Value<'gc>>,
+    vm_mirror: &'state mut Option<Value<'gc>>,
+    kernel: &'state mut Option<Value<'gc>>,
+    depth_reserve: &'state mut Option<FrameReference<'gc>>,
+}
+
+impl crate::trace::Trace for StepRoots<'_, '_> {
+    fn trace<T: crate::trace::Tracer>(&mut self, tracer: &mut T) {
+        let StepRoots {
+            builtin_classes,
+            platform_singleton,
+            vm_mirror,
+            kernel,
+            depth_reserve,
+        } = self;
+        for class in builtin_classes.iter_mut() {
+            tracer.object(class);
+        }
+        if let Some(platform) = platform_singleton.as_mut() {
+            tracer.value(platform);
+        }
+        if let Some(mirror) = vm_mirror.as_mut() {
+            tracer.value(mirror);
+        }
+        if let Some(kernel) = kernel.as_mut() {
+            tracer.value(kernel);
+        }
+        if let Some(frame) = depth_reserve.as_mut() {
+            tracer.frame(frame);
+        }
+    }
+}
+
+/// The heap and the step roots, borrowed side by side out of one mutator,
+/// so that a tracer the heap lends out can reach the roots it does not own.
+fn split<'state, 'gc>(
+    mutator: &'state mut Mutator<'gc>,
+) -> (&'state mut Heap<'gc>, StepRoots<'state, 'gc>) {
+    let Mutator {
+        heap,
+        builtin_classes,
+        platform_singleton,
+        vm_mirror,
+        kernel,
+        depth_reserve,
+        ..
+    } = mutator;
+    (
+        heap,
+        StepRoots {
+            builtin_classes,
+            platform_singleton,
+            vm_mirror,
+            kernel,
+            depth_reserve,
+        },
+    )
+}
 
 pub(crate) struct World {
     mutator: Mutator<'static>,
@@ -130,9 +196,7 @@ impl World {
 
     /// Moves every object, every reified frame among them
     /// (`Heap::move_everything`), and forwards what the step state holds
-    /// beside the heap: the
-    /// bootstrap's builtin classes, the `platform` singleton, the VM
-    /// mirror and the kernel.
+    /// beside the heap (`StepRoots`).
     #[cfg(debug_assertions)]
     pub(crate) fn move_everything(&mut self) {
         self.check_quiescent_state();
@@ -141,35 +205,57 @@ impl World {
         self.forward_step_state(&mut forwarder);
     }
 
-    /// Marks everything reachable: the heap's own roots, then the step state's
-    /// -- the bootstrap's builtin classes, the `platform` singleton, the VM
-    /// mirror, the kernel and the depth limit's reserve -- then the traversal.
+    /// Marks everything reachable: the heap's own roots, then the step
+    /// state's (`StepRoots`), then the traversal.
     pub(crate) fn mark_everything_reachable(&mut self) {
-        use crate::trace::Tracer;
-        let mutator = &mut self.mutator;
-        let mut marker = mutator.heap.begin_marking();
-        for class in &mut mutator.builtin_classes {
-            marker.object(class);
-        }
-        if let Some(platform) = &mut mutator.platform_singleton {
-            marker.value(platform);
-        }
-        if let Some(mirror) = &mut mutator.vm_mirror {
-            marker.value(mirror);
-        }
-        if let Some(kernel) = &mut mutator.kernel {
-            marker.value(kernel);
-        }
-        if let Some(frame) = &mut mutator.depth_reserve {
-            marker.frame(frame);
-        }
-        mutator.heap.drain_marking(&mut marker);
+        use crate::trace::Trace;
+        let (heap, mut roots) = split(&mut self.mutator);
+        let mut marker = heap.begin_marking();
+        roots.trace(&mut marker);
+        heap.drain_marking(&mut marker);
+    }
+
+    /// One scavenge (`Heap::scavenge`), with the step state's roots traced
+    /// beside the heap's, timed like a collection.
+    pub(crate) fn scavenge(&mut self, tenure_all: bool) {
+        let start = std::time::Instant::now();
+        self.check_quiescent_state();
+        let (heap, mut roots) = split(&mut self.mutator);
+        heap.scavenge(tenure_all, |scavenger| {
+            use crate::trace::Trace;
+            roots.trace(scavenger);
+        });
+        self.mutator.heap.record_scavenge(start.elapsed());
+    }
+
+    /// Whether an allocation or the remembered set has asked for a
+    /// scavenge since the last one (`Interpreter::safepoint`).
+    pub(crate) fn scavenge_requested(&self) -> bool {
+        self.mutator.heap.scavenge_requested()
+    }
+
+    /// Whether the requested scavenge must tenure every survivor.
+    pub(crate) fn tenure_all_requested(&self) -> bool {
+        self.mutator.heap.tenure_all_requested()
+    }
+
+    /// Asserts the remembered-set invariant (`Heap::verify_remembered_set`):
+    /// the scavenge stress mode's check before each of its scavenges.
+    #[cfg(debug_assertions)]
+    pub(crate) fn verify_remembered_set(&self) {
+        self.mutator.heap.verify_remembered_set();
+    }
+
+    /// Sets eden's occupied bytes at which an allocation asks for a
+    /// scavenge (`Interpreter::set_scavenge_threshold`).
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_scavenge_threshold(&mut self, bytes: usize) {
+        self.mutator.heap.set_scavenge_threshold(bytes);
     }
 
     /// One collection: mark everything reachable, compact the space, and
-    /// forward what the step state holds beside the heap -- the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror and the
-    /// kernel -- exactly as a move does.
+    /// forward what the step state holds beside the heap (`StepRoots`)
+    /// exactly as a move does.
     ///
     /// Timed end to end with one `Instant::now()`/`elapsed()`, folded into
     /// `Heap`'s counters by `record_collection`. That timing call costs
@@ -207,32 +293,16 @@ impl World {
         self.mutator.heap.collector_statistics()
     }
 
-    /// Forwards what the step state holds beside the heap: the bootstrap's
-    /// builtin classes, the `platform` singleton, the VM mirror, the
-    /// kernel and the depth limit's reserve. Shared by `move_everything` and `collect`, which forward the
-    /// same roots after the heap has forwarded its own -- one copy so a root
-    /// added here later cannot land in one caller's walk and not the other's.
+    /// Forwards what the step state holds beside the heap (`StepRoots`).
+    /// Shared by `move_everything` and `collect`, which forward the same
+    /// roots after the heap has forwarded its own.
     fn forward_step_state<M: crate::heap::Relocation>(
         &mut self,
         forwarder: &mut crate::heap::Forwarder<M>,
     ) {
-        use crate::trace::Tracer;
-        let mutator = &mut self.mutator;
-        for class in &mut mutator.builtin_classes {
-            forwarder.object(class);
-        }
-        if let Some(platform) = &mut mutator.platform_singleton {
-            forwarder.value(platform);
-        }
-        if let Some(mirror) = &mut mutator.vm_mirror {
-            forwarder.value(mirror);
-        }
-        if let Some(kernel) = &mut mutator.kernel {
-            forwarder.value(kernel);
-        }
-        if let Some(frame) = &mut mutator.depth_reserve {
-            forwarder.frame(frame);
-        }
+        use crate::trace::Trace;
+        let (_, mut roots) = split(&mut self.mutator);
+        roots.trace(forwarder);
     }
 
     /// What must hold no handle when everything moves, because nothing

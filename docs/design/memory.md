@@ -9,14 +9,20 @@
 > stack in the same `Heap` and become frame objects in the space only when
 > something reifies one.
 > Identity, layout ownership and the seam that routes every access through
-> `Heap` are built. A mark-compact collector reclaims an object once nothing
-> reaches it: marking walks the roots through `trace.rs`'s one edge
+> `Heap` are built. The space has two generations ("Generations"): a
+> nursery of two survivor spaces and eden below the old space, collected
+> by a copying scavenger with age-based tenuring, whose roots include a
+> remembered set that the write barrier in `heap.rs`'s store accessors
+> keeps. A full collection reclaims an object of either generation once
+> nothing reaches it: marking walks the roots through `trace.rs`'s one edge
 > enumeration and sets each reached object's mark bit in its header,
-> compaction slides the survivors down to the space's first offset and
-> gives committed memory back with hysteresis, and every handle is
-> rewritten through a live-word bitmap, in one stop-the-world pass. It runs
-> only at a safepoint of the run loop, on a request an allocation past the
-> space's limit sets — never inside an allocation itself. The root
+> compaction slides the survivors of both generations into the old space
+> from its first offset and gives committed memory back with hysteresis,
+> and every handle is rewritten through a live-word bitmap, in one
+> stop-the-world pass. Both run only at a safepoint of the run loop, on a
+> request an allocation sets -- a scavenge once eden holds its threshold, a
+> full collection once the old space reaches its limit -- or between
+> entries, never inside an allocation itself. The root
 > discipline it runs on, in "Checked roots and a collector", is built in all
 > three of its parts: nothing re-enters the run loop from Rust, so no Rust
 > frame is live below a safepoint (step 2a); the run loop polls a safepoint,
@@ -26,13 +32,15 @@
 > movable handle carries a lifetime brand, so that holding one across a
 > safepoint is a compile error (step 2c). The canonical symbol table is
 > weak; everything else the collector traces is strong.
-> **Planned:** a nursery ("Planned: generations") and allocation by a bump
-> in eden ("Planned: inline allocation").
+> **Planned:** allocation by a bump in eden inlined into the instructions
+> that allocate ("Planned: inline allocation").
 > **Code:** `crates/ns-runtime/src/heap.rs` (the activation stack, the
-> handle types and their brand, every accessor and allocation, the host
-> root table, the move, the collection trigger, marking, compaction and
-> forwarding), `heap/space.rs` (the object space: the reservation, the
-> bump, the overflow word and the walk), `heap/compaction.rs` (the
+> handle types and their brand, every accessor and allocation, the write
+> barrier and the remembered set, the host root table, the move, the
+> triggers, the scavenge, marking, compaction and forwarding),
+> `heap/space.rs` (the object space: the reservation, its four regions,
+> the bumps, the overflow word and the walk), `heap/scavenge.rs` (the
+> scavenger and the tenuring threshold), `heap/compaction.rs` (the
 > live-word bitmap a collection forwards through, and the move's shift),
 > `heap/object.rs` (the block of words an object is, `pointer_ranges`,
 > which names its pointer words by its format, and `trace_block`),
@@ -40,12 +48,15 @@
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
 > tables of mixins, applications and code),
 > `heap/mark.rs` (the marker's work list), `heap/world.rs` (the step
-> state at rest, the entry that lends it out, and `World::collect`),
+> state at rest, the entry that lends it out, `StepRoots`, `World::collect`
+> and `World::scavenge`),
 > `interpreter/mod.rs` (`Mutator`, and `Interpreter::enter` with the
 > doctests that pin the brand), `trace.rs` (every root the collector
-> traces, marking and forwarding alike, in every build), `interpreter/safepoint.rs`
-> (the safepoint, `Interpreter::collect_now` and the switches of the four
-> stress modes: moves, caches, collection, and every instruction wide),
+> traces, marking, forwarding and scavenging alike, in every build),
+> `interpreter/safepoint.rs`
+> (the safepoint, `Interpreter::tenure_now`, `Interpreter::collect_now` and
+> the switches of the five stress modes: moves, caches, collection,
+> scavenges, and every instruction wide),
 > `vm.rs` (one entry per stretch between two safepoints, and the poll),
 > `heap/value.rs` (`Value`, and `Word`, what a heap object stores),
 > `mixin.rs` (layout, and the one remaining iterative
@@ -411,14 +422,14 @@ on the activation stack or in one of the places "What the collector traces"
 below lists. The step state's reusable argument buffer is empty there — a
 send gathers into it, decides and pushes within one instruction, and it is
 cleared when it is given back — so it is not a root, and a debug assertion
-before every move says so (`World::check_quiescent_state`).
+before every move, collection and scavenge says so
+(`World::check_quiescent_state`).
 
 The one other place a collection is sound is between entries, where only
 roots hold values and no step is running: `Interpreter::collect_now`
-(`interpreter/safepoint.rs:215`) collects there today, for tests only. Under
-generations a load will tenure everything there -- between the bootstrap
-and the decoder's first allocation, and, for a stateful load, again after
-the platform paths and before the graph pass ("Planned: generations").
+(`interpreter/safepoint.rs`) collects there, for tests only, and every
+image load tenures everything there once, between the platform paths and
+the graph pass (`Interpreter::tenure_now`; "Generations").
 
 The first four systems below chose this placement; the last four collect
 elsewhere, and their right-hand column is what that costs their runtime code:
@@ -443,20 +454,25 @@ across one. HotSpot affords it for Java code only because its JIT emits the
 maps, and ns-next's Rust code has none. What the run-loop placement costs is
 overshoot: a request made during a step waits for the next safepoint, so the
 heap can pass its threshold by what one step allocates. A large object going
-straight to a large-object space and a small reserve absorb that, as they do in
-Cog and Primordial Soup.
+straight to the old space and eden's reserve past its scavenge threshold
+absorb that, as they do in Cog and Primordial Soup, and an allocation that
+finds even the reserve spent goes old ("Generations").
 
 **The poll** (in `vm::run_stretch`, forced inline into `vm::run`) is one
 compare of a flag the heap owns, `Heap::safepoint_requested`. When the flag is
 set the stretch writes its frame back and leaves its entry, and `run` calls
 `Interpreter::safepoint` (`interpreter/safepoint.rs`), `#[cold]` and out of
 line, so `vm.rs` holds the compare and the call and nothing of what a
-safepoint does. The safepoint serves a request by clearing the flag, except
-under the stress mode below, which keeps it set. The collector's trigger sets
-it in a release build too: `allocate_block`, through which `reify` allocates
-its frame object as every allocation does, compares the bytes the objects
-occupy against a limit, not a counter, and requests a collection when it is
-reached ("The trigger and the growth policy" below).
+safepoint does. The safepoint serves a request -- a full collection if one
+is pending, which empties the nursery too, and otherwise a pending scavenge
+-- and clears the flag, except under a stress mode below, which keeps it
+set. The collector's triggers set it in a release build too:
+`allocate_block`, through which `reify` allocates its frame object as every
+allocation does, compares eden's occupied bytes against the scavenge
+threshold, and the old space's against the collection limit when an
+allocation goes old, a comparison and not a counter, and requests a
+scavenge or a collection when one is reached ("The trigger and the growth
+policy" below).
 
 That the slow path serves the request, which a release build's trigger now
 also raises, is what keeps the poll in the binary. With an empty release slow
@@ -678,9 +694,12 @@ check").
   `kernel`, `Kernel.ns`'s one instance and the enclosing object of every
   builtin class ([core-library.md](core-library.md), "The bootstrap:
   placeholders first, kernel second"). The step state holds all four beside
-  the heap, and both root walks visit them: marking
-  (`World::mark_everything_reachable`) and forwarding, after a collection or
-  a stress move (`forward_step_state`). The mirror is also the kernel's
+  the heap, with the depth limit's reserve below, and one `Trace` impl
+  enumerates the five, `StepRoots` (`heap/world.rs`), which marking
+  (`World::mark_everything_reachable`), forwarding after a collection or a
+  stress move (`forward_step_state`) and the scavenge (`World::scavenge`)
+  all trace, so a root added later is named once and reached by all three.
+  The mirror is also the kernel's
   `vmMirror` slot and the kernel every builtin class's `enclosing` object,
   but a root of their own keeps both alive and forwarded whatever those
   links are.
@@ -706,14 +725,21 @@ check").
   a string's code points are never handed to the tracer, since they would
   read as handles.
 - The host root table.
+- The kernel-private `Activation` class, every frame object's class, which
+  the heap holds (`Heap::activation_class`).
 - The depth limit's reserve, `Mutator.depth_reserve`: the frame of the
-  activation an error near the limit arose in, marked and forwarded with the
-  bootstrap's roots ([execution.md](execution.md), "The depth limit").
+  activation an error near the limit arose in, marked, forwarded and
+  scavenged with the bootstrap's roots through `StepRoots`
+  ([execution.md](execution.md), "The depth limit").
+- For a scavenge only, the remembered set: every old object that may name a
+  young one, scanned by its format ("Generations"). Marking and forwarding
+  need no such set, since they reach or walk every object.
 - The heap's canonical symbol table ([object-model.md](object-model.md),
   "Values and objects"), forwarded by a move but not a root for marking: it
   is weak, as Primordial Soup's `symbolTable` is -- a symbol no program holds
   any more is free to go, and the next literal of its text allocates a new
-  canonical one ("Weak references", below).
+  canonical one ("Weak references", below); a scavenge forwards its young
+  entries and clears the ones it did not copy.
 
 **Every impl names every field and matches every variant**, with no `..` and
 no `_` arm, so a field or a variant added later does not compile until someone
@@ -721,8 +747,9 @@ decides whether it holds a handle; `pointer_ranges` likewise matches every
 `Format`, so a new format does not compile until its pointer words are
 named. That is what keeps the enumeration complete
 as the types grow; the stress mode checks that the places it is applied to are
-complete. Enumerating is `trace.rs`'s and rewriting is `heap.rs`'s
-(`Forwarder`), since only `heap.rs` can mint a handle. `trace.rs` exists in
+complete. Enumerating is `trace.rs`'s and rewriting is the heap module's
+(`Forwarder` in `heap.rs`, `Scavenger` in `heap/scavenge.rs`), since only
+the heap module can mint a handle. `trace.rs` exists in
 every build, since the collector runs in every build.
 
 A reified frame is not a root of its own: it is reached through the closure
@@ -794,7 +821,9 @@ so a resolved future lives at most until then. The walk is gated on
 `Mutator::futures_made`, so a program that never made a future pays nothing
 for it, and the move stress mode (`World::move_everything`) does not
 replace: moving is not collecting ([object-model.md](object-model.md),
-"Simultaneous slots").
+"Simultaneous slots"). A scavenge does not replace either: the walk reads
+every object of both generations, which a scavenge exists not to do, so a
+resolved future stays until the next full collection.
 
 ### The move stress mode
 
@@ -807,13 +836,18 @@ everything at the safepoints its schedule picks, so the whole existing suite,
 which pins every program's outcome, runs under it unchanged.
 
 A move (`World::move_everything`: `Heap::move_everything`, then the step
-state's own roots) shifts every object by one distance and rewrites every
-traced handle: a compacting collection that treats everything as live. When
-the objects start at the space's first offset they shift up by
+state's own roots) shifts the objects of each region that holds any -- the
+past survivor space, eden and the old space -- within that region, and
+rewrites every traced handle: a compacting collection that treats everything
+as live. When a region's objects start at its first offset they shift up by
 `8 * (2 + epoch % 31)` bytes, `epoch` the new move epoch, varied so that
 moves do not all shift alike, and otherwise back down to the first offset,
-so no object keeps its offset at any move and the space never creeps upward
-(`compaction::Shift`). Every `ObjectReference` and
+so no object keeps its offset at any move, young stays young, and no region
+creeps upward (`compaction::Shift`); each nursery region keeps 264 bytes
+free past what it fills (`REGION_SLACK`), so a shift of up to 256 bytes
+never pushes an object out of it. The remembered set holds raw offsets that
+no tracer reaches, so the move relocates each through the same shift
+before the next scavenge reads it as a header. Every `ObjectReference` and
 `FrameReference` carries, in a debug build and beside the origin it already carries,
 the heap's move epoch when it was minted or last forwarded, and every accessor
 compares the two, so a handle the tracer missed panics at its first read
@@ -877,10 +911,11 @@ The stress runs are gates: `CLAUDE.md` requires the whole suite and
 `run-corpus` — every runnable module through `run` and through `build` then
 `load`, under both lowerings — under the variable at the end of a batch, as
 the `finishing-a-batch` skill lists them. A release build contains none of it:
-`trace.rs`, the epoch, the move, the schedule and the test hooks
+the epoch, the move, the schedule and the test hooks
 (`Interpreter::move_now`, `moves`, `stress_safepoints`, `set_stress_moves`)
 are `#[cfg(debug_assertions)]`, and only the poll is left, whose price is
-measured in "Where a collection can happen" above.
+measured in "Where a collection can happen" above; `trace.rs` stays, since
+the collector and the scavenger trace through it in every build.
 
 ### Considered and rejected: Nova's scopes
 
@@ -944,8 +979,9 @@ contiguous, precisely typed pair of arrays rather than a pointer-chased chain
 of individually allocated frames. The safepoint, the tracing (`trace.rs`)
 and the forwarding (`Forwarder`) exist in every build; the move
 (`Heap::move_everything`) exists in a debug build, where the stress mode
-checks the roots with it. What the collector does not have yet is
-generations: a nursery and a large-object space ("Planned: generations").
+checks the roots with it. The scavenger traces the same roots, plus the
+remembered set, and a large object goes straight to the old space rather
+than to a space of its own ("Generations").
 
 Closure conversion ([execution.md](execution.md), "Closure conversion") was
 built directly before the collector for the collector's sake. Before it, a
@@ -1088,8 +1124,12 @@ that peak is what the collector's design and the image format's guarantee
 need, stated carefully because the careless version is wrong.
 `decode_graph_section` allocates every record's object before it fills any,
 because a record must be addressable before the records that reference it
-are read; nothing collects during a load, because the decoder never polls a
-safepoint, so a rejected image cannot give them back part-way through. It is
+are read. The decoder allocates them only after the load's one tenure,
+which runs between two entries; the platform paths' sends before it may
+collect at their safepoints like any run, but the graph pass allocates
+every placeholder old, after the last tenure, and never polls a safepoint,
+so nothing collects while the placeholders exist and a rejected image
+cannot give them back part-way through ("Generations"). It is
 not retained past that: `image::load` owns its `Interpreter` in a local, so
 every `Err` path drops it and the space with it -- the cost is a transient
 peak during loading, not a leak for the process's life.
@@ -1141,10 +1181,13 @@ allocated (`read_large_integer_parts`).
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the
 decoder fills it, which holds both buffers for a moment; the object space's
-commit growth, which commits at least double what it had committed, so the
-space may have up to about twice what the placeholders occupy committed --
-committed, not touched, so it is charged against the commit limit but not
-the working set ("The object space"); and the decoded `Vec<Instruction>` of
+commit growth, which commits at least double what it had committed, the
+10 MiB nursery included, so the space may have up to about twice the
+nursery and the placeholders together committed -- committed, not
+touched, so it is charged against the commit limit but not the working
+set ("The object space"); the old space the load's tenure commits before
+it copies, for the worst case of everything young being promoted, which
+the nursery bounds rather than the input; and the decoded `Vec<Instruction>` of
 one compiled body at a time while the code table is verified ("The trigger
 and the growth policy" below). Each stays proportional to the input.
 
@@ -1158,17 +1201,19 @@ This is also *better* than the model it replaced, which is the part that
 makes it an accepted cost rather than a regression. Under `Rc<RefCell<_>>`
 each placeholder was its own heap allocation with the same lifetime, plus a
 refcount and an allocator round trip per record; the space makes each
-placeholder one bump of its top. The collector's interest here is
+placeholder one bump of the old space's top. The collector's interest here is
 the peak, not a lifetime bug.
 
 ### The shape: mark, compact, forward
 
 Decided with the user on 2026-09-20 over the arena the heap then had, and
 kept for the object space; built. The collector marks from the roots,
-slides the survivors down to the space's first offset, and rewrites every
-handle through a forwarding table. One space, stop-the-world. Generations
-are planned ("Planned: generations" below), with this collector as the old
-space's.
+slides the survivors down to the old space's first offset, and rewrites
+every handle through a forwarding table, stop-the-world. Since road step 4
+it is the full collection over both generations, and compacts the
+nursery's survivors into the old space with the old space's own; a
+copying scavenger collects the nursery alone between full collections
+("Generations" below).
 
 Three things the representation settles before any taste enters:
 
@@ -1257,48 +1302,69 @@ marking and forwarding is what keeps the two from drifting: a field a later
 change adds is named in exactly one place, and the compiler refuses that
 place until it is named.
 
-The roots are the list `Heap::move_everything` and `World::move_everything`
-already walk — the activation stack's entries and registers, the builtin
-classes, the `platform` singleton, the host roots — with the canonical symbol
-table removed from it, since that is weak. The difference from a move is
-the direction: a move walks every object because everything counts as
-live, while the collector starts at the roots and reaches an object only
+The roots are the ones a move forwards -- the heap's own, which
+`Heap::begin_marking` pushes (the `Activation` class, the activation
+stack's entries and registers, the host roots), and the step state's,
+`StepRoots` (the builtin classes, the `platform` singleton, the VM mirror,
+the kernel and the depth limit's reserve) -- with the canonical symbol
+table removed, since that is weak. The remembered set is not a root here:
+marking reaches every reachable object of both generations along its
+edges, an old one that names a young one included. The difference from a
+move is the direction: a move walks every object because everything counts
+as live, while the collector starts at the roots and reaches an object only
 along an edge.
 
 ### Compaction and forwarding
 
-Three walks over the space, each from its first object to its top, stepping
-from one allocation to the next by the word count in each header, or in the
-overflow word before it (`space::object_at`). The first records every word
-of each marked object's allocation, its overflow word included, as live in
-the forwarding table, a `ForwardingTable` (`heap/compaction.rs`): one bit
-per word of the space and, per chunk of 64 words, the number of live words
-before the chunk, filled in once the bits are (`summarize`). A survivor's
-new position is the first object's plus the live words before it -- the
-chunk's prefix plus the `popcount` of the live bits below it in the chunk --
-one entry, a mask and a `popcount` per lookup, the bits and the prefix side
-by side so that a lookup reads one cache line. The second walk slides each
-survivor down to that position and clears its mark bit; a destination is
-never above its source, so copying down never overwrites an allocation the
-walk has yet to read, and the new top is the first object plus the live
-words. The third is the existing `Forwarder` over everything that holds a
-handle -- the roots and every object by its format (`forward_everything`)
--- each offset looked up in the table. The table takes two `u64`s per 64
-words of the space, about 3%, and lives only while the collection runs
-(decided with the user on 2026-10-03; "Decisions" below).
+Three walks over the space's occupied ranges -- the past survivor space,
+eden and the old space (`Space::occupied`) -- each range from its first
+object to its top, stepping from one allocation to the next by the word
+count in each header, or in the overflow word before it
+(`space::object_at`). The first records every word of each marked object's
+allocation, its overflow word included, as live in the forwarding table, a
+`ForwardingTable` (`heap/compaction.rs`): one bit per word of the space up
+to the old space's top, the nursery included, and, per chunk of 64 words,
+the number of live words before the chunk, filled in once the bits are
+(`summarize`). The table is summarized in two segments, the old space's
+chunks first and the nursery's after them, so a survivor's new position is
+the old space's first offset (`NURSERY_END`) plus the live words before it
+in that order -- the chunk's prefix plus the `popcount` of the live bits
+below it in the chunk -- one entry, a mask and a `popcount` per lookup, the
+bits and the prefix side by side so that a lookup reads one cache line;
+`NURSERY_END` is a multiple of 64 words, so no chunk straddles the two
+generations. The second walk slides the old space's survivors down to
+their positions -- a destination there is never above its source, so
+copying down never overwrites an allocation the walk has yet to read --
+and then copies the nursery's survivors, the past survivor space's and
+then eden's in address order, above the last old one: a copy reads below
+`NURSERY_END` and writes above it, so the two never overlap. Each survivor's
+mark bit and age are cleared as it lands. The remembered bits are cleared
+first, at the offsets the remembered set holds, and the set emptied: once
+everything is old nothing needs remembering. The new top is `NURSERY_END`
+plus the live words, the nursery is empty, and a pending scavenge request
+is served by the collection with it. The third walk is the existing
+`Forwarder` over everything that holds a handle -- the roots and every
+object by its format (`forward_everything`) -- each offset looked up in the
+table. The table takes two `u64`s per 64 words of the space below the old
+space's top, about 3%, and lives only while the collection runs (decided
+with the user on 2026-10-03; "Decisions" below). Why the full collection
+compacts both generations into the old space, and what was rejected, is
+decision 2 under "Generations".
 
 Frames are objects in the same space, so a closure's captured frame, a
 frame's sender and home and the objects a frame holds are one graph with one
 mark, one compaction and one forwarding table.
 
-The epoch is unchanged, and it is what makes a stale handle loud rather than
-silent. A reclaimed object does not linger to be read the way a free list's
-would: the space ends at the new top, and every accessor reads through the
-slice below it, so an offset into the vacated tail finds no word; one below
-the new top names whatever survivor slid there, and carries an old epoch.
-Poisoning freed memory, which Primordial Soup does with `kUnallocatedByte`,
-is not needed here, and neither, until generated code dereferences
-addresses, is protecting the vacated pages ("The object space").
+The epoch advances, and it is what makes a stale handle loud rather than
+silent. A reclaimed old object does not linger to be read the way a free
+list's would: the old space ends at the new top, and every accessor reads
+through the slice below it, so an offset into the vacated tail finds no
+word; one below the new top names whatever survivor slid there, and carries
+an old epoch. The collection poisons nothing, unlike a scavenge
+("Generations"): it rewrites every word of every object by format, so no
+stored word can keep naming the nursery it emptied, and a Rust-side handle
+that does carries an old epoch. Protecting the vacated pages waits until
+generated code dereferences addresses ("The object space").
 
 The move stress mode stays beside the collector rather than being folded into
 it. It moves everything without liveness, so it isolates the completeness of
@@ -1309,46 +1375,64 @@ the stress mode, the forwarding table for the collector.
 
 ### The trigger and the growth policy
 
-A collection happens only at a safepoint of the run loop, as decided on
-2026-09-13. An allocation sets the request at most; it never collects.
+A scavenge and a full collection happen only at a safepoint of the run
+loop, as decided on 2026-09-13, or between entries. An allocation sets the
+request at most; it never collects.
 
-The test is a comparison, not a counter. `allocate_block`, through which
-every allocation enters the space, `reify`'s frame object included, already
-holds the space's new top, so it compares the bytes the objects occupy --
-the top less the space's start -- against a limit and sets the safepoint
-request when it is reached. One predictable branch, and no new state on the
-hot path.
+The tests are comparisons, not counters, in `allocate_block`, through which
+every allocation enters the space, `reify`'s frame object included, and
+which holds the region's new top already. A young allocation compares
+eden's occupied bytes against the scavenge threshold, 7.5 MiB -- eden's
+8 MiB less its 512 KiB reserve (`EDEN_RESERVE`) -- and requests a scavenge
+once it is reached. An allocation that goes old compares the old space's
+occupied bytes -- its top less its start -- against the collection limit
+and requests a full collection once it is reached; so does every scavenge,
+after it has promoted. One predictable branch on each path, and no new
+state on the hot path. At the safepoint a pending full collection is
+served first, since it empties the nursery as well; otherwise a pending
+scavenge.
 
-After a collection the limit becomes `max(floor, live * 2)` in bytes
-(`collection_limit`), so that between two collections no more is allocated
-than is live and the marking work per allocated byte is amortized constant.
-The floor -- 512 KiB of objects, about 4,096 objects at a 128-byte average
-(`COLLECTION_FLOOR`, `heap.rs`) -- keeps a small program out of the
-collector altogether: `bench_loop.ns` and `bench_send.ns` never collect.
+After a full collection the limit becomes `max(floor, live * 2)` in bytes
+(`collection_limit`), `live` the old space's occupancy after the compaction,
+so that between two full collections no more is promoted or allocated old
+than is live and the marking work per byte is amortized constant. The
+floor -- 512 KiB of objects, about 4,096 objects at a 128-byte average
+(`COLLECTION_FLOOR`, `heap.rs`) -- keeps a small program out of the full
+collector altogether: `bench_loop.ns` and `bench_send.ns` never collect,
+and of the twenty-four measured programs only Havlak and DeltaBlue reach a
+full collection ([execution.md](execution.md), "What generations moved").
 Soup's `GrowthPolicy` and HotSpot's free-ratio control have the same shape.
 
-The space commits as it grows (`Space::ensure_committed`): its first commit
-is 256 KiB, and a growth commits at least double what is committed and at
-least what the allocation needs, rounded up to a page, so a run of
-allocations commits a logarithmic number of times. Compaction gives memory
-back against the same limit that triggers a collection (`collection_limit`,
-which `compact` and `reset_collection_limits` share): a space with more than
-twice its next limit committed gives back what lies above the limit
-(`Space::release_above`, never below the top or the first commit), and one
-within twice it keeps what it has. Measured against the live set instead,
+The space commits as it grows (`Space::ensure_committed`): when the heap is
+made it commits the whole 10 MiB nursery and the old space's first 256 KiB
+(`MINIMUM_COMMIT`), and a growth commits at least double what is committed
+-- the committed range starts at the base, so the nursery counts, and the
+first growth takes it from 10.25 MiB to 20.5 MiB -- and at least what the
+allocation needs, rounded up to a page, so a run of allocations commits a
+logarithmic number of times. Committed is not touched: a page costs the
+working set only once something is written into it, which is what makes
+eden's first fill a cost each process pays once
+([execution.md](execution.md), "What generations moved"). Compaction gives
+memory back against the same limit that triggers a collection
+(`collection_limit`, which `compact` and `reset_collection_limits` share): a
+space with more than twice its next limit committed past the nursery gives
+back what lies above the nursery plus the limit (`Space::release_above`,
+never below the old space's top or its first commit), and one within twice
+it keeps what it has. Measured against the live set instead,
 the two part under the floor -- a live set far below the floor would cut
 the space to twice that, and the next cycle, allowed to reach the floor,
 would commit its way back at every collection; on the arena, where the same
 choice cut a buffer of slots, that was about 5% of `bench_value.ns`
 ([execution.md](execution.md), "What exceptions cost"). The price is
 retention: under the floor the space keeps up to twice the floor committed
-after a collection, 1 MiB, in either build.
+past the nursery after a collection, 1 MiB, in either build.
 
-The image decoder never collects, because it never polls — it does not run in
-the run loop. The transient peak described under the decode amplification above
-therefore stands unchanged: a rejected image's placeholders are reachable until
-validation finishes, so they are live, and the amplification figures stay
-valid.
+The image decoder's graph pass never collects, because it never polls — it
+does not run in the run loop — and it starts after the load's one tenure
+("Generations"). The transient peak described under the decode
+amplification above therefore stands: a rejected image's placeholders are
+reachable until validation finishes, so they are live, and the
+amplification figures stay valid.
 
 A second transient, not in those figures and not measured: a compiled body is
 stored as eight-byte instructions, and the decoder reads each body back into a
@@ -1362,7 +1446,7 @@ numbering walk the body's blocks and send sites
 (`EncodedBody::created_blocks`, `for_each_emitted_mut`). The memory stays
 bounded by the input, since every instruction consumed at least one wire byte.
 
-In a release build this gives the safepoint's slow path its first real work.
+In a release build the two triggers are what the safepoint's slow path serves.
 
 ### Weak references
 
@@ -1377,6 +1461,16 @@ handle, pruned with the table and rebuilt after every compaction and
 move.
 Nova has exactly this pair: `shift_strong_u32_index` answers an index,
 `shift_weak_u32_index` answers an `Option`.
+
+**A scavenge prunes the table too**, since a young symbol can die in
+either kind of collection (`Heap::forward_weak_symbols`). It is not a
+scavenge's root either: once the copying is done, a young entry whose
+object was copied -- its old place a forwarder -- names the copy, a young
+entry whose object was not is gone, becomes `None` and leaves the inverse
+map, and an old entry is left alone, since a scavenge reclaims nothing old.
+The inverse map follows each moved entry to its new offset. Every entry is
+checked for its heap and its epoch as the scavenger checks a handle it
+traces, and rebranded into the scavenge's epoch.
 
 This does not weaken §5.1.6. Equal symbols are one object as long as
 `Mutator::new_symbol` is the only way to make one. If a symbol object is
@@ -1449,6 +1543,20 @@ it is married the frame's own registers are nil and skipped by the trace,
 since the live ones are the entry's. The divorce on pop writes the program
 counter and the uncontinuable flag, clears the marriage, and copies the
 registers into the frame object only when the activation retains them.
+
+**A frame can be tenured while it is married.** A scavenge copies a young
+married frame like any other object -- its registers skipped, since they
+are the entry's -- and `StackEntry::reified` is rewritten to the copy, in
+the survivor space or the old space; the married field still holds the
+stack index. While it is married an old frame needs no remembering: its
+live registers are on the activation stack, which every scavenge traces as
+a root. The divorce is a store into an existing object, so it takes the
+barrier's rule: when it copies the registers into an old frame and one of
+them names a young object, it remembers the frame (`Heap::pop_activation`),
+since from then on the stack no longer covers them. A later
+`StoreOuterLocal` into the divorced frame goes through
+`Heap::frame_set_local` and its barrier ("Generations").
+
 Pinned across a move and a collection by `heap.rs`'s unit tests
 (`a_married_frame_survives_a_move_and_is_divorced_into_its_moved_object`,
 `a_frame_divorced_after_a_collection_holds_its_registers_only_when_retained`).
@@ -1470,20 +1578,37 @@ are different: **premature reclamation** — a missed root, a reachable object
 gone, silent wrong output at exit status 0 — and **false retention**, which no
 test sees at all and only a measurement shows.
 
-`NS_NEXT_STRESS_COLLECT=1` is the third stress mode, beside the move and the
-cache one, and a gate of its own. It collects at every safepoint rather than at
-a limit, paced by heap size like `STRESS_MOVE_BUDGET`, since collecting at
+There are five stress modes, each a gate of its own at the end of a batch,
+each set by an environment variable to anything but empty or `0`, all of
+them debug builds only: `NS_NEXT_STRESS_MOVES` ("The move stress mode"),
+`NS_NEXT_STRESS_CACHES` ([dispatch.md](dispatch.md), "Invalidation"),
+`NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_SCAVENGE` ("Finding a missed
+barrier: the scavenge stress mode"), each of these four keeping the
+safepoint flag set while it is on, and `NS_NEXT_STRESS_WIDE`, which emits
+every instruction in a wide form ([execution.md](execution.md), "The
+compact instruction encoding").
+
+`NS_NEXT_STRESS_COLLECT=1` runs a full collection at every safepoint rather
+than at a limit, paced by heap size like `STRESS_MOVE_BUDGET`
+(`StressSchedule`, `interpreter/safepoint.rs`), since collecting at
 literally every safepoint is quadratic in a deep recursion. Under it every
 golden and every corpus module runs at the highest collection frequency there
 is, so a missed root kills its object at the earliest possible moment and the
-recorded outputs catch the difference.
+recorded outputs catch the difference. `NS_NEXT_STRESS_SCAVENGE=1` does the
+same with a scavenge, after a check of the remembered set, and is what finds
+a store that missed the write barrier.
 
 False retention is caught by counting rather than by observing: a
 `debug_assertions`-only `collect_now`, beside `move_now`, and a
-`heap_statistics` answering the objects in the space, the bytes they
-occupy and the bytes committed for it. A program that
-discards n closures is back at its starting size afterwards; one that keeps n
-closures keeps n frames.
+`heap_statistics` answering the objects lying in the space and how many of
+them are young, the bytes they occupy and the bytes committed for it. An
+object in the space is counted until a collection reclaims it, so between
+two scavenges the count includes eden's dead objects; a test that counts
+collects first. A program that discards n closures is back at its starting
+size after a collection; one that keeps n closures keeps n frames.
+`--collector-statistics` prints the scavenges and their total and longest
+pause, the full collections and theirs, and the objects lying in the space,
+on one line to stderr (`crates/ns-cli/src/entry.rs`).
 
 ### How the collector is measured
 
@@ -1602,8 +1727,8 @@ owning it makes possible:
 - **A nursery where death is free.** Soup's semispaces
   (`prior-art/primordialsoup/vm/heap.h:40-73`), Strongtalk's eden and
   survivors and Spur's scavenger copy the survivors and never touch the dead,
-  so a young collection costs what survives. Road step 4 ("Planned:
-  generations"); the space's reservation is where its nursery will lie.
+  so a young collection costs what survives. Built: road step 4 put the
+  nursery at the low end of the space's reservation ("Generations").
 - **Allocation a JIT can inline.** Cogit bumps `freeStart` against
   `scavengeThreshold` in machine code for `new`, closures and boxed floats
   (`genPrimitiveNew`, `genCreateFullClosure:…`,
@@ -1680,8 +1805,8 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   heap holds its object space in it, reserved once at a generous size --
   64 GiB on a 64-bit target and 1 GiB otherwise (`DEFAULT_RESERVATION`,
   `heap/space.rs`), since reserved address space costs nothing until it is
-  committed -- and committed as the space grows; under generations the
-  nursery will lie in it beside the old space. A handle is an offset from the
+  committed -- and committed as the space grows; the nursery lies at its
+  low end, below the old space ("Generations"). A handle is an offset from the
   reservation's base, so the base must be fixed and the reservation
   contiguous, as HotSpot's compressed oops require; Spur's segments at
   scattered addresses (`addSegmentOfSize:`,
@@ -1711,11 +1836,11 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   over-report it, so a lent slice never covers memory a partly failed call
   changed. The heap does not store slices borrowed from its own
   reservation, which would make it self-referential; it re-borrows the
-  prefix up to the space's top at every access (`Space::words`,
+  prefix up to the old space's top at every access (`Space::words`,
   `words_mut`) and indexes it by the offset, so an offset at or above the
   top finds no word: that slice is the bounds check the accessors rely on.
-  Under generations it will take one slice per space -- each survivor
-  space, eden and the old space -- through `split_words_mut`.
+  The old space lies above the nursery, so the one slice covers all four
+  regions and the heap needs no other; `split_words_mut` is unused by it.
 - **Two implementations behind one interface**: Windows (`VirtualAlloc`,
   `VirtualFree`, `VirtualProtect`, through `windows-sys`) and POSIX (`mmap`
   with `PROT_NONE` to reserve, `mprotect` to commit and protect, a re-mapping
@@ -1746,7 +1871,7 @@ and an interpreter, which holds `Rc`s throughout, is not `Send` either.
   offset into a protected range finds no slice, a stale one would fail the
   accessor's bounds check at once. The crate supplies `Protection::NoAccess`
   and the slice refusal; why the heap protects nothing is in "The object
-  space".
+  space" and, for the nursery a scavenge vacates, "Generations".
 - **Executable memory for the JIT tiers** comes to the same crate when they
   do, with its `unsafe` entry into generated code.
 
@@ -1756,26 +1881,31 @@ Built by road step 3b on 2026-10-03
 ([its plan](../superpowers/plans/2026-10-03-1934-ns-next-object-space.md)),
 after the eight-byte value (road step 2), the compact instruction encoding
 and road step 3a, which fixed the layout of an object's words; 3b changed
-where the words live and nothing about the layout. Every object of a `Heap`
-lies end to end in one space (`heap/space.rs`), a `Reservation` of the
-memory layer above: each its header word, its class word and its fields
-([object-model.md](object-model.md), "The object layout"), from the first
-object's offset up to the top.
+where the words live and nothing about the layout; road step 4 split the
+space into two generations. Every object of a `Heap` lies in one space
+(`heap/space.rs`), a `Reservation` of the memory layer above: each its
+header word, its class word and its fields ([object-model.md](object-model.md),
+"The object layout"). The space is four regions, low to high -- two
+survivor spaces, eden and the old space ("Generations") -- and in each the
+objects lie end to end from the region's start up to its top.
 
 - **The reservation and its growth.** A heap reserves 64 GiB on a 64-bit
   target and 1 GiB otherwise (`DEFAULT_RESERVATION`): address space costs
   nothing until it is committed. When the operating system refuses it (an
   address-space limit, a sandbox), the request is halved and retried down to
   1 GiB (`MINIMUM_RESERVATION`, `reserve_falling_back`) before the heap
-  aborts. The first commit is 256 KiB
-  (`MINIMUM_COMMIT`), and a growth commits at least double what is
-  committed and at least what the allocation needs, rounded up to a page,
-  never past the reservation (`Space::ensure_committed`), so a run of
+  aborts. The first commit is the whole 10 MiB nursery and the old space's
+  first 256 KiB (`MINIMUM_COMMIT`), and a growth commits at least double
+  what is committed and at least what the allocation needs, rounded up to a
+  page, never past the reservation (`Space::ensure_committed`), so a run of
   allocations commits a logarithmic number of times. A compaction gives back
-  what lies above the next limit once more than twice it is committed ("The
-  trigger and the growth policy"). Each constant is one line to change.
-- **Allocation is a bump of the top** (`Space::allocate`, through
-  `Heap::allocate_block`), as Soup's `Heap::Allocate`
+  what lies above the nursery and the next limit once more than twice the
+  limit is committed past the nursery ("The trigger and the growth
+  policy"). Each constant is one line to change.
+- **Allocation is a bump of a region's top** -- eden's for a young object,
+  the old space's for a large one, one the image decoder makes, or one that
+  found eden spent (`Space::allocate_young`, `allocate_old`, through
+  `Heap::allocate_block`; "Generations") -- as Soup's `Heap::Allocate`
   (`prior-art/primordialsoup/vm/heap.h:373-387`), and every allocation
   writes its object's header, class word and fields in place, so no object
   is built beside the space and copied in. Objects are 8-byte aligned and at
@@ -1800,9 +1930,12 @@ object's offset up to the top.
   value cannot be laundered into a field; a word read out of an object is
   given the current ones (`Heap::load`), since a full collection rewrites
   every word it walks by format and cannot miss one the way it can miss an
-  unknown Rust field; under generations a scavenge will walk only the young
-  and the remembered objects, and a missed barrier is what
-  `NS_NEXT_STRESS_SCAVENGE` will catch ("Planned: generations"). The one
+  unknown Rust field. A scavenge walks only the young objects and the
+  remembered old ones, so an old object whose store missed the write
+  barrier keeps a word naming a young object the scavenge moved or
+  reclaimed; that is what `NS_NEXT_STRESS_SCAVENGE`'s check of the
+  remembered set and the poison over the vacated nursery find
+  ("Generations"). The one
   exception is deliberate: a married frame's inline registers are skipped,
   because while it is married its registers live on the activation stack,
   which is traced as a root.
@@ -1813,12 +1946,18 @@ object's offset up to the top.
   word from a header, as Spur's does (`numSlotsOfAny:`, `objectAfter:`,
   `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:55584`, `:55781`).
   The space is its first use: the arena's blocks knew their own length.
-  The space is walked linearly by these counts (`space::object_at`), which
-  is how compaction, a move, the forwarding of every object and the debug
-  check of the mark bits visit every object.
+  The space is walked linearly by these counts (`space::object_at`), over
+  the ranges its regions occupy (`Space::occupied`: the past survivor
+  space, eden and the old space, in address order), which is how
+  compaction, a move, the forwarding of every object, the replacement of
+  resolved futures and the debug check of the mark bits visit every object,
+  so none can miss a region; the scavenger's Cheney scan and the
+  remembered set's verification walk the same way over the regions they
+  read.
 - **Access stays behind `Heap`'s accessors**, which read the words through
-  `Space::words`, the slice `[0, top)` that `Reservation::prefix` lends in
-  O(1), so every access is bounds-checked against the top and a stale offset
+  `Space::words`, the slice `[0, old top)` that `Reservation::prefix` lends in
+  O(1) and that covers the nursery below the old space, so every access is
+  bounds-checked against the top and a stale offset
   reads a wrong object at worst, never undefined behaviour and never memory
   outside the objects. `Heap::block` ends where the header's count says, so
   no field, element or register accessor reaches the next object's header
@@ -1837,27 +1976,29 @@ object's offset up to the top.
   whether a divorce copies the registers stays decided per activation from
   the block's `outer_reach`. The activation stack of running activations is
   unchanged until road step 7, the execution model for compiled code.
-- **The collector is mark and sliding compaction** over the variably sized
-  objects, after Spur's planning compactor, which slides marked objects
+- **The full collector is mark and sliding compaction** over the variably
+  sized objects of both generations, after Spur's planning compactor,
+  which slides marked objects
   down and plans their new addresses before moving any (`compact`,
   `planCompactSavingForwarders`,
   `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:61596`, `:62399`).
   The mark bit is in the header ("Marking"); the forwarding addresses live
   in a side table while a collection runs, a live-word bitmap with a prefix
   count per 64 words, where Spur saves each object's first field to make
-  room for one ("Compaction and forwarding").
+  room for one ("Compaction and forwarding"). Between full collections a
+  copying scavenger collects the nursery ("Generations").
 - **The weak symbol table and the replacement of resolved futures** walk
   the space and read fields by format; the inverse symbol map is keyed by
   offset ("Weak references").
-- **The trigger** compares the bytes the objects occupy against a limit
-  reset after each collection, with a 512 KiB floor ("The trigger and the
-  growth policy").
-- **The move stress mode shifts every object** by `8 * (2 + epoch % 31)`
-  bytes, `epoch` the new move epoch, up from the first offset, and back
-  down to it at the next move, so every handle changes at every move ("The
-  move stress mode");
-  `NS_NEXT_STRESS_COLLECT`, `NS_NEXT_STRESS_CACHES` and
-  `NS_NEXT_STRESS_WIDE` are unchanged.
+- **The triggers** compare eden's occupied bytes against the scavenge
+  threshold, and the old space's against a limit reset after each full
+  collection, with a 512 KiB floor ("The trigger and the growth policy").
+- **The move stress mode shifts every region's objects within the
+  region** by `8 * (2 + epoch % 31)` bytes, `epoch` the new move epoch, up
+  from the region's first offset, and back down to it at the next move, so
+  every handle changes at every move and young stays young ("The move
+  stress mode"). The other four stress modes are in "The gates the
+  collector needs".
 - **Running out of memory aborts the process.** A commit the operating
   system refuses, or a reservation used up, ends in
   `std::alloc::handle_alloc_error`, as a failed `Vec` push does, so
@@ -1865,130 +2006,369 @@ object's offset up to the top.
   (decided with the user on 2026-10-03). A Newspeak-level out-of-memory
   error is open ([OPEN-WORK.md](../OPEN-WORK.md)).
 - **No page is protected, in either build** (decided with the user on
-  2026-10-03). The accessors lend only `[0, top)`, so a stale offset at or
-  above the top -- into the tail a compaction vacated -- already finds no
-  word, and one below the top lands in live, compacted memory, which is what
-  the epoch check is for. Protecting the vacated pages pays when code
-  dereferences addresses itself, which is road step 8's generated code; it
-  is open until then ([OPEN-WORK.md](../OPEN-WORK.md)).
+  2026-10-03, and kept for the nursery on 2026-10-04). The accessors lend
+  only `[0, old top)`, so a stale offset at or above the top -- into the
+  tail a compaction vacated -- already finds no word, and one below the top
+  lands in live, compacted memory, which is what the epoch check is for.
+  The nursery lies inside that slice whatever its regions hold, so a debug
+  build poisons what a scavenge vacates instead ("Finding a missed
+  barrier: the scavenge stress mode"). Protecting the vacated pages pays
+  when code dereferences addresses itself, which is road step 8's
+  generated code; it is open until then ([OPEN-WORK.md](../OPEN-WORK.md)).
 - **The space belongs to a `Heap`**, never to a thread or the process,
   because an actor is meant to be a per-heap scope
   ([liveness-and-reflection.md](liveness-and-reflection.md)).
 
 **What changes in `CLAUDE.md`, and when.** Its invariants describe what is
 built, so each changes when its road step lands, not before. Road steps 1,
-3a and 3b are done: the crate list names `crates/ns-memory`, the one crate
-with `unsafe`, and the heap's space in its reservation; "the crate forbids
+3a, 3b and 4 are done: the crate list names `crates/ns-memory`, the one crate
+with `unsafe`, and the heap's space in its reservation, a nursery of eden
+and two survivor spaces below the old space, a Cheney scavenger beside the
+mark-and-slide collector, which compacts both generations, and the barrier
+in `heap.rs`'s store accessors; "the crate forbids
 unsafe code" names `ns-runtime`; "An image is untrusted input" states the
-figures of "The amplification bound of a rejected load" above; the handle
-paragraphs describe a 64-bit byte offset and name no frame arena; and "A
+figures of "The amplification bound of a rejected load" above, and that
+the decoder allocates only after a tenure between entries, the
+platform-path sends may collect at their safepoints like any run, and the
+graph pass allocates old, after the last tenure, and never polls a
+safepoint, so the peak argument stands; the handle
+paragraphs describe a 64-bit byte offset and name no frame arena; "A
 cache records what the lookup decided" reads the builtin tag as a field of
-the class object, which `act` still reads afresh on every send. Still to
-come: the gates' stress loop gains `SCAVENGE`, "nothing collects during a
-load" becomes "the decoder allocates only after a tenure between entries;
-the platform-path sends may collect at their safepoints like any run; the
-graph pass allocates after the last tenure and never polls a safepoint" --
-so the peak argument stands -- and the crate list's sentence on the
-mark-compact collector names the scavenger beside it (road step 4); and "The
+the class object, which `act` still reads afresh on every send; the end-of-batch
+gates name five stress modes, `SCAVENGE` among them; and "Every store into
+an existing object goes through `heap.rs`'s store accessors and their write
+barrier" is an invariant of its own. Still to
+come: "The
 VM mirror is a capability" gains, as a consequence, that a program's
 `become:` refuses value objects and class objects, which covers every object
 a platform path names (road step 5; [object-model.md](object-model.md),
 "Planned: `become:` through forwarders"). "Decided per activation from the
 block's `outer_reach`" stands, since the divorce keeps that rule.
 
-## Planned: generations
+## Generations
 
-Would change: the space gains a nursery with a copying scavenger, and the
-mark-compact of "The object space" becomes the old space's collector.
-Road step 4.
+Built by road step 4 on 2026-10-04
+([its plan](../superpowers/plans/2026-10-04-2030-ns-next-generations.md)).
+The space has a young generation, the nursery, below the old space. A
+copying scavenger collects the nursery alone, at a cost in proportion to
+what survives; the mark-compact of "The shape: mark, compact, forward" is
+the full collection, over both generations. The code is `heap/space.rs`
+(the regions and their constants), `heap/scavenge.rs` (the scavenger and
+the tenuring threshold), `heap.rs` (the barrier, the remembered set, the
+triggers, `Heap::scavenge` and `Heap::compact`), `heap/world.rs`
+(`World::scavenge`, `StepRoots`) and `interpreter/safepoint.rs` (the
+safepoint that serves a request, `Interpreter::tenure_now` and the scavenge
+stress mode). What it measured is in [execution.md](execution.md), "What
+generations moved".
 
-- **Layout**: the nursery sits at the low end of the reservation -- two
-  survivor spaces and eden -- and the old space above it, as in Spur
-  (`setHeapBase:memoryLimit:endOfMemory:`, `cointerp.c:60020`) and Strongtalk
-  (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`). Young means an offset
-  below the boundary, one comparison, in the barrier and later in generated
-  code.
-- **The scavenger** is a Cheney copy of the survivors, as in all three
-  references (Spur `doScavenge:`, `cointerp.c:48477`; Strongtalk
-  `Universe::scavenge`,
-  `prior-art/strongtalk/vm/memory/universe_more.cpp:81-137`). An object's age
-  lives in the header's four age bits (bits 27-30), and it is tenured once its
-  age reaches a threshold that adapts to how full the survivor space is,
-  Strongtalk's age table
-  (`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`). A copied object's old
-  copy becomes a forwarder -- the forwarded format, its class word naming the
-  new location -- the same mechanism `become:` uses. A reference to a
-  forwarder is followed along the whole chain, whatever made each link, and
-  the object at its end is copied only if it is young and not already in the
-  survivor space being filled, as Spur's `scavengeReferentsOf:` does
+### The layout and its constants
+
+- **Four regions, low to high**: two survivor spaces of 1 MiB each
+  (`SURVIVOR_BYTES`), eden of 8 MiB (`EDEN_BYTES`, from `EDEN_START`,
+  2 MiB), then the old space from `NURSERY_END`, 10 MiB, to the end of the
+  reservation. Eden is eight times a survivor space, HotSpot's
+  `SurvivorRatio=8` (decision 3 below). The survivor spaces lie first and
+  the old space above the nursery, as Spur lays its heap out
+  (`setHeapBase:memoryLimit:endOfMemory:`,
+  `prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:60020`) and
+  Strongtalk its generations
+  (`prior-art/strongtalk/vm/memory/universe.cpp:64-79`).
+  The first survivor space starts at `FIRST_OBJECT`, so it is 16 bytes
+  smaller than the second. `NURSERY_END` is a multiple of 64 words, so no
+  chunk of the forwarding table straddles the two generations.
+- **Young means an offset below `NURSERY_END`** (`space::is_young`): one
+  comparison against a constant, in the barrier, in the scavenger and
+  wherever else a generation is asked, and the comparison generated code
+  will make.
+- **Each region keeps its base, start, top and end** (`space::Region`).
+  One survivor space, the past one, holds the last scavenge's survivors;
+  the other, the future one, is empty outside a scavenge, which copies into
+  it and then makes it the past one (`Space::flip_survivors`). The ranges
+  that hold objects are the past survivor space's, eden's and the old
+  space's, in address order (`Space::occupied`), and every walk of the
+  space reads them, so none can miss a region. Every object is read
+  through one slice, `[0, old top)`, which covers the nursery.
+- **Every nursery region keeps 264 bytes free past what it fills**
+  (`REGION_SLACK`, `8 * 33`), so that the move stress mode's shift of up
+  to 256 bytes never pushes an object out of its region (chosen by the
+  plan; [OPEN-WORK.md](../OPEN-WORK.md)).
+- **The nursery is committed whole when the heap is made**, with the old
+  space's first 256 KiB (chosen by the plan); the old space grows as "The
+  trigger and the growth policy" says.
+
+### Allocation: eden, its reserve, and what goes old
+
+- **A young allocation bumps eden** (`Space::allocate_young`). Eden asks
+  for a scavenge once it holds 7.5 MiB, its 8 MiB less a 512 KiB reserve
+  (`EDEN_RESERVE`, chosen by the plan): the reserve takes what a stretch
+  of the run loop allocates before its safepoint serves the request, as
+  Spur's `scavengeThreshold` lies below eden's end and an allocation past
+  it only schedules the scavenge (`ceScheduleScavengeTrampoline`).
+- **An allocation that finds eden spent goes old** and asks for the
+  scavenge, as Strongtalk's `allocate_tenured` does when a scavenge cannot
+  run (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
+- **Large objects are allocated old**: an allocation of 32 KiB or more
+  (`LARGE_OBJECT_BYTES`), Primordial Soup's `kLargeAllocationSize`
+  (`prior-art/primordialsoup/vm/heap.h:111`), since copying it through the
+  survivor spaces would buy nothing (decision 3).
+- **Every old allocation outside the image decoder is born remembered.**
+  A freshly allocated object is filled before anything else can see it, so
+  its initializing stores take no barrier -- the fields `allocate_block`
+  writes, a closure's copied values, a self-referential class word -- and
+  an old one may be filled with young values. `allocate_block` therefore
+  adds every object it allocates old to the remembered set, and the next
+  scavenge scans it. The decoder's graph pass allocates old
+  (`Heap::set_allocating_old`) and its objects are not remembered: the load
+  tenured everything they name before the pass began, which a debug build
+  asserts at every fill.
+
+### The scavenger
+
+A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
+`doScavenge:` (`cointerp.c:48477`) and Strongtalk's `Universe::scavenge`
+(`universe_more.cpp:81-137`) are.
+
+- **The roots** are what a full collection marks from -- the `Activation`
+  class, every activation stack entry and every register, the host roots,
+  and the step state's `StepRoots` -- plus the remembered set. The whole
+  activation stack is a root, so a scavenge costs time in proportion to the
+  recursion depth, up to the depth limit's 100,000 activations and its
+  1,000 reserve; Spur bounds that with stack pages, and road step 7's
+  shared frames revisit it. Each remembered object leaves the set, its bit
+  cleared, has its pointer words scanned, and rejoins only if it still
+  names a young object.
+- **The Cheney loop** then scans what was copied, in the future survivor
+  space and in the old space from where each top stood when the scavenge
+  began, until neither grew; a promoted object that still names a young
+  one joins the remembered set.
+- **Forwarders.** A copied object's old place becomes a forwarder: its
+  header's format the forwarded one, its class word naming the copy, the
+  mechanism road step 5's `become:` will use. A reference to a forwarder is
+  followed along the whole chain, whatever made each link, and the object
+  at its end is copied only if it is young and not already in the future
+  survivor space, as Spur's `scavengeReferentsOf:` decides
   (`cointerp.c:43278`, the `isReallyYoungObject:` test at `:43316-43322`;
   [object-model.md](object-model.md), "Planned: `become:` through
-  forwarders").
-- **Before a scavenge starts it commits old space for the worst case** -- the
-  occupancy of eden and the survivor space -- so a promotion never meets a
-  commit failure halfway through; a commit the operating system refuses is
-  reported before the scavenge, as running out of memory.
-- **The roots include the whole activation stack**, so a scavenge costs time
-  in proportion to the recursion depth, up to the depth limit's 100,000
-  activations; Spur bounds that with stack pages, and road step 7's shared
-  frames revisit it.
-- **The write barrier**: an old object that stores a young value sets its
-  remembered bit and joins the remembered set, as in Spur
-  (`storePointer:ofObject:withValue:`, `cointerp.c:60688`; `remember:`,
-  `:42843`) and Soup (`HeapObject::Store`,
-  `prior-art/primordialsoup/vm/object.h:257-273`) -- per object rather than
-  Strongtalk's cards, simpler and cheaper to emit. The barrier sits in
-  `heap.rs`'s store accessors, never in `vm.rs`, so the interpreter, the
-  reference lowering and a JIT share one rule. Every store into a heap object
-  goes through them: fields and elements, the class word, a frame object's
-  registers written on divorce and by `StoreOuterLocal`, a closure's copied
-  values, and a forwarder's target. The debug check of the stored Rust-side
-  value's heap id and epoch, which every store accessor makes from road step
-  2 on ("The object space"), holds here too. The collector's own rewrites -- the
-  scavenge, the compaction, the replacement of resolved futures -- keep the
-  remembered set themselves. The running activation stack's registers are
-  roots and take no barrier.
-- **A remembered set past its limit requests a scavenge that tenures
-  everything**, at the next safepoint, and keeps growing until then, as Soup's
-  `kRememberedSetOverflowSize` raises an interrupt
-  (`prior-art/primordialsoup/vm/heap.cc:279-283`).
-- **Large objects are allocated old**, as Soup does from 32 KB
-  (`kLargeAllocationSize`), since copying them buys nothing.
-- **Initializing stores skip the barrier.** A freshly allocated object is
-  filled before anything else can see it, so its initializing stores take no
-  barrier; therefore every old-space allocation outside the decoder -- a large
-  object, or an allocation that found eden's reserve spent ("Planned: inline
-  allocation") -- is born remembered, and the next scavenge scans it.
-- **A full collection** is the mark-compact over both generations. The image
-  decoder allocates everything old, the boxed floats and large integers it
-  creates included, since a decoded graph is long-lived. Every load runs
-  `Interpreter::bootstrap()` first (`image/mod.rs:290`), and then rebuilds
-  every module's root class (`modules::build_module_classes`,
-  `image/mod.rs:305`) before anything else, so every load will tenure
-  everything -- a scavenge -- right after the bootstrap, before the decoder
-  allocates anything; a load whose image names platform paths follows them
-  next, which leaves young objects the graph may reference, and will tenure
-  again before the graph pass. Both are collections between entries, where
-  only roots hold values, as `Interpreter::collect_now`
-  (`interpreter/safepoint.rs:215`) is today -- the module classes are
-  already held as `Root`s across the paths --
-  never inside a step. The decoder's old-to-old stores then need no barrier.
-- **The weak symbol table is pruned at every scavenge** as well as at every
-  full collection, since a young symbol can die in either. At a scavenge a
-  young entry whose symbol was not copied becomes `None`, a copied one is
-  rewritten to its new location, and an old entry is left alone; the table
-  is not a strong root. The inverse map from a symbol object's offset to its
-  `Symbol` is kept in step the same way.
-- **A fifth stress mode**, `NS_NEXT_STRESS_SCAVENGE`, scavenges at every
-  safepoint, which is what finds a store that missed the barrier. So that a
-  stale young word into eden faults as well as one into a survivor space, a
-  debug build under it alternates eden between two regions and protects the
-  vacated one.
+  forwarders"). The copy takes the whole allocation, its overflow word
+  included.
+- **Where a survivor goes.** To the future survivor space, its age one
+  higher, or to the old space, its age 0, when the scavenge tenures
+  everything, when its age is at least the tenuring threshold, or when the
+  survivor space is full.
+- **The precommit.** Before it copies anything a scavenge commits the old
+  space for the worst case, every object in the past survivor space and in
+  eden promoted, so a promotion never meets a refused commit halfway
+  through; a commit the operating system refuses aborts the process as
+  running out of memory before the scavenge begins.
+- **Afterwards** the weak symbol table is pruned ("Weak references"), the
+  survivor spaces flip, eden is empty, the threshold is recomputed, and the
+  request is cleared. A rebuilt remembered set past its limit requests a
+  scavenge that tenures everything, and an old space past its limit
+  requests a full collection.
+- **The epoch advances**, as at a move or a compaction, and the scavenger
+  rewrites every Rust-side handle it traces into the new epoch, old ones
+  included, after checking its heap and its epoch as `Forwarder` does.
+- **A scavenge does not replace resolved futures**, which stays the full
+  collection's work ("A resolved future is traced as its value"; chosen by
+  the plan).
+
+`World::scavenge` checks that the step state holds no handle outside its
+roots (`World::check_quiescent_state`), lends the heap and `StepRoots` side
+by side, and times the scavenge as `World::collect` times a collection;
+`--collector-statistics` reports the scavenges and their pauses beside the
+full collections ("The gates the collector needs").
+
+### The age table and the tenuring threshold
+
+An object's age is the header's four age bits, 27-30, so at most 15
+(`MAX_AGE`): the scavenges it has survived in a survivor space. A promoted
+object's age is 0, and a full collection clears every survivor's.
+
+Each scavenge counts, in its age table, the words it copies into the
+survivor space by the age each object arrives with, one higher than the
+age it had -- Strongtalk's age table (`ageTable.cpp`). Afterwards the
+threshold becomes the lowest age at which the words of the survivors of
+that age and younger exceed half a survivor space, less its slack; never
+below 1, and 15 when no age does (`scavenge::tenuring_threshold`). The next
+scavenge promotes an object whose age is at least the threshold. The first
+threshold is 15, the widest the age bits hold, so nothing is tenured by
+age before a scavenge has measured the survivors. That is HotSpot's
+`ageTable::compute_tenuring_threshold` with `TargetSurvivorRatio=50` and
+`MaxTenuringThreshold=15` (decision 3). The age table is Strongtalk's,
+which HotSpot took over; Strongtalk's own `ageTable::tenuring_threshold`
+(`prior-art/strongtalk/vm/memory/ageTable.cpp:37-46`) answers one age less
+and so tenures the age that would just have fitted as well. HotSpot's rule
+is the one decision 3 states, and the scavenger's own test pins it.
+
+### The write barrier
+
+An old object that comes to name a young one sets its remembered bit and
+joins the remembered set (`Heap::write_barrier`, then `Heap::remember`),
+per object, as Spur's `storePointer:ofObject:withValue:`
+(`cointerp.c:60688`; `remember:`, `:42843`) and Primordial Soup's
+`HeapObject::Store` (`prior-art/primordialsoup/vm/object.h:257-273`)
+remember, rather than Strongtalk's cards: simpler, and cheaper to emit. The
+test is two comparisons against `NURSERY_END` -- the holder is old, the
+stored word names a young object -- and the barrier is forced inline into
+each store accessor; `remember` is out of line, and a holder whose bit is
+set already returns at once.
+
+The barrier sits in `heap.rs`'s store accessors and nowhere else, never in
+`vm.rs`, so the interpreter, the reference lowering and a JIT share one
+rule. Every store into an existing object goes through one of them:
+
+- `Heap::set_pointer_word`: an instance's fields, an array's elements and a
+  class object's fields;
+- `Heap::object_set_class`: the class word;
+- `Heap::frame_set_local`: a divorced frame's register, which
+  `StoreOuterLocal` writes through its frame;
+- `Heap::pop_activation`: the divorce, which copies a retaining
+  activation's registers into its frame object and remembers an old frame
+  that one of them makes name a young object ("Frames, the activation
+  stack and the marriage").
+
+`allocate_block` remembers every old object it allocates outside the
+decoder, as above. A married frame's registers live on the activation
+stack, which is a root, and take no barrier; nor does a store into a young
+object. The collector's own rewrites -- the scavenge, the compaction, the
+move -- keep the remembered set themselves; the replacement of resolved
+futures, which may store a young value into an old object, runs only
+before a full collection, which empties the nursery and the set; and the
+decoder's fills store old values into old objects. The debug check of the
+stored Rust-side value's
+heap id and epoch, which every store makes (`Heap::store`; "The object
+space"), holds here too. A store that writes a word into an old object any
+other way leaves the young object it names unreachable to the next
+scavenge, silently; that is the invariant `CLAUDE.md` states, and the
+scavenge stress mode below is what finds a breach.
+
+### The remembered set and its limit
+
+`Heap::remembered` holds the offset of every old object that may name a
+young one, each once, its header's remembered bit, bit 31, set; a young
+object never carries the bit. A scavenge rebuilds it, a full collection
+empties it and clears every bit, and a move relocates every offset through
+the same shift, since no tracer reaches a raw offset. Past 8,192 entries
+(`REMEMBERED_SET_LIMIT`), Primordial Soup's `kRememberedSetOverflowSize`
+(`heap.h:112`, `heap.cc:279-283`), the barrier requests a scavenge that
+tenures everything, at the next safepoint, and the set keeps growing until
+then; a scavenge whose rebuilt set is past the limit requests one as well.
+A scavenge that tenures everything empties the nursery, and the set with
+it.
+
+### The full collection over both generations
+
+The full collection marks both generations from the roots and compacts
+them into the old space (decision 2): one forwarding table covers both, the
+old space's survivors slide down to its bottom, the nursery's follow them
+in address order, and every handle is rewritten in one pass ("Compaction
+and forwarding"). The nursery is empty afterwards, the remembered set with
+it, and a pending scavenge is served too. A full collection is requested
+when the old space reaches its limit -- by an allocation that goes old, or
+by a scavenge that promoted -- and the safepoint serves it before a pending
+scavenge.
+
+### An image load tenures once
+
+Every load bootstraps, rebuilds its module classes and follows its
+platform paths before it decodes the graph, so the builtins, the module
+classes and what the paths answered are young when the graph pass starts.
+One scavenge that tenures everything, between two entries
+(`Interpreter::tenure_now`), makes all three old, and the graph pass then
+allocates old, its stores old-to-old (decision 4;
+[image-format.md](image-format.md), "The image under generations").
+
+### Finding a missed barrier: the scavenge stress mode
+
+`NS_NEXT_STRESS_SCAVENGE`, the fifth stress mode, scavenges at the
+safepoints its schedule picks -- every safepoint while the traced size is
+within `STRESS_MOVE_BUDGET`, as the move and the collect modes are paced
+(`StressSchedule`, `interpreter/safepoint.rs`) -- and verifies the
+remembered set before each of them (`Heap::verify_remembered_set`): a walk
+of the old space asserting that the set holds no offset twice, that every
+entry is the header of an old object carrying the remembered bit, that
+every old object carrying the bit is an entry, and that every old object
+naming a young one carries the bit.
+The verification runs only under the stress mode, since it walks the old
+space at every scavenge (chosen by the plan). It is Strongtalk's
+`VerifyBeforeScavenge` (`universe_more.cpp:98`) and HotSpot's
+`VerifyBeforeGC`.
+
+Every scavenge in a debug build then fills the nursery memory it vacated --
+the past survivor space's and eden's occupied ranges -- with a poison word
+whose format is the free one, which no object has (`header::POISON`), and
+`Heap::block` refuses a free or a forwarded header in a debug build, so a
+word that missed the barrier and still names a reclaimed young object
+fails at its first read instead of answering whatever is allocated there
+next, as HotSpot's `ZapUnusedHeapArea` does (decision 1). Under the stress
+mode the whole suite runs at the highest scavenge frequency there is.
+
+### Decisions of road step 4
+
+Decided with the user on 2026-10-04:
+
+1. **A missed write barrier is found by verification and poisoning, not by
+   page protection.** The verification before every stress scavenge
+   (Strongtalk's `VerifyBeforeScavenge`, HotSpot's `VerifyBeforeGC`) finds
+   the old object that missed the barrier before the scavenge that would
+   lose its young object; the poison (HotSpot's `ZapUnusedHeapArea`) finds
+   a word that still names vacated nursery memory at its first read. No
+   page is protected: `Space::words` lends a safe slice over `[0, old top)`,
+   which covers the nursery, and a `&[u64]` over no-access pages would be
+   undefined behaviour. Rejected: alternating eden between two regions and
+   making the vacated one no-access, for that reason; the decision of
+   2026-10-03 that nothing is protected stands ("The object space").
+2. **The full collection marks both generations and compacts them into the
+   old space**, as Strongtalk's full collection does -- the old generation
+   compacted first, then the new one into it
+   (`prior-art/strongtalk/vm/memory/markSweep.cpp:255`, `:265-266`) -- and as
+   HotSpot's Serial and Parallel collectors do. One forwarding table covers
+   both generations, so every handle is rewritten once. Rejected: Spur's
+   mark, then scavenge-and-tenure, then compact the old space (`fullGC`,
+   `cointerp.c:50168`), which relocates twice per full collection; and
+   tenure everything, then mark and compact the old space, which keeps
+   young garbage reachable only from dead remembered objects alive until
+   the next full collection.
+3. **The nursery's sizes follow HotSpot's ratio**: eden 8 MiB and two
+   survivor spaces of 1 MiB each (`SurvivorRatio=8`), 10 MiB of nursery
+   from the reservation's base. Objects of 32 KiB and more are allocated
+   old (Primordial Soup's `kLargeAllocationSize`). A remembered set past
+   8,192 entries requests a scavenge that tenures everything (Soup's
+   `kRememberedSetOverflowSize`). The tenuring threshold adapts by
+   Strongtalk's age table, which HotSpot took over: it starts at 15, the
+   widest the header's four age bits hold, so nothing is tenured by age at
+   first, and after each scavenge it is the lowest age at which the
+   survivors of that age and younger exceed half a survivor space
+   (HotSpot's `TargetSurvivorRatio=50`, `MaxTenuringThreshold=15`). The
+   sizes are measured in [execution.md](execution.md), "What generations
+   moved"; what a smaller eden would trade is open
+   ([OPEN-WORK.md](../OPEN-WORK.md)).
+4. **An image load tenures once, between the platform paths and the graph
+   pass.** Spur, Primordial Soup, Strongtalk and HotSpot's CDS all load
+   into a heap that holds nothing young; here the bootstrap's objects, the
+   module classes and what the platform paths answered are young when the
+   graph pass starts, and one tenure between two entries makes all three
+   old. The decoder then allocates its graph old, as Soup's
+   `AllocateSnapshot` does (`prior-art/primordialsoup/vm/heap.cc:228`).
+   Rejected: a second tenure right after the bootstrap, which
+   `image::load` could run between the bootstrap and the entry in which
+   `build_module_classes` runs. It would be redundant: the module classes
+   and what the platform paths answer are made young after it, so the
+   tenure before the graph pass is needed anyway, and that one tenure
+   covers the bootstrap's objects too.
+
+The plan also chose constants for the user to confirm, each one line to
+change and each stated where it is built above: eden's 512 KiB reserve,
+the eden-spent rule, `REGION_SLACK`, the old space's first commit past the
+nursery, a scavenge that leaves resolved futures alone, and the
+remembered-set verification under the stress mode only
+([OPEN-WORK.md](../OPEN-WORK.md)).
 
 ## Planned: inline allocation
 
 Would change: the instructions that allocate take their memory by a bump in
-eden instead of a call into the collector's allocation path. Road step 6, and
+eden instead of a call into the collector's allocation path
+(`Heap::allocate_block`). Road step 6, and
 the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 `genCreateFullClosure:…` do in machine code (`cogitX64SysV.c:16464`,
 `:19026`).
@@ -1996,21 +2376,22 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
 - **What bumps**: `new` of a class whose instances fall below the
   large-object threshold, `MakeClosure`, a boxed
   `Float`, and `Array new:` below the large-object threshold; a larger
-  `Array new:` allocates old, as every large object does ("Planned:
-  generations").
-- **Eden keeps a reserve past the scavenge threshold**, so an allocation that
-  crosses the threshold still succeeds and only requests a safepoint, as Spur
-  schedules a scavenge rather than failing (`ceScheduleScavengeTrampoline`).
-  A collection therefore still happens only at a safepoint of the run loop
-  ("Where a collection can happen: only at a safepoint in the run loop"), and
-  generated code will allocate the same way.
-- **An exhausted reserve takes the slow path.** Between two safepoints the
-  allocations are bounded by a stretch's straight-line instructions times the
-  large-object threshold, but no fixed reserve fits every body, so an
-  allocation that finds the reserve spent allocates in old space, born
-  remembered by the rule in "Planned: generations", and requests a safepoint,
-  as Strongtalk's `allocate_tenured` does when a scavenge cannot run
-  (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
+  `Array new:` allocates old, as every large object does ("Generations").
+- **What it builds on is built** ("Generations", "Allocation: eden, its
+  reserve, and what goes old"): eden keeps a 512 KiB reserve past its
+  scavenge threshold, so an allocation that crosses the threshold still
+  succeeds and only requests a safepoint, as Spur schedules a scavenge
+  rather than failing (`ceScheduleScavengeTrampoline`), and a collection
+  therefore still happens only at a safepoint of the run loop ("Where a
+  collection can happen: only at a safepoint in the run loop"); an
+  allocation that finds eden spent goes old, born remembered, and requests
+  the scavenge, as Strongtalk's `allocate_tenured` does when a scavenge
+  cannot run (`prior-art/strongtalk/vm/memory/universe_more.cpp:55-64`).
+  Between two safepoints the allocations are bounded by a stretch's
+  straight-line instructions times the large-object threshold, but no
+  fixed reserve fits every body, which is why the spent case goes old
+  rather than fails. The inlined bump keeps both rules, and generated code
+  will allocate the same way.
 - **The bump path lives in `heap.rs`**; an instruction arm calls it and does
   nothing else with it, since one more calling arm measures about 3% on the
   send-heavy sources ([execution.md](execution.md), "Where the 3% goes").
@@ -2084,10 +2465,10 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   object layout"): an object is the header word, the class word and the
   fields, there is no separate store for frames, and one mark, one
   compaction and one forwarding table cover everything.
-- **Mark-compact, one space, stop-the-world** (decided with the user on
-  2026-09-20 over the index arena, kept for the object space). Under the
-  planned generations it is the old space's collector ("Planned:
-  generations"). The choice rested on what the step is for — the heap
+- **Mark-compact, stop-the-world** (decided with the user on
+  2026-09-20 over the index arena, kept for the object space). Under
+  generations it is the full collection, over both generations
+  ("Generations"). The choice rested on what the step is for — the heap
   shrinks and the pages go back — on rewriting being O(1) per handle
   through a forwarding table, and on the machinery already built and under
   test; over the space's variably sized objects a sliding compaction also
@@ -2123,14 +2504,18 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   editing, so the ids are minted and none is reclaimed
   ([object-model.md](object-model.md), "An application has two ids").
 - **A collection is requested by comparing the bytes the objects occupy
-  against a limit**, reset to `max(512 KiB, live bytes * 2)` after each
-  collection, rather than by counting allocations: the space's top is already
-  in hand where an allocation happens, so the hot path pays one predictable
-  branch and carries no new state.
-- **Collecting at every safepoint is a third stress mode and a third gate**,
+  against a limit** -- eden's against the scavenge threshold, the old
+  space's against a limit reset to `max(512 KiB, live bytes * 2)` after
+  each full collection -- rather than by counting allocations: the region's
+  top is already in hand where an allocation happens, so the hot path pays
+  one predictable branch and carries no new state.
+- **Collecting at every safepoint is a stress mode and a gate of its own**,
   `NS_NEXT_STRESS_COLLECT`, kept beside the move stress rather than replacing
   it, because moving everything without liveness is what separates a missing
-  root from a mistake in marking.
+  root from a mistake in marking; scavenging at every safepoint,
+  `NS_NEXT_STRESS_SCAVENGE`, is another, because a scavenge reads only the
+  young objects and the remembered ones and so is the one collection a
+  missed barrier breaks.
 - **Fields go inline after the header word and the class word, and the
   objects into a space the heap owns, not payloads into a region beside the
   arena** (decided with the user on 2026-09-29; the fields inline built by
@@ -2162,10 +2547,35 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   memory and a cache miss per handle on any heap larger than the cache.
 - **No page is protected yet; a debug build's no-access protection of
   vacated pages waits for generated code** (decided with the user on
-  2026-10-03). The accessors lend only `[0, top)`, so a stale offset at or
+  2026-10-03). The accessors lend only `[0, old top)`, so a stale offset at or
   above the top already finds no word; the protection pays when code
   dereferences addresses itself, which is road step 8's baseline JIT
   ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **A missed write barrier is found by verification and poisoning, not by
+  page protection** (decided with the user on 2026-10-04): the scavenge
+  stress mode verifies the remembered set before each scavenge it runs, as
+  Strongtalk's `VerifyBeforeScavenge` and HotSpot's `VerifyBeforeGC` do,
+  and every debug-build scavenge poisons the nursery it vacated, as
+  HotSpot's `ZapUnusedHeapArea` does, because the one slice the heap reads
+  through covers the nursery and a slice over no-access pages would be
+  undefined behaviour ("Generations", "Decisions of road step 4").
+- **The full collection marks both generations and compacts them into the
+  old space** (decided with the user on 2026-10-04), as Strongtalk's and
+  HotSpot's Serial and Parallel collectors do: one forwarding table, one
+  relocation per survivor. Spur's mark, scavenge-and-tenure, then compact
+  relocates twice, and tenuring everything before a mark-compact keeps
+  young garbage alive that only dead remembered objects reached.
+- **The nursery's sizes follow HotSpot's ratio** (decided with the user on
+  2026-10-04): eden 8 MiB, two survivor spaces of 1 MiB; objects of 32 KiB
+  and more allocated old and a remembered set past 8,192 entries tenuring
+  everything, both Primordial Soup's limits; and a tenuring threshold that
+  adapts by Strongtalk's age table under HotSpot's rule, starting at 15.
+- **An image load tenures once, between the platform paths and the graph
+  pass** (decided with the user on 2026-10-04), so that the graph pass
+  allocates old into a heap that holds nothing young, as every reference
+  loads; a tenure right after the bootstrap would be redundant, since the
+  module classes and what the paths answer are made young after it and the
+  one tenure before the graph pass covers the bootstrap's objects too.
 - **A refused commit or an exhausted reservation aborts the process**, as a
   failed `Vec` push does, through `std::alloc::handle_alloc_error` (decided
   with the user on 2026-10-03). Allocation stays infallible, so no hot path

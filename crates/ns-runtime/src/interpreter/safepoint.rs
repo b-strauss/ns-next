@@ -5,11 +5,13 @@
 //! at the safepoints its own schedule picks (`docs/design/memory.md`, "The
 //! gates the collector needs") -- the mode that catches a root the marking
 //! does not know about, since the move stress mode alone treats everything
-//! as live. The step state's side of a move -- its own roots, forwarded
-//! after the heap's, and the state that must hold no handle when one
-//! happens -- is
-//! `World::move_everything` and `World::check_quiescent_state`, in
-//! `heap/world.rs`; a collection's is `World::collect`, in the same file.
+//! as live -- and a scavenge at the safepoints a third schedule picks, each
+//! after a check of the remembered set, the mode that catches a store that
+//! missed the write barrier. The step state's side of a move -- its own
+//! roots, forwarded after the heap's, and the state that must hold no handle
+//! when one happens -- is `World::move_everything` and
+//! `World::check_quiescent_state`, in `heap/world.rs`; a collection's is
+//! `World::collect`, in the same file.
 
 use super::Interpreter;
 
@@ -20,15 +22,18 @@ impl Interpreter {
     /// every safepoint (`docs/design/dispatch.md`, "Invalidation"), and the
     /// collect stress mode runs a full collection when its own schedule says
     /// one is due (`docs/design/memory.md`, "The gates the collector
-    /// needs"); any one of the three keeps the request set, so that every
-    /// safepoint comes here.
+    /// needs"), and the scavenge stress mode verifies the remembered set and
+    /// scavenges when its schedule says one is due; any one of the four
+    /// keeps the request set, so that every safepoint comes here.
     ///
     /// A pending collection is served after the stress modes have had their
     /// turn: `World::collect` is sound only where nothing outside the heap
     /// holds a handle, exactly the condition a safepoint of the run loop
     /// gives it, and an allocation only ever asks for one
     /// (`docs/design/memory.md`, "The trigger and the growth policy") --
-    /// this is the one place that request is served.
+    /// this is the one place that request is served. A pending scavenge is
+    /// served here too, for the same reason, unless a collection is pending
+    /// as well: the collection empties the nursery, which serves both.
     ///
     /// Otherwise the safepoint that took no request clears it. In a release
     /// build this is now real work rather than a debug-only convenience --
@@ -61,6 +66,13 @@ impl Interpreter {
                 }
                 stressed = true;
             }
+            if let Some(stress) = &mut self.stress_scavenge {
+                if stress.due(self.world.traced_size()) {
+                    self.world.verify_remembered_set();
+                    self.world.scavenge(false);
+                }
+                stressed = true;
+            }
         }
         if self.world.collection_requested() {
             self.world.collect();
@@ -72,6 +84,15 @@ impl Interpreter {
             // `safepoint_requested` there instead. Harmless -- one
             // extra call to a `#[cold]` function per collection -- and
             // simpler than threading a second clear through this branch.
+            return;
+        }
+        // After the collection branch: a full collection empties the
+        // nursery as well, and clears a pending scavenge's flags with it.
+        if self.world.scavenge_requested() {
+            let tenure_all = self.world.tenure_all_requested();
+            self.world.scavenge(tenure_all);
+            // As after a collection: the next poll finds nothing pending and
+            // clears the safepoint request there.
             return;
         }
         #[cfg(debug_assertions)]
@@ -127,9 +148,10 @@ pub(crate) fn global_cache_entries_from_env() -> Option<usize> {
 /// trigger does, and every small program keeps a move at every safepoint.
 /// Fixed-frequency stress modes (HotSpot's `ScavengeALotInterval`,
 /// SpiderMonkey's `JS_GC_ZEAL` frequency) would take coverage from small
-/// programs to spare large ones. `StressCollections` paces its collections
-/// by the same constant, for the same reason: a collection's compaction is
-/// proportional to the traced size too.
+/// programs to spare large ones. `StressSchedule` paces collections and
+/// scavenges by the same constant, for the same reason: a collection's
+/// compaction is proportional to the traced size too, and so is the walk of
+/// the old space that verifies the remembered set before each scavenge.
 #[cfg(debug_assertions)]
 pub(crate) const STRESS_MOVE_BUDGET: usize = 1_000;
 
@@ -169,47 +191,58 @@ impl StressMoves {
     }
 }
 
-/// The collect stress mode's schedule: a collection at every safepoint
-/// while the traced size is within `STRESS_MOVE_BUDGET`, and above it once
-/// per size-over-budget safepoints -- the pacing `StressMoves` uses, for
-/// the same reason.
+/// The schedule of the collect and the scavenge stress modes: their work
+/// at every safepoint while the traced size is within
+/// `STRESS_MOVE_BUDGET`, and above it once per size-over-budget safepoints
+/// -- the pacing `StressMoves` uses, for the same reason.
 #[cfg(debug_assertions)]
 #[derive(Default)]
-pub(crate) struct StressCollections {
-    safepoints_since_collection: usize,
-    /// How many collections this schedule has actually caused since the
-    /// mode was turned on -- incremented only when `due` answers `true`,
-    /// never merely on a safepoint taken. `Interpreter::moves` cannot stand
-    /// in for this: an ordinary collection advances it too, so it cannot
-    /// tell "the stress mode collected" from "something else did". For
-    /// tests (`Interpreter::stress_collections`): without this, a schedule
-    /// whose `due` always answered `false` would still pass every existing
+pub(crate) struct StressSchedule {
+    safepoints_since_fired: usize,
+    /// How many times this schedule has actually fired since the mode was
+    /// turned on -- incremented only when `due` answers `true`, never
+    /// merely on a safepoint taken. `Interpreter::moves` cannot stand in for
+    /// this: an ordinary collection or scavenge advances it too, so it
+    /// cannot tell "the stress mode worked" from "something else did". For
+    /// tests (`Interpreter::stress_collections`,
+    /// `Interpreter::stress_scavenges`): without this, a schedule whose
+    /// `due` always answered `false` would still pass every existing
     /// assertion -- the gate would be a no-op that stays green.
-    collections: usize,
+    fired: usize,
 }
 
 #[cfg(debug_assertions)]
-impl StressCollections {
+impl StressSchedule {
     fn due(&mut self, traced_size: usize) -> bool {
-        self.safepoints_since_collection += 1;
+        self.safepoints_since_fired += 1;
         if self
-            .safepoints_since_collection
+            .safepoints_since_fired
             .saturating_mul(STRESS_MOVE_BUDGET)
             < traced_size
         {
             return false;
         }
-        self.safepoints_since_collection = 0;
-        self.collections += 1;
+        self.safepoints_since_fired = 0;
+        self.fired += 1;
         true
     }
 
-    /// Whether `NS_NEXT_STRESS_COLLECT` asks for the mode: set, and
-    /// neither empty nor `0`.
-    pub(crate) fn from_env() -> Option<StressCollections> {
-        let requested = std::env::var_os("NS_NEXT_STRESS_COLLECT")
-            .is_some_and(|value| !value.is_empty() && value != "0");
-        requested.then(StressCollections::default)
+    /// Whether the environment variable `variable` asks for the mode: set,
+    /// and neither empty nor `0`.
+    pub(crate) fn from_env(variable: &str) -> Option<StressSchedule> {
+        let requested =
+            std::env::var_os(variable).is_some_and(|value| !value.is_empty() && value != "0");
+        requested.then(StressSchedule::default)
+    }
+}
+
+impl Interpreter {
+    /// Tenures everything now, between entries, where only roots hold
+    /// values: `image::load` makes the builtins, the module classes and what
+    /// the platform paths answered old before the graph pass allocates old.
+    pub(crate) fn tenure_now(&mut self) {
+        assert!(!self.running, "tenure_now is for between runs");
+        self.world.scavenge(true);
     }
 }
 
@@ -229,38 +262,65 @@ impl Interpreter {
         self.world.collect();
     }
 
+    /// Scavenges now, between runs, where only roots hold values. For
+    /// tests; the run loop scavenges at a safepoint instead.
+    pub fn scavenge_now(&mut self) {
+        assert!(!self.running, "scavenge_now is for between runs");
+        self.world.scavenge(false);
+    }
+
+    /// Sets eden's occupied bytes at which an allocation asks for a
+    /// scavenge, so a test can reach the trigger without filling eden
+    /// first.
+    pub fn set_scavenge_threshold(&mut self, bytes: usize) {
+        self.world.set_scavenge_threshold(bytes);
+    }
+
+    /// Sets the safepoint request exactly when a stress mode is on, since
+    /// any one alone must keep every safepoint coming back to `safepoint`:
+    /// what every `set_stress_*` does after switching its own mode.
+    ///
+    /// Turning the last mode off this way drops `safepoint_requested` even
+    /// while a collection or a scavenge is still pending. Both self-heal:
+    /// the collection limits were never reset, so the next allocation that
+    /// reaches one asks again, and the scavenge was never served, so the
+    /// next allocation past eden's threshold, or the next old object to
+    /// join the remembered set past its limit, asks again -- each only
+    /// slightly later than it otherwise would have. Debug-only, since the
+    /// setters do not exist in a release build; not worth coupling the
+    /// flags together to close.
+    pub(super) fn hold_safepoints_for_stress(&mut self) {
+        let enabled = self.stress.is_some()
+            || self.stress_caches
+            || self.stress_collect.is_some()
+            || self.stress_scavenge.is_some();
+        self.world.set_safepoint_requested(enabled);
+    }
+
     /// Turns the stress mode on or off for this interpreter, whatever
     /// `NS_NEXT_STRESS_MOVES` says. For tests. Keeps the safepoint request
-    /// set while either other stress mode is on, since any one alone must
-    /// keep every safepoint coming back to `safepoint`.
-    ///
-    /// This can overwrite `safepoint_requested` from `true` to `false` while
-    /// a collection is still pending -- turning off every stress mode here
-    /// with `collection_requested` set does exactly that. It self-heals: the
-    /// collection limits were never reset, so the next allocation that
-    /// reaches one re-requests every flag, only slightly later than it
-    /// otherwise would have. Debug-only, since this setter does not exist
-    /// in a release build; not worth coupling the flags together to close.
+    /// set while any other stress mode is on (`hold_safepoints_for_stress`).
     pub fn set_stress_moves(&mut self, enabled: bool) {
         self.stress = enabled.then(StressMoves::default);
-        self.world.set_safepoint_requested(
-            enabled || self.stress_caches || self.stress_collect.is_some(),
-        );
+        self.hold_safepoints_for_stress();
     }
 
     /// Turns the collect stress mode on or off for this interpreter,
     /// whatever `NS_NEXT_STRESS_COLLECT` says. For tests. Keeps the
-    /// safepoint request set while either other stress mode is on, since
-    /// any one alone must keep every safepoint coming back to `safepoint`.
-    ///
-    /// Like `set_stress_moves`, this can drop `safepoint_requested` to
-    /// `false` while a collection is still pending, by the same
-    /// self-healing, debug-only path: the collection limits were never
-    /// reset, so the next allocation that reaches one re-requests it again.
+    /// safepoint request set while any other stress mode is on
+    /// (`hold_safepoints_for_stress`).
     pub fn set_stress_collect(&mut self, enabled: bool) {
-        self.stress_collect = enabled.then(StressCollections::default);
-        self.world
-            .set_safepoint_requested(enabled || self.stress.is_some() || self.stress_caches);
+        self.stress_collect = enabled.then(StressSchedule::default);
+        self.hold_safepoints_for_stress();
+    }
+
+    /// Turns the scavenge stress mode on or off for this interpreter,
+    /// whatever `NS_NEXT_STRESS_SCAVENGE` says. For tests. Keeps the
+    /// safepoint request set while any other stress mode is on
+    /// (`hold_safepoints_for_stress`).
+    pub fn set_stress_scavenge(&mut self, enabled: bool) {
+        self.stress_scavenge = enabled.then(StressSchedule::default);
+        self.hold_safepoints_for_stress();
     }
 
     /// How many times this interpreter's heap has moved everything -- a
@@ -297,7 +357,16 @@ impl Interpreter {
     pub fn stress_collections(&self) -> usize {
         self.stress_collect
             .as_ref()
-            .map_or(0, |stress| stress.collections)
+            .map_or(0, |stress| stress.fired)
+    }
+
+    /// How many scavenges the scavenge stress mode has actually caused
+    /// since it was turned on, each after verifying the remembered set; 0
+    /// while it is off. An ordinary scavenge never advances this.
+    pub fn stress_scavenges(&self) -> usize {
+        self.stress_scavenge
+            .as_ref()
+            .map_or(0, |stress| stress.fired)
     }
 }
 

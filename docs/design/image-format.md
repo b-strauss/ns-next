@@ -8,7 +8,9 @@
 > wire"). The decoder reads the graph section in two passes, sizing every
 > record's object from its own bytes before it allocates any ("Two
 > passes"), and a reified frame is an object record like every other
-> ("Frames are object records"). **Planned:** suspend and resume.
+> ("Frames are object records"). A load tenures everything once before
+> it decodes the graph, which it allocates old ("The image under
+> generations"). **Planned:** suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
 > `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
@@ -1486,30 +1488,51 @@ and mutation and truncation tests for the module section, the module class
 and hash tags, `FLAG_START` and the retired tags and flag
 (`crates/ns-runtime/tests/image.rs`).
 
-## Planned: the image under generations
+## The image under generations
 
 The decoder builds its objects in the object space ([memory.md](memory.md),
 "The object space"): each placeholder is a run of words the first pass
-sized, bumped off the space's top and filled in place. The wire format is
-id-based, and road step 3b changed nothing on it: nothing on the wire
-becomes an address or an offset, so an artifact stays independent of word
-size and layout, as Primordial Soup's snapshots are
+sized, bumped off the old space's top and filled in place. The wire format
+is id-based, and neither road step 3b nor road step 4 changed anything on
+it: nothing on the wire becomes an address, an offset or a generation, so
+an artifact stays independent of word size, layout and nursery size, as
+Primordial Soup's snapshots are
 (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image, which is
 old space's bytes relocated on load, is the model this does not take.
 
-Would change: from road step 4 the decoder allocates its objects old.
-
-- **Every load tenures before the decoder allocates.** Under generations
-  ([memory.md](memory.md), "Planned: generations") the decoder allocates
-  everything old, and every load runs `Interpreter::bootstrap()` first
-  (`image/mod.rs`) and then rebuilds every module's root class
-  (`modules::build_module_classes`), so every load will scavenge and tenure
-  right after the bootstrap, before the decoder allocates anything; a load
-  whose image names platform paths does it again after following them,
-  before the graph pass. Each is a collection between entries, where only
-  roots hold values, as `Interpreter::collect_now` is today, never one
-  inside a step. The decoder's stores are then old-to-old and need no
-  barrier.
+- **Every load tenures once, between the platform paths and the graph
+  pass** (decided with the user on 2026-10-04). A load runs in three
+  phases (`image::load`): the first bootstraps an interpreter
+  (`Interpreter::bootstrap`), then, in an entry of its own, decodes
+  everything up to and including the platform path section and rebuilds
+  every module's root class (`modules::build_module_classes`), rooting the
+  classes as `Root`s; the second follows the platform paths, sending each
+  step to the loading platform as an ordinary run, which may scavenge or
+  collect at its safepoints like any run; the third decodes the graph.
+  Between the second and the third, outside any entry, where only roots
+  hold values, one scavenge that tenures everything
+  (`Interpreter::tenure_now`) makes the builtins, the module classes and
+  everything the paths answered old. Spur, Primordial Soup, Strongtalk and
+  HotSpot's CDS all load into a heap that holds nothing young; this makes
+  the heap so before the graph is decoded. One tenure suffices: a second
+  right after the bootstrap, between it and the first phase's entry, would
+  be redundant, since the module classes and what the paths answer are
+  made young after it, so the tenure before the graph pass is needed
+  anyway, and it covers the bootstrap's objects too.
+- **The graph pass allocates old.** It sets the heap allocating old
+  (`Heap::set_allocating_old`) for its whole length, the refusal path
+  included, so every placeholder -- the boxed floats and large integers it
+  creates among them -- goes to the old space, as Primordial Soup's
+  `AllocateSnapshot` allocates a snapshot's objects old
+  (`prior-art/primordialsoup/vm/heap.cc:228`), since a decoded graph is
+  long-lived. Its stores are then old-to-old and take no write barrier, and
+  its objects are not born remembered; a debug build asserts at every fill
+  that the word it stores names no young object
+  ([memory.md](memory.md), "Generations").
+- **The graph pass never collects.** It never polls a safepoint, so nothing
+  moves while its placeholders exist, and the transient peak of a rejected
+  load is unchanged by the generations ([memory.md](memory.md), "The
+  amplification bound of a rejected load").
 
 ## Planned: suspend and resume
 

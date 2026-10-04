@@ -20,14 +20,18 @@ Rust 1.98.0, edition 2021, six crates:
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, one object space
   of variably sized objects in `ns-memory`'s reservation (`heap/space.rs`),
+  a nursery of eden and two survivor spaces below the old space,
   each object its words -- header word, class word, fields, in road step 3's
   layout (`heap/header.rs`, `heap/object.rs`; the seam's value types in
   `heap/records.rs`, the per-heap tables of mixins, applications and compiled
   code in `heap/tables.rs`) -- named by handles that are 64-bit byte
   offsets; an activation stack reified on demand into frame objects; a
-  mark-and-slide collector, the mark bit in the header and the forwarding
-  through a live-word bitmap (`heap/compaction.rs`), run only at run-loop
-  safepoints; `heap/value.rs`, a value as one
+  Cheney scavenger with age-based tenuring (`heap/scavenge.rs`) beside a
+  mark-and-slide collector, which compacts both generations into the old
+  space, the mark bit in the header and the forwarding through a live-word
+  bitmap (`heap/compaction.rs`), both run only at run-loop safepoints or
+  between entries; the write barrier and the remembered set in `heap.rs`'s
+  store accessors; `heap/value.rs`, a value as one
   tagged word, Spur's, and `Word`, the bare word a heap object stores; the
   step state `Mutator` in `interpreter/mod.rs`, held at rest by `World` in
   `heap/world.rs` and reached only through `Interpreter::enter`) and the image
@@ -123,6 +127,11 @@ mixins before any decoded code runs (`image-format.md`, "Verification"). The
 decoder sizes every record from its own bytes in a first pass and allocates
 nothing before it (`image-format.md`, "Two passes"), then fills each
 placeholder in place, so no record is built beside its placeholder. The
+decoder allocates its graph only after a tenure between entries: the
+platform-path sends before it may collect at their safepoints like any run,
+but the graph pass allocates old, after the last tenure, and never polls a
+safepoint, so nothing collects while its placeholders exist and the peak
+argument stands (`image-format.md`, "The image under generations"). The
 transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one (`memory.md`, "The
@@ -132,6 +141,21 @@ covers decoding only: `ns-next load` runs the packaged application's code,
 recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
 (`execution.md`, "The depth limit"), and an image that names platform paths
 first follows them through shipped code only.
+
+**Every store into an existing object goes through `heap.rs`'s store
+accessors and their write barrier.** A scavenge reads only the young
+objects and the remembered old ones, so a store that writes a word into an
+old object any other way leaves the young object it names unreachable to
+the next scavenge -- moved or reclaimed, silently, at exit status 0. Only an
+initializing store into an object just allocated skips the barrier, which
+is why every old allocation outside the image decoder is born remembered;
+besides those, only the collector's own rewrites (a scavenge, a
+compaction, a move), which keep the remembered set themselves, and the
+replacement of resolved futures, which runs only before a full collection
+empties the nursery, write words without it.
+`NS_NEXT_STRESS_SCAVENGE`'s verification of the remembered set, and a
+debug build's poison over the nursery a scavenge vacated, are what find a
+breach (`memory.md`, "Generations").
 
 **A wire tag is assigned once and never renumbered or reused.** Every tag lives in
 `crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`; a new
@@ -264,8 +288,8 @@ benchmarking, and once at the end of a branch, never under a stress mode:
 `cargo nextest run -p ns-cli --profile benchmarks` (`execution.md`, "The Are
 We Fast Yet benchmarks").
 
-The end-of-batch gates (the four stress modes: moves, caches, collection and
-every instruction wide; `run-corpus` plain and under
+The end-of-batch gates (the five stress modes: moves, caches, collection,
+scavenges and every instruction wide; `run-corpus` plain and under
 stress, the benchmarks profile, `verifyPlugin`) are in the `finishing-a-batch`
 skill. A commit that
 never saw them is work in progress, not finished work; a subagent implementing

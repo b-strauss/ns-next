@@ -11863,6 +11863,37 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
     );
 }
 
+/// The root instance's class is the module class and its `collections` slot
+/// what a platform path answered: both were young when the load began, and
+/// the load's tenure made them old before the graph pass named them
+/// (`a_stored_platform_and_a_stored_member_agree_after_a_load`, after both
+/// collections).
+#[cfg(debug_assertions)]
+#[test]
+fn a_loaded_graph_naming_a_platform_path_and_a_module_class_survives_both_collections() {
+    let source = indoc! {"
+        class Holder usingPlatform: platform = Object new (
+            | public keptPlatform = platform.
+              public collections = platform collections. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.scavenge_now();
+    loaded.interpreter.collect_now();
+    loaded.interpreter.scavenge_now();
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let kept = send_to(&mut loaded, &instance, "keptPlatform");
+    let through_the_platform = send_to(&mut loaded, &kept, "collections");
+    let stored = send_to(&mut loaded, &instance, "collections");
+    assert!(
+        same_object(&mut loaded, &through_the_platform, &stored),
+        "a stored platform and a stored member answer one collections module after both \
+         collections"
+    );
+}
+
 /// The platform hands out its module's classes by class accessors
 /// (`public Transcript = ( ^outer PlatformFactory Transcript )`), and the
 /// collections facet its module's the same way, so a class a program got

@@ -4,7 +4,6 @@
 use std::num::NonZeroU64;
 use std::ops::Range;
 
-use crate::heap::space::FIRST_OBJECT;
 use crate::heap::Relocation;
 
 /// Where a collection slides each survivor: one bit per word of the space
@@ -18,6 +17,8 @@ use crate::heap::Relocation;
 /// forwarding").
 pub(crate) struct ForwardingTable {
     chunks: Vec<Chunk>,
+    /// The word index the first survivor moves to.
+    base: usize,
 }
 
 /// The bits and the prefix side by side, so one lookup reads one cache line.
@@ -28,9 +29,10 @@ struct Chunk {
 }
 
 impl ForwardingTable {
-    pub(in crate::heap) fn with_words(words: usize) -> ForwardingTable {
+    pub(in crate::heap) fn with_words(words: usize, base_word: usize) -> ForwardingTable {
         ForwardingTable {
             chunks: vec![Chunk::default(); words.div_ceil(64)],
+            base: base_word,
         }
     }
 
@@ -50,10 +52,18 @@ impl ForwardingTable {
         }
     }
 
-    /// Fills in each chunk's prefix; answers the live words in all.
-    pub(in crate::heap) fn summarize(&mut self) -> usize {
+    /// Fills in each chunk's prefix: the chunks from `first_chunk` on -- the
+    /// old space -- first, then the ones below it -- the nursery -- so that
+    /// the old space's survivors keep its bottom and the nursery's follow
+    /// them, as Strongtalk's full collection compacts the new generation into
+    /// the old one after the old one's own survivors
+    /// (`prior-art/strongtalk/vm/memory/markSweep.cpp:255`). Answers the live
+    /// words in all.
+    pub(in crate::heap) fn summarize(&mut self, first_chunk: usize) -> usize {
+        let first_chunk = first_chunk.min(self.chunks.len());
+        let (nursery, old) = self.chunks.split_at_mut(first_chunk);
         let mut total = 0u64;
-        for chunk in &mut self.chunks {
+        for chunk in old.iter_mut().chain(nursery.iter_mut()) {
             chunk.before = total;
             total += u64::from(chunk.live.count_ones());
         }
@@ -70,7 +80,7 @@ impl ForwardingTable {
     pub(in crate::heap) fn destination(&self, word: usize) -> usize {
         let chunk = self.chunks[word / 64];
         let below = chunk.live & ((1u64 << (word % 64)) - 1);
-        FIRST_OBJECT / 8 + (chunk.before + u64::from(below.count_ones())) as usize
+        self.base + (chunk.before + u64::from(below.count_ones())) as usize
     }
 }
 
@@ -88,56 +98,85 @@ impl Relocation for ForwardingTable {
     }
 }
 
-/// The move stress mode's relocation: every object shifts by one distance,
-/// so every offset changes and a handle the tracer missed both carries an
-/// old epoch and names a different place.
+/// The move stress mode's relocation: each region's objects shift within
+/// that region by their own distance, so every offset changes, young stays
+/// young, and a handle the tracer missed both carries an old epoch and
+/// names a different place.
 #[cfg(debug_assertions)]
 pub(crate) struct Shift {
-    pub(in crate::heap) source: u64,
+    pub(in crate::heap) regions: [ShiftedRegion; 3],
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone)]
+pub(crate) struct ShiftedRegion {
+    pub(in crate::heap) source: Range<u64>,
     pub(in crate::heap) destination: u64,
 }
 
 #[cfg(debug_assertions)]
 impl Relocation for Shift {
     fn apply(&self, offset: NonZeroU64) -> NonZeroU64 {
-        match NonZeroU64::new(offset.get() - self.source + self.destination) {
-            Some(moved) => moved,
-            None => unreachable!("internal: a shifted object lies past the first object"),
+        for region in &self.regions {
+            if region.source.contains(&offset.get()) {
+                if let Some(moved) =
+                    NonZeroU64::new(offset.get() - region.source.start + region.destination)
+                {
+                    return moved;
+                }
+            }
         }
+        unreachable!("internal: a moved handle names an object in no occupied region")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heap::space::FIRST_OBJECT;
 
     #[test]
     fn set_live_across_a_chunk_boundary_sets_exactly_those_bits() {
-        let mut table = ForwardingTable::with_words(192);
+        let mut table = ForwardingTable::with_words(192, FIRST_OBJECT / 8);
         table.set_live(60..70);
         assert_eq!(table.chunks[0].live, 0b1111 << 60);
         assert_eq!(table.chunks[1].live, 0b11_1111);
         assert_eq!(table.chunks[2].live, 0);
         table.set_live(128..192);
         assert_eq!(table.chunks[2].live, u64::MAX, "a whole chunk at once");
-        assert_eq!(table.summarize(), 10 + 64);
+        assert_eq!(table.summarize(0), 10 + 64);
+    }
+
+    #[test]
+    fn the_old_segment_keeps_the_bottom_and_the_nursery_follows_it() {
+        // Base 128 words, the old segment from chunk 2 on; one young object
+        // at words 10..13 and two old ones at 130..132 and 200..204.
+        let mut table = ForwardingTable::with_words(256, 128);
+        table.set_live(10..13);
+        table.set_live(130..132);
+        table.set_live(200..204);
+        assert_eq!(table.summarize(2), 3 + 2 + 4);
+        assert_eq!(table.destination(130), 128);
+        assert_eq!(table.destination(200), 128 + 2);
+        assert_eq!(table.destination(10), 128 + 6, "after every old survivor");
+        assert_eq!(table.destination(12), 128 + 8);
     }
 
     #[test]
     fn the_first_live_word_goes_to_the_first_object() {
-        let mut table = ForwardingTable::with_words(256);
+        let mut table = ForwardingTable::with_words(256, FIRST_OBJECT / 8);
         table.set_live(100..104);
-        table.summarize();
+        table.summarize(0);
         assert_eq!(table.destination(100), FIRST_OBJECT / 8);
     }
 
     #[test]
     fn a_word_after_a_dead_gap_goes_past_the_live_words_before_it() {
-        let mut table = ForwardingTable::with_words(256);
+        let mut table = ForwardingTable::with_words(256, FIRST_OBJECT / 8);
         table.set_live(2..5);
         table.set_live(62..66);
         table.set_live(200..203);
-        table.summarize();
+        table.summarize(0);
         assert_eq!(table.destination(62), FIRST_OBJECT / 8 + 3);
         assert_eq!(table.destination(65), FIRST_OBJECT / 8 + 3 + 3);
         assert_eq!(table.destination(200), FIRST_OBJECT / 8 + 3 + 4);
