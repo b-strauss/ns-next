@@ -60,9 +60,14 @@ pub struct Parser<'a> {
     /// time it asks, so a source without errors never builds them.
     free_closers: Option<declaration::FreeClosers>,
     /// The end `speculative_member_end` answered for a member, keyed by
-    /// the offset it starts at and the bound the parse ran under, which
-    /// is all the answer depends on. Each statement of a run of half-typed
-    /// members asks again for the members after it.
+    /// the offset it starts at and the bound the parse ran under. The
+    /// answer depends on the depth it was asked at and on the budget left
+    /// as well; those are kept out of the key by not keeping an answer the
+    /// depth guard or a spent budget cut short, so every answer kept is
+    /// the member's own. Reused at a depth or with a budget that would
+    /// have refused, it is better than the refusal would have been, never
+    /// wrong. Each statement of a run of half-typed members asks again for
+    /// the members after it.
     member_ends: std::collections::HashMap<(u32, u32), Option<u32>>,
     /// How many times [`Parser::enter`] refused to go deeper: an answer
     /// the depth guard cut short depends on the depth it was asked at, so

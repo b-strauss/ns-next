@@ -3236,8 +3236,12 @@ mod recovery_work_tests {
 
     /// The budget, and what a parse that spends it does besides: it runs
     /// on through the tokens, a recovery skip checks each for a member at a
-    /// fixed cost, and every speculative parse in flight finishes.
-    const STEPS_PER_TOKEN_AT_MOST: usize = RECOVERY_WORK_PER_TOKEN + 64;
+    /// fixed cost, and every speculative parse in flight finishes. It holds
+    /// the work to linear, not to an exact count: the messages below take
+    /// 257 to 259 steps per token, and twice the budget leaves room for
+    /// the passes besides it, while the quadratic work it rules out takes
+    /// thousands per token -- 64 million steps over their 16,000 tokens.
+    const STEPS_PER_TOKEN_AT_MOST: usize = 2 * RECOVERY_WORK_PER_TOKEN;
 
     /// A keyword message of eight thousand parts with an error at its end.
     /// Each of its keywords starts a pattern that reads to the end of the
