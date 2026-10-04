@@ -77,6 +77,6 @@ pub use interpreter::{
     HostSignal, Interpreter, MethodSide, Mutator,
 };
 pub use mixin::{DispatchId, DispatchIds, Mixin, MixinApplication};
-pub use resolver::{resolve, resolve_for_editor};
+pub use resolver::{resolve, resolve_for_editor, root_class_is_value};
 pub use symbol::Symbol;
 pub use types::*;

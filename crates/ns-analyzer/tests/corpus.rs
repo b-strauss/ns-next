@@ -194,7 +194,11 @@ fn every_symbol_selection_lies_inside_its_range() {
         for end in cut_points(&path, &text, false) {
             let module = ns_syntax::parse_for_editor(&text[..end]).module;
             let context = format!("{} cut at byte {end}", path.display());
-            check(&ns_analyzer::document_symbols::symbols(&module), &context);
+            let resolution = ns_runtime::resolve_for_editor(module);
+            check(
+                &ns_analyzer::document_symbols::symbols(&resolution.module, &resolution.bindings),
+                &context,
+            );
         }
     }
 }

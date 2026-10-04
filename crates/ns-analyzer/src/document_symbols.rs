@@ -8,7 +8,10 @@
 //! answers, so they survive while a file is typed. See
 //! `docs/design/editor-support.md`, "Structure".
 
+use std::collections::HashMap;
+
 use lsp_types::{DocumentSymbol, SymbolKind};
+use ns_runtime::Binding;
 use ns_syntax::ast::{self, AccessModifier, SlotMutability};
 use ns_syntax::Span;
 
@@ -39,6 +42,9 @@ pub struct Symbol {
     pub lazy: bool,
     /// A method declared on the class side; never anything else.
     pub class_side: bool,
+    /// A class that names `Value` in its superclass or `<:` clauses; never
+    /// anything else.
+    pub value: bool,
     /// The effective access of a class, factory, slot or method; `None` for
     /// a temporary, which has none.
     pub access: Option<AccessModifier>,
@@ -47,10 +53,17 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
-/// The module's class and everything in it.
-pub fn symbols(module: &ast::Module) -> Vec<Symbol> {
+/// The module's class and everything in it. `bindings` are the resolver's
+/// for the same module (`ns_runtime::resolve_for_editor`); they tell which
+/// declaration a nested class's superclass or `<:` clause names.
+pub fn symbols(module: &ast::Module, bindings: &HashMap<Span, Binding>) -> Vec<Symbol> {
     // §6.3.1: "The access level of a top-level class is always public".
-    vec![class(&module.root_class, Some(AccessModifier::Public))]
+    vec![class(
+        &module.root_class,
+        Some(AccessModifier::Public),
+        bindings,
+        &[],
+    )]
 }
 
 /// The access a member answers to: what it declares, else protected
@@ -59,14 +72,27 @@ fn effective(declared: Option<AccessModifier>) -> Option<AccessModifier> {
     Some(declared.unwrap_or(AccessModifier::Protected))
 }
 
-fn class(declaration: &ast::ClassDeclaration, access: Option<AccessModifier>) -> Symbol {
+/// `enclosing` is the chain of classes declaring this one, innermost first;
+/// empty for the module's root class.
+fn class(
+    declaration: &ast::ClassDeclaration,
+    access: Option<AccessModifier>,
+    bindings: &HashMap<Span, Binding>,
+    enclosing: &[&ast::ClassDeclaration],
+) -> Symbol {
     let name = if declaration.name.name.is_empty() {
         "(unnamed)".to_string()
     } else {
         declaration.name.name.clone()
     };
     let mut children = vec![factory(declaration)];
-    children.extend(instance_members(&declaration.instance_side));
+    let mut chain = vec![declaration];
+    chain.extend_from_slice(enclosing);
+    children.extend(instance_members(
+        &declaration.instance_side,
+        bindings,
+        &chain,
+    ));
     if let Some(class_side) = &declaration.class_side {
         children.extend(class_side.methods.iter().map(|declaration| Symbol {
             class_side: true,
@@ -78,11 +104,71 @@ fn class(declaration: &ast::ClassDeclaration, access: Option<AccessModifier>) ->
         category: SymbolCategory::Class,
         lazy: false,
         class_side: false,
+        value: if enclosing.is_empty() {
+            ns_runtime::root_class_is_value(declaration)
+        } else {
+            nested_class_is_value(declaration, bindings, enclosing, &mut Vec::new())
+        },
         access,
         span: declaration.span.merge(declaration.name.span),
         selection: declaration.name.span,
         children,
     }
+}
+
+/// Whether a nested class is shown as a value class. Unlike a root class's,
+/// a nested class's clauses are expressions evaluated in the enclosing
+/// object at run time (§6.1), so the editor can only approximate: a clause
+/// whose receiver the resolver binds to a nested class declared in this
+/// module makes it a value class when that class is one, or is the class
+/// named `Value` itself (as `Kernel.ns` declares it); any other receiver --
+/// a slot, a method, a name only inherited, `super` -- counts when it is
+/// named `Value`. A class that reaches `Value` through a class from another
+/// module, or through a `Value` slot holding something else, is misread.
+/// `visiting` holds the classes whose verdict is being decided, so a cycle
+/// of clauses (`A = B`, `B = A`) answers no rather than recursing forever.
+fn nested_class_is_value(
+    declaration: &ast::ClassDeclaration,
+    bindings: &HashMap<Span, Binding>,
+    enclosing: &[&ast::ClassDeclaration],
+    visiting: &mut Vec<Span>,
+) -> bool {
+    if visiting.contains(&declaration.name.span) {
+        return false;
+    }
+    visiting.push(declaration.name.span);
+    let value = declaration
+        .superclass
+        .iter()
+        .chain(&declaration.mixin_applications)
+        .any(|clause| {
+            let named = match bindings.get(&clause.receiver.span) {
+                // The clause runs in the enclosing class, so depth 0 is
+                // `enclosing[0]`; a nested class is declared on its
+                // instance side.
+                Some(Binding::LexicalSend { depth }) => enclosing
+                    .get(usize::from(*depth))
+                    .map(|owner| (owner, usize::from(*depth)))
+                    .and_then(|(owner, depth)| {
+                        owner
+                            .instance_side
+                            .nested_classes
+                            .iter()
+                            .find(|nested| nested.name.name == clause.receiver.name)
+                            .map(|nested| (nested, depth))
+                    }),
+                _ => None,
+            };
+            match named {
+                Some((target, depth)) => {
+                    target.name.name == "Value"
+                        || nested_class_is_value(target, bindings, &enclosing[depth..], visiting)
+                }
+                None => clause.receiver.name == "Value",
+            }
+        });
+    visiting.pop();
+    value
 }
 
 /// The primary factory: the pattern as written, or `new`, which a class
@@ -100,6 +186,7 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
         category: SymbolCategory::Factory,
         lazy: false,
         class_side: false,
+        value: false,
         access: Some(AccessModifier::Public),
         span,
         selection: span,
@@ -108,12 +195,17 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
 }
 
 /// Header slots, lazy slots, nested classes and methods, in source order.
-fn instance_members(body: &ast::ClassBody) -> Vec<Symbol> {
+/// `chain` is the class declaring them, then the classes enclosing it.
+fn instance_members(
+    body: &ast::ClassBody,
+    bindings: &HashMap<Span, Binding>,
+    chain: &[&ast::ClassDeclaration],
+) -> Vec<Symbol> {
     let mut members: Vec<Symbol> = body.slots.iter().map(slot).collect();
     members.extend(
         body.nested_classes
             .iter()
-            .map(|nested| class(nested, effective(nested.access))),
+            .map(|nested| class(nested, effective(nested.access), bindings, chain)),
     );
     members.extend(body.methods.iter().map(method));
     members.sort_by_key(|member| member.span.start);
@@ -127,6 +219,7 @@ fn method(declaration: &ast::MethodDeclaration) -> Symbol {
         category: SymbolCategory::Method,
         lazy: false,
         class_side: false,
+        value: false,
         access: effective(declaration.access),
         span: declaration.span.merge(selection),
         selection,
@@ -164,6 +257,7 @@ fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Sym
         category,
         lazy: false,
         class_side: false,
+        value: false,
         access: None,
         span: declaration.span.merge(declaration.name.span),
         selection: declaration.name.span,
@@ -207,9 +301,9 @@ fn pattern_span(pattern: &ast::MessagePattern) -> Span {
     }
 }
 
-/// The access word, then ` class` for a class-side method and ` lazy` for a
-/// lazy slot (`public class`, `protected lazy`); `None` where a symbol has
-/// none of them. `class` is how a client tells a class-side method from an
+/// The access word, then ` class` for a class-side method, ` value` for a
+/// value class and ` lazy` for a lazy slot (`public class`, `public value`,
+/// `protected lazy`); `None` where a symbol has none of them. `class` is how a client tells a class-side method from an
 /// instance-side one, since no node stands for a side.
 fn detail(symbol: &Symbol) -> Option<String> {
     let access = symbol.access.map(|access| match access {
@@ -220,6 +314,7 @@ fn detail(symbol: &Symbol) -> Option<String> {
     let words: Vec<&str> = access
         .into_iter()
         .chain(symbol.class_side.then_some("class"))
+        .chain(symbol.value.then_some("value"))
         .chain(symbol.lazy.then_some("lazy"))
         .collect();
     (!words.is_empty()).then(|| words.join(" "))
@@ -269,6 +364,13 @@ mod tests {
     use super::*;
     use indoc::indoc;
 
+    /// The symbols of a module with the resolver's bindings for it, as the
+    /// server computes them.
+    fn symbols_of(module: &ast::Module) -> Vec<Symbol> {
+        let resolution = ns_runtime::resolve_for_editor(module.clone());
+        symbols(&resolution.module, &resolution.bindings)
+    }
+
     fn outline(text: &str) -> String {
         fn render(symbol: &Symbol, depth: usize, lines: &mut Vec<String>) {
             lines.push(format!(
@@ -285,7 +387,7 @@ mod tests {
         }
         let parsed = ns_syntax::parse_for_editor(text);
         let mut lines = Vec::new();
-        for symbol in symbols(&parsed.module) {
+        for symbol in symbols_of(&parsed.module) {
             render(&symbol, 0, &mut lines);
         }
         lines.join("\n")
@@ -383,7 +485,7 @@ mod tests {
                 broken = (
             ) : ()
         "};
-        assert_selections_inside(&symbols(&ns_syntax::parse_for_editor(text).module));
+        assert_selections_inside(&symbols_of(&ns_syntax::parse_for_editor(text).module));
     }
 
     #[test]
@@ -391,7 +493,7 @@ mod tests {
         let text = "class Module = () (\r\n    (* Grüße 😀 *) run = ( ^1 )\r\n)\r\n";
         let parsed = ns_syntax::parse_for_editor(text);
         let line_index = crate::documents::LineIndex::new(text);
-        let encoded = encode(&symbols(&parsed.module), text, &line_index);
+        let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
         let method = &encoded[0].children.as_ref().expect("the class's children")[1];
         let line_start = text.find("    (* Grüße").expect("line 1");
         let column = text[line_start..text.find("run").expect("the method")]
@@ -420,7 +522,7 @@ mod tests {
             )
         "};
         let parsed = ns_syntax::parse_for_editor(text);
-        let tree = symbols(&parsed.module);
+        let tree = symbols_of(&parsed.module);
         let members = &tree[0].children[1..];
         let shape: Vec<(&str, SymbolCategory, bool)> = members
             .iter()
@@ -468,7 +570,7 @@ mod tests {
             )
         "};
         let parsed = ns_syntax::parse_for_editor(text);
-        let tree = symbols(&parsed.module);
+        let tree = symbols_of(&parsed.module);
         let temporaries = &tree[0].children[1].children;
         let shape: Vec<(&str, SymbolCategory)> = temporaries
             .iter()
@@ -502,6 +604,124 @@ mod tests {
         );
     }
 
+    /// The details of a module's classes, by name, the root first, then
+    /// every nested class depth first in source order.
+    fn class_details(text: &str) -> Vec<(String, Option<String>)> {
+        fn collect(symbol: &DocumentSymbol, found: &mut Vec<(String, Option<String>)>) {
+            if symbol.kind == SymbolKind::CLASS {
+                found.push((symbol.name.clone(), symbol.detail.clone()));
+            }
+            for child in symbol.children.iter().flatten() {
+                collect(child, found);
+            }
+        }
+        let parsed = ns_syntax::parse_for_editor(text);
+        let line_index = LineIndex::new(text);
+        let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
+        let mut found = Vec::new();
+        collect(&encoded[0], &mut found);
+        found
+    }
+
+    fn named(found: &[(&str, &str)]) -> Vec<(String, Option<String>)> {
+        found
+            .iter()
+            .map(|(name, detail)| (name.to_string(), Some(detail.to_string())))
+            .collect()
+    }
+
+    /// A root class is a value class exactly when the root rule builds it
+    /// over `Value` (`ns_runtime::root_class_is_value`).
+    #[test]
+    fn a_root_class_is_a_value_class_as_the_root_rule_builds_it() {
+        for (header, detail) in [
+            ("class Module = Object <: Value ()", "public value"),
+            ("class Module = Value new ()", "public value"),
+            ("class Module = Object new ()", "public"),
+            ("class Module = ()", "public"),
+            // A defect: refused, so never built over `Value`.
+            ("class Module = Value <: Value ()", "public"),
+        ] {
+            let text = format!(
+                "{header} ()
+"
+            );
+            assert_eq!(
+                class_details(&text),
+                named(&[("Module", detail)]),
+                "{header}"
+            );
+        }
+    }
+
+    /// A nested class whose clause names `Value`, or a nested class of this
+    /// module that is a value class, is one; through a sibling declared later
+    /// and through an enclosing class's member too.
+    #[test]
+    fn a_nested_class_is_a_value_class_through_the_class_its_clause_names() {
+        let text = indoc! {"
+            class Module = (
+            ) (
+                class Derived = Point ()
+                public class Point = Value new () (
+                    class Inner = Derived ()
+                )
+                class Plain = () ()
+                class Mixed = Object <: Plain <: Value ()
+                class Named = Plain ()
+                class First = Second ()
+                class Second = First ()
+            )
+        "};
+        assert_eq!(
+            class_details(text),
+            named(&[
+                ("Module", "public"),
+                ("Derived", "protected value"),
+                ("Point", "public value"),
+                ("Inner", "protected value"),
+                ("Plain", "protected"),
+                ("Mixed", "protected value"),
+                ("Named", "protected"),
+                ("First", "protected"),
+                ("Second", "protected"),
+            ])
+        );
+    }
+
+    /// A class declared as `Value`, as `Kernel.ns` declares it, makes the
+    /// classes over it value classes; a `Value` slot counts by its name, since
+    /// what it holds is decided at run time.
+    #[test]
+    fn a_receiver_named_value_counts_unless_it_names_a_class_of_this_module() {
+        let declared = indoc! {"
+            class Module = Object <: Value (
+            ) (
+                public class Value = Object new () ()
+                public class Number = Value new () ()
+            )
+        "};
+        assert_eq!(
+            class_details(declared),
+            named(&[
+                ("Module", "public value"),
+                ("Value", "public"),
+                ("Number", "public value"),
+            ])
+        );
+        let slot = indoc! {"
+            class Module usingPlatform: platform = (
+                | Value = platform Value. |
+            ) (
+                class Point = Value ()
+            )
+        "};
+        assert_eq!(
+            class_details(slot),
+            named(&[("Module", "public"), ("Point", "protected value")])
+        );
+    }
+
     #[test]
     fn a_member_shows_its_effective_access() {
         let text = indoc! {"
@@ -517,7 +737,7 @@ mod tests {
         "};
         let parsed = ns_syntax::parse_for_editor(text);
         let line_index = LineIndex::new(text);
-        let encoded = encode(&symbols(&parsed.module), text, &line_index);
+        let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
         let details = |symbol: &DocumentSymbol| symbol.detail.clone();
         let root = &encoded[0];
         assert_eq!(details(root).as_deref(), Some("public"));

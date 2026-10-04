@@ -216,6 +216,38 @@ pub(crate) fn root_clause_defect(
     None
 }
 
+/// The two choices the root rule leaves a root class without a defect: built
+/// over `Value` rather than `Object`, and with a `Value` level applied by a
+/// `<:` clause over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RootShape {
+    pub(crate) over_value: bool,
+    pub(crate) applies_value: bool,
+}
+
+/// How a root class is built, read from the clauses `root_clause_defect`
+/// accepts; `None` for a root with a defect.
+pub(crate) fn root_shape(declaration: &ast::ClassDeclaration) -> Option<RootShape> {
+    if root_clause_defect(declaration).is_some() {
+        return None;
+    }
+    Some(RootShape {
+        over_value: declaration
+            .superclass
+            .as_ref()
+            .is_some_and(|clause| clause.receiver.name == "Value"),
+        applies_value: !declaration.mixin_applications.is_empty(),
+    })
+}
+
+/// Whether a module's root class is a value class: one the root rule
+/// accepts, built over `Value` (`Value new`) or with `Value` applied over
+/// `Object` (`Object <: Value`). Exact, since the rule leaves a root no other
+/// way to reach `Value`; the editor's structure view asks it.
+pub fn root_class_is_value(declaration: &ast::ClassDeclaration) -> bool {
+    root_shape(declaration).is_some_and(|shape| shape.over_value || shape.applies_value)
+}
+
 /// A clause's prefix and receiver, as the program wrote them -- what a
 /// refusal names; a message at fault is named apart.
 fn clause_as_written(clause: &ast::SuperclassClause) -> String {

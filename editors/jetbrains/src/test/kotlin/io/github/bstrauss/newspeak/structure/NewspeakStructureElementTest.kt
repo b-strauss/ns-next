@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.structure
 
 import com.intellij.icons.AllIcons
+import io.github.bstrauss.newspeak.NewspeakIcons
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
@@ -24,12 +25,14 @@ class NewspeakStructureElementTest {
         assertEquals("at: index put: value", presentationOf(symbol("at: index put: value", SymbolKind.Method, "public")).name)
     }
 
-    /** One row per element the tree shows: its base icon and its hover text. */
+    /** One row per element the tree shows, and a value class: its base icon and its hover text. */
     @Test fun eachElementShowsItsIconAndHover() {
         class Case(val symbol: DocumentSymbol, val root: Boolean, val icon: Icon, val tooltip: String)
         val cases = listOf(
-            Case(symbol("Module", SymbolKind.Class, "public"), true, AllIcons.Nodes.JavaModule, "Root class"),
+            Case(symbol("Module", SymbolKind.Class, "public"), true, NewspeakIcons.ROOT_CLASS, "Root class"),
+            Case(symbol("Kernel", SymbolKind.Class, "public value"), true, NewspeakIcons.ROOT_CLASS, "Root value class"),
             Case(symbol("Inner", SymbolKind.Class, "public"), false, AllIcons.Nodes.Class, "Public class"),
+            Case(symbol("Point", SymbolKind.Class, "protected value"), false, NewspeakIcons.VALUE_CLASS, "Protected value class"),
             Case(symbol("usingPlatform: platform", SymbolKind.Constructor, "public"), false, AllIcons.Nodes.Function, "Factory method"),
             Case(symbol("count", SymbolKind.Constant, "private"), false, AllIcons.Nodes.Constant, "Private constant"),
             Case(symbol("count", SymbolKind.Property, "protected"), false, AllIcons.Nodes.Variable, "Protected variable"),

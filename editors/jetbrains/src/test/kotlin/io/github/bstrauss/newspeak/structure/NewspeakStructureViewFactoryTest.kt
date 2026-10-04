@@ -9,6 +9,7 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.ide.projectView.PresentationData
 import com.intellij.ui.icons.CompositeIcon
 import com.intellij.ui.icons.RowIcon
+import io.github.bstrauss.newspeak.NewspeakIcons
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
@@ -80,12 +81,21 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
     }
 
+    /** The plugin's own node icons load from its resources, at the size of a tree icon. */
+    fun testTheNodeIconsLoad() {
+        for (icon in listOf(NewspeakIcons.ROOT_CLASS, NewspeakIcons.VALUE_CLASS)) {
+            assertNotNull(icon)
+            assertEquals(16, icon.iconWidth)
+            assertEquals(16, icon.iconHeight)
+        }
+    }
+
     /**
-     * The root class's row: the module icon with the public icon beside it,
+     * The root class's row: the root-class icon with the public icon beside it,
      * and its hover text, carried as `PresentationData`'s tooltip, which the
      * structure view's tree copies from the element's presentation.
      */
-    fun testTheRootClassShowsTheModuleIconAndItsHover() {
+    fun testTheRootClassShowsItsIconAndItsHover() {
         val file = myFixture.configureByText("Module.ns", "class Module = () ()").virtualFile
         val range = Range(Position(0, 6), Position(0, 12))
         val symbol = DocumentSymbol("Module", SymbolKind.Class, range, range, "public")
@@ -94,7 +104,7 @@ class NewspeakStructureViewFactoryTest : BasePlatformTestCase() {
         assertEquals("Root class", (presentation as PresentationData).tooltip)
         assertEquals("Module", presentation.presentableText)
         val row = presentation.getIcon(false) as RowIcon
-        assertSame(AllIcons.Nodes.JavaModule, row.getIcon(0))
+        assertSame(NewspeakIcons.ROOT_CLASS, row.getIcon(0))
         assertSame(AllIcons.Nodes.C_public, row.getIcon(1))
         val child = NewspeakStructureElement(project, file, symbol).presentation as PresentationData
         assertEquals("Public class", child.tooltip)

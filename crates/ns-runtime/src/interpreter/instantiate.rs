@@ -230,20 +230,14 @@ impl<'gc> Mutator<'gc> {
         // over `Object` so that its class exists and can be inspected, and only
         // an instance is refused (`apply_mixin` carries the defect into the
         // application).
-        let (superclass_kind, applies_value) = match &mixin.root_clause_defect {
-            Some(_) => (BuiltinClass::Object, false),
-            None => {
-                let names_value = declaration
-                    .superclass
-                    .as_ref()
-                    .is_some_and(|clause| clause.receiver.name == "Value");
-                let superclass_kind = if names_value {
-                    BuiltinClass::Value
-                } else {
-                    BuiltinClass::Object
-                };
-                (superclass_kind, !declaration.mixin_applications.is_empty())
-            }
+        let shape = match &mixin.root_clause_defect {
+            Some(_) => None,
+            None => crate::resolver::root_shape(declaration),
+        };
+        let (superclass_kind, applies_value) = match shape {
+            Some(shape) if shape.over_value => (BuiltinClass::Value, shape.applies_value),
+            Some(shape) => (BuiltinClass::Object, shape.applies_value),
+            None => (BuiltinClass::Object, false),
         };
         let builtin = self.builtin_class(superclass_kind);
         let superclass = self
@@ -1676,6 +1670,36 @@ pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_root_class_is_a_value_class_exactly_when_the_root_rule_builds_it_over_value() {
+        let is_value = |header: &str| {
+            let source = format!(
+                "{header} ()
+"
+            );
+            let module = ns_syntax::parse(&source).expect("parse");
+            crate::resolver::root_class_is_value(&module.root_class)
+        };
+        for value in [
+            "class R = Value ()",
+            "class R = Value new ()",
+            "class R = Object <: Value ()",
+            "class R = Object new <: Value ()",
+        ] {
+            assert!(is_value(value), "{value}");
+        }
+        for other in [
+            "class R = ()",
+            "class R = Object ()",
+            "class R = Object new ()",
+            // A defect: the rule refuses it, so it is built over `Object`.
+            "class R = Value <: Value ()",
+            "class R = Value foo ()",
+        ] {
+            assert!(!is_value(other), "{other}");
+        }
+    }
+
     #[test]
     fn root_clause_defect_classifies_every_root_form() {
         use crate::mixin::RootClauseDefect;

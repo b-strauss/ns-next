@@ -10,6 +10,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.util.getOffsetInDocument
 import com.intellij.ui.IconManager
+import io.github.bstrauss.newspeak.NewspeakIcons
 import io.github.bstrauss.newspeak.lsp.NewspeakSymbolKinds
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.SymbolKind
@@ -32,15 +33,17 @@ data class SymbolPresentation(
 
 /**
  * The server's `detail` is the effective access word, then ` class` for a
- * class-side method and ` lazy` for a lazy slot (`public class`,
- * `protected lazy`); a temporary has none. A first word that is no access word
+ * class-side method, ` value` for a value class and ` lazy` for a lazy slot
+ * (`public class`, `public value`, `protected lazy`); a temporary has none. A first word that is no access word
  * shows no access icon rather than a guessed one.
  *
  * The icons and hover texts follow what a member can do, not LSP's names for
  * the kinds: a slot with a getter only (`Constant`) and an immutable temporary
  * (`Constant` without `detail`) are constants, a slot with a getter and a
  * setter (`Property`) and a mutable temporary (`Variable`) are variables. The
- * root class, the module's one top-level class, is shown as the module it is.
+ * root class, the module's one top-level class, has an icon of its own, and
+ * so has a nested value class, `value` among the class's `detail` words; a
+ * root value class keeps the root's icon and says `Root value class`.
  */
 fun presentationOf(symbol: DocumentSymbol, root: Boolean = false): SymbolPresentation {
     val words = symbol.detail?.split(' ')?.filter { word -> word.isNotEmpty() }.orEmpty()
@@ -52,17 +55,23 @@ fun presentationOf(symbol: DocumentSymbol, root: Boolean = false): SymbolPresent
         else -> null
     }
     val classSide = "class" in words
-    val rootClass = root && symbol.kind == SymbolKind.Class
+    val isClass = symbol.kind == SymbolKind.Class
+    val rootClass = root && isClass
+    val valueClass = isClass && "value" in words
     return SymbolPresentation(
         name = symbol.name,
         locationString = if ("lazy" in words) "lazy" else null,
-        kindIcon = if (rootClass) AllIcons.Nodes.JavaModule else symbol.kind?.let(NewspeakSymbolKinds::getIcon),
+        kindIcon = when {
+            rootClass -> NewspeakIcons.ROOT_CLASS
+            valueClass -> NewspeakIcons.VALUE_CLASS
+            else -> symbol.kind?.let(NewspeakSymbolKinds::getIcon)
+        },
         visibilityIcon = visibilityIcon,
         classSide = classSide,
         tooltip = when {
-            rootClass -> "Root class"
+            rootClass -> if (valueClass) "Root value class" else "Root class"
             else -> when (symbol.kind) {
-                SymbolKind.Class -> withAccess(access, "class")
+                SymbolKind.Class -> withAccess(access, if (valueClass) "value class" else "class")
                 SymbolKind.Constructor -> "Factory method"
                 SymbolKind.Constant -> if (access == null) "Local constant" else withAccess(access, "constant")
                 SymbolKind.Property -> withAccess(access, "variable")
