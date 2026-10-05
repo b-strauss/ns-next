@@ -74,6 +74,8 @@
                                  displayName="Newspeak"/>
         <notificationGroup id="Newspeak" displayType="BALLOON"/>
         <configurationType implementation="io.github.bstrauss.newspeak.run.NewspeakConfigurationType"/>
+        <!-- Reads the language server's symbols, no JSON PSI, so it is here and not in newspeak-json.xml. -->
+        <runLineMarkerContributor language="Newspeak" implementationClass="io.github.bstrauss.newspeak.run.NewspeakModuleRunLineMarkerContributor"/>
         <platform.lsp.integrationProvider implementation="io.github.bstrauss.newspeak.lsp.NewspeakLspIntegrationProvider"/>
         <!-- Asked before the platform's LSP structure view, which is registered for every
              language; that one is also turned off for the Newspeak client
