@@ -38,8 +38,11 @@ Rust 1.98.0, edition 2021, six crates:
   format (`image/`).
   `docs/design/README.md`, "The map", says which document covers each part.
 - `crates/ns-cli` — the `ns-next` binary, which runs programs: `run`, `run-corpus`,
-  `load`, `bench`, `build`. A program is one `.ns` file or a JSON project file of
-  several modules (`project.rs`, `program.rs`).
+  `load`, `bench`, `build`. A program is one `.ns` file or a project of several
+  modules: a directory whose `newspeak.json` names them, the current directory
+  when no program is given (`project.rs`, `program.rs`). The file is described
+  by `schemas/newspeak.schema.json`, which `crates/ns-cli/tests/project_schema.rs`
+  holds the reader to and the JetBrains plugin bundles.
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
   (diagnostics, semantic tokens, fold ranges, document symbols); `dump-tokens`,
@@ -278,9 +281,10 @@ Plus, per commit touching them:
 
 - `crates/ns-memory` → `cargo clippy -p ns-memory --all-targets --target x86_64-unknown-linux-gnu`
   and the same for `aarch64-apple-darwin`
-- `editors/jetbrains`, `crates/ns-analyzer` or `crates/ns-syntax` →
-  `./editors/jetbrains/gradlew -p editors/jetbrains check` (when unsure whether
-  a change reaches the plugin, run it)
+- `editors/jetbrains`, `crates/ns-analyzer`, `crates/ns-syntax` or `schemas/` →
+  `./editors/jetbrains/gradlew -p editors/jetbrains check` (the plugin bundles
+  `schemas/newspeak.schema.json`, so a change to it reaches the plugin; when
+  unsure whether a change reaches the plugin, run it)
 
 `.config/nextest.toml`'s default profile leaves out the tests that run the Are
 We Fast Yet benchmarks at full size; they run only on demand, when
@@ -341,6 +345,9 @@ and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
 - All code, identifiers, comments, commit messages and developer documentation
   are in English.
 - Classic terminology: `blacklist`, `whitelist`, `sane`.
+- Newspeak sources (`.ns`) outside `corpus/` are indented with four spaces,
+  never tabs; `crates/ns-cli/tests/source_formatting.rs` holds it, and
+  `corpus/` stays upstream's verbatim copy.
 - **Names are written out.** No identifier of one or two characters and no
   truncated word, in every kind of name and every segment of a compound:
   `mutator`, `index`, `error`, `interpreter` (not `interp`), `program_counter`

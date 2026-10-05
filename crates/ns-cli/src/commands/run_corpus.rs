@@ -204,9 +204,9 @@ fn write_wrapper(scratch: &Path, module: &Path, send: &str) -> Result<PathBuf, S
         .map_err(|error| format!("could not write the wrapper: {error}"))?;
     let absolute = std::path::absolute(module)
         .map_err(|error| format!("could not resolve {}: {error}", module.display()))?;
-    let project = scratch.join("project.json");
+    let project = scratch.join(crate::project::PROJECT_FILE_NAME);
     let contents = serde_json::json!({
-        "root": "RunCorpusEntry.ns",
+        "main": "RunCorpusEntry.ns",
         "modules": [absolute.to_string_lossy()],
     });
     std::fs::write(&project, contents.to_string())

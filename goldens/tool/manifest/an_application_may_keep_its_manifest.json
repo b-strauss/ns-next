@@ -1,6 +1,0 @@
-{
-  "root": "an_application_may_keep_its_manifest/App.ns",
-  "modules": [
-    "an_application_may_keep_its_manifest/Counter.ns"
-  ]
-}

@@ -15,7 +15,7 @@
    obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
    and in THIRD-PARTY-NOTICES.md at the repository root.
 
-   ns-next run are-we-fast-yet.json -- [--timed] [Benchmark]: without
+   ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]: without
    --timed, runs each benchmark (or the one named) once and prints
    '<Name>: ok'; with it, measures each for at least 20 ms after 3 ms of
    warm-up and prints its runs per second, as Primordial Soup does. *)
@@ -70,7 +70,7 @@ class AreWeFastYet packageUsing: manifest = (
             found ifFalse: [Error signal: 'Unknown benchmark: ', name]
         )
         public usage = (
-            Error signal: 'usage: ns-next run are-we-fast-yet.json -- [--timed] [Benchmark]'
+            Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]'
         )
     )
     public main: platform args: arguments = (

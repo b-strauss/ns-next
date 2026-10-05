@@ -83,10 +83,10 @@ guarantee it gives up or the complexity it adds.
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
 | Activations, the VM loop | [execution.md](execution.md) | Built, including the trampoline; nothing re-enters the loop from Rust, the loop runs over the frame's state in locals, one entry per stretch between two safepoints, and polls a safepoint, its sends go through the inline caches, and the optimized lowering converts closures — a captured variable is copied into the closure or lives in its scope's indirection vector, and only by-reference code keeps a returning frame's registers; a body is stored and run as eight-byte instructions with side tables, read back as `Instruction`s through a decoded view, each send kind joining its own send path ("The compact instruction encoding") | The JIT tiers, after the representation steps of the road -- an execution model for compiled code, a baseline JIT and an optimizing one ("Planned: JIT tiers") |
 | Object lifetime, identity, collection | [memory.md](memory.md) | Built — the memory layer, `crates/ns-memory` ("The memory layer"), and in it the object space: every object end to end in one reservation, byte-offset handles, bump allocation (road step 3b, "The object space"); frames objects in it, the activation stack, the safepoint, tracing by format, host roots, the stress modes, the lifetime brand; two generations (road step 4, "Generations"): a nursery of eden and two survivor spaces below the old space, a copying scavenger with age-based tenuring, a write barrier and remembered set behind the store accessors, large objects allocated old, and a mark-compact full collection that marks in the header and slides the survivors of both generations into the old space through a live-word bitmap; an object is reclaimed once nothing reaches it | Inline allocation ("Planned: inline allocation") |
-| Serialization: the packaged application | [image-format.md](image-format.md) | Built: one artifact, an application packaged just before `main:args:`, carrying every module of a project; frames are object records, and the decoder sizes every record from its own bytes before it allocates any ("Two passes"); a load tenures once before the graph pass, which allocates old ("The image under generations") | Suspend and resume ("Planned: suspend and resume") |
+| Serialization: the packaged application, the project file | [image-format.md](image-format.md) | Built: one artifact, an application packaged just before `main:args:`, carrying every module of a project; a project is the directory its `newspeak.json` describes (`main`, `modules`, `scripts` for `--script`), described by `schemas/newspeak.schema.json`, which the agreement test `crates/ns-cli/tests/project_schema.rs` holds the reader to ("Packaging"); frames are object records, and the decoder sizes every record from its own bytes before it allocates any ("Two passes"); a load tenures once before the graph pass, which allocates old ("The image under generations") | Suspend and resume ("Planned: suspend and resume") |
 | Builtins and the platform | [core-library.md](core-library.md) | **Partial:** `Integer` answers `//` but not `/`. Built as Newspeak source over a VM mirror: every builtin method is Newspeak in `crates/ns-runtime/core-library/Kernel.ns` -- a forwarder to one of the mirror's `MIRROR` rows, which are the leaves, or a quick method or ordinary method that reaches no leaf, as all of `True`'s, `False`'s and the nil protocol's are. Its hierarchy is §3.2's and §3.1.1's — `Top`, then `Object`, then `Value` over the value classes with `Number` among them, and `Behavior` over `Class` and `Metaclass` — and `Value` derives `=`, `==` and `hash` from an instance's state. Every class object's class is its own metaclass, its class side applied to `Class`, and every metaclass's class is `Metaclass`; a class object is a value when its enclosing object is. `Object` carries §3.2's accessors for the predefined classes, so a bare `String` is a send answered without an activation. §8.6's exceptions are Newspeak over kernel-private activation objects: `Exception`, `Error`, `MessageNotUnderstood`, `Halt` and `Message`, reached through `platform kernel`, with ANSI's `on:do:`, `ensure:`, `ifCurtailed:`, `return:`, `retry`, `resume:` and `pass`; every VM error and every message nothing understands is signalled, and the depth limit keeps a reserve for signalling its own. The platform is an instance of the nested `Platform` of the shipped module `crates/ns-runtime/core-library/PlatformFactory.ns`, whose root is booted with the mirror and the kernel instance from the table of shipped modules (`interpreter/core_library.rs`) and never handed out (the factory pattern); its transcript, `collections`, `kernel` and `time` members are lazy slots, its module's classes are handed out by class accessors, and an image names all of them by their platform paths. `collections` is the facet of a second shipped module, `CollectionsFactory.ns`, whose root `PlatformFactory`'s builds once through the mirror's `moduleNamed:`; its `List`, `Map` and `Set` are Newspeak. A `String` is its code points, one byte or four each ("Strings are code points in two widths"), and a NaN equals a NaN. Integers are unbounded, as §5.1.1 requires: one that does not fit a `SmallInteger`'s 61 bits is a `LargeInteger`, a kernel subclass of `Integer` whose arithmetic (`crates/ns-runtime/src/arbitrary_integer/`) is adapted from `num-bigint` and `num-integer` ("Large integers") | real bodies for `whileTrue:`, `whileFalse:` and `do:` before the baseline JIT (road step 8); settling `Integer>>/` and the numeric tower `Number` is the place for |
 | Debugger, mirrors, edit-and-continue, actors | [liveness-and-reflection.md](liveness-and-reflection.md) | Planned | — |
-| Editor support and the analyzer: the language server, the JetBrains plugin, `ns-next-analyzer` | [editor-support.md](editor-support.md) | Built — highlighting, errors as you type, code folding and a structure view with breadcrumbs in every commercial JetBrains IDE from 2026.1.4, kept through syntax errors; the server bundled for Windows x64. The server is `ns-next-analyzer lsp`; the same binary parses (`parse`, `parse-corpus`), prints a compiled body (`disasm`, [compiler.md](compiler.md)) and an image's structure (`inspect`, [image-format.md](image-format.md)), and never runs a program | formatting (`ns-next-analyzer fmt`), go to definition and find usages, more platforms; a heap dump and inspection of JIT-compiled code as further analyzer commands |
+| Editor support and the analyzer: the language server, the JetBrains plugin, `ns-next-analyzer` | [editor-support.md](editor-support.md) | Built — highlighting, errors as you type, code folding and a structure view with breadcrumbs in every commercial JetBrains IDE from 2026.1.4, kept through syntax errors; the server bundled for Windows x64. For `newspeak.json`, the schema from `schemas/`, and a "Newspeak" run configuration with play buttons that run or benchmark the project with the `ns-next` the settings name. The server is `ns-next-analyzer lsp`; the same binary parses (`parse`, `parse-corpus`), prints a compiled body (`disasm`, [compiler.md](compiler.md)) and an image's structure (`inspect`, [image-format.md](image-format.md)), and never runs a program | formatting (`ns-next-analyzer fmt`), go to definition and find usages, more platforms; a heap dump and inspection of JIT-compiled code as further analyzer commands |
 
 Real programs to measure the runtime on, beside the microbenchmarks under
 `goldens/tool/bench/`, live in `benchmarks/`: today
@@ -200,17 +200,23 @@ spawned with the stack the front end needs ([execution.md](execution.md),
 `source.rs` loads and resolves one source file, collects the `.ns` files under
 a directory and prints diagnostics; it is a crate of its own so the language
 server's dependencies never reach `ns-next`. What `ns-next`'s commands share
-lives beside them: `project.rs` reads a JSON project file and its path rules,
+lives beside them: `project.rs` finds a project's `newspeak.json` and reads
+it, with its rules, its scripts and its path rules; `command_line.rs` splits
+a script into arguments as a POSIX shell splits a command line;
 `program.rs` reads a program -- one source file or a project, its modules in
 module order -- compiles it and assembles its application with `new` or
 `packageUsing:` a manifest, and `entry.rs` sends `main: platform args:` and
-reports its outcome.
+reports its outcome. The project file's schema is
+`schemas/newspeak.schema.json`, the one copy:
+`crates/ns-cli/tests/project_schema.rs` holds the reader and the schema to
+one another, and the JetBrains plugin bundles it
+([image-format.md](image-format.md), "Packaging").
 
 ## The goldens
 
 `goldens/` is this runtime's recorded behaviour. A golden is a `.ns` program
-or a `.json` project file ([image-format.md](image-format.md)), and a `.toml`
-beside it holding the outcome that program must produce:
+or a project golden, a directory holding a `newspeak.json`
+([image-format.md](image-format.md)), and a `.toml` beside it holding the outcome that program must produce:
 `status`, `stdout` and `stderr`, each defaulting to the success case (`0`,
 empty, empty), so an ordinary golden's file is just its `stdout` and one that
 raises writes its `status` and `stderr`. Both lowerings must produce it, byte
@@ -235,11 +241,12 @@ whose assembly fails must fail its `build` with `run`'s status and report.
 A golden's root class is instantiated with `new`, and a project golden's
 root with `packageUsing:` its manifest; either reaches the platform only as
 `main:args:`'s first argument (§8.4), as every program does
-([image-format.md](image-format.md), "Packaging"). A project golden's
-modules live in the directory `goldens/<category>/<name>/` beside its
-`<name>.json`, or in a tree several goldens share outside `goldens/`, which
-its project file names by relative paths: each `goldens/tool/awfy/` golden is a
-project file over `benchmarks/are-we-fast-yet/`. The modules are not
+([image-format.md](image-format.md), "Packaging"). A project golden is
+the directory `goldens/<category>/<name>/`, its `newspeak.json` in it and
+`<name>.toml` beside it; its modules live in the directory too, or in a tree
+several goldens share outside `goldens/`, which its `newspeak.json` names by
+relative paths: each `goldens/tool/awfy/` golden is a directory holding only a
+`newspeak.json` over `benchmarks/are-we-fast-yet/`. The modules are not
 goldens themselves, and `goldens/tool/manifest/` pins the manifest.
 
 A fifth key, `arguments`, lists the program's arguments, which every runner
@@ -306,10 +313,10 @@ The goldens are a tree. A directory that holds files is a category and holds
 goldens only; one that holds none groups categories or further groups. The
 set is found by walking it — no list, no count, so adding a golden needs no
 edit anywhere, and `cargo nextest run -p ns-cli --test run_goldens
-library/number` runs one subtree. A project golden's modules live in the
-directory named like it (`<name>.json` and `<name>/`), the one directory a
-category may hold, or in a shared tree outside `goldens/`, as `tool/awfy/`'s
-do; neither's contents are goldens, and neither is walked. A file at the
+library/number` runs one subtree. A project golden is a
+directory holding a `newspeak.json`, the one directory a category may hold;
+its modules live in it, or in a shared tree outside `goldens/`, as
+`tool/awfy/`'s do; neither's contents are goldens, and neither is walked. A file at the
 root, a directory beside goldens or an empty directory is refused by name
 rather than skipped, because a golden nothing discovers is not a golden at
 all. `every_golden_is_a_complete_pair` covers the other half: an orphan on
@@ -324,10 +331,10 @@ explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the
 harness's own header in `benchmarks/are-we-fast-yet/AreWeFastYet.ns`, which
 says what an untimed run prints and gives the usage line the refusals pin;
-their file names say which case each is. Every `goldens/tool/awfy/*.json` lists
-every module of `benchmarks/are-we-fast-yet/are-we-fast-yet.json`, because the
+their file names say which case each is. Every `goldens/tool/awfy/*/newspeak.json` lists
+every module of `benchmarks/are-we-fast-yet/newspeak.json`, because the
 harness names each benchmark when it is instantiated; a new benchmark is added
-to the harness tuple, the project file, each `awfy` golden `.json`,
+to the harness tuple, the project file, each `awfy` golden's `newspeak.json`,
 `all_benchmarks_verify.toml` and the name list in `crates/ns-cli/tests/run.rs`'s
 `a_timed_run_prints_a_score_for_every_benchmark`. The `.toml` holds the recorded
 answer and nothing else.

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ns-next project",
+  "description": "A Newspeak program of several modules, run by ns-next: `main` is the application's module, instantiated with `packageUsing:` a manifest of the others. Paths are relative to this file, with either separator.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "Where an editor finds this schema; ns-next checks only that it is a string.",
+      "type": "string"
+    },
+    "main": {
+      "description": "The application's module: its root class is instantiated with `packageUsing:` the manifest, then sent `main: platform args:`.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\.ns$"
+    },
+    "modules": {
+      "description": "The other modules the manifest holds, each reached as `manifest <Name>` by the name its source declares.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\.ns$"
+      },
+      "uniqueItems": true
+    },
+    "scripts": {
+      "description": "Named command lines: `ns-next run --script <name>` and `ns-next bench --script <name>` hand one's arguments to `main:args:`, as if written after `--`; arguments after `--` follow them.",
+      "type": "object",
+      "propertyNames": {
+        "description": "A script's name: not empty, and neither beginning nor ending with whitespace.",
+        "pattern": "^\\S([\\s\\S]*\\S)?$"
+      },
+      "additionalProperties": {
+        "description": "A script: one string, split into arguments as a POSIX shell splits a command line, on every platform. Unquoted spaces, tabs and newlines separate arguments. '…' holds everything literally. Inside \"…\" a backslash escapes \", \\, $, a backtick or a newline and is otherwise literal. Outside quotes a backslash escapes the next character. A backslash before a newline removes both. Adjacent parts make one argument; '' or \"\" alone is one empty argument. Nothing is expanded and nothing is an operator or a comment: $, *, ~, backticks, |, ;, &, (, ) and # are literal. An unterminated quote or a backslash at the end is refused.",
+        "type": "string"
+      }
+    }
+  },
+  "required": ["main"]
+}

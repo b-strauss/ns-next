@@ -1,0 +1,21 @@
+{
+  "main": "AreWeFastYet.ns",
+  "modules": [
+    "Bounce.ns",
+    "CD.ns",
+    "DeltaBlue.ns",
+    "DeltaBlueTon80.ns",
+    "Havlak.ns",
+    "Json.ns",
+    "List.ns",
+    "Mandelbrot.ns",
+    "NBody.ns",
+    "Permute.ns",
+    "Queens.ns",
+    "Richards.ns",
+    "RichardsTon80.ns",
+    "Sieve.ns",
+    "Storage.ns",
+    "Towers.ns"
+  ]
+}

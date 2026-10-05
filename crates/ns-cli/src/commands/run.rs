@@ -11,10 +11,15 @@ pub(crate) fn execute(
     file: &Path,
     lowering: ns_runtime::Lowering,
     cache_statistics: bool,
+    script: Option<&str>,
     program_arguments: &[String],
 ) -> ExitCode {
     let program = match program::read_program(file) {
         Ok(program) => program,
+        Err(code) => return code,
+    };
+    let arguments = match program::entry_arguments(&program, script, program_arguments) {
+        Ok(arguments) => arguments,
         Err(code) => return code,
     };
     let mut loaded = program::load_program(&program, lowering);
@@ -22,7 +27,7 @@ pub(crate) fn execute(
         Ok(application) => application,
         Err(code) => return code,
     };
-    let result = entry::send_main(&mut loaded.interpreter, &application, program_arguments);
+    let result = entry::send_main(&mut loaded.interpreter, &application, &arguments);
     // To stderr, after the answer is decided: no fixture or golden reads
     // stdout any differently for it.
     if cache_statistics {

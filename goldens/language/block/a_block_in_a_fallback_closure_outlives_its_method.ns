@@ -16,25 +16,25 @@
    method's activation gone after the first. x is 4 and nothing writes
    it, so the answer is 4. *)
 class ABlockInAFallbackClosureOutlivesItsMethod = Object new (
-	|
-	  held ::= nil. |
+    |
+      held ::= nil. |
 ) (
-	class Keeper = Object new (
-		| kept ::= nil. |
-	) (
-		public ifTrue: block = ( kept:: block. ^nil )
-		public runKept = ( ^kept value )
-	) : ()
-	nestedInAFallback: keeper = (
-		| x ::= 4. |
-		keeper ifTrue: [held:: [x]].
-		^nil
-	)
-	public main: platform args: arguments = (
-		| transcript = platform transcript. keeper |
-		keeper:: Keeper new.
-		self nestedInAFallback: keeper.
-		keeper runKept.
-		transcript show: held value printString; newLine
-	)
+    class Keeper = Object new (
+        | kept ::= nil. |
+    ) (
+        public ifTrue: block = ( kept:: block. ^nil )
+        public runKept = ( ^kept value )
+    ) : ()
+    nestedInAFallback: keeper = (
+        | x ::= 4. |
+        keeper ifTrue: [held:: [x]].
+        ^nil
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. keeper |
+        keeper:: Keeper new.
+        self nestedInAFallback: keeper.
+        keeper runKept.
+        transcript show: held value printString; newLine
+    )
 ) : ()

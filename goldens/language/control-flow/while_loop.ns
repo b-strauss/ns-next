@@ -1,9 +1,9 @@
 class WhileLoop = Object new (
-	| n ::= 0. sum ::= 0. |
+    | n ::= 0. sum ::= 0. |
 ) (
-	public main: p args: a = (
-		[n < 5] whileTrue: [sum:: sum + n. n:: n + 1].
-		[n = 0] whileFalse: [n:: n - 1].
-		p transcript show: sum printString; show: ' '; show: n printString; newLine
-	)
+    public main: p args: a = (
+        [n < 5] whileTrue: [sum:: sum + n. n:: n + 1].
+        [n = 0] whileFalse: [n:: n - 1].
+        p transcript show: sum printString; show: ' '; show: n printString; newLine
+    )
 ) : ()

@@ -23,9 +23,21 @@ class NewspeakSettingsConfigurable : BoundConfigurable("Newspeak") {
                             "target/debug/ns-next-analyzer to see changes to ns-next's parser or resolver at once."
                     )
             }
+            row("ns-next path:") {
+                textFieldWithBrowseButton(
+                    FileChooserDescriptorFactory.singleFile().withTitle("Choose the ns-next Executable"),
+                )
+                    .bindText({ settings.runtimePath.orEmpty() }, { text -> settings.runtimePath = text.trim().ifEmpty { null } })
+                    .align(AlignX.FILL)
+                    .comment(
+                        "The ns-next runtime that Newspeak run configurations start; build it with " +
+                            "cargo build -p ns-cli --release. It is not bundled with the plugin."
+                    )
+            }
         }
     }
 
+    /** Restarts the language servers for a changed analyzer path; a changed ns-next path needs nothing, since every run reads it afresh. */
     override fun apply() {
         super.apply()
         restartNewspeakServers()

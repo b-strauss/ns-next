@@ -5,29 +5,29 @@
    other's value. findFirstAbove: returns out of a block whose home
    activation is still running and whose home has captured variables. *)
 class ClosuresThatOutliveTheirMethod = Object new (
-	| private List ::= nil. |
+    | private List ::= nil. |
 ) (
-	writerAndReader = (
-		| value ::= 0. |
-		^{[:fresh | value:: fresh]. [value]}
-	)
-	adder: base = (
-		^[:x | [:y | base + x + y]]
-	)
-	findFirstAbove: limit = (
-		| seen ::= 0. numbers ::= nil. |
-		numbers:: List new.
-		numbers add: 3; add: 8; add: 12; add: 20.
-		numbers do: [:each | seen:: seen + 1. each > limit ifTrue: [^seen]].
-		^0
-	)
-	public main: platform args: arguments = (
-		| transcript = platform transcript. pair |
-		List:: platform collections List.
-		pair:: self writerAndReader.
-		(pair at: 1) value: 42.
-		transcript show: (pair at: 2) value printString; newLine.
-		transcript show: (((self adder: 100) value: 20) value: 3) printString; newLine.
-		transcript show: (self findFirstAbove: 10) printString; newLine
-	)
+    writerAndReader = (
+        | value ::= 0. |
+        ^{[:fresh | value:: fresh]. [value]}
+    )
+    adder: base = (
+        ^[:x | [:y | base + x + y]]
+    )
+    findFirstAbove: limit = (
+        | seen ::= 0. numbers ::= nil. |
+        numbers:: List new.
+        numbers add: 3; add: 8; add: 12; add: 20.
+        numbers do: [:each | seen:: seen + 1. each > limit ifTrue: [^seen]].
+        ^0
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. pair |
+        List:: platform collections List.
+        pair:: self writerAndReader.
+        (pair at: 1) value: 42.
+        transcript show: (pair at: 2) value printString; newLine.
+        transcript show: (((self adder: 100) value: 20) value: 3) printString; newLine.
+        transcript show: (self findFirstAbove: 10) printString; newLine
+    )
 ) : ()

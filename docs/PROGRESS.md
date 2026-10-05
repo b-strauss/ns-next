@@ -29,6 +29,7 @@ first.
 | Editor support: code folding, the structure view with breadcrumbs and sticky lines, and the fault-tolerant editor parse | Complete | 2026-10-04 | [editor-folding](superpowers/plans/2026-10-03-2341-editor-folding.md), [editor-structure-view](superpowers/plans/2026-10-04-0134-editor-structure-view.md) |
 | One binary for looking at Newspeak without running it: `ns-next-analyzer`, the crate `ns-tooling`, one test suite | Complete | 2026-10-04 | [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md) |
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
+| The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -3648,7 +3649,7 @@ Bounce, Storage and List -- are runnable programs in
 `benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
 module shape and protocol (decided with the user on 2026-09-30, for stage
 1), under a harness adapted from Primordial Soup's `BenchmarkRunner.ns`:
-the root of the project `are-we-fast-yet.json`, which reaches each
+the root of the project in that directory, which reaches each
 benchmark as `manifest Sieve`. Without `--timed` the harness runs each
 benchmark once and prints `<Name>: ok`, which `goldens/tool/awfy/` pins under
 both lowerings and `ns-next bench` times; with `--timed` it prints each
@@ -3781,7 +3782,7 @@ modules is documented in place, and `CLAUDE.md`'s "Conventions" holds the
 rule. No wire tag changed. Of the existing goldens, only
 `goldens/tool/awfy/all_benchmarks_verify.toml` records a different outcome, a
 `<Name>: ok` line for each of the five new programs, and the four
-`goldens/tool/awfy/*.json` project files list the five new modules. Four
+`goldens/tool/awfy/*/newspeak.json` project files list the five new modules. Four
 other existing goldens' sources changed, their outcomes not: the comments of
 `goldens/library/collection/a_list_grows_past_its_first_array` and
 `a_list_index_error_is_caught_as_an_error` name the new growth;
@@ -4399,3 +4400,55 @@ show why Havlak still collects in full; the constants the plan chose for
 the user to confirm; and the tests and comments its reviews deferred. The
 next session starts at road step 5, `become:` through forwarders
 ([OPEN-WORK.md](OPEN-WORK.md), "Next").
+
+## `newspeak.json`, its schema and running projects (2026-10-05)
+
+Plan: [ns-next-project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md);
+[image-format.md](design/image-format.md), "Packaging";
+[editor-support.md](design/editor-support.md), "The project file and
+running projects".
+
+A project is the directory its `newspeak.json` describes. The application
+module's key is `main`; `modules` is optional, `scripts` names command
+lines whose arguments `ns-next run --script <name>` and `ns-next bench
+--script <name>` hand to `main:args:`, before any given after `--`, and
+every other key is ignored. A script name written twice is refused, as a
+key written twice is. The rules are in `crates/ns-cli/src/project.rs`, each
+with a message of its own, and `schemas/newspeak.schema.json` states them
+for editors; no validator crate was added, and
+`crates/ns-cli/tests/project_schema.rs` holds the reader and the schema to
+one another over a table of files. The JetBrains plugin bundles the schema
+for every `newspeak.json`, takes an "ns-next path" in its settings, and
+runs or benchmarks a project from a "Newspeak" run configuration, created
+by a play button beside `main` and each script.
+
+- `54c021d6` -- a project is the directory its `newspeak.json` describes;
+  `df35eef8` -- its key is `main`, other keys are ignored.
+- `578c746c`, `f0613878` -- the schema, and a reader held to it.
+- `911d0ba6`, `1fdca499` -- `scripts` and `--script` for `run` and `bench`.
+- `e5deace7` -- the plugin gives every `newspeak.json` the schema.
+- `881639bf`, `685a4fe2`, `15669b3e`, `b22497d4` -- the ns-next path setting
+  and the "Newspeak" run configuration.
+- `6dd09d8f`, `ae7cdb6c`, `d54d32f4`, `c7c641b1` -- the play buttons.
+- `977e1d42` -- a script name written twice is refused.
+- `b0f0e321`, `a6423fec`, `93745dc7` -- the documentation, and the
+  plugin's description and change notes.
+- `0f86bb29` -- the repository's own `.ns` files are indented with spaces,
+  not tabs; `crates/ns-cli/tests/source_formatting.rs` checks every tracked
+  one outside `corpus/`, and CLAUDE.md states the convention.
+- `2b2a7de7`, `b824d4a3`, `316c358d` and the documentation after them --
+  the final review's fixes: a script name that is empty or begins or ends
+  with whitespace is refused by the reader and the schema; the plugin
+  passes a script as one token, `--script=<name>`, so a name may start
+  with `-`; a relative project file is the IDE project's, to run it and to
+  recognise its configuration; configurations from the play button get
+  unique names; the tests delete their temporary directories.
+- `3b326eef` -- a script is one string, split into arguments as a POSIX
+  shell splits a command line, the same on every platform and with nothing
+  expanded (`crates/ns-cli/src/command_line.rs`); the array form is
+  refused, and so, when the file is read, is a script with an unterminated
+  quote or a backslash at its end.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
+recorded into an image, so that `load` could start one with it, and the
+plugin's next step, a play button beside a module's `main:args:`.

@@ -196,7 +196,9 @@ fn every_golden_is_a_complete_pair() -> Result<(), Failed> {
     }
     let mut orphaned_expectation = Vec::new();
     for path in common::golden_files("toml") {
-        if !path.with_extension("ns").exists() && !path.with_extension("json").exists() {
+        if !path.with_extension("ns").exists()
+            && !path.with_extension("").join(common::PROJECT_FILE).exists()
+        {
             orphaned_expectation.push(path.display().to_string());
         }
     }

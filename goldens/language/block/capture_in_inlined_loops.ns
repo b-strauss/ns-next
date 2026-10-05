@@ -14,48 +14,48 @@
    an inlined ifTrue: block is not a block at run time, so reading x
    there captures nothing. *)
 class CaptureInInlinedLoops = Object new (
-	| transcript ::= nil. private List ::= nil. |
+    | transcript ::= nil. private List ::= nil. |
 ) (
-	loopBody = (
-		| index ::= 0. x ::= 0. blocks ::= nil. |
-		blocks:: List new.
-		[index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
-		^blocks
-	)
-	loopCondition = (
-		| index ::= 0. x ::= 0. blocks ::= nil. |
-		blocks:: List new.
-		[x:: index. index < 3] whileTrue: [blocks add: [x]. index:: index + 1].
-		^blocks
-	)
-	loopConditionWhileFalse = (
-		| index ::= 0. x ::= 0. blocks ::= nil. |
-		blocks:: List new.
-		[x:: index. index >= 3] whileFalse: [blocks add: [x]. index:: index + 1].
-		^blocks
-	)
-	writtenBeforeTheLoop = (
-		| x ::= 0. blocks ::= nil. |
-		blocks:: List new.
-		x:: 41.
-		blocks add: [x + 1].
-		^blocks
-	)
-	readOnlyInABranch = (
-		| x ::= 4. |
-		^true ifTrue: [x + 1] ifFalse: [0]
-	)
-	show: blocks = (
-		blocks do: [:each | transcript show: each value printString; show: ' '].
-		transcript newLine
-	)
-	public main: platform args: arguments = (
-		transcript:: platform transcript.
-		List:: platform collections List.
-		self show: self loopBody.
-		self show: self loopCondition.
-		self show: self loopConditionWhileFalse.
-		self show: self writtenBeforeTheLoop.
-		transcript show: self readOnlyInABranch printString; newLine
-	)
+    loopBody = (
+        | index ::= 0. x ::= 0. blocks ::= nil. |
+        blocks:: List new.
+        [index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
+        ^blocks
+    )
+    loopCondition = (
+        | index ::= 0. x ::= 0. blocks ::= nil. |
+        blocks:: List new.
+        [x:: index. index < 3] whileTrue: [blocks add: [x]. index:: index + 1].
+        ^blocks
+    )
+    loopConditionWhileFalse = (
+        | index ::= 0. x ::= 0. blocks ::= nil. |
+        blocks:: List new.
+        [x:: index. index >= 3] whileFalse: [blocks add: [x]. index:: index + 1].
+        ^blocks
+    )
+    writtenBeforeTheLoop = (
+        | x ::= 0. blocks ::= nil. |
+        blocks:: List new.
+        x:: 41.
+        blocks add: [x + 1].
+        ^blocks
+    )
+    readOnlyInABranch = (
+        | x ::= 4. |
+        ^true ifTrue: [x + 1] ifFalse: [0]
+    )
+    show: blocks = (
+        blocks do: [:each | transcript show: each value printString; show: ' '].
+        transcript newLine
+    )
+    public main: platform args: arguments = (
+        transcript:: platform transcript.
+        List:: platform collections List.
+        self show: self loopBody.
+        self show: self loopCondition.
+        self show: self loopConditionWhileFalse.
+        self show: self writtenBeforeTheLoop.
+        transcript show: self readOnlyInABranch printString; newLine
+    )
 ) : ()
