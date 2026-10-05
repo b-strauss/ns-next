@@ -15,25 +15,35 @@ when they were written.
 
 ## Next
 
-**Road step 5, `become:` through forwarders** ("Step 5, `become:` through
-forwarders" below), after Spur: `become:` turns the old object into a
-forwarder -- the forwarded format, the target in its class word, a reserved
-application id that is never a send's guard -- and every send unforwards
-its receiver in one shared step before it resolves; with it come the
-recorded guard of an activation and the slot-access check, since `become:`
-is the first way a running activation's receiver can change shape, and the
-refusal of a program's `become:` on value objects and class objects
-([object-model.md](design/object-model.md), "Planned: `become:` through
-forwarders", "Planned with road step 5: what a slot access checks"). Its
-design is in those sections; it has no implementation plan yet, so the
-next session starts by writing one. Everything before it on the road is
-built, road step 4 last: generations
+**Road step 5, mirrors and atomic installation** ("Step 5, mirrors and
+atomic installation" below; decided with the user on 2026-10-05). Its
+building block is `become:` as an eager bulk forward, as Primordial Soup's:
+a one-way forward of an array of old objects to an array of new ones that
+copies the identity hash, makes forwarders that exist only while it runs,
+rewrites every reference by one walk of the roots the collector traces and
+of every heap object, and flushes the inline caches -- so no send, `==`,
+leaf or accessor ever meets a forwarder. No program sends `become:`; it is
+a leaf on the VM mirror that the shipped mirrors module's atomic install
+alone uses. On it the step builds a minimal MirrorBuilder: staged edits of
+a class's instance slots and methods, an atomic install (§8.2) that reaches
+every application of an edited mixin and migrates the instances whose
+layout changed, the refusal of every edit to a shipped mixin, a mirror
+capability from the platform, and `ClassMirror` and `ObjectMirror` to read
+with. With it come the recorded guard of an activation and the slot-access
+check, since the install's forward is the first way a running activation's
+receiver can change shape ([object-model.md](design/object-model.md),
+"Planned: `become:` as an eager bulk forward", "Planned with road step 5:
+what a slot access checks";
+[liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
+road step 5, mirrors and atomic installation", which also lists what the
+step's plan decides and what it defers). It has no implementation plan
+yet, so the next session starts by writing one. Everything before it on
+the road is built, road step 4 last: generations
 ([memory.md](design/memory.md), "Generations";
 [image-format.md](design/image-format.md), "The image under
-generations"), whose scavenger already follows a forwarder chain whatever
-made each link, and whose forwarded format is the one `become:` will
-write. Each step has its entry in [PROGRESS.md](PROGRESS.md); the whole
-road is below.
+generations"), whose scavenger's forwarded format is the one the bulk
+forward writes. Each step has its entry in [PROGRESS.md](PROGRESS.md); the
+whole road is below.
 
 **Measuring.** The protocol is [execution.md](design/execution.md)'s "What
 removing the re-entries moved"; every compared binary, the current tree
@@ -135,12 +145,48 @@ and `prior-art/newspeak-benchmarks`.
   verifies the remembered set and poisons the vacated nursery.
   [memory.md](design/memory.md), "Generations";
   [execution.md](design/execution.md), "What generations moved".
-- **Step 5, `become:` through forwarders**, after Spur. It brings the
-  recorded guard of an activation and the slot-access check with it, since
-  `become:` is the first way a running activation's receiver can change
-  shape (decided with the user on 2026-10-03).
-  [object-model.md](design/object-model.md), "Planned: `become:` through
-  forwarders", "Planned with road step 5: what a slot access checks".
+- **Step 5, mirrors and atomic installation** (decided with the user on
+  2026-10-05), on `become:` as an eager bulk forward after Primordial
+  Soup's, reached only through mirrors. A minimal MirrorBuilder after
+  Primordial Soup's `Mirrors.ns` and the canonical Newspeak's
+  `AtomicInstaller.ns`: edits staged apart from the live system, of a
+  class's instance slots and methods; an atomic install that reaches every
+  application of an edited mixin and their subclasses (§6.2), migrates the
+  instances whose layout changed and forwards them in one bulk forward, and
+  flushes every inline cache; every edit to a shipped mixin refused; a
+  mirror capability a program obtains from the platform; `ClassMirror` and
+  `ObjectMirror` to read with. It brings the recorded guard of an activation
+  and the slot-access check with it (decided with the user on 2026-10-03).
+  It is the live editing of mixins, which §6.2 requires to reach every
+  application: a `Mixin` stays an immutable Rust value outside the object
+  space, its identity is its `MixinId`, and an edit installs a fresh mixin
+  under the old one's id -- Primordial Soup's forward of a mixin, done on
+  the Rust side -- so the places that still name a mixin by its `Rc`'s
+  address (`Heap::mixin_id`, `Mixin::nested`, the hidden nested-class slot,
+  the encoder's row ids) move to the id (decided with the user on
+  2026-10-05). The application cache, kept strong since road step 3a,
+  reclaims no mixin id, application index or guard id; the reuse rules of
+  [object-model.md](design/object-model.md), "An application has two ids",
+  and a weak application cache come with this step (decided with the user
+  on 2026-10-03). An edited program, its edited mixins and their code
+  included, is written to an image and loads back edited (decided with the
+  user on 2026-10-05; [image-format.md](design/image-format.md), "Planned:
+  edited mixins in the image"). Left to its plan: how removing a slot
+  recompiles a mixin whose declaration is absent, as a decoded one's is,
+  and the questions "Planned: edited mixins in the image" leaves open.
+  Deferred beyond it: a shape-changing `setClass:`, a superclass change,
+  edits of nested classes, `installAtomically:` over several builders,
+  editing kernel methods, `ActivationMirror` and edit-and-continue, scoped
+  invalidation ("Planned: images, liveness and reflection" below). The
+  comments on the forwarder's guard in
+  `crates/ns-runtime/src/mixin.rs` and on `evacuate` in
+  `crates/ns-runtime/src/heap/scavenge.rs` still give lazy forwarding as
+  their reason; the step rewrites them.
+  [object-model.md](design/object-model.md), "Planned: `become:` as an
+  eager bulk forward", "Planned with road step 5: what a slot access
+  checks"; [liveness-and-reflection.md](design/liveness-and-reflection.md),
+  "Planned: road step 5, mirrors and atomic installation";
+  [memory.md](design/memory.md), "Weak references".
 - **Step 6, inline allocation in the interpreter**: a bump in eden for `new`,
   closures, boxed floats and `Array new:`, with headroom past the scavenge
   threshold so that collection stays at safepoints.
@@ -395,25 +441,22 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
   (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on
   the yield path above. [liveness-and-reflection.md](design/liveness-and-reflection.md).
-- **Mirrors and `MirrorBuilder`**, on the activation objects (`ActivationMirror`)
-  and the reified instance-of relation, both of which exist; a `MirrorBuilder`
-  must seal the VM mirror's class. Depends on `become:` (step 5 of the road).
-  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Mirrors and
-  MirrorBuilder"; [dispatch.md](design/dispatch.md).
-- **Live editing of mixins.** A `Mixin` has no interior mutability, so an edit
-  re-applies a fresh mixin and existing instances keep the old code, where
-  §6.2 requires otherwise: interior mutability or mixin versioning. The
-  application cache grows without bound. Road step 3a keys it by id and
-  keeps it strong, and reclaims no mixin id, application index or guard id,
-  since nothing drops a mixin before live editing; the reuse rules of
-  [object-model.md](design/object-model.md), "An application has two ids",
-  and a weak application cache come with the first edit (decided with the
-  user on 2026-10-03). `Interpreter::invalidate_caches`
-  exists but nothing but a
-  test calls it; scoped invalidation comes with the first mutation.
-  `SourceOrigin` has only `File(PathBuf)`; code entered in the debugger wants a
-  variant. [liveness-and-reflection.md](design/liveness-and-reflection.md);
-  [memory.md](design/memory.md), "Weak references".
+- **Reflection beyond road step 5**: a shape-changing `setClass:`, a
+  superclass change, edits of nested classes, `installAtomically:` over
+  several builders, and `ActivationMirror`, on the activation objects that
+  exist, for edit-and-continue and §8.2's access to the current activation.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Planned:
+  road step 5, mirrors and atomic installation".
+- **Scoped invalidation.** `Interpreter::invalidate_caches` exists, and
+  nothing but a test and the cache stress mode calls it; road step 5's
+  install will flush every inline cache through it. Scoping an invalidation
+  to the applications an edit affects is deferred beyond that step.
+  [liveness-and-reflection.md](design/liveness-and-reflection.md), "Caches
+  and their dependency keys".
+- **A `SourceOrigin` for code entered in the debugger.** `SourceOrigin` has
+  `File(PathBuf)` and `Embedded(String)` (`types.rs`); code entered live
+  wants a variant of its own. [object-model.md](design/object-model.md),
+  "Source retention and provenance".
 - **Actors and real concurrency**: an M:N scheduler, per-actor heaps as
   snapshot units, promises for `<-:`, and copying value objects across an
   actor boundary. The treatment of in-flight cross-actor promises at snapshot
@@ -484,7 +527,10 @@ program wrongly at exit status 0**:
 The others: no character literals and no
 `Character` (§5.1.4); a modifier needs no whitespace after it (§6.3.3,
 §6.3.4); `outer N` without a message answers the enclosing object (§5.9);
-value objects are never copied across an actor boundary (§3.1.1).
+value objects are never copied across an actor boundary (§3.1.1); there is
+no mirror-based reflection (§8.2), which road step 5 closes but for
+changing the class of an individual object and access to the current
+activation.
 
 ## Open design questions
 
@@ -516,7 +562,25 @@ value objects are never copied across an actor boundary (§3.1.1).
 - **How a replaced kernel method is compiled.** Its primitive-method mark and
   `SendMirror` rest on `Binding::MirrorSend`, which only shipped source gets;
   recording it for an edit would hand the edit the whole Rust boundary.
+  Road step 5 refuses every edit to a shipped mixin, so the question stays
+  open until editing kernel methods is offered.
   [liveness-and-reflection.md](design/liveness-and-reflection.md).
+- **Whether a shape-changing `setClass:` is ever offered, and at what
+  cost.** §8.2 makes it possible to change the class of an individual
+  object; with `become:` an eager bulk forward, changing one object to a
+  class of another shape would pay a walk of the whole heap for one object.
+  The canonical Newspeak's `setClass:` rewrites the class word in place
+  (`changeClassOf:to:`), and Primordial Soup offers none. Road step 5
+  leaves it out.
+  [object-model.md](design/object-model.md), "Planned: `become:` as an
+  eager bulk forward".
+- **Whether lazy forwarding is revisited.** `become:` is eager, one walk per
+  forward, because its one consumer, the atomic install, walks the heap
+  anyway; Spur's lazy forwarders would cost every send, `==`, leaf and
+  generated code a check. Revisit it, behind the same bulk-forward seam,
+  only if a measurement shows `become:` frequent (decided with the user on
+  2026-10-05). [object-model.md](design/object-model.md), "Planned:
+  `become:` as an eager bulk forward".
 - **Whether a debugger forces `program_counter` at every instruction.**
   [execution.md](design/execution.md), "Where `program_counter` is stored".
 - **The reference lowering's future.** It is the oracle today; the user said

@@ -551,9 +551,10 @@ holds the mirror ([compiler.md](compiler.md), "Mirror sends") — and what
 lets a primitive method carry its row ("Primitive methods" below). **A
 MirrorBuilder must seal the mirror's class when it arrives**: a method added
 to or replaced on it would be found by a sent mirror send and bypassed by
-every `SendMirror` and primitive method, and the two would then disagree
-([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors and
-MirrorBuilder").
+every `SendMirror` and primitive method, and the two would then disagree.
+Road step 5's MirrorBuilder seals it by refusing every edit to a shipped
+mixin ([liveness-and-reflection.md](liveness-and-reflection.md), "Mirrors
+and MirrorBuilder").
 
 **A primitive can fail.** `builtins::execute` answers `None` when a leaf
 declines: a receiver of the wrong variant or payload — an instance of a user
@@ -917,10 +918,10 @@ dispatches on it in between. A decoded image rebuilds its applications
 through `apply_mixin` ([image-format.md](image-format.md), "What is *not*
 serialized"), so an id never comes from its bytes. The id is not a handle,
 so the tracer does not see it and a move carries it along. The planned
-`become:` will swap no ids: a forwarder will carry a reserved id that makes
-every send to it miss, and its target will keep its own id
-([object-model.md](object-model.md), "Planned: `become:` through
-forwarders"). In a debug build
+`become:` will swap no ids: it is an eager bulk forward, so once it ends no
+reference names a forwarder, every target keeps its own id, and every
+inline cache is flushed ([object-model.md](object-model.md), "Planned:
+`become:` as an eager bulk forward"). In a debug build
 `Heap::dispatch_id` recomputes the id from the class on every read and
 asserts that the header agrees, so a missed restamp fails the first test
 that dispatches on the stale object. Outside `heap.rs` nothing knows where
@@ -929,8 +930,10 @@ the id lives: every read goes through `Heap::dispatch_id` or
 `DispatchId::NONE`, 0, which a value whose class has no application answers
 — only a crafted image makes one — and which is never cached;
 `DispatchId::VACANT`, 1, which guards a site state and which no value
-answers; and `DispatchId::FORWARDED`, 2, which road step 5's forwarders will
-carry ([object-model.md](object-model.md), "The reserved guard values sit at
+answers; and `DispatchId::FORWARDED`, 2, reserved as a forwarder's guard,
+which the eager bulk forward of road step 5 does not need, since no send
+meets a forwarder; whether it stays reserved is left to that step's plan
+([object-model.md](object-model.md), "The reserved guard values sit at
 the low end"). The counter mints from 3 and below 2^22; an exhausted counter
 hands out `NONE`, so that application runs uncached.
 
@@ -1254,10 +1257,12 @@ fills the same index again. A debug-build stress mode,
 (`interpreter/safepoint.rs`, ahead of the move stress mode's schedule, either
 mode keeping the safepoint request set), so that filling, transitions and
 invalidation run under the whole suite; `Interpreter::cache_invalidations`
-counts them. Scoping an invalidation to the application a change affects — the
+counts them. Road step 5's atomic install will be the first mutation, and it
+invalidates every cache this way after its bulk forward
+([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
+forward"). Scoping an invalidation to the application a change affects — the
 dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
-"Caches and their dependency keys" — comes with the first mutation that needs
-it.
+"Caches and their dependency keys" — is deferred beyond that step.
 
 #### What stays uncached
 
@@ -1460,10 +1465,10 @@ interpreter's measurement cannot see:
 
 **The cost accepted.** A copy that must be restamped wherever a class's
 application changes (`Heap::class_set_application`, the decoder's one
-stamping pass). The planned `become:` will need no restamp: its forwarder
-will carry a reserved id and the target will keep its own
-([object-model.md](object-model.md), "Planned: `become:` through
-forwarders"). A debug build's check in `Heap::dispatch_id` catches a stale
+stamping pass). The planned `become:` will need no restamp: it rewrites
+every reference to an old object into its target, which keeps its own id
+([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
+forward"). A debug build's check in `Heap::dispatch_id` catches a stale
 copy in every test that dispatches on one.
 
 ### The guard in the header word
@@ -1473,8 +1478,8 @@ time, and read in one load from the object space since road step 3b
 (decided with the user on 2026-10-03; [object-model.md](object-model.md),
 "The object layout"): the guard is read from the object's one header word,
 bits 0-21, and nothing else about the caches changed. `DispatchId::NONE` is
-0 and `DispatchId::VACANT` 1, with 2 reserved for the forwarder
-(`FORWARDED`), so a header word left zero is never a minted guard. The
+0 and `DispatchId::VACANT` 1, with 2 reserved (`FORWARDED`), so a header
+word left zero is never a minted guard. The
 layout keeps the application id in the header and the class object in a
 word of its own, precisely so that this guard stays a per-application id --
 a class-index guard as in Spur and Primordial Soup would make every site
@@ -1489,21 +1494,20 @@ that full-width index, separate from the 22-bit guard id; with ids that are
 never reused while a key can name them, the cache is free to become weak
 ([memory.md](memory.md), "Weak references") -- it stays strong until live
 editing reclaims an id ([object-model.md](object-model.md), "An application
-has two ids"). And a forwarder ([object-model.md](object-model.md),
-"Planned: `become:` through forwarders", road step 5) will carry a reserved
-application id that is never a guard, so every send whose guard is the
-receiver's own header misses on a forwarder -- Spur's read barrier on send,
-which needs no check on a hit. A super send and a private lexical send guard
-on the running method's or N's application instead, so they will check the
-receiver's header for the forwarded format before using a hit, as Spur's
-explicit barrier in super sends does (`ensureReceiverUnforwarded`,
-`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). A
-forwarded receiver will be unforwarded in one shared step at the top of each
-send entry, before resolve and act -- `decide_send` (`interpreter/mod.rs`),
-`decide_lexical_send` and `decide_super_send` (`interpreter/sends.rs`), and
-the caches' `miss` and their hit check for super and private lexical sends --
-so the receiver `act` gets is the followed one and the two lowerings cannot
-diverge.
+has two ids"). And no cache ever meets a forwarder: `become:` will be an
+eager bulk forward ([object-model.md](object-model.md), "Planned:
+`become:` as an eager bulk forward", road step 5), whose forwarders exist
+only while it runs, rewritten out of every root and every object before
+any send runs again, after which every inline cache is flushed. So no send
+entry unforwards its receiver, and a super send or a private lexical send,
+which guards on the running method's or N's application rather than on the
+receiver's header, needs no check of the receiver for the forwarded format
+on a hit -- the read barriers Spur's lazy forwarders cost it on every send
+and explicitly in super sends (`ensureReceiverUnforwarded`,
+`prior-art/opensmalltalk-vm/src/spur64.cog/cointerp.c:6637-6643`). What a
+super or private slot accessor's hit still checks after an install
+migrated its receiver is the recorded guard ([object-model.md](object-model.md),
+"Planned with road step 5: what a slot access checks").
 
 An immediate's guard comes from a table indexed by its tag, and for the
 constant tag by the constant, since `nil`, `true` and `false` share a tag but
@@ -1523,10 +1527,7 @@ None of the ids is reclaimed yet; their reuse rules are
 [object-model.md](object-model.md), "An application has two ids". A class's
 change of application restamps every instance's header by a heap walk
 (`Heap::class_set_application`) before the old guard id could become
-reclaimable. The debug build's check in `Heap::dispatch_id`, which recomputes
-an object's id from its class and asserts that the header agrees, will
-answer the reserved id for an object of the forwarded format instead of
-reading its class word, which then names the target rather than a class.
+reclaimable.
 
 ### Considered and rejected
 
