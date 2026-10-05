@@ -847,4 +847,65 @@ mod tests {
         assert_eq!(temporary.name, "scratch");
         assert_eq!(details(temporary), None);
     }
+
+    /// The JetBrains plugin puts a play button beside `main:args:` when the
+    /// root's factory is `new` -- written or omitted -- and `main:args:` is a
+    /// public instance-side method (`editors/jetbrains/.../run/NewspeakModuleRun.kt`,
+    /// `runnableMain`); these are the names, kinds and details it reads -- a
+    /// method named by its pattern, whose selector the plugin takes apart.
+    #[test]
+    fn a_runnable_root_shows_its_factory_new_and_a_public_instance_side_main() {
+        let members = |text: &str| -> Vec<(String, SymbolKind, Option<String>)> {
+            let parsed = ns_syntax::parse_for_editor(text);
+            let line_index = LineIndex::new(text);
+            let encoded = encode(&symbols_of(&parsed.module), text, &line_index);
+            encoded[0]
+                .children
+                .as_ref()
+                .expect("children")
+                .iter()
+                .map(|member| (member.name.clone(), member.kind, member.detail.clone()))
+                .collect()
+        };
+        let omitted = indoc! {"
+            class Hello = () (
+                public main: platform args: arguments = ( ^0 )
+            ) : (
+                public main: platform args: arguments = ( ^0 )
+            )
+        "};
+        let expected = vec![
+            (
+                "new".to_string(),
+                SymbolKind::CONSTRUCTOR,
+                Some("public".to_string()),
+            ),
+            (
+                "main: platform args: arguments".to_string(),
+                SymbolKind::METHOD,
+                Some("public".to_string()),
+            ),
+            (
+                "main: platform args: arguments".to_string(),
+                SymbolKind::METHOD,
+                Some("public class".to_string()),
+            ),
+        ];
+        assert_eq!(members(omitted), expected);
+        let written = omitted.replacen("class Hello =", "class Hello new =", 1);
+        assert_eq!(members(&written), expected);
+        let protected = indoc! {"
+            class Hello = () (
+                main: platform args: arguments = ( ^0 )
+            )
+        "};
+        assert_eq!(
+            members(protected)[1],
+            (
+                "main: platform args: arguments".to_string(),
+                SymbolKind::METHOD,
+                Some("protected".to_string()),
+            )
+        );
+    }
 }
