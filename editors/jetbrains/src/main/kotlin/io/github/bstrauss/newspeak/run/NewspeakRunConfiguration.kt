@@ -41,12 +41,7 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
     /** A [NewspeakCommand]'s name. */
     var command by string(NewspeakCommand.RUN.name)
 
-    /** The script's name; the platform stores an empty string as null, so the empty name is [emptyScript]. */
     var script by string()
-
-    /** Whether the script is the one named `""`, a valid key of `scripts` that [script] cannot hold. */
-    var emptyScript by property(false)
-
     var programArguments by string()
     var iterations by property(10)
 }
@@ -70,12 +65,11 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
             options.command = value.name
         }
 
-    /** The script to run; null runs the project without one, and `""` is the script of that name. */
+    /** The script to run; null runs the project without one. */
     var script: String?
-        get() = options.script ?: if (options.emptyScript) "" else null
+        get() = options.script
         set(value) {
             options.script = value
-            options.emptyScript = value == ""
         }
 
     var programArguments: String?
@@ -91,13 +85,23 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         }
 
     /**
-     * Whether the project file is `file`: compared system-independently, since
-     * a configuration stored by hand on Windows may hold backslashes, and with
-     * the file system's case sensitivity.
+     * Whether the project file is `file`: a relative path resolved against the
+     * IDE project's base directory, as the run resolves it, and compared system-independently,
+     * since a configuration stored by hand on Windows may hold backslashes,
+     * and with the file system's case sensitivity.
      */
     fun namesProjectFile(file: VirtualFile): Boolean {
         val stored = projectFile?.trim()?.takeIf(String::isNotEmpty) ?: return false
-        return FileUtil.pathsEqual(FileUtil.toSystemIndependentName(stored), file.path)
+        val basePath = project.basePath
+        // A path with a root is compared as written: made absolute, Windows' `\work` would gain a drive the VFS path lacks.
+        val resolved = if (basePath != null && isRelative(stored)) "$basePath/$stored" else stored
+        return FileUtil.pathsEqual(FileUtil.toCanonicalPath(FileUtil.toSystemIndependentName(resolved)), file.path)
+    }
+
+    private fun isRelative(path: String): Boolean = try {
+        Path.of(path).root == null
+    } catch (_: InvalidPathException) {
+        false
     }
 
     override fun getConfigurationEditor(): SettingsEditor<out RunConfiguration> = NewspeakRunConfigurationEditor()
@@ -185,8 +189,7 @@ fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfigur
 fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): List<String> = buildList {
     add(runtime.toString())
     add(configuration.command.subcommand)
-    // One token, so a name starting with `-` is not read as an option, and the empty name `""` -- a valid
-    // key of `scripts` -- is still given; "no script" is null, never the empty string.
+    // One token, so a name starting with `-` is not read as an option.
     configuration.script?.let { script -> add("--script=$script") }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))
     // ns-next takes the project's directory; the configuration names its newspeak.json, which is what the chooser picks.

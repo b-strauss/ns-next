@@ -27,6 +27,10 @@
     "scripts": {
       "description": "Named argument lists: `ns-next run --script <name>` and `ns-next bench --script <name>` hand one to `main:args:`, each element one argument, as if written after `--`; arguments after `--` follow it.",
       "type": "object",
+      "propertyNames": {
+        "description": "A script's name: not empty, and neither beginning nor ending with whitespace.",
+        "pattern": "^\\S([\\s\\S]*\\S)?$"
+      },
       "additionalProperties": {
         "type": "array",
         "items": { "type": "string" }

@@ -79,15 +79,30 @@ fn valid(schema: &Value, instance: &Value) -> bool {
             "minLength" => instance.as_str().is_none_or(|text| {
                 text.chars().count() as u64 >= argument.as_u64().expect("a length")
             }),
-            "pattern" => {
-                // The only pattern the schema uses: a literal suffix.
-                assert_eq!(
-                    argument.as_str(),
-                    Some("\\.ns$"),
-                    "the interpreter knows only `\\.ns$`"
-                );
-                instance.as_str().is_none_or(|text| text.ends_with(".ns"))
-            }
+            "pattern" => instance
+                .as_str()
+                .is_none_or(|text| match argument.as_str() {
+                    // A literal suffix.
+                    Some(r"\.ns$") => text.ends_with(".ns"),
+                    // A non-empty text whose first and last characters are no
+                    // whitespace; `[\s\S]` is any character, line terminators
+                    // included.
+                    Some(r"^\S([\s\S]*\S)?$") => {
+                        text.chars()
+                            .next()
+                            .is_some_and(|character| !is_pattern_whitespace(character))
+                            && text
+                                .chars()
+                                .last()
+                                .is_some_and(|character| !is_pattern_whitespace(character))
+                    }
+                    other => panic!("the interpreter knows no pattern {other:?}"),
+                }),
+            "propertyNames" => instance.as_object().is_none_or(|members| {
+                members
+                    .keys()
+                    .all(|name| valid(argument, &Value::String(name.clone())))
+            }),
             "additionalProperties" => {
                 assert!(argument.is_object(), "only a schema is interpreted");
                 let Some(members) = instance.as_object() else {
@@ -101,6 +116,12 @@ fn valid(schema: &Value, instance: &Value) -> bool {
             }
             other => panic!("the schema uses `{other}`, which this interpreter does not know"),
         })
+}
+
+/// Whether `c` is matched by `\s` in a JSON Schema pattern, an ECMA-262
+/// regular expression: Unicode's `White_Space` less U+0085, plus U+FEFF.
+fn is_pattern_whitespace(character: char) -> bool {
+    (character.is_whitespace() && character != '\u{85}') || character == '\u{feff}'
 }
 
 /// The table: each file, and whether it is a valid project file.
@@ -141,6 +162,27 @@ const FILES: &[(&str, bool)] = &[
     ),
     (
         r#"{ "main": "App.ns", "scripts": { "timed": [1] } }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "scripts": { "two words": [], "-x": [], "a": [] } }"#,
+        true,
+    ),
+    (r#"{ "main": "App.ns", "scripts": { "": [] } }"#, false),
+    (
+        r#"{ "main": "App.ns", "scripts": { " timed": [] } }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "scripts": { "timed ": [] } }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "scripts": { "timed\n": [] } }"#,
+        false,
+    ),
+    (
+        r#"{ "main": "App.ns", "scripts": { "timed ": [] } }"#,
         false,
     ),
 ];

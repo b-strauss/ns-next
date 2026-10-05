@@ -77,6 +77,8 @@ struct ProjectFile {
 /// The `scripts` object, refusing a name written twice: a map would keep the
 /// last list silently, so `--script` would run arguments other than the ones
 /// a reader of the file sees first, as a key of the file written twice would.
+/// A name is also refused when it is empty or begins or ends with
+/// whitespace ([`check_script_name`]).
 fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<BTreeMap<String, Vec<String>>, D::Error> {
@@ -95,6 +97,7 @@ fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
         ) -> Result<Self::Value, A::Error> {
             let mut scripts = BTreeMap::new();
             while let Some((name, arguments)) = access.next_entry::<String, Vec<String>>()? {
+                check_script_name(&name).map_err(serde::de::Error::custom)?;
                 if scripts.contains_key(&name) {
                     return Err(serde::de::Error::custom(format!(
                         "script `{name}` is written twice"
@@ -107,6 +110,31 @@ fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
     }
 
     deserializer.deserialize_map(ScriptsVisitor)
+}
+
+/// A script's name is non-empty and neither begins nor ends with whitespace:
+/// such a name is easily mistyped on a command line and invisible in a list
+/// of names. The schema states the same with the pattern
+/// `^\S([\s\S]*\S)?$`, so whitespace is what a JSON Schema pattern's `\s`
+/// matches ([`is_pattern_whitespace`]).
+fn check_script_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("a script name is empty".to_string());
+    }
+    if name.starts_with(is_pattern_whitespace) || name.ends_with(is_pattern_whitespace) {
+        return Err(format!(
+            "script name `{name}` has leading or trailing whitespace"
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `c` is whitespace as a JSON Schema pattern's `\s` means it,
+/// ECMA-262's: Unicode's `White_Space`, which `char::is_whitespace` tests,
+/// less U+0085, which ECMA-262 does not count, and with U+FEFF, which it
+/// does.
+fn is_pattern_whitespace(character: char) -> bool {
+    (character.is_whitespace() && character != '\u{85}') || character == '\u{feff}'
 }
 
 /// A string where the key is present. `Option<String>` alone would also take
@@ -407,6 +435,58 @@ mod tests {
             r#"{ "main": "App.ns", "scripts": { "timed": ["1"], "timed": ["2"] } }"#,
         );
         assert!(error.contains("script `timed` is written twice"), "{error}");
+    }
+
+    #[test]
+    fn an_empty_script_name_is_refused() {
+        let error = refusal_of(
+            "empty-script-name",
+            r#"{ "main": "App.ns", "scripts": { "": ["1"] } }"#,
+        );
+        assert!(error.contains("a script name is empty"), "{error}");
+    }
+
+    /// Written as JSON escapes: a space, a tab, a no-break space and a byte
+    /// order mark, each before or after the name.
+    #[test]
+    fn a_script_name_with_surrounding_whitespace_is_refused_naming_it() {
+        for (index, (written, name)) in [
+            (" x", " x"),
+            ("x ", "x "),
+            (r"\tx", "\tx"),
+            (r"x ", "x\u{a0}"),
+            (r"﻿x", "\u{feff}x"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let error = refusal_of(
+                &format!("spaced-script-name-{index}"),
+                &format!(r#"{{ "main": "App.ns", "scripts": {{ "{written}": [] }} }}"#),
+            );
+            assert!(
+                error.contains(&format!(
+                    "script name `{name}` has leading or trailing whitespace"
+                )),
+                "{written}: {error}"
+            );
+        }
+    }
+
+    /// U+0085 is no whitespace to a JSON Schema pattern, so the reader
+    /// takes it at an end as the schema does.
+    #[test]
+    fn a_script_name_may_hold_whitespace_inside_and_begin_with_a_dash() {
+        let directory = scratch("inner-space-script-name");
+        let path = directory.join(PROJECT_FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{ "main": "App.ns", "scripts": { "two words": [], "-x": [], "a\u0085": [] } }"#,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
+        let names: Vec<&str> = project.scripts.keys().map(String::as_str).collect();
+        assert_eq!(names, ["-x", "a\u{85}", "two words"]);
     }
 
     #[test]

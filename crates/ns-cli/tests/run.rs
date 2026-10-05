@@ -81,31 +81,44 @@ fn a_script_hands_its_arguments_to_main_and_the_command_line_follows() {
     );
 }
 
-/// `--script=<name>` is one token, as the JetBrains plugin passes it: a name
-/// starting with `-` is not read as an option, and the empty name, a valid
-/// key of `scripts`, is a script rather than none.
+/// `--script=<name>` is one token, as the JetBrains plugin passes it, so a
+/// name starting with `-` is not read as an option. An empty name is no
+/// script a project can hold, so `--script=` is refused as any unknown name
+/// is.
 #[test]
-fn a_script_named_in_one_token_may_start_with_a_dash_or_be_empty() {
+fn a_script_named_in_one_token_may_start_with_a_dash_and_not_be_empty() {
     let directory = ScratchDirectory::new("script-one-token");
     std::fs::write(directory.join("Echo.ns"), ECHO).unwrap();
     std::fs::write(
         directory.join("newspeak.json"),
-        r#"{ "main": "Echo.ns", "scripts": { "-x": ["dash"], "": ["empty"] } }"#,
+        r#"{ "main": "Echo.ns", "scripts": { "-x": ["dash"] } }"#,
     )
     .unwrap();
-    for (script, expected) in [("--script=-x", "dash\n"), ("--script=", "empty\n")] {
-        let out = ns_next()
-            .args(["run", script])
-            .arg(directory.path())
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{script}: stderr: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{script}");
-    }
+    let out = ns_next()
+        .args(["run", "--script=-x"])
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "dash
+"
+    );
+
+    let empty = ns_next()
+        .args(["run", "--script="])
+        .arg(directory.path())
+        .output()
+        .unwrap();
+    assert_eq!(empty.status.code(), Some(1));
+    assert!(empty.stdout.is_empty(), "nothing runs");
+    let stderr = String::from_utf8_lossy(&empty.stderr);
+    assert!(stderr.contains("has no script ``"), "stderr: {stderr}");
 }
 
 #[test]

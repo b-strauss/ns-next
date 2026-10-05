@@ -8,7 +8,6 @@ import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
-import org.jdom.Element
 import org.junit.Assert
 
 class NewspeakRunConfigurationTest : BasePlatformTestCase() {
@@ -61,27 +60,12 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         )
     }
 
-    fun testAScriptNameIsOneTokenSoADashOrAnEmptyNameIsGiven() {
+    fun testAScriptNameIsOneTokenSoADashIsNoOption() {
         val dashed = configuration().apply {
             projectFile = "/work/app/newspeak.json"
             script = "-x"
         }
         assertEquals(listOf(runtime.toString(), "run", "--script=-x", projectDirectory), newspeakCommandLine(runtime, dashed))
-        val empty = configuration().apply {
-            projectFile = "/work/app/newspeak.json"
-            script = ""
-        }
-        assertEquals(listOf(runtime.toString(), "run", "--script=", projectDirectory), newspeakCommandLine(runtime, empty))
-    }
-
-    fun testTheEmptyScriptNameSurvivesBeingStored() {
-        val stored = Element("configuration")
-        configuration().apply { script = "" }.writeExternal(stored)
-        val read = configuration().apply { readExternal(stored) }
-        assertEquals("", read.script)
-        val none = Element("configuration")
-        configuration().writeExternal(none)
-        assertNull(configuration().apply { readExternal(none) }.script)
     }
 
     fun testTheProcessDecodesOutputAsUtf8() {

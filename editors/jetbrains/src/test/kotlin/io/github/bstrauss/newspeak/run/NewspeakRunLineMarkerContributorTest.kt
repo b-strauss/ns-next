@@ -10,9 +10,13 @@ import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionWithDelegate
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.application.PathManager
+import com.intellij.openapi.util.io.FileUtil
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import java.nio.file.Files
+import java.nio.file.Path
 
 class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
     override fun setUp() {
@@ -126,15 +130,6 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         assertEquals(file.parent.name, first.name)
     }
 
-    fun testTheEmptyScriptNameIsAScriptOfItsOwn() {
-        myFixture.configureByText("newspeak.json", projectJson)
-        val file = myFixture.file.virtualFile
-        val wholeProject = createConfigurationFromGutter(project, file, null, NewspeakCommand.RUN)
-        val emptyScript = createConfigurationFromGutter(project, file, "", NewspeakCommand.RUN)
-        assertNotSame(wholeProject, emptyScript)
-        assertEquals("", (emptyScript.configuration as NewspeakRunConfiguration).script)
-    }
-
     fun testProjectsInSameNamedDirectoriesGetDistinctNames() {
         val first = myFixture.addFileToProject("one/app/newspeak.json", projectJson).virtualFile
         val second = myFixture.addFileToProject("two/app/newspeak.json", projectJson).virtualFile
@@ -158,6 +153,24 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         assertSame(stored, createConfigurationFromGutter(project, file, "sieve", NewspeakCommand.RUN))
         val onSieve = checkNotNull(myFixture.file.findElementAt(myFixture.editor.document.text.indexOf("\"sieve\"")))
         assertTrue(producer.isConfigurationFromContext(stored.configuration as NewspeakRunConfiguration, contextAt(onSieve)))
+    }
+
+    // On disk under the project's base directory, which a relative path is resolved against;
+    // the fixture's own files live in an in-memory file system elsewhere.
+    fun testAConfigurationStoredWithARelativePathIsReused() {
+        val directory = Path.of(checkNotNull(project.basePath)).resolve("relative")
+        try {
+            Files.createDirectories(directory)
+            val onDisk = Files.writeString(directory.resolve("newspeak.json"), projectJson)
+            val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(onDisk))
+            val runManager = RunManager.getInstance(project)
+            val stored = runManager.createConfiguration("relative by hand", NewspeakConfigurationType.getInstance().factory)
+            (stored.configuration as NewspeakRunConfiguration).projectFile = "relative/newspeak.json"
+            runManager.addConfiguration(stored)
+            assertSame(stored, createConfigurationFromGutter(project, file, null, NewspeakCommand.RUN))
+        } finally {
+            FileUtil.delete(directory)
+        }
     }
 
     private fun contextAt(element: PsiElement): ConfigurationContext =
