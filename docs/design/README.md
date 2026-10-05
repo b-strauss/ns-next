@@ -201,7 +201,8 @@ spawned with the stack the front end needs ([execution.md](execution.md),
 a directory and prints diagnostics; it is a crate of its own so the language
 server's dependencies never reach `ns-next`. What `ns-next`'s commands share
 lives beside them: `project.rs` finds a project's `newspeak.json` and reads it,
-with its rules, its scripts and its path rules; `program.rs` reads a program -- one source file or a project, its modules in
+with its rules, its scripts and its path rules, and `command_line.rs` splits
+a script into arguments as a POSIX shell splits a command line; `program.rs` reads a program -- one source file or a project, its modules in
 module order -- compiles it and assembles its application with `new` or
 `packageUsing:` a manifest, and `entry.rs` sends `main: platform args:` and
 reports its outcome. The project file's schema is

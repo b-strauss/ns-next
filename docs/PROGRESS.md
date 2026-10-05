@@ -4409,10 +4409,10 @@ Plan: [ns-next-project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-pr
 running projects".
 
 A project is the directory its `newspeak.json` describes. The application
-module's key is `main`; `modules` is optional, `scripts` names argument lists
-that `ns-next run --script <name>` and `ns-next bench --script <name>` hand
-to `main:args:`, before any given after `--`, and every other key is
-ignored. A script name written twice is refused, as a key written twice
+module's key is `main`; `modules` is optional, `scripts` names command
+lines whose arguments `ns-next run --script <name>` and `ns-next bench
+--script <name>` hand to `main:args:`, before any given after `--`, and
+every other key is ignored. A script name written twice is refused, as a key written twice
 is. The rules are in `crates/ns-cli/src/project.rs`, each with a
 message of its own, and `schemas/newspeak.schema.json` states them for
 editors; no validator crate was added, and
@@ -4443,6 +4443,11 @@ by a play button beside `main` and each script.
   with `-`; a relative project file is the IDE project's, to run it and to
   recognise its configuration; configurations from the play button get
   unique names; the tests delete their temporary directories.
+- `3b326eef` -- a script is one string, split into arguments as a POSIX
+  shell splits a command line, the same on every platform and with nothing
+  expanded (`crates/ns-cli/src/command_line.rs`); the array form is
+  refused, and so, when the file is read, is a script with an unterminated
+  quote or a backslash at its end.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
 recorded into an image, so that `load` could start one with it, and the

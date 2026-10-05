@@ -821,7 +821,11 @@ one copy that `ns-next`'s reader is held to, into its resources
 `newspeak.json` -- the name `ns-next` recognises a project file by -- and to
 no other. The IDE's JSON support does the rest: completion of the keys,
 their descriptions, and the schema's rules as warnings (a missing `main`, a
-path not ending in `.ns`, a module listed twice). A change to the schema
+path not ending in `.ns`, a module listed twice, a script that is no
+string). A script's description states how `ns-next` splits it into
+arguments; whether it splits, with no quote left open, only `ns-next`
+checks, when it reads the file ([image-format.md](image-format.md),
+"Scripts"). A change to the schema
 thus reaches the plugin, and runs the plugin's `check`. The JSON plugin
 (`com.intellij.modules.json`) is an optional dependency, declared like the
 spellchecker's: `plugin.xml` names `newspeak-json.xml`, which registers the

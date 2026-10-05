@@ -116,17 +116,18 @@ program:
   "main": "App.ns",
   "modules": ["Greeting.ns", "Counter.ns"],
   "scripts": {
-    "loud": ["--loud", "World"]
+    "loud": "--loud 'the World'"
   }
 }
 ```
 
 `App.ns` declares `class App packageUsing: manifest = (...)` and reaches each
 module by the name its source declares, `manifest Greeting`
-(`goldens/tool/manifest/` has three such projects). A script names
-arguments for `main:args:`: `ns-next run --script loud` hands it `--loud`
-and `World`, and arguments after `--` follow them; `bench` takes `--script`
-too. The file's schema is `schemas/newspeak.schema.json`; the JetBrains
+(`goldens/tool/manifest/` has three such projects). A script is a command
+line for `main:args:`, split into arguments as a POSIX shell splits one, on
+every platform and with nothing expanded: `ns-next run --script loud` hands
+it `--loud` and `the World`, and arguments after `--` follow them; `bench`
+takes `--script` too. The file's schema is `schemas/newspeak.schema.json`; the JetBrains
 plugin gives it to every `newspeak.json`, and an editor without the plugin
 finds it through a `"$schema"` key, which `ns-next` does not follow.
 

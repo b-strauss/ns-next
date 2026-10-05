@@ -1382,8 +1382,8 @@ existence.
   "main": "Harness.ns",
   "modules": ["Sieve.ns", "../shared/RedBlackTree.ns"],
   "scripts": {
-    "sieve": ["Sieve", "10"],
-    "timed": ["--timed"]
+    "sieve": "Sieve 10",
+    "timed": "--timed 'Delta Blue'"
   }
 }
 ```
@@ -1391,7 +1391,7 @@ existence.
 - `main` is the application module's source file, whose root class is sent
   `packageUsing:`; `modules` the other modules the manifest holds.
   `modules` may be absent or empty. `main`'s module is not in the manifest.
-- `scripts` is optional: named argument lists for `--script` ("Scripts"
+- `scripts` is optional: named command lines for `--script` ("Scripts"
   below).
 - Every other key is ignored, so a file may carry what an editor or another
   tool wants beside what ns-next reads. `$schema` is one of them: it tells
@@ -1426,6 +1426,9 @@ runs, with `error: <project file>: ` and a message of its own:
 | a script name written twice | `` script `timed` is written twice `` |
 | an empty script name | `a script name is empty` |
 | a script name beginning or ending with whitespace | `` script name ` timed` has leading or trailing whitespace `` |
+| a script that is no string | serde's `` invalid type: sequence, expected a script of `scripts`, one command-line string `` |
+| a script with an unterminated `'` or `"` | `` script `timed` holds an unterminated `'` `` |
+| a script ending in a backslash outside quotes | `` script `timed` holds a backslash at its end, escaping nothing `` |
 | an empty path in `main` or `modules` | `` `main` holds an empty path `` |
 | a path not ending in `.ns`, matched case-sensitively | `` `modules` names `B`, which is no `.ns` file `` |
 | a module path equal to `main`'s | `` `modules` names `main`'s module `./App.ns` again `` |
@@ -1457,7 +1460,7 @@ least one character (`minLength`) ending in `.ns` (`pattern: "\\.ns$"`);
 (`uniqueItems`); `scripts` an object whose every name is non-empty and
 neither begins nor ends with whitespace (`propertyNames`, `pattern:
 "^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s` matches) and
-whose every value (`additionalProperties`) is an array of strings. Every
+whose every value (`additionalProperties`) is a string. Every
 other key is allowed. An editor's validator may read the pattern's `\s` as
 ASCII whitespace only, as Java's regular expressions do, and so let a name
 with other whitespace at an end pass; the reader decides. No validator crate
@@ -1471,25 +1474,52 @@ the schema and the reader must both accept or both refuse. The rules the
 reader alone holds cannot be stated in JSON Schema: one of its four keys
 written twice and a script name written twice (a schema sees only the last
 value of a key), one module path in two spellings (`uniqueItems` compares
-strings as written), and a `modules` entry naming `main`'s module (no
-keyword compares one property with another). They stay out of the table, and
+strings as written), a `modules` entry naming `main`'s module (no
+keyword compares one property with another), and a script that does not
+split as a command line, such as `"'unterminated"` (the schema states only
+that a script is a string). They stay out of the table, and
 `project.rs`'s own tests pin them. The JetBrains plugin bundles the same
 file and gives it to every `newspeak.json`
 ([editor-support.md](editor-support.md), "The project file and running
 projects").
 
-**Scripts**, as Node's are. `scripts` maps a name to an array of strings.
-`ns-next run --script <name>` and `ns-next bench --script <name>` hand that
-array to `main:args:`, each element one argument, exactly as if it were
-written after `--`; arguments after `--` are still taken and follow the
-script's, so `ns-next run --script timed -- Sieve` hands `--timed` and then
-`Sieve`, as `npm run timed -- Sieve` does (`program::entry_arguments`;
+**Scripts**, as Node's are. `scripts` maps a name to a string, a command
+line. `ns-next run --script <name>` and `ns-next bench --script <name>` hand
+its arguments to `main:args:`, exactly as if they were written after `--`;
+arguments after `--` are still taken and follow the script's, so with the
+example above `ns-next run --script timed -- Sieve` hands `--timed`,
+`Delta Blue` and then `Sieve`, as `npm run timed -- Sieve` does
+(`program::entry_arguments`;
 `a_script_hands_its_arguments_to_main_and_the_command_line_follows`,
 `crates/ns-cli/tests/run.rs`). A script's name is a non-empty name that
-neither begins nor ends with whitespace; its arguments are any strings,
-empty ones included, since an empty argument is a valid command-line
-argument too. Arguments stay strings everywhere, from a script as from the
-command line or an image, so a program sees one form however it is started.
+neither begins nor ends with whitespace.
+
+A script is split into arguments as a POSIX shell splits a command line,
+on every platform (`command_line::split_command_line`):
+
+- unquoted whitespace -- a space, a tab or a newline -- separates
+  arguments; whitespace at either end or repeated makes no empty argument,
+  and any other character (a carriage return, a no-break space) belongs to
+  an argument;
+- `'…'` holds everything literally up to the next `'`;
+- `"…"` holds everything literally except a backslash before `"`, `\`, `$`,
+  a backtick or a newline, which escapes it; a backslash before a newline
+  removes both, and any other backslash stays;
+- outside quotes a backslash escapes the next character (`second\ word` is
+  one argument), and a backslash before a newline removes both;
+- adjacent parts make one argument, so `a"b c"'d'` is `ab cd`, and `""` or
+  `''` alone is one empty argument;
+- nothing is expanded: `$HOME`, `*`, `~` and backticks are literal, and a
+  pipe, a redirection or `;` is a plain character, because no shell runs a
+  script.
+
+So `"--name=\"Delta Blue\" '' $HOME"`, as written in the JSON, is the
+arguments `--name=Delta Blue`, an empty one, and `$HOME`. The script is
+split when the project file is read, so an unterminated `'` or `"`, or a
+backslash at the very end, refuses the file before anything runs, whichever
+script is asked for. Arguments stay strings everywhere, from a script as
+from the command line or an image, so a program sees one form however it is
+started.
 Refused before anything runs: `--script` with a source file rather than a
 project ("--script names a script of a project's newspeak.json, and the
 program given is a source file"), and a name the project's `scripts` does
@@ -1782,16 +1812,26 @@ builtins.
 - **The schema lives at `schemas/newspeak.schema.json`, the one copy**
   (decided with the user on 2026-10-05). The plugin's build copies it into
   its resources, and the plugin maps it to every file named `newspeak.json`.
-- **Scripts, as Node's are** (decided with the user on 2026-10-05). A script
-  is an array of strings handed to `main:args:` as if written after `--`, and
-  arguments after `--` follow it, as `npm run timed -- Sieve` does.
+- **Scripts, as Node's are** (decided with the user on 2026-10-05). A
+  script's arguments are handed to `main:args:` as if written after `--`, and
+  arguments after `--` follow them, as `npm run timed -- Sieve` does.
   Arguments stay strings from every source, so a program sees one form
   however it is started. `--script` is for `run` and `bench` only: `build`
   sends no `main:args:`, and a script recorded into an image would need a
   section of the format of its own. Chosen beside it: `--script` with a
   source file, and a name the project lacks, are refused, the latter listing
-  the names there are; a script's arguments are any strings, empty ones
-  included.
+  the names there are.
+- **A script is one string, split like a POSIX command line on every
+  platform** (decided with the user on 2026-10-05). One string reads as the
+  command line it stands for, as a script in `package.json` does, where an
+  array of strings, one per argument, does not; the array form is not
+  accepted. The rules are a POSIX shell's word splitting, quotes and
+  backslashes, the same on every system rather than each platform's own
+  (Windows splits a command line otherwise), so that one `newspeak.json`
+  gives the same arguments everywhere. Nothing is expanded, since no shell
+  runs a script. The splitter is hand-written in `ns-cli`, so no dependency
+  comes with it, and runs when the project file is read, so that a script
+  which does not split refuses the file before anything runs.
 - **A script's name is a non-empty name without surrounding whitespace**
   (decided with the user on 2026-10-05). An empty name, or one beginning or
   ending with whitespace, is refused by the reader and by the schema
