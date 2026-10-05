@@ -25,15 +25,15 @@
       "uniqueItems": true
     },
     "scripts": {
-      "description": "Named argument lists: `ns-next run --script <name>` and `ns-next bench --script <name>` hand one to `main:args:`, each element one argument, as if written after `--`; arguments after `--` follow it.",
+      "description": "Named command lines: `ns-next run --script <name>` and `ns-next bench --script <name>` hand one's arguments to `main:args:`, as if written after `--`; arguments after `--` follow them.",
       "type": "object",
       "propertyNames": {
         "description": "A script's name: not empty, and neither beginning nor ending with whitespace.",
         "pattern": "^\\S([\\s\\S]*\\S)?$"
       },
       "additionalProperties": {
-        "type": "array",
-        "items": { "type": "string" }
+        "description": "A script: one string, split into arguments as a POSIX shell splits a command line, on every platform. Unquoted spaces, tabs and newlines separate arguments; '…' holds everything literally; \"…\" holds everything literally but a backslash before \", \\, $, a backtick or a newline; outside quotes a backslash escapes the next character; adjacent parts make one argument, and \"\" alone is an empty one. Nothing is expanded: $, *, ~ and backticks are literal. An unterminated quote or a backslash at the end is refused.",
+        "type": "string"
       }
     }
   },

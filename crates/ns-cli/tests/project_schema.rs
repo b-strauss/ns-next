@@ -10,8 +10,11 @@
 //! twice, and a script name written twice (a schema sees only the last
 //! value of a key, as `serde_json` parses it); one module path written in
 //! two spellings, such as `lib/A.ns` and `lib\A.ns` (`uniqueItems` compares
-//! strings as written); and a `modules` entry naming `main`'s module. None is
-//! in the table; `project.rs`'s own tests pin them.
+//! strings as written); and a `modules` entry naming `main`'s module. A
+//! script that does not split as a command line -- an unterminated `'` or
+//! `"`, or a backslash at its end, such as `"'unterminated"` -- is refused
+//! by the reader alone too, because the schema states only that a script is
+//! a string. None is in the table; `project.rs`'s own tests pin them.
 
 mod common;
 
@@ -152,37 +155,34 @@ const FILES: &[(&str, bool)] = &[
     (r#"["x", "App.ns"]"#, false),
     (r#"{ "main": "App.ns", "scripts": {} }"#, true),
     (
-        r#"{ "main": "App.ns", "scripts": { "start": [], "timed": ["--timed", ""] } }"#,
+        r#"{ "main": "App.ns", "scripts": { "start": "", "timed": "--timed 'Delta Blue' \"\"" } }"#,
         true,
     ),
     (r#"{ "main": "App.ns", "scripts": ["--timed"] }"#, false),
     (
-        r#"{ "main": "App.ns", "scripts": { "timed": "--timed" } }"#,
+        r#"{ "main": "App.ns", "scripts": { "timed": ["--timed"] } }"#,
         false,
     ),
+    (r#"{ "main": "App.ns", "scripts": { "timed": 1 } }"#, false),
     (
-        r#"{ "main": "App.ns", "scripts": { "timed": [1] } }"#,
-        false,
-    ),
-    (
-        r#"{ "main": "App.ns", "scripts": { "two words": [], "-x": [], "a": [] } }"#,
+        r#"{ "main": "App.ns", "scripts": { "two words": "", "-x": "", "a": "" } }"#,
         true,
     ),
-    (r#"{ "main": "App.ns", "scripts": { "": [] } }"#, false),
+    (r#"{ "main": "App.ns", "scripts": { "": "" } }"#, false),
     (
-        r#"{ "main": "App.ns", "scripts": { " timed": [] } }"#,
+        r#"{ "main": "App.ns", "scripts": { " timed": "" } }"#,
         false,
     ),
     (
-        r#"{ "main": "App.ns", "scripts": { "timed ": [] } }"#,
+        r#"{ "main": "App.ns", "scripts": { "timed ": "" } }"#,
         false,
     ),
     (
-        r#"{ "main": "App.ns", "scripts": { "timed\n": [] } }"#,
+        r#"{ "main": "App.ns", "scripts": { "timed\n": "" } }"#,
         false,
     ),
     (
-        r#"{ "main": "App.ns", "scripts": { "timed\u00a0": [] } }"#,
+        r#"{ "main": "App.ns", "scripts": { "timed\u00a0": "" } }"#,
         false,
     ),
 ];

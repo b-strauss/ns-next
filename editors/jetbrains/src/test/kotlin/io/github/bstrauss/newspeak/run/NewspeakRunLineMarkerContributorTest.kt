@@ -50,7 +50,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         {
           "main": "App.ns",
           "modules": ["Greeter.ns"],
-          "scripts": { "timed": ["--timed"], "sieve": ["Sieve"] },
+          "scripts": { "timed": "--timed", "sieve": "Sieve" },
           "other": { "main": "Nested.ns" }
         }
     """.trimIndent()

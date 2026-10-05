@@ -55,12 +55,14 @@ fn echo_project(name: &str) -> ScratchDirectory {
     std::fs::write(directory.join("Echo.ns"), ECHO).unwrap();
     std::fs::write(
         directory.join("newspeak.json"),
-        r#"{ "main": "Echo.ns", "scripts": { "two": ["first", "second word"], "none": [] } }"#,
+        r#"{ "main": "Echo.ns", "scripts": { "two": "first 'second word'", "none": "" } }"#,
     )
     .unwrap();
     directory
 }
 
+/// The script `first 'second word'` is split as a command line, so its
+/// quoted words are one argument.
 #[test]
 fn a_script_hands_its_arguments_to_main_and_the_command_line_follows() {
     let directory = echo_project("script-arguments");
@@ -91,7 +93,7 @@ fn a_script_named_in_one_token_may_start_with_a_dash_and_not_be_empty() {
     std::fs::write(directory.join("Echo.ns"), ECHO).unwrap();
     std::fs::write(
         directory.join("newspeak.json"),
-        r#"{ "main": "Echo.ns", "scripts": { "-x": ["dash"] } }"#,
+        r#"{ "main": "Echo.ns", "scripts": { "-x": "dash" } }"#,
     )
     .unwrap();
     let out = ns_next()

@@ -8,6 +8,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::command_line::split_command_line;
+
 /// The one name a project file has, as every Node package's is
 /// `package.json`: a command given a directory finds the project in it, and
 /// no other JSON file is mistaken for one.
@@ -69,16 +71,18 @@ struct ProjectFile {
     main: String,
     #[serde(default)]
     modules: Vec<String>,
-    /// Named argument lists, each element one argument, empty ones included.
+    /// Named command lines, each already split into its arguments.
     #[serde(default, deserialize_with = "scripts_without_repeats")]
     scripts: BTreeMap<String, Vec<String>>,
 }
 
 /// The `scripts` object, refusing a name written twice: a map would keep the
-/// last list silently, so `--script` would run arguments other than the ones
-/// a reader of the file sees first, as a key of the file written twice would.
-/// A name is also refused when it is empty or begins or ends with
-/// whitespace ([`check_script_name`]).
+/// last script silently, so `--script` would run arguments other than the
+/// ones a reader of the file sees first, as a key of the file written twice
+/// would. A name is also refused when it is empty or begins or ends with
+/// whitespace ([`check_script_name`]). Each script is split into its
+/// arguments here ([`split_command_line`]), so that one which does not split
+/// refuses the file before anything runs, whichever script is asked for.
 fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<BTreeMap<String, Vec<String>>, D::Error> {
@@ -88,7 +92,7 @@ fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
         type Value = BTreeMap<String, Vec<String>>;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("an object of scripts, each an array of strings")
+            formatter.write_str("an object of scripts, each a command-line string")
         }
 
         fn visit_map<A: serde::de::MapAccess<'de>>(
@@ -96,13 +100,17 @@ fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
             mut access: A,
         ) -> Result<Self::Value, A::Error> {
             let mut scripts = BTreeMap::new();
-            while let Some((name, arguments)) = access.next_entry::<String, Vec<String>>()? {
+            while let Some(name) = access.next_key::<String>()? {
                 check_script_name(&name).map_err(serde::de::Error::custom)?;
+                let ScriptText(text) = access.next_value()?;
                 if scripts.contains_key(&name) {
                     return Err(serde::de::Error::custom(format!(
                         "script `{name}` is written twice"
                     )));
                 }
+                let arguments = split_command_line(&text).map_err(|problem| {
+                    serde::de::Error::custom(format!("script `{name}` holds {problem}"))
+                })?;
                 scripts.insert(name, arguments);
             }
             Ok(scripts)
@@ -110,6 +118,35 @@ fn scripts_without_repeats<'de, D: serde::Deserializer<'de>>(
     }
 
     deserializer.deserialize_map(ScriptsVisitor)
+}
+
+/// One script's text. A `String` alone would be refused, when it is no
+/// string, as `expected a string`, which does not say where; this names
+/// `scripts`.
+struct ScriptText(String);
+
+impl<'de> serde::Deserialize<'de> for ScriptText {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ScriptTextVisitor;
+
+        impl serde::de::Visitor<'_> for ScriptTextVisitor {
+            type Value = ScriptText;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a script of `scripts`, one command-line string")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<ScriptText, E> {
+                Ok(ScriptText(text.to_string()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, text: String) -> Result<ScriptText, E> {
+                Ok(ScriptText(text))
+            }
+        }
+
+        deserializer.deserialize_string(ScriptTextVisitor)
+    }
 }
 
 /// A script's name is non-empty and neither begins nor ends with whitespace:
@@ -432,7 +469,7 @@ mod tests {
     fn a_script_name_written_twice_is_refused_naming_the_script() {
         let error = refusal_of(
             "duplicate-script",
-            r#"{ "main": "App.ns", "scripts": { "timed": ["1"], "timed": ["2"] } }"#,
+            r#"{ "main": "App.ns", "scripts": { "timed": "1", "timed": "2" } }"#,
         );
         assert!(error.contains("script `timed` is written twice"), "{error}");
     }
@@ -441,7 +478,7 @@ mod tests {
     fn an_empty_script_name_is_refused() {
         let error = refusal_of(
             "empty-script-name",
-            r#"{ "main": "App.ns", "scripts": { "": ["1"] } }"#,
+            r#"{ "main": "App.ns", "scripts": { "": "1" } }"#,
         );
         assert!(error.contains("a script name is empty"), "{error}");
     }
@@ -465,7 +502,7 @@ mod tests {
         {
             let error = refusal_of(
                 &format!("spaced-script-name-{index}"),
-                &format!(r#"{{ "main": "App.ns", "scripts": {{ "{written}": [] }} }}"#),
+                &format!(r#"{{ "main": "App.ns", "scripts": {{ "{written}": "" }} }}"#),
             );
             assert!(
                 error.contains(&format!(
@@ -484,12 +521,63 @@ mod tests {
         let path = directory.join(PROJECT_FILE_NAME);
         std::fs::write(
             &path,
-            r#"{ "main": "App.ns", "scripts": { "two words": [], "-x": [], "a\u0085": [] } }"#,
+            r#"{ "main": "App.ns", "scripts": { "two words": "", "-x": "", "a\u0085": "" } }"#,
         )
         .unwrap_or_else(|error| panic!("{error}"));
         let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
         let names: Vec<&str> = project.scripts.keys().map(String::as_str).collect();
         assert_eq!(names, ["-x", "a\u{85}", "two words"]);
+    }
+
+    #[test]
+    fn a_script_is_split_into_arguments_when_the_file_is_read() {
+        let directory = scratch("split-script");
+        let path = directory.join(PROJECT_FILE_NAME);
+        std::fs::write(
+            &path,
+            r#"{ "main": "App.ns", "scripts": { "two": "first 'second word' \"\"", "none": "" } }"#,
+        )
+        .unwrap_or_else(|error| panic!("{error}"));
+        let project = read_project(&path).unwrap_or_else(|error| panic!("{error}"));
+        assert_eq!(project.scripts["two"], ["first", "second word", ""]);
+        assert!(project.scripts["none"].is_empty());
+    }
+
+    /// The schema takes any string as a script, so these refusals are the
+    /// reader's alone.
+    #[test]
+    fn a_script_that_does_not_split_is_refused_naming_it() {
+        for (index, (script, problem)) in [
+            ("'unterminated", "unterminated `'`"),
+            (r#"\"unterminated"#, r#"unterminated `"`"#),
+            (r"a\\", "backslash at its end"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let error = refusal_of(
+                &format!("malformed-script-{index}"),
+                &format!(r#"{{ "main": "App.ns", "scripts": {{ "timed": "{script}" }} }}"#),
+            );
+            assert!(
+                error.contains("script `timed`") && error.contains(problem),
+                "{script}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_script_that_is_no_string_is_refused_naming_scripts() {
+        for (index, script) in [r#"["--timed"]"#, "1", "null"].iter().enumerate() {
+            let error = refusal_of(
+                &format!("script-no-string-{index}"),
+                &format!(r#"{{ "main": "App.ns", "scripts": {{ "timed": {script} }} }}"#),
+            );
+            assert!(
+                error.contains("invalid type") && error.contains("`scripts`"),
+                "{script}: {error}"
+            );
+        }
     }
 
     #[test]

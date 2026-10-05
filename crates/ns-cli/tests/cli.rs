@@ -262,7 +262,7 @@ fn benchmark_runs_a_script_of_the_project() {
     .unwrap();
     std::fs::write(
         directory.join("newspeak.json"),
-        r#"{ "main": "Echo.ns", "scripts": { "two": ["first", "second"] } }"#,
+        r#"{ "main": "Echo.ns", "scripts": { "two": "first second" } }"#,
     )
     .unwrap();
     let out = ns_next()
