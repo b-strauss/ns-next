@@ -1725,6 +1725,47 @@ load-bearing, and whoever wires up re-entry has to decide, deliberately,
 whether `verify_graph` gains the cross-check or the re-entry path treats a
 mismatched `home` as its own untrusted-input case.
 
+## Planned: edited mixins in the image
+
+Would change: a program a MirrorBuilder edited is written to an image and
+loads back edited -- every mixin it names now, with its compiled code, is a
+row of the mixin table, whether a module declared it or an install put it
+there (decided with the user on 2026-10-05; road step 5,
+[liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
+step 5, mirrors and atomic installation").
+
+Today the rows come from what the modules declared: `image::mixins::encode`
+takes the module roots' mixins and plans one tree per module from them
+(`image/mixins.rs`), the code table holds the code those rows reach, and
+the encoder refuses a class object whose mixin is part of no module the
+image carries (`image/encode.rs`). An edit installs a fresh mixin under the
+old one's id ([liveness-and-reflection.md](liveness-and-reflection.md),
+"Planned with road step 5: an edit replaces the mixin under its id"), so
+the encoder walks each module's tree through the ids to the mixins they
+name now: an edited mixin is the row of the declaration it replaced, in
+the same place of the same tree, and its code enters the code table like
+any other. Nothing about the format's trust changes: a row an edit
+produced is verified as any row is ("Verification"), the kernel's mixins
+stay named by tag, and an edit to a shipped mixin is refused, so no image
+carries one. This is the step toward the graph style for user-defined
+behaviour that "How upstream compares" below names, taken in the table
+style: the row is the unit, not a graph of method objects.
+
+Open, for road step 5's plan:
+
+- **Code an older version of a mixin still runs.** A closure keeps the code
+  it was made with, and a frame the code it was running, after an edit
+  replaced its mixin; the code table holds today only code a row reaches,
+  so such code has to enter it from the graph's closures and frames, with
+  the decoder's reconciliation of a frame against its compiled body
+  ("Verification") unchanged.
+- **Source text and provenance of an edited mixin.** `FLAG_HAS_SOURCE`
+  carries one text per module ("Source") and a row's provenance span points
+  into it; an edited mixin's span points into text that no longer
+  describes it. Writing the edited declaration's own text, dropping the
+  module's text once any of its mixins was edited, or marking the row's
+  span absent are the candidates.
+
 ## How upstream compares
 
 Recorded because the difference is a deliberate choice, not an accident. Sources
@@ -1752,8 +1793,9 @@ round-trip behaviour created at run time because methods are ordinary graph
 edges, and reuses one format for isolate messages. We get artifacts in kilobytes
 rather than a ~1.27 MB floor, and hold the untrusted-input invariant cheaply
 because a hostile file cannot replace a builtin. **The decision is to stay with
-the table style**, and to move the line one step toward the graph style later for
-*user-defined* behaviour only, when edit-and-continue is built — never for the
+the table style**, and to move the line one step toward the graph style for
+*user-defined* behaviour only -- with road step 5's edits, as rows of the
+mixin table ("Planned: edited mixins in the image") -- never for the
 builtins.
 
 ## Decisions

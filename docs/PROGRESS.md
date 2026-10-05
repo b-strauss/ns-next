@@ -31,7 +31,7 @@ first.
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
 | The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Running a module from the play button beside its `main:args:` in the JetBrains plugin | Complete | 2026-10-05 | [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md) |
-| Road step 5 — `become:` through forwarders | Not started | — | — |
+| Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
 | Between road steps 7 and 8 — real Newspeak bodies for `whileTrue:`, `whileFalse:` and `do:` | Not started | — | — |
@@ -4399,7 +4399,7 @@ What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): eden's
 first-touch cost and the sizes that would trade it; statistics that cannot
 show why Havlak still collects in full; the constants the plan chose for
 the user to confirm; and the tests and comments its reviews deferred. The
-next session starts at road step 5, `become:` through forwarders
+next road step is step 5, mirrors and atomic installation
 ([OPEN-WORK.md](OPEN-WORK.md), "Next").
 
 ## `newspeak.json`, its schema and running projects (2026-10-05)

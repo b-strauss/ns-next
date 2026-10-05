@@ -389,10 +389,10 @@ complete since 2026-09-20: a release build's trigger requests a collection
 once the bytes the objects occupy reach its limit, served at the run loop's
 next safepoint ("The trigger and the growth policy" below).
 
-**The collector has to move objects.** `become:`-style identity swap and object
-forwarding are requirements, not conveniences: adding an instance variable to a
+**The collector has to move objects.** `become:`-style identity forwarding is
+a requirement, not a convenience: adding an instance variable to a
 class with live instances allocates new-shape instances, copies fields, and
-atomically swaps identity. That rules out a conservative non-moving collector,
+atomically forwards the old identities to them. That rules out a conservative non-moving collector,
 which makes `become:` hard. A copying or compacting collector can implement it,
 and MMTk supports object forwarding.
 
@@ -1083,9 +1083,10 @@ creator's frame record without registers.
   run. This is recorded because a collector's design should know the interim
   may have a latency cost as well as a memory one.
 - **The application cache grows without bound** in the presence of live editing,
-  because every re-application mints a fresh entry that nothing evicts. That is
-  the same knot as `Mixin`'s lack of interior mutability; see
-  [liveness-and-reflection.md](liveness-and-reflection.md). Its key is a pair
+  because every re-application mints a fresh entry that nothing evicts. It is
+  settled with road step 5's edits, which replace a mixin under its id
+  ([liveness-and-reflection.md](liveness-and-reflection.md), "Planned with
+  road step 5: an edit replaces the mixin under its id"). Its key is a pair
   of the heap's ids since road step 3a, so evicting weakly is decidable; it
   stays strong until live editing reclaims an id ("Weak references" below).
 
@@ -1507,7 +1508,9 @@ reclaimable. Nothing drops a mixin before live editing, so the ids are
 minted and none is reclaimed, and the cache stays strong until then (decided
 with the user on 2026-10-03); its unbounded growth under live editing
 ([liveness-and-reflection.md](liveness-and-reflection.md)) ends with the
-first edit's reclamation. The same per-mixin id serves dispatch's open
+first edit's reclamation, which road step 5's atomic install brings
+([liveness-and-reflection.md](liveness-and-reflection.md), "Planned: road
+step 5, mirrors and atomic installation"). The same per-mixin id serves dispatch's open
 option of guarding a private lexical site on N's mixin
 ([dispatch.md](dispatch.md), "Decisions").
 
@@ -1762,12 +1765,14 @@ object's size is reflective and rare -- edit-and-continue adding locals to a
 live activation, a MirrorBuilder adding or removing slots of live instances
 (requirements 2 and 3 of
 [liveness-and-reflection.md](liveness-and-reflection.md)) -- and will take a
-new object: for instances, a `become:` will forward the old one to it
-([object-model.md](object-model.md), "Planned: `become:` through forwarders");
-for a frame, the activation will be divorced into the larger frame object and
-the VM will rewrite the references to the old one by a walk of every root the
-collector traces (`trace.rs`) and every heap object, the new frame allocated
-old and born remembered ("The object layout", there).
+new object: for instances, road step 5's atomic install will forward the old
+ones to their replacements in one bulk forward, a walk of every root the
+collector traces (`trace.rs`) and every heap object that rewrites every
+reference ([object-model.md](object-model.md), "Planned: `become:` as an
+eager bulk forward"); for a frame, the activation will be divorced into the
+larger frame object and the VM will rewrite the references to the old one by
+the same walk, the new frame allocated old and born remembered ("The object
+layout", there).
 
 **No existing arena crate does what the space needs.** Every arena crate
 models one lifetime pattern -- everything lives until a reset -- where this
@@ -2039,10 +2044,12 @@ gates name five stress modes, `SCAVENGE` among them; and "Every store into
 an existing object goes through `heap.rs`'s store accessors and their write
 barrier" is an invariant of its own. Still to
 come: "The
-VM mirror is a capability" gains, as a consequence, that a program's
-`become:` refuses value objects and class objects, which covers every object
-a platform path names (road step 5; [object-model.md](object-model.md),
-"Planned: `become:` through forwarders"). "Decided per activation from the
+VM mirror is a capability" gains, as a consequence, that no program reaches
+`become:` -- a leaf on the mirror that only the shipped mirrors module's
+atomic install uses -- and that the mirrors refuse every edit to a shipped
+mixin, which seals the mirror's class and keeps every object a platform path
+names out of the forward (road step 5; [object-model.md](object-model.md),
+"Planned: `become:` as an eager bulk forward"). "Decided per activation from the
 block's `outer_reach`" stands, since the divorce keeps that rule.
 
 ## Generations
@@ -2143,13 +2150,15 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   one joins the remembered set.
 - **Forwarders.** A copied object's old place becomes a forwarder: its
   header's format the forwarded one, its class word naming the copy, the
-  mechanism road step 5's `become:` will use. A reference to a forwarder is
-  followed along the whole chain, whatever made each link, and the object
-  at its end is copied only if it is young and not already in the future
-  survivor space, as Spur's `scavengeReferentsOf:` decides
-  (`cointerp.c:43278`, the `isReallyYoungObject:` test at `:43316-43322`;
-  [object-model.md](object-model.md), "Planned: `become:` through
-  forwarders"). The copy takes the whole allocation, its overflow word
+  format road step 5's bulk forward writes too, while it runs
+  ([object-model.md](object-model.md), "Planned: `become:` as an eager bulk
+  forward"). A reference to a forwarder is followed along the whole chain
+  (`evacuate`), and the object at its end is copied only if it is young and
+  not already in the future survivor space, as Spur's
+  `scavengeReferentsOf:` decides (`cointerp.c:43278`, the
+  `isReallyYoungObject:` test at `:43316-43322`). Since the bulk forward
+  leaves no forwarder behind, every chain a scavenge meets is one link of
+  its own. The copy takes the whole allocation, its overflow word
   included.
 - **Where a survivor goes.** To the future survivor space, its age one
   higher, or to the old space, its age 0, when the scavenge tenures
@@ -2526,7 +2535,8 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   allocation a JIT can inline -- needs the fields inline, which a payload region
   would not give; the space gives the one load, and the nursery and the
   inline allocation build on it (road steps 4 and 6). The memory layer, the eight-byte value, the object space,
-  generations, `become:` and inline allocation are steps 1 to 6 of the road in
+  generations, mirrors and atomic installation over an eager `become:`, and
+  inline allocation are steps 1 to 6 of the road in
   [OPEN-WORK.md](../OPEN-WORK.md), "The road to a high-performance VM".
 - **One reservation per heap, contiguous and committed as it grows**
   (built: `Reservation`, which holds each heap's object space), because

@@ -1270,21 +1270,23 @@ modules alone, `Kernel vmMirror:` and `PlatformFactory
 usingVmMirror:kernel:`, whose roots no program reaches ("The platform"
 above); a user module would receive it only if a shipped module passed it
 on, and none does: each root keeps it in a private slot. The planned
-`become:` ([object-model.md](object-model.md), "Planned: `become:` through
-forwarders") will keep it that way: every instance a platform path names is
-a value (`Platform`, `Transcript`, `KernelNamespace`, `Time` and
-`Collections` are declared `= Value new`) and every class it names is a class object, and a
-program's `become:` will refuse both in either direction; the kernel-made
-non-value objects a program can reach, such as a VM error's `Error` and its
-`Message`, lie on no path from shipped code to the mirror, and a kernel
-method whose receiver a program forwarded fails the planned slot-access
-check ([object-model.md](object-model.md), "What a slot access checks")
-rather than writing kernel-private state into a program object; the path to
-the mirror runs only
-through class objects and the value roots of `Kernel`, `PlatformFactory` and
-`CollectionsFactory`, so no program will be able to redirect a reference
-that leads shipped code to the mirror. Six things keep it
-that way,
+`become:` ([object-model.md](object-model.md), "Planned: `become:` as an
+eager bulk forward") will keep it that way, because no program sends it: it
+is a leaf on the mirror, which road step 5's shipped mirrors module alone
+uses, for its atomic install, and the install forwards only the instances it
+migrates, of classes a program edited -- never of a shipped mixin, since the
+mirrors refuse every edit to one ([liveness-and-reflection.md](liveness-and-reflection.md),
+"Planned: road step 5, mirrors and atomic installation"). So no instance a
+platform path names, no class object and no kernel-made object a program
+can reach, such as a VM error's `Error` and its `Message`, is ever
+forwarded; the path to the mirror runs only through class objects and the
+value roots of `Kernel`, `PlatformFactory` and `CollectionsFactory`, so no
+program will be able to redirect a reference that leads shipped code to the
+mirror. A kernel method running on an instance of a program's subclass
+that the install migrated fails the planned slot-access check
+([object-model.md](object-model.md), "Planned with road step 5: what a slot
+access checks") rather than writing the old layout into the new shape. Six
+things keep it that way,
 and loosening any one of them lets a program claim every primitive:
 
 - Only `resolver::resolve_kernel` records `Binding::MirrorSend`, the mark the
