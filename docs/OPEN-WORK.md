@@ -449,6 +449,18 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   enclosing object and a module can be instantiated with different
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
+- **Running a module from its `main:args:`**, the plugin's next step
+  (decided with the user on 2026-10-05), with its own plan once
+  `feature/newspeak-json` is merged. A Run/Benchmark play button beside
+  `main:args:` of a `.ns` module's root class whose primary factory is the
+  default `new`, written or omitted -- the class `ns-next run` starts from a
+  source file. The plugin finds it in the analyzer's document symbols, which
+  mark that root class and its `main:args:`, not with a second parser of its
+  own. The "Newspeak" run configuration then takes a single `.ns` file as
+  well as a `newspeak.json`, with the script field disabled for it, as the
+  CLI refuses `--script` with a source file
+  ([editor-support.md](design/editor-support.md), "The project file and
+  running projects").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.

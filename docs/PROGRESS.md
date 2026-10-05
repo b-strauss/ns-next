@@ -4431,8 +4431,17 @@ by a play button beside `main` and each script.
   and the "Newspeak" run configuration.
 - `6dd09d8f`, `ae7cdb6c`, `d54d32f4`, `c7c641b1` -- the play buttons.
 - `977e1d42` -- a script name written twice is refused.
-- `b0f0e321`, `a6423fec` and the review's fix after them -- the
-  documentation, and the plugin's description and change notes.
+- `b0f0e321`, `a6423fec`, `93745dc7` -- the documentation, and the
+  plugin's description and change notes.
+- `0f86bb29` -- the repository's own `.ns` files are indented with spaces,
+  not tabs; `crates/ns-cli/tests/source_formatting.rs` checks every tracked
+  one outside `corpus/`, and CLAUDE.md states the convention.
+- `2b2a7de7`, `b824d4a3` and the documentation after them -- the final
+  review's fixes: the plugin passes a script as one token,
+  `--script=<name>`, so a name may start with `-` or be empty; a relative
+  project file is the IDE project's; configurations from the play button
+  get unique names; the tests delete their temporary directories.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
-recorded into an image, so that `load` could start one with it.
+recorded into an image, so that `load` could start one with it, and the
+plugin's next step, a play button beside a module's `main:args:`.

@@ -835,8 +835,8 @@ targets, not a dependency fetched from anywhere.
 chooses, the "ns-next path" in the settings, beside the analyzer's.
 `ns-next` is not bundled (decided with the user on 2026-10-05): the setting
 is the only source, and the field's comment says to build it with `cargo
-build -p ns-cli --release`. Every run reads the setting afresh, so a changed path needs no restart.
-With the path empty, or naming no file, a configuration refuses to start,
+build -p ns-cli --release`. Every run reads the setting afresh, so a changed
+path needs no restart. With the path empty, or naming no file, a configuration refuses to start,
 with an error that says which ("The ns-next path is not set: …", "No file at
 the ns-next path …") and offers to open the settings as its quick fix
 (`RuntimeLocation`, `NewspeakRunConfiguration.checkConfiguration`).
@@ -847,9 +847,14 @@ configurations. A configuration names a project's `newspeak.json`, stored
 system-independently, and runs `ns-next run` or `ns-next bench` ("Run" or
 "Benchmark" in its form) on that file's directory, in that directory, with
 an optional script, extra arguments, and for `bench` the iterations (ten by
-default, at least one): `ns-next <run|bench> [--script <name>]
+default, at least one): `ns-next <run|bench> [--script=<name>]
 [--iterations <n>] <project directory> [-- <arguments>]`
-(`newspeakCommandLine`). The arguments are one field, split as the platform
+(`newspeakCommandLine`). The script is one token, so a name starting with
+`-` is not read as an option and the empty name `""`, a valid key of
+`scripts`, is given as the script it is; "no script" is a configuration
+without one, and the empty name is stored beside the script's field, as the
+platform stores an empty string as none. A relative project file is the IDE
+project's, resolved against its base directory. The arguments are one field, split as the platform
 splits program parameters (`ParametersListUtil`), and go after `--`. A
 missing project file, a text that is no valid path among them, is refused
 before anything starts ("Choose the project's newspeak.json"), and so are
@@ -864,13 +869,16 @@ run marker, `AllIcons.RunConfigurations.TestState.Run`, the one every
 language's play button uses through `RunLineMarkerContributor`, and clicking
 it opens a menu of two entries, "Run" (`AllIcons.Actions.Execute`) and
 "Benchmark" (`AllIcons.Gutter.RunInQueue`). `main`'s runs without a script, a
-script's with `--script <name>`. Each entry creates the configuration, or
+script's with `--script=<name>`. Each entry creates the configuration, or
 reuses an equal one -- the same project file, compared system-independently
 and with the file system's case sensitivity, the same script and the same
 command -- selects it and starts it. A configuration created there is
 temporary, as the platform's are: it is reused while equal, can be kept with
 "Save Configuration", and is named `<project directory>` or
-`<project directory> [<script>]`, with ` (benchmark)` appended for `bench`.
+`<project directory> [<script>]`, with ` (benchmark)` appended for `bench`,
+and made unique as the platform makes names unique when another
+configuration has it already, so projects in directories of the same name
+stay apart.
 An invalid one, with no ns-next path say, takes the platform's own path: its
 error, and the dialog to edit the configuration. Two scripts written on one
 line get one button, holding both scripts' entries: the platform merges the
@@ -1092,5 +1100,12 @@ and resolves cleanly in a JetBrains IDE today.
   that does not parse, while it is typed; the fault-tolerant parse exists
   ([frontend.md](frontend.md), "Recovery"). What remains is `definition` and
   `references` in the server.
+- **Running a module's `main:args:`** (decided with the user on 2026-10-05):
+  a Run/Benchmark play button beside `main:args:` of a `.ns` module's root
+  class whose primary factory is the default `new`, found from the
+  analyzer's document symbols rather than a second parser in the plugin, and
+  the "Newspeak" run configuration taking a single `.ns` file as well
+  ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: editor support and the
+  analyzer"; "The project file and running projects" above).
 - **More platforms.** A CI build producing the other five binaries into
   `bin/<os>-<arch>/`. The repository has no CI yet.
