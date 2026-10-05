@@ -5,7 +5,8 @@
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
-> `lsp/NewspeakSymbolKinds.kt`) both exist: highlighting, errors as you
+> `lsp/NewspeakSymbolKinds.kt`, the document symbols the structure view and
+> the run markers share in `lsp/DocumentSymbolCache.kt`) both exist: highlighting, errors as you
 > type, code folding and a structure view with breadcrumbs, in every
 > commercial JetBrains IDE from 2026.1.4, kept while a file has syntax
 > errors. For a project's `newspeak.json`, completion and validation from
@@ -877,7 +878,8 @@ configurations. A configuration names its **program** (the option
 `program`, stored system-independently): a project's `newspeak.json`, whose
 directory ns-next is given, or a `.ns` module, whose file ns-next is given
 (`ProgramKind`; a file named `newspeak.json` is a project, a name ending in
-`.ns` a module). It runs `ns-next run` or `ns-next bench` ("Run" or
+`.ns` a module). No older option name is read: the plugin is unpublished,
+so only local configurations ever held one. It runs `ns-next run` or `ns-next bench` ("Run" or
 "Benchmark" in its form) on it, in the program file's directory for both
 kinds, with an optional script, extra arguments, and for `bench` the
 iterations (ten by default, at least one): `ns-next <run|bench>

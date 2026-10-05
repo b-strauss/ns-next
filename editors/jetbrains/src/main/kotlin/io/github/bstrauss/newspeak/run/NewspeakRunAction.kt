@@ -74,7 +74,8 @@ fun createConfigurationFromGutter(
             this.script = script
             this.command = command
         }
-        // Two projects in directories of the same name would otherwise share a name in the run list.
+        // Two programs of the same name -- projects in directories of the same name, or modules
+        // `a/Hello.ns` and `b/Hello.ns` -- would otherwise share a name in the run list.
         runManager.setUniqueNameIfNeeded(created)
         created.isTemporary = true
         runManager.addConfiguration(created)

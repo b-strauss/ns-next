@@ -19,7 +19,7 @@ sealed interface ProjectEntry {
  */
 fun projectEntryAt(element: PsiElement): ProjectEntry? {
     val file = element.containingFile as? JsonFile ?: return null
-    if (file.name != "newspeak.json") return null
+    if (file.name != PROJECT_FILE_NAME) return null
     // The JSON plugin's shape: the quoted leaf, inside the JsonStringLiteral that is the property's name.
     val property = element.parent?.parent as? JsonProperty ?: return null
     if (property.nameElement != element.parent) return null

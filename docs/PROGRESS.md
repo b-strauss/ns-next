@@ -4480,8 +4480,8 @@ the CLI refuses `--script` with a source file.
   a project.
 - `5c285bf9` -- the play button beside `main:args:`.
 - `108e6249` -- "Run" in the context menu of a runnable module.
-- The documentation commit after them -- the design document, the plugin's
-  description and change notes.
+- `7b72b827`, `6e843674` -- the design document, the plugin's description
+  and change notes, and the check under `runIde`.
 
 What the branch leaves open is in [editor-support.md](design/editor-support.md),
 "Known gaps": no automated test reaches the play button through a running

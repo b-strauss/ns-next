@@ -55,7 +55,10 @@ class DocumentSymbolCache(private val project: Project) {
      * Asks on a pooled thread and calls `onAnswer` there once an answer is
      * kept. While the server has none -- not started yet, or the file not
      * opened with it yet -- it asks again every second, about a minute
-     * long; a later edit asks anew.
+     * long; a later edit asks anew. A second request for a file and stamp
+     * already in flight is not called back, as every caller passes the same
+     * callback, the daemon's restart. Once an answer is kept a new request
+     * asks again, so a caller reads `current` first.
      */
     fun request(file: VirtualFile, onAnswer: () -> Unit) {
         val stamp = documentStamp(file)

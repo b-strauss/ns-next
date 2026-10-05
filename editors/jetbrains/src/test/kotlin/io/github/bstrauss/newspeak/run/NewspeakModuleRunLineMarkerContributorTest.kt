@@ -107,7 +107,8 @@ class NewspeakModuleRunLineMarkerContributorTest : BasePlatformTestCase() {
         cache.fetcher = { null }
         myFixture.configureByText("Hello.ns", runnable)
         assertEquals(0, myFixture.findAllGutters().count { renderer -> renderer.icon == AllIcons.RunConfigurations.TestState.Run })
-        // The pass asked; answer it, so no request outlives the test and reaches the real server once tearDown restores it.
+        // The pass asked; answer it before the test ends, so the request never reaches the real server once tearDown
+        // restores it. Its daemon restart may still run after tearDown, and is skipped for a file no longer valid.
         val file = myFixture.file.virtualFile
         cache.fetcher = { module(runnable, "new", "public") }
         val deadline = System.currentTimeMillis() + 10_000

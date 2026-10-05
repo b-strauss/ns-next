@@ -2,6 +2,7 @@ package io.github.bstrauss.newspeak.lsp
 
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
@@ -16,7 +17,7 @@ class DocumentSymbolCacheTest : BasePlatformTestCase() {
     private fun moduleSymbols() = listOf(DocumentSymbol("Module", SymbolKind.Class, range, range, "public"))
 
     private val cache: DocumentSymbolCache get() = DocumentSymbolCache.getInstance(project)
-    private lateinit var serverFetcher: (com.intellij.openapi.vfs.VirtualFile) -> List<DocumentSymbol>?
+    private lateinit var serverFetcher: (VirtualFile) -> List<DocumentSymbol>?
 
     override fun setUp() {
         super.setUp()
