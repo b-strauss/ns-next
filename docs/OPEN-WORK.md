@@ -450,8 +450,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
 - **Running a module from its `main:args:`**, the plugin's next step
-  (decided with the user on 2026-10-05), with its own plan once
-  `feature/newspeak-json` is merged. A Run/Benchmark play button beside
+  (decided with the user on 2026-10-05); it has no implementation plan yet,
+  so its session starts by writing one. A Run/Benchmark play button beside
   `main:args:` of a `.ns` module's root class whose primary factory is the
   default `new`, written or omitted -- the class `ns-next run` starts from a
   source file. The plugin finds it in the analyzer's document symbols, which
