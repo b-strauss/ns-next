@@ -127,9 +127,10 @@ module by the name its source declares, `manifest Greeting`
 line for `main:args:`, split into arguments as a POSIX shell splits one, on
 every platform and with nothing expanded: `ns-next run --script loud` hands
 it `--loud` and `the World`, and arguments after `--` follow them; `bench`
-takes `--script` too. The file's schema is `schemas/newspeak.schema.json`; the JetBrains
-plugin gives it to every `newspeak.json`, and an editor without the plugin
-finds it through a `"$schema"` key, which `ns-next` does not follow.
+takes `--script` too. The file's schema is `schemas/newspeak.schema.json`;
+the JetBrains plugin gives it to every `newspeak.json`, and an editor
+without the plugin finds it through a `"$schema"` key, which `ns-next` does
+not follow.
 
 ```bash
 cargo run -p ns-cli -- run goldens/tool/manifest/a_project_reaches_its_modules_through_the_manifest

@@ -814,8 +814,8 @@ plugin's code.
 A project's `newspeak.json` ([image-format.md](image-format.md), "Packaging")
 gets its schema in the IDE, and can be run and benchmarked from it.
 
-**The schema.** The plugin's build copies `schemas/newspeak.schema.json`, the
-one copy that `ns-next`'s reader is held to, into its resources
+**The schema.** The plugin's build copies `schemas/newspeak.schema.json`,
+the one copy that `ns-next`'s reader is held to, into its resources
 (`processResources`, under `schemas/`), and
 `NewspeakJsonSchemaProviderFactory` gives it to every file named
 `newspeak.json` -- the name `ns-next` recognises a project file by -- and to
@@ -825,8 +825,8 @@ path not ending in `.ns`, a module listed twice, a script that is no
 string). A script's description states how `ns-next` splits it into
 arguments; whether it splits, with no quote left open, only `ns-next`
 checks, when it reads the file ([image-format.md](image-format.md),
-"Scripts"). A change to the schema
-thus reaches the plugin, and runs the plugin's `check`. The JSON plugin
+"Scripts"). A change to the schema thus reaches the plugin, and runs the
+plugin's `check`. The JSON plugin
 (`com.intellij.modules.json`) is an optional dependency, declared like the
 spellchecker's: `plugin.xml` names `newspeak-json.xml`, which registers the
 schema provider, the play buttons and the context-menu producer, all of

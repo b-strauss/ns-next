@@ -4412,10 +4412,10 @@ A project is the directory its `newspeak.json` describes. The application
 module's key is `main`; `modules` is optional, `scripts` names command
 lines whose arguments `ns-next run --script <name>` and `ns-next bench
 --script <name>` hand to `main:args:`, before any given after `--`, and
-every other key is ignored. A script name written twice is refused, as a key written twice
-is. The rules are in `crates/ns-cli/src/project.rs`, each with a
-message of its own, and `schemas/newspeak.schema.json` states them for
-editors; no validator crate was added, and
+every other key is ignored. A script name written twice is refused, as a
+key written twice is. The rules are in `crates/ns-cli/src/project.rs`, each
+with a message of its own, and `schemas/newspeak.schema.json` states them
+for editors; no validator crate was added, and
 `crates/ns-cli/tests/project_schema.rs` holds the reader and the schema to
 one another over a table of files. The JetBrains plugin bundles the schema
 for every `newspeak.json`, takes an "ns-next path" in its settings, and
