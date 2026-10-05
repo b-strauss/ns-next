@@ -2,6 +2,7 @@ package io.github.bstrauss.newspeak.run
 
 import com.intellij.execution.configurations.RuntimeConfigurationError
 import com.intellij.openapi.util.Disposer
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.nio.charset.StandardCharsets
@@ -20,9 +21,16 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
     private val runtime: Path = Path.of("/bin/ns-next")
     private val projectDirectory: String = Path.of("/work/app").toAbsolutePath().toString()
 
+    /** Directories a test created on disk, deleted after it. */
+    private val temporaryDirectories = mutableListOf<Path>()
+
+    private fun temporaryDirectory(): Path =
+        Files.createTempDirectory("ns-next-run-configuration").also(temporaryDirectories::add)
+
     override fun tearDown() {
         try {
             NewspeakSettings.getInstance().state.runtimePath = null
+            temporaryDirectories.forEach { directory -> FileUtil.delete(directory) }
         } finally {
             super.tearDown()
         }
@@ -139,7 +147,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
     }
 
     fun testWithARuntimeTheProjectFileAndIterationsAreChecked() {
-        val directory = Files.createTempDirectory("ns-next-run-configuration")
+        val directory = temporaryDirectory()
         NewspeakSettings.getInstance().state.runtimePath = Files.createFile(directory.resolve("ns-next")).toString()
         val projectFile = Files.writeString(directory.resolve("newspeak.json"), "{}").toString()
 
@@ -160,7 +168,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
 
     // A NUL is invalid in a path on every platform, so this holds beyond Windows' `"` and `<`.
     fun testAnInvalidProjectPathIsRefusedLikeAMissingOne() {
-        val directory = Files.createTempDirectory("ns-next-run-configuration")
+        val directory = temporaryDirectory()
         NewspeakSettings.getInstance().state.runtimePath = Files.createFile(directory.resolve("ns-next")).toString()
         val invalid = configuration().apply { projectFile = "/work/a\u0000b/newspeak.json" }
         val error = Assert.assertThrows(RuntimeConfigurationError::class.java) { invalid.checkConfiguration() }

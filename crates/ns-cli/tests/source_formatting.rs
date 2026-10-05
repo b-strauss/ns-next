@@ -1,6 +1,6 @@
 //! The repository's own Newspeak sources are indented with four spaces, never
 //! tabs. `corpus/` is excluded because it is upstream's verbatim copy
-//! (`corpus/PROVENANCE.md`), and `prior-art/` because it is not ours either.
+//! (`corpus/PROVENANCE.md`).
 
 use std::path::Path;
 use std::process::Command;
@@ -17,7 +17,7 @@ fn newspeak_sources_outside_the_corpus_contain_no_tab() {
     let listing = String::from_utf8(output.stdout).expect("file names are UTF-8");
     let mut offences = Vec::new();
     for name in listing.lines() {
-        if name.starts_with("corpus/") || name.starts_with("prior-art/") {
+        if name.starts_with("corpus/") {
             continue;
         }
         let text = std::fs::read_to_string(root.join(name)).expect("a tracked file reads");

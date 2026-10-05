@@ -19,7 +19,12 @@ class RuntimeLocationTest {
 
     @Test
     fun anExistingFileIsFound() {
-        val runtime = Files.createFile(createTempDirectory("ns-next-runtime").resolve("ns-next"))
-        assertEquals(RuntimeLocation.Found(runtime), locateRuntime(runtime.toString()))
+        val directory = createTempDirectory("ns-next-runtime")
+        try {
+            val runtime = Files.createFile(directory.resolve("ns-next"))
+            assertEquals(RuntimeLocation.Found(runtime), locateRuntime(runtime.toString()))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
     }
 }
