@@ -32,7 +32,7 @@
         "pattern": "^\\S([\\s\\S]*\\S)?$"
       },
       "additionalProperties": {
-        "description": "A script: one string, split into arguments as a POSIX shell splits a command line, on every platform. Unquoted spaces, tabs and newlines separate arguments; '…' holds everything literally; \"…\" holds everything literally but a backslash before \", \\, $, a backtick or a newline; outside quotes a backslash escapes the next character; adjacent parts make one argument, and \"\" alone is an empty one. Nothing is expanded: $, *, ~ and backticks are literal. An unterminated quote or a backslash at the end is refused.",
+        "description": "A script: one string, split into arguments as a POSIX shell splits a command line, on every platform. Unquoted spaces, tabs and newlines separate arguments. '…' holds everything literally. Inside \"…\" a backslash escapes \", \\, $, a backtick or a newline and is otherwise literal. Outside quotes a backslash escapes the next character. A backslash before a newline removes both. Adjacent parts make one argument; '' or \"\" alone is one empty argument. Nothing is expanded and nothing is an operator or a comment: $, *, ~, backticks, |, ;, &, (, ) and # are literal. An unterminated quote or a backslash at the end is refused.",
         "type": "string"
       }
     }

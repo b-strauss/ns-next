@@ -18,10 +18,12 @@
 //! - adjacent parts make one argument (`a"b c"'d'` is `ab cd`), and `""` or
 //!   `''` alone is one empty argument.
 //!
-//! Nothing is expanded: `$`, `*`, `?`, `~` and backticks are literal, and
-//! pipes, redirections and `;` are plain characters, because a script is
-//! handed to `main:args:` and no shell runs it. An unterminated quote and a
-//! backslash at the very end are refused ([`split_command_line`]).
+//! Nothing is expanded: `$`, `*`, `?`, `~` and backticks are literal. There
+//! are no operators and no comments either: `|`, `<`, `>`, `;`, `&`, `(`
+//! and `)` are plain characters, and so is `#`, even at the start of a word,
+//! where a shell would begin a comment. A script is handed to `main:args:`
+//! and no shell runs it. An unterminated quote and a backslash at the very
+//! end are refused ([`split_command_line`]).
 
 /// The arguments `text` holds by the rules above, or why it holds none: an
 /// unterminated `'` or `"`, or a backslash ending it.
@@ -159,6 +161,11 @@ mod tests {
             ["$HOME", "*", "~", "`date`", "a|b", "c>d", "e;f", "?"]
         );
         assert_eq!(split(r#""$HOME" "*""#), ["$HOME", "*"]);
+    }
+
+    #[test]
+    fn a_hash_parentheses_and_an_ampersand_are_plain_characters() {
+        assert_eq!(split("a #b (c) & d"), ["a", "#b", "(c)", "&", "d"]);
     }
 
     #[test]
