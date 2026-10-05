@@ -1,5 +1,6 @@
 package io.github.bstrauss.newspeak.structure
 
+import io.github.bstrauss.newspeak.lsp.usableAnswer
 import org.eclipse.lsp4j.DocumentSymbol
 import org.eclipse.lsp4j.Position
 import org.eclipse.lsp4j.Range
