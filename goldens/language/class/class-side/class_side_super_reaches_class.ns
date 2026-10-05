@@ -6,16 +6,16 @@
    superclass. `super printString` inside `build` therefore reaches
    `Class>>printString`, which answers `self`'s (`Simple`'s) name. *)
 class ClassSideSuperReachesClass = Object new () (
-	class Base = Object new () (
-	) : (
-	)
-	class Simple = Base new () (
-		public printString = ( ^'a simple' )
-	) : (
-		public build = ( ^super printString )
-	)
-	public main: platform args: args = (
-		| transcript = platform transcript. |
-		transcript show: Simple build; newLine.
-	)
+    class Base = Object new () (
+    ) : (
+    )
+    class Simple = Base new () (
+        public printString = ( ^'a simple' )
+    ) : (
+        public build = ( ^super printString )
+    )
+    public main: platform args: args = (
+        | transcript = platform transcript. |
+        transcript show: Simple build; newLine.
+    )
 ) : ()

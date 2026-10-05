@@ -13,39 +13,39 @@
    block's activation has returned, and shares both the block's parameter
    and the method's variable, so the second call answers 15. *)
 class FallbackClosuresShareVariables = Object new (
-	
+    
 ) (
-	class Keeper = Object new (
-		| kept ::= nil. |
-	) (
-		public ifTrue: block = ( kept:: block. ^nil )
-		public runKept = ( ^kept value )
-	) : ()
-	writeThenCapture: keeper = (
-		| x ::= 1. reader ::= nil. |
-		keeper ifTrue: [x:: 2].
-		reader:: [x].
-		keeper runKept.
-		^reader value
-	)
-	readLater: keeper = (
-		| x ::= 1. |
-		keeper ifTrue: [x].
-		x:: 5.
-		^keeper runKept
-	)
-	fromAReturnedBlock: keeper = (
-		| total ::= 10. |
-		^[:increment | keeper ifTrue: [total:: total + increment]. total]
-	)
-	public main: platform args: arguments = (
-		| transcript = platform transcript. maker keeper |
-		transcript show: (self writeThenCapture: Keeper new) printString; newLine.
-		transcript show: (self readLater: Keeper new) printString; newLine.
-		keeper:: Keeper new.
-		maker:: self fromAReturnedBlock: keeper.
-		transcript show: (maker value: 5) printString; newLine.
-		keeper runKept.
-		transcript show: (maker value: 0) printString; newLine
-	)
+    class Keeper = Object new (
+        | kept ::= nil. |
+    ) (
+        public ifTrue: block = ( kept:: block. ^nil )
+        public runKept = ( ^kept value )
+    ) : ()
+    writeThenCapture: keeper = (
+        | x ::= 1. reader ::= nil. |
+        keeper ifTrue: [x:: 2].
+        reader:: [x].
+        keeper runKept.
+        ^reader value
+    )
+    readLater: keeper = (
+        | x ::= 1. |
+        keeper ifTrue: [x].
+        x:: 5.
+        ^keeper runKept
+    )
+    fromAReturnedBlock: keeper = (
+        | total ::= 10. |
+        ^[:increment | keeper ifTrue: [total:: total + increment]. total]
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. maker keeper |
+        transcript show: (self writeThenCapture: Keeper new) printString; newLine.
+        transcript show: (self readLater: Keeper new) printString; newLine.
+        keeper:: Keeper new.
+        maker:: self fromAReturnedBlock: keeper.
+        transcript show: (maker value: 5) printString; newLine.
+        keeper runKept.
+        transcript show: (maker value: 0) printString; newLine
+    )
 ) : ()

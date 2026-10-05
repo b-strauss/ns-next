@@ -1,9 +1,9 @@
 class BenchSend = Object new (
-	| n ::= 0. sum ::= 0. |
+    | n ::= 0. sum ::= 0. |
 ) (
-	tick: x = ( ^x + 1 )
-	public main: p args: a = (
-		[n < 50000] whileTrue: [sum:: self tick: sum. n:: n + 1].
-		p transcript show: sum printString; newLine
-	)
+    tick: x = ( ^x + 1 )
+    public main: p args: a = (
+        [n < 50000] whileTrue: [sum:: self tick: sum. n:: n + 1].
+        p transcript show: sum printString; newLine
+    )
 ) : ()

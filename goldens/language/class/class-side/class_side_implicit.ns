@@ -1,15 +1,15 @@
 class ClassSideImplicit = Object new () (
-	public class Widget new = Object new () (
-	) : (
-		public describe = ( ^'widget, ', helper, ', ', secret )
-		public printString = ( ^'the Widget class' )
-		public shadowed = ( ^printString )
-		protected helper = ( ^'protected class side' )
-		private secret = ( ^'private class side' )
-	)
-	public main: platform args: args = (
-		| t ::= platform transcript. |
-		t show: Widget describe; newLine.
-		t show: Widget shadowed; newLine.
-	)
+    public class Widget new = Object new () (
+    ) : (
+        public describe = ( ^'widget, ', helper, ', ', secret )
+        public printString = ( ^'the Widget class' )
+        public shadowed = ( ^printString )
+        protected helper = ( ^'protected class side' )
+        private secret = ( ^'private class side' )
+    )
+    public main: platform args: args = (
+        | t ::= platform transcript. |
+        t show: Widget describe; newLine.
+        t show: Widget shadowed; newLine.
+    )
 ) : ()

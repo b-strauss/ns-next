@@ -5,16 +5,16 @@
    implicit-receiver and keyword alike, while `new` still finds the
    inherited factory and instantiates normally. *)
 class AClassSideDoesNotUnderstandHandlesItsClassObjectsSends = Object new () (
-	class Foo = Object new () (
-	) : (
-		protected doesNotUnderstand: message = ( ^'caught ', message selector printString )
-		public tryImplicit = ( ^zap )
-	)
-	public main: platform args: args = (
-		| transcript = platform transcript. |
-		transcript show: Foo bar; newLine.
-		transcript show: Foo tryImplicit; newLine.
-		transcript show: (Foo zork: 1 with: 2); newLine.
-		transcript show: Foo new printString; newLine.
-	)
+    class Foo = Object new () (
+    ) : (
+        protected doesNotUnderstand: message = ( ^'caught ', message selector printString )
+        public tryImplicit = ( ^zap )
+    )
+    public main: platform args: args = (
+        | transcript = platform transcript. |
+        transcript show: Foo bar; newLine.
+        transcript show: Foo tryImplicit; newLine.
+        transcript show: (Foo zork: 1 with: 2); newLine.
+        transcript show: Foo new printString; newLine.
+    )
 ) : ()

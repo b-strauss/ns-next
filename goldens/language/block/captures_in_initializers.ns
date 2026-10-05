@@ -4,17 +4,17 @@
    write (3.6), so they are copied. The block outlives the initializer:
    every send of add: runs it after the initializer has returned. *)
 class CapturesInInitializers = Object new (
-	
+    
 ) (
-	class Adder base: base = Object new (
-		| adder = [:x | x + base]. |
-	) (
-		public add: x = ( ^adder value: x )
-	) : ()
-	public main: platform args: arguments = (
-		| transcript = platform transcript. adder |
-		adder:: Adder base: 5.
-		transcript show: (adder add: 10) printString; newLine.
-		transcript show: (adder add: 100) printString; newLine
-	)
+    class Adder base: base = Object new (
+        | adder = [:x | x + base]. |
+    ) (
+        public add: x = ( ^adder value: x )
+    ) : ()
+    public main: platform args: arguments = (
+        | transcript = platform transcript. adder |
+        adder:: Adder base: 5.
+        transcript show: (adder add: 10) printString; newLine.
+        transcript show: (adder add: 100) printString; newLine
+    )
 ) : ()

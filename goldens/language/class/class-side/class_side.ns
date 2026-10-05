@@ -1,22 +1,22 @@
 class ClassSide = Object new () (
-	public class Widget new = Object new () (
-	) : (
-		public describe = ( ^'a widget class' )
-	)
-	public class SpecialWidget new = Widget new () (
-	)
-	public class OverridingWidget new = Widget new () (
-	) : (
-		public describe = ( ^'a special widget class' )
-	)
-	public main: platform args: args = (
-		| transcript ::= platform transcript. |
-		transcript show: self class describe; newLine.
-		transcript show: (self class greet: 'world'); newLine.
-		transcript show: Widget describe; newLine.
-		transcript show: OverridingWidget describe; newLine.
-	)
+    public class Widget new = Object new () (
+    ) : (
+        public describe = ( ^'a widget class' )
+    )
+    public class SpecialWidget new = Widget new () (
+    )
+    public class OverridingWidget new = Widget new () (
+    ) : (
+        public describe = ( ^'a special widget class' )
+    )
+    public main: platform args: args = (
+        | transcript ::= platform transcript. |
+        transcript show: self class describe; newLine.
+        transcript show: (self class greet: 'world'); newLine.
+        transcript show: Widget describe; newLine.
+        transcript show: OverridingWidget describe; newLine.
+    )
 ) : (
-	public describe = ( ^'the class side of ClassSide' )
-	public greet: name = ( ^'hello, ', name )
+    public describe = ( ^'the class side of ClassSide' )
+    public greet: name = ( ^'hello, ', name )
 )

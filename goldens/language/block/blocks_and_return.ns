@@ -1,13 +1,13 @@
 class BlocksAndReturn = Object new () (
-	find: target in: coll = (
-		coll do: [:each | each = target ifTrue: [^'found']].
-		^'not found'
-	)
-	public main: p args: a = (
-		| List = p collections List. c |
-		c:: List new.
-		c add: 1; add: 2; add: 3.
-		p transcript show: (self find: 2 in: c); newLine.
-		p transcript show: (self find: 9 in: c); newLine
-	)
+    find: target in: coll = (
+        coll do: [:each | each = target ifTrue: [^'found']].
+        ^'not found'
+    )
+    public main: p args: a = (
+        | List = p collections List. c |
+        c:: List new.
+        c add: 1; add: 2; add: 3.
+        p transcript show: (self find: 2 in: c); newLine.
+        p transcript show: (self find: 9 in: c); newLine
+    )
 ) : ()

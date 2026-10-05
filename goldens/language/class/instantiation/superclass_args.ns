@@ -1,18 +1,18 @@
 class SuperclassArgs = Object new () (
-	public class Base withBase: b = Object new (| baseValue ::= b. |) (
-		public base = ( ^baseValue )
-	)
-	public class Middle withMiddle: m = Base withBase: m + 1 (| middleValue ::= m. |) (
-		public middle = ( ^middleValue )
-	)
-	public class Leaf = Middle withMiddle: 10 (| leafValue ::= 100. |) (
-		public leaf = ( ^leafValue )
-	)
-	public main: platform args: args = (
-		| t ::= platform transcript. x |
-		x:: Leaf new.
-		t show: x base printString; newLine.
-		t show: x middle printString; newLine.
-		t show: x leaf printString; newLine.
-	)
+    public class Base withBase: b = Object new (| baseValue ::= b. |) (
+        public base = ( ^baseValue )
+    )
+    public class Middle withMiddle: m = Base withBase: m + 1 (| middleValue ::= m. |) (
+        public middle = ( ^middleValue )
+    )
+    public class Leaf = Middle withMiddle: 10 (| leafValue ::= 100. |) (
+        public leaf = ( ^leafValue )
+    )
+    public main: platform args: args = (
+        | t ::= platform transcript. x |
+        x:: Leaf new.
+        t show: x base printString; newLine.
+        t show: x middle printString; newLine.
+        t show: x leaf printString; newLine.
+    )
 )

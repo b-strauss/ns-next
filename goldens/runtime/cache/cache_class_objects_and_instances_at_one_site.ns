@@ -1,24 +1,24 @@
 class CacheClassObjectsAndInstancesAtOneSite = Object new () (
-	class Maker make = Object new () (
-		public describe = ( ^'a made maker' )
-	)
-	class Plain = Object new () (
-		public describe = ( ^'a plain' )
-	) : (
-		public make = ( ^Plain new )
-	)
-	class Custom = Object new () (
-		public describe = ( ^'a custom' )
-		public make = ( ^self )
-		public printString = ( ^'a custom instance' )
-	) : (
-		public printString = ( ^'the custom class' )
-	)
-	public main: platform args: args = (
-		| transcript = platform transcript. receivers |
-		receivers:: {Maker. Plain. Custom new. Maker. Plain. Custom new}.
-		receivers do: [:each | transcript show: each make describe; newLine].
-		{Plain. Custom. Custom new. Maker. Plain new. Plain. Custom}
-			do: [:each | transcript show: each printString; newLine].
-	)
+    class Maker make = Object new () (
+        public describe = ( ^'a made maker' )
+    )
+    class Plain = Object new () (
+        public describe = ( ^'a plain' )
+    ) : (
+        public make = ( ^Plain new )
+    )
+    class Custom = Object new () (
+        public describe = ( ^'a custom' )
+        public make = ( ^self )
+        public printString = ( ^'a custom instance' )
+    ) : (
+        public printString = ( ^'the custom class' )
+    )
+    public main: platform args: args = (
+        | transcript = platform transcript. receivers |
+        receivers:: {Maker. Plain. Custom new. Maker. Plain. Custom new}.
+        receivers do: [:each | transcript show: each make describe; newLine].
+        {Plain. Custom. Custom new. Maker. Plain new. Plain. Custom}
+            do: [:each | transcript show: each printString; newLine].
+    )
 ) : ()

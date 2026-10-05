@@ -14,28 +14,28 @@
    element is what `at: 2` answers. Reading t after the assignment instead
    would answer 31, 41 and 51. *)
 class WritesTwoInlinedLevelsDeep = Object new (
-	
+    
 ) (
-	nestedLoopsInTheMethod = (
-		| t ::= 2. outerDone ::= false. innerDone ::= false. |
-		^t + ({[outerDone] whileFalse: [
-			[innerDone] whileFalse: [innerDone:: true. t:: 30].
-			outerDone:: true]. 1} at: 2)
-	)
-	nestedLoopsInABlock = (
-		^[ | t ::= 5. outerDone ::= false. innerDone ::= false. |
-		   t + ({[outerDone] whileFalse: [
-			[innerDone] whileFalse: [innerDone:: true. t:: 40].
-			outerDone:: true]. 1} at: 2)]
-	)
-	nestedConditionalsInABlock = (
-		^[ | t ::= 7. |
-		   t + (true ifTrue: [true ifTrue: [t:: 50. 1] ifFalse: [0]] ifFalse: [0])]
-	)
-	public main: platform args: arguments = (
-		| transcript = platform transcript. |
-		transcript show: self nestedLoopsInTheMethod printString; newLine.
-		transcript show: self nestedLoopsInABlock value printString; newLine.
-		transcript show: self nestedConditionalsInABlock value printString; newLine
-	)
+    nestedLoopsInTheMethod = (
+        | t ::= 2. outerDone ::= false. innerDone ::= false. |
+        ^t + ({[outerDone] whileFalse: [
+            [innerDone] whileFalse: [innerDone:: true. t:: 30].
+            outerDone:: true]. 1} at: 2)
+    )
+    nestedLoopsInABlock = (
+        ^[ | t ::= 5. outerDone ::= false. innerDone ::= false. |
+           t + ({[outerDone] whileFalse: [
+            [innerDone] whileFalse: [innerDone:: true. t:: 40].
+            outerDone:: true]. 1} at: 2)]
+    )
+    nestedConditionalsInABlock = (
+        ^[ | t ::= 7. |
+           t + (true ifTrue: [true ifTrue: [t:: 50. 1] ifFalse: [0]] ifFalse: [0])]
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. |
+        transcript show: self nestedLoopsInTheMethod printString; newLine.
+        transcript show: self nestedLoopsInABlock value printString; newLine.
+        transcript show: self nestedConditionalsInABlock value printString; newLine
+    )
 ) : ()

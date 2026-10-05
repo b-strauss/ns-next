@@ -345,6 +345,9 @@ and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
 - All code, identifiers, comments, commit messages and developer documentation
   are in English.
 - Classic terminology: `blacklist`, `whitelist`, `sane`.
+- Newspeak sources (`.ns`) outside `corpus/` are indented with four spaces,
+  never tabs; `crates/ns-cli/tests/source_formatting.rs` holds it, and
+  `corpus/` stays upstream's verbatim copy.
 - **Names are written out.** No identifier of one or two characters and no
   truncated word, in every kind of name and every segment of a compound:
   `mutator`, `index`, `error`, `interpreter` (not `interp`), `program_counter`
