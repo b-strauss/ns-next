@@ -23,6 +23,8 @@
       <li>Running and benchmarking a project from its <code>newspeak.json</code>: a play button
           beside <code>main</code> and beside each script opens Run and Benchmark, which create a
           "Newspeak" run configuration starting <code>ns-next run</code> or <code>ns-next bench</code>.</li>
+      <li>Running and benchmarking a single module: a play button beside <code>main:args:</code>
+          of a module whose root class is created with <code>new</code>, and Run in its context menu.</li>
     </ul>
     <p>The language server, <code>ns-next-analyzer</code>, is bundled for the platform the plugin was
     built on. Where none is bundled, the plugin says so; build it with
@@ -37,7 +39,8 @@
     <p>0.1.0: highlighting, errors as you type, semantic colouring, code folding, and a
     structure view with breadcrumbs. Completion and validation in <code>newspeak.json</code>
     from the project file's schema. Running and benchmarking a project from its
-    <code>newspeak.json</code>, with the ns-next path setting.</p>
+    <code>newspeak.json</code>, with the ns-next path setting. Running and benchmarking a single
+    module from its <code>main:args:</code>.</p>
     ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>

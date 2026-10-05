@@ -30,6 +30,7 @@ first.
 | One binary for looking at Newspeak without running it: `ns-next-analyzer`, the crate `ns-tooling`, one test suite | Complete | 2026-10-04 | [ns-analyzer](superpowers/plans/2026-10-04-1406-ns-analyzer.md) |
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
 | The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
+| Running a module from the play button beside its `main:args:` in the JetBrains plugin | Complete | 2026-10-05 | [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md) |
 | Road step 5 — `become:` through forwarders | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4450,5 +4451,38 @@ by a play button beside `main` and each script.
   quote or a backslash at its end.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
-recorded into an image, so that `load` could start one with it, and the
-plugin's next step, a play button beside a module's `main:args:`.
+recorded into an image, so that `load` could start one with it.
+
+## A module runs from the play button beside its `main:args:` (2026-10-05)
+
+Plan: [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md);
+[editor-support.md](design/editor-support.md), "The project file and
+running projects", "Structure".
+
+A module `ns-next run <file>.ns` can start -- its root class built with
+`new`, written or omitted, and a public instance-side `main:args:` -- gets
+a play button beside `main:args:` opening Run and Benchmark, and "Run" in
+its context menu. The plugin reads that from the analyzer's document
+symbols, not from a parser of its own; the last answer per file and
+document stamp is kept by a project service, `DocumentSymbolCache`, which
+the structure view and the run markers share. The line marker never waits
+for the server: it asks on a pooled thread and restarts the file's daemon
+once the answer is kept. The "Newspeak" run configuration's program is a
+project's `newspeak.json` or a `.ns` module; a module takes no script, as
+the CLI refuses `--script` with a source file.
+
+- `27f3188e` -- an analyzer test pins the document symbols the button is
+  read from: `new` written or omitted, a public instance-side `main:args:`
+  named by its pattern.
+- `fe589615` -- the document symbols are kept in a project cache the run
+  markers can share.
+- `6701ac6a` -- a Newspeak run configuration runs a `.ns` module as well as
+  a project.
+- `5c285bf9` -- the play button beside `main:args:`.
+- `108e6249` -- "Run" in the context menu of a runnable module.
+- The documentation commit after them -- the design document, the plugin's
+  description and change notes.
+
+What the branch leaves open is in [editor-support.md](design/editor-support.md),
+"Known gaps": no automated test reaches the play button through a running
+server.

@@ -5,8 +5,9 @@ structure view with breadcrumbs for `.ns` files, through the language server
 `ns-next-analyzer lsp` from `crates/ns-analyzer`; the schema for a project's
 `newspeak.json`; and running and benchmarking projects with the `ns-next`
 named by the "ns-next path" setting, from a "Newspeak" run configuration or
-the play buttons in `newspeak.json`. The design, its components and the
-platform version it targets are in `docs/design/editor-support.md`.
+the play buttons in `newspeak.json`, and single modules from the play button
+beside their `main:args:`. The design, its components and the platform
+version it targets are in `docs/design/editor-support.md`.
 
 ## Opening it in IntelliJ IDEA
 
@@ -25,7 +26,7 @@ From this directory (`gradlew.bat` on Windows outside Git Bash):
 
 ```bash
 # a sandbox IDE with the plugin and a release build of ns-next-analyzer;
-# to run projects there, set the ns-next path under
+# to run projects and modules there, set the ns-next path under
 # Settings | Languages & Frameworks | Newspeak
 ./gradlew runIde
 
