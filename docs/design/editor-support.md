@@ -848,21 +848,19 @@ configurations. A configuration names a project's `newspeak.json`, stored
 system-independently, and runs `ns-next run` or `ns-next bench` ("Run" or
 "Benchmark" in its form) on that file's directory, in that directory, with
 an optional script, extra arguments, and for `bench` the iterations (ten by
-default, at least one): `ns-next <run|bench> [--script=<name>]
-[--iterations <n>] <project directory> [-- <arguments>]`
-(`newspeakCommandLine`). The script is one token, so a name starting with
-`-` is not read as an option; an empty script field means no script, as a
-script's name is never empty nor surrounded by whitespace
-([image-format.md](image-format.md), "Scripts"). A relative project file is
-the IDE project's, resolved against its base directory, both to run it and
-to recognise the configuration from the file. The arguments are one field,
-split as the platform splits program parameters (`ParametersListUtil`), and
-go after `--`. A
-missing project file, a text that is no valid path among them, is refused
-before anything starts ("Choose the project's newspeak.json"), and so are
-fewer than one iteration. ns-next's output is decoded as UTF-8, which it
-writes whatever the platform; the default, Windows' code page, would garble
-anything past ASCII.
+default, at least one): `ns-next <run|bench> [--script=<name>] [--iterations
+<n>] <project directory> [-- <arguments>]` (`newspeakCommandLine`). The
+script is one token, so a name starting with `-` is not read as an option;
+an empty script field means no script, as a script's name is never empty nor
+surrounded by whitespace ([image-format.md](image-format.md), "Scripts"). A
+relative project file is the IDE project's, resolved against its base
+directory, both to run it and to recognise the configuration from the file.
+The arguments are one field, split as the platform splits program parameters
+(`ParametersListUtil`), and go after `--`. A missing project file, a text
+that is no valid path among them, is refused before anything starts ("Choose
+the project's newspeak.json"), and so are fewer than one iteration.
+ns-next's output is decoded as UTF-8, which it writes whatever the platform;
+the default, Windows' code page, would garble anything past ASCII.
 
 **The play buttons.** `NewspeakRunLineMarkerContributor` puts a play button
 beside the top-level `main` and beside each key of the top-level `scripts`

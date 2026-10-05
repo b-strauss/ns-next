@@ -1455,13 +1455,14 @@ these rules: the file is an object (`type`) with a `main` (`required`);
 least one character (`minLength`) ending in `.ns` (`pattern: "\\.ns$"`);
 `modules` an array whose entries are not written twice as the same string
 (`uniqueItems`); `scripts` an object whose every name is non-empty and
-neither begins nor ends with whitespace (`propertyNames`,
-`pattern: "^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s`
-matches) and whose every value
-(`additionalProperties`) is an array of strings. Every other key is
-allowed. No validator crate reads it, so
-the project file brings no dependency beyond `serde_json`: the reader states
-each rule itself, with a message of its own, and
+neither begins nor ends with whitespace (`propertyNames`, `pattern:
+"^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s` matches) and
+whose every value (`additionalProperties`) is an array of strings. Every
+other key is allowed. An editor's validator may read the pattern's `\s` as
+ASCII whitespace only, as Java's regular expressions do, and so let a name
+with other whitespace at an end pass; the reader decides. No validator crate
+reads the schema, so the project file brings no dependency beyond `serde_json`: the
+reader states each rule itself, with a message of its own, and
 `crates/ns-cli/tests/project_schema.rs` holds the two together. That test
 interprets the schema with exactly the keywords it uses -- a keyword it does
 not know fails the test, so the schema cannot gain a rule nothing checks the
@@ -1471,9 +1472,9 @@ reader alone holds cannot be stated in JSON Schema: one of its four keys
 written twice and a script name written twice (a schema sees only the last
 value of a key), one module path in two spellings (`uniqueItems` compares
 strings as written), and a `modules` entry naming `main`'s module (no
-keyword compares one property with another). They stay out of the table,
-and `project.rs`'s own tests pin them. The JetBrains plugin
-bundles the same file and gives it to every `newspeak.json`
+keyword compares one property with another). They stay out of the table, and
+`project.rs`'s own tests pin them. The JetBrains plugin bundles the same
+file and gives it to every `newspeak.json`
 ([editor-support.md](editor-support.md), "The project file and running
 projects").
 
@@ -1486,14 +1487,14 @@ script's, so `ns-next run --script timed -- Sieve` hands `--timed` and then
 `a_script_hands_its_arguments_to_main_and_the_command_line_follows`,
 `crates/ns-cli/tests/run.rs`). A script's name is a non-empty name that
 neither begins nor ends with whitespace; its arguments are any strings,
-empty ones included, since an empty argument is a valid
-command-line argument too. Arguments stay strings everywhere, from a script
-as from the command line or an image, so a program sees one form however it
-is started. Refused before anything runs: `--script` with a source file
-rather than a project ("--script names a script of a project's
-newspeak.json, and the program given is a source file"), and a name the
-project's `scripts` does not hold ("`<project file>` has no script `zz`;
-its scripts are sieve, timed", or "it has none";
+empty ones included, since an empty argument is a valid command-line
+argument too. Arguments stay strings everywhere, from a script as from the
+command line or an image, so a program sees one form however it is started.
+Refused before anything runs: `--script` with a source file rather than a
+project ("--script names a script of a project's newspeak.json, and the
+program given is a source file"), and a name the project's `scripts` does
+not hold ("`<project file>` has no script `zz`; its scripts are sieve,
+timed", or "it has none";
 `an_unknown_script_is_refused_naming_the_scripts_there_are`,
 `a_script_with_a_source_file_is_refused`). Written as one token,
 `--script=<name>`, a name may start with `-`; the JetBrains plugin always

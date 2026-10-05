@@ -104,11 +104,7 @@ fn a_script_named_in_one_token_may_start_with_a_dash_and_not_be_empty() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
-        "dash
-"
-    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "dash\n");
 
     let empty = ns_next()
         .args(["run", "--script="])

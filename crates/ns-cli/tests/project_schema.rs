@@ -182,7 +182,7 @@ const FILES: &[(&str, bool)] = &[
         false,
     ),
     (
-        r#"{ "main": "App.ns", "scripts": { "timed ": [] } }"#,
+        r#"{ "main": "App.ns", "scripts": { "timed\u00a0": [] } }"#,
         false,
     ),
 ];

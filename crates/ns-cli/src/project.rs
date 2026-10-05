@@ -446,16 +446,19 @@ mod tests {
         assert!(error.contains("a script name is empty"), "{error}");
     }
 
-    /// Written as JSON escapes: a space, a tab, a no-break space and a byte
-    /// order mark, each before or after the name.
+    /// Each case is the name as written in the JSON text, a raw string
+    /// holding JSON escapes, and the name the message quotes: a leading
+    /// space, a trailing space, a leading tab (`\t`), a trailing no-break
+    /// space (U+00A0, `\u00a0`) and a leading byte order mark (U+FEFF,
+    /// `\ufeff`).
     #[test]
     fn a_script_name_with_surrounding_whitespace_is_refused_naming_it() {
         for (index, (written, name)) in [
             (" x", " x"),
             ("x ", "x "),
             (r"\tx", "\tx"),
-            (r"x ", "x\u{a0}"),
-            (r"﻿x", "\u{feff}x"),
+            (r"x\u00a0", "x\u{a0}"),
+            (r"\ufeffx", "\u{feff}x"),
         ]
         .iter()
         .enumerate()
