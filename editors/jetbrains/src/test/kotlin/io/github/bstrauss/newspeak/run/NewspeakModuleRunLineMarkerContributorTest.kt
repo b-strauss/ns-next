@@ -1,12 +1,18 @@
 package io.github.bstrauss.newspeak.run
 
 import com.intellij.codeInsight.daemon.LineMarkerInfo
+import com.intellij.execution.PsiLocation
 import com.intellij.execution.RunManager
+import com.intellij.execution.actions.ConfigurationContext
+import com.intellij.execution.actions.RunConfigurationProducer
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionWithDelegate
 import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiElement
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import io.github.bstrauss.newspeak.lsp.DocumentSymbolCache
@@ -132,5 +138,47 @@ class NewspeakModuleRunLineMarkerContributorTest : BasePlatformTestCase() {
         assertNotNull(runnableMain(renamed))
         renamed.single().children[1].name = "main: platform"
         assertNull(runnableMain(renamed))
+    }
+
+    private val producer: NewspeakModuleRunConfigurationProducer
+        get() = RunConfigurationProducer.getInstance(NewspeakModuleRunConfigurationProducer::class.java)
+
+    private fun contextAt(element: PsiElement) =
+        ConfigurationContext.createEmptyContextForLocation(PsiLocation(element))
+
+    fun testTheContextMenuRunsARunnableModule() {
+        cache.fetcher = { module(runnable, "new", "public") }
+        myFixture.configureByText("Hello.ns", runnable)
+        assertNotNull(cache.fetch(myFixture.file.virtualFile))
+        val onBody = checkNotNull(myFixture.file.findElementAt(runnable.indexOf("^ 0")))
+        for (context in listOf(contextAt(myFixture.file), contextAt(onBody))) {
+            val configuration = checkNotNull(producer.createConfigurationFromContext(context)).configuration as NewspeakRunConfiguration
+            assertEquals(myFixture.file.virtualFile.path, configuration.program)
+            assertNull(configuration.script)
+            assertEquals(NewspeakCommand.RUN, configuration.command)
+            assertEquals("Hello.ns", configuration.name)
+        }
+        val gutter = createConfigurationFromGutter(project, myFixture.file.virtualFile, null, NewspeakCommand.RUN)
+        assertTrue(producer.isConfigurationFromContext(gutter.configuration as NewspeakRunConfiguration, contextAt(myFixture.file)))
+    }
+
+    fun testTheContextMenuOfAModuleThatCannotRunOffersNothing() {
+        cache.fetcher = { module(runnable, "new", "protected") }
+        myFixture.configureByText("Hello.ns", runnable)
+        assertNotNull(cache.fetch(myFixture.file.virtualFile))
+        assertNull(producer.createConfigurationFromContext(contextAt(myFixture.file)))
+    }
+
+    // Off the EDT, with nothing kept yet, the producer asks the server itself: a Project-view
+    // file never opened in an editor has no answer until someone asks.
+    fun testOffTheEdtTheContextMenuAsksForTheSymbols() {
+        cache.fetcher = { module(runnable, "new", "public") }
+        val file = myFixture.addFileToProject("Hello.ns", runnable)
+        val created = ApplicationManager.getApplication().executeOnPooledThread<Any?> {
+            ReadAction.computeBlocking<Any?, RuntimeException> {
+                producer.createConfigurationFromContext(contextAt(file))
+            }
+        }.get()
+        assertNotNull(created)
     }
 }
