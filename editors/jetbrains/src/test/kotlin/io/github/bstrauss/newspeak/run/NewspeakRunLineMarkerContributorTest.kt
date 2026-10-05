@@ -114,7 +114,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         val configuration = settings.configuration as NewspeakRunConfiguration
         assertEquals("timed", configuration.script)
         assertEquals(NewspeakCommand.BENCH, configuration.command)
-        assertEquals(myFixture.file.virtualFile.path, configuration.projectFile)
+        assertEquals(myFixture.file.virtualFile.path, configuration.program)
         assertEquals("${myFixture.file.virtualFile.parent.name} [timed] (benchmark)", settings.name)
         assertTrue(settings.isTemporary)
         assertSame(settings, RunManager.getInstance(project).selectedConfiguration)
@@ -146,7 +146,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         // As the editor's chooser stored a path on Windows before it stored system-independent ones.
         val stored = runManager.createConfiguration("chosen by hand", NewspeakConfigurationType.getInstance().factory)
         (stored.configuration as NewspeakRunConfiguration).apply {
-            projectFile = file.path.replace('/', '\\')
+            program = file.path.replace('/', '\\')
             script = "sieve"
         }
         runManager.addConfiguration(stored)
@@ -165,7 +165,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
             val file = checkNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(onDisk))
             val runManager = RunManager.getInstance(project)
             val stored = runManager.createConfiguration("relative by hand", NewspeakConfigurationType.getInstance().factory)
-            (stored.configuration as NewspeakRunConfiguration).projectFile = "relative/newspeak.json"
+            (stored.configuration as NewspeakRunConfiguration).program = "relative/newspeak.json"
             runManager.addConfiguration(stored)
             assertSame(stored, createConfigurationFromGutter(project, file, null, NewspeakCommand.RUN))
         } finally {
@@ -186,7 +186,7 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         val fromKey = checkNotNull(producer.createConfigurationFromContext(contextAt(onSieve))).configuration as NewspeakRunConfiguration
         assertEquals("sieve", fromKey.script)
         assertEquals(NewspeakCommand.RUN, fromKey.command)
-        assertEquals(file.virtualFile.path, fromKey.projectFile)
+        assertEquals(file.virtualFile.path, fromKey.program)
         assertEquals("${file.virtualFile.parent.name} [sieve]", fromKey.name)
 
         val fromFile = checkNotNull(producer.createConfigurationFromContext(contextAt(file))).configuration as NewspeakRunConfiguration
@@ -200,5 +200,15 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
     fun testTheContextMenuOfAnotherJsonFileOffersNothing() {
         myFixture.configureByText("package.json", projectJson)
         assertNull(producer.createConfigurationFromContext(contextAt(myFixture.file)))
+    }
+
+    fun testAModulesConfigurationIsNamedByItsFile() {
+        val module = myFixture.addFileToProject("app/Hello.ns", "class Hello = () ()").virtualFile
+        val run = createConfigurationFromGutter(project, module, null, NewspeakCommand.RUN)
+        val bench = createConfigurationFromGutter(project, module, null, NewspeakCommand.BENCH)
+        assertEquals("Hello.ns", run.name)
+        assertEquals("Hello.ns (benchmark)", bench.name)
+        assertEquals(module.path, (run.configuration as NewspeakRunConfiguration).program)
+        assertSame(run, createConfigurationFromGutter(project, module, null, NewspeakCommand.RUN))
     }
 }

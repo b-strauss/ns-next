@@ -11,7 +11,7 @@ import io.github.bstrauss.newspeak.NewspeakIcons
 class NewspeakConfigurationType : ConfigurationTypeBase(
     ID,
     "Newspeak",
-    "Runs or benchmarks a Newspeak project with ns-next",
+    "Runs or benchmarks a Newspeak project or module with ns-next",
     NewspeakIcons.FILE,
 ) {
     init {

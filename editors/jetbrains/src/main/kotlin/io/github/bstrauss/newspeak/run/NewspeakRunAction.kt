@@ -11,9 +11,9 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 
-/** One entry of the play button's menu: runs or benchmarks the project, or one of its scripts. */
+/** One entry of the play button's menu: runs or benchmarks a project, one of its scripts, or a module. */
 class NewspeakRunAction(
-    val projectFile: VirtualFile,
+    val programFile: VirtualFile,
     val script: String?,
     val command: NewspeakCommand,
 ) : AnAction(
@@ -30,29 +30,29 @@ class NewspeakRunAction(
     DumbAware {
     override fun actionPerformed(event: AnActionEvent) {
         val project = event.project ?: return
-        val settings = createConfigurationFromGutter(project, projectFile, script, command)
+        val settings = createConfigurationFromGutter(project, programFile, script, command)
         // An invalid configuration -- no ns-next path, say -- takes the platform's own path:
         // its error, and the dialog to edit the configuration.
         ProgramRunnerUtil.executeConfiguration(settings, DefaultRunExecutor.getRunExecutorInstance())
     }
 }
 
-/** What the gutter names a configuration: the project's directory, the script, and whether it benchmarks. */
-fun gutterConfigurationName(projectFile: VirtualFile, script: String?, command: NewspeakCommand): String {
-    val projectName = projectFile.parent?.name ?: projectFile.name
+/** What the gutter names a configuration: a project by its directory, a module by its file; the script; whether it benchmarks. */
+fun gutterConfigurationName(programFile: VirtualFile, script: String?, command: NewspeakCommand): String {
+    val programName = if (programFile.name == PROJECT_FILE_NAME) programFile.parent?.name ?: programFile.name else programFile.name
     val scriptPart = script?.let { name -> " [$name]" }.orEmpty()
     val benchmarkPart = if (command == NewspeakCommand.BENCH) " (benchmark)" else ""
-    return projectName + scriptPart + benchmarkPart
+    return programName + scriptPart + benchmarkPart
 }
 
 /**
  * The configuration the play button runs, selected but not started: the
- * existing one with the same project file, script and command, or a new
+ * existing one with the same program file, script and command, or a new
  * temporary one from the type's template.
  */
 fun createConfigurationFromGutter(
     project: Project,
-    projectFile: VirtualFile,
+    programFile: VirtualFile,
     script: String?,
     command: NewspeakCommand,
 ): RunnerAndConfigurationSettings {
@@ -61,16 +61,16 @@ fun createConfigurationFromGutter(
         .firstOrNull { settings ->
             val configuration = settings.configuration as? NewspeakRunConfiguration
             configuration != null &&
-                configuration.namesProjectFile(projectFile) &&
+                configuration.namesProgram(programFile) &&
                 configuration.script == script &&
                 configuration.command == command
         }
     val settings = existing ?: runManager.createConfiguration(
-        gutterConfigurationName(projectFile, script, command),
+        gutterConfigurationName(programFile, script, command),
         NewspeakConfigurationType.getInstance().factory,
     ).also { created ->
         (created.configuration as NewspeakRunConfiguration).apply {
-            this.projectFile = projectFile.path
+            this.program = programFile.path
             this.script = script
             this.command = command
         }
