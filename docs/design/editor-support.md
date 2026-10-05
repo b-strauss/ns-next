@@ -971,6 +971,16 @@ the EDT only a kept answer counts. Recognising its configuration needs no
 symbols: one is the module's when it names the file, with no script and
 `run`.
 
+**Checked under `runIde` (2026-10-05)** with a module printing through
+`platform transcript`: the button beside `main:` with Run and Benchmark,
+Run printing its output and Benchmark running its ten iterations; after a
+line typed above `main:args:` the button back on the moved line with no
+further edit; no button for a `main:args:` without `public` nor for a root
+whose factory is `usingPlatform: platform`; "Run" in the context menu of
+the file in the Project view and in its editor; the Script field disabled in
+the form for a `.ns` program; and a project's `newspeak.json` running as
+before.
+
 Decided with the user on 2026-10-05: the plugin runs a project with the
 `ns-next` the user chooses, and bundles none; a run configuration type
 "Newspeak", with the plugin's file icon, groups the configurations; a play
