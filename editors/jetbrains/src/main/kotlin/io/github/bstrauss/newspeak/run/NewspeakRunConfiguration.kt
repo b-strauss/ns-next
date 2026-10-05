@@ -35,8 +35,8 @@ enum class NewspeakCommand(val subcommand: String) {
 
 /** What a Newspeak run configuration stores. */
 class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
-    /** The project's `newspeak.json`; ns-next is given its directory. */
-    var projectFile by string()
+    /** The program: a project's `newspeak.json`, whose directory ns-next is given, or a `.ns` module. */
+    var program by string()
 
     /** A [NewspeakCommand]'s name. */
     var command by string(NewspeakCommand.RUN.name)
@@ -46,16 +46,16 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
     var iterations by property(10)
 }
 
-/** Runs `ns-next run` or `ns-next bench` on a project, with the runtime the plugin's settings name. */
+/** Runs `ns-next run` or `ns-next bench` on a project or a module, with the runtime the plugin's settings name. */
 class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, name: String) :
     RunConfigurationBase<NewspeakRunConfigurationOptions>(project, factory, name) {
 
     override fun getOptions(): NewspeakRunConfigurationOptions = super.getOptions() as NewspeakRunConfigurationOptions
 
-    var projectFile: String?
-        get() = options.projectFile
+    var program: String?
+        get() = options.program
         set(value) {
-            options.projectFile = value
+            options.program = value
         }
 
     /** A stored name no constant has, as from a hand-edited workspace file, reads as [NewspeakCommand.RUN]. */
@@ -85,13 +85,13 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         }
 
     /**
-     * Whether the project file is `file`: a relative path resolved against the
+     * Whether the program is `file`: a relative path resolved against the
      * IDE project's base directory, as the run resolves it, and compared system-independently,
      * since a configuration stored by hand on Windows may hold backslashes,
      * and with the file system's case sensitivity.
      */
-    fun namesProjectFile(file: VirtualFile): Boolean {
-        val stored = projectFile?.trim()?.takeIf(String::isNotEmpty) ?: return false
+    fun namesProgram(file: VirtualFile): Boolean {
+        val stored = program?.trim()?.takeIf(String::isNotEmpty) ?: return false
         val basePath = project.basePath
         // A path with a root is compared as written: made absolute, Windows' `\work` would gain a drive the VFS path lacks.
         val resolved = if (basePath != null && isRelative(stored)) "$basePath/$stored" else stored
@@ -111,9 +111,13 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         if (runtime !is RuntimeLocation.Found) {
             throw RuntimeConfigurationError(runtimeProblem(runtime), ::openNewspeakSettings)
         }
-        val projectPath = projectFilePath(this)
-        if (projectPath == null || !Files.isRegularFile(projectPath)) {
-            throw RuntimeConfigurationError(NO_PROJECT_FILE)
+        val programPath = programFilePath(this)
+        val kind = programPath?.let(::programKind)
+        if (programPath == null || kind == null || !Files.isRegularFile(programPath)) {
+            throw RuntimeConfigurationError(NO_PROGRAM)
+        }
+        if (kind == ProgramKind.MODULE && script != null) {
+            throw RuntimeConfigurationError(SCRIPT_OF_A_MODULE)
         }
         if (command == NewspeakCommand.BENCH && iterations < 1) {
             throw RuntimeConfigurationError("A benchmark takes at least one iteration")
@@ -126,7 +130,7 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
             is RuntimeLocation.Found -> location.path
             else -> throw ExecutionException(runtimeProblem(location))
         }
-        if (projectDirectory(this) == null) throw ExecutionException(NO_PROJECT_FILE)
+        if (programArgument(this) == null) throw ExecutionException(NO_PROGRAM)
         val configuration = this
         return object : CommandLineState(environment) {
             override fun startProcess(): ProcessHandler {
@@ -142,24 +146,66 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
     }
 }
 
-private const val NO_PROJECT_FILE = "Choose the project's newspeak.json"
+/** `crates/ns-cli/src/project.rs`'s `PROJECT_FILE_NAME`: the name ns-next recognises a project file by. */
+const val PROJECT_FILE_NAME = "newspeak.json"
+
+/** What a configuration runs: a project from its `newspeak.json`, or one module from its source. */
+enum class ProgramKind { PROJECT, MODULE }
 
 /**
- * The directory ns-next is given: the project file's. Null without a project
- * file, for one naming a root, which has no parent, and for text that is no
- * path; `getState` refuses all three before anything is started.
+ * By the file's name, as ns-next tells the two apart; null for anything
+ * else, which the check refuses rather than hand ns-next a file it would
+ * read as a source.
  */
-fun projectDirectory(configuration: NewspeakRunConfiguration): Path? = projectFilePath(configuration)?.parent
+fun programKind(path: Path): ProgramKind? {
+    val name = path.fileName?.toString() ?: return null
+    return when {
+        name == PROJECT_FILE_NAME -> ProgramKind.PROJECT
+        name.endsWith(".ns") -> ProgramKind.MODULE
+        else -> null
+    }
+}
+
+/** Whether text typed as a program names a `.ns` module; text that is no path names none. */
+fun namesAModule(text: String): Boolean = try {
+    programKind(Path.of(text.trim())) == ProgramKind.MODULE
+} catch (_: InvalidPathException) {
+    false
+}
+
+private const val NO_PROGRAM = "Choose the program: a project's newspeak.json or a .ns module"
+
+private const val SCRIPT_OF_A_MODULE =
+    "A script belongs to a project's newspeak.json: ns-next refuses --script with a .ns module"
 
 /**
- * The project file as an absolute path; null when none is set or the text is
+ * What ns-next is given: a project's directory, or the module's file. Null
+ * without a program, for one naming a root, for text that is no path and
+ * for a file that is neither kind; `getState` refuses them all before
+ * anything is started.
+ */
+fun programArgument(configuration: NewspeakRunConfiguration): Path? {
+    val path = programFilePath(configuration) ?: return null
+    return when (programKind(path)) {
+        ProgramKind.PROJECT -> path.parent
+        ProgramKind.MODULE -> path
+        null -> null
+    }
+}
+
+/** Where ns-next runs: the program file's directory, for a project and a module alike. */
+fun workingDirectory(configuration: NewspeakRunConfiguration): Path? =
+    programArgument(configuration)?.let { programFilePath(configuration)?.parent }
+
+/**
+ * The program file as an absolute path; null when none is set or the text is
  * no valid path (a `"` or `<` on Windows, say), which is refused as a missing
  * one is. A relative path is the IDE project's, as a hand-edited
  * configuration means it; the IDE's own working directory is unrelated to the
  * project, so it is used only for a project without a base path.
  */
-private fun projectFilePath(configuration: NewspeakRunConfiguration): Path? {
-    val file = configuration.projectFile?.trim()?.takeIf(String::isNotEmpty) ?: return null
+private fun programFilePath(configuration: NewspeakRunConfiguration): Path? {
+    val file = configuration.program?.trim()?.takeIf(String::isNotEmpty) ?: return null
     return try {
         val path = Path.of(file)
         val basePath = configuration.project.basePath
@@ -178,10 +224,10 @@ private fun runtimeProblem(location: RuntimeLocation): String = when (location) 
     is RuntimeLocation.ConfiguredPathMissing -> "No file at the ns-next path ${location.path}"
 }
 
-/** The process a Newspeak run configuration starts: [newspeakCommandLine], in the project's directory. */
+/** The process a Newspeak run configuration starts: [newspeakCommandLine], in the program file's directory. */
 fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): GeneralCommandLine =
     GeneralCommandLine(newspeakCommandLine(runtime, configuration))
-        .withWorkDirectory(projectDirectory(configuration)?.toFile())
+        .withWorkDirectory(workingDirectory(configuration)?.toFile())
         // ns-next writes UTF-8 whatever the platform; the default, Windows' code page, garbles anything past ASCII.
         .withCharset(StandardCharsets.UTF_8)
 
@@ -192,8 +238,8 @@ fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration):
     // One token, so a name starting with `-` is not read as an option.
     configuration.script?.let { script -> add("--script=$script") }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))
-    // ns-next takes the project's directory; the configuration names its newspeak.json, which is what the chooser picks.
-    add(checkNotNull(projectDirectory(configuration)) { NO_PROJECT_FILE }.toString())
+    // A project is given as its directory, a module as its file; the configuration names the file either way.
+    add(checkNotNull(programArgument(configuration)) { NO_PROGRAM }.toString())
     val arguments = ParametersListUtil.parse(configuration.programArguments.orEmpty())
     if (arguments.isNotEmpty()) {
         add("--")

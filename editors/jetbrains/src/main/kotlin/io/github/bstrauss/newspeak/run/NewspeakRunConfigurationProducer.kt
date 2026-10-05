@@ -22,7 +22,7 @@ class NewspeakRunConfigurationProducer : LazyRunConfigurationProducer<NewspeakRu
         sourceElement: Ref<PsiElement>,
     ): Boolean {
         val target = contextTarget(context) ?: return false
-        configuration.projectFile = target.file.path
+        configuration.program = target.file.path
         configuration.script = target.script
         configuration.command = NewspeakCommand.RUN
         configuration.name = gutterConfigurationName(target.file, target.script, NewspeakCommand.RUN)
@@ -31,7 +31,7 @@ class NewspeakRunConfigurationProducer : LazyRunConfigurationProducer<NewspeakRu
 
     override fun isConfigurationFromContext(configuration: NewspeakRunConfiguration, context: ConfigurationContext): Boolean {
         val target = contextTarget(context) ?: return false
-        return configuration.namesProjectFile(target.file) &&
+        return configuration.namesProgram(target.file) &&
             configuration.script == target.script &&
             configuration.command == NewspeakCommand.RUN
     }
@@ -42,7 +42,7 @@ class NewspeakRunConfigurationProducer : LazyRunConfigurationProducer<NewspeakRu
     private fun contextTarget(context: ConfigurationContext): ContextTarget? {
         val element = context.psiLocation ?: return null
         val file = element.containingFile ?: return null
-        if (file.name != "newspeak.json") return null
+        if (file.name != PROJECT_FILE_NAME) return null
         val virtualFile = file.virtualFile ?: return null
         // The project view hands over the file itself, whose first leaf is no key: that runs the project.
         val entry = projectEntryAt(PsiTreeUtil.getDeepestFirst(element))

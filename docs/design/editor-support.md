@@ -5,21 +5,25 @@
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
-> `lsp/NewspeakSymbolKinds.kt`) both exist: highlighting, errors as you
+> `lsp/NewspeakSymbolKinds.kt`, the document symbols the structure view and
+> the run markers share in `lsp/DocumentSymbolCache.kt`) both exist: highlighting, errors as you
 > type, code folding and a structure view with breadcrumbs, in every
 > commercial JetBrains IDE from 2026.1.4, kept while a file has syntax
 > errors. For a project's `newspeak.json`, completion and validation from
 > the project file's schema, and play buttons that run or benchmark the
-> project with the `ns-next` the settings name ("The project file and
-> running projects"). Formatting, go to definition, find usages and further
-> platforms are planned ("Planned later").
+> project with the `ns-next` the settings name; for a module `ns-next` can
+> run from its source, a play button beside its `main:args:` that runs or
+> benchmarks the module ("The project file and running projects").
+> Formatting, go to definition, find usages and further platforms are
+> planned ("Planned later").
 
 Without a plugin, editing `.ns` files in a JetBrains IDE means editing plain
 text. This document describes the editor support that replaces it: syntax
 highlighting as you type, the errors `ns-next` would report before running a
 module, shown in the editor at the place they occur, code folding, and a
 structure view of each file's classes and members. Beside the `.ns` files,
-it knows a project's `newspeak.json`: its schema, and how to run it.
+it knows a project's `newspeak.json`: its schema, and how to run it; and it
+runs a single module from its `main:args:`.
 
 ## Scope
 
@@ -41,7 +45,8 @@ it knows a project's `newspeak.json`: its schema, and how to run it.
 
 Beside them, for a project's `newspeak.json`: completion and validation from
 the project file's schema, and running and benchmarking the project from the
-IDE ("The project file and running projects").
+IDE; and running and benchmarking a single module from its `main:args:`
+("The project file and running projects").
 
 **Target IDEs.** Every commercial JetBrains IDE that carries JetBrains' own
 LSP API: IntelliJ IDEA, WebStorm, PhpStorm, PyCharm, DataSpell, RubyMine,
@@ -447,14 +452,15 @@ view for a language server (`LspStructureViewFactory`, registered for every
 language) takes its icons per `SymbolKind` only, so it cannot show a member's
 access. The plugin registers `NewspeakStructureViewFactory`
 (`lang.psiStructureViewFactory` for `Newspeak`), built over the public LSP
-API alone: it finds the client with
+API alone: its model asks through `DocumentSymbolCache` (below), which finds
+the client with
 `LspClientManager.getInstance(project).getClients(NewspeakLspIntegrationProvider::class.java)`
 and asks `textDocument/documentSymbol` through `sendRequestSync`. With no
 client it starts one: the platform starts the server only through the
 provider's `fileOpened`, for a file opened in an editor, so with no `.ns`
 file opened in the session a file selected in the Project view would find no
 server. `LspClientManager.startClientsIfNeeded` does not help, since it calls
-`fileOpened` for the files open in editors only; the model takes the
+`fileOpened` for the files open in editors only; the cache takes the
 registered provider (`LspIntegrationProvider.EP_NAME.findExtension`, the one
 instance that holds the plugin's directory) and its `startClient` hands the
 same descriptor `fileOpened` would build to
@@ -542,9 +548,9 @@ document's UTF-16 columns; the view selects the innermost symbol whose
 range holds the caret.
 
 **When it asks.** The model asks the server for the file's children, off the
-EDT, and again only once the document's modification stamp has changed; asked
-on the EDT it answers what it already has. A usable answer is a non-empty one:
-the server always answers the root class for a document it has opened or read
+EDT, through `DocumentSymbolCache.fetch`, and again only once the document's
+modification stamp has changed; asked on the EDT it answers what it already
+has. A usable answer is a non-empty one: the server always answers the root class for a document it has opened or read
 from disk, so no client, no answer in time or an empty answer means the server
 is not up yet (it starts the client itself when there is none, above), the
 file has not reached it yet (a file opened with the tool window already
@@ -563,10 +569,18 @@ therefore fills the tree without an edit.
 model each time it shows a file -- selected anew in the Project view, the
 window reopened -- and a model that starts empty would show an empty tree
 until the server has answered, then the tree: a flicker on every rebuild.
-The last usable answer is therefore kept on the `VirtualFile` (user data)
-with the document stamp it was given for, and every model of the file answers
-an unchanged document from it at once, on the EDT too, without a request; the
-server is asked again only once the stamp changes. The user data holds
+The last usable answer is therefore kept by `DocumentSymbolCache`, a project
+service in the `lsp` package, on the `VirtualFile` (user data) with the
+document stamp it was given for, and every model of the file answers an
+unchanged document from it at once, on the EDT too, without a request; the
+server is asked again only once the stamp changes. The stamp is read before
+the question is sent, so an answer to older text is never kept under a newer
+stamp, and `current` answers the kept symbols only while their stamp is the
+document's (the open document's, else the file's), so no reader places
+anything by the positions of older text. The same cache serves the module's
+play button and "Run" in its context menu ("The project file and running
+projects"), so an answer one of them has asked for serves the others while
+the document is unchanged. The user data holds
 platform types only -- the platform's `Pair` of lsp4j's symbols and the stamp
 -- since a plugin class kept there for the session would hold the plugin's
 class loader and stop the plugin from unloading without a restart. A file
@@ -635,8 +649,11 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   through the class its clause binds to -- a later sibling, an enclosing
   class's member, a class named `Value`, a `Value` slot, a cycle -- and a
   class reaching `Value` nowhere; a
-  temporary's kind, `Constant` when declared with `=`; and a
-  member's effective access;
+  temporary's kind, `Constant` when declared with `=`; a
+  member's effective access; and what the module's play button reads -- a
+  root's `new`, written or omitted, and its `main:args:` named by its
+  pattern, `public` on the instance side, `public class` on the class side,
+  `protected` without a modifier;
 - semantic tokens — a small module per category (parameter, local, slot with
   and without `readonly`, nested class, declared method, inherited send,
   a receiver inside a keyword message's span, a lazy slot in both
@@ -771,9 +788,11 @@ Components:
   project. Folding needs nothing of its own: the platform's `LspFoldingBuilder`
   asks the server ("Folding").
 - **Structure view** — `NewspeakStructureViewFactory`, its model and
-  `NewspeakStructureElement`, over the server's document symbols, with
-  `NewspeakSymbolKinds` and `NewspeakDocumentSymbols` in the client
-  descriptor's customization ("Structure").
+  `NewspeakStructureElement`, over the server's document symbols, which
+  `DocumentSymbolCache` keeps per file and stamp for the structure view and
+  the module's play button alike, with `NewspeakSymbolKinds` and
+  `NewspeakDocumentSymbols` in the client descriptor's customization
+  ("Structure").
 - **Settings** — *Languages & Frameworks → Newspeak*: an "ns-next-analyzer
   path", the server binary, and an "ns-next path", the runtime run
   configurations start ("The project file and running projects"); both empty
@@ -782,8 +801,12 @@ Components:
   settings restarts it too. Stored at application level: the paths are
   specific to a machine, so they do not belong in `.idea/`.
 - **The project file and run configurations** — the `project` package
-  (`NewspeakJsonSchemaProviderFactory`) and the `run` package
-  ("The project file and running projects").
+  (`NewspeakJsonSchemaProviderFactory`) and the `run` package: the "Newspeak"
+  run configuration, the play buttons of `newspeak.json` and its context
+  menu's producer, and the module's play button beside `main:args:`
+  (`NewspeakModuleRunLineMarkerContributor`) and its context menu's producer
+  (`NewspeakModuleRunConfigurationProducer`) ("The project file and running
+  projects").
 
 ### Which binary runs
 
@@ -812,7 +835,8 @@ plugin's code.
 ### The project file and running projects
 
 A project's `newspeak.json` ([image-format.md](image-format.md), "Packaging")
-gets its schema in the IDE, and can be run and benchmarked from it.
+gets its schema in the IDE, and can be run and benchmarked from it; so can a
+single module ns-next can run from its source, from its `main:args:`.
 
 **The schema.** The plugin's build copies `schemas/newspeak.schema.json`,
 the one copy that `ns-next`'s reader is held to, into its resources
@@ -829,9 +853,11 @@ checks, when it reads the file ([image-format.md](image-format.md),
 plugin's `check`. The JSON plugin
 (`com.intellij.modules.json`) is an optional dependency, declared like the
 spellchecker's: `plugin.xml` names `newspeak-json.xml`, which registers the
-schema provider, the play buttons and the context-menu producer, all of
-which read JSON PSI, so an IDE without the JSON plugin still loads this one,
-with neither the schema nor the play buttons. The build compiles against it
+schema provider, the play buttons of `newspeak.json` and its context-menu
+producer, all of which read JSON PSI, so an IDE without the JSON plugin
+still loads this one, with neither the schema nor those play buttons. The
+module's play button and its producer read no JSON PSI and are registered
+in `plugin.xml`, so they are there either way. The build compiles against it
 with `bundledPlugin("com.intellij.modules.json")`, a module of the IDE it
 targets, not a dependency fetched from anywhere.
 
@@ -848,21 +874,33 @@ the settings as its quick fix (`RuntimeLocation`,
 
 **The "Newspeak" run configuration type**, with the plugin's file icon
 (`icons/newspeak.svg`, the 16-pixel icon `.ns` files carry), groups the
-configurations. A configuration names a project's `newspeak.json`, stored
-system-independently, and runs `ns-next run` or `ns-next bench` ("Run" or
-"Benchmark" in its form) on that file's directory, in that directory, with
-an optional script, extra arguments, and for `bench` the iterations (ten by
-default, at least one): `ns-next <run|bench> [--script=<name>] [--iterations
-<n>] <project directory> [-- <arguments>]` (`newspeakCommandLine`). The
-script is one token, so a name starting with `-` is not read as an option;
-an empty script field means no script, as a script's name is never empty nor
-surrounded by whitespace ([image-format.md](image-format.md), "Scripts"). A
-relative project file is the IDE project's, resolved against its base
-directory, both to run it and to recognise the configuration from the file.
-The arguments are one field, split as the platform splits program parameters
-(`ParametersListUtil`), and go after `--`. A missing project file, a text
-that is no valid path among them, is refused before anything starts ("Choose
-the project's newspeak.json"), and so are fewer than one iteration.
+configurations. A configuration names its **program** (the option
+`program`, stored system-independently): a project's `newspeak.json`, whose
+directory ns-next is given, or a `.ns` module, whose file ns-next is given
+(`ProgramKind`; a file named `newspeak.json` is a project, a name ending in
+`.ns` a module). No older option name is read: the plugin is unpublished,
+so only local configurations ever held one. It runs `ns-next run` or `ns-next bench` ("Run" or
+"Benchmark" in its form) on it, in the program file's directory for both
+kinds, with an optional script, extra arguments, and for `bench` the
+iterations (ten by default, at least one): `ns-next <run|bench>
+[--script=<name>] [--iterations <n>] <project directory | module file> [--
+<arguments>]` (`newspeakCommandLine`). The form's "Program" field chooses a
+`newspeak.json` or a `.ns` file. The script is one token, so a name starting
+with `-` is not read as an option; an empty script field means no script, as
+a script's name is never empty nor surrounded by whitespace
+([image-format.md](image-format.md), "Scripts"). A script belongs to a
+project, as the CLI refuses `--script` with a source file: the form's Script
+row is disabled while the program names a `.ns` module and applying the form
+drops the script, and a configuration that names a module and a script --
+stored by hand -- is refused by the check ("A script belongs to a project's
+newspeak.json: ns-next refuses --script with a .ns module"). A relative
+program file is the IDE project's, resolved against its base directory, both
+to run it and to recognise the configuration from the file. The arguments
+are one field, split as the platform splits program parameters
+(`ParametersListUtil`), and go after `--`. A program that is missing, names
+a file of neither kind, or is a text that is no valid path is refused before
+anything starts ("Choose the program: a project's newspeak.json or a .ns
+module"), and so are fewer than one iteration.
 ns-next's output is decoded as UTF-8, which it writes whatever the platform;
 the default, Windows' code page, would garble anything past ASCII.
 
@@ -890,13 +928,73 @@ markers of a line. "Run" in the context menu of a `newspeak.json`, in the
 project view or the editor, does the same for the project, or for the script
 whose key the caret is on (`NewspeakRunConfigurationProducer`).
 
+**The module's play button.** `NewspeakModuleRunLineMarkerContributor`, a
+`RunLineMarkerContributor` for the language `Newspeak`, puts the same play
+button, with the same "Run" and "Benchmark" (`NewspeakRunAction`), beside
+`main:args:` of a module ns-next can run from its source, and nowhere else.
+`ns-next run <file>.ns` builds the root class with `new` and sends the
+instance `main:args:` as a public send (`crates/ns-cli/src/program.rs`,
+`instantiate_application`), so a protected or private `main:args:` -- and
+one without a modifier is protected (§6.3.1) -- answers
+`doesNotUnderstand:`, and a class-side one is never sent. Whether a module
+is runnable is read from the server's document symbols (`runnableMain`), not
+from a parser of the plugin's own: the root class, the answer's top-level
+symbol, has a `Constructor` named `new`, which the server names a written
+and an omitted `new` alike, and a `Method` whose `detail` is exactly
+`public` -- `public class` is class-side -- and whose name, the full pattern
+the server writes (`main: platform args: arguments`), has the selector
+`main:args:`. The analyzer test
+`a_runnable_root_shows_its_factory_new_and_a_public_instance_side_main`
+pins those names. A project's main module, built with `packageUsing:`, has
+no button: it runs from its `newspeak.json`. The button stands on the
+keyword `main:` where `main:args:`'s `selectionRange` starts, the symbol's
+UTF-16 position converted through the document, and its tooltip is `Run
+module '<root class>'`. A daemon pass runs in a read action, which every
+write action, typing included, waits behind, so the contributor never waits
+for the server: it reads `DocumentSymbolCache.current`, and with no answer
+for the current stamp it calls `request`, which asks on a pooled thread --
+again every second, for about a minute, while the server has no answer --
+and, once an answer is kept, restarts the daemon for that file
+(`DaemonCodeAnalyzer.restart`, skipped for a file no longer valid); the next
+pass places the button. One request per file and stamp is in flight; a
+second for the same stamp is not called back, since every caller restarts
+the same daemon. After an edit the button is therefore gone until the
+server has answered the new text; keeping the stale answer was rejected,
+since after an edit above `main:args:` it would put the button on the wrong
+line. A configuration created from the button is named `<file>.ns`, with
+` (benchmark)` appended for `bench`, and is temporary, reused while equal
+(the same program file, no script, the same command) and made unique as for
+a project. "Run" in the context menu of a runnable module, in the project
+view and anywhere in its editor (`NewspeakModuleRunConfigurationProducer`,
+registered in `plugin.xml`), creates the same "Run" configuration. It runs
+once per gesture, so off the EDT, with no current answer, it asks the
+server itself (`DocumentSymbolCache.fetch`), as the structure view does; on
+the EDT only a kept answer counts. Recognising its configuration needs no
+symbols: one is the module's when it names the file, with no script and
+`run`.
+
+**Checked under `runIde` (2026-10-05)** with a module printing through
+`platform transcript`: the button beside `main:` with Run and Benchmark,
+Run printing its output and Benchmark running its ten iterations; after a
+line typed above `main:args:` the button back on the moved line with no
+further edit; no button for a `main:args:` without `public` nor for a root
+whose factory is `usingPlatform: platform`; "Run" in the context menu of
+the file in the Project view and in its editor; the Script field disabled in
+the form for a `.ns` program; and a project's `newspeak.json` running as
+before.
+
 Decided with the user on 2026-10-05: the plugin runs a project with the
 `ns-next` the user chooses, and bundles none; a run configuration type
 "Newspeak", with the plugin's file icon, groups the configurations; a play
 button beside `main` and each script opens Run and Benchmark. Chosen beside
 them: the platform's run marker as the gutter icon; temporary configurations
 from the gutter, named as above; the extra arguments as one field split as
-program parameters; the JSON plugin as an optional dependency.
+program parameters; the JSON plugin as an optional dependency. Decided with
+the user on the same day: a play button beside `main:args:` of a module
+ns-next can run from its source, and "Run" in its context menu, read from
+the document symbols the structure view shares through
+`DocumentSymbolCache`; the run configuration's program a `newspeak.json` or
+a `.ns` module.
 
 ## Build and packaging
 
@@ -1037,15 +1135,30 @@ The server's own tests are described under its section, above ("Testing").
   `RuntimeLocationTest`, plain JUnit (the ns-next path empty, naming no file,
   naming one); `NewspeakRunConfigurationTest` (the command line with a script
   and arguments and for `bench` with its iterations, UTF-8 output, a relative
-  project file's absolute directory, the form giving back what it was shown
-  and storing a system-independent path, the errors for no runtime, a missing
-  runtime file, a missing or invalid project file and too few iterations);
+  project file's absolute directory, a module given as its file and run in
+  its directory, run and benchmarked, the form giving back what it was shown,
+  storing a system-independent path and dropping a module's script, the
+  errors for no runtime, a missing runtime file, a missing or invalid
+  program, a program of neither kind, a module with a script and too few
+  iterations); `DocumentSymbolCacheTest` (an answer current until the
+  document changes, an empty answer not kept, a request called back once
+  its answer is kept, asking again while there is none, and two requests
+  for one stamp asking once);
   `NewspeakRunLineMarkerContributorTest` (a play button beside `main` and each
   script and nowhere else, none in another JSON file, a menu of "Run" and
   "Benchmark", a configuration created without starting it, reused on a
   second click and when stored with backslashes, and the context menu's
-  "Run" for the script under the caret or the project). No test starts
-  `ns-next`.
+  "Run" for the script under the caret or the project);
+  `NewspeakModuleRunLineMarkerContributorTest`, over a cache filled by a
+  stand-in for the server (`runnableMain` for `new` and for
+  `packageUsing:`, a private, a class-side and a missing `main:args:`, a
+  renamed parameter, another selector and an empty answer; Run and Benchmark
+  beside `main:` of a runnable module, also past a character outside the
+  BMP, and none for a protected `main:args:`, another factory or before the
+  server has answered; the context menu's "Run" from the file and from inside a
+  method, named `<file>.ns` and recognised from the gutter's
+  configuration, none for a module that cannot run, and off the EDT asking
+  the server itself). No test starts `ns-next`.
 
 **Gates.** There is one suite: `cargo nextest run --workspace` runs
 `ns-analyzer`'s tests before every commit and under every stress mode, like
@@ -1085,7 +1198,9 @@ and resolves cleanly in a JetBrains IDE today.
   block comment over a whole-line selection; TODO markers through the
   project-wide TODO index rather than a single open file; a Newspeak run
   configuration starting `ns-next` and showing its output, which the tests
-  stop short of (they check the command line and the process's charset).
+  stop short of (they check the command line and the process's charset);
+  the module's play button against a running server, the daemon restarted
+  by the answer (the tests fill the cache through a stand-in).
 
 ## Planned later
 
@@ -1104,12 +1219,5 @@ and resolves cleanly in a JetBrains IDE today.
   that does not parse, while it is typed; the fault-tolerant parse exists
   ([frontend.md](frontend.md), "Recovery"). What remains is `definition` and
   `references` in the server.
-- **Running a module's `main:args:`** (decided with the user on 2026-10-05):
-  a Run/Benchmark play button beside `main:args:` of a `.ns` module's root
-  class whose primary factory is the default `new`, found from the
-  analyzer's document symbols rather than a second parser in the plugin, and
-  the "Newspeak" run configuration taking a single `.ns` file as well
-  ([OPEN-WORK.md](../OPEN-WORK.md), "Planned: editor support and the
-  analyzer"; "The project file and running projects" above).
 - **More platforms.** A CI build producing the other five binaries into
   `bin/<os>-<arch>/`. The repository has no CI yet.

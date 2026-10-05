@@ -5,6 +5,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.jetbrains.jsonSchema.extension.JsonSchemaFileProvider
 import com.jetbrains.jsonSchema.extension.JsonSchemaProviderFactory
 import com.jetbrains.jsonSchema.extension.SchemaType
+import io.github.bstrauss.newspeak.run.PROJECT_FILE_NAME
 
 /**
  * Gives every file named `newspeak.json` -- ns-next's project file, which it
@@ -26,10 +27,5 @@ class NewspeakJsonSchemaProviderFactory : JsonSchemaProviderFactory {
             )
 
         override fun getSchemaType(): SchemaType = SchemaType.embeddedSchema
-    }
-
-    private companion object {
-        /** `crates/ns-cli/src/project.rs`'s `PROJECT_FILE_NAME`. */
-        const val PROJECT_FILE_NAME = "newspeak.json"
     }
 }

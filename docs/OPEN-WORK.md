@@ -449,18 +449,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   enclosing object and a module can be instantiated with different
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
-- **Running a module from its `main:args:`**, the plugin's next step
-  (decided with the user on 2026-10-05); it has no implementation plan yet,
-  so its session starts by writing one. A Run/Benchmark play button beside
-  `main:args:` of a `.ns` module's root class whose primary factory is the
-  default `new`, written or omitted -- the class `ns-next run` starts from a
-  source file. The plugin finds it in the analyzer's document symbols, which
-  mark that root class and its `main:args:`, not with a second parser of its
-  own. The "Newspeak" run configuration then takes a single `.ns` file as
-  well as a `newspeak.json`, with the script field disabled for it, as the
-  CLI refuses `--script` with a source file
-  ([editor-support.md](design/editor-support.md), "The project file and
-  running projects").
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -919,9 +907,11 @@ text and `to:by:do:`'s zero step.
   `runIde`: folding, with the `(...)` placeholder in the editor's font, and
   the structure view's tree, navigation, breadcrumbs, sticky lines, its icons
   in light and dark themes, the hovers on a row's text and on its icon (the
-  same), and first open against a running server), and `dump-tokens` on an
-  unreadable file, a block comment over a whole-line selection and TODO
-  markers through the project-wide index are untested. [editor-support.md](design/editor-support.md), "Known gaps".
+  same), first open against a running server, the module's play button
+  and the context menu's Run against a running server (the daemon
+  restarted by the answer), and a run configuration starting `ns-next`),
+  and `dump-tokens` on an unreadable file, a block comment over a
+  whole-line selection and TODO markers through the project-wide index are untested. [editor-support.md](design/editor-support.md), "Known gaps".
 - The packaged artifact (2026-09-30): the refusal of a module set of which
   only some carry source (`modules::encode_modules`); a back-reference into
   an earlier tree, or a child shared between trees, in the mixin forest; a
