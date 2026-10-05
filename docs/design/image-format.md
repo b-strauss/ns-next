@@ -1489,7 +1489,11 @@ newspeak.json, and the program given is a source file"), and a name the
 project's `scripts` does not hold ("`<project file>` has no script `zz`;
 its scripts are sieve, timed", or "it has none";
 `an_unknown_script_is_refused_naming_the_scripts_there_are`,
-`a_script_with_a_source_file_is_refused`).
+`a_script_with_a_source_file_is_refused`). Written as one token,
+`--script=<name>`, a name may start with `-` and may be the empty key `""`,
+which is a script of its own rather than none; the JetBrains plugin always
+passes it so
+(`a_script_named_in_one_token_may_start_with_a_dash_or_be_empty`).
 
 `build` takes no `--script`. It does not send `main:args:`, so it has no
 arguments to take, and `load` takes its arguments after `--` like any

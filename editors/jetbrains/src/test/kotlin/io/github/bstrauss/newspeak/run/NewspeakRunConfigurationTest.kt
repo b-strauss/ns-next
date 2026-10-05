@@ -7,6 +7,7 @@ import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import org.jdom.Element
 import org.junit.Assert
 
 class NewspeakRunConfigurationTest : BasePlatformTestCase() {
@@ -35,7 +36,7 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
             programArguments = "Sieve \"Delta Blue\""
         }
         assertEquals(
-            listOf(runtime.toString(), "run", "--script", "timed", projectDirectory, "--", "Sieve", "Delta Blue"),
+            listOf(runtime.toString(), "run", "--script=timed", projectDirectory, "--", "Sieve", "Delta Blue"),
             newspeakCommandLine(runtime, run),
         )
     }
@@ -52,14 +53,37 @@ class NewspeakRunConfigurationTest : BasePlatformTestCase() {
         )
     }
 
+    fun testAScriptNameIsOneTokenSoADashOrAnEmptyNameIsGiven() {
+        val dashed = configuration().apply {
+            projectFile = "/work/app/newspeak.json"
+            script = "-x"
+        }
+        assertEquals(listOf(runtime.toString(), "run", "--script=-x", projectDirectory), newspeakCommandLine(runtime, dashed))
+        val empty = configuration().apply {
+            projectFile = "/work/app/newspeak.json"
+            script = ""
+        }
+        assertEquals(listOf(runtime.toString(), "run", "--script=", projectDirectory), newspeakCommandLine(runtime, empty))
+    }
+
+    fun testTheEmptyScriptNameSurvivesBeingStored() {
+        val stored = Element("configuration")
+        configuration().apply { script = "" }.writeExternal(stored)
+        val read = configuration().apply { readExternal(stored) }
+        assertEquals("", read.script)
+        val none = Element("configuration")
+        configuration().writeExternal(none)
+        assertNull(configuration().apply { readExternal(none) }.script)
+    }
+
     fun testTheProcessDecodesOutputAsUtf8() {
         val run = configuration().apply { projectFile = "/work/app/newspeak.json" }
         assertEquals(StandardCharsets.UTF_8, newspeakProcessCommandLine(runtime, run).charset)
     }
 
-    fun testARelativeProjectFileNamesItsAbsoluteDirectory() {
-        val run = configuration().apply { projectFile = "newspeak.json" }
-        val directory = Path.of("newspeak.json").toAbsolutePath().parent.toString()
+    fun testARelativeProjectFileIsTheIdeProjects() {
+        val run = configuration().apply { projectFile = "app/newspeak.json" }
+        val directory = Path.of(checkNotNull(project.basePath)).resolve("app").toAbsolutePath().toString()
         assertEquals(listOf(runtime.toString(), "run", directory), newspeakCommandLine(runtime, run))
         assertEquals(directory, newspeakProcessCommandLine(runtime, run).workDirectory?.toString())
     }

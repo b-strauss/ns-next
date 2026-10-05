@@ -41,7 +41,12 @@ class NewspeakRunConfigurationOptions : RunConfigurationOptions() {
     /** A [NewspeakCommand]'s name. */
     var command by string(NewspeakCommand.RUN.name)
 
+    /** The script's name; the platform stores an empty string as null, so the empty name is [emptyScript]. */
     var script by string()
+
+    /** Whether the script is the one named `""`, a valid key of `scripts` that [script] cannot hold. */
+    var emptyScript by property(false)
+
     var programArguments by string()
     var iterations by property(10)
 }
@@ -65,10 +70,12 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
             options.command = value.name
         }
 
+    /** The script to run; null runs the project without one, and `""` is the script of that name. */
     var script: String?
-        get() = options.script
+        get() = options.script ?: if (options.emptyScript) "" else null
         set(value) {
             options.script = value
+            options.emptyScript = value == ""
         }
 
     var programArguments: String?
@@ -134,21 +141,26 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
 private const val NO_PROJECT_FILE = "Choose the project's newspeak.json"
 
 /**
- * The directory ns-next is given: the project file's, made absolute first, as
- * a relative path has no parent of its own. Null without a project file, for
- * one naming a root, which has no parent, and for text that is no path;
- * `getState` refuses all three before anything is started.
+ * The directory ns-next is given: the project file's. Null without a project
+ * file, for one naming a root, which has no parent, and for text that is no
+ * path; `getState` refuses all three before anything is started.
  */
-fun projectDirectory(configuration: NewspeakRunConfiguration): Path? = projectFilePath(configuration)?.toAbsolutePath()?.parent
+fun projectDirectory(configuration: NewspeakRunConfiguration): Path? = projectFilePath(configuration)?.parent
 
 /**
- * The project file as a path; null when none is set or the text is no valid
- * path (a `"` or `<` on Windows, say), which is refused as a missing one is.
+ * The project file as an absolute path; null when none is set or the text is
+ * no valid path (a `"` or `<` on Windows, say), which is refused as a missing
+ * one is. A relative path is the IDE project's, as a hand-edited
+ * configuration means it; the IDE's own working directory is unrelated to the
+ * project, so it is used only for a project without a base path.
  */
 private fun projectFilePath(configuration: NewspeakRunConfiguration): Path? {
     val file = configuration.projectFile?.trim()?.takeIf(String::isNotEmpty) ?: return null
     return try {
-        Path.of(file)
+        val path = Path.of(file)
+        val basePath = configuration.project.basePath
+        // A path with a root, Windows' `\work` without a drive included, is not the project's.
+        if (path.root != null || basePath == null) path.toAbsolutePath() else Path.of(basePath).resolve(path).toAbsolutePath()
     } catch (_: InvalidPathException) {
         null
     }
@@ -173,7 +185,9 @@ fun newspeakProcessCommandLine(runtime: Path, configuration: NewspeakRunConfigur
 fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration): List<String> = buildList {
     add(runtime.toString())
     add(configuration.command.subcommand)
-    configuration.script?.takeIf(String::isNotEmpty)?.let { script -> addAll(listOf("--script", script)) }
+    // One token, so a name starting with `-` is not read as an option, and the empty name `""` -- a valid
+    // key of `scripts` -- is still given; "no script" is null, never the empty string.
+    configuration.script?.let { script -> add("--script=$script") }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))
     // ns-next takes the project's directory; the configuration names its newspeak.json, which is what the chooser picks.
     add(checkNotNull(projectDirectory(configuration)) { NO_PROJECT_FILE }.toString())

@@ -62,7 +62,7 @@ fun createConfigurationFromGutter(
             val configuration = settings.configuration as? NewspeakRunConfiguration
             configuration != null &&
                 configuration.namesProjectFile(projectFile) &&
-                configuration.script.orEmpty() == script.orEmpty() &&
+                configuration.script == script &&
                 configuration.command == command
         }
     val settings = existing ?: runManager.createConfiguration(
@@ -74,6 +74,8 @@ fun createConfigurationFromGutter(
             this.script = script
             this.command = command
         }
+        // Two projects in directories of the same name would otherwise share a name in the run list.
+        runManager.setUniqueNameIfNeeded(created)
         created.isTemporary = true
         runManager.addConfiguration(created)
     }

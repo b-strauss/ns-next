@@ -126,6 +126,24 @@ class NewspeakRunLineMarkerContributorTest : BasePlatformTestCase() {
         assertEquals(file.parent.name, first.name)
     }
 
+    fun testTheEmptyScriptNameIsAScriptOfItsOwn() {
+        myFixture.configureByText("newspeak.json", projectJson)
+        val file = myFixture.file.virtualFile
+        val wholeProject = createConfigurationFromGutter(project, file, null, NewspeakCommand.RUN)
+        val emptyScript = createConfigurationFromGutter(project, file, "", NewspeakCommand.RUN)
+        assertNotSame(wholeProject, emptyScript)
+        assertEquals("", (emptyScript.configuration as NewspeakRunConfiguration).script)
+    }
+
+    fun testProjectsInSameNamedDirectoriesGetDistinctNames() {
+        val first = myFixture.addFileToProject("one/app/newspeak.json", projectJson).virtualFile
+        val second = myFixture.addFileToProject("two/app/newspeak.json", projectJson).virtualFile
+        val firstSettings = createConfigurationFromGutter(project, first, null, NewspeakCommand.RUN)
+        val secondSettings = createConfigurationFromGutter(project, second, null, NewspeakCommand.RUN)
+        assertEquals("app", firstSettings.name)
+        assertFalse(secondSettings.name, secondSettings.name == firstSettings.name)
+    }
+
     fun testAConfigurationStoredWithBackslashesIsReusedAndRecognised() {
         myFixture.configureByText("newspeak.json", projectJson)
         val file = myFixture.file.virtualFile

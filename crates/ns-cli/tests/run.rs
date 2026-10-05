@@ -81,6 +81,33 @@ fn a_script_hands_its_arguments_to_main_and_the_command_line_follows() {
     );
 }
 
+/// `--script=<name>` is one token, as the JetBrains plugin passes it: a name
+/// starting with `-` is not read as an option, and the empty name, a valid
+/// key of `scripts`, is a script rather than none.
+#[test]
+fn a_script_named_in_one_token_may_start_with_a_dash_or_be_empty() {
+    let directory = ScratchDirectory::new("script-one-token");
+    std::fs::write(directory.join("Echo.ns"), ECHO).unwrap();
+    std::fs::write(
+        directory.join("newspeak.json"),
+        r#"{ "main": "Echo.ns", "scripts": { "-x": ["dash"], "": ["empty"] } }"#,
+    )
+    .unwrap();
+    for (script, expected) in [("--script=-x", "dash\n"), ("--script=", "empty\n")] {
+        let out = ns_next()
+            .args(["run", script])
+            .arg(directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{script}: stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&out.stdout), expected, "{script}");
+    }
+}
+
 #[test]
 fn an_unknown_script_is_refused_naming_the_scripts_there_are() {
     let directory = echo_project("script-unknown");
