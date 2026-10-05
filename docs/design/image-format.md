@@ -1424,6 +1424,8 @@ runs, with `error: <project file>: ` and a message of its own:
 | `$schema`, `main`, `modules` or `scripts` of the wrong type (a `$schema` of `null` included) | serde's `invalid type: …, expected …` |
 | one of those four keys written twice | serde's `` duplicate field `main` `` |
 | a script name written twice | `` script `timed` is written twice `` |
+| an empty script name | `a script name is empty` |
+| a script name beginning or ending with whitespace | `` script name ` timed` has leading or trailing whitespace `` |
 | an empty path in `main` or `modules` | `` `main` holds an empty path `` |
 | a path not ending in `.ns`, matched case-sensitively | `` `modules` names `B`, which is no `.ns` file `` |
 | a module path equal to `main`'s | `` `modules` names `main`'s module `./App.ns` again `` |
@@ -1452,7 +1454,10 @@ these rules: the file is an object (`type`) with a `main` (`required`);
 `$schema` is a string; `main` and every entry of `modules` a string of at
 least one character (`minLength`) ending in `.ns` (`pattern: "\\.ns$"`);
 `modules` an array whose entries are not written twice as the same string
-(`uniqueItems`); `scripts` an object whose every value
+(`uniqueItems`); `scripts` an object whose every name is non-empty and
+neither begins nor ends with whitespace (`propertyNames`,
+`pattern: "^\\S([\\s\\S]*\\S)?$"`, whitespace being what a pattern's `\s`
+matches) and whose every value
 (`additionalProperties`) is an array of strings. Every other key is
 allowed. No validator crate reads it, so
 the project file brings no dependency beyond `serde_json`: the reader states
@@ -1479,8 +1484,9 @@ written after `--`; arguments after `--` are still taken and follow the
 script's, so `ns-next run --script timed -- Sieve` hands `--timed` and then
 `Sieve`, as `npm run timed -- Sieve` does (`program::entry_arguments`;
 `a_script_hands_its_arguments_to_main_and_the_command_line_follows`,
-`crates/ns-cli/tests/run.rs`). A script's name is any key and its arguments
-any strings, empty ones included, since an empty argument is a valid
+`crates/ns-cli/tests/run.rs`). A script's name is a non-empty name that
+neither begins nor ends with whitespace; its arguments are any strings,
+empty ones included, since an empty argument is a valid
 command-line argument too. Arguments stay strings everywhere, from a script
 as from the command line or an image, so a program sees one form however it
 is started. Refused before anything runs: `--script` with a source file
@@ -1490,10 +1496,9 @@ project's `scripts` does not hold ("`<project file>` has no script `zz`;
 its scripts are sieve, timed", or "it has none";
 `an_unknown_script_is_refused_naming_the_scripts_there_are`,
 `a_script_with_a_source_file_is_refused`). Written as one token,
-`--script=<name>`, a name may start with `-` and may be the empty key `""`,
-which is a script of its own rather than none; the JetBrains plugin always
-passes it so
-(`a_script_named_in_one_token_may_start_with_a_dash_or_be_empty`).
+`--script=<name>`, a name may start with `-`; the JetBrains plugin always
+passes it so, and `--script=` is refused as a name no project holds
+(`a_script_named_in_one_token_may_start_with_a_dash_and_not_be_empty`).
 
 `build` takes no `--script`. It does not send `main:args:`, so it has no
 arguments to take, and `load` takes its arguments after `--` like any
@@ -1784,8 +1789,14 @@ builtins.
   sends no `main:args:`, and a script recorded into an image would need a
   section of the format of its own. Chosen beside it: `--script` with a
   source file, and a name the project lacks, are refused, the latter listing
-  the names there are; a script's name is any key and its arguments any
-  strings, empty ones included.
+  the names there are; a script's arguments are any strings, empty ones
+  included.
+- **A script's name is a non-empty name without surrounding whitespace**
+  (decided with the user on 2026-10-05). An empty name, or one beginning or
+  ending with whitespace, is refused by the reader and by the schema
+  (`propertyNames`): such a name is easily mistyped on a command line and
+  invisible in a list of names. Whitespace inside a name is allowed, and so
+  is a leading `-`, which `--script=<name>` passes as one token.
 - **Module order is fixed: the application module, the project's modules
   as written, then `Manifest.ns`.** `run`, `build` and `load` compile or
   rebuild the modules in the same order, so every identity hash the bootstrap draws is the same

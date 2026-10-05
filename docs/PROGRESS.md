@@ -4436,11 +4436,13 @@ by a play button beside `main` and each script.
 - `0f86bb29` -- the repository's own `.ns` files are indented with spaces,
   not tabs; `crates/ns-cli/tests/source_formatting.rs` checks every tracked
   one outside `corpus/`, and CLAUDE.md states the convention.
-- `2b2a7de7`, `b824d4a3` and the documentation after them -- the final
-  review's fixes: the plugin passes a script as one token,
-  `--script=<name>`, so a name may start with `-` or be empty; a relative
-  project file is the IDE project's; configurations from the play button
-  get unique names; the tests delete their temporary directories.
+- `2b2a7de7`, `b824d4a3`, `316c358d` and the documentation after them --
+  the final review's fixes: a script name that is empty or begins or ends
+  with whitespace is refused by the reader and the schema; the plugin
+  passes a script as one token, `--script=<name>`, so a name may start
+  with `-`; a relative project file is the IDE project's, to run it and to
+  recognise its configuration; configurations from the play button get
+  unique names; the tests delete their temporary directories.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a script
 recorded into an image, so that `load` could start one with it, and the

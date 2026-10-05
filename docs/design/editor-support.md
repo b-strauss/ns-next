@@ -836,10 +836,11 @@ chooses, the "ns-next path" in the settings, beside the analyzer's.
 `ns-next` is not bundled (decided with the user on 2026-10-05): the setting
 is the only source, and the field's comment says to build it with `cargo
 build -p ns-cli --release`. Every run reads the setting afresh, so a changed
-path needs no restart. With the path empty, or naming no file, a configuration refuses to start,
-with an error that says which ("The ns-next path is not set: …", "No file at
-the ns-next path …") and offers to open the settings as its quick fix
-(`RuntimeLocation`, `NewspeakRunConfiguration.checkConfiguration`).
+path needs no restart. With the path empty, or naming no file, a
+configuration refuses to start, with an error that says which ("The ns-next
+path is not set: …", "No file at the ns-next path …") and offers to open
+the settings as its quick fix (`RuntimeLocation`,
+`NewspeakRunConfiguration.checkConfiguration`).
 
 **The "Newspeak" run configuration type**, with the plugin's file icon
 (`icons/newspeak.svg`, the 16-pixel icon `.ns` files carry), groups the
@@ -850,12 +851,13 @@ an optional script, extra arguments, and for `bench` the iterations (ten by
 default, at least one): `ns-next <run|bench> [--script=<name>]
 [--iterations <n>] <project directory> [-- <arguments>]`
 (`newspeakCommandLine`). The script is one token, so a name starting with
-`-` is not read as an option and the empty name `""`, a valid key of
-`scripts`, is given as the script it is; "no script" is a configuration
-without one, and the empty name is stored beside the script's field, as the
-platform stores an empty string as none. A relative project file is the IDE
-project's, resolved against its base directory. The arguments are one field, split as the platform
-splits program parameters (`ParametersListUtil`), and go after `--`. A
+`-` is not read as an option; an empty script field means no script, as a
+script's name is never empty nor surrounded by whitespace
+([image-format.md](image-format.md), "Scripts"). A relative project file is
+the IDE project's, resolved against its base directory, both to run it and
+to recognise the configuration from the file. The arguments are one field,
+split as the platform splits program parameters (`ParametersListUtil`), and
+go after `--`. A
 missing project file, a text that is no valid path among them, is refused
 before anything starts ("Choose the project's newspeak.json"), and so are
 fewer than one iteration. ns-next's output is decoded as UTF-8, which it
