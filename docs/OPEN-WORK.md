@@ -209,10 +209,10 @@ and `prior-art/newspeak-benchmarks`.
   compiled code share, a calling convention, GC maps for compiled frames, and
   deoptimization metadata, which the debugger needs as much as the optimizer.
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
-  `do:`.** Making them Newspeak loops keeps what the `do:` leaf settles --
-  it reads each element as it goes and sends `value:` to a non-block -- and
-  re-settles one semantic: `whileTrue:` with a non-block body re-runs the
-  condition.
+  `do:`.** Making them Newspeak loops keeps what their leaves settle --
+  `do:` reads each element as it goes and sends `value:` to a non-block,
+  `whileTrue:` and `whileFalse:` send `value` to a non-block body -- and
+  changes nothing a program can see.
   [core-library.md](design/core-library.md), "Planned: real bodies for
   control flow and `do:`, before the baseline JIT".
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
@@ -831,10 +831,11 @@ text and `to:by:do:`'s zero step.
   error. Pinned by `tests/trampoline.rs`'s
   `a_return_into_a_running_initializer_escapes_the_run`.
   [execution.md](design/execution.md), "Activations".
-- **`whileTrue:` and `whileFalse:` index `arguments[0]` unchecked**
-  (`builtins/block.rs:43,48`), and the decoder does not check a send's
-  argument count against its selector, so a crafted artifact can panic while
-  executing — not a decoder defect, but a check away from none.
+- **The identity leaves index `arguments[0]` unchecked**
+  (`builtins/object_class.rs`, `==` and `Object`'s `=`), and the decoder does
+  not check a send's argument count against its selector, so a crafted
+  artifact can panic while executing — not a decoder defect, but a check
+  away from none.
 - **A decoded image's last initializer is not held to answering `self`**, so
   a crafted image's `new` answers whatever it answers. `verify_mixins` could
   refuse it.

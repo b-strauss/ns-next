@@ -6,7 +6,7 @@
 //! inlined form, which the compiler's own tests and the goldens under
 //! `goldens/language/control-flow/` covers.
 
-use indoc::formatdoc;
+use indoc::{formatdoc, indoc};
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -125,6 +125,53 @@ fn a_non_local_return_escapes_a_while_loop() {
         interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
         5
     );
+}
+
+#[test]
+fn a_while_loop_sends_value_to_a_body_that_is_no_block() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+            class Counter = Object new (
+                | public count ::= 0. |
+            ) (
+                public value = ( count:: count + 1 )
+            )
+            public run = (
+                | counter condition |
+                counter:: Counter new.
+                condition:: [counter count < 4].
+                condition whileTrue: counter.
+                ^counter count
+            )
+        ) : ()
+    "};
+    let (mut interpreter, result) = run_method(source, "run");
+    let value = expect_ok(result, "run");
+    assert_eq!(
+        interpreter.enter(|mutator| integer_of(mutator.fetch(&value))),
+        4
+    );
+}
+
+#[test]
+fn a_while_loop_body_that_understands_nothing_fails() {
+    // A condition that ends on its own, so a loop that never sends `value`
+    // answers rather than spinning.
+    let (_interpreter, result) = run_method(
+        &module("| count condition | count:: 0. condition:: [count:: count + 1. count < 3]. ^condition whileTrue: nil"),
+        "run",
+    );
+    match result {
+        Err(HostSignal::Error(error)) => assert!(
+            error
+                .message
+                .contains("an object does not understand #value"),
+            "{}",
+            error.message
+        ),
+        _ => panic!("expected the value doesNotUnderstand: error"),
+    }
 }
 
 #[test]

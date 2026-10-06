@@ -1210,7 +1210,7 @@ block answers it as a trampoline step instead of calling it:
 | Selector | How it runs its block |
 |---|---|
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. There is no leaf: `True`'s or `False`'s method is a quick method, and one whose body is `^<parameter> value` answers the block as a trampoline step instead of calling it ("`True` and `False` are quick methods" below; [execution.md](execution.md), "The trampoline") |
-| `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
+| `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body -- or, for a non-block, sends it `value` through `Closure>>valueOf:` -- or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
 | `do:` | A trampoline step: it answers the block for the first element -- or, for a non-block, its send of `value:` through `Closure>>valueOf:with:` -- and its continuation does the same for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
 
@@ -2787,25 +2787,20 @@ code, road step 7, and before the baseline JIT, road step 8
 ([object-model.md](object-model.md), "Planned: the road to a
 high-performance VM"; [execution.md](execution.md), "Planned: JIT tiers").
 
-The step owned three semantic decisions, each of which the leaves settle
-today and a Newspeak body would have had to settle again, visibly; the
-kernel's completion settles all three in the leaves first, Primordial
-Soup's way ("Planned: the kernel completed to Primordial Soup's core API"
-below), so that the step changes nothing a program can see. A fourth,
-what a conditional does with an argument that is no block, is settled for
-the branches: it is sent `value`, and nothing answers it ("`True` and
-`False` are quick methods" above); the loops below would follow it.
-
-- **`do:` reads as it goes.** The leaf reads the size once, when the loop
-  starts, and each element when the walk reaches it, so a store inside the
-  block to a later index is seen, as a Newspeak loop from 1 to `size` over
-  `at:` sees it (`goldens/library/collection/do_sees_a_store_made_inside_its_block`).
-- **`do:` sends `value:` to a non-block argument**, once per element,
-  through `Closure`'s private `valueOf:with:` (`builtins::collections`,
-  `do_step`; `goldens/library/collection/do_sends_value_to_a_non_block`).
-- **`whileTrue:` with a non-block body re-runs the condition**: the leaf
-  treats a body that is not a block as its own value and loops on the
-  condition alone (`builtins::block`).
+What a Newspeak body must keep is what the leaves do today, so that the
+step changes nothing a program can see; no semantic question is left to
+it. `do:` reads the size once, when the loop starts, and each element when
+the walk reaches it, so a store inside the block to a later index is seen,
+as a Newspeak loop from 1 to `size` over `at:` sees it
+(`goldens/library/collection/do_sees_a_store_made_inside_its_block`). `do:`
+sends `value:` to an argument that is no block, once per element, and
+`whileTrue:` and `whileFalse:` send `value` to such a body, once per
+iteration, through `Closure`'s private `valueOf:with:` and `valueOf:`
+(`builtins::collections`, `do_step`; `builtins::block`, `body_step`;
+`goldens/library/collection/do_sends_value_to_a_non_block`,
+`goldens/language/control-flow/a_loop_sends_value_to_a_body_that_is_no_block`).
+A conditional sends `value` to such an argument too, and nothing answers
+it ("`True` and `False` are quick methods" above).
 
 ## Planned: the kernel completed to Primordial Soup's core API
 
@@ -2858,13 +2853,6 @@ on its own (decided with the user on 2026-10-06):
   are signalled where it signals them, as subclasses of `Error`, so that
   `on: Error do:` still catches them and today's texts stay their
   `messageText`; Primordial Soup has no `Error` and its classes no text.
-- **`do:`, `whileTrue:` and `whileFalse:` take Primordial Soup's
-  semantics now, in their leaves**: `do:` reads the elements as it goes, so
-  an `at:put:` inside the block is seen, and sends `value:` to whatever it
-  is given, and a loop sends `value` to a body that is no block. The three
-  questions "Planned: real bodies for control flow and `do:`" above leaves
-  to that step are settled by this; moving the loops into Newspeak stays
-  where the road puts it, and changes nothing observable.
 - **`isKindOf…` answers `false` for what a receiver does not declare**:
   `Object>>doesNotUnderstand:` answers `false` for a unary selector that
   begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's

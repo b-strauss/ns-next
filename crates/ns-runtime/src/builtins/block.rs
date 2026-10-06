@@ -1,6 +1,7 @@
 //! `Closure` native methods -- `value`..`value:value:value:`,
 //! `numArgs`, and `whileTrue:`/`whileFalse:`. Each returns the block to
-//! activate as a step; the loops continue through `Continuation`s.
+//! activate -- or a loop's send of `value` to a body that is no block -- as
+//! a step; the loops continue through `Continuation`s.
 
 use crate::builtins::primitive::BlockPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
@@ -15,25 +16,6 @@ pub(crate) fn execute<'gc>(
 ) -> Option<Result<Step<'gc>, Signal<'gc>>> {
     let closure = receiver.as_object()?;
     let parameters = mutator.heap().closure_parameter_count(closure)?;
-    // A loop keeps its body and takes a non-block for a value of its own,
-    // which a future is not: it stands for its value, which may well be a
-    // block. Declining hands it to its caller's failure path, which sees through
-    // it before the loop keeps anything. Asked only of a body that is no
-    // block, as `do:` asks it, so a block body pays nothing for it.
-    if let BlockPrimitive::WhileTrue | BlockPrimitive::WhileFalse = primitive {
-        if let Some(body) = arguments.first().and_then(|value| value.as_object()) {
-            if !mutator.heap().is_closure(body) && mutator.as_future(Value::object(body)).is_some()
-            {
-                return None;
-            }
-        }
-    }
-    // Whether the body is a block, decided once for the whole loop.
-    let body = || {
-        arguments[0]
-            .as_object()
-            .filter(|body| mutator.heap().is_closure(*body))
-    };
     Some(Ok(match primitive {
         BlockPrimitive::Value => Step::Block {
             closure,
@@ -43,15 +25,31 @@ pub(crate) fn execute<'gc>(
         BlockPrimitive::ArgumentCount => Step::Value(Value::small_integer(parameters as i64)),
         BlockPrimitive::WhileTrue => condition_step(Box::new(WhileLoop {
             condition: closure,
-            body: body(),
+            body: loop_body(mutator, arguments)?,
             expect: true,
         })),
         BlockPrimitive::WhileFalse => condition_step(Box::new(WhileLoop {
             condition: closure,
-            body: body(),
+            body: loop_body(mutator, arguments)?,
             expect: false,
         })),
     }))
+}
+
+/// What a loop runs as its body, decided once for the whole loop: an
+/// object never stops or starts being a closure. `None` for a missing body,
+/// which only a crafted image's send can leave out, and for a future, which
+/// stands for its value, which may well be a block: declining hands it to
+/// the caller's failure path, which sees through it, where sending it
+/// `value` would send to the future itself. Whether it is a future is asked
+/// only of a body that is no block, as `do:` asks it, so a block body pays
+/// nothing for it.
+fn loop_body<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Option<LoopAction<'gc>> {
+    let body = LoopAction::of(mutator.heap(), *arguments.first()?);
+    match body {
+        LoopAction::Sent(sent) if mutator.as_future(sent).is_some() => None,
+        _ => Some(body),
+    }
 }
 
 // `whileTrue:` (`expect == true`) / `whileFalse:` (`expect == false`):
@@ -78,7 +76,7 @@ pub(crate) fn after_condition<'gc>(
     value: Value<'gc>,
 ) -> Result<Step<'gc>, Signal<'gc>> {
     match value.as_boolean() {
-        Some(boolean) if boolean == state.expect => Ok(body_step(state)),
+        Some(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
         Some(_) => Ok(Step::Value(Value::nil())),
         None => mutator.decide_send(value, Symbol::MUST_BE_BOOLEAN, &[]),
     }
@@ -89,15 +87,18 @@ pub(crate) fn after_body<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
     condition_step(state)
 }
 
-/// The body, activated -- or, when it is not a block, taken as its own value,
-/// so the condition runs again straight away.
-fn body_step<'gc>(state: Box<WhileLoop<'gc>>) -> Step<'gc> {
+/// The body: a closure activated as a control-flow step, or anything else
+/// sent `value`, whose answer is dropped before the condition runs again.
+fn body_step<'gc>(mutator: &mut Mutator<'gc>, state: Box<WhileLoop<'gc>>) -> Step<'gc> {
     match state.body {
-        Some(body) => Step::Block {
+        LoopAction::Closure(body) => Step::Block {
             closure: body,
             arguments: StepArguments::ControlFlow,
             then: Continuation::WhileBody(state),
         },
-        None => condition_step(state),
+        LoopAction::Sent(body) => {
+            let receiver = Value::object(state.condition);
+            mutator.send_value_then(receiver, body, None, Continuation::WhileBody(state))
+        }
     }
 }

@@ -46,15 +46,6 @@ fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     }
 }
 
-pub(crate) fn trace_optional_object<T: Tracer>(
-    handle: &mut Option<ObjectReference<'_>>,
-    tracer: &mut T,
-) {
-    if let Some(handle) = handle {
-        tracer.object(handle);
-    }
-}
-
 impl Trace for FrameKind<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
@@ -129,7 +120,7 @@ impl Trace for WhileLoop<'_> {
             expect: _,
         } = self;
         tracer.object(condition);
-        trace_optional_object(body, tracer);
+        body.trace(tracer);
     }
 }
 

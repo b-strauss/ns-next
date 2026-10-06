@@ -5404,7 +5404,10 @@ Three things the trampoline settles on its own:
   `whileFalse:` on a block answer the condition block with
   `Continuation::WhileCondition`, which, when it returns, activates the body or
   ends the loop (`builtins::block::after_condition`), and the body's
-  `Continuation::WhileBody` activates the condition again. The continuation
+  `Continuation::WhileBody` activates the condition again. A body that is no
+  block is sent `value` instead, through `Closure`'s private `valueOf:`
+  pushed with the loop's continuation, as `do:` sends `value:` ("No
+  re-entry from Rust" below); its answer is dropped. The continuation
   rides on the block activation's stack entry and `vm::finish` applies it,
   through `Mutator::resume`, when it pops the activation, so a loop's
   condition and body replace each other on the stack instead of nesting. This
@@ -5553,7 +5556,9 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
   reason must not build `ControlFlow`. `do:`'s block has an argument, so it is
-  always counted. `&` and `|` share `and:`'s and `or:`'s
+  always counted. A loop body that is no block is sent `value` through a
+  method, so it is counted under both lowerings: the optimized lowering
+  inlines only a literal block, and counts it too. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the

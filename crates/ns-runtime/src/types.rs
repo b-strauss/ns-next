@@ -384,18 +384,16 @@ impl<'gc> LoopAction<'gc> {
     }
 }
 
-/// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
-/// body's closure -- `None` for a body that is not a block, which evaluates
-/// to itself and so has nothing to run -- and the condition value that keeps
-/// it going. Whether the body is a block is decided once, when the loop
-/// starts: an object never stops or starts being a closure.
+/// A native `whileTrue:`/`whileFalse:` loop in progress: its condition,
+/// what it runs as the body -- a closure it activates, or any other object,
+/// which it sends `value` -- and the condition value that keeps it going.
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
 pub struct WhileLoop<'gc> {
     /// The condition's closure object.
     pub(crate) condition: ObjectReference<'gc>,
-    pub(crate) body: Option<ObjectReference<'gc>>,
+    pub(crate) body: LoopAction<'gc>,
     pub(crate) expect: bool,
 }
 
