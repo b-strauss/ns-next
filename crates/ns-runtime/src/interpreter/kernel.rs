@@ -780,6 +780,10 @@ mod tests {
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
         (BuiltinClass::Closure, "cull:"),
+        // A native loop's send of `value:` to an action that is no block,
+        // pushed as a method so that its return carries the loop on
+        // (`Mutator::send_value_then`): a send, no leaf.
+        (BuiltinClass::Closure, "valueOf:with:"),
         // Iteration is Newspeak, after Primordial Soup's `Number`: a loop that
         // sends `<=`, `>=` and `+` to its receiver, which no leaf could do.
         (BuiltinClass::Number, "to:do:"),
@@ -1024,6 +1028,14 @@ mod tests {
         (
             BuiltinClass::Closure,
             "valueOnUnwind:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        // Quick in shape too, though only a native loop activates it, pushing
+        // it as a method so that its return carries the loop on
+        // (`Mutator::send_value_then`).
+        (
+            BuiltinClass::Closure,
+            "valueOf:",
             MethodFastPath::ValueOfParameter(0),
         ),
         // Whether a handler may resume the exception.

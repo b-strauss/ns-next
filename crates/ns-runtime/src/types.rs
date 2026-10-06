@@ -365,6 +365,25 @@ pub enum UnwindAction<'gc> {
     Terminate(NewspeakError<'gc>),
 }
 
+/// What a native loop runs for each step: a closure it activates itself,
+/// or any other object, which it sends `value` or `value:` as a block
+/// would be sent them. Decided once, when the loop starts: an object never
+/// stops or starts being a closure.
+#[derive(Debug, Clone, Copy)]
+pub enum LoopAction<'gc> {
+    Closure(ObjectReference<'gc>),
+    Sent(Value<'gc>),
+}
+
+impl<'gc> LoopAction<'gc> {
+    pub(crate) fn of(heap: &crate::Heap<'gc>, value: Value<'gc>) -> Self {
+        match value.as_object() {
+            Some(object) if heap.is_closure(object) => LoopAction::Closure(object),
+            _ => LoopAction::Sent(value),
+        }
+    }
+}
+
 /// A native `whileTrue:`/`whileFalse:` loop in progress: its condition, its
 /// body's closure -- `None` for a body that is not a block, which evaluates
 /// to itself and so has nothing to run -- and the condition value that keeps
@@ -380,18 +399,18 @@ pub struct WhileLoop<'gc> {
     pub(crate) expect: bool,
 }
 
-/// A native `do:` loop in progress: the collection it answers when it is done,
-/// its block's closure object, the elements the collection had when the loop
-/// began -- `do:` walks that snapshot, so a block that changes the collection
-/// does not change the walk -- and the index of the next element to hand the
-/// block.
+/// A native `do:` loop in progress: the array it walks and answers when it
+/// is done, what it runs for each element, the size it read when it began
+/// -- the walk ends there, as a loop from 1 to the size does -- and the
+/// index of the next element, which is read from the array only when the
+/// walk reaches it, so a store the action makes to a later index is seen.
 ///
 /// Boxed in its continuation, and owned by exactly one stack entry.
 #[derive(Debug, Clone)]
 pub struct DoLoop<'gc> {
-    pub(crate) receiver: Value<'gc>,
-    pub(crate) block: ObjectReference<'gc>,
-    pub(crate) items: Vec<Value<'gc>>,
+    pub(crate) receiver: ObjectReference<'gc>,
+    pub(crate) action: LoopAction<'gc>,
+    pub(crate) size: usize,
     pub(crate) next: usize,
 }
 

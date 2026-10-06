@@ -5655,13 +5655,23 @@ stack entry, and `Mutator::resume` applies it when the activation returns.
 The semantics and the order of every observable effect are what they were
 when these paths ran in nested runs of the loop.
 
-- **`do:`** (`builtins/collections.rs`) walks a snapshot of the elements. An
-  empty collection, or an argument that is not a block, answers the receiver
-  at once: a non-block stands for its own value, so handing it the elements
-  would observe nothing. Otherwise `do_step` answers `Step::Block` for the
-  first element with `Continuation::DoElement`, whose `DoLoop` carries the
-  receiver, the block, the snapshot and the next index; `resume` hands it to
-  `after_element`, which activates the block for the next element or answers
+- **`do:`** (`builtins/collections.rs`) reads the size once, when the walk
+  starts, and each element when it reaches it, so a store the action makes
+  to a later index is seen, as in a loop from 1 to the size over `at:`. An
+  empty array answers the receiver at once. Otherwise `do_step` decides,
+  once, what the loop runs (`LoopAction`): a closure it activates itself, or
+  any other object, which it sends `value:` -- a future excepted, which it
+  declines so that the failure path sees through it. For the first element
+  it answers `Step::Block`, or for a non-block the `Step::MethodThen` of
+  `Mutator::send_value_then`, which activates `Closure`'s private
+  `valueOf:with:` -- `^action value: element` -- as a method, given the
+  loop's continuation once pushed, as the unwinder pushes `valueOnUnwind:`
+  ("Unwinding"): what the send of `value:` decides may be a method, a block,
+  a value or an instantiation of several activations, and only the helper's
+  own return is one place to hang the continuation on. The continuation is
+  `Continuation::DoElement`, whose `DoLoop` carries the receiver, the
+  action, the size and the next index; `resume` hands it to
+  `after_element`, which runs the action for the next element or answers
   the receiver. `collections::execute` matches the enumerated
   `CollectionPrimitive` a lookup found ([dispatch.md](dispatch.md),
   "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and

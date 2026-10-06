@@ -877,9 +877,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* A fixed-size sequence of objects, indexed from 1: `Array new: 3`, or a
        literal such as `{1. 2}`. *)
     public class Array = Object new () (
-        (* Evaluates `action` with each element in turn, from the first;
-           answers the receiver. An `action` that is no block is not
-           evaluated. *)
+        (* Evaluates `action` with each element in turn, from the first,
+           reading each element when it reaches it; an `action` that is no
+           block is sent `value:`. Answers the receiver. *)
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
         (* Stores `value` at `index`, 1-based, and answers `value`.
            Signals an Error, 'index … out of range: valid indices are
@@ -983,5 +983,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
            carries on (`interpreter::unwind`). A block the unwinder activates
            itself. *)
         private valueOnUnwind: onUnwind = ( ^onUnwind value )
+        (* What a native loop sends to an action that is no block, so that
+           the loop carries on from this activation's return whatever the
+           send decides: `do:`'s `value:`, a loop body's `value`. *)
+        private valueOf: action = ( ^action value )
+        private valueOf: action with: element = ( ^action value: element )
     )
 ) : ()

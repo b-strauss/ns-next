@@ -1,0 +1,10 @@
+(* An argument of `Array>>do:` that is no block and has no `value:` ends
+   in `doesNotUnderstand:` at the first element. *)
+class DoWithANonBlockThatUnderstandsNothingFails = Object new (
+) (
+    public main: platform args: arguments = (
+        | three |
+        three:: 3.
+        ^{1. 2} do: three
+    )
+) : ()

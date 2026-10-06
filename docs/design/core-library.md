@@ -1212,7 +1212,7 @@ block answers it as a trampoline step instead of calling it:
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. There is no leaf: `True`'s or `False`'s method is a quick method, and one whose body is `^<parameter> value` answers the block as a trampoline step instead of calling it ("`True` and `False` are quick methods" below; [execution.md](execution.md), "The trampoline") |
 | `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
+| `do:` | A trampoline step: it answers the block for the first element -- or, for a non-block, its send of `value:` through `Closure>>valueOf:with:` -- and its continuation does the same for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
 
 So no native calls back into Newspeak, which the root discipline needs as well:
 no Rust frame may be live below a safepoint ([memory.md](memory.md), "No Rust
@@ -2444,9 +2444,8 @@ its class. That needs its own decision when the first such module arrives.
   (decided with the user on 2026-09-28). `do:` reads the size once, as
   Primordial Soup's `1 to: size_ do:` does, so an `add:` inside the block
   does not extend the walk while an `at:put:` inside it is seen, and it
-  sends `value:` to any argument, as any loop written over `at:` would,
-  where the `Array>>do:` leaf treats a non-block as a no-op (decided with
-  the user on 2026-09-28;
+  sends `value:` to any argument, as any loop written over `at:` would --
+  as the `Array>>do:` leaf does too (decided with the user on 2026-09-28;
   `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`).
   An index outside `1..size` -- whatever capacity the array has spare --
   or one that is no `Integer` is an `Error` signalled through
@@ -2797,11 +2796,13 @@ what a conditional does with an argument that is no block, is settled for
 the branches: it is sent `value`, and nothing answers it ("`True` and
 `False` are quick methods" above); the loops below would follow it.
 
-- **`do:` iterates over a copy.** `Heap::array_elements` clones the payload
-  when the loop starts, so an `add:` inside the block does not extend the
-  iteration; a Newspeak loop over `size` and `at:` would see it.
-- **`do:` with a non-block argument is a no-op** that answers the receiver
-  (`builtins::collections`, `do_step`), rather than sending `value:` to it.
+- **`do:` reads as it goes.** The leaf reads the size once, when the loop
+  starts, and each element when the walk reaches it, so a store inside the
+  block to a later index is seen, as a Newspeak loop from 1 to `size` over
+  `at:` sees it (`goldens/library/collection/do_sees_a_store_made_inside_its_block`).
+- **`do:` sends `value:` to a non-block argument**, once per element,
+  through `Closure`'s private `valueOf:with:` (`builtins::collections`,
+  `do_step`; `goldens/library/collection/do_sends_value_to_a_non_block`).
 - **`whileTrue:` with a non-block body re-runs the condition**: the leaf
   treats a body that is not a block as its own value and loops on the
   condition alone (`builtins::block`).

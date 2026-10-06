@@ -706,7 +706,7 @@ check").
 - The activation stack: each entry's receiver, `current_class`, the
   `ClassReference` or closure object its `FrameKind` names, the frame it is married
   to, and the state its continuation carries — a `WhileLoop`'s condition and
-  body, a `DoLoop`'s receiver, block and elements, a `NestedClassCreation`'s
+  body, a `DoLoop`'s receiver and action, a `NestedClassCreation`'s
   enclosing object and declaring class, an `Instantiation`'s instance, levels
   with their arguments, and phase, an `Unwind`'s target frame and the value or error it carries,
   a `VmErrorSignalled` error's receiver, and a `Future` forcing's future and
@@ -771,7 +771,7 @@ closure object's own words, and its code, which holds no handle, is named by
 a code id into the heap's table of compiled code, shared with the
 `MakeClosure` instruction that made it; and everything else
 that needs a closure — `FrameKind::Closure` on each of its activations,
-`WhileLoop.condition` and `.body`, `DoLoop.block`, `Step::Block` — names the
+`WhileLoop.condition` and `.body`, a `DoLoop`'s `LoopAction::Closure`, `Step::Block` — names the
 closure object, whose captured frame and copied values the tracer then
 rewrites once, in its words.
 A native loop's state is boxed in its continuation (`Box<WhileLoop>`,

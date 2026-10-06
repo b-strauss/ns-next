@@ -209,9 +209,10 @@ and `prior-art/newspeak-benchmarks`.
   compiled code share, a calling convention, GC maps for compiled frames, and
   deoptimization metadata, which the debugger needs as much as the optimizer.
 - **Between steps 7 and 8, real Newspeak bodies for `whileTrue:`, `whileFalse:` and
-  `do:`.** Making them Newspeak loops re-settles three semantics: `do:`
-  iterates over a copy, `do:` with a non-block is a no-op, and `whileTrue:`
-  with a non-block body re-runs the condition.
+  `do:`.** Making them Newspeak loops keeps what the `do:` leaf settles --
+  it reads each element as it goes and sends `value:` to a non-block -- and
+  re-settles one semantic: `whileTrue:` with a non-block body re-runs the
+  condition.
   [core-library.md](design/core-library.md), "Planned: real bodies for
   control flow and `do:`, before the baseline JIT".
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.

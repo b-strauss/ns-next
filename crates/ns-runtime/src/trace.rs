@@ -137,13 +137,21 @@ impl Trace for DoLoop<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let DoLoop {
             receiver,
-            block,
-            items,
+            action,
+            size: _,
             next: _,
         } = self;
-        tracer.value(receiver);
-        tracer.object(block);
-        trace_values(items, tracer);
+        tracer.object(receiver);
+        action.trace(tracer);
+    }
+}
+
+impl Trace for LoopAction<'_> {
+    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
+        match self {
+            LoopAction::Closure(closure) => tracer.object(closure),
+            LoopAction::Sent(value) => tracer.value(value),
+        }
     }
 }
 
