@@ -470,7 +470,7 @@ kernel's.
   platform"). `Number` holds only `to:do:` and `to:by:do:`; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
-  `Array` and `Block` stay directly under `Object`,
+  `Array` and `Closure` stay directly under `Object`,
   since their instances are not values, and so does `Behavior`, with `Class`
   and `Metaclass` below it ("Class sides and metaclasses" below). The VM mirror's class,
   which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
@@ -841,7 +841,7 @@ an `ifCurtailed:` around every simultaneous clause.
 `Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol — is
 overridden as protected, and `doesNotUnderstand:` forces the future through
 the mirror row `futureValue:ifFail:` (`builtins/future.rs`) and forwards the
-message to the value with `Message>>sentTo:`. A member added to `Object`
+message to the value with `Message>>sendTo:`. A member added to `Object`
 without its override fails
 `future_overrides_every_public_member_of_object_as_protected`. Its state is
 two private slots, `computation` — its block until it is resolved, then its
@@ -938,7 +938,7 @@ until the program has made one.
   and the selector and description an unhandled exception's termination
   reports — decline for a future, so the failure path sees through it. Every
   other leaf that answers for any operand stores or forwards it
-  (`at:put:`'s element, `value:`'s arguments, `sentTo:`'s receiver,
+  (`at:put:`'s element, `value:`'s arguments, `sendTo:`'s receiver,
   `returnValue:`'s value), and a future there is the value it stands for to
   whoever reads it later. On a leaf's failure path, though, every future
   operand is seen through: an unresolved one the leaf would only have stored
@@ -1766,7 +1766,7 @@ would be a weak table of its own. Its message is rendered by
 `Heap::describe` when `new` refuses, not at creation, and reads the
 same as a message rendered at creation would: the offender is never a value,
 and what `describe` says of a non-value -- "an instance of X", "an Array of
-n", "a Block", "the class X" -- does not change while it lives. Holding the
+n", "a Closure", "the class X" -- does not change while it lives. Holding the
 offender keeps nothing alive: it is the enclosing object of a level of this
 class object's own superclass chain. An image carries no refusal; the
 decoder recomputes it (decided with the user on 2026-10-03; "A value

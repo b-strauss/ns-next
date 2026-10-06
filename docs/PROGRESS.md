@@ -31,6 +31,7 @@ first.
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
 | The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Running a module from the play button beside its `main:args:` in the JetBrains plugin | Complete | 2026-10-05 | [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md) |
+| The kernel completed to Primordial Soup's core API, in six sub-projects | In progress | 2026-10-06 | [kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md) (the first of six) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -2814,7 +2815,7 @@ the same six the other way round, as SOMns's and Newspeak's JS kernel do
 - **A not-nil block is culled with the receiver** — handed it when it takes
   an argument, nothing when it takes none — because the Newspeak sources
   under `corpus/` pass both shapes (386 against 126) and the prior art
-  splits. `Block>>cull:` is an ordinary kernel method stating the rule.
+  splits. `Closure>>cull:` is an ordinary kernel method stating the rule.
 - **Every one of the twelve is a quick method.** Two shapes joined the
   quick methods for them, `^self` (`MethodFastPath::Receiver`), which also
   made `Integer>>hash` quick, and `^<parameter> cull: self`
@@ -3022,7 +3023,7 @@ steps, and aims at a `FrameReference` (`Signal::Return` no longer carries an
 `ActivationReference`; `Heap::activation_is_live` is gone). Every VM error
 becomes a signalled `Error` pushed above the activation it arose in, and
 `Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` with a real
-`Message` and re-sends it with the public `sentTo:` when the default
+`Message` and re-sends it with the public `sendTo:` when the default
 handler resumed it; the mirror row that answered it in Rust retired, which
 removes the §3.4 deviation row. An uncaught exception ends the run with the
 `HostError` and the line the host received before, once the pending
@@ -4399,8 +4400,8 @@ What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): eden's
 first-touch cost and the sizes that would trade it; statistics that cannot
 show why Havlak still collects in full; the constants the plan chose for
 the user to confirm; and the tests and comments its reviews deferred. The
-next road step is step 5, mirrors and atomic installation
-([OPEN-WORK.md](OPEN-WORK.md), "Next").
+next work is the kernel completed to Primordial Soup's core API, then
+road step 5 ([OPEN-WORK.md](OPEN-WORK.md), "Next").
 
 ## `newspeak.json`, its schema and running projects (2026-10-05)
 
@@ -4486,3 +4487,31 @@ the CLI refuses `--script` with a source file.
 What the branch leaves open is in [editor-support.md](design/editor-support.md),
 "Known gaps": no automated test reaches the play button through a running
 server.
+
+## The kernel's aligning sub-project (2026-10-06)
+
+Plan: [ns-next-kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md);
+[core-library.md](design/core-library.md), "Planned: the kernel completed to
+Primordial Soup's core API", "Decisions".
+
+The first of the six sub-projects that complete the kernel to Primordial
+Soup's core API. The closure class is `Closure`, as §5.1.8 names it, and
+`Message>>sendTo:` replaces `sentTo:`. `Array>>at:put:` answers the value it
+stored, and `Array>>do:` reads each element as it goes and sends `value:` to
+whatever it is given. `whileTrue:` and `whileFalse:` send `value` to a body
+that is no block, through the trampoline step `Step::MethodThen` and
+`Closure>>valueOf:` and `valueOf:with:`, so the send runs under both
+lowerings with the same depth count.
+
+- `c2caeb42` -- the closure class is `Closure`.
+- `cbc007d0` -- `Message>>sentTo:` becomes `sendTo:`.
+- `483d754c` -- `Array>>at:put:` answers the value it stored.
+- `62723650` -- `Array>>do:` reads each element as it goes and sends
+  `value:` to a non-block.
+- `9b326f76` -- `whileTrue:` and `whileFalse:` send `value` to a body that is
+  no block.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
+foundations sub-project (the error classes under `Error`, the `isKindOf…`
+rule, `yourself`, `identityHash`, the kernel facet's accessors, `Proxy`, a
+public `Future`) is next and has no plan yet.

@@ -4,7 +4,7 @@
 //! what §3.2's `Class` and `Metaclass` forward to, then `numbers`, `text`,
 //! `collections` and `block`, `activation` for the exceptions
 //! `Kernel.ns` builds over the running activations, `message` for
-//! `Message>>sentTo:`, `module` for `moduleNamed:`, through which
+//! `Message>>sendTo:`, `module` for `moduleNamed:`, through which
 //! shipped source reaches another shipped module, and `future` for the
 //! forcing of §6.3.2's pull future. `primitive` names every
 //! one of them as a `Primitive` and lists them as the rows of the VM

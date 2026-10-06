@@ -361,11 +361,11 @@ selector and arguments". `resolve.rs`'s `handler_message` hands every
 `doesNotUnderstand:` handler an instance of the kernel's `Message`, as
 Primordial Soup's `doesNotUnderstand: message <Message>` receives one: its
 `selector` is the selector symbol and its `arguments` an `Array` of the
-arguments, built by slot name once the handler is found, and `sentTo:
+arguments, built by slot name once the handler is found, and `sendTo:
 receiver` sends it again as an ordinary *public* send (§5.5), through the
 `message:sendTo:ifFail:` leaf's `decide_send` — a program can build a
 message, so a send through one must reach no protected or private method
-(`goldens/library/exception/sent_to_is_a_public_send`). A handler reads
+(`goldens/library/exception/send_to_is_a_public_send`). A handler reads
 `message selector` and `message arguments`, which
 `goldens/runtime/cache/does_not_understand_site_with_three_kinds_of_handler.ns`
 records.
@@ -375,9 +375,9 @@ records.
 `MessageNotUnderstood` holding the message and the receiver, with the text
 "an object does not understand #…" the host has always received, and when
 the default handler resumed it — the debugger, once it has created the
-missing method — sends the message again with `message sentTo: self`;
+missing method — sends the message again with `message sendTo: self`;
 otherwise it answers the value the exception was resumed with
-([core-library.md](core-library.md), "Exceptions"). Because `sentTo:` is a
+([core-library.md](core-library.md), "Exceptions"). Because `sendTo:` is a
 public send, the re-send reaches a method the debugger created only if it
 is public. `act_handler_method` activates the handler whatever its fast
 path, since no kernel handler forwards to a leaf any more, and takes the

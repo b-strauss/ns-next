@@ -200,6 +200,23 @@ pub(crate) enum Step<'gc> {
     /// declares it; its value is the superclass, from which the class is
     /// built, cached and answered (`nested::after_clause`).
     SuperclassClause(Box<NestedClassCreation<'gc>>),
+    /// Activate `method`, as `Step::Method` with owned arguments does, and
+    /// do `then` with its value: how a native loop sends `value` or
+    /// `value:` to an action that is no block and carries on afterwards
+    /// (`Mutator::send_value_then`). Boxed, so that `Step` keeps the size
+    /// the hot path was measured at.
+    MethodThen(Box<MethodThen<'gc>>),
+}
+
+/// What `Step::MethodThen` activates: a kernel method on `receiver` with
+/// `arguments`, `defining_class` its current class, and the continuation
+/// its activation returns to.
+pub(crate) struct MethodThen<'gc> {
+    pub(crate) receiver: Value<'gc>,
+    pub(crate) method: Rc<crate::mixin::MixinMethod>,
+    pub(crate) defining_class: ClassReference<'gc>,
+    pub(crate) arguments: Vec<Value<'gc>>,
+    pub(crate) then: Continuation<'gc>,
 }
 
 /// Where an activation's arguments come from.
@@ -1258,6 +1275,41 @@ impl<'gc> Mutator<'gc> {
                 nested::begin_creation(self, enclosing, index);
                 Ok(activation)
             }
+            // Pushed as `Step::Method` pushes it, and only then given its
+            // continuation, as the unwinder gives `valueOnUnwind:` its own
+            // (`Mutator::start_unwind_block`).
+            Step::MethodThen(method_then) => {
+                let MethodThen {
+                    receiver,
+                    method,
+                    defining_class,
+                    arguments,
+                    then,
+                } = *method_then;
+                let pushed = self.push_step(
+                    Step::Method {
+                        receiver,
+                        method,
+                        defining_class,
+                        arguments: StepArguments::Owned(arguments),
+                        feedback_base: FeedbackBase::NOT_ASSIGNED,
+                    },
+                    send_arguments,
+                    sender,
+                    inlinable,
+                );
+                // A refused push never runs, so `then` is thrown away as a
+                // popped activation's continuation is.
+                let activation = match pushed {
+                    Ok(activation) => activation,
+                    Err(signal) => {
+                        self.abandon(then);
+                        return Err(signal);
+                    }
+                };
+                self.heap.activation_set_continuation(activation, then);
+                Ok(activation)
+            }
         }
     }
 
@@ -1309,7 +1361,7 @@ impl<'gc> Mutator<'gc> {
             }
             Continuation::WhileBody(state) => Ok(crate::builtins::block::after_body(state)),
             Continuation::DoElement(state) => {
-                Ok(crate::builtins::collections::after_element(state))
+                Ok(crate::builtins::collections::after_element(self, state))
             }
             Continuation::NestedClass(creation) => {
                 nested::end_creation(self, &creation);
@@ -1367,9 +1419,42 @@ impl<'gc> Mutator<'gc> {
         let sender = self.heap.top_activation();
         // A continuation's step never refers to a send's arguments
         // (`StepArguments::Send` is only answered by a decision about a send,
-        // and the one a continuation makes -- `mustBeBoolean` -- has none), so
-        // `&[]` is always right here.
+        // and the one a continuation makes -- `mustBeBoolean` -- has none; a
+        // `Step::MethodThen` owns its arguments), so `&[]` is always right
+        // here.
         self.push_step(step, &[], sender, !replaced_counted)
+    }
+
+    /// The step that sends `value` to `action`, or `value:` with
+    /// `argument`, through `Closure`'s private `valueOf:` or
+    /// `valueOf:with:` activated on `receiver`, and does `then` with the
+    /// answer. A send's decision may be a method, a block, a value or an
+    /// instantiation of several activations; the helper's own return is
+    /// the one place to hang `then` on for all of them.
+    pub(crate) fn send_value_then(
+        &mut self,
+        receiver: Value<'gc>,
+        action: Value<'gc>,
+        argument: Option<Value<'gc>>,
+        then: Continuation<'gc>,
+    ) -> Step<'gc> {
+        let closure_class = self.builtin_class(BuiltinClass::Closure);
+        let (selector, arguments) = match argument {
+            None => (Symbol::VALUE_OF, vec![action]),
+            Some(argument) => (Symbol::VALUE_OF_WITH, vec![action, argument]),
+        };
+        let method = self
+            .heap
+            .class_application(closure_class)
+            .and_then(|application| application.mixin.compiled_method(selector).cloned())
+            .expect("internal: Kernel.ns's Closure declares valueOf: and valueOf:with:");
+        Step::MethodThen(Box::new(MethodThen {
+            receiver,
+            method,
+            defining_class: closure_class,
+            arguments,
+            then,
+        }))
     }
 
     /// Whether a `^` aimed at `activation` ends at `activation`: a method's
@@ -1494,7 +1579,7 @@ impl<'gc> Mutator<'gc> {
     }
 
     pub fn new_closure(&mut self, closure: crate::heap::NewClosure<'gc>) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Block);
+        let class = self.builtin_class(BuiltinClass::Closure);
         self.heap.allocate_closure(class, closure)
     }
 
@@ -1509,7 +1594,7 @@ impl<'gc> Mutator<'gc> {
         register_base: crate::heap::RegisterBase,
         copied: &[u16],
     ) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Block);
+        let class = self.builtin_class(BuiltinClass::Closure);
         self.heap.allocate_closure_from_registers(
             class,
             code,
@@ -2128,7 +2213,7 @@ mod tests {
                         "the first element"
                     );
                     assert_eq!(state.next, 1, "the second element is next");
-                    assert_eq!(state.items.len(), 3, "the whole snapshot rides along");
+                    assert_eq!(state.size, 3, "the size read when the walk began");
                 }
                 _ => panic!("`do:` is decided as its block's first activation"),
             }

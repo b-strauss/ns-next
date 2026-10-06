@@ -2017,7 +2017,7 @@ fn every_builtin_class_tag_round_trips() {
         BuiltinClass::Symbol,
         BuiltinClass::Array,
         BuiltinClass::UndefinedObject,
-        BuiltinClass::Block,
+        BuiltinClass::Closure,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,
@@ -3515,7 +3515,7 @@ fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Closure));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(42); // code id, out of range for an empty code table
@@ -3930,7 +3930,7 @@ fn closure_object_with_copied_values(copied: &[i64]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Closure));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(0); // code id
@@ -5285,7 +5285,7 @@ fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
     writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Block));
+    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Closure));
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(0); // code id 0 -- the block body
@@ -9239,7 +9239,7 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
     // setter that takes the block as its argument). `value:` is a kernel
     // primitive method (`Kernel.ns`): caching its call site as
     // a `CachedTargetKind::Method` also reserves the target's own family --
-    // `Block>>value:`'s two sends (the lexical read of `vmMirror` and its
+    // `Closure>>value:`'s two sends (the lexical read of `vmMirror` and its
     // `block:value:ifFail:` send) -- so the total is 5, not 3.
     assert_eq!(
         loaded.interpreter.cache_statistics().site_entries,

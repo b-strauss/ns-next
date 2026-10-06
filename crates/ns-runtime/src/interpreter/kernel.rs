@@ -77,7 +77,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Symbol => "Symbol",
         BuiltinClass::Array => "Array",
         BuiltinClass::UndefinedObject => "UndefinedObject",
-        BuiltinClass::Block => "Block",
+        BuiltinClass::Closure => "Closure",
         BuiltinClass::Top => "Top",
         BuiltinClass::Value => "Value",
         BuiltinClass::Number => "Number",
@@ -779,7 +779,11 @@ mod tests {
         (BuiltinClass::UndefinedObject, "printString"),
         // `cull:` tests its own arity, which no quick method does; the quick
         // methods of the nil protocol do what it says without sending it.
-        (BuiltinClass::Block, "cull:"),
+        (BuiltinClass::Closure, "cull:"),
+        // A native loop's send of `value:` to an action that is no block,
+        // pushed as a method so that its return carries the loop on
+        // (`Mutator::send_value_then`): a send, no leaf.
+        (BuiltinClass::Closure, "valueOf:with:"),
         // Iteration is Newspeak, after Primordial Soup's `Number`: a loop that
         // sends `<=`, `>=` and `+` to its receiver, which no leaf could do.
         (BuiltinClass::Number, "to:do:"),
@@ -808,9 +812,9 @@ mod tests {
         (BuiltinClass::Metaclass, "thisClassOf:"),
         // The marked methods (`UNWIND_MARKERS`): each keeps a local the
         // unwinder or `signal` reads, and sends `value` to `self`.
-        (BuiltinClass::Block, "on:do:"),
-        (BuiltinClass::Block, "ensure:"),
-        (BuiltinClass::Block, "ifCurtailed:"),
+        (BuiltinClass::Closure, "on:do:"),
+        (BuiltinClass::Closure, "ensure:"),
+        (BuiltinClass::Closure, "ifCurtailed:"),
         // A forwarder in shape, but of its argument rather than of `self`,
         // for the reason `Value`'s slot readers above are: the leaf's
         // subject is the exception, and the class is its argument.
@@ -1022,8 +1026,16 @@ mod tests {
         // as a method so that its return carries the unwind on
         // (`Mutator::start_unwind_block`).
         (
-            BuiltinClass::Block,
+            BuiltinClass::Closure,
             "valueOnUnwind:",
+            MethodFastPath::ValueOfParameter(0),
+        ),
+        // Quick in shape too, though only a native loop activates it, pushing
+        // it as a method so that its return carries the loop on
+        // (`Mutator::send_value_then`).
+        (
+            BuiltinClass::Closure,
+            "valueOf:",
             MethodFastPath::ValueOfParameter(0),
         ),
         // Whether a handler may resume the exception.
@@ -1063,7 +1075,7 @@ mod tests {
         BuiltinClass::Symbol,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Array,
-        BuiltinClass::Block,
+        BuiltinClass::Closure,
     ];
 
     /// Every kernel method is a forwarder the compiler recognized, and is
@@ -1416,7 +1428,7 @@ mod tests {
     ];
 
     crate::for_each_lowering! {
-        /// `Block>>on:do:`, `ensure:` and `ifCurtailed:` carry the markers
+        /// `Closure>>on:do:`, `ensure:` and `ifCurtailed:` carry the markers
         /// `UNWIND_MARKERS` says, under both lowerings, and no other kernel
         /// method's code carries one: the unwinder would run a block for it.
         fn only_the_three_block_methods_carry_an_unwind_marker(lowering) {
@@ -1435,7 +1447,7 @@ mod tests {
                         .flat_map(|side| side.compiled_methods());
                     for method in mixin.compiled_methods().chain(class_side) {
                         let selector = method.selector.as_str();
-                        let expected = if kind == BuiltinClass::Block {
+                        let expected = if kind == BuiltinClass::Closure {
                             UNWIND_MARKERS
                                 .iter()
                                 .find(|(name, _)| *name == selector)
@@ -1449,18 +1461,18 @@ mod tests {
                         );
                     }
                 }
-                let block = mutator.builtin_class(BuiltinClass::Block);
+                let block = mutator.builtin_class(BuiltinClass::Closure);
                 let application = mutator
                     .heap()
                     .class_application(block)
-                    .expect("Block has an application");
+                    .expect("Closure has an application");
                 for (selector, _) in UNWIND_MARKERS {
                     assert!(
                         application
                             .mixin
                             .compiled_method(crate::Symbol::intern(selector))
                             .is_some(),
-                        "Block declares no {selector}"
+                        "Closure declares no {selector}"
                     );
                 }
             });
@@ -1468,7 +1480,7 @@ mod tests {
     }
 
     crate::for_each_lowering! {
-        /// Only `Kernel.ns`'s own `Block` may carry unwind markers: a class of
+        /// Only `Kernel.ns`'s own `Closure` may carry unwind markers: a class of
         /// that name in another shipped module, with the same bodies, gets none,
         /// since the unwinder trusts a marked method's registers. Other shipped
         /// modules are resolved with `resolve_kernel` too, so the mark cannot
@@ -1476,7 +1488,7 @@ mod tests {
         fn a_block_class_in_another_shipped_module_carries_no_unwind_marker(lowering) {
             let source = indoc::indoc! {"
                 class Shipped = Object new () (
-                    public class Block = Object new () (
+                    public class Closure = Object new () (
                         public on: exceptionClass do: handler = (
                             | handlerActive ::= true. |
                             ^self value
@@ -1512,14 +1524,14 @@ mod tests {
                     .mixin
                     .nested
                     .iter()
-                    .find(|nested| nested.name.as_str() == "Block")
-                    .expect("the module declares Block");
+                    .find(|nested| nested.name.as_str() == "Closure")
+                    .expect("the module declares Closure");
                 assert!(block.shipped, "the module is shipped source");
                 for method in block.compiled_methods() {
                     assert_eq!(
                         method.code.unwind_marker,
                         None,
-                        "{lowering:?}: Shipped's Block>>{}",
+                        "{lowering:?}: Shipped's Closure>>{}",
                         method.selector.as_str()
                     );
                 }
@@ -1671,7 +1683,7 @@ mod tests {
                 (BuiltinClass::Symbol, Some(BuiltinClass::String)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
-                (BuiltinClass::Block, Some(BuiltinClass::Object)),
+                (BuiltinClass::Closure, Some(BuiltinClass::Object)),
                 (BuiltinClass::Top, None),
             ];
             for (kind, superclass) in expected {
@@ -1712,7 +1724,7 @@ mod tests {
                 (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),
                 (BuiltinClass::Array, false),
-                (BuiltinClass::Block, false),
+                (BuiltinClass::Closure, false),
                 (BuiltinClass::Object, false),
                 // §3.2's "subclass of" is inclusive -- "C's superclass is S
                 // or a subclass of S" -- so `Value`'s own application meets

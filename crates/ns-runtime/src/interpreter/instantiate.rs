@@ -35,7 +35,7 @@ const SPARE_LEVELS: usize = 64;
 /// twice: the resolver has already refused a body that declares one member
 /// twice (`resolver::classes::duplicate_member_names`).
 ///
-/// `kernel_block` says `body` is the instance side of the kernel's `Block`,
+/// `kernel_block` says `body` is the instance side of the kernel's `Closure`,
 /// the one body whose methods may carry an unwind marker
 /// (`compiler::unwind_marker`). `class_accessor_root` is the module root a
 /// method may be a pure class accessor of (`MixinMethod::class_accessor`):
@@ -282,7 +282,7 @@ impl<'gc> Mutator<'gc> {
     /// only a shipped method can carry a fast path
     /// (`MixinMethod::from_declaration`), and recorded on every mixin of the
     /// tree, class sides included, as `Mixin.shipped`; whether it is
-    /// `Kernel.ns` itself decides which `Block` may carry unwind markers,
+    /// `Kernel.ns` itself decides which `Closure` may carry unwind markers,
     /// and whether it is another shipped module which methods are
     /// recognized as class accessors of `root`, the module's root
     /// declaration (`MixinMethod::class_accessor`).
@@ -331,12 +331,12 @@ impl<'gc> Mutator<'gc> {
     ) -> Mixin {
         let kernel = source.is_shipped();
         let slots = build_slots(&declaration.instance_side);
-        // `Kernel.ns`'s own `Block`, not a class of that name in another
+        // `Kernel.ns`'s own `Closure`, not a class of that name in another
         // shipped module: an unwind marker makes the unwinder trust the
         // method's registers (`compiler::unwind_marker`).
         let kernel_block = source == ModuleSource::Kernel
             && declaration.name.name
-                == super::kernel::kernel_class_name(crate::types::BuiltinClass::Block);
+                == super::kernel::kernel_class_name(crate::types::BuiltinClass::Closure);
         // Only a shipped module other than the kernel hands out its classes
         // by class accessors: `Kernel.ns`'s own `^outer Kernel <Name>` on
         // `Object` answers a builtin class, which an image names by its tag.

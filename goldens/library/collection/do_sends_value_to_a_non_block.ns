@@ -1,0 +1,24 @@
+(* `Array>>do:` sends `value:` to an argument that is no block, once per
+   element and in order, as it would evaluate a block; an empty array
+   sends nothing. *)
+class DoSendsValueToANonBlock = Object new (
+) (
+    class Collector = Object new (
+        | public seen ::= 0. public total ::= 0. |
+    ) (
+        public value: element = (
+            seen:: seen + 1.
+            total:: total * 10 + element.
+            ^'ignored'
+        )
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. collector answer |
+        collector:: Collector new.
+        answer:: {1. 2. 3} do: collector.
+        transcript show: collector seen printString; newLine.
+        transcript show: collector total printString; newLine.
+        transcript show: answer size printString; newLine.
+        transcript show: (({} do: 3) size) printString; newLine
+    )
+) : ()

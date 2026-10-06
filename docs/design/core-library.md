@@ -5,9 +5,11 @@
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/`, and the
-> surface grows on demand, not speculatively. Every public member of the
-> three shipped modules is documented in place, by a comment above it.
+> with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/` and much
+> of Primordial Soup's core API, whose names and loops are aligned and the
+> rest planned in full ("Planned: the kernel completed to Primordial Soup's
+> core API"). Every public member of the three shipped modules is
+> documented in place, by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
@@ -59,11 +61,11 @@ Top                     (private; no superclass, declares nothing)
     │   ├── Symbol
     │   └── UndefinedObject
     ├── Array
-    ├── Block           ..., on:do:, ensure:, ifCurtailed: (marked methods)
+    ├── Closure         ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
     │   ├── Error       └── MessageNotUnderstood
     │   └── Halt
-    ├── Message         selector, arguments, sentTo:
+    ├── Message         selector, arguments, sendTo:
     ├── Activation      (private; a running activation, for the kernel only)
     └── Behavior        =, ==, hash (a class object's, derived from its state
         │               when it is a value)
@@ -119,7 +121,7 @@ may.
 Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 and `printString`, beside its thirteen
-accessors for the predefined classes, `Object` to `Block`, each
+accessors for the predefined classes, `Object` to `Closure` (§5.1.8), each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Integer`'s `+ - * // \\ < >
 <= >= =`, `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `negated`, `abs`, `asFloat`,
@@ -130,7 +132,7 @@ leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
 `asString`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
 `asSymbol` and `printString`, and on its class side `with:`; `Symbol`'s
 `asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`
-and `at:`; `Block`'s `value` to `value:value:value:`, `numArgs`, `whileTrue:`
+and `at:`; `Closure`'s `value` to `value:value:value:`, `numArgs`, `whileTrue:`
 and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
 below). `Number` reaches no leaf of its own: its `to:do:` and `to:by:do:` are
@@ -141,7 +143,7 @@ ordinary one ("The nil protocol" below). `True` and `False` reach no leaf at
 all: their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
 `hash` ordinary ones. `Boolean` declares nothing of its own either. `Object`'s
-protected `doesNotUnderstand:` and `halt`, the exception classes, `Block`'s
+protected `doesNotUnderstand:` and `halt`, the exception classes, `Closure`'s
 `on:do:`, `ensure:` and `ifCurtailed:` and `Message` are the exception
 machinery, ordinary Newspeak over the activation leaves ("Exceptions" below).
 
@@ -793,31 +795,37 @@ ordinary record of the class the path `Platform` names.
 
 ## The on-demand rule
 
-**`PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on
-demand.** An accessor exists because a module on `corpus/runnable.toml` or
+**`PlatformFactory.ns` is widened only on demand.** `Kernel.ns` and
+`CollectionsFactory.ns` are not bound by it: they are to carry Primordial
+Soup's whole core API ("Planned: the kernel completed to Primordial Soup's
+core API" below; decided with the user on 2026-10-06), and until that work
+has reached a class, what it has is what the programs below asked for.
+An accessor exists because a module on `corpus/runnable.toml` or
 a program under `benchmarks/` needs it, and the whitelist entry or the
 program that demanded it is named in a comment beside it: the comments of
 `Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
 
-This is not minimalism for its own sake. A capability nothing on that list or
-under `benchmarks/` asks for has no test that would catch it rotting, so it is
-a liability rather than an asset. A module that needs something nobody has
+This is not minimalism for its own sake. A platform member reaches the host
+-- a file, a clock, the network -- and one nothing on that list or under
+`benchmarks/` asks for has no test that would catch it rotting, so it is a
+liability rather than an asset. A module that needs something nobody has
 asked for is a reason to widen the whitelist deliberately — with a real
 module, run end to end, its output recorded — not a reason to build a
-speculative library.
+speculative platform. The core is different: Primordial Soup's API is the
+specification it is completed to, and each sub-project pins what it adds
+with goldens of its own.
 
-The `collections` namespace is the worked example. It hands out `List`,
-`Map` and `Set`, because those are asked for: `List` because `Ducts.ns`,
-`NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform collections
-List`, and the Are We Fast Yet benchmarks of stage 3 widen it; `Map` and
-`Set` because DeltaBlue and Havlak need them. Each carries only the
-selectors those programs and the goldens send ("The collections module
-(plan 2)" below). The corpus also asks that namespace for `IdentityMap`,
-`IdentitySet`, `WeakArray` and `Collection`. Those name classes the runtime
-does not have, and inventing them — or worse, aliasing them onto `List`,
-`Map` or `Set`, which compare by `=` and hold their elements strongly —
-would be a collections library built without a caller. Modules needing them
-stay off the whitelist.
+The `collections` namespace hands out `List`, `Map` and `Set` today, each
+with the selectors the programs that asked for it send: `List` because
+`Ducts.ns`, `NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform
+collections List`, and the Are We Fast Yet benchmarks of stage 3 widen it;
+`Map` and `Set` because DeltaBlue and Havlak need them ("The collections
+module (plan 2)" below). The corpus also asks that namespace for
+`IdentityMap`, `IdentitySet`, `WeakArray` and `Collection`; `IdentityMap`,
+`WeakArray` and `Collection` come with the completed core, and
+`IdentitySet`, which Primordial Soup does not have, does not. None is ever
+an alias of `List`, `Map` or `Set`, which compare by `=` and hold their
+elements strongly.
 
 ## Large integers
 
@@ -1203,9 +1211,9 @@ block answers it as a trampoline step instead of calling it:
 | Selector | How it runs its block |
 |---|---|
 | `ifTrue:ifFalse:`, `ifFalse:ifTrue:`, `ifTrue:`, `ifFalse:`, `and:`, `or:` | Lowered by the compiler for a literal block, with the kernel method kept as the guarded fallback. There is no leaf: `True`'s or `False`'s method is a quick method, and one whose body is `^<parameter> value` answers the block as a trampoline step instead of calling it ("`True` and `False` are quick methods" below; [execution.md](execution.md), "The trampoline") |
-| `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body or ends the loop |
+| `whileTrue:`, `whileFalse:` | The same, both halves: the leaf is a trampoline step that returns the condition block, and its continuation activates the body -- or, for a non-block, sends it `value` through `Closure>>valueOf:` -- or ends the loop |
 | `value`, `value:`, … | A trampoline step that returns the block to activate: activating a closure is what the activation stack does. See [execution.md](execution.md) |
-| `do:` | A trampoline step: it answers the block for the first element, and its continuation activates it for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
+| `do:` | A trampoline step: it answers the block for the first element -- or, for a non-block, its send of `value:` through `Closure>>valueOf:with:` -- and its continuation does the same for each next one ([execution.md](execution.md), "No re-entry from Rust"). `Array>>do:` is a kernel method forwarding to it; a Newspeak loop is "Planned: real bodies for control flow and `do:`, before the baseline JIT" below |
 
 So no native calls back into Newspeak, which the root discipline needs as well:
 no Rust frame may be live below a safepoint ([memory.md](memory.md), "No Rust
@@ -1383,7 +1391,7 @@ an exception — and their failure blocks answer a value (`ifFail: [nil]`,
 but `Object`'s `doesNotUnderstand:`, which §5.5 makes `protected`, and the
 machinery's own: `Exception`'s `hostSelector` and `hostReceiver` and
 `MessageNotUnderstood`'s overrides of them (`protected`), `Exception`'s
-handler search (`private`) and `Block>>valueOnUnwind:` (`private`) — and
+handler search (`private`) and `Closure>>valueOnUnwind:` (`private`) — and
 `Metaclass`'s two `thisClass` helpers (`private`).
 
 Two things about the shape are enforced rather than conventional:
@@ -1491,7 +1499,7 @@ splits here — SOMns sends `ifNotNil:`'s block `value` and culls
 `ifNil:ifNotNil:`'s, the JS kernel sends every one `value: self` — and the
 canonical Newspeak sources under `corpus/` pass both shapes, 386
 `ifNotNil: [:x | ...]` against 126 `ifNotNil: [...]`, which only `cull:`
-runs. `Block>>cull:` is an ordinary `Kernel.ns` method saying so, and
+runs. `Closure>>cull:` is an ordinary `Kernel.ns` method saying so, and
 `Object`'s bodies are `^notNilBlock cull: self`. A block that takes two
 arguments is handed one and fails the arity check as `value:` would; an
 argument that is no block is sent `cull:`, which nothing but a block
@@ -1761,12 +1769,12 @@ an error is the VM's business.
   Squeak rather than SOMns's `vmMirror halt: self` breakpoint primitive: a
   halt and an unhandled error reach the debugger through the same place,
   `defaultAction` on an intact stack.
-- `Message`: `selector`, `arguments`, and `sentTo: receiver`, which sends the
-  message as an ordinary *public* send (§5.5), as Primordial Soup's
-  `Message>>sendTo:` does — a program can obtain and build messages, so a
-  send through one must not reach a protected or private method. A message
+- `Message`: `selector`, `arguments`, and `sendTo: receiver`, which sends the
+  message as an ordinary *public* send (§5.5) — a program can obtain and
+  build messages, so a send through one must not reach a protected or
+  private method. A message
   built without `arguments:` is sent with none; a selector that is no Symbol
-  or arguments that are no Array make `sentTo:` signal an `Error`. It is
+  or arguments that are no Array make `sendTo:` signal an `Error`. It is
   what every `doesNotUnderstand:` handler receives
   ([dispatch.md](dispatch.md), "The reified message is a `Message`").
 - `Activation`: private to the kernel, like `Top` (below).
@@ -1795,14 +1803,14 @@ platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 platform was handed.
 `Object` gains no accessor, so its set stays what §3.2 names.
 
-`Block` has `on: exceptionClass do: handler`, `ensure: aBlock` and
+`Closure` has `on: exceptionClass do: handler`, `ensure: aBlock` and
 `ifCurtailed: aBlock`, three marked methods (below): `on:do:`'s body sets
 its `handlerActive` local and answers `self value`; `ensure:`'s runs its
 block after `self value` in Newspeak on the normal path, having set its
 `complete` local first; `ifCurtailed:`'s answers `self value` and leaves
 its block to the unwinder. A block the unwinder runs is activated directly;
 an argument that is no block is sent `value` through the kernel's private
-`Block>>valueOnUnwind:`, as the normal path sends it.
+`Closure>>valueOnUnwind:`, as the normal path sends it.
 
 **The semantics are ANSI's, as Squeak and Primordial Soup implement them.**
 `signal` walks the sender chain from its own activation for a marked
@@ -1891,12 +1899,12 @@ terminating, as a debugger that resumed the exception would.
 `MessageNotUnderstood` with the message, the receiver and the text "an
 object does not understand #…", signals it, and when the default handler
 resumed it (`reachedDefaultHandler`) re-sends the message with
-`message sentTo: self`; otherwise it answers the resumption value. The
+`message sendTo: self`; otherwise it answers the resumption value. The
 default handler today ends the program; the live system replaces that one
 place with "open the debugger and wait", where creating the method and
 proceeding re-sends the message into it — the user's requirement for a live
 system, and why `MessageNotUnderstood` is resumable although it is an
-`Error`. The re-send is a *public* send, as `sentTo:` always is, so a method
+`Error`. The re-send is a *public* send, as `sendTo:` always is, so a method
 the debugger creates as protected or private would not be reached by it and
 the message would fail again; the debugger has to create it public, or
 re-send it another way. The text is the one the retired mirror row gave, so
@@ -1926,7 +1934,7 @@ with an argument that is no `Message` fails inside the handler, on
   flag; `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`; and
-  `terminate…` for `defaultAction`. `Message>>sentTo:`'s row,
+  `terminate…` for `defaultAction`. `Message>>sendTo:`'s row,
   `message:sendTo:ifFail:`, is the last row (`builtins/message.rs`), and the
   row `Object>>doesNotUnderstand:` used to forward to retired with the Rust
   handler it ran, which moved the rows after it down by one. The tracer
@@ -1934,7 +1942,7 @@ with an argument that is no `Message` fails inside the handler, on
 - **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
   a property of its compiled code (`bytecode::UnwindMarker`, naming the
   registers of the method's arguments and of its `handlerActive` or
-  `complete` local), recognized by selector when the kernel's `Block` is
+  `complete` local), recognized by selector when the kernel's `Closure` is
   compiled (`compiler::unwind_marker`), as the quick methods are; only
   kernel methods carry one, it is never written to an image, and a decoded
   body has none. The unwinder and the leaves read it off each activation's
@@ -2052,7 +2060,7 @@ only on an unwind, and an argument that is no block; an exception in an
 `ensure:` block during an unwind; a `^` out of a handler block; an index
 error from `Array>>at:` and a `doesNotUnderstand:` caught with
 `on: Error do:`, `on: MessageNotUnderstood do: [:e | e resume: 42]`
-answering 42, and `sentTo:` a public send; the depth limit caught twice in
+answering 42, and `sendTo:` a public send; the depth limit caught twice in
 a row, an index error and a `doesNotUnderstand:` just below it caught as
 themselves, a recursion through `on:do:` counted alike, and a recursive
 handler overrunning the reserve; a caught `cannotReturn`; `on: Halt do: [:e
@@ -2433,14 +2441,12 @@ its class. That needs its own decision when the first such module arrives.
   only `size_` stays protected, as a subclass's view of the size
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`
   reads it; decided with the user on 2026-10-01). `add:` answers
-  the element, and `at:put:` the value, as Smalltalk's and Primordial
-  Soup's do, where the kernel's `Array>>at:put:` leaf answers the receiver
+  the element, and `at:put:` the value, as `Array>>at:put:` does
   (decided with the user on 2026-09-28). `do:` reads the size once, as
   Primordial Soup's `1 to: size_ do:` does, so an `add:` inside the block
   does not extend the walk while an `at:put:` inside it is seen, and it
-  sends `value:` to any argument, as any loop written over `at:` would,
-  where the `Array>>do:` leaf treats a non-block as a no-op (decided with
-  the user on 2026-09-28;
+  sends `value:` to any argument, as any loop written over `at:` would --
+  as the `Array>>do:` leaf does too (decided with the user on 2026-09-28;
   `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`).
   An index outside `1..size` -- whatever capacity the array has spare --
   or one that is no `Integer` is an `Error` signalled through
@@ -2608,7 +2614,7 @@ move came *after* the caches, and after the inlined integer fast path that
 was sequenced to cushion it. What Milestone 4 owed this section was only that
 it not deepen the investment in Rust callbacks while it rewrote the code
 around them; step 2a took the last callback away, as a trampoline step, which
-maps directly onto the leaf the kernel's `Block>>value` forwards to.
+maps directly onto the leaf the kernel's `Closure>>value` forwards to.
 
 **Measured, the move cost nothing measurable**, against `e2bb31e`, the
 commit before it, over the eight sources in two sittings: with primitive
@@ -2641,7 +2647,7 @@ Each decision below was taken with the user.
 
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `UndefinedObject`, `Array` and `Block`.
+`Float`, `String`, `Symbol`, `UndefinedObject`, `Array` and `Closure`.
 `OrderedCollection` was among them until it was removed (2026-09-28), when
 `platform collections List` replaced it. `Top` and the VM mirror's class get none:
 §3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a
@@ -2750,7 +2756,7 @@ grew from 6,507 to 6,626 instructions and is still one function.
 every public member of `Object` as protected and forwards through
 `doesNotUnderstand:`, which forces the future through the mirror row
 `futureValue:ifFail:` (`builtins/future.rs`) and sends the message on to its
-value with `Message>>sentTo:`; its state is the two slots `computation` and
+value with `Message>>sendTo:`; its state is the two slots `computation` and
 `state`, and forcing is `interpreter/future.rs`'s, a trampoline step under
 `Continuation::Future`. Like `Activation`, it is private, `Object` declares
 no accessor for it, and builtin class tag 30 names it only where the image
@@ -2765,7 +2771,7 @@ decline for one where they would answer "no"
 
 ### Planned: real bodies for control flow and `do:`, before the baseline JIT
 
-Would change: `Block`'s `whileTrue:` and `whileFalse:` and the
+Would change: `Closure`'s `whileTrue:` and `whileFalse:` and the
 collections' `do:` become real Newspeak loops instead of forwarders to
 today's leaves. The branches are done: `True`'s and `False`'s methods are
 already Newspeak ("`True` and `False` are quick methods" above).
@@ -2782,22 +2788,116 @@ code, road step 7, and before the baseline JIT, road step 8
 ([object-model.md](object-model.md), "Planned: the road to a
 high-performance VM"; [execution.md](execution.md), "Planned: JIT tiers").
 
-The step owns three semantic decisions, each of which the leaves settle
-today and a Newspeak body would have to settle again, visibly. A fourth,
-what a conditional does with an argument that is no block, is settled for
-the branches: it is sent `value`, and nothing answers it ("`True` and
-`False` are quick methods" above); the loops below would follow it.
+What a Newspeak body must keep is what the leaves do today, so that the
+step changes nothing a program can see; no semantic question is left to
+it. `do:` reads the size once, when the loop starts, and each element when
+the walk reaches it, so a store inside the block to a later index is seen,
+as a Newspeak loop from 1 to `size` over `at:` sees it
+(`goldens/library/collection/do_sees_a_store_made_inside_its_block`). `do:`
+sends `value:` to an argument that is no block, once per element, and
+`whileTrue:` and `whileFalse:` send `value` to such a body, once per
+iteration, through `Closure`'s private `valueOf:with:` and `valueOf:`
+(`builtins::collections`, `do_step`; `builtins::block`, `body_step`;
+`goldens/library/collection/do_sends_value_to_a_non_block`,
+`goldens/language/control-flow/a_loop_sends_value_to_a_body_that_is_no_block`).
+A conditional sends `value` to such an argument too, and nothing answers
+it ("`True` and `False` are quick methods" above).
 
-- **`do:` iterates over a copy.** `Heap::array_elements` clones the payload
-  when the loop starts, so an `add:` inside the block does not extend the
-  iteration; a Newspeak loop over `size` and `at:` would see it.
-- **`do:` with a non-block argument is a no-op** that answers the receiver
-  (`builtins::collections`, `do_step`), rather than sending `value:` to it.
-- **`whileTrue:` with a non-block body re-runs the condition**: the leaf
-  treats a body that is not a block as its own value and loops on the
-  condition alone (`builtins::block`).
+## Planned: the kernel completed to Primordial Soup's core API
+
+Would change: `Kernel.ns` and `CollectionsFactory.ns` carry the whole
+public core API of Primordial Soup's kernel and collections
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
+`newspeak/Collections.ns`), before road step 5 (decided with the user on
+2026-10-06). Core means the classes a program computes with -- objects,
+booleans, numbers, strings, closures, messages, exceptions, collections,
+byte arrays, weak references -- and not the platform's side effects (files,
+network, time, random numbers, processes), not reflection or tooling
+(mirrors, `allInstances`, `become:`), and not actors. An inventory taken on
+2026-10-06 counted 450 public selectors in that scope, 131 of them present,
+11 in part and 308 missing.
+
+**The API is adopted; the code is written here.** Selectors, arguments,
+answers and error cases follow Primordial Soup's, so its behaviour may be
+reproduced exactly, but every body is written from that description, not
+adapted from Primordial Soup's source, and the shipped modules name no
+other project in their comments (decided with the user on 2026-10-06).
+`List`, `Map` and `Set`, adapted today, are rewritten in the same way, so
+that `CollectionsFactory.ns` loses its licence header and
+`THIRD-PARTY-NOTICES.md` its entry for it.
+
+**The on-demand rule no longer governs the core** ("The on-demand rule"
+above): it stays for `PlatformFactory.ns`, whose members reach the host,
+and `Kernel.ns` and `CollectionsFactory.ns` take the whole core API.
+
+**Where Primordial Soup's API met a decision taken here**, each was settled
+on its own (decided with the user on 2026-10-06):
+
+- **A numeric tower, symmetric.** `Fraction` exists; `Integer>>/` answers
+  an exact quotient, an `Integer` when it divides; `=` compares `Integer`,
+  `LargeInteger`, `Fraction` and `Float` by value in both directions, and
+  `hash` agrees with it -- `3 asFloat hash = 3 hash`, as Primordial Soup's
+  `testFloatHash` asks -- where Primordial Soup's `Fraction>>=` answers
+  `false` for a `Float` and the other order signals. The class-tight `=` of
+  2026-09-23 ("Gap: an integer has no `/`" above) gives way to it. A NaN
+  still equals a NaN.
+- **Strings stay code points** ("Strings are code points in two widths"
+  above). Primordial Soup's `String` selectors are adopted with code-point
+  meaning -- `size`, `at:`, `do:`, `indexOf:`, `withAll:` count and take
+  code points -- and bytes appear only where a conversion says so:
+  `asByteArray` answers the UTF-8 bytes, a `String` is decoded from a
+  `ByteArray` as UTF-8, and `StringBuilder` takes strings and code points.
+  §5.1.5 leaves the encoding to an API that "encapsulates this decision".
+- **Primordial Soup's error classes, under `Error`.** `ArgumentError
+  value:`, `NotFound element:`, `CannotReturn result:` and
+  `NonBooleanReceiver receiver:` exist with Primordial Soup's factories and
+  are signalled where it signals them, as subclasses of `Error`, so that
+  `on: Error do:` still catches them and today's texts stay their
+  `messageText`; Primordial Soup has no `Error` and its classes no text.
+- **`isKindOf…` answers `false` for what a receiver does not declare**:
+  `Object>>doesNotUnderstand:` answers `false` for a unary selector that
+  begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's
+  (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
+  its own with `true`. A program can introduce a question of its own
+  without touching `Object`, which no Newspeak program can.
+- **A weak collection refuses a value as a key.** `WeakMap` and
+  `Ephemeron` signal an `ArgumentError` for a key that is a value
+  (§3.1.1): a value has no identity, an equal one can always be made
+  again, so a weak entry under it would vanish or not as the collector
+  happened to run. JavaScript's `WeakMap`, which the canonical Newspeak's
+  is built on, refuses such keys too. `identityHash` of a value is its
+  `hash`, since `==` on a value is `=`.
+
+Kept as recorded deviations, not taken up: tuple literals stay mutable
+`Array`s (§5.1.7), a non-integral literal stays a `Float` (§5.1.1, "Deviation:
+a non-integral literal is a binary float" above), and there is no
+`Character` (§5.1.4).
+
+**Six sub-projects, in this order**, each with its own design and plan
+(decided with the user on 2026-10-06):
+
+1. **Aligning** -- built (2026-10-06, [its
+   plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
+2. **Foundations**: the error classes, the `isKindOf…` rule, `yourself`,
+   `identityHash`, the kernel facet's accessors, `Proxy` and a public
+   `Future`.
+3. **Collections and strings**: `Collection`, the whole protocol of
+   `Array`, `List`, `Map` and `Set`, `IdentityMap`, `NotFound`, `List`,
+   `Map` and `Set` rewritten, and `String`'s protocol in code points.
+4. **Numbers**: `Float`'s mathematics, `Integer`'s and `Number`'s
+   protocol, then `Fraction` and the tower.
+5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions.
+6. **Weak references**: `WeakArray`, `WeakMap` and `Ephemeron`, in the
+   scavenger and the compaction, the image and the stress modes.
 
 ## Decisions
+
+- **The kernel's names and loops aligned with Primordial Soup's core API**
+  (decided with the user on 2026-10-06, built the same day): `Closure`,
+  `sendTo:`, `Array>>at:put:` answering the value, and loops that send
+  `value`/`value:` to a non-block through `Closure>>valueOf:` and
+  `valueOf:with:`
+  ([plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:
@@ -2893,7 +2993,7 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
   with `on:do:`, `ensure:` and `ifCurtailed:`, and `ExceptionSet`,
   `Notification`, `outer`, `retryUsing:`, `signalerContext`,
   `Object>>error:` and the finer `Error` subclasses left out;
-  `doesNotUnderstand:` is Squeak's, re-sending with `sentTo:` when the
+  `doesNotUnderstand:` is Squeak's, re-sending with `sendTo:` when the
   default handler resumed it; every VM error becomes a signalled `Error`
   with today's text; the depth limit keeps a reserve of 1,000; one unwinder
   in `interpreter/`, running `ensure:` blocks as trampoline steps and aiming

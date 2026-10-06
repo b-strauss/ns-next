@@ -1,5 +1,5 @@
 //! Integration tests for `Array`'s native methods
-//! (`crate::builtins::collections`) and `Block` native methods
+//! (`crate::builtins::collections`) and `Closure` native methods
 //! (`crate::builtins::block`), found as primitives by the ordinary lookup
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 
@@ -84,11 +84,11 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 }
 
 #[test]
-fn array_at_put_writes_and_returns_the_receiver() {
+fn array_at_put_writes_and_answers_the_value() {
     let source = indoc! {"
         class Foo = Object new (
         ) (
-          public m = ( | a | a:: {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )
+          public m = ( | a | a:: {1. 2. 3}. ^(a at: 2 put: 99) = 99 ifTrue: [a at: 2] ifFalse: [0] )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -128,17 +128,16 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
     });
 }
 
-/// `do:` walks the elements it read when it started, not the live payload:
-/// a write inside the block through `at:put:` is not seen by a later step of
-/// the same walk, even though the live array holds it once the walk ends.
-/// Pins `builtins/collections.rs`'s `do_step`, which reads
-/// `Heap::array_elements` once, before the first element's activation, and
-/// stores the clone in `DoLoop` -- the walk never re-reads the receiver.
+/// `do:` reads each element when the walk reaches it, not a copy taken when
+/// it started: a write inside the block through `at:put:` to a later index
+/// is seen by the step that reaches that index. Pins
+/// `builtins/collections.rs`'s `element_step`, which reads
+/// `Heap::array_element` for each element in turn.
 /// `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`
-/// pins the same invariant for `List>>do:`, a Newspeak loop that never
-/// reaches this leaf, so it cannot stand in for this test.
+/// pins `List>>do:`, a Newspeak loop that never reaches this leaf, so it
+/// cannot stand in for this test.
 #[test]
-fn do_walks_a_snapshot_of_its_receiver() {
+fn do_reads_each_element_when_it_reaches_it() {
     let source = indoc! {"
         class Foo = Object new (
         ) (
@@ -159,13 +158,11 @@ fn do_walks_a_snapshot_of_its_receiver() {
         "do: over an array the block mutates through at:put:",
     );
     interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
-        // 6099 = (1 + 2 + 3) * 1000 + 99: the walk summed the three original
-        // elements, unaffected by the `at:put:` inside it, and the live
-        // array's third slot holds 99 afterward -- the write took effect,
-        // the walk just never saw it.
-        ValueKind::SmallInteger(6099) => {}
+        // 102099 = (1 + 2 + 99) * 1000 + 99: the first step wrote 99 to the
+        // third index before the walk reached it, so the third step read 99.
+        ValueKind::SmallInteger(102099) => {}
         _ => panic!(
-            "expected 6099, got {}",
+            "expected 102099, got {}",
             mutator.heap().describe(mutator.fetch(&result))
         ),
     });
@@ -198,10 +195,11 @@ fn array_at_with_an_object_index_is_an_error_not_a_stack_overflow() {
     );
 }
 
-/// A non-block argument stands for its own value, so `do:` hands it every
-/// element and observes nothing; like any `do:`, it answers its receiver.
+/// A non-block argument is sent `value:` for each element, as a block would
+/// be evaluated; an Integer understands no `value:`, so the first element
+/// ends in `doesNotUnderstand:`.
 #[test]
-fn do_with_a_non_block_answers_its_receiver() {
+fn do_with_a_non_block_sends_it_value() {
     let source = indoc! {"
         class Foo = Object new (
         ) (
@@ -211,11 +209,8 @@ fn do_with_a_non_block_answers_its_receiver() {
     let (mut interpreter, class) = load(source);
     let receiver = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let result = interpreter.send(&receiver, Symbol::intern("m"), &[]);
-    let result = expect_ok(result, "{1. 2} do: 3");
-    assert_eq!(
-        interpreter.enter(|mutator| mutator.fetch(&result).as_boolean()),
-        Some(true)
-    );
+    let error = expect_error(&mut interpreter, result, "{1. 2} do: 3");
+    assert_eq!(error.message, "an object does not understand #value:");
 }
 
 /// A block of the wrong arity fails at the first element; an empty

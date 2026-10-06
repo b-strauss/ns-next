@@ -46,15 +46,6 @@ fn trace_values<T: Tracer>(values: &mut [Value<'_>], tracer: &mut T) {
     }
 }
 
-pub(crate) fn trace_optional_object<T: Tracer>(
-    handle: &mut Option<ObjectReference<'_>>,
-    tracer: &mut T,
-) {
-    if let Some(handle) = handle {
-        tracer.object(handle);
-    }
-}
-
 impl Trace for FrameKind<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         match self {
@@ -129,7 +120,7 @@ impl Trace for WhileLoop<'_> {
             expect: _,
         } = self;
         tracer.object(condition);
-        trace_optional_object(body, tracer);
+        body.trace(tracer);
     }
 }
 
@@ -137,13 +128,21 @@ impl Trace for DoLoop<'_> {
     fn trace<T: Tracer>(&mut self, tracer: &mut T) {
         let DoLoop {
             receiver,
-            block,
-            items,
+            action,
+            size: _,
             next: _,
         } = self;
-        tracer.value(receiver);
-        tracer.object(block);
-        trace_values(items, tracer);
+        tracer.object(receiver);
+        action.trace(tracer);
+    }
+}
+
+impl Trace for LoopAction<'_> {
+    fn trace<T: Tracer>(&mut self, tracer: &mut T) {
+        match self {
+            LoopAction::Closure(closure) => tracer.object(closure),
+            LoopAction::Sent(value) => tracer.value(value),
+        }
     }
 }
 

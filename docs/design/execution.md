@@ -479,7 +479,7 @@ moved"). The stretch sits near that threshold, and anything added to a
 send's hit path lands in it. `dumpbin /disasm` shows one `ns_runtime::vm::run` and no
 `vm::run::closure` or `run_stretch` ("What the loop over locals moved").
 
-Block invocation is not special-cased into an opcode: `Block value` is still a
+Closure invocation is not special-cased into an opcode: `Closure value` is still a
 native method, which answers the closure as a step; the closure's activation is
 pushed above the one that sent `value` — its sender, by position — and a wrong
 argument count is still the same error.
@@ -565,7 +565,7 @@ action, through the unwinds above. Before the kernel is installed there is
 no `Error` class, and an error pops every activation of the run, running no
 block, and leaves with the error.
 
-**`ensure:` and `ifCurtailed:` blocks run on the way.** `Block>>ensure:` and
+**`ensure:` and `ifCurtailed:` blocks run on the way.** `Closure>>ensure:` and
 `ifCurtailed:` are kernel methods whose code carries an unwind marker
 (`bytecode::UnwindMarker`, recognized when the kernel is compiled,
 `compiler::unwind_marker`) naming the registers of their block and of their
@@ -578,7 +578,7 @@ marked activation. A newer unwind or an error that pops the block first drops
 the old one. `ensure:`'s own normal path sets `complete` before it runs the
 block, so the block runs exactly once whichever path gets there first. An
 argument that is no closure is sent `value` through the kernel's
-`Block>>valueOnUnwind:`, whose own return carries the unwind on. An activation
+`Closure>>valueOnUnwind:`, whose own return carries the unwind on. An activation
 without a marker costs the unwinder one test.
 
 Because those blocks run code while an unwind is in progress, an activation
@@ -3788,7 +3788,7 @@ kernel's compiled bodies, and how that reaches an instantiation loop is not
 isolated. Nor is why
 `bench_block.ns` is 4.5% *faster* with primitive methods than `e2bb31e`,
 entirely below in the first sitting: its `value:` went from a primitive
-entry of `Block`'s method table, run by `act`'s `Primitive` arm, to a
+entry of `Closure`'s method table, run by `act`'s `Primitive` arm, to a
 kernel method whose leaf runs from its `Method` arm, and nothing on that
 path is obviously cheaper. Neither was profiled.
 
@@ -4191,7 +4191,7 @@ instantiates nothing in its loop. It makes lexical sends of its slots and
 iteration, and `vm::run` is the same size in both trees. What the head changed
 that such a loop can reach is data, not code on its path: the kernel instance
 is now a value whose class has one applied level more, which is the enclosing
-object of every builtin class, `Block` and `Integer` included, and every class
+object of every builtin class, `Closure` and `Integer` included, and every class
 object's `ClassData` grew by `value_class_refusal`. `bench_new.ns` instantiates
 a class that is no value. On its path the new `inherits_value` test sits behind
 a refusal test it already had, inside a `decide_instantiation` that grew by 62
@@ -5391,7 +5391,7 @@ allocates no vector of its own.
 
 Three things the trampoline settles on its own:
 
-- **`Block value` is not a callback.** It is a native that answers the closure
+- **`Closure value` is not a callback.** It is a native that answers the closure
   as a `Step::Block`; activating a closure is what the loop already does, so no
   Rust frame sits in the middle, and nothing was rewritten in Newspeak.
 - **Nor are the control-flow steps** (decided 2026-09-12).
@@ -5404,7 +5404,10 @@ Three things the trampoline settles on its own:
   `whileFalse:` on a block answer the condition block with
   `Continuation::WhileCondition`, which, when it returns, activates the body or
   ends the loop (`builtins::block::after_condition`), and the body's
-  `Continuation::WhileBody` activates the condition again. The continuation
+  `Continuation::WhileBody` activates the condition again. A body that is no
+  block is sent `value` instead, through `Closure`'s private `valueOf:`
+  pushed with the loop's continuation, as `do:` sends `value:` ("No
+  re-entry from Rust" below); its answer is dropped. The continuation
   rides on the block activation's stack entry and `vm::finish` applies it,
   through `Mutator::resume`, when it pops the activation, so a loop's
   condition and body replace each other on the stack instead of nesting. This
@@ -5553,7 +5556,9 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
   reason must not build `ControlFlow`. `do:`'s block has an argument, so it is
-  always counted. `&` and `|` share `and:`'s and `or:`'s
+  always counted. Neither lowering emits a `SendInlinable` for a loop
+  body that is no block, so both reach the leaf, which sends it `value`
+  through a method and counts that method. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the
@@ -5655,13 +5660,23 @@ stack entry, and `Mutator::resume` applies it when the activation returns.
 The semantics and the order of every observable effect are what they were
 when these paths ran in nested runs of the loop.
 
-- **`do:`** (`builtins/collections.rs`) walks a snapshot of the elements. An
-  empty collection, or an argument that is not a block, answers the receiver
-  at once: a non-block stands for its own value, so handing it the elements
-  would observe nothing. Otherwise `do_step` answers `Step::Block` for the
-  first element with `Continuation::DoElement`, whose `DoLoop` carries the
-  receiver, the block, the snapshot and the next index; `resume` hands it to
-  `after_element`, which activates the block for the next element or answers
+- **`do:`** (`builtins/collections.rs`) reads the size once, when the walk
+  starts, and each element when it reaches it, so a store the action makes
+  to a later index is seen, as in a loop from 1 to the size over `at:`. An
+  empty array answers the receiver at once. Otherwise `do_step` decides,
+  once, what the loop runs (`LoopAction`): a closure it activates itself, or
+  any other object, which it sends `value:` -- a future excepted, which it
+  declines so that the failure path sees through it. For the first element
+  it answers `Step::Block`, or for a non-block the `Step::MethodThen` of
+  `Mutator::send_value_then`, which activates `Closure`'s private
+  `valueOf:with:` -- `^action value: element` -- as a method, given the
+  loop's continuation once pushed, as the unwinder pushes `valueOnUnwind:`
+  ("Unwinding"): what the send of `value:` decides may be a method, a block,
+  a value or an instantiation of several activations, and only the helper's
+  own return is one place to hang the continuation on. The continuation is
+  `Continuation::DoElement`, whose `DoLoop` carries the receiver, the
+  action, the size and the next index; `resume` hands it to
+  `after_element`, which runs the action for the next element or answers
   the receiver. `collections::execute` matches the enumerated
   `CollectionPrimitive` a lookup found ([dispatch.md](dispatch.md),
   "Primitives"): `Enumerate` (`do:`) answers `do_step`'s step directly, and
@@ -6459,7 +6474,7 @@ one byte what happened -- delivered, activate, raised -- keeping a rare
 `Step` or `Signal` in an out slot, as `Handoff` keeps the next frame.
 `StepSink` would have collected the decision as the `Result<Step, Signal>`
 it is, with the functions every other caller uses -- the host's send, the
-unwinder, `Message>>sentTo:`, the block leaves -- as thin wrappers over it,
+unwinder, `Message>>sendTo:`, the block leaves -- as thin wrappers over it,
 so none of those callers would change and `vm.rs` would still decide
 nothing.
 

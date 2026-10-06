@@ -1,0 +1,5 @@
+stdout = '''
+Closure
+true
++ requires a numeric argument, got a Closure
+'''

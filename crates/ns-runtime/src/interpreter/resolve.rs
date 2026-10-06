@@ -377,7 +377,7 @@ impl<'gc> Mutator<'gc> {
                         Some(MethodFastPath::Receiver) => return Ok(Step::Value(receiver)),
                         // Read with `get` rather than indexed: a send the
                         // compiler emitted matches its selector's count,
-                        // but `Message>>sentTo:` delivers whatever
+                        // but `Message>>sendTo:` delivers whatever
                         // arguments a program put in the message, so a
                         // missing one activates the method -- whose arity
                         // check refuses the count -- rather than panicking.
@@ -416,7 +416,7 @@ impl<'gc> Mutator<'gc> {
                                 }
                             }
                         }
-                        // `cull:`'s rule, as `Block>>cull:` states it: the
+                        // `cull:`'s rule, as `Closure>>cull:` states it: the
                         // receiver as the block's argument when it takes one,
                         // nothing when it takes none. A block that takes more
                         // is handed the one and fails the arity check exactly
@@ -571,7 +571,7 @@ impl<'gc> Mutator<'gc> {
     ///
     /// The message is a `Message` of the kernel's, its `selector` a Symbol
     /// and its `arguments` an Array, which `Object>>doesNotUnderstand:`
-    /// sends again with `sentTo:` when the debugger resumed it
+    /// sends again with `sendTo:` when the debugger resumed it
     /// (`docs/design/core-library.md`, "Exceptions"). It is built
     /// once the handler is found; allocation order is unobservable, identity
     /// hashes being drawn lazily.

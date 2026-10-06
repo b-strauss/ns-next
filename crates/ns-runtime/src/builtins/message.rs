@@ -1,9 +1,8 @@
-//! `Message>>sentTo:`'s leaf (`docs/design/core-library.md`, "Exceptions"):
+//! `Message>>sendTo:`'s leaf (`docs/design/core-library.md`, "Exceptions"):
 //! a message sent to a receiver as an ordinary explicit-receiver send,
 //! decided by `Mutator::decide_send` -- §5.5's lookupPublic, then
 //! `doesNotUnderstand:` -- so that a message a program built reaches no
-//! protected or private method, as Primordial Soup's `Message>>sendTo:`
-//! reaches none. It answers the step the send decided,
+//! protected or private method. It answers the step the send decided,
 //! which the run loop runs as any send's; it runs nothing itself.
 
 use crate::builtins::primitive::MessagePrimitive;
@@ -52,7 +51,7 @@ fn message_parts<'gc>(
 }
 
 /// A step that activates something "with the send's own arguments" means
-/// the message's here, not the arguments of the `sentTo:` send the run loop
+/// the message's here, not the arguments of the `sendTo:` send the run loop
 /// delivers the step for.
 fn owning_the_message_arguments<'gc>(
     step: Step<'gc>,

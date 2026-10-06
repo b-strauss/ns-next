@@ -383,7 +383,7 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Symbol), 7);
     assert_eq!(builtin_class_tag(BuiltinClass::Array), 9);
     assert_eq!(builtin_class_tag(BuiltinClass::UndefinedObject), 11);
-    assert_eq!(builtin_class_tag(BuiltinClass::Block), 12);
+    assert_eq!(builtin_class_tag(BuiltinClass::Closure), 12);
     assert_eq!(builtin_class_tag(BuiltinClass::VmMirror), 14);
     assert_eq!(builtin_class_tag(BuiltinClass::Top), 15);
     assert_eq!(builtin_class_tag(BuiltinClass::Value), 16);

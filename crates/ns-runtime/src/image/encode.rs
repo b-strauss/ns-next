@@ -243,7 +243,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Symbol => 7,
         BuiltinClass::Array => 9,
         BuiltinClass::UndefinedObject => 11,
-        BuiltinClass::Block => 12,
+        BuiltinClass::Closure => 12,
         BuiltinClass::VmMirror => 14,
         BuiltinClass::Top => 15,
         BuiltinClass::Value => 16,
