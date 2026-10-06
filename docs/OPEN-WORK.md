@@ -19,13 +19,14 @@ when they were written.
 (decided with the user on 2026-10-06): `Kernel.ns` and
 `CollectionsFactory.ns` take Primordial Soup's whole public core API --
 selectors and behaviour adopted, every body written here -- in six
-sub-projects, in this order: aligning (`Block` to `Closure`, `sentTo:` to
-`sendTo:`, `Array>>at:put:` answering the value, the loops' semantics);
-foundations (the error classes under `Error`, the `isKindOf…` rule,
-`yourself`, `identityHash`, `Proxy`, a public `Future`); collections and
-strings; numbers, the symmetric tower with `Fraction` among them;
-`ByteArray` and `StringBuilder`; weak references. Each has its own design
-and plan; the first starts next. The decisions and the scope are
+sub-projects, in this order: aligning, which is built (`Block` is
+`Closure`, `sentTo:` is `sendTo:`, `Array>>at:put:` answers the value, the
+loops send `value` to a non-block); foundations (the error classes under
+`Error`, the `isKindOf…` rule, `yourself`, `identityHash`, the kernel
+facet's accessors, `Proxy`, a public `Future`); collections and strings;
+numbers, the symmetric tower with `Fraction` among them; `ByteArray` and
+`StringBuilder`; weak references. Each has its own design and plan; the
+foundations sub-project is next and has no plan yet. The decisions and the scope are
 [core-library.md](design/core-library.md), "Planned: the kernel completed
 to Primordial Soup's core API".
 

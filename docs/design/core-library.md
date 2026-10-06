@@ -6,8 +6,9 @@
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
 > with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/` and much
-> of Primordial Soup's core API, which is planned in full ("Planned: the
-> kernel completed to Primordial Soup's core API"). Every public member of the
+> of Primordial Soup's core API, whose names and loops are aligned and the
+> rest planned in full ("Planned: the kernel completed to Primordial Soup's
+> core API"). Every public member of the
 > three shipped modules is documented in place, by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
@@ -2875,8 +2876,8 @@ a non-integral literal is a binary float" above), and there is no
 **Six sub-projects, in this order**, each with its own design and plan
 (decided with the user on 2026-10-06):
 
-1. **Aligning**: `Block` to `Closure`, `sentTo:` to `sendTo:`,
-   `Array>>at:put:`'s answer, the loops' semantics.
+1. **Aligning** -- built (2026-10-06, [its
+   plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
 2. **Foundations**: the error classes, the `isKindOf…` rule, `yourself`,
    `identityHash`, the kernel facet's accessors, `Proxy` and a public
    `Future`.
@@ -2890,6 +2891,13 @@ a non-integral literal is a binary float" above), and there is no
    scavenger and the compaction, the image and the stress modes.
 
 ## Decisions
+
+- **The kernel's names and loops aligned with Primordial Soup's core API**
+  (decided with the user on 2026-10-06, built the same day): `Closure`,
+  `sendTo:`, `Array>>at:put:` answering the value, and loops that send
+  `value`/`value:` to a non-block through `Closure>>valueOf:` and
+  `valueOf:with:`
+  ([plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:

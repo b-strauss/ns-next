@@ -31,7 +31,7 @@ first.
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
 | The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Running a module from the play button beside its `main:args:` in the JetBrains plugin | Complete | 2026-10-05 | [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md) |
-| The kernel completed to Primordial Soup's core API, in six sub-projects | Not started | — | — |
+| The kernel completed to Primordial Soup's core API, in six sub-projects | In progress | 2026-10-06 | [kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md) (the first of six) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4487,3 +4487,31 @@ the CLI refuses `--script` with a source file.
 What the branch leaves open is in [editor-support.md](design/editor-support.md),
 "Known gaps": no automated test reaches the play button through a running
 server.
+
+## The kernel's aligning sub-project (2026-10-06)
+
+Plan: [ns-next-kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md);
+[core-library.md](design/core-library.md), "Planned: the kernel completed to
+Primordial Soup's core API", "Decisions".
+
+The first of the six sub-projects that complete the kernel to Primordial
+Soup's core API. The closure class is `Closure`, as §5.1.8 names it, and
+`Message>>sendTo:` replaces `sentTo:`. `Array>>at:put:` answers the value it
+stored, and `Array>>do:` reads each element as it goes and sends `value:` to
+whatever it is given. `whileTrue:` and `whileFalse:` send `value` to a body
+that is no block, through the trampoline step `Step::MethodThen` and
+`Closure>>valueOf:` and `valueOf:with:`, so the send runs under both
+lowerings with the same depth count.
+
+- `c2caeb42` -- the closure class is `Closure`.
+- `cbc007d0` -- `Message>>sentTo:` becomes `sendTo:`.
+- `483d754c` -- `Array>>at:put:` answers the value it stored.
+- `62723650` -- `Array>>do:` reads each element as it goes and sends
+  `value:` to a non-block.
+- `9b326f76` -- `whileTrue:` and `whileFalse:` send `value` to a body that is
+  no block.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
+foundations sub-project (the error classes under `Error`, the `isKindOf…`
+rule, `yourself`, `identityHash`, the kernel facet's accessors, `Proxy`, a
+public `Future`) is next and has no plan yet.
