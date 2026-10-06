@@ -5556,9 +5556,9 @@ L and L + 1 and the overruns of the machinery, a `pass`'s included.
   because the field measured 4–8% slower ("What the trampoline moved" above);
   so a future native that activates a block with no arguments for any other
   reason must not build `ControlFlow`. `do:`'s block has an argument, so it is
-  always counted. A loop body that is no block is sent `value` through a
-  method, so it is counted under both lowerings: the optimized lowering
-  inlines only a literal block, and counts it too. `&` and `|` share `and:`'s and `or:`'s
+  always counted. Neither lowering emits a `SendInlinable` for a loop
+  body that is no block, so both reach the leaf, which sends it `value`
+  through a method and counts that method. `&` and `|` share `and:`'s and `or:`'s
   native and so carry the mark too, which is harmless: no lowering emits a
   `SendInlinable` for them, since `control_flow::recognize` accepts only the
   eight inlined selectors, and a crafted artifact that marks one meets the

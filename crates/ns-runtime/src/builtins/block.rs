@@ -37,13 +37,12 @@ pub(crate) fn execute<'gc>(
 }
 
 /// What a loop runs as its body, decided once for the whole loop: an
-/// object never stops or starts being a closure. `None` for a missing body,
-/// which only a crafted image's send can leave out, and for a future, which
+/// object never stops or starts being a closure. `None` for a missing body
+/// (the `?` keeps the leaf total rather than indexed) and for a future, which
 /// stands for its value, which may well be a block: declining hands it to
-/// the caller's failure path, which sees through it, where sending it
-/// `value` would send to the future itself. Whether it is a future is asked
-/// only of a body that is no block, as `do:` asks it, so a block body pays
-/// nothing for it.
+/// the caller's failure path, which sees through it. Whether it is a future
+/// is asked only of a body that is no block, as `do:` asks it, so a block
+/// body pays nothing for it.
 fn loop_body<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Option<LoopAction<'gc>> {
     let body = LoopAction::of(mutator.heap(), *arguments.first()?);
     match body {

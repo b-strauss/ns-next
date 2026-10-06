@@ -2815,7 +2815,7 @@ the same six the other way round, as SOMns's and Newspeak's JS kernel do
 - **A not-nil block is culled with the receiver** — handed it when it takes
   an argument, nothing when it takes none — because the Newspeak sources
   under `corpus/` pass both shapes (386 against 126) and the prior art
-  splits. `Block>>cull:` is an ordinary kernel method stating the rule.
+  splits. `Closure>>cull:` is an ordinary kernel method stating the rule.
 - **Every one of the twelve is a quick method.** Two shapes joined the
   quick methods for them, `^self` (`MethodFastPath::Receiver`), which also
   made `Integer>>hash` quick, and `^<parameter> cull: self`
@@ -3023,7 +3023,7 @@ steps, and aims at a `FrameReference` (`Signal::Return` no longer carries an
 `ActivationReference`; `Heap::activation_is_live` is gone). Every VM error
 becomes a signalled `Error` pushed above the activation it arose in, and
 `Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` with a real
-`Message` and re-sends it with the public `sentTo:` when the default
+`Message` and re-sends it with the public `sendTo:` when the default
 handler resumed it; the mirror row that answered it in Rust retired, which
 removes the §3.4 deviation row. An uncaught exception ends the run with the
 `HostError` and the line the host received before, once the pending

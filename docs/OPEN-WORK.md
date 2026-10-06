@@ -26,9 +26,9 @@ loops send `value` to a non-block); foundations (the error classes under
 facet's accessors, `Proxy`, a public `Future`); collections and strings;
 numbers, the symmetric tower with `Fraction` among them; `ByteArray` and
 `StringBuilder`; weak references. Each has its own design and plan; the
-foundations sub-project is next and has no plan yet. The decisions and the scope are
-[core-library.md](design/core-library.md), "Planned: the kernel completed
-to Primordial Soup's core API".
+foundations sub-project is next and has no plan yet. The decisions and the
+scope are [core-library.md](design/core-library.md), "Planned: the kernel
+completed to Primordial Soup's core API".
 
 **Then road step 5, mirrors and atomic installation** ("Step 5, mirrors and
 atomic installation" below; decided with the user on 2026-10-05). Its
@@ -738,6 +738,12 @@ activation.
   programs' 23,635 instructions; no working set was measured before and
   after. Noted 2026-10-02. [execution.md](design/execution.md), "What the
   compact instruction encoding moved".
+- **`Array>>do:` with a closure reads each element through
+  `Heap::array_element` per step** instead of indexing a copy taken at the
+  start (kernel aligning sub-project, 2026-10-06). Its cost on the benchmarks
+  is unmeasured; measure it per the `measuring-performance` skill
+  ([execution.md](design/execution.md)'s protocol) before the next
+  performance step.
 
 ## Defects that change a correct program's output
 

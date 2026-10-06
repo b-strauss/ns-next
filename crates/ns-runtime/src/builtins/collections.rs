@@ -269,8 +269,7 @@ fn do_step<'gc>(
     }
     let action = LoopAction::of(&mutator.heap, action);
     // A future stands for its value, which may well be a block: declining
-    // hands it to the caller's failure path, which sees through it, where
-    // sending it `value:` would send to the future itself.
+    // hands it to the caller's failure path, which sees through it.
     if let LoopAction::Sent(sent) = action {
         if mutator.as_future(sent).is_some() {
             return None;

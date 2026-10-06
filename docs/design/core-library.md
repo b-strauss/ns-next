@@ -8,8 +8,8 @@
 > with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/` and much
 > of Primordial Soup's core API, whose names and loops are aligned and the
 > rest planned in full ("Planned: the kernel completed to Primordial Soup's
-> core API"). Every public member of the
-> three shipped modules is documented in place, by a comment above it.
+> core API"). Every public member of the three shipped modules is
+> documented in place, by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
@@ -1770,9 +1770,9 @@ an error is the VM's business.
   halt and an unhandled error reach the debugger through the same place,
   `defaultAction` on an intact stack.
 - `Message`: `selector`, `arguments`, and `sendTo: receiver`, which sends the
-  message as an ordinary *public* send (§5.5), as Primordial Soup's
-  `Message>>sendTo:` does — a program can obtain and build messages, so a
-  send through one must not reach a protected or private method. A message
+  message as an ordinary *public* send (§5.5) — a program can obtain and
+  build messages, so a send through one must not reach a protected or
+  private method. A message
   built without `arguments:` is sent with none; a selector that is no Symbol
   or arguments that are no Array make `sendTo:` signal an `Error`. It is
   what every `doesNotUnderstand:` handler receives
