@@ -1,10 +1,10 @@
 //! Unwind markers (`docs/design/core-library.md`, "Exceptions"):
-//! `Block>>on:do:`, `ensure:` and `ifCurtailed:` are ordinary kernel
+//! `Closure>>on:do:`, `ensure:` and `ifCurtailed:` are ordinary kernel
 //! methods whose compiled code says what they are and where their
 //! parameters and locals live, so that the unwinder -- and, later,
 //! `signal` -- can find them on the stack and read them there. Recognized
 //! the way the quick methods are, when the kernel is compiled, and only
-//! there: the caller asks for it only for the kernel's `Block`
+//! there: the caller asks for it only for the kernel's `Closure`
 //! (`instantiate::build_methods`), so no program can mark a method of its
 //! own.
 
@@ -12,7 +12,7 @@ use ns_syntax::ast;
 
 use crate::bytecode::{CompiledCode, Instruction, UnwindMarker};
 
-/// The marker `declaration`, a method of the kernel's `Block` compiled to
+/// The marker `declaration`, a method of the kernel's `Closure` compiled to
 /// `code`, carries, if it is one of the three. The registers are read off
 /// the layout `docs/design/compiler.md`, "Registers" gives a method: its
 /// parameters from 0, then its named temporaries in declaration order.
@@ -48,7 +48,7 @@ pub(crate) fn recognize(
             .instructions()
             .iter()
             .any(|instruction| matches!(instruction, Instruction::MakeVector { .. })),
-        "internal: Kernel.ns's Block>>{selector} keeps a local in an indirection vector, \
+        "internal: Kernel.ns's Closure>>{selector} keeps a local in an indirection vector, \
          where the unwinder cannot read it"
     );
     // The local's register is read off the layout, not off the code; the
@@ -71,7 +71,7 @@ pub(crate) fn recognize(
             code.instructions()
                 .iter()
                 .any(|instruction| writes_register(instruction, register)),
-            "internal: Kernel.ns's Block>>{selector} never writes register {register}, \
+            "internal: Kernel.ns's Closure>>{selector} never writes register {register}, \
              where its marker says the local lives"
         );
     }
@@ -98,7 +98,7 @@ fn local_register(declaration: &ast::MethodDeclaration, code: &CompiledCode, nam
         .iter()
         .position(|temporary| temporary.name.name == name)
         .unwrap_or_else(|| {
-            panic!("internal: Kernel.ns's marked Block method declares no local {name}")
+            panic!("internal: Kernel.ns's marked Closure method declares no local {name}")
         });
     debug_assert_eq!(code.copied_count, 0, "a method is handed no copied values");
     super::temporary_index(code.argument_count, position)

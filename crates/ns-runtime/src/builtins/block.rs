@@ -1,4 +1,4 @@
-//! `Block` (closure) native methods -- `value`..`value:value:value:`,
+//! `Closure` native methods -- `value`..`value:value:value:`,
 //! `numArgs`, and `whileTrue:`/`whileFalse:`. Each returns the block to
 //! activate as a step; the loops continue through `Continuation`s.
 

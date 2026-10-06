@@ -83,7 +83,7 @@ pub enum BuiltinClass {
     Symbol,
     Array,
     UndefinedObject,
-    Block,
+    Closure,
     /// The VM mirror's class (`docs/design/core-library.md`, "The VM mirror
     /// is the whole Rust boundary"): one instance, built at bootstrap and
     /// handed to the core library alone. No program can name it -- it is
@@ -157,7 +157,7 @@ impl BuiltinClass {
         BuiltinClass::Symbol,
         BuiltinClass::Array,
         BuiltinClass::UndefinedObject,
-        BuiltinClass::Block,
+        BuiltinClass::Closure,
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Value,

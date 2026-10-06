@@ -433,7 +433,7 @@ pub struct CompiledCode {
     /// -- silent wrong output at exit status 0, not a crash. The round-trip
     /// tests' `assert_derived_as_decoded` holds the two lists to each other.
     pub outer_reach: u16,
-    /// Whether this is the body of `Block>>on:do:`, `ensure:` or
+    /// Whether this is the body of `Closure>>on:do:`, `ensure:` or
     /// `ifCurtailed:`, and where its parameters and locals live: recognized
     /// only when the kernel is compiled (`compiler::unwind_marker`), so no
     /// other body carries one. The unwinder reads it off each activation's

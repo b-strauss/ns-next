@@ -470,7 +470,7 @@ kernel's.
   platform"). `Number` holds only `to:do:` and `to:by:do:`; it is the
   place §3.1.1 names, and where the numeric tower goes when there is one
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
-  `Array` and `Block` stay directly under `Object`,
+  `Array` and `Closure` stay directly under `Object`,
   since their instances are not values, and so does `Behavior`, with `Class`
   and `Metaclass` below it ("Class sides and metaclasses" below). The VM mirror's class,
   which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
@@ -1766,7 +1766,7 @@ would be a weak table of its own. Its message is rendered by
 `Heap::describe` when `new` refuses, not at creation, and reads the
 same as a message rendered at creation would: the offender is never a value,
 and what `describe` says of a non-value -- "an instance of X", "an Array of
-n", "a Block", "the class X" -- does not change while it lives. Holding the
+n", "a Closure", "the class X" -- does not change while it lives. Holding the
 offender keeps nothing alive: it is the enclosing object of a level of this
 class object's own superclass chain. An image carries no refusal; the
 decoder recomputes it (decided with the user on 2026-10-03; "A value

@@ -479,7 +479,7 @@ moved"). The stretch sits near that threshold, and anything added to a
 send's hit path lands in it. `dumpbin /disasm` shows one `ns_runtime::vm::run` and no
 `vm::run::closure` or `run_stretch` ("What the loop over locals moved").
 
-Block invocation is not special-cased into an opcode: `Block value` is still a
+Closure invocation is not special-cased into an opcode: `Closure value` is still a
 native method, which answers the closure as a step; the closure's activation is
 pushed above the one that sent `value` — its sender, by position — and a wrong
 argument count is still the same error.
@@ -565,7 +565,7 @@ action, through the unwinds above. Before the kernel is installed there is
 no `Error` class, and an error pops every activation of the run, running no
 block, and leaves with the error.
 
-**`ensure:` and `ifCurtailed:` blocks run on the way.** `Block>>ensure:` and
+**`ensure:` and `ifCurtailed:` blocks run on the way.** `Closure>>ensure:` and
 `ifCurtailed:` are kernel methods whose code carries an unwind marker
 (`bytecode::UnwindMarker`, recognized when the kernel is compiled,
 `compiler::unwind_marker`) naming the registers of their block and of their
@@ -578,7 +578,7 @@ marked activation. A newer unwind or an error that pops the block first drops
 the old one. `ensure:`'s own normal path sets `complete` before it runs the
 block, so the block runs exactly once whichever path gets there first. An
 argument that is no closure is sent `value` through the kernel's
-`Block>>valueOnUnwind:`, whose own return carries the unwind on. An activation
+`Closure>>valueOnUnwind:`, whose own return carries the unwind on. An activation
 without a marker costs the unwinder one test.
 
 Because those blocks run code while an unwind is in progress, an activation
@@ -3788,7 +3788,7 @@ kernel's compiled bodies, and how that reaches an instantiation loop is not
 isolated. Nor is why
 `bench_block.ns` is 4.5% *faster* with primitive methods than `e2bb31e`,
 entirely below in the first sitting: its `value:` went from a primitive
-entry of `Block`'s method table, run by `act`'s `Primitive` arm, to a
+entry of `Closure`'s method table, run by `act`'s `Primitive` arm, to a
 kernel method whose leaf runs from its `Method` arm, and nothing on that
 path is obviously cheaper. Neither was profiled.
 
@@ -4191,7 +4191,7 @@ instantiates nothing in its loop. It makes lexical sends of its slots and
 iteration, and `vm::run` is the same size in both trees. What the head changed
 that such a loop can reach is data, not code on its path: the kernel instance
 is now a value whose class has one applied level more, which is the enclosing
-object of every builtin class, `Block` and `Integer` included, and every class
+object of every builtin class, `Closure` and `Integer` included, and every class
 object's `ClassData` grew by `value_class_refusal`. `bench_new.ns` instantiates
 a class that is no value. On its path the new `inherits_value` test sits behind
 a refusal test it already had, inside a `decide_instantiation` that grew by 62
@@ -5391,7 +5391,7 @@ allocates no vector of its own.
 
 Three things the trampoline settles on its own:
 
-- **`Block value` is not a callback.** It is a native that answers the closure
+- **`Closure value` is not a callback.** It is a native that answers the closure
   as a `Step::Block`; activating a closure is what the loop already does, so no
   Rust frame sits in the middle, and nothing was rewritten in Newspeak.
 - **Nor are the control-flow steps** (decided 2026-09-12).

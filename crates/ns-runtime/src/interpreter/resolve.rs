@@ -416,7 +416,7 @@ impl<'gc> Mutator<'gc> {
                                 }
                             }
                         }
-                        // `cull:`'s rule, as `Block>>cull:` states it: the
+                        // `cull:`'s rule, as `Closure>>cull:` states it: the
                         // receiver as the block's argument when it takes one,
                         // nothing when it takes none. A block that takes more
                         // is handed the one and fails the arity check exactly

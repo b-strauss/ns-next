@@ -60,7 +60,7 @@ Top                     (private; no superclass, declares nothing)
     │   ├── Symbol
     │   └── UndefinedObject
     ├── Array
-    ├── Block           ..., on:do:, ensure:, ifCurtailed: (marked methods)
+    ├── Closure         ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
     │   ├── Error       └── MessageNotUnderstood
     │   └── Halt
@@ -120,7 +120,7 @@ may.
 Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 and `printString`, beside its thirteen
-accessors for the predefined classes, `Object` to `Block`, each
+accessors for the predefined classes, `Object` to `Closure` (§5.1.8), each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Integer`'s `+ - * // \\ < >
 <= >= =`, `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `negated`, `abs`, `asFloat`,
@@ -131,7 +131,7 @@ leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
 `asString`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
 `asSymbol` and `printString`, and on its class side `with:`; `Symbol`'s
 `asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`
-and `at:`; `Block`'s `value` to `value:value:value:`, `numArgs`, `whileTrue:`
+and `at:`; `Closure`'s `value` to `value:value:value:`, `numArgs`, `whileTrue:`
 and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
 below). `Number` reaches no leaf of its own: its `to:do:` and `to:by:do:` are
@@ -142,7 +142,7 @@ ordinary one ("The nil protocol" below). `True` and `False` reach no leaf at
 all: their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
 ("`True` and `False` are quick methods" below), and their `printString` and
 `hash` ordinary ones. `Boolean` declares nothing of its own either. `Object`'s
-protected `doesNotUnderstand:` and `halt`, the exception classes, `Block`'s
+protected `doesNotUnderstand:` and `halt`, the exception classes, `Closure`'s
 `on:do:`, `ensure:` and `ifCurtailed:` and `Message` are the exception
 machinery, ordinary Newspeak over the activation leaves ("Exceptions" below).
 
@@ -1390,7 +1390,7 @@ an exception — and their failure blocks answer a value (`ifFail: [nil]`,
 but `Object`'s `doesNotUnderstand:`, which §5.5 makes `protected`, and the
 machinery's own: `Exception`'s `hostSelector` and `hostReceiver` and
 `MessageNotUnderstood`'s overrides of them (`protected`), `Exception`'s
-handler search (`private`) and `Block>>valueOnUnwind:` (`private`) — and
+handler search (`private`) and `Closure>>valueOnUnwind:` (`private`) — and
 `Metaclass`'s two `thisClass` helpers (`private`).
 
 Two things about the shape are enforced rather than conventional:
@@ -1498,7 +1498,7 @@ splits here — SOMns sends `ifNotNil:`'s block `value` and culls
 `ifNil:ifNotNil:`'s, the JS kernel sends every one `value: self` — and the
 canonical Newspeak sources under `corpus/` pass both shapes, 386
 `ifNotNil: [:x | ...]` against 126 `ifNotNil: [...]`, which only `cull:`
-runs. `Block>>cull:` is an ordinary `Kernel.ns` method saying so, and
+runs. `Closure>>cull:` is an ordinary `Kernel.ns` method saying so, and
 `Object`'s bodies are `^notNilBlock cull: self`. A block that takes two
 arguments is handed one and fails the arity check as `value:` would; an
 argument that is no block is sent `cull:`, which nothing but a block
@@ -1802,14 +1802,14 @@ platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 platform was handed.
 `Object` gains no accessor, so its set stays what §3.2 names.
 
-`Block` has `on: exceptionClass do: handler`, `ensure: aBlock` and
+`Closure` has `on: exceptionClass do: handler`, `ensure: aBlock` and
 `ifCurtailed: aBlock`, three marked methods (below): `on:do:`'s body sets
 its `handlerActive` local and answers `self value`; `ensure:`'s runs its
 block after `self value` in Newspeak on the normal path, having set its
 `complete` local first; `ifCurtailed:`'s answers `self value` and leaves
 its block to the unwinder. A block the unwinder runs is activated directly;
 an argument that is no block is sent `value` through the kernel's private
-`Block>>valueOnUnwind:`, as the normal path sends it.
+`Closure>>valueOnUnwind:`, as the normal path sends it.
 
 **The semantics are ANSI's, as Squeak and Primordial Soup implement them.**
 `signal` walks the sender chain from its own activation for a marked
@@ -1941,7 +1941,7 @@ with an argument that is no `Message` fails inside the handler, on
 - **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
   a property of its compiled code (`bytecode::UnwindMarker`, naming the
   registers of the method's arguments and of its `handlerActive` or
-  `complete` local), recognized by selector when the kernel's `Block` is
+  `complete` local), recognized by selector when the kernel's `Closure` is
   compiled (`compiler::unwind_marker`), as the quick methods are; only
   kernel methods carry one, it is never written to an image, and a decoded
   body has none. The unwinder and the leaves read it off each activation's
@@ -2615,7 +2615,7 @@ move came *after* the caches, and after the inlined integer fast path that
 was sequenced to cushion it. What Milestone 4 owed this section was only that
 it not deepen the investment in Rust callbacks while it rewrote the code
 around them; step 2a took the last callback away, as a trampoline step, which
-maps directly onto the leaf the kernel's `Block>>value` forwards to.
+maps directly onto the leaf the kernel's `Closure>>value` forwards to.
 
 **Measured, the move cost nothing measurable**, against `e2bb31e`, the
 commit before it, over the eight sources in two sittings: with primitive
@@ -2648,7 +2648,7 @@ Each decision below was taken with the user.
 
 **The accessors are exactly the names a program could reach before**:
 `Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `UndefinedObject`, `Array` and `Block`.
+`Float`, `String`, `Symbol`, `UndefinedObject`, `Array` and `Closure`.
 `OrderedCollection` was among them until it was removed (2026-09-28), when
 `platform collections List` replaced it. `Top` and the VM mirror's class get none:
 §3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a
@@ -2772,7 +2772,7 @@ decline for one where they would answer "no"
 
 ### Planned: real bodies for control flow and `do:`, before the baseline JIT
 
-Would change: `Block`'s `whileTrue:` and `whileFalse:` and the
+Would change: `Closure`'s `whileTrue:` and `whileFalse:` and the
 collections' `do:` become real Newspeak loops instead of forwarders to
 today's leaves. The branches are done: `True`'s and `False`'s methods are
 already Newspeak ("`True` and `False` are quick methods" above).
@@ -2882,8 +2882,6 @@ on its own (decided with the user on 2026-10-06):
   happened to run. JavaScript's `WeakMap`, which the canonical Newspeak's
   is built on, refuses such keys too. `identityHash` of a value is its
   `hash`, since `==` on a value is `=`.
-- **`Block` becomes `Closure`**, the class §5.1.8 names and Primordial
-  Soup's.
 
 Kept as recorded deviations, not taken up: tuple literals stay mutable
 `Array`s (§5.1.7), a non-integral literal stays a `Float` (§5.1.1, "Deviation:

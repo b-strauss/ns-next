@@ -1494,7 +1494,7 @@ impl<'gc> Mutator<'gc> {
     }
 
     pub fn new_closure(&mut self, closure: crate::heap::NewClosure<'gc>) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Block);
+        let class = self.builtin_class(BuiltinClass::Closure);
         self.heap.allocate_closure(class, closure)
     }
 
@@ -1509,7 +1509,7 @@ impl<'gc> Mutator<'gc> {
         register_base: crate::heap::RegisterBase,
         copied: &[u16],
     ) -> ObjectReference<'gc> {
-        let class = self.builtin_class(BuiltinClass::Block);
+        let class = self.builtin_class(BuiltinClass::Closure);
         self.heap.allocate_closure_from_registers(
             class,
             code,

@@ -606,15 +606,15 @@ mod tests {
         });
     }
 
-    /// `Block` has no `==`; the ordinary walk reaches `Object`'s, since
-    /// `Block`'s superclass is `Object` -- no hand-restored inheritance.
+    /// `Closure` has no `==`; the ordinary walk reaches `Object`'s, since
+    /// `Closure`'s superclass is `Object` -- no hand-restored inheritance.
     /// `Object`'s `==` is a kernel primitive method (`Kernel.ns`), found as a
     /// `Lookup::Method` whose `MixinMethod.fast_path` names the mirror row.
     #[test]
     fn a_primitive_a_builtin_lacks_is_found_at_objects_level() {
         let mut interpreter = crate::Interpreter::bootstrap();
         interpreter.enter(|mutator| {
-            let block = mutator.builtin_class(BuiltinClass::Block);
+            let block = mutator.builtin_class(BuiltinClass::Closure);
             let object = mutator.builtin_class(BuiltinClass::Object);
             match lookup_public(&mutator.heap, block, Symbol::intern("==")) {
                 Lookup::Method(method, level) => {
@@ -625,7 +625,7 @@ mod tests {
                     );
                     assert!(level.same(object))
                 }
-                _ => panic!("a Block's `==` must find Object's `==`"),
+                _ => panic!("a Closure's `==` must find Object's `==`"),
             }
         });
     }

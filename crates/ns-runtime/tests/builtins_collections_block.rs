@@ -1,5 +1,5 @@
 //! Integration tests for `Array`'s native methods
-//! (`crate::builtins::collections`) and `Block` native methods
+//! (`crate::builtins::collections`) and `Closure` native methods
 //! (`crate::builtins::block`), found as primitives by the ordinary lookup
 //! via `Interpreter::send` -- same pattern as `tests/builtins_boolean_numbers.rs`.
 

@@ -2582,7 +2582,7 @@ impl<'gc> Heap<'gc> {
                         }
                     }
                     Format::Frame => "an Activation".to_string(),
-                    Format::Closure => "a Block".to_string(),
+                    Format::Closure => "a Closure".to_string(),
                     Format::Class => format!("the class {}", self.class_display_name(object)),
                     _ => {
                         match self.class_application_entry(self.object_class(object)) {
@@ -5933,7 +5933,7 @@ mod tests {
     #[test]
     fn a_closure_filled_in_place_is_the_block_its_allocation_writes() {
         let mut heap = frame_heap();
-        let class = named_class(&mut heap, "Block");
+        let class = named_class(&mut heap, "Closure");
         let frame = heap.allocate_placeholder_frame(0);
         let code = trivial_code();
         let placeholder = heap.allocate_placeholder(class, record_size::CLOSURE_FIXED_FIELDS + 2);

@@ -941,7 +941,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         7 => BuiltinClass::Symbol,
         9 => BuiltinClass::Array,
         11 => BuiltinClass::UndefinedObject,
-        12 => BuiltinClass::Block,
+        12 => BuiltinClass::Closure,
         14 => BuiltinClass::VmMirror,
         15 => BuiltinClass::Top,
         16 => BuiltinClass::Value,

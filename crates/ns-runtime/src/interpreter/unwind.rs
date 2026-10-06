@@ -448,9 +448,9 @@ impl<'gc> Mutator<'gc> {
     /// the unwinder answered -- above the marked activation, which is the
     /// top of the stack, with the unwind to carry on as its continuation.
     ///
-    /// A closure is activated as `Block>>value` activates it. Anything else
+    /// A closure is activated as `Closure>>value` activates it. Anything else
     /// is sent `value`, as the normal path sends it, through the kernel's
-    /// `Block>>valueOnUnwind:`, whose activation is where the unwind carries
+    /// `Closure>>valueOnUnwind:`, whose activation is where the unwind carries
     /// on: what that send decides may be a method, a block, a value or an
     /// instantiation of several activations, and only the kernel method's
     /// own return is one place to hang the continuation on for all of them.
@@ -484,7 +484,7 @@ impl<'gc> Mutator<'gc> {
             .top_activation()
             .expect("internal: the marked activation is the top of the stack");
         let receiver = self.heap.activation_receiver(marked);
-        let block_class = self.builtin_class(BuiltinClass::Block);
+        let block_class = self.builtin_class(BuiltinClass::Closure);
         let method = self
             .heap
             .class_application(block_class)
@@ -494,7 +494,7 @@ impl<'gc> Mutator<'gc> {
                     .compiled_method(Symbol::VALUE_ON_UNWIND)
                     .cloned()
             })
-            .expect("internal: Kernel.ns's Block declares valueOnUnwind:");
+            .expect("internal: Kernel.ns's Closure declares valueOnUnwind:");
         let activation = self.push_step(
             Step::Method {
                 receiver,

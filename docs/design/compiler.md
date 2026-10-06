@@ -394,7 +394,7 @@ bytecode, not repeated closure invocation — with the guard re-checked each
 iteration, which is cheap because it is a tag check.
 
 Their guard is different in kind. The receiver is a block literal by
-construction, so its class is always `Block` and there is no receiver ambiguity to
+construction, so its class is always `Closure` and there is no receiver ambiguity to
 fall back from; what the guard checks is the **condition block's value** each
 iteration. A non-Boolean condition cannot fall back to re-sending `whileTrue:` to
 a materialized closure, because that would re-run the condition body and duplicate

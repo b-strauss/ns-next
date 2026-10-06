@@ -65,7 +65,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Symbol = ( ^outer Kernel Symbol )
         public UndefinedObject = ( ^outer Kernel UndefinedObject )
         public Array = ( ^outer Kernel Array )
-        public Block = ( ^outer Kernel Block )
+        public Closure = ( ^outer Kernel Closure )
         (* §5.5: protected, so an explicit-receiver send of it finds nothing
            through lookupPublic and falls to the access-blind "defined for"
            walk that invokes it for the failing send itself.
@@ -186,7 +186,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         private thisClassOf: subject = ( ^vmMirror metaclassThisClass: subject ifFail: [^nil] )
     )
     (* The root of the exceptions: signalled with `signal` or `signal:`,
-       caught by `Block>>on:do:`, whose handler block receives it and may
+       caught by `Closure>>on:do:`, whose handler block receives it and may
        send it `resume:`, `return:`, `retry` or `pass`. Resumable. *)
     (* §8.6: exception handling is a library issue, built here over the
        activation (docs/design/core-library.md, "Exceptions"). The slots are
@@ -486,7 +486,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         protected Symbol = ( ^super Symbol )
         protected UndefinedObject = ( ^super UndefinedObject )
         protected Array = ( ^super Array )
-        protected Block = ( ^super Block )
+        protected Closure = ( ^super Closure )
         protected isNil = ( ^super isNil )
         protected notNil = ( ^super notNil )
         protected ifNil: block = ( ^super ifNil: block )
@@ -922,9 +922,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* The String 'nil'. *)
         public printString = ( ^'nil' )
     )
-    (* A block, `[:argument | …]`: code that runs when it is sent `value`,
-       in the scope it was written in. *)
-    public class Block = Object new () (
+    (* A closure, `[:argument | …]`: code that runs when it is sent
+       `value`, in the scope it was written in (§5.1.8). *)
+    public class Closure = Object new () (
         (* `value` to `value:value:value:` evaluate the block with the
            arguments given and answer its value. Each signals an Error,
            'wrong number of block arguments: block takes …, got …', when
