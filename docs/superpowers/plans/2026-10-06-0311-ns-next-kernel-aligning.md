@@ -182,7 +182,7 @@ class AClosureIsAnInstanceOfClosure = Object new (
     public main: platform args: arguments = (
         | transcript = platform transcript. Error = platform kernel Error. |
         transcript show: [] class printString; newLine.
-        transcript show: ([:each | each] class = Closure) printString; newLine.
+        transcript show: ([:each | each] class == Closure) printString; newLine.
         transcript show: ([3 + []] on: Error do: [:error | error messageText]); newLine
     )
 ) : ()
@@ -270,10 +270,8 @@ to `Closure` (and `describe`'s text "a Block" to "a Closure") wherever
 the sentence names the class, in present tense. In
 `docs/design/core-library.md`'s "Planned: the kernel completed to
 Primordial Soup's core API", delete the bullet "**`Block` becomes
-`Closure`**" and add, after the sentence "**The on-demand rule no longer
-governs the core**…", nothing -- instead rewrite the class's description
-in "What exists" (line ~63-145, where `Block` is listed) to name
-`Closure` and cite §5.1.8.
+`Closure`**", and make the class's description in "What exists" (lines
+~63-145, where `Block` is listed) name `Closure` and cite §5.1.8.
 
 - [ ] **Step 8: Run the per-commit gates and commit**
 
@@ -664,7 +662,7 @@ class AnErrorInsideDoWithANonBlockIsCaught = Object new (
     ) (
         public value: element = (
             seen:: seen + 1.
-            element = 2 ifTrue: [^1 + nil].
+            element = 2 ifTrue: [1 + nil].
             ^element
         )
     )
@@ -1186,7 +1184,7 @@ Claude-Session: https://claude.ai/code/session_01Xp5itLVQcsQMvNvW3fWNu2"
 - Modify: `docs/PROGRESS.md` (an entry for this sub-project, in the style
   of the entries before it, with its date, plan link and what changed; the
   milestone table row "The kernel completed to Primordial Soup's core API,
-  in six sub-projects" stays "In progress" with this plan linked)
+  in six sub-projects" becomes "In progress", with this plan linked)
 
 - [ ] **Step 1: Check what is left of the decided bullets**
 
