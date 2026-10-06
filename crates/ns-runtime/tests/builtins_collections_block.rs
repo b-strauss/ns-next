@@ -84,11 +84,11 @@ fn array_at_out_of_range_is_a_newspeak_error_not_a_panic() {
 }
 
 #[test]
-fn array_at_put_writes_and_returns_the_receiver() {
+fn array_at_put_writes_and_answers_the_value() {
     let source = indoc! {"
         class Foo = Object new (
         ) (
-          public m = ( | a | a:: {1. 2. 3}. a at: 2 put: 99. ^a at: 2 )
+          public m = ( | a | a:: {1. 2. 3}. ^(a at: 2 put: 99) = 99 ifTrue: [a at: 2] ifFalse: [0] )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);

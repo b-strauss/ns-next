@@ -881,7 +881,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
            answers the receiver. An `action` that is no block is not
            evaluated. *)
         public do: action = ( ^vmMirror collection: self do: action ifFail: [^super do: action] )
-        (* Stores `value` at `index`, 1-based, and answers the receiver.
+        (* Stores `value` at `index`, 1-based, and answers `value`.
            Signals an Error, 'index … out of range: valid indices are
            1..size (size …)', for an index outside 1 to `size`, and 'at:put:
            requires an Integer index, got …' for one that is no Integer. *)

@@ -2440,8 +2440,7 @@ its class. That needs its own decision when the first such module arrives.
   only `size_` stays protected, as a subclass's view of the size
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`
   reads it; decided with the user on 2026-10-01). `add:` answers
-  the element, and `at:put:` the value, as Smalltalk's and Primordial
-  Soup's do, where the kernel's `Array>>at:put:` leaf answers the receiver
+  the element, and `at:put:` the value, as `Array>>at:put:` does
   (decided with the user on 2026-09-28). `do:` reads the size once, as
   Primordial Soup's `1 to: size_ do:` does, so an `add:` inside the block
   does not extend the walk while an `at:put:` inside it is seen, and it
@@ -2858,8 +2857,6 @@ on its own (decided with the user on 2026-10-06):
   are signalled where it signals them, as subclasses of `Error`, so that
   `on: Error do:` still catches them and today's texts stay their
   `messageText`; Primordial Soup has no `Error` and its classes no text.
-- **`Array>>at:put:` answers the value**, as `List>>at:put:` already does,
-  where its leaf answers the receiver today.
 - **`do:`, `whileTrue:` and `whileFalse:` take Primordial Soup's
   semantics now, in their leaves**: `do:` reads the elements as it goes, so
   an `at:put:` inside the block is seen, and sends `value:` to whatever it

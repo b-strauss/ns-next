@@ -110,7 +110,7 @@ fn element_at<'gc>(
     )
 }
 
-/// `at:put:`.
+/// `at:put:`: stores the value and answers it.
 fn element_at_put<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
@@ -145,7 +145,7 @@ fn element_at_put<'gc>(
     mutator
         .heap
         .array_set_element(object, (index as usize) - 1, value);
-    Some(Ok(receiver))
+    Some(Ok(value))
 }
 
 /// `Array new: size`: an array of `size` `nil`s. Its subject is the class
