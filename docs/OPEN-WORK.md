@@ -15,7 +15,21 @@ when they were written.
 
 ## Next
 
-**Road step 5, mirrors and atomic installation** ("Step 5, mirrors and
+**The kernel completed to Primordial Soup's core API**, before road step 5
+(decided with the user on 2026-10-06): `Kernel.ns` and
+`CollectionsFactory.ns` take Primordial Soup's whole public core API --
+selectors and behaviour adopted, every body written here -- in six
+sub-projects, in this order: aligning (`Block` to `Closure`, `sentTo:` to
+`sendTo:`, `Array>>at:put:` answering the value, the loops' semantics);
+foundations (the error classes under `Error`, the `isKindOf…` rule,
+`yourself`, `identityHash`, `Proxy`, a public `Future`); collections and
+strings; numbers, the symmetric tower with `Fraction` among them;
+`ByteArray` and `StringBuilder`; weak references. Each has its own design
+and plan; the first starts next. The decisions and the scope are
+[core-library.md](design/core-library.md), "Planned: the kernel completed
+to Primordial Soup's core API".
+
+**Then road step 5, mirrors and atomic installation** ("Step 5, mirrors and
 atomic installation" below; decided with the user on 2026-10-05). Its
 building block is `become:` as an eager bulk forward, as Primordial Soup's:
 a one-way forward of an array of old objects to an array of new ones that
@@ -351,9 +365,10 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   false; `Number` (`Kernel.ns:464`) carries only `to:do:` and `to:by:do:`.
   Settling it means
   `Number`'s shared behaviour, `Fraction`, cross-type comparison and a
-  matching hash (`3 asFloat hash = 3 hash`). Decided only that it must be
-  settled; `num-rational` is the reference for `Fraction` and for converting a
-  `Float` to a fraction exactly. [core-library.md](design/core-library.md),
+  matching hash (`3 asFloat hash = 3 hash`). Decided on 2026-10-06 with the
+  user: Primordial Soup's tower, made symmetric, as the kernel completion's
+  fourth sub-project ("Next" above); `num-rational` is the reference for
+  `Fraction` and for converting a `Float` to a fraction exactly. [core-library.md](design/core-library.md),
   "Gap: an integer has no `/`".
 - **`//` with a `Float` operand.** Primordial Soup answers `7 // 2.5` and
   `7.5 // 2` as a floored `Float` (`vm/primitives.cc`, `Number_div`, whose
@@ -362,14 +377,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   `Float` has no `//`. `\\` is not a gap: Primordial Soup's `Number_mod` has
   no `Float` branch and its Newspeak fallback signals an `ArgumentError`
   (`newspeak/KernelForPrimordialSoup.ns:1988`), as ours refuses a `Float`.
-  The on-demand rule adds `//` when a benchmark or runnable module sends
-  it. [core-library.md](design/core-library.md), "Gap: an integer has no
+  `Float>>//` comes with the kernel completion's fourth sub-project
+  ("Next" above). [core-library.md](design/core-library.md), "Gap: an integer has no
   `/`".
 - **`isNaN`.** `Number>>isNaN` answering `false` and `Float>>isNaN` as a
   leaf over `f64::is_nan`; Primordial Soup's `^(self = self) not` no longer
   works, since a NaN equals a NaN here. A NaN stays an ordinary `Float`
   (a class of its own was set aside). Noted with the user on 2026-10-01;
-  added when a program sends it. [core-library.md](design/core-library.md),
+  comes with the kernel completion's fourth sub-project ("Next" above). [core-library.md](design/core-library.md),
   "A NaN equals a NaN".
 - **`Float>>printString` of a large or small magnitude.** A `Float` prints
   as Rust's `Display` writes it, the shortest digits that read back as the
@@ -418,14 +433,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   come with the first user module. Static module linking through it is decided,
   not built. [core-library.md](design/core-library.md), "Planned: the module
   namespace on the mirror".
-- **Library classes on demand**, each when a module on `corpus/runnable.toml`
-  or a program under `benchmarks/` asks for it: collections beyond `List`,
-  `Map` and `Set` (`IdentityMap`, `IdentitySet`, `WeakArray`,
-  `Collection`); exceptions beyond §8.6's core
+- **Library classes beyond Primordial Soup's core API**, each when a module
+  on `corpus/runnable.toml` or a program under `benchmarks/` asks for it:
+  `IdentitySet`; exceptions beyond §8.6's core and Primordial Soup's
   (`ExceptionSet`, `Notification`, `Warning`, `outer`, `retryUsing:`,
-  `signalerContext`, `Object>>error:`, finer `Error` subclasses); a mirror
-  `slot name` leaf for reflection; an embedded compiled kernel image if the
-  kernel grows. [core-library.md](design/core-library.md).
+  `signalerContext`, `Object>>error:`); a mirror `slot name` leaf for
+  reflection; an embedded compiled kernel image if the kernel grows. What
+  Primordial Soup's core API has comes with "Next" above.
+  [core-library.md](design/core-library.md).
 
 ## Planned: images, liveness and reflection
 

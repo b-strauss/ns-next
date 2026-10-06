@@ -316,9 +316,12 @@ Only a release build runs the size tests (`a_handle_and_an_optional_handle_are_o
 Every corpus module must parse; there is no list of exceptions. A module that
 runs end to end belongs in `corpus/runnable.toml` with the unary selector its
 generated application sends it (`send`) and its output. `PlatformFactory.ns`
-and `CollectionsFactory.ns` are widened only on demand: an accessor exists
-because a `runnable.toml` module or a program under `benchmarks/` needs it,
-named in the accessor's comment.
+is widened only on demand: an accessor exists because a `runnable.toml`
+module or a program under `benchmarks/` needs it, named in the accessor's
+comment. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
+core API instead, its selectors and behaviour adopted, every body written
+here and no other project named in their comments (`core-library.md`,
+"Planned: the kernel completed to Primordial Soup's core API").
 
 Add no new external dependency without a reason that survives review — the image
 format is hand-rolled on purpose.

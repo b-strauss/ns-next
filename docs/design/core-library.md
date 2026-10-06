@@ -5,8 +5,9 @@
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/`, and the
-> surface grows on demand, not speculatively. Every public member of the
+> with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/` and much
+> of Primordial Soup's core API, which is planned in full ("Planned: the
+> kernel completed to Primordial Soup's core API"). Every public member of the
 > three shipped modules is documented in place, by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
@@ -793,31 +794,37 @@ ordinary record of the class the path `Platform` names.
 
 ## The on-demand rule
 
-**`PlatformFactory.ns` and `CollectionsFactory.ns` are widened only on
-demand.** An accessor exists because a module on `corpus/runnable.toml` or
+**`PlatformFactory.ns` is widened only on demand.** `Kernel.ns` and
+`CollectionsFactory.ns` are not bound by it: they are to carry Primordial
+Soup's whole core API ("Planned: the kernel completed to Primordial Soup's
+core API" below; decided with the user on 2026-10-06), and until that work
+has reached a class, what it has is what the programs below asked for.
+An accessor exists because a module on `corpus/runnable.toml` or
 a program under `benchmarks/` needs it, and the whitelist entry or the
 program that demanded it is named in a comment beside it: the comments of
 `Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
 
-This is not minimalism for its own sake. A capability nothing on that list or
-under `benchmarks/` asks for has no test that would catch it rotting, so it is
-a liability rather than an asset. A module that needs something nobody has
+This is not minimalism for its own sake. A platform member reaches the host
+-- a file, a clock, the network -- and one nothing on that list or under
+`benchmarks/` asks for has no test that would catch it rotting, so it is a
+liability rather than an asset. A module that needs something nobody has
 asked for is a reason to widen the whitelist deliberately — with a real
 module, run end to end, its output recorded — not a reason to build a
-speculative library.
+speculative platform. The core is different: Primordial Soup's API is the
+specification it is completed to, and each sub-project pins what it adds
+with goldens of its own.
 
-The `collections` namespace is the worked example. It hands out `List`,
-`Map` and `Set`, because those are asked for: `List` because `Ducts.ns`,
-`NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform collections
-List`, and the Are We Fast Yet benchmarks of stage 3 widen it; `Map` and
-`Set` because DeltaBlue and Havlak need them. Each carries only the
-selectors those programs and the goldens send ("The collections module
-(plan 2)" below). The corpus also asks that namespace for `IdentityMap`,
-`IdentitySet`, `WeakArray` and `Collection`. Those name classes the runtime
-does not have, and inventing them — or worse, aliasing them onto `List`,
-`Map` or `Set`, which compare by `=` and hold their elements strongly —
-would be a collections library built without a caller. Modules needing them
-stay off the whitelist.
+The `collections` namespace hands out `List`, `Map` and `Set` today, each
+with the selectors the programs that asked for it send: `List` because
+`Ducts.ns`, `NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform
+collections List`, and the Are We Fast Yet benchmarks of stage 3 widen it;
+`Map` and `Set` because DeltaBlue and Havlak need them ("The collections
+module (plan 2)" below). The corpus also asks that namespace for
+`IdentityMap`, `IdentitySet`, `WeakArray` and `Collection`; `IdentityMap`,
+`WeakArray` and `Collection` come with the completed core, and
+`IdentitySet`, which Primordial Soup does not have, does not. None is ever
+an alias of `List`, `Map` or `Set`, which compare by `=` and hold their
+elements strongly.
 
 ## Large integers
 
@@ -2782,8 +2789,11 @@ code, road step 7, and before the baseline JIT, road step 8
 ([object-model.md](object-model.md), "Planned: the road to a
 high-performance VM"; [execution.md](execution.md), "Planned: JIT tiers").
 
-The step owns three semantic decisions, each of which the leaves settle
-today and a Newspeak body would have to settle again, visibly. A fourth,
+The step owned three semantic decisions, each of which the leaves settle
+today and a Newspeak body would have had to settle again, visibly; the
+kernel's completion settles all three in the leaves first, Primordial
+Soup's way ("Planned: the kernel completed to Primordial Soup's core API"
+below), so that the step changes nothing a program can see. A fourth,
 what a conditional does with an argument that is no block, is settled for
 the branches: it is sent `value`, and nothing answers it ("`True` and
 `False` are quick methods" above); the loops below would follow it.
@@ -2796,6 +2806,106 @@ the branches: it is sent `value`, and nothing answers it ("`True` and
 - **`whileTrue:` with a non-block body re-runs the condition**: the leaf
   treats a body that is not a block as its own value and loops on the
   condition alone (`builtins::block`).
+
+## Planned: the kernel completed to Primordial Soup's core API
+
+Would change: `Kernel.ns` and `CollectionsFactory.ns` carry the whole
+public core API of Primordial Soup's kernel and collections
+(`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`,
+`newspeak/Collections.ns`), before road step 5 (decided with the user on
+2026-10-06). Core means the classes a program computes with -- objects,
+booleans, numbers, strings, closures, messages, exceptions, collections,
+byte arrays, weak references -- and not the platform's side effects (files,
+network, time, random numbers, processes), not reflection or tooling
+(mirrors, `allInstances`, `become:`), and not actors. An inventory taken on
+2026-10-06 counted 450 public selectors in that scope, 131 of them present,
+11 in part and 308 missing.
+
+**The API is adopted; the code is written here.** Selectors, arguments,
+answers and error cases follow Primordial Soup's, so its behaviour may be
+reproduced exactly, but every body is written from that description, not
+adapted from Primordial Soup's source, and the shipped modules name no
+other project in their comments (decided with the user on 2026-10-06).
+`List`, `Map` and `Set`, adapted today, are rewritten in the same way, so
+that `CollectionsFactory.ns` loses its licence header and
+`THIRD-PARTY-NOTICES.md` its entry for it.
+
+**The on-demand rule no longer governs the core** ("The on-demand rule"
+above): it stays for `PlatformFactory.ns`, whose members reach the host,
+and `Kernel.ns` and `CollectionsFactory.ns` take the whole core API.
+
+**Where Primordial Soup's API met a decision taken here**, each was settled
+on its own (decided with the user on 2026-10-06):
+
+- **A numeric tower, symmetric.** `Fraction` exists; `Integer>>/` answers
+  an exact quotient, an `Integer` when it divides; `=` compares `Integer`,
+  `LargeInteger`, `Fraction` and `Float` by value in both directions, and
+  `hash` agrees with it -- `3 asFloat hash = 3 hash`, as Primordial Soup's
+  `testFloatHash` asks -- where Primordial Soup's `Fraction>>=` answers
+  `false` for a `Float` and the other order signals. The class-tight `=` of
+  2026-09-23 ("Gap: an integer has no `/`" above) gives way to it. A NaN
+  still equals a NaN.
+- **Strings stay code points** ("Strings are code points in two widths"
+  above). Primordial Soup's `String` selectors are adopted with code-point
+  meaning -- `size`, `at:`, `do:`, `indexOf:`, `withAll:` count and take
+  code points -- and bytes appear only where a conversion says so:
+  `asByteArray` answers the UTF-8 bytes, a `String` is decoded from a
+  `ByteArray` as UTF-8, and `StringBuilder` takes strings and code points.
+  §5.1.5 leaves the encoding to an API that "encapsulates this decision".
+- **Primordial Soup's error classes, under `Error`.** `ArgumentError
+  value:`, `NotFound element:`, `CannotReturn result:` and
+  `NonBooleanReceiver receiver:` exist with Primordial Soup's factories and
+  are signalled where it signals them, as subclasses of `Error`, so that
+  `on: Error do:` still catches them and today's texts stay their
+  `messageText`; Primordial Soup has no `Error` and its classes no text.
+- **`Array>>at:put:` answers the value**, as `List>>at:put:` already does,
+  where its leaf answers the receiver today.
+- **`do:`, `whileTrue:` and `whileFalse:` take Primordial Soup's
+  semantics now, in their leaves**: `do:` reads the elements as it goes, so
+  an `at:put:` inside the block is seen, and sends `value:` to whatever it
+  is given, and a loop sends `value` to a body that is no block. The three
+  questions "Planned: real bodies for control flow and `do:`" above leaves
+  to that step are settled by this; moving the loops into Newspeak stays
+  where the road puts it, and changes nothing observable.
+- **`isKindOf…` answers `false` for what a receiver does not declare**:
+  `Object>>doesNotUnderstand:` answers `false` for a unary selector that
+  begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's
+  (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
+  its own with `true`. A program can introduce a question of its own
+  without touching `Object`, which no Newspeak program can.
+- **`Message>>sentTo:` becomes `sendTo:`**, Primordial Soup's and the
+  canonical Newspeak's name, with no alias.
+- **A weak collection refuses a value as a key.** `WeakMap` and
+  `Ephemeron` signal an `ArgumentError` for a key that is a value
+  (§3.1.1): a value has no identity, an equal one can always be made
+  again, so a weak entry under it would vanish or not as the collector
+  happened to run. JavaScript's `WeakMap`, which the canonical Newspeak's
+  is built on, refuses such keys too. `identityHash` of a value is its
+  `hash`, since `==` on a value is `=`.
+- **`Block` becomes `Closure`**, the class §5.1.8 names and Primordial
+  Soup's.
+
+Kept as recorded deviations, not taken up: tuple literals stay mutable
+`Array`s (§5.1.7), a non-integral literal stays a `Float` (§5.1.1, "Deviation:
+a non-integral literal is a binary float" above), and there is no
+`Character` (§5.1.4).
+
+**Six sub-projects, in this order**, each with its own design and plan
+(decided with the user on 2026-10-06):
+
+1. **Aligning**: `Block` to `Closure`, `sentTo:` to `sendTo:`,
+   `Array>>at:put:`'s answer, the loops' semantics.
+2. **Foundations**: the error classes, the `isKindOf…` rule, `yourself`,
+   `identityHash`, the kernel facet's accessors, `Proxy` and a public
+   `Future`.
+3. **Collections and strings**: `Collection`, the whole protocol of
+   `Array`, `List`, `Map` and `Set`, `IdentityMap`, `NotFound`, `List`,
+   `Map` and `Set` rewritten, and `String`'s protocol in code points.
+4. **Numbers**: `Float`'s mathematics, `Integer`'s and `Number`'s
+   protocol, then `Fraction` and the tower.
+5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions.
+6. **Weak references**: `WeakArray`, `WeakMap` and `Ephemeron`, in the
+   scavenger and the compaction, the image and the stress modes.
 
 ## Decisions
 
