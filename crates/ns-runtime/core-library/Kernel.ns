@@ -81,7 +81,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
             exception receiver: self.
             exception messageText: 'an object does not understand #', message selector asString.
             value:: exception signal.
-            exception reachedDefaultHandler ifTrue: [^message sentTo: self].
+            exception reachedDefaultHandler ifTrue: [^message sendTo: self].
             ^value
         )
         (* The nil protocol: every object but nil answers `isNil` false,
@@ -431,10 +431,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
     )
     (* A message: a selector and its arguments. `doesNotUnderstand:`
        receives one, and a program may build one and send it. *)
-    (* What a `doesNotUnderstand:` handler receives. `sentTo:` sends it as
-       an ordinary public send (§5.5), as Primordial Soup's `sendTo:` does:
-       a program can build a message, so a send through one must reach no
-       protected or private method. *)
+    (* What a `doesNotUnderstand:` handler receives. `sendTo:` sends it as
+       an ordinary public send (§5.5): a program can build a message, so a
+       send through one must reach no protected or private method. *)
     public class Message = Object new (
         (* The selector, a Symbol, and the arguments, an Array or nil for
            none. *)
@@ -443,11 +442,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
     ) (
         (* Sends the message to `receiver` as a public send and answers the
            result; only public methods are found. Signals an Error,
-           'sentTo: needs a Symbol selector and an Array of arguments', when
+           'sendTo: needs a Symbol selector and an Array of arguments', when
            `selector` is no Symbol or `arguments` neither an Array nor nil. *)
         (* A message built without `arguments:` holds nil there, and is
            sent with none. *)
-        public sentTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [^(outer Kernel Error new) signal: 'sentTo: needs a Symbol selector and an Array of arguments'] )
+        public sendTo: receiver = ( ^vmMirror message: self sendTo: receiver ifFail: [^(outer Kernel Error new) signal: 'sendTo: needs a Symbol selector and an Array of arguments'] )
     )
     (* A running activation as an object: the frame it wraps, and nothing a
        program can reach -- it reads other frames and unwinds stacks, a
@@ -495,7 +494,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         protected ifNotNil: notNilBlock ifNil: nilBlock = ( ^super ifNotNil: notNilBlock ifNil: nilBlock )
         protected halt = ( ^super halt )
         protected doesNotUnderstand: message = (
-            ^message sentTo: (vmMirror futureValue: self ifFail: [^nil])
+            ^message sendTo: (vmMirror futureValue: self ifFail: [^nil])
         )
     )
     (* The superclass of every value class: its instances are deeply

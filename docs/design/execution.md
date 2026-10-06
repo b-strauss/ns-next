@@ -6459,7 +6459,7 @@ one byte what happened -- delivered, activate, raised -- keeping a rare
 `Step` or `Signal` in an out slot, as `Handoff` keeps the next frame.
 `StepSink` would have collected the decision as the `Result<Step, Signal>`
 it is, with the functions every other caller uses -- the host's send, the
-unwinder, `Message>>sentTo:`, the block leaves -- as thin wrappers over it,
+unwinder, `Message>>sendTo:`, the block leaves -- as thin wrappers over it,
 so none of those callers would change and `vm.rs` would still decide
 nothing.
 

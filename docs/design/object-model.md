@@ -841,7 +841,7 @@ an `ifCurtailed:` around every simultaneous clause.
 `Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol — is
 overridden as protected, and `doesNotUnderstand:` forces the future through
 the mirror row `futureValue:ifFail:` (`builtins/future.rs`) and forwards the
-message to the value with `Message>>sentTo:`. A member added to `Object`
+message to the value with `Message>>sendTo:`. A member added to `Object`
 without its override fails
 `future_overrides_every_public_member_of_object_as_protected`. Its state is
 two private slots, `computation` — its block until it is resolved, then its
@@ -938,7 +938,7 @@ until the program has made one.
   and the selector and description an unhandled exception's termination
   reports — decline for a future, so the failure path sees through it. Every
   other leaf that answers for any operand stores or forwards it
-  (`at:put:`'s element, `value:`'s arguments, `sentTo:`'s receiver,
+  (`at:put:`'s element, `value:`'s arguments, `sendTo:`'s receiver,
   `returnValue:`'s value), and a future there is the value it stands for to
   whoever reads it later. On a leaf's failure path, though, every future
   operand is seen through: an unresolved one the leaf would only have stored

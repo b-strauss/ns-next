@@ -64,7 +64,7 @@ Top                     (private; no superclass, declares nothing)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
     │   ├── Error       └── MessageNotUnderstood
     │   └── Halt
-    ├── Message         selector, arguments, sentTo:
+    ├── Message         selector, arguments, sendTo:
     ├── Activation      (private; a running activation, for the kernel only)
     └── Behavior        =, ==, hash (a class object's, derived from its state
         │               when it is a value)
@@ -1768,12 +1768,12 @@ an error is the VM's business.
   Squeak rather than SOMns's `vmMirror halt: self` breakpoint primitive: a
   halt and an unhandled error reach the debugger through the same place,
   `defaultAction` on an intact stack.
-- `Message`: `selector`, `arguments`, and `sentTo: receiver`, which sends the
+- `Message`: `selector`, `arguments`, and `sendTo: receiver`, which sends the
   message as an ordinary *public* send (§5.5), as Primordial Soup's
   `Message>>sendTo:` does — a program can obtain and build messages, so a
   send through one must not reach a protected or private method. A message
   built without `arguments:` is sent with none; a selector that is no Symbol
-  or arguments that are no Array make `sentTo:` signal an `Error`. It is
+  or arguments that are no Array make `sendTo:` signal an `Error`. It is
   what every `doesNotUnderstand:` handler receives
   ([dispatch.md](dispatch.md), "The reified message is a `Message`").
 - `Activation`: private to the kernel, like `Top` (below).
@@ -1898,12 +1898,12 @@ terminating, as a debugger that resumed the exception would.
 `MessageNotUnderstood` with the message, the receiver and the text "an
 object does not understand #…", signals it, and when the default handler
 resumed it (`reachedDefaultHandler`) re-sends the message with
-`message sentTo: self`; otherwise it answers the resumption value. The
+`message sendTo: self`; otherwise it answers the resumption value. The
 default handler today ends the program; the live system replaces that one
 place with "open the debugger and wait", where creating the method and
 proceeding re-sends the message into it — the user's requirement for a live
 system, and why `MessageNotUnderstood` is resumable although it is an
-`Error`. The re-send is a *public* send, as `sentTo:` always is, so a method
+`Error`. The re-send is a *public* send, as `sendTo:` always is, so a method
 the debugger creates as protected or private would not be reached by it and
 the message would fail again; the debugger has to create it public, or
 re-send it another way. The text is the one the retired mirror row gave, so
@@ -1933,7 +1933,7 @@ with an argument that is no `Message` fails inside the handler, on
   flag; `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`; and
-  `terminate…` for `defaultAction`. `Message>>sentTo:`'s row,
+  `terminate…` for `defaultAction`. `Message>>sendTo:`'s row,
   `message:sendTo:ifFail:`, is the last row (`builtins/message.rs`), and the
   row `Object>>doesNotUnderstand:` used to forward to retired with the Rust
   handler it ran, which moved the rows after it down by one. The tracer
@@ -2059,7 +2059,7 @@ only on an unwind, and an argument that is no block; an exception in an
 `ensure:` block during an unwind; a `^` out of a handler block; an index
 error from `Array>>at:` and a `doesNotUnderstand:` caught with
 `on: Error do:`, `on: MessageNotUnderstood do: [:e | e resume: 42]`
-answering 42, and `sentTo:` a public send; the depth limit caught twice in
+answering 42, and `sendTo:` a public send; the depth limit caught twice in
 a row, an index error and a `doesNotUnderstand:` just below it caught as
 themselves, a recursion through `on:do:` counted alike, and a recursive
 handler overrunning the reserve; a caught `cannotReturn`; `on: Halt do: [:e
@@ -2757,7 +2757,7 @@ grew from 6,507 to 6,626 instructions and is still one function.
 every public member of `Object` as protected and forwards through
 `doesNotUnderstand:`, which forces the future through the mirror row
 `futureValue:ifFail:` (`builtins/future.rs`) and sends the message on to its
-value with `Message>>sentTo:`; its state is the two slots `computation` and
+value with `Message>>sendTo:`; its state is the two slots `computation` and
 `state`, and forcing is `interpreter/future.rs`'s, a trampoline step under
 `Continuation::Future`. Like `Activation`, it is private, `Object` declares
 no accessor for it, and builtin class tag 30 names it only where the image
@@ -2873,8 +2873,6 @@ on its own (decided with the user on 2026-10-06):
   (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
   its own with `true`. A program can introduce a question of its own
   without touching `Object`, which no Newspeak program can.
-- **`Message>>sentTo:` becomes `sendTo:`**, Primordial Soup's and the
-  canonical Newspeak's name, with no alias.
 - **A weak collection refuses a value as a key.** `WeakMap` and
   `Ephemeron` signal an `ArgumentError` for a key that is a value
   (§3.1.1): a value has no identity, an equal one can always be made
@@ -3001,7 +2999,7 @@ a non-integral literal is a binary float" above), and there is no
   with `on:do:`, `ensure:` and `ifCurtailed:`, and `ExceptionSet`,
   `Notification`, `outer`, `retryUsing:`, `signalerContext`,
   `Object>>error:` and the finer `Error` subclasses left out;
-  `doesNotUnderstand:` is Squeak's, re-sending with `sentTo:` when the
+  `doesNotUnderstand:` is Squeak's, re-sending with `sendTo:` when the
   default handler resumed it; every VM error becomes a signalled `Error`
   with today's text; the depth limit keeps a reserve of 1,000; one unwinder
   in `interpreter/`, running `ensure:` blocks as trampoline steps and aiming

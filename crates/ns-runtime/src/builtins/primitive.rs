@@ -49,7 +49,7 @@ impl Primitive {
     /// Every leaf marked `false` either declines or raises on an operand of
     /// the wrong kind -- which the failure path covers -- or never needs to
     /// see through one: it has no operand but its own subject, or it stores,
-    /// forwards or ignores the operand (`ElementAtPut`'s element, `Block`'s
+    /// forwards or ignores the operand (`ElementAtPut`'s element, `Closure`'s
     /// `Value` arguments, `Message`'s `SendTo` receiver, `ReturnValue`'s
     /// value). The three that take a block, or a text they render, and would
     /// otherwise answer as though a future were a value of its own --
@@ -365,7 +365,7 @@ pub enum ActivationPrimitive {
     Terminate,
 }
 
-/// `Message>>sentTo:`'s leaf: the message sent to a receiver as an
+/// `Message>>sendTo:`'s leaf: the message sent to a receiver as an
 /// ordinary public send (§5.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessagePrimitive {
@@ -890,7 +890,7 @@ pub const MIRROR: &[MirrorEntry] = &[
     ),
     mirror(
         "message:sendTo:ifFail:",
-        "sentTo:",
+        "sendTo:",
         Primitive::Message(MessagePrimitive::SendTo),
     ),
     mirror(
