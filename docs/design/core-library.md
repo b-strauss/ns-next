@@ -2590,8 +2590,8 @@ its class. That needs its own decision when the first such module arrives.
   as a copy first), `do:`, `keysAndValuesDo:`, `anySatisfy:`, `indexOf:`,
   `remove:` (a `NotFound` for an absent element), `remove:ifAbsent:`,
   `removeFirst`, `removeLast`, `removeAll` (keeping the capacity),
-  `removeAllSuchThat:`, `sort:` (a stable merge sort in `Array`'s leaves
-  whose block answers whether its first argument may precede its second),
+  `removeAllSuchThat:`, `sort:` (`Array>>sort:`'s stable merge sort, whose block
+  answers whether its first argument may precede its second),
   `asArray`, `,` and `copyFrom:to:`; the rest is `Collection`'s, written
   over `do:`, and `collect:`, `select:` and `reject:` answer Lists through
   the hook `newForCollectUsingAdd:`

@@ -50,5 +50,11 @@ class AListHasTheWholeProtocol = Object new () (
         list:: List new: 0.
         list addFirst: 2; addFirst: 1; add: 3.
         show value: list.
+        list:: List withAll: {1. 2. 3. 4. 5}.
+        12 timesRepeat: [list addFirst: list removeLast].
+        show value: list.
+        list:: List withAll: {1. 2. 3. 4}.
+        list removeAllSuchThat: [:each | each = 2 ifTrue: [list at: 4 put: 40]. (each = 1) or: [each = 3]].
+        show value: list.
     )
 ) : ()

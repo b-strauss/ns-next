@@ -350,17 +350,27 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            Signals a ConcurrentModification after the evaluation of
            `predicate` that added or removed an element. *)
         public removeAllSuchThat: predicate = (
-            | elements expected kept count |
+            | elements expected keep count position kept target |
             elements:: self asArray.
             expected:: modifications.
-            kept:: Array new: elements size.
+            keep:: Array new: elements size.
             count:: 0.
+            position:: 0.
             elements do: [:element |
+                position:: position + 1.
                 (predicate value: element) ifFalse: [
                     count:: count + 1.
-                    kept at: count put: element].
+                    keep at: position put: true].
                 expected = modifications ifFalse: [^signalModificationOf: self]].
             count = size_ ifTrue: [^self].
+            (* The kept elements are read now, not from the snapshot, so a
+               store the predicate made at a kept position is kept. *)
+            kept:: Array new: count.
+            target:: 0.
+            1 to: size_ do: [:index |
+                (keep at: index) == true ifTrue: [
+                    target:: target + 1.
+                    kept at: target put: (data at: firstIndex + index - 1)]].
             data:: Array new: data size.
             data replaceFrom: 1 to: count with: kept startingAt: 1.
             firstIndex:: 1.
@@ -449,14 +459,17 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^size_ + 1
         )
         (* Makes room before the first element, which lies at index 1 of
-           `data`: slides the elements right by half the empty slots after
-           them, rounded up, or, when there are none, copies them into an
-           Array half as large again, plus four, leaving that room in
-           front. *)
+           `data`. Slides the elements right by half the empty slots after
+           them, rounded up, when those are at least as many as the
+           elements -- the removals that emptied them pay for the move --
+           and otherwise copies the elements into an Array half as large
+           again, plus four, leaving that room in front. Sliding whenever
+           any slot is free would move every element for each `addFirst:`
+           of a list rotated at its full size. *)
         private makeRoomAtFront = (
             | free shift target |
             free:: data size - size_.
-            free > 0
+            ((free > 0) and: [free >= size_])
                 ifTrue: [
                     shift:: free + 1 // 2.
                     target:: data]
@@ -483,8 +496,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        it changed -- an element added or removed -- by the block it ran.
        Carries the collection.
 
-       Iteration means `do:`, `keysAndValuesDo:` and everything built on
-       them; storing at an existing index or key, and sorting, are no
+       Iteration means `do:`, `keysAndValuesDo:`, `anySatisfy:`,
+       `removeAllSuchThat:` and everything built on `do:`; storing at an existing index or key, and sorting, are no
        change. *)
     (* Without it a change inside `do:` would visit an element twice, skip
        one or end early, silently. *)
