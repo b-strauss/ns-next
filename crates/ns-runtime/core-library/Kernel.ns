@@ -1077,7 +1077,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
            Signals the ArgumentError the receiver's `<=` signals for a
            `stop` that is no number, and an ArgumentError carrying the
            block, 'wrong number of block arguments: block takes …, got
-           1', for a block that does not take one argument. *)
+           1', for a block that does not take one argument, when the
+           receiver is at most `stop`. *)
         public to: stop do: action = (
             | current |
             current:: self.
@@ -1098,7 +1099,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
            Signals the ArgumentError the receiver's comparison signals for
            a `stop` that is no number, and `to:do:`'s ArgumentError for a
-           block that does not take one argument. *)
+           block that does not take one argument, when the loop runs a
+           step. *)
         public to: stop by: step do: action = (
             | current |
             current:: self.

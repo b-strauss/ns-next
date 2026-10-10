@@ -759,8 +759,8 @@ write, so each costs one activation more than it did as a kernel accessor
 (`interpreter/kernel.rs`,
 `the_platform_modules_members_have_the_fast_path_they_should`). A
 namespace member is asked for once, typically in a slot initializer. The
-platform's class accessors, and the collections facet's `Collections` and
-`List`, carry no fast path either: the compiler recognizes them
+platform's class accessors, and the collections facet's, carry no fast
+path either: the compiler recognizes them
 (`MixinMethod::class_accessor`) for the image's platform paths alone, and
 no send reads the mark
 (`the_platforms_class_accessors_are_recognized_without_a_fast_path`).
@@ -2480,8 +2480,9 @@ the table has two entries. The design as decided:
 
 An artifact names a shipped object by its **path of public members from
 the platform**: the empty path is the platform, `collections` its
-collections facet, `collections List` and `collections Collections` that
-facet's two classes, `transcript` the transcript, `Transcript` its class,
+collections facet, `collections Collections`, `collections List` and the
+rest the classes of its module, `transcript` the transcript,
+`Transcript` its class,
 `Platform` the platform's own. A step is a public slot's getter, a public
 nested class's accessor, or a public **class accessor**: a method the
 compiler recognized, in shipped source other than the kernel, as exactly
@@ -2624,8 +2625,9 @@ its class. That needs its own decision when the first such module arrives.
   `modifications`; `do:`, `keysAndValuesDo:`, `anySatisfy:` and
   `removeAllSuchThat:` compare it with the count they started at after
   every block, the last included, and signal a `ConcurrentModification`
-  (a kernel `Error` subclass, public as `platform collections
-  ConcurrentModification`, carrying the `collection`, messageText "the
+  (a class of the collections module under the kernel's `Error`, public
+  as `platform collections ConcurrentModification`, carrying the
+  `collection`, messageText "the
   collection was modified while it was being iterated"), raised in one
   place, the module's `signalModificationOf:`. Storing at an existing
   index and sorting change no count: a `do:` re-reads each element, so a
@@ -2691,20 +2693,22 @@ its class. That needs its own decision when the first such module arrives.
   `whileTrue:` loops, which the compiler inlines, rather than by `to:do:`.
 - **`IdentityMap`, built,** is a subclass of `Map` that finds keys by
   `identityHash` and compares them with `==`, and inherits everything else
-  -- insertion order, removal, the modification count. It overrides the
-  three hooks' two probes, written out again with `identityHash` and `==`
-  and reading the data array through `dataForScan`, the probe key the
-  receiver of `==`, sent each stored key past the removed marks; and
-  `newForCollectUsingAdd:`, so that `collect:`, `select:` and `reject:`
-  answer IdentityMaps. It adds `at:putReplace:`, `at:ifAbsentPutVal:` and
-  `atOrItself:`, and its `at:put:` replaces the value of a present key, as
-  `Map`'s does. A value as key (§3.1.1) behaves as in a `Map`, since a
+  -- insertion order, removal, the modification count. It overrides three
+  protected selectors of `Map`: the two probes, `scanFor:in:` and
+  `emptyBucketFor:in:`, written out again with `identityHash` and `==` and
+  reading the data array through the inherited `dataForScan`, the probe
+  key the receiver of `==`, sent each stored key past the removed marks;
+  and `newForCollectUsingAdd:`, so that `collect:`, `select:` and
+  `reject:` answer IdentityMaps. It adds three public selectors,
+  `at:putReplace:`, `at:ifAbsentPutVal:` and `atOrItself:`, and
+  `isKindOfIdentityMap`; its `at:put:` is `Map`'s, which replaces the value
+  of a present key. A value as key (§3.1.1) behaves as in a `Map`, since a
   value's `==` is `=` and its `identityHash` its `hash`. It is a subclass
-  of `Map`, not a kernel class of its own beside it, because the two
-  differ only in how a key is found and compared, not in representation or
-  protocol, and nothing in the kernel needs one: its first user is to be
-  road step 5's atomic install, which maps old objects to new ones and
-  must not run a program's `=`. A class side is not inherited, so
+  of `Map`, not a kernel class of its own beside it, because the two differ
+  in how a key is found and compared and by those three selectors, not in
+  representation, and nothing in the kernel needs one: its first user is
+  to be road step 5's atomic install, which maps old objects to new ones
+  and must not run a program's `=`. A class side is not inherited, so
   `IdentityMap` declares its own `new` and `withAll:`
   (`goldens/library/collection/an_identity_map_compares_keys_by_identity`).
 - **`Set` under `Collection`, with removal, built; the collections module

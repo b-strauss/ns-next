@@ -644,10 +644,14 @@ classes of the module, once the module root's accessor for each has run.
 `time`'s own class accessor `Stopwatch` answers the class `Stopwatch` does, so
 the path `Stopwatch`, the shorter, is the one written for it. `collections`
 answers an instance of the shipped `CollectionsFactory.ns`'s facet
-`Collections`, whose own class accessors `Collections` and `List` name that
-module's two classes the same way, so `collections Collections` and
-`collections List` are platform paths too, with the facet as their first
-member. All seven classes are private to their root: a class accessor reaches
+`Collections`, whose own class accessors `Collections`, `List`, `Map`,
+`IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` name that
+module's seven classes the same way, so `collections Collections`,
+`collections List` and the rest are platform paths too, with the facet as
+their first member. The facet's `Collection` is no such accessor: it
+answers the kernel's `Collection`, a builtin class, which an image names by
+its builtin class tag. All twelve classes of the two modules are private
+to their root: a class accessor reaches
 them by a lexical send (§5.9), and `discover` looks the class up the same way
 (`dispatch::lexical_member`), so a private nested class is named by its
 accessor's path like a public one. Neither root instance is named by any path,
