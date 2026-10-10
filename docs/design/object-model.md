@@ -873,8 +873,12 @@ a future"). A block that answers another unresolved future forces that one
 next, the waiting forcing chained behind it, so both resolve to its value —
 §6.3.2's pipelined promise, as Primordial Soup's `resolve` loops. Nothing
 bounds that chain's length, so every walk of it loops rather than recursing
-once per link. No message a program sends forces a future, since a public
-`resolve` would tell an escaped future from its value. The runtime makes
+once per link. A program has no message of its own that forces a future,
+since a public `resolve` would tell an escaped future from its value: a
+future is forced only where the runtime needs the value it stands for -- a
+message sent to it, an instruction that must not hold one, or a leaf that
+could not answer for it as an operand, as `Future computing:` below does
+with the future it is handed. The runtime makes
 every instance (`Mutator::new_future`): `MakeFuture` calls it for a
 simultaneous clause, and the mirror row `futureComputing:ifFail:` for
 `Future computing:`, a program's way to make one. `Future` is a public
@@ -883,13 +887,22 @@ a computation that is no block `value` when the future is forced, by
 wrapping it in a block of its own, and `Future new` — or the instantiation
 of a subclass, which does not inherit `computing:` since a class side is
 not inherited (§3.2) — signals a `CannotInstantiate` from its initializer.
-A future handed to `computing:`, resolved or not, is taken as its value:
-the row declines for it, since it is no closure, and the failure path wraps
-it in a block that sends it `value`, so forcing the new future forces the
-handed one and forwards `value` to its value -- a future whose value is a
-block computes what the block answers, and one of anything else is sent
-`value` as that object would be
-(`goldens/library/object/a_future_handed_to_future_computing_is_its_value.ns`).
+A future handed to `computing:` is forced at the call, not when the new
+future is. The row's leaf declines for it, since it is no closure, but
+once a program has made a future, a mirror row that declines goes through
+`after_a_failed_leaf` (`interpreter/mirror.rs`, `see_through_a_failed_row`),
+which sees through a future among the leaf's operands
+(`interpreter/future.rs`, `see_through`), the computation among them. An
+unresolved future is forced at once under `AfterForcing::Reexecute`, and
+the `futureComputing:ifFail:` send then runs again; a resolved one is
+replaced by its value and the leaf runs again on that. A value that is a
+block makes a future of that block directly; any other value declines
+again, and only then does the failure path wrap the computation in a block
+that sends it `value`, which the handed future forwards to its value when
+the new future is forced. A future still being computed is a divergent
+evaluation, an error at the call
+(`goldens/library/object/a_future_handed_to_future_computing_is_forced_at_the_call.ns`,
+`a_future_handed_to_future_computing_is_its_value.ns`).
 A program cannot subclass `FutureImplementation` itself: an instance of a
 subclass would be a future the runtime does not know, which it neither
 forces, sees through, nor replaces, so a forwarding object a program wants

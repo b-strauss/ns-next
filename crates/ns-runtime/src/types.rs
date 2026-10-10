@@ -170,7 +170,9 @@ impl BuiltinClass {
     /// it is an error class carrying a subject; in the image's tag tables --
     /// `image::encode::builtin_class_tag`, `image::decode::builtin_class_from_tag`,
     /// `tests/opcode_tags.rs` and, for a class no program may name, the
-    /// filter in `image::encode::encode_tag_named_hashes`; and in the class
+    /// filter in `image::encode::encode_tag_named_hashes`, the refusals in
+    /// `image::encode::named_builtin` and in
+    /// `image::decode::referenced_builtin_class`; and in the class
     /// accessor lists, `OBJECT_CLASS_ACCESSORS` if `Object` declares an
     /// accessor for it and otherwise the absent-list of
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`.
