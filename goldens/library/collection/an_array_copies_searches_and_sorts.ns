@@ -1,0 +1,44 @@
+(* An Array's own protocol: concatenating, copying, searching, sorting --
+   stably -- and replacing a range from any source answering `at:`,
+   itself included with overlapping ranges. `collect:`, `select:` and
+   `reject:` answer Arrays. *)
+class AnArrayCopiesSearchesAndSorts = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. array show shifted pairs |
+        show:: [:collection |
+            collection do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
+            transcript newLine].
+        array:: {5. 3. 8. 1}.
+        show value: array , {9. 7}.
+        show value: (array copyFrom: 2 to: 3).
+        show value: (array copyFrom: 3 to: 2).
+        show value: (array copyWith: 0).
+        show value: (array copyWithSize: 2).
+        show value: (array copyWithSize: 6).
+        show value: (array collect: [:each | each * 2]).
+        show value: (array select: [:each | each > 3]).
+        show value: (array reject: [:each | each > 3]).
+        transcript show: (array select: [:each | true]) class printString; newLine.
+        transcript show: array first printString; show: ' '; show: array last printString; newLine.
+        transcript show: (array indexOf: 8) printString; show: ' '; show: (array indexOf: 4) printString; newLine.
+        transcript show: array isEmpty printString; show: ' '; show: (Array new: 0) isEmpty printString; newLine.
+        transcript show: (array asArray == array) printString; newLine.
+        array keysAndValuesDo: [:index :each |
+            transcript show: index printString; show: '='; show: each printString; show: ' '].
+        transcript newLine.
+        show value: ((Array withAll: array) sort: [:left :right | left <= right]).
+        show value: array.
+        pairs:: {{2. #a}. {1. #b}. {2. #c}. {1. #d}}.
+        pairs sort: [:left :right | left first <= right first].
+        show value: (pairs collect: [:pair | pair last]).
+        show value: ({4. 3. 2. 1} sortFrom: 2 to: 3 by: [:left :right | left <= right]).
+        shifted:: {1. 2. 3. 4. 5}.
+        shifted replaceFrom: 2 to: 5 with: shifted startingAt: 1.
+        show value: shifted.
+        shifted:: {1. 2. 3. 4. 5}.
+        shifted replaceFrom: 1 to: 4 with: shifted startingAt: 2.
+        show value: shifted.
+        show value: ((Array new: 3) replaceFrom: 1 to: 3 with: 'abc' startingAt: 1).
+        show value: {1} , 'ab'.
+    )
+) : ()

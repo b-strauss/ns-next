@@ -63,6 +63,187 @@ pub(crate) fn not_an_integer<'gc>(
     )
 }
 
+/// The zero-based positions `start - 1 .. stop` of a range `copyFrom:to:`
+/// or `replaceFrom:to:` names in a sequence of `size` elements, or the
+/// `ArgumentError` it signals: one carrying the bound out of range -- the
+/// start unless it is a position the sequence has, one past the end
+/// included for the empty range, then the stop -- and the text
+/// "<keyword> … to: … out of range: valid ranges lie within 1..size, an
+/// empty range ends just before it starts (size …)", or the text of a
+/// bound that is no Integer.
+pub(crate) fn checked_range<'gc>(
+    heap: &Heap<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    keyword: &str,
+    start: Option<Value<'gc>>,
+    stop: Option<Value<'gc>>,
+    size: usize,
+) -> Result<std::ops::Range<usize>, NewspeakError<'gc>> {
+    // A `LargeInteger` bound is past every position, so it takes the
+    // out-of-range error below, described as it is written.
+    let bound = |argument: Option<Value<'gc>>| match integer_argument(heap, argument) {
+        Some(IntegerArgument::Small(bound)) => Ok(Some(bound)),
+        Some(IntegerArgument::Large { .. }) => Ok(None),
+        None => Err(not_an_integer(heap, receiver, selector, argument)),
+    };
+    let start_bound = bound(start)?;
+    let stop_bound = bound(stop)?;
+    // `start` is tested first, so that `start - 1` cannot overflow.
+    if let (Some(first), Some(last)) = (start_bound, stop_bound) {
+        if first >= 1 && last >= first - 1 {
+            if let (Ok(first), Ok(last)) = (usize::try_from(first), usize::try_from(last)) {
+                if last <= size {
+                    return Ok(first - 1..last);
+                }
+            }
+        }
+    }
+    let describe = |bound: Option<i64>, argument: Option<Value<'gc>>| match bound {
+        Some(number) => number.to_string(),
+        None => heap.describe_argument(argument),
+    };
+    let start_in_range =
+        matches!(start_bound, Some(position) if position >= 1 && position - 1 <= size as i64);
+    let refused = if start_in_range { stop } else { start };
+    Err(NewspeakError::argument_error(
+        selector,
+        receiver,
+        refused.unwrap_or(Value::nil()),
+        format!(
+            "{keyword} {} to: {} out of range: valid ranges lie within \
+             1..{size}, an empty range ends just before it starts (size {size})",
+            describe(start_bound, start),
+            describe(stop_bound, stop),
+        ),
+    ))
+}
+
+/// The zero-based position `startingAt:` names in a source of
+/// `source_size` elements, from which `count` elements are read, or the
+/// `ArgumentError` carrying the `startingAt:` argument: the text of a start
+/// that is no Integer, or "startingAt: … out of range: the source holds …
+/// elements, the range needs … from …". An empty range takes any start
+/// from 1 to one past the source's end.
+fn source_start<'gc>(
+    heap: &Heap<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    start: Option<Value<'gc>>,
+    count: usize,
+    source_size: usize,
+) -> Result<usize, NewspeakError<'gc>> {
+    let position = match integer_argument(heap, start) {
+        Some(IntegerArgument::Small(position)) => Some(position),
+        Some(IntegerArgument::Large { .. }) => None,
+        None => return Err(not_an_integer(heap, receiver, selector, start)),
+    };
+    if let Some(Ok(first)) = position.map(usize::try_from) {
+        if first >= 1
+            && (first - 1)
+                .checked_add(count)
+                .is_some_and(|end| end <= source_size)
+        {
+            return Ok(first - 1);
+        }
+    }
+    let described = match position {
+        Some(number) => number.to_string(),
+        None => heap.describe_argument(start),
+    };
+    let elements = if source_size == 1 {
+        "element"
+    } else {
+        "elements"
+    };
+    Err(NewspeakError::argument_error(
+        selector,
+        receiver,
+        start.unwrap_or(Value::nil()),
+        format!(
+            "startingAt: {described} out of range: the source holds {source_size} \
+             {elements}, the range needs {count} from {described}"
+        ),
+    ))
+}
+
+/// `copyFrom:to:` on an `Array`: a new Array of the elements in the range.
+/// `None` when the receiver is no Array.
+fn copy_range<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let object = receiver.as_object()?;
+    let size = mutator.heap.array_element_count(object)?;
+    let range = match checked_range(
+        &mutator.heap,
+        receiver,
+        selector,
+        "copyFrom:",
+        arguments.first().copied(),
+        arguments.get(1).copied(),
+        size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return Some(Err(error)),
+    };
+    let elements: Vec<Value<'gc>> = range
+        .filter_map(|position| mutator.heap.array_element(object, position))
+        .collect();
+    Some(Ok(Value::object(mutator.new_array(elements))))
+}
+
+/// `replaceFrom:to:with:startingAt:` on an `Array` from an `Array`:
+/// stores the source's elements from `startingAt` on into the range,
+/// through the write barrier, and answers the receiver. `None` -- the
+/// Newspeak fallback runs, which copies any other source into an Array --
+/// when the receiver or the source is no Array.
+fn replace<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let object = receiver.as_object()?;
+    let size = mutator.heap.array_element_count(object)?;
+    let source = arguments.get(2).copied()?.as_object()?;
+    let source_size = mutator.heap.array_element_count(source)?;
+    let range = match checked_range(
+        &mutator.heap,
+        receiver,
+        selector,
+        "replaceFrom:",
+        arguments.first().copied(),
+        arguments.get(1).copied(),
+        size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return Some(Err(error)),
+    };
+    let first = match source_start(
+        &mutator.heap,
+        receiver,
+        selector,
+        arguments.get(3).copied(),
+        range.len(),
+        source_size,
+    ) {
+        Ok(first) => first,
+        Err(error) => return Some(Err(error)),
+    };
+    // Every element is read before any is stored, so overlapping ranges of
+    // one array copy as if through a buffer, in either direction.
+    let elements: Vec<Value<'gc>> = (first..first + range.len())
+        .filter_map(|position| mutator.heap.array_element(source, position))
+        .collect();
+    for (position, element) in range.zip(elements) {
+        mutator.heap.array_set_element(object, position, element);
+    }
+    Some(Ok(receiver))
+}
+
 /// `size`. `None` if `receiver` isn't `ObjectShape::Array` at all.
 fn size<'gc>(
     mutator: &Mutator<'gc>,
@@ -252,6 +433,10 @@ pub(crate) fn execute<'gc>(
         CollectionPrimitive::Allocate => {
             leaf_step(allocate(mutator, receiver, selector, arguments))
         }
+        CollectionPrimitive::CopyRange => {
+            leaf_step(copy_range(mutator, receiver, selector, arguments))
+        }
+        CollectionPrimitive::Replace => leaf_step(replace(mutator, receiver, selector, arguments)),
     }
 }
 

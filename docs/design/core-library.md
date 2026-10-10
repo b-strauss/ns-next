@@ -103,6 +103,19 @@ class tag 38 -- only because `Array`'s superclass clause names it.
 `Object` declares no accessor for it; a program reaches it through
 `platform kernel Collection`.
 
+`Array` adds a sequence's protocol over its leaves: `,`, `asArray`,
+`collect:`, `select:` and `reject:` answering Arrays, `copyFrom:to:`,
+`copyWith:`, `copyWithSize:`, `first`, `last`, `indexOf:`, `isEmpty`,
+`keysAndValuesDo:`, `replaceFrom:to:with:startingAt:`, `sort:`,
+`sortFrom:to:by:` and, on its class side, `withAll:`. Its two range leaves
+share one range check, and one error text, with `String>>copyFrom:to:`; the
+replacing leaf reads every source element before it stores any, through the
+write barrier, so overlapping ranges of one array copy as if through a
+buffer, and a source that is no Array is first copied into one in Newspeak,
+so every error text is the leaf's. `sortFrom:to:by:` is a stable bottom-up
+merge sort: no recursion, so its depth does not grow with the range, and a
+buffer the size of the range.
+
 `Object>>subclassResponsibility`, protected, is what an abstract method's
 body sends: it signals an `Error` whose `messageText` names the abstract
 method -- the class declaring the method that sent it and its selector --
@@ -167,9 +180,9 @@ leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
 `hash`, `sqrt`, `sin`, `cos`, `asInteger`, `asStringFixed:`, `printString` and
 `asString`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
 `asSymbol` and `printString`, and on its class side `with:`; `Symbol`'s
-`asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`
-and `at:`; `Closure`'s `value` to `value:value:value:`, `numArgs`, `whileTrue:`
-and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
+`asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`,
+`at:`, `copyFrom:to:` and `replaceFrom:to:with:startingAt:`; `Closure`'s
+`value` to `value:value:value:`, `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
 below). `Number` reaches no leaf of its own: its `to:do:` and `to:by:do:` are
 ordinary Newspeak (below), and so are `Number>>max:` and
@@ -271,7 +284,8 @@ code points rather than its bytes:
   lies within the string, and the empty range is the one that stops just
   before it starts. Anything else is an `Error`, "copyFrom: 3 to: 1 out of
   range: valid ranges lie within 1..3, an empty range ends just before it
-  starts (size 3)", or "copyFrom:to: requires an Integer index, got …".
+  starts (size 3)", or "copyFrom:to: requires an Integer index, got …" --
+  `Array>>copyFrom:to:`'s texts, from the one range check both leaves share.
 - **`String with:`** answers a one-character string of any code point,
   where Primordial Soup's takes a byte; anything that is not a scalar value
   is an `Error`, "with: requires a Unicode code point, an Integer from 0 to
@@ -928,8 +942,9 @@ zero" from either class's leaf
 
 **An index, size or count that is a `LargeInteger` is out of range, not of
 the wrong class.** It is still an `Integer`, and no index, size or count
-reaches one, so `at:`, `at:put:`, `Array new:`, `String`'s `at:`,
-`copyFrom:to:`, `Value`'s `slotAt:` and `asStringFixed:` refuse it in the
+reaches one, so `at:`, `at:put:`, `Array new:`, `Array`'s `copyFrom:to:`
+and `replaceFrom:to:with:startingAt:`, `String`'s `at:`, `copyFrom:to:`,
+`Value`'s `slotAt:` and `asStringFixed:` refuse it in the
 words they use for a `SmallInteger` out of range -- "index
 18446744073709551616 out of range: valid indices are 1..3 (size 3)", "new:
 cannot allocate an Array of … elements" -- never with a type mismatch

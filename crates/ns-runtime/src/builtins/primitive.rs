@@ -155,7 +155,9 @@ impl Primitive {
                 | CollectionPrimitive::Size
                 | CollectionPrimitive::ElementAt
                 | CollectionPrimitive::ElementAtPut
-                | CollectionPrimitive::Allocate,
+                | CollectionPrimitive::Allocate
+                | CollectionPrimitive::CopyRange
+                | CollectionPrimitive::Replace,
             ) => false,
             Primitive::Block(
                 BlockPrimitive::Value
@@ -330,6 +332,10 @@ pub enum CollectionPrimitive {
     ElementAtPut,
     /// `Array new: size`, on `Array`'s class side.
     Allocate,
+    /// `copyFrom:to:`: a new Array of a range.
+    CopyRange,
+    /// `replaceFrom:to:with:startingAt:` from another Array, or the same.
+    Replace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -770,6 +776,16 @@ pub const MIRROR: &[MirrorEntry] = &[
         "collection:at:put:ifFail:",
         "at:put:",
         Primitive::Collection(CollectionPrimitive::ElementAtPut),
+    ),
+    mirror(
+        "collection:copyFrom:to:ifFail:",
+        "copyFrom:to:",
+        Primitive::Collection(CollectionPrimitive::CopyRange),
+    ),
+    mirror(
+        "collection:replaceFrom:to:with:startingAt:ifFail:",
+        "replaceFrom:to:with:startingAt:",
+        Primitive::Collection(CollectionPrimitive::Replace),
     ),
     mirror(
         "blockValue:ifFail:",

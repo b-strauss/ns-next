@@ -1776,6 +1776,216 @@ class Kernel vmMirror: theMirror = Object <: Value (
            1 to `size`, a LargeInteger included, and 'at: requires an
            Integer index, got …' for an index that is no Integer. *)
         public at: index = ( ^vmMirror collection: self at: index ifFail: [^super at: index] )
+        (* Answers the receiver itself: an Array is its own Array. *)
+        public asArray = ( ^self )
+        (* Answers whether the Array has no element. *)
+        public isEmpty = ( ^self size = 0 )
+        (* Answers the first element.
+
+           Signals the ArgumentError of `at:`, carrying 1, for an empty
+           Array. *)
+        public first = ( ^self at: 1 )
+        (* Answers the last element.
+
+           Signals the ArgumentError of `at:`, carrying 0, for an empty
+           Array. *)
+        public last = ( ^self at: self size )
+        (* Answers the index of the first element `=` to `element`, or 0
+           when there is none. Each element is sent `=` with `element`, from
+           the first, until one answers true. *)
+        public indexOf: element = (
+            1 to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
+            ^0
+        )
+        (* Evaluates `action` with each index and the element there, from
+           the first, reading each element when it reaches it. Answers the
+           receiver.
+
+           action: a two-argument block, given the index and the element. *)
+        public keysAndValuesDo: action = (
+            1 to: self size do: [:index | action value: index value: (self at: index)]
+        )
+        (* Answers a new Array of the elements from `start` to `stop`; empty
+           when `stop` is `start - 1`. The receiver is unchanged.
+
+           start, stop: Integers with 1 <= start <= stop + 1 and
+               stop <= size.
+
+           Signals an ArgumentError carrying the bound out of range,
+           'copyFrom: … to: … out of range: valid ranges lie within
+           1..size, an empty range ends just before it starts (size …)', or
+           'copyFrom:to: requires an Integer index, got …' for a bound that
+           is no Integer. *)
+        public copyFrom: start to: stop = (
+            ^vmMirror collection: self copyFrom: start to: stop
+                ifFail: [^super copyFrom: start to: stop]
+        )
+        (* Stores the elements of `source` from `sourceStart` on into the
+           receiver's positions `start` to `stop`, and answers the
+           receiver. Correct when `source` is the receiver and the ranges
+           overlap: every element is read before any is stored.
+
+           start, stop: a range of the receiver, as for `copyFrom:to:`.
+           source: an Array, or anything answering `size` and `at:` -- a
+               List, a String, whose elements are its code points.
+           sourceStart: an Integer with 1 <= sourceStart and
+               sourceStart + (stop - start) <= source size.
+
+           Signals the ArgumentError `copyFrom:to:` signals, its text
+           beginning 'replaceFrom: … to: …', for a range the receiver does
+           not hold, and an ArgumentError carrying `sourceStart`,
+           'startingAt: … out of range: the source holds … elements, the
+           range needs … from …', for a source too short. *)
+        public replaceFrom: start to: stop with: source startingAt: sourceStart = (
+            ^vmMirror collection: self replaceFrom: start to: stop with: source startingAt: sourceStart
+                ifFail: [self replaceFrom: start to: stop withElementsOf: source startingAt: sourceStart]
+        )
+        (* `replaceFrom:to:with:startingAt:` for a source that is no Array:
+           copies the whole source into a new Array of its size and hands
+           that to the leaf with `sourceStart` unchanged, so the leaf checks
+           the range and the start against a source of the same size, and
+           every error text is the leaf's.
+
+           source: anything answering `size` and `at:`; signals the
+               MessageNotUnderstood of the first it lacks.
+
+           Signals what `replaceFrom:to:with:startingAt:` documents. *)
+        private replaceFrom: start to: stop withElementsOf: source startingAt: sourceStart = (
+            | elements |
+            elements:: outer Kernel Array new: source size.
+            1 to: source size do: [:index | elements at: index put: (source at: index)].
+            ^vmMirror collection: self replaceFrom: start to: stop with: elements startingAt: sourceStart
+                ifFail: [^super replaceFrom: start to: stop with: source startingAt: sourceStart]
+        )
+        (* Answers a new Array of the receiver's elements followed by those
+           of `collection`. The receiver is unchanged.
+
+           collection: an Array, or anything answering `size` and `at:` --
+               a List, a String, whose elements are its code points. *)
+        public , collection = (
+            | result |
+            result:: outer Kernel Array new: self size + collection size.
+            result replaceFrom: 1 to: self size with: self startingAt: 1.
+            result replaceFrom: self size + 1 to: result size with: collection startingAt: 1.
+            ^result
+        )
+        (* Answers a new Array one longer than the receiver, `element` last.
+           The receiver is unchanged. *)
+        public copyWith: element = (
+            | result |
+            result:: self copyWithSize: self size + 1.
+            result at: result size put: element.
+            ^result
+        )
+        (* Answers a new Array of `newSize` elements: the receiver's first
+           ones, cut off when `newSize` is smaller than `size`, followed by
+           nils when it is larger. The receiver is unchanged.
+
+           newSize: an Integer of at least 0.
+
+           Signals the ArgumentError of `Array new:` for a `newSize` that
+           is negative or no Integer. *)
+        public copyWithSize: newSize = (
+            | result kept |
+            result:: outer Kernel Array new: newSize.
+            kept:: newSize < self size ifTrue: [newSize] ifFalse: [self size].
+            result replaceFrom: 1 to: kept with: self startingAt: 1.
+            ^result
+        )
+        (* Answers a new Array of `transform`'s answer for each element, in
+           order. The receiver is unchanged.
+
+           transform: a one-argument block. *)
+        public collect: transform = (
+            | result |
+            result:: outer Kernel Array new: self size.
+            1 to: self size do: [:index | result at: index put: (transform value: (self at: index))].
+            ^result
+        )
+        (* Answers a new Array of the elements for which `predicate`
+           answers true, in order. The receiver is unchanged.
+
+           predicate: a one-argument block answering a Boolean. *)
+        public select: predicate = (
+            | result count |
+            result:: outer Kernel Array new: self size.
+            count:: 0.
+            self do: [:element |
+                (predicate value: element) ifTrue: [
+                    count:: count + 1.
+                    result at: count put: element]].
+            ^result copyFrom: 1 to: count
+        )
+        (* Answers a new Array of the elements for which `predicate`
+           answers false, in order. The receiver is unchanged.
+
+           predicate: a one-argument block answering a Boolean. *)
+        public reject: predicate = ( ^self select: [:element | (predicate value: element) not] )
+        (* Sorts the elements in place, stably -- elements that may precede
+           each other both ways keep their order -- and answers the
+           receiver.
+
+           lessOrEqual: a two-argument block answering whether its first
+               argument may precede its second. *)
+        public sort: lessOrEqual = ( ^self sortFrom: 1 to: self size by: lessOrEqual )
+        (* Sorts the elements from `start` to `stop` in place, stably, as
+           `sort:` does, and answers the receiver; the rest stay where they
+           are.
+
+           start, stop: a range of the receiver, as for `copyFrom:to:`.
+           lessOrEqual: a two-argument block answering whether its first
+               argument may precede its second.
+
+           Signals the ArgumentError of `copyFrom:to:` for a range the
+           receiver does not hold. *)
+        (* A bottom-up merge sort over a copy of the range and a buffer of
+           the same size, trading the two each pass: no recursion, so its
+           depth does not grow with the range, and at most `size` extra
+           slots. Taking from the left run while its element may precede
+           the right run's keeps it stable. *)
+        public sortFrom: start to: stop by: lessOrEqual = (
+            | source target count width left swap |
+            source:: self copyFrom: start to: stop.
+            count:: source size.
+            count < 2 ifTrue: [^self].
+            target:: outer Kernel Array new: count.
+            width:: 1.
+            [width < count] whileTrue: [
+                left:: 1.
+                [left <= count] whileTrue: [
+                    self merge: source into: target from: left width: width count: count by: lessOrEqual.
+                    left:: left + width + width].
+                swap:: source.
+                source:: target.
+                target:: swap.
+                width:: width + width].
+            self replaceFrom: start to: stop with: source startingAt: 1
+        )
+        (* Merges the sorted runs of `source` that start at `left` -- the
+           first `width` elements long, the second the next `width`, each
+           cut off at `count` -- into the same positions of `target`,
+           taking from the first run while its element may precede the
+           second's. *)
+        private merge: source into: target from: left width: width count: count by: lessOrEqual = (
+            | middle right leftCursor rightCursor targetCursor |
+            middle:: left + width - 1.
+            middle > count ifTrue: [middle:: count].
+            right:: middle + width.
+            right > count ifTrue: [right:: count].
+            leftCursor:: left.
+            rightCursor:: middle + 1.
+            targetCursor:: left.
+            [targetCursor <= right] whileTrue: [
+                ((rightCursor > right) or: [(leftCursor <= middle)
+                        and: [lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor)]])
+                    ifTrue: [
+                        target at: targetCursor put: (source at: leftCursor).
+                        leftCursor:: leftCursor + 1]
+                    ifFalse: [
+                        target at: targetCursor put: (source at: rightCursor).
+                        rightCursor:: rightCursor + 1].
+                targetCursor:: targetCursor + 1]
+        )
     ) : (
         (* Answers a new Array of `size` elements, each nil.
 
@@ -1790,6 +2000,20 @@ class Kernel vmMirror: theMirror = Object <: Value (
            search fills. The leaf declines only a subject that is not `Array`
            itself, which a flat class side cannot be sent from. *)
         public new: size = ( ^vmMirror arrayClass: self new: size ifFail: [nil] )
+        (* Answers a new Array of `collection`'s elements, in its `do:`
+           order.
+
+           collection: a Collection, or anything answering `size` and
+               `do:` -- a String, whose elements are its code points. *)
+        public withAll: collection = (
+            | result index |
+            result:: self new: collection size.
+            index:: 0.
+            collection do: [:element |
+                index:: index + 1.
+                result at: index put: element].
+            ^result
+        )
     )
     (* The class of `nil`. *)
     (* §5.1.3: `nil` is the unique instance of `UndefinedObject`, which

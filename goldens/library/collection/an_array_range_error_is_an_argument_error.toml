@@ -1,0 +1,11 @@
+stdout = '''
+0
+9
+copyFrom: 2 to: 9 out of range: valid ranges lie within 1..4, an empty range ends just before it starts (size 4)
+copyFrom:to: requires an Integer index, got the Symbol #a
+1
+startingAt: 1 out of range: the source holds 1 element, the range needs 2 from 1
+5
+1
+0
+'''

@@ -120,9 +120,10 @@ fn from_code_point<'gc>(
     })
 }
 
-/// `copyFrom: start to: stop`, 1-based and inclusive, as Primordial Soup's
-/// `Bytes_copyStringFromTo`: the range lies within the string, and the
-/// empty range is the one that stops just before it starts, at either end.
+/// `copyFrom: start to: stop`, 1-based and inclusive, over code points:
+/// the range lies within the string, and the empty range is the one that
+/// stops just before it starts, at either end. Its errors are `Array`'s
+/// (`collections::checked_range`), so a program sees one text from either.
 fn copy_range<'gc>(
     mutator: &mut Mutator<'gc>,
     object: ObjectReference<'gc>,
@@ -130,67 +131,23 @@ fn copy_range<'gc>(
     receiver: Value<'gc>,
     selector: Symbol,
     arguments: &[Value<'gc>],
-) -> Result<Value<'gc>, NewspeakError<'gc>> {
-    // A `LargeInteger` bound is past every position, so it takes the error
-    // below, described as it is written.
-    let bound =
-        |argument: Option<Value<'gc>>| match collections::integer_argument(&mutator.heap, argument)
-        {
-            Some(IntegerArgument::Small(bound)) => Ok(Some(bound)),
-            Some(IntegerArgument::Large { .. }) => Ok(None),
-            None => Err(collections::not_an_integer(
-                &mutator.heap,
-                receiver,
-                selector,
-                argument,
-            )),
-        };
-    let start = bound(arguments.first().copied())?;
-    let stop = bound(arguments.get(1).copied())?;
-    let describe = |bound: Option<i64>, argument: Option<Value<'gc>>| match bound {
-        Some(number) => number.to_string(),
-        None => mutator.heap.describe_argument(argument),
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let range = match collections::checked_range(
+        &mutator.heap,
+        receiver,
+        selector,
+        "copyFrom:",
+        arguments.first().copied(),
+        arguments.get(1).copied(),
+        size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return Some(Err(error)),
     };
-    let slice = match (start, stop) {
-        // `start` is tested first, so that `start - 1` cannot overflow; the
-        // slice refuses a `stop` past the end.
-        (Some(start), Some(stop)) if start >= 1 && stop >= start - 1 => {
-            usize::try_from(stop).ok().and_then(|stop| {
-                mutator
-                    .heap
-                    .string_slice(object, (start - 1) as usize, stop)
-            })
-        }
-        _ => None,
-    };
-    match slice {
-        Some(code_points) => Ok(Value::object(
-            mutator.new_string_from_code_points(code_points),
-        )),
-        None => {
-            // The refused argument is the bound out of range: the start
-            // unless it is a position the string has (one past the end
-            // included, for the empty range), then the stop.
-            let start_in_range =
-                matches!(start, Some(position) if position >= 1 && position - 1 <= size as i64);
-            let refused = if start_in_range {
-                arguments.get(1)
-            } else {
-                arguments.first()
-            };
-            Err(NewspeakError::argument_error(
-                selector,
-                receiver,
-                refused.copied().unwrap_or(Value::nil()),
-                format!(
-                    "copyFrom: {} to: {} out of range: valid ranges lie within \
-                     1..{size}, an empty range ends just before it starts (size {size})",
-                    describe(start, arguments.first().copied()),
-                    describe(stop, arguments.get(1).copied()),
-                ),
-            ))
-        }
-    }
+    let code_points = mutator.heap.string_slice(object, range.start, range.end)?;
+    Some(Ok(Value::object(
+        mutator.new_string_from_code_points(code_points),
+    )))
 }
 
 pub(crate) fn execute_string<'gc>(
@@ -243,9 +200,9 @@ pub(crate) fn execute_string<'gc>(
                 )),
             },
         ),
-        StringPrimitive::CopyRange => Some(copy_range(
-            mutator, object, size, receiver, selector, arguments,
-        )),
+        StringPrimitive::CopyRange => {
+            copy_range(mutator, object, size, receiver, selector, arguments)
+        }
         StringPrimitive::Size => Some(Ok(Value::small_integer(size as i64))),
         StringPrimitive::Concatenate => {
             let joined = arguments

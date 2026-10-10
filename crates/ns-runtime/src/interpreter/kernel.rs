@@ -865,6 +865,29 @@ mod tests {
         (BuiltinClass::Collection, "select:"),
         (BuiltinClass::Collection, "reject:"),
         (BuiltinClass::Collection, "size"),
+        // `Array`'s sequence protocol is Newspeak over its leaves --
+        // `at:`, `at:put:`, `size`, `copyFrom:to:` and
+        // `replaceFrom:to:with:startingAt:` -- and `new:` on its class side:
+        // every method sends, none forwards to a leaf.
+        (BuiltinClass::Array, "isEmpty"),
+        (BuiltinClass::Array, "first"),
+        (BuiltinClass::Array, "last"),
+        (BuiltinClass::Array, "indexOf:"),
+        (BuiltinClass::Array, "keysAndValuesDo:"),
+        (
+            BuiltinClass::Array,
+            "replaceFrom:to:withElementsOf:startingAt:",
+        ),
+        (BuiltinClass::Array, ","),
+        (BuiltinClass::Array, "copyWith:"),
+        (BuiltinClass::Array, "copyWithSize:"),
+        (BuiltinClass::Array, "collect:"),
+        (BuiltinClass::Array, "select:"),
+        (BuiltinClass::Array, "reject:"),
+        (BuiltinClass::Array, "sort:"),
+        (BuiltinClass::Array, "sortFrom:to:by:"),
+        (BuiltinClass::Array, "merge:into:from:width:count:by:"),
+        (BuiltinClass::Array, "withAll:"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
         (BuiltinClass::MessageNotUnderstood, "hostSelector"),
@@ -1151,6 +1174,7 @@ mod tests {
         ),
         (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
         (BuiltinClass::String, "asString", MethodFastPath::Receiver),
+        (BuiltinClass::Array, "asArray", MethodFastPath::Receiver),
         // Quick in shape, though only the unwinder activates it, pushing it
         // as a method so that its return carries the unwind on
         // (`Mutator::start_unwind_block`).
