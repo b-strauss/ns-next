@@ -4604,7 +4604,8 @@ and removal; `NotFound` stays in the collections module; no
 `ReadOnlyTuple` and no value collections yet; leaves where Primordial
 Soup has primitives, Newspeak elsewhere; every body written here from the
 protocol's description; `ConcurrentModification` on a structural change
-during an iteration, checked after every block; and the documentation
+during an iteration, checked after every block that does not end it,
+and by `List>>sort:` once its copy is sorted; and the documentation
 rule ([core-library.md](design/core-library.md), "Decisions",
 "Collections and strings").
 
@@ -4627,8 +4628,9 @@ to 3,711 ms) and DeltaBlue 4.7% (670.5 ms to 702.3 ms), the other fourteen
 within noise, -1.7% to +2.3%. Havlak was 23.4% slower until `Map`'s probes
 sent `hash` and `=` inline, the tables were filled by `whileTrue:` and the
 data array became the removed mark. The remainder -- a private slot's
-getter send per element, and the modification check after every block,
-all of DeltaBlue's loss -- was accepted with the user.
+getter send per element, and the modification check after every block
+that does not end the iteration, all of DeltaBlue's loss -- was accepted
+with the user.
 
 - `6368827f`, `2163ded7`, `e2aff2ff` -- the design and the plan.
 - `025ac278`, `f779071e` -- every member of the kernel and the platform
@@ -4645,7 +4647,13 @@ all of DeltaBlue's loss -- was accepted with the user.
   collections module is written here.
 - `91d25b79`, `7a661484` -- `Map`'s probes inline, the tables filled by
   `whileTrue:`, the data array as the removed mark.
-- This commit -- the documentation describes the built state.
+- `611ae57e`, `457382c6`, `31468913` -- the documentation describes the
+  built state.
+- `32c7c16b` -- `List>>sort:` signals `ConcurrentModification` when its
+  block adds or removes an element, and writes nothing back; the final
+  review's comment and test findings; a cascade on `self` pinned as an
+  ordinary send (§5.4.4).
+- This commit -- the review's deferred findings in `OPEN-WORK.md`.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 numbers sub-project is next ("Next") and has no design or plan yet;

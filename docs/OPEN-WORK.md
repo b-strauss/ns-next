@@ -365,6 +365,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   measurement of what the read costs a program should inform. Unmeasured;
   noted 2026-10-02. [object-model.md](design/object-model.md), "Values and
   objects".
+- **`String`'s search leaf copies the whole receiver on every call.**
+  `search` (`crates/ns-runtime/src/builtins/text.rs`), behind
+  `indexOf:startingAt:` and `lastIndexOf:startingAt:`, collects the
+  receiver's code points and the argument's into two `Vec<u32>` before it
+  compares, so `startsWith:` and `endsWith:`, which compare one position,
+  still take time and an allocation in the receiver's size. Comparing the
+  code points in place, in either width, would remove the copy. Unmeasured;
+  found by the collections and strings sub-project's review, 2026-10-10.
+  [core-library.md](design/core-library.md), "What exists".
 
 ## Planned: language and library
 
@@ -828,9 +837,11 @@ activation.
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first three, which a
-program can reach and which end the process, and three a program meets as a
+program can reach and which end the process, and five a program meets as a
 gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
-text and `to:by:do:`'s zero step.
+text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
+that only answers `isKindOfArray`, and the error of a `hash` that is no
+Integer.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -954,6 +965,29 @@ text and `to:by:do:`'s zero step.
   not. Found 2026-10-10, outside the collections and strings
   sub-project's scope. [core-library.md](design/core-library.md),
   "Exceptions".
+- **`String withAll:` answers nil for an argument that answers
+  `isKindOfArray` true without being an `Array`.** The class side
+  (`Kernel.ns`, `String class>>withAll:`) asks the leaf, and when the leaf
+  declines it gathers the argument into an Array -- unless the argument
+  claims to be an Array or a String, in which case it answers nil, the
+  answer meant for a subclass of `String` as receiver. A program's class
+  that answers `isKindOfArray` true and `do:` its code points gets nil at
+  exit status 0 instead of a String. Telling the two declines apart -- a
+  subject that is not `String` itself from an argument the leaf does not
+  read -- would close it. Found by the collections and strings
+  sub-project's review, 2026-10-10. [core-library.md](design/core-library.md),
+  "What exists".
+- **A `hash` that answers no Integer surfaces as "does not understand
+  `#\\`" from a `Map` or a `Set`.** The probes
+  (`CollectionsFactory.ns`, `scanFor:in:` and `emptyBucketFor:in:`) send
+  the answer of `hash` `\\` with the table's size, so a `hash` answering
+  `1.5` ends in a `MessageNotUnderstood` of `\\` from inside the probe,
+  which names neither `hash` nor the collection. The program's `hash` is
+  the defect, and the probes' comments say what is signalled; an
+  `ArgumentError` naming `hash` and the answer would read better, at the
+  cost of a check on every probe. Found by the collections and strings
+  sub-project's review, 2026-10-10. [core-library.md](design/core-library.md),
+  "The collections module (plan 2)".
 - **A `.ns` root declaring `packageUsing:`** is refused with the message
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
