@@ -872,7 +872,7 @@ show").
    block, so a native loop's condition and body replace each other on the
    stack. `value` and the control-flow natives answer steps;
    `invoke_closure` remains only for `do:`. A non-Boolean loop condition's
-   `mustBeBoolean` is decided and pushed by the loop instead of re-entering it.
+   error is raised by the loop's continuation instead of re-entering it.
    Three golden outcomes were added first and passed before the change, pinning
    the behaviour it had to keep.
 5. **The two bounds.** `MAX_ACTIVATION_DEPTH` and `MAX_NATIVE_DEPTH`;

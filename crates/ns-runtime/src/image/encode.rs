@@ -747,6 +747,10 @@ fn encode_instruction(
             writer.write_u8(OPCODE_NON_LOCAL_RETURN);
             writer.write_u16(*register);
         }
+        Instruction::SignalNonBoolean { register } => {
+            writer.write_u8(OPCODE_SIGNAL_NON_BOOLEAN);
+            writer.write_u16(*register);
+        }
         Instruction::Jump { target } => {
             writer.write_u8(OPCODE_JUMP);
             writer.write_u32(*target);

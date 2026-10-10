@@ -1537,6 +1537,7 @@ fn verify_body(code: &CompiledCode, instructions: &[Instruction]) -> Result<(), 
             Instruction::Return { .. }
             | Instruction::ImplicitReturn { .. }
             | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
             | Instruction::Jump { .. },
         ) => {}
         _ => return Err(DecodeError::UnterminatedBody),
@@ -1671,6 +1672,7 @@ fn own_registers(instruction: &Instruction) -> Vec<u16> {
         Instruction::Return { register }
         | Instruction::ImplicitReturn { register }
         | Instruction::NonLocalReturn { register }
+        | Instruction::SignalNonBoolean { register }
         | Instruction::JumpIfNotBoolean { register, .. }
         | Instruction::BranchIfFalse { register, .. }
         | Instruction::BranchIfTrue { register, .. } => vec![*register],
@@ -1720,7 +1722,8 @@ fn jump_target(instruction: &Instruction) -> Option<u32> {
         | Instruction::InitializeSlotProvisionally { .. }
         | Instruction::Return { .. }
         | Instruction::ImplicitReturn { .. }
-        | Instruction::NonLocalReturn { .. } => None,
+        | Instruction::NonLocalReturn { .. }
+        | Instruction::SignalNonBoolean { .. } => None,
     }
 }
 
@@ -2088,6 +2091,9 @@ fn decode_instruction(
             register: reader.read_u16()?,
         },
         OPCODE_NON_LOCAL_RETURN => Instruction::NonLocalReturn {
+            register: reader.read_u16()?,
+        },
+        OPCODE_SIGNAL_NON_BOOLEAN => Instruction::SignalNonBoolean {
             register: reader.read_u16()?,
         },
         OPCODE_JUMP => Instruction::Jump {

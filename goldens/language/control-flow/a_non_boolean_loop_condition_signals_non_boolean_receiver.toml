@@ -1,0 +1,8 @@
+status = 1
+stdout = '''
+before
+cond
+'''
+stderr = '''
+Uncaught Newspeak error: a loop's condition answered 3, which is no Boolean
+'''

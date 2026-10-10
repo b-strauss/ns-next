@@ -128,6 +128,9 @@ identity".
   `self`, a block its last expression's value. The VM treats it exactly like
   `Return`; it is kept distinct so `disasm` output stays legible.
 - `NonLocalReturn { register }` — a `^` inside a block body.
+- `SignalNonBoolean { register }` — an inlined `whileTrue:`/`whileFalse:`'s
+  guard-failure path: signals `NonBooleanReceiver` for the condition's answer
+  in `register`. Nothing after it runs, so it ends a path as a return does.
 
 **Branches**
 
@@ -400,11 +403,13 @@ iteration. A non-Boolean condition cannot fall back to re-sending `whileTrue:` t
 a materialized closure, because that would re-run the condition body and duplicate
 its side effects before the native could report anything — an observable
 difference. Instead the natives define the behaviour and the inlined form
-reproduces it: both send `mustBeBoolean` to the offending value, an ordinary
-virtual send, and answer its result. No class implements `mustBeBoolean`, so the
-inlined loop and the native produce the identical `doesNotUnderstand:` through
-the shared path, and a user class that does implement it is observed identically
-by both.
+reproduces it: both signal a `NonBooleanReceiver` carrying the offending value,
+built by the one function `interpreter::unwind::non_boolean_condition`. The
+inlined loop's guard-failure path is the single instruction `SignalNonBoolean`,
+which ends the path as a return does; the native loop's continuation raises the
+same error, so class, text, selector and receiver are identical under both
+lowerings. A loop's behaviour is the library's to define, so there is no message
+a program could implement to answer a non-Boolean condition.
 
 ### Lexical addressing inside an inlined block
 
@@ -441,7 +446,7 @@ Coverage has to include the paths the gate is designed to leave alone, not just
 the common case: a non-Boolean receiver must still produce the identical
 `doesNotUnderstand:` a fully virtual send would; a user class that *implements*
 `ifTrue:ifFalse:` must have its method run; a non-Boolean `whileTrue:` condition
-must produce the identical `mustBeBoolean` error.
+must signal the identical `NonBooleanReceiver`.
 
 Those paths are pinned by recorded answers, which both lowerings must produce:
 `goldens/language/control-flow/` holds the non-Boolean receiver and the non-Boolean loop
@@ -536,7 +541,7 @@ and fall through into the immediately following `SendPublic` when it
 declines. `vm::run` polls a safepoint only on a backward jump (`target <=
 program_counter`), so the forward jump costs no safepoint, and the hot path
 becomes one dispatch with no `Jump` instruction at all. **This requires
-retiring tag 33 and taking the next free instruction tag (40 today, per
+retiring tag 33 and taking the next free instruction tag (41 today, per
 `image/opcodes.rs`) for the changed instruction**, because the
 meaning of `target` changes and a stale artifact would otherwise decode into
 a different, perfectly valid program and run it silently
@@ -1001,8 +1006,8 @@ by exempting it from the comparison:
 Everything else was checked and agrees: all eight inlined forms exist as
 kernel methods that follow the rules the inlined code reproduces (`True`'s
 and `False`'s quick methods for the six branches, which answer the block's
-value as it is, and leaves for the two loops, with `mustBeBoolean` for a
-non-Boolean loop condition); a mirror send's failure block runs the same code
+value as it is, and leaves for the two loops, which signal `NonBooleanReceiver`
+for a non-Boolean loop condition); a mirror send's failure block runs the same code
 whether it is inlined or activated; a
 method's `^` inside a block the optimized lowering inlines is a `Return` there
 and a `NonLocalReturn` here, whose unwind ends at the method's activation, with
@@ -1039,7 +1044,8 @@ that only the reference lowering emits, for exactly the sends
 - **The count agrees at every point of every program.** The optimized lowering
   omits exactly these activations and no others. On a non-Boolean receiver
   both lowerings make the same real send with real closures, and from there
-  count alike; the `mustBeBoolean` send is made alike too. That holds for an
+  count alike; a non-Boolean loop condition signals its `NonBooleanReceiver`
+  from the same depth under both. That holds for an
   instance of a user subclass of `True`, which reaches `True`'s quick methods:
   they mark the block as a control-flow step only for a Boolean receiver, so
   its block is counted under both lowerings
@@ -1224,9 +1230,10 @@ handle, so none can read one through a heap that did not mint it
   every error an integer operation can raise — a `doesNotUnderstand:`, a zero
   divisor — are still decided by the primitive in `builtins/` and by nothing
   else ("Arithmetic inlining").
-- **`whileTrue:` with a non-Boolean condition sends `mustBeBoolean`** rather than
-  falling back to a re-send, because a re-send would duplicate the condition's
-  side effects and the inlined loop would diverge from the native one.
+- **`whileTrue:` with a non-Boolean condition signals `NonBooleanReceiver`**
+  (`SignalNonBoolean`) rather than falling back to a re-send, because a re-send
+  would duplicate the condition's side effects and the inlined loop would
+  diverge from the native one.
 - **Code lives on the mixin and `InitializeSlot` is mixin-relative**, because one mixin
   backs many applications with different inherited layouts.
 - **Every send carries a call site, numbered per code family as a `u32`**, so

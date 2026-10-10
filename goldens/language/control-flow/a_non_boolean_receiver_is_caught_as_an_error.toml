@@ -1,0 +1,6 @@
+stdout = '''
+NonBooleanReceiver
+4
+5
+a loop's condition answered 5, which is no Boolean
+'''

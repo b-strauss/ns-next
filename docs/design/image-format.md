@@ -336,8 +336,11 @@ Instructions:
 - 39 `InitializeSlotProvisionally`: `InitializeSlot` without §3.1.1's
   value-slot check, for a simultaneous clause's future only, `source` a `u16`
   and `own_index` a `u32`.
+- 40 `SignalNonBoolean`: an inlined loop's guard failure, `register` a `u16`:
+  signals `NonBooleanReceiver` for the condition's answer in it. Like a
+  return, it may end a body.
 
-The next free instruction number is 40. A send's `CallSite` -- its number
+The next free instruction number is 41. A send's `CallSite` -- its number
 within its code family, a `u32`, or `u32::MAX` (`CallSite::UNCACHED`) for
 every send the reference lowering emits ([compiler.md](compiler.md),
 "Safepoints and call-site identity") -- is not among its operands at all: see

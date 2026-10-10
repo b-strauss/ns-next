@@ -615,12 +615,12 @@ ns_runtime::for_each_lowering! {
             what("ifTrue:")
         );
 
-        // A condition that answers a non-Boolean: the continuation decides a
-        // `mustBeBoolean` send, which nothing here understands, and the error
+        // A condition that answers a non-Boolean: the continuation signals a
+        // `NonBooleanReceiver`, which nothing here handles, and the error
         // leaves the floor as clean as a value does.
         match send(&mut interpreter, &three, "whileTrue:", &[&step]) {
             Err(HostSignal::Error(error)) => assert!(
-                error.message.contains("mustBeBoolean"),
+                error.message.contains("which is no Boolean"),
                 "{}: {}",
                 what("whileTrue:"),
                 error.message

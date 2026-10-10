@@ -1,8 +1,0 @@
-status = 1
-stdout = '''
-1
-2
-'''
-stderr = '''
-Uncaught Newspeak error: an object does not understand #mustBeBoolean
-'''

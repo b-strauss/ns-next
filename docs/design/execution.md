@@ -377,9 +377,10 @@ activations from its callers'.
   accessor's, an instantiation's — is applied by `Mutator::resume`, which
   calls into `builtins/` or `interpreter/`; it may answer a value, or another
   activation — a native loop's next block, `do:`'s block for the next element,
-  an instantiation's next body, or the method a non-Boolean condition's
-  `mustBeBoolean` send finds — which `Mutator::push_continuation` pushes
-  in the popped activation's place ("The trampoline" below). A future's
+  an instantiation's next body, or the `valueOf:` that runs a loop body which
+  is no block — which `Mutator::push_continuation` pushes
+  in the popped activation's place; a native loop whose condition answers no
+  Boolean signals `NonBooleanReceiver` instead ("The trampoline" below). A future's
   forcing, `Continuation::Future`, is the one `finish` does not hand to
   `resume`: `Mutator::future_computed` records the value, and the loop
   delivers it, forces the next future of a chain, or runs the caller's
@@ -5995,7 +5996,7 @@ literals through `lower_block_literal`), so that inlining stays a pure
 optimization (`goldens/language/control-flow/control_flow_fallback.ns`). The same block
 literal is lowered twice: inlined on the common path, a real closure on the
 fallback path. An inlined `whileTrue:` or `whileFalse:` is not affected: its
-fallback is `mustBeBoolean`, with no closure.
+fallback is `SignalNonBoolean`, with no closure.
 
 A fallback closure can outlive the statement that made it — a non-Boolean
 receiver's `ifTrue:` may keep the block and run it later — so treating it as a
@@ -6022,8 +6023,9 @@ one literal differ in more than where they sit:
 reading a copied register and the fallback one a `LoadOuterLocal` at depth 2.
 
 Rejected: converting fallback closures like any other block (a vector for every
-variable any branch writes), and sending `mustBeBoolean` on the fallback path
-as Cog does, which would change recorded outcomes and make inlining observable.
+variable any branch writes), and sending `mustBeBoolean` on a conditional's
+fallback path as Cog does, which would change recorded outcomes and make
+inlining observable.
 
 ### Converted representation
 

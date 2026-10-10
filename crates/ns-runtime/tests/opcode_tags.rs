@@ -59,6 +59,12 @@ fn the_simultaneous_slot_instructions_keep_their_numbers() {
     assert_eq!(OPCODE_INITIALIZE_SLOT_PROVISIONALLY, 39);
 }
 
+/// An inlined loop's guard failure, which signals `NonBooleanReceiver`.
+#[test]
+fn the_non_boolean_signal_keeps_its_number() {
+    assert_eq!(OPCODE_SIGNAL_NON_BOOLEAN, 40);
+}
+
 #[test]
 fn the_integer_binary_opcode_keeps_its_tag() {
     // A tag is assigned once and never renumbered: a stale artifact must hit
@@ -117,6 +123,7 @@ fn no_two_tags_share_a_number() {
         OPCODE_RESOLVE_FUTURE,
         OPCODE_LOAD_OWN_SLOT,
         OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
+        OPCODE_SIGNAL_NON_BOOLEAN,
     ];
     let mut sorted = opcodes;
     sorted.sort_unstable();
@@ -189,6 +196,7 @@ fn retired_instruction_tags_are_never_reused() {
         OPCODE_RESOLVE_FUTURE,
         OPCODE_LOAD_OWN_SLOT,
         OPCODE_INITIALIZE_SLOT_PROVISIONALLY,
+        OPCODE_SIGNAL_NON_BOOLEAN,
     ];
     for retired in RETIRED_OPCODES {
         assert!(!live.contains(&retired), "tag {retired} is retired");

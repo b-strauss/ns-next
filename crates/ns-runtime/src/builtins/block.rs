@@ -6,7 +6,7 @@
 use crate::builtins::primitive::BlockPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
-use crate::{Mutator, Symbol};
+use crate::Mutator;
 
 pub(crate) fn execute<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -54,9 +54,9 @@ fn loop_body<'gc>(mutator: &Mutator<'gc>, arguments: &[Value<'gc>]) -> Option<Lo
 // `whileTrue:` (`expect == true`) / `whileFalse:` (`expect == false`):
 // evaluate the condition; while its value is `Boolean(expect)`, evaluate the
 // body and repeat; a `Boolean(!expect)` ends the loop with `nil`; a non-Boolean
-// condition value is sent `mustBeBoolean`, and that send's result is the
-// loop's value. The inlined loop reproduces exactly this on its guard-failure
-// path (`docs/design/compiler.md`, "Control-flow inlining"). Condition and
+// condition value signals `NonBooleanReceiver`. The inlined loop signals the
+// same error, built by the same function, on its guard-failure path
+// (`docs/design/compiler.md`, "Control-flow inlining"). Condition and
 // body replace each other on the activation stack: each one's continuation
 // says what runs next.
 
@@ -77,7 +77,9 @@ pub(crate) fn after_condition<'gc>(
     match value.as_boolean() {
         Some(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
         Some(_) => Ok(Step::Value(Value::nil())),
-        None => mutator.decide_send(value, Symbol::MUST_BE_BOOLEAN, &[]),
+        None => Err(Signal::Error(
+            crate::interpreter::unwind::non_boolean_condition(&mutator.heap, value),
+        )),
     }
 }
 

@@ -100,17 +100,17 @@ fn while_false_loops_until_the_condition_is_true() {
 }
 
 #[test]
-fn a_non_boolean_condition_sends_must_be_boolean() {
+fn a_non_boolean_condition_signals_non_boolean_receiver() {
     let (_interpreter, result) = run_method(&module("| c | c:: [3]. ^c whileTrue: [nil]"), "run");
     match result {
         Err(HostSignal::Error(error)) => {
             assert!(
-                error.message.contains("does not understand #mustBeBoolean"),
+                error.message.contains("which is no Boolean"),
                 "{}",
                 error.message
             )
         }
-        _ => panic!("expected the mustBeBoolean doesNotUnderstand: error"),
+        _ => panic!("expected the NonBooleanReceiver error"),
     }
 }
 

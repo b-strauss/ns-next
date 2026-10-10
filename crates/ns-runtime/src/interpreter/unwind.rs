@@ -14,7 +14,7 @@
 //! no marker costs one test.
 
 use crate::bytecode::UnwindMarker;
-use crate::heap::{ActivationHeader, ActivationReference};
+use crate::heap::{ActivationHeader, ActivationReference, Heap};
 use crate::types::*;
 use crate::Symbol;
 
@@ -260,6 +260,23 @@ pub(crate) fn dead_activation_error<'gc>(
         Value::nil(),
         result,
         "cannotReturn: the activation has already returned",
+    )
+}
+
+/// The `NonBooleanReceiver` a loop signals when its condition answers
+/// `value`, which is no Boolean; one error for the inlined loop and the
+/// native one alike.
+pub(crate) fn non_boolean_condition<'gc>(
+    heap: &Heap<'gc>,
+    value: Value<'gc>,
+) -> NewspeakError<'gc> {
+    NewspeakError::non_boolean_receiver(
+        Symbol::VALUE,
+        value,
+        format!(
+            "a loop's condition answered {}, which is no Boolean",
+            heap.describe(value)
+        ),
     )
 }
 

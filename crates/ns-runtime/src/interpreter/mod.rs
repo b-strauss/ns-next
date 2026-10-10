@@ -1347,9 +1347,10 @@ impl<'gc> Mutator<'gc> {
     /// waits for instead of a Rust frame. `then` is the continuation of the
     /// block's activation, which the loop has just popped. It answers the
     /// value for the caller, or another activation to run in the popped
-    /// one's place -- a native loop's next block, or the method a
-    /// non-Boolean condition's `mustBeBoolean` finds -- which the loop hands
-    /// to `push_continuation`.
+    /// one's place -- a native loop's next block, or the `valueOf:` that
+    /// runs a body which is no block -- which the loop hands to
+    /// `push_continuation`; or the signal of a non-Boolean condition's
+    /// `NonBooleanReceiver`.
     pub(crate) fn resume(
         &mut self,
         then: Continuation<'gc>,
@@ -1420,9 +1421,9 @@ impl<'gc> Mutator<'gc> {
         let sender = self.heap.top_activation();
         // A continuation's step never refers to a send's arguments
         // (`StepArguments::Send` is only answered by a decision about a send,
-        // and the one a continuation makes -- `mustBeBoolean` -- has none; a
-        // `Step::MethodThen` owns its arguments), so `&[]` is always right
-        // here.
+        // and a continuation decides none: the one send it makes, a body's
+        // `value`, is a `Step::MethodThen`, which owns its arguments), so
+        // `&[]` is always right here.
         self.push_step(step, &[], sender, !replaced_counted)
     }
 

@@ -1082,8 +1082,9 @@ impl<'a> Lowerer<'a> {
     /// explicit-receiver send is offered to `recognize`, and a lexical or
     /// `super` send has no receiver expression to walk. Every send runs user
     /// code, and so does every recognized inlinable form -- through the real
-    /// send its guard-failure path makes (`lower_fallback_send`,
-    /// `emit_must_be_boolean`).
+    /// send its guard-failure path makes (`lower_fallback_send`), or, for a
+    /// loop, through the handlers the `NonBooleanReceiver` it signals runs
+    /// (`emit_signal_non_boolean`).
     ///
     /// An inlined integer leaf is deliberately not named here: its fallback
     /// *is* the ordinary send, over the same registers, so it falls through
@@ -1685,17 +1686,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// The guard-failure path of an inlined loop: what the native
-    /// `whileTrue:`/`whileFalse:` does with a non-Boolean condition value.
-    fn emit_must_be_boolean(&mut self, register: u16) -> u16 {
-        let selector = crate::Symbol::MUST_BE_BOOLEAN;
-        self.emit_send(|destination, call_site| Instruction::SendPublic {
-            selector,
-            receiver_register: register,
-            argument_registers: vec![],
-            destination,
-            call_site,
-        })
+    /// The guard-failure path of an inlined loop: signals
+    /// `NonBooleanReceiver`, as the native `whileTrue:`/`whileFalse:` does
+    /// with a non-Boolean condition value. The path ends here.
+    fn emit_signal_non_boolean(&mut self, register: u16) {
+        self.emit(Instruction::SignalNonBoolean { register });
     }
 
     /// The shared shape behind every one-shot inlined form: `guard_register`
@@ -1936,10 +1931,10 @@ impl<'a> Lowerer<'a> {
     }
 
     /// A real loop: condition, guard, exit branch, body, back-edge. A
-    /// non-Boolean condition value takes the `mustBeBoolean` path and ends the
-    /// loop with that send's value; a normal exit leaves `nil` in
-    /// `destination`. The guard reads the condition's value on every iteration,
-    /// whatever reads the loop's; nothing reads the body's.
+    /// non-Boolean condition value takes the path that signals
+    /// `NonBooleanReceiver`, which never reaches the loop's end; a normal exit
+    /// leaves `nil` in `destination`. The guard reads the condition's value on
+    /// every iteration, whatever reads the loop's; nothing reads the body's.
     fn lower_while(
         &mut self,
         condition: &ast::BlockExpression,
@@ -1968,11 +1963,10 @@ impl<'a> Lowerer<'a> {
         self.emit(Instruction::Jump { target: loop_start });
         let fallback_label = self.here();
         self.patch_target(not_boolean_jump, fallback_label);
-        let fallback_result = self.emit_must_be_boolean(guard_register);
-        self.emit(Instruction::Move {
-            destination,
-            source: fallback_result,
-        });
+        // The signal ends its path, like a return: nothing writes
+        // `destination` after it, and the end label is reached only by the
+        // exit branch.
+        self.emit_signal_non_boolean(guard_register);
         let end_label = self.here();
         self.patch_target(exit_jump, end_label);
         destination
@@ -2433,7 +2427,7 @@ mod tests {
     /// The two nested inlined loops of
     /// `goldens/language/block/writes_two_inlined_levels_deep.ns`, as a method body
     /// and as a block body. Both levels are loops on purpose: a loop's
-    /// guard-failure path is `mustBeBoolean`, with no closure, so no
+    /// guard-failure path signals `NonBooleanReceiver`, with no closure, so no
     /// inlinable conditional assigns `t` and `branch_assigned` is false. The
     /// copy can therefore come only from resolving the assignment's target
     /// back to `t`'s own register, which is where `writes_register`'s
@@ -4079,7 +4073,7 @@ mod tests {
     }
 
     #[test]
-    fn while_true_compiles_to_a_back_edge_jump_and_a_must_be_boolean_fallback() {
+    fn while_true_compiles_to_a_back_edge_jump_and_a_non_boolean_signal() {
         let code = compile_foo("[x] whileTrue: [x]");
         let back_edge =
             code.instructions().iter().enumerate().find_map(
@@ -4095,7 +4089,7 @@ mod tests {
         );
         assert!(has(&code, |instruction| matches!(
             instruction,
-            Instruction::SendPublic { selector, .. } if selector.as_str() == "mustBeBoolean"
+            Instruction::SignalNonBoolean { .. }
         )));
         assert!(!has(&code, |instruction| matches!(
             instruction,

@@ -435,8 +435,8 @@ which answers from the call site's cache or runs the lookup; every lookup is in
 `resolve_super`), and so is `act`, the one place that runs what a lookup
 found. The uncached sends — `Mutator::decide_send`,
 `sends::decide_lexical_send` and `sends::decide_super_send` — are `act` on a
-fresh resolution, and are what the reference lowering's sends, a host's
-`Interpreter::send` and a send a continuation decides (`mustBeBoolean`) run.
+fresh resolution, and are what the reference lowering's sends and a host's
+`Interpreter::send` run.
 
 Never copy dispatch logic, lookup logic or error text out of `interpreter/` into
 `vm.rs` or `compiler/`. The reference lowering and, later, a JIT must reach the
@@ -1266,9 +1266,8 @@ dependency key of [liveness-and-reflection.md](liveness-and-reflection.md),
 
 #### What stays uncached
 
-A host's `Interpreter::send`, a send a continuation decides (the `mustBeBoolean`
-a non-Boolean loop condition is sent), and every send the reference lowering
-compiles run the full lookup and record nothing.
+A host's `Interpreter::send` and every send the reference lowering compiles run
+the full lookup and record nothing.
 
 #### Bytecode and image
 

@@ -1,9 +1,0 @@
-(* The condition body runs exactly once, then its non-Boolean value is sent
-   `mustBeBoolean`. *)
-class WhileMbb = Object new (
-) (
-    public main: p args: a = (
-        p transcript show: 'before'; newLine.
-        [p transcript show: 'cond'; newLine. 3] whileTrue: [nil]
-    )
-) : ()

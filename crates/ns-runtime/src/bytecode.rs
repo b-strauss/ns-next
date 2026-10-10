@@ -318,6 +318,12 @@ pub enum Instruction {
     NonLocalReturn {
         register: u16,
     },
+    /// The guard-failure path of an inlined `whileTrue:`/`whileFalse:`:
+    /// signals `NonBooleanReceiver` for the value in `register`, which the
+    /// condition answered. Ends its path: nothing after it runs.
+    SignalNonBoolean {
+        register: u16,
+    },
     /// Unconditional jump. Emitted only by control-flow inlining.
     Jump {
         target: u32,
@@ -812,6 +818,7 @@ pub(crate) fn outer_reach_of(instructions: &[Instruction]) -> u16 {
             | Instruction::Return { .. }
             | Instruction::ImplicitReturn { .. }
             | Instruction::NonLocalReturn { .. }
+            | Instruction::SignalNonBoolean { .. }
             | Instruction::Jump { .. }
             | Instruction::JumpIfNotBoolean { .. }
             | Instruction::BranchIfFalse { .. }
@@ -1041,6 +1048,7 @@ fn format_instruction(instruction: &Instruction) -> String {
         Instruction::Return { register } => format!("Return r{register}"),
         Instruction::ImplicitReturn { register } => format!("ImplicitReturn r{register}"),
         Instruction::NonLocalReturn { register } => format!("NonLocalReturn r{register}"),
+        Instruction::SignalNonBoolean { register } => format!("SignalNonBoolean r{register}"),
         Instruction::Jump { target } => format!("Jump -> {target}"),
         Instruction::JumpIfNotBoolean { register, target } => {
             format!("JumpIfNotBoolean r{register} -> {target}")

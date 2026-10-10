@@ -27,7 +27,7 @@
 // retired at 11 and reassigned to 29 for the same reason: closure
 // conversion gave it a list of copied registers, so its old bytes describe
 // a different instruction.
-// Next free number: 40.
+// Next free number: 41.
 
 /// Loads a literal into a register; a string, symbol or array
 /// literal allocates a fresh object every time it runs.
@@ -112,6 +112,9 @@ pub const OPCODE_LOAD_OWN_SLOT: u8 = 38;
 /// `InitializeSlot` without §3.1.1's value-slot check, for a simultaneous
 /// clause's future only (`Instruction::InitializeSlotProvisionally`).
 pub const OPCODE_INITIALIZE_SLOT_PROVISIONALLY: u8 = 39;
+/// An inlined loop's guard failure: signals `NonBooleanReceiver` for the
+/// condition's answer and ends its path (`Instruction::SignalNonBoolean`).
+pub const OPCODE_SIGNAL_NON_BOOLEAN: u8 = 40;
 
 /// Instruction tags that no longer name anything and are never reused:
 /// 7–10 were the four sends while their call site was a `u16` instruction

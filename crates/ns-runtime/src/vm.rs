@@ -26,7 +26,7 @@ use crate::interpreter::locals::{
     filled_own_slot, load_own_slot, load_vector, read_local, read_outer_local,
     store_instance_field, store_vector, write_local, write_outer_local,
 };
-use crate::interpreter::unwind::UnwindOutcome;
+use crate::interpreter::unwind::{non_boolean_condition, UnwindOutcome};
 use crate::interpreter::{
     EvaluationResult, FeedbackBase, HostResult, Interpreter, Mutator, Signal, Step,
 };
@@ -822,6 +822,19 @@ fn run_stretch<'gc>(mutator: &mut Mutator<'gc>, frame: &mut FrameRegisters, floo
                                         &mut handoff,
                                     )
                                 }
+                                // An inlined loop's condition answered no Boolean: the error
+                                // is `unwind`'s to build, as the native loop's is.
+                                CompactInstruction::SignalNonBoolean { register } => {
+                                    let value =
+                                        mutator.heap.register(register_base, u16::from(register));
+                                    let error = non_boolean_condition(&mutator.heap, value);
+                                    break 'decided unwind(
+                                        mutator,
+                                        Signal::Error(error),
+                                        floor,
+                                        &mut handoff,
+                                    );
+                                }
                                 CompactInstruction::NonLocalReturn { register } => {
                                     break 'decided non_local_return(
                                         mutator,
@@ -1313,6 +1326,11 @@ fn run_wide<'gc>(
             floor,
             handoff,
         ),
+        Instruction::SignalNonBoolean { register } => {
+            let value = mutator.heap.register(register_base, *register);
+            let error = non_boolean_condition(&mutator.heap, value);
+            unwind(mutator, Signal::Error(error), floor, handoff)
+        }
         Instruction::Jump { target } => return WideOutcome::Jump(*target),
         Instruction::JumpIfNotBoolean { register, target } => {
             return match boolean_in(mutator, register_base, *register) {
@@ -1761,8 +1779,9 @@ fn deliver<'gc>(
 /// A value -- the usual case -- goes to the send in the caller, which resumes,
 /// or out of `run` when there is no caller in this run; a native loop's
 /// continuation may instead decide another activation -- a native loop's next
-/// block, or a `mustBeBoolean` method -- which runs in the popped activation's
-/// place. `Mutator::resume` applies the continuation and
+/// block, or the `valueOf:` that runs a body which is no block -- which runs
+/// in the popped activation's place. `Mutator::resume` applies the
+/// continuation and
 /// `Mutator::push_continuation` pushes what it decided, depth count included;
 /// the loop only forwards the popped entry's flag. A future's forcing
 /// (`Mutator::future_computed`) may also run the caller's stopped

@@ -604,6 +604,7 @@ fn every_instruction_once() -> CompiledCode {
             Instruction::Return { register: 0 },
             Instruction::ImplicitReturn { register: 1 },
             Instruction::NonLocalReturn { register: 2 },
+            Instruction::SignalNonBoolean { register: 3 },
             Instruction::Jump { target: 3 },
             Instruction::JumpIfNotBoolean {
                 register: 1,
@@ -1077,14 +1078,14 @@ fn an_invalid_instruction_tag_is_a_decode_error_not_a_panic() {
     writer.write_u32(0);
     writer.write_boolean(false); // not compiled uncached
     writer.write_u32(1); // one instruction ...
-    writer.write_u8(40); // ... one past the last real tag
+    writer.write_u8(41); // ... one past the last real tag
     let bytes = writer.into_bytes();
     let mut reader = decode::Reader::new(&bytes);
     assert_eq!(
         decode::decode_code_table(&mut reader, &symbols::Table::empty()),
         Err(decode::DecodeError::InvalidTag {
             what: "instruction",
-            tag: 40
+            tag: 41
         })
     );
 }
@@ -4733,6 +4734,38 @@ fn a_register_in_a_send_inlinable_is_checked_too() {
             register_count: 1
         })
     );
+}
+
+/// The loop's signal reads its register like any other operand, so a
+/// decoded one out of range is refused before the VM reads it.
+#[test]
+fn a_register_in_a_non_boolean_signal_is_checked_too() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![Instruction::SignalNonBoolean { register: 4 }],
+    )]);
+    assert_eq!(
+        decode::verify_code_table(&table),
+        Err(decode::DecodeError::RegisterOutOfRange {
+            register: 4,
+            register_count: 1
+        })
+    );
+}
+
+/// Nothing runs after the loop's signal, so a body may end in it, as the
+/// optimized lowering's never does but a decoded one may.
+#[test]
+fn a_body_that_ends_in_a_non_boolean_signal_is_terminated() {
+    let table = table_of(vec![code_with(
+        CodeKind::Method,
+        0,
+        1,
+        vec![Instruction::SignalNonBoolean { register: 0 }],
+    )]);
+    assert_eq!(decode::verify_code_table(&table), Ok(()));
 }
 
 #[test]

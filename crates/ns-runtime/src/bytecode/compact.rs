@@ -202,6 +202,9 @@ pub enum CompactInstruction {
     NonLocalReturn {
         register: u8,
     },
+    SignalNonBoolean {
+        register: u8,
+    },
     Jump {
         target: u32,
     },
@@ -656,6 +659,7 @@ impl CodeBuilder {
             Instruction::Return { register }
             | Instruction::ImplicitReturn { register }
             | Instruction::NonLocalReturn { register }
+            | Instruction::SignalNonBoolean { register }
             | Instruction::JumpIfNotBoolean { register, .. }
             | Instruction::BranchIfFalse { register, .. }
             | Instruction::BranchIfTrue { register, .. } => fits(*register),
@@ -1043,6 +1047,9 @@ impl CodeBuilder {
                 register: register as u8,
             },
             Instruction::NonLocalReturn { register } => CompactInstruction::NonLocalReturn {
+                register: register as u8,
+            },
+            Instruction::SignalNonBoolean { register } => CompactInstruction::SignalNonBoolean {
                 register: register as u8,
             },
             Instruction::Jump { target } => CompactInstruction::Jump { target },
@@ -1460,6 +1467,7 @@ fn emitted_entry(slot: CompactInstruction) -> EmittedEntry {
         | CompactInstruction::Return { .. }
         | CompactInstruction::ImplicitReturn { .. }
         | CompactInstruction::NonLocalReturn { .. }
+        | CompactInstruction::SignalNonBoolean { .. }
         | CompactInstruction::Jump { .. }
         | CompactInstruction::JumpIfNotBoolean { .. }
         | CompactInstruction::BranchIfFalse { .. }
@@ -1528,6 +1536,7 @@ fn narrow_outer_reach(slot: CompactInstruction) -> u16 {
         | CompactInstruction::Return { .. }
         | CompactInstruction::ImplicitReturn { .. }
         | CompactInstruction::NonLocalReturn { .. }
+        | CompactInstruction::SignalNonBoolean { .. }
         | CompactInstruction::Jump { .. }
         | CompactInstruction::JumpIfNotBoolean { .. }
         | CompactInstruction::BranchIfFalse { .. }
@@ -1848,6 +1857,11 @@ impl Tables<'_> {
             CompactInstruction::NonLocalReturn { register: value } => Instruction::NonLocalReturn {
                 register: register(value),
             },
+            CompactInstruction::SignalNonBoolean { register: value } => {
+                Instruction::SignalNonBoolean {
+                    register: register(value),
+                }
+            }
             CompactInstruction::Jump { target } => Instruction::Jump { target },
             CompactInstruction::JumpIfNotBoolean {
                 register: value,
@@ -2390,6 +2404,7 @@ mod tests {
             Instruction::Return { register: 1 },
             Instruction::ImplicitReturn { register: 1 },
             Instruction::NonLocalReturn { register: 1 },
+            Instruction::SignalNonBoolean { register: 1 },
             Instruction::Jump { target: 2 },
             Instruction::JumpIfNotBoolean {
                 register: 1,
