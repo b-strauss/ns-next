@@ -90,12 +90,14 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::MessageNotUnderstood => "MessageNotUnderstood",
         BuiltinClass::Message => "Message",
         BuiltinClass::Halt => "Halt",
-        BuiltinClass::Future => "Future",
+        BuiltinClass::FutureImplementation => "FutureImplementation",
         BuiltinClass::LargeInteger => "LargeInteger",
         BuiltinClass::ArgumentError => "ArgumentError",
         BuiltinClass::CannotReturn => "CannotReturn",
         BuiltinClass::NonBooleanReceiver => "NonBooleanReceiver",
         BuiltinClass::CannotInstantiate => "CannotInstantiate",
+        BuiltinClass::Proxy => "Proxy",
+        BuiltinClass::Future => "Future",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -496,8 +498,9 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
         // field vector like any other class's (`docs/design/core-library.md`,
         // "Exceptions"). `Activation` declares no slots of its own: an
         // activation's state lives in the running activation it wraps.
-        // `Future`'s two slots are an ordinary field vector too, which
-        // `interpreter::future` allocates and alone reads and writes.
+        // `FutureImplementation`'s two slots are an ordinary field vector
+        // too, which `interpreter::future` allocates and alone reads and
+        // writes.
         assert!(
             nested.slots.is_empty()
                 || matches!(
@@ -511,7 +514,7 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
                         | BuiltinClass::CannotReturn
                         | BuiltinClass::NonBooleanReceiver
                         | BuiltinClass::CannotInstantiate
-                        | BuiltinClass::Future
+                        | BuiltinClass::FutureImplementation
                 ),
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
         );
@@ -891,6 +894,9 @@ mod tests {
         (BuiltinClass::CannotReturn, "description"),
         (BuiltinClass::NonBooleanReceiver, "description"),
         (BuiltinClass::CannotInstantiate, "description"),
+        // A forwarder in shape, but of its argument rather than of `self`:
+        // the row's subject is the computation the future will force.
+        (BuiltinClass::Future, "computing:"),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -1150,9 +1156,9 @@ mod tests {
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
-    /// `Future`, `LargeInteger`, which a program meets only as an integer's
-    /// class, and the exception classes and `Message`, which a program
-    /// reaches through `platform kernel`.
+    /// `FutureImplementation`, `LargeInteger`, which a program meets only as
+    /// an integer's class, and the exception classes, `Message`, `Proxy` and
+    /// `Future`, which a program reaches through `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -1186,13 +1192,18 @@ mod tests {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             for kind in BuiltinClass::ALL {
-                // `Future`'s methods forward nothing to a leaf: each is a
+                // `Proxy`'s methods forward nothing to a leaf: each is a
                 // protected override of one of `Object`'s public members,
                 // there only to stop §5.5's lookupPublic, and none is ever
                 // found by a send a program writes. `tests/future.rs`'s
-                // `future_overrides_every_public_member_of_object_as_protected`
-                // checks them instead.
-                if kind == BuiltinClass::VmMirror || kind == BuiltinClass::Future {
+                // `a_proxy_overrides_every_public_member_of_object_as_protected`
+                // checks them instead. `FutureImplementation`'s one method,
+                // `doesNotUnderstand:`, forces the future and sends the
+                // message on: a send, no leaf.
+                if matches!(
+                    kind,
+                    BuiltinClass::VmMirror | BuiltinClass::Proxy | BuiltinClass::FutureImplementation
+                ) {
                     continue;
                 }
                 let class = mutator.builtin_class(kind);
@@ -1659,8 +1670,10 @@ mod tests {
     /// each recognized as a fast path answering its own class; `Top` and the
     /// mirror's class have none, which is one of the locks that keep the
     /// mirror a capability. Neither have the exception classes, which a
-    /// program reaches through `platform kernel`, nor `Activation` and
-    /// `Future`, which it does not reach at all, nor `LargeInteger`, which a
+    /// program reaches through `platform kernel`, nor `Proxy` and `Future`,
+    /// which it reaches there too, nor `Activation` and
+    /// `FutureImplementation`, which it does not reach at all, nor
+    /// `LargeInteger`, which a
     /// program meets only as an integer's class. `PlatformFactory.ns`'s class names are listed
     /// too: `Object` must never grow an accessor for one of them, since a
     /// program reaches them through the platform it is handed.
@@ -1705,6 +1718,8 @@ mod tests {
                 "NonBooleanReceiver",
                 "CannotInstantiate",
                 "Activation",
+                "FutureImplementation",
+                "Proxy",
                 "Future",
                 "KernelNamespace",
                 "Time",
@@ -1726,12 +1741,13 @@ mod tests {
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
     /// every one but `Top`, which §3.2 lets only `Object` name,
-    /// `Activation` and `Future`, which no program may reach at all, and
+    /// `Activation` and `FutureImplementation`, which no program may reach
+    /// at all, and
     /// `NonBooleanReceiver`, which a program catches as an `Error`
     /// (`docs/design/core-library.md`, "Exceptions";
     /// `docs/design/object-model.md`, "Simultaneous slots").
     #[test]
-    fn only_top_activation_future_and_non_boolean_receiver_are_private() {
+    fn only_top_activation_future_implementation_and_non_boolean_receiver_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
@@ -1745,7 +1761,7 @@ mod tests {
             );
             let top = super::kernel_class_name(BuiltinClass::Top);
             let activation = super::kernel_class_name(BuiltinClass::Activation);
-            let future = super::kernel_class_name(BuiltinClass::Future);
+            let future = super::kernel_class_name(BuiltinClass::FutureImplementation);
             let non_boolean_receiver = super::kernel_class_name(BuiltinClass::NonBooleanReceiver);
             for nested in &application.mixin.nested {
                 let name = nested.name.as_str();
@@ -1784,6 +1800,12 @@ mod tests {
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
                 (BuiltinClass::Array, Some(BuiltinClass::Object)),
                 (BuiltinClass::Closure, Some(BuiltinClass::Object)),
+                (BuiltinClass::Proxy, Some(BuiltinClass::Object)),
+                (
+                    BuiltinClass::FutureImplementation,
+                    Some(BuiltinClass::Proxy),
+                ),
+                (BuiltinClass::Future, Some(BuiltinClass::Object)),
                 (BuiltinClass::Top, None),
             ];
             for (kind, superclass) in expected {

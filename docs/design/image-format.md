@@ -726,7 +726,7 @@ every header and body exactly as the second will and stores nothing: values
 are parsed and dropped, ids range-checked against the count, prebuilt class
 tags, code ids, mixin rows, clause indices and symbol ids resolved, a symbol
 record naming a symbol-table entry already named refused (`DuplicateSymbol`),
-and a `Future` record of a field count other than two refused
+and a `FutureImplementation` record of a field count other than two refused
 (`FutureRecord`); each record yields its object's size, read from its own
 bytes — the kind comes first in a frame record and the register count is on
 the wire, so no size depends on another record. If the objects would take
@@ -1077,7 +1077,7 @@ refuses the other direction: an image whose graph reaches the mirror object is
 not written at all, since it would hand the capability to whatever loaded it
 (`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
 and neither is one whose graph reaches the mirror's class, `Top`,
-`Activation`, `Future` or the metaclass of one of them
+`Activation`, `FutureImplementation` or the metaclass of one of them
 (`encode::unnameable_class`), which the decoder would refuse. Neither can
 happen to a program built from source, which cannot obtain the mirror; both
 are there for the day something could.
@@ -1141,9 +1141,10 @@ of the five wherever it names a class: an exception a program made is an
 ordinary instance record.
 
 **Futures in a graph: a resolved future is its value, an unresolved one a
-record under tag 30.** `Future` carries builtin tag **30**, the
-kernel-private pull future of §6.3.2's simultaneous slots
-([object-model.md](object-model.md), "Simultaneous slots"). No
+record under tag 30.** `FutureImplementation` carries builtin tag **30**,
+the kernel-private pull future of §6.3.2's simultaneous slots and of
+`Future computing:` ([object-model.md](object-model.md), "Simultaneous
+slots"). No
 program names it, so `read_referenced_builtin_class` refuses tag 30 wherever
 the graph names a class — as a value, a superclass, a `<:` clause's builtin
 and behind `CLASS_METACLASS` — and the encoder refuses a graph that reaches
@@ -1189,7 +1190,9 @@ future exists runs in the loaded world
 (`a_resolved_future_is_written_as_its_value`,
 `an_unresolved_future_round_trips_and_computes_after_load`,
 `a_future_record_that_is_not_an_unresolved_future_is_refused`,
-`a_graph_naming_future_as_a_class_is_refused`, `tests/image.rs`;
+`a_graph_naming_the_future_implementation_as_a_class_is_refused`,
+`an_argument_error_a_proxy_and_a_programs_future_round_trip`,
+`tests/image.rs`;
 `goldens/language/slot/simultaneous/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose build/load
 round trip carries a data cycle through resolved futures).
 
@@ -1208,6 +1211,12 @@ instance record.
 "Exceptions"). Like the other exception classes they are ordinary
 nameable builtins: a caught one is an ordinary instance record, and an
 image may name any of the four wherever it names a class.
+
+**`Proxy` takes tag 36 and the public `Future` 37**
+([object-model.md](object-model.md), "Simultaneous slots"). Both are
+nameable builtins an image may name wherever it names a class; an
+instance of a program's `Proxy` subclass is an ordinary instance record,
+and a program's future is a `FutureImplementation`, under tag 30 as above.
 
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak

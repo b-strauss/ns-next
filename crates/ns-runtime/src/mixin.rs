@@ -1036,15 +1036,20 @@ mod applied_clause_tests {
 
     #[test]
     fn a_negative_pattern_with_bit_sixty_set_is_read_back_through_its_sign_extension() {
-        // The builtins' tags stay below 32, so `pack` never sets bit 60; a
-        // field holding it is corrupt, and `unpack` must still answer by the
-        // 61-bit pattern -- tag 33 names no builtin.
+        // A tag of 32 or more sets bit 60, so the packed SmallInteger is
+        // negative, and `unpack` must answer by the 61-bit pattern: tag 33
+        // names no builtin, and the last builtin's tag, 32, names it.
         let packed = ((33i64 << 55) << 3) >> 3;
         assert!(packed < 0);
         assert_eq!(AppliedClause::unpack(packed), None);
         let largest_tag = *BuiltinClass::ALL.last().expect("builtins exist");
         let mixin = MixinId::from_index(0).expect("fits");
-        assert!(AppliedClause::pack(mixin, 0, Some(largest_tag)) > 0);
+        let packed = AppliedClause::pack(mixin, 0, Some(largest_tag));
+        assert!(packed < 0);
+        assert_eq!(
+            AppliedClause::unpack(packed),
+            Some((mixin, 0, Some(largest_tag)))
+        );
     }
 
     #[test]

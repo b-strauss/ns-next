@@ -128,7 +128,8 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// §5.5: every public member of `Object` is protected in `Future`, so
+    /// §5.5: every public member of `Object` is protected in `Proxy`, the
+    /// future's superclass, so
     /// even `class`, `==` and `printString` reach `doesNotUnderstand:` and
     /// are answered by the value.
     fn a_future_answers_objects_own_messages_as_its_value(lowering) {
@@ -167,11 +168,12 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// Every public selector `Object` declares is overridden by `Future` as
+/// Every public selector `Object` declares is overridden by `Proxy` as
 /// protected, so a member added to `Object` later without its override
-/// fails here rather than letting a future tell itself from its value.
+/// fails here rather than letting a future, or a program's own proxy, tell
+/// itself from its target.
 #[test]
-fn future_overrides_every_public_member_of_object_as_protected() {
+fn a_proxy_overrides_every_public_member_of_object_as_protected() {
     let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
         let public_of_object = mutator.public_selectors_of(ns_runtime::BuiltinClass::Object);
@@ -181,9 +183,9 @@ fn future_overrides_every_public_member_of_object_as_protected() {
         );
         for selector in public_of_object {
             assert_eq!(
-                mutator.access_of(ns_runtime::BuiltinClass::Future, selector),
+                mutator.access_of(ns_runtime::BuiltinClass::Proxy, selector),
                 Some(ns_syntax::ast::AccessModifier::Protected),
-                "Future must override {selector} as protected"
+                "Proxy must override {selector} as protected"
             );
         }
     });
@@ -356,7 +358,7 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// Only an instance of the kernel's `Future` is a future.
+/// Only an instance of the kernel's `FutureImplementation` is a future.
 #[test]
 fn only_a_future_is_a_future() {
     let (mut interpreter, holder) = a_holder(Lowering::Optimized);
@@ -410,27 +412,33 @@ ns_runtime::for_each_lowering! {
 }
 
 ns_runtime::for_each_lowering! {
-    /// No program names `Future`: `Object` declares no accessor for it, so a
-    /// bare `Future` is a message nothing understands, and neither does
-    /// `platform kernel`, which hands out only the exception classes and
-    /// `Message`.
-    fn no_program_names_the_future_class(lowering) {
+    /// No program names `FutureImplementation`: `Object` declares no
+    /// accessor for it, so a bare `FutureImplementation` is a message
+    /// nothing understands, and neither does `platform kernel`, which hands
+    /// out the public `Future` instead.
+    fn no_program_names_the_future_implementation(lowering) {
         let (mut interpreter, holder) = a_holder(lowering);
         let message = expect_error_message(
-            interpreter.send(&holder, Symbol::intern("Future"), &[]),
-            "Holder Future",
+            interpreter.send(&holder, Symbol::intern("FutureImplementation"), &[]),
+            "Holder FutureImplementation",
         );
-        assert!(message.contains("does not understand #Future"), "{message}");
+        assert!(
+            message.contains("does not understand #FutureImplementation"),
+            "{message}"
+        );
         let platform = interpreter.platform();
         let kernel = expect_ok(
             interpreter.send(&platform, Symbol::intern("kernel"), &[]),
             "platform kernel",
         );
         let message = expect_error_message(
-            interpreter.send(&kernel, Symbol::intern("Future"), &[]),
-            "platform kernel Future",
+            interpreter.send(&kernel, Symbol::intern("FutureImplementation"), &[]),
+            "platform kernel FutureImplementation",
         );
-        assert!(message.contains("does not understand #Future"), "{message}");
+        assert!(
+            message.contains("does not understand #FutureImplementation"),
+            "{message}"
+        );
     }
 }
 

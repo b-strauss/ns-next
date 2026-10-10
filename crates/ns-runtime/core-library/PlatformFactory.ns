@@ -105,6 +105,9 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public ArgumentError = ( ^kernelModule ArgumentError )
         public CannotReturn = ( ^kernelModule CannotReturn )
         public CannotInstantiate = ( ^kernelModule CannotInstantiate )
+        public Closure = ( ^kernelModule Closure )
+        public Future = ( ^kernelModule Future )
+        public Proxy = ( ^kernelModule Proxy )
     )
     (* `platform time`: Primordial Soup's `Time` facet, holding only what
        `benchmarks/are-we-fast-yet/AreWeFastYet.ns` measures with. *)

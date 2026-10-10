@@ -1,0 +1,18 @@
+(* `Future` is a class only for its `computing:`: `Future new`, and an
+   instance of a subclass, signal a `CannotInstantiate` carrying the class
+   that was instantiated. A subclass does not inherit `computing:`, since a
+   class side is not inherited. *)
+class AFutureIsMadeOnlyByComputing = Object new (
+    | Future ::= nil. |
+) (
+    class Later = Future new () ()
+    public main: platform args: arguments = (
+        | transcript = platform transcript. kernel = platform kernel. |
+        Future:: kernel Future.
+        transcript show: Future printString; newLine.
+        transcript show: ([Future new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
+        transcript show: ([Future new] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Later new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
+        transcript show: ([Later computing: [1]] on: kernel Error do: [:error | error class name]); newLine.
+    )
+) : ()

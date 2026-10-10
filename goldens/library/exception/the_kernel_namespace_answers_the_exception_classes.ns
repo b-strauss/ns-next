@@ -1,8 +1,8 @@
 (* Programs reach the exception classes, `Message` and the classes a
    program may name through `platform kernel`, as the corpus does
    (`private Exception = platform kernel Exception.`) and as Primordial
-   Soup's `Kernel wrapping:` facet provides them; `Object` declares no
-   accessor for them. *)
+   Soup's `Kernel wrapping:` facet provides them; `Object` declares an
+   accessor only for `Closure`. *)
 class TheKernelNamespace = Object new (
     
 ) (
@@ -16,6 +16,9 @@ class TheKernelNamespace = Object new (
         transcript show: kernel ArgumentError printString; newLine.
         transcript show: kernel CannotReturn printString; newLine.
         transcript show: kernel CannotInstantiate printString; newLine.
+        transcript show: kernel Closure printString; newLine.
+        transcript show: kernel Future printString; newLine.
+        transcript show: kernel Proxy printString; newLine.
         transcript show: (kernel = platform kernel) printString; newLine.
     )
 ) : ()

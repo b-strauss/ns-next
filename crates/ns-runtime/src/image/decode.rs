@@ -127,9 +127,9 @@ pub enum DecodeError {
     /// which no live world has. The other half -- `Activation`'s header on
     /// another record -- is refused as `Activation` named anywhere else is.
     FrameRecordUnderAnotherClass,
-    /// A record under the builtin `Future` header that is not an unresolved
-    /// future's: an instance record of exactly two fields, a closure and the
-    /// state 0. The encoder writes a resolved future as its value and a
+    /// A record under the builtin `FutureImplementation` header that is not
+    /// an unresolved future's: an instance record of exactly two fields, a
+    /// closure and the state 0. The encoder writes a resolved future as its value and a
     /// resolving one as unresolved (`docs/design/image-format.md`, "Futures
     /// in a graph"), so any other record describes a future no encoder
     /// wrote -- one `Mutator::future_state` reads as malformed, or a resolved one
@@ -518,7 +518,8 @@ impl std::fmt::Display for DecodeError {
             ),
             DecodeError::FutureRecord => write!(
                 f,
-                "an object in the image is a Future without an unresolved future's record"
+                "an object in the image is a FutureImplementation without an unresolved \
+                 future's record"
             ),
             DecodeError::InstanceOfAClassClass => write!(
                 f,
@@ -955,12 +956,14 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         26 => BuiltinClass::MessageNotUnderstood,
         27 => BuiltinClass::Message,
         28 => BuiltinClass::Halt,
-        30 => BuiltinClass::Future,
+        30 => BuiltinClass::FutureImplementation,
         31 => BuiltinClass::LargeInteger,
         32 => BuiltinClass::ArgumentError,
         33 => BuiltinClass::CannotReturn,
         34 => BuiltinClass::NonBooleanReceiver,
         35 => BuiltinClass::CannotInstantiate,
+        36 => BuiltinClass::Proxy,
+        37 => BuiltinClass::Future,
         _ => return None,
     })
 }
@@ -987,9 +990,10 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// mirrors, so no artifact may name its class either
 /// (`docs/design/core-library.md`, "Exceptions") -- except as the
 /// header of a frame record, which `decode_object_header` reads.
-/// `Future`: §6.3.2's pull future is kernel-private as `Activation` is, and
-/// no program names its class -- except as the header of an unresolved
-/// future's record, which `decode_object_header` reads too. `Object`
+/// `FutureImplementation`: §6.3.2's pull future is kernel-private as
+/// `Activation` is, and no program names its class -- except as the header
+/// of an unresolved future's record, which `decode_object_header` reads
+/// too. `Object`
 /// declares an accessor for none of the four, for the same reasons, which
 /// is what keeps source and artifact agreed on the names a program has.
 /// Only the closing hash table names them, by tag, as it names every
@@ -1015,7 +1019,7 @@ fn referenced_builtin_class(kind: BuiltinClass) -> Result<BuiltinClass, DecodeEr
             what: "builtin class a program may name",
             tag: 23,
         }),
-        BuiltinClass::Future => Err(DecodeError::InvalidTag {
+        BuiltinClass::FutureImplementation => Err(DecodeError::InvalidTag {
             what: "builtin class a program may name",
             tag: 30,
         }),
@@ -2292,7 +2296,7 @@ struct ObjectHeader<'gc> {
     class: ClassReference<'gc>,
     /// The header named the builtin `Activation`.
     activation: bool,
-    /// The header named the builtin `Future`.
+    /// The header named the builtin `FutureImplementation`.
     future: bool,
     /// The header named a class by platform path (`CLASS_PLATFORM_PATH`),
     /// whose layout comes from the loading binary.
@@ -2302,8 +2306,8 @@ struct ObjectHeader<'gc> {
 /// An object record's header: its class tag, which is `decode_class_tag`'s
 /// except that it also accepts the builtin `Activation` -- the header of a
 /// frame record, the one place an image may name that class -- and the
-/// builtin `Future`, the header of an unresolved future's record, for the
-/// same reason. Answers whether it did, so the caller can hold the header
+/// builtin `FutureImplementation`, the header of an unresolved future's
+/// record, for the same reason. Answers whether it did, so the caller can hold the header
 /// and the body to each other (`DecodeError::FrameRecordUnderAnotherClass`,
 /// `DecodeError::FutureRecord`) once it has read the body, and whether it
 /// named its class by platform path, so the caller can hold an instance's
@@ -2323,13 +2327,13 @@ fn decode_object_header<'gc>(
         });
     }
     let kind = match read_builtin_class(reader)? {
-        kind @ (BuiltinClass::Activation | BuiltinClass::Future) => kind,
+        kind @ (BuiltinClass::Activation | BuiltinClass::FutureImplementation) => kind,
         kind => referenced_builtin_class(kind)?,
     };
     Ok(ObjectHeader {
         class: context.mutator.builtin_class(kind),
         activation: kind == BuiltinClass::Activation,
-        future: kind == BuiltinClass::Future,
+        future: kind == BuiltinClass::FutureImplementation,
         platform_path: false,
     })
 }
@@ -3452,7 +3456,7 @@ impl Sizing<'_, '_, '_> {
     }
 
     /// `decode_object_header`'s reading; answers whether the header named
-    /// the builtin `Future`.
+    /// the builtin `FutureImplementation`.
     fn header(&self, reader: &mut Reader) -> Result<bool, DecodeError> {
         let tag = reader.read_u8()?;
         if tag != CLASS_BUILTIN {
@@ -3460,7 +3464,7 @@ impl Sizing<'_, '_, '_> {
         }
         match read_builtin_class(reader)? {
             BuiltinClass::Activation => Ok(false),
-            BuiltinClass::Future => Ok(true),
+            BuiltinClass::FutureImplementation => Ok(true),
             kind => referenced_builtin_class(kind).map(|_| false),
         }
     }
@@ -3819,8 +3823,8 @@ pub fn decode_graph_section<'gc>(
                 let count = reader.read_u32()? as usize;
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
-                // The first pass refused any other count under the `Future`
-                // header; restated here, beside the layout check, as what
+                // The first pass refused any other count under the
+                // `FutureImplementation` header; restated here, beside the layout check, as what
                 // reading the two fields below rests on.
                 if future_header && count != crate::interpreter::future::FIELD_COUNT {
                     return Err(DecodeError::FutureRecord);

@@ -4775,15 +4775,15 @@ impl<'gc> Heap<'gc> {
     }
 
     /// Rewrites every object field that holds a resolved future to hold its
-    /// value instead (`docs/design/memory.md`, "A resolved future is traced
-    /// as its value"): instance and array fields -- an indirection vector is
-    /// an `Array` -- and a closure's copied values. Never a register or a
-    /// host root: the `Future`'s `doesNotUnderstand:` that forced it may
+    /// value instead (`docs/design/memory.md`, "A resolved future is traced as
+    /// its value"): instance and array fields -- an indirection vector is an
+    /// `Array` -- and a closure's copied values. Never a register or a host
+    /// root: `FutureImplementation>>doesNotUnderstand:`, which forced it, may
     /// still be returning, with the future as `self`, and a host holding the
     /// future holds that object, so a future still held there survives this
-    /// collection and is replaced by the first one after it lets go. Runs before
-    /// marking, so a future nothing else reaches is garbage by the time the
-    /// marker looks. Answers how many references it replaced.
+    /// collection and is replaced by the first one after it lets go. Runs
+    /// before marking, so a future nothing else reaches is garbage by the time
+    /// the marker looks. Answers how many references it replaced.
     ///
     /// A future is an `Instance` of `future_class` whose field `state_index`
     /// is `SmallInteger(resolved)`; its value is then field

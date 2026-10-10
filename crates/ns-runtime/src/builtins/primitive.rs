@@ -28,8 +28,8 @@ pub enum Primitive {
     Message(MessagePrimitive),
     /// `moduleNamed:`: a shipped module's root class (`builtins::module`).
     Module(ModulePrimitive),
-    /// §6.3.2's pull future, forced by its `doesNotUnderstand:`
-    /// (`builtins::future`).
+    /// §6.3.2's pull future, made by `Future computing:` and forced by its
+    /// `doesNotUnderstand:` (`builtins::future`).
     Future(FuturePrimitive),
     /// A leaf reached as a send to the VM mirror: a row of `MIRROR`.
     Mirror(MirrorPrimitive),
@@ -182,7 +182,7 @@ impl Primitive {
             ) => false,
             Primitive::Message(MessagePrimitive::SendTo) => false,
             Primitive::Module(ModulePrimitive::Named) => false,
-            Primitive::Future(FuturePrimitive::Value) => false,
+            Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Computing) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
             // operands.
@@ -379,12 +379,14 @@ pub enum ModulePrimitive {
     Named,
 }
 
-/// The one leaf of `Kernel.ns`'s `Future` (`docs/design/object-model.md`,
-/// "Simultaneous slots").
+/// The two leaves of the futures (`docs/design/object-model.md`,
+/// "Simultaneous slots"): `FutureImplementation`'s and `Future`'s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FuturePrimitive {
     /// The future's value, forcing it first when it is unresolved.
     Value,
+    /// A new unresolved future of a closure, for `Future computing:`.
+    Computing,
 }
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
@@ -1024,6 +1026,13 @@ pub const MIRROR: &[MirrorEntry] = &[
         "floatAsInteger:ifFail:",
         "asInteger",
         Primitive::Float(FloatPrimitive::AsInteger),
+    ),
+    mirror(
+        "futureComputing:ifFail:",
+        // Unary: the computation is the row's subject, as the future is
+        // `futureValue:ifFail:`'s.
+        "computing",
+        Primitive::Future(FuturePrimitive::Computing),
     ),
 ];
 

@@ -1,0 +1,13 @@
+stdout = '''
+0
+42
+1
+true
+true
+true
+true
+1
+7
+an object does not understand #value
+divergent evaluation: a future was forced while it was being computed
+'''

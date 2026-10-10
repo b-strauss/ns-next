@@ -757,7 +757,7 @@ well-founded mutual recursion between them resolves, where a `| ... |`
 clause initializes them in declaration order. The code is
 `compiler/simultaneous.rs` (the desugaring both lowerings share),
 `interpreter/future.rs` (what a future is, and forcing it), `Kernel.ns`'s
-private `Future`, and four instructions, `MakeFuture`, `ResolveFuture`,
+private `FutureImplementation`, and four instructions, `MakeFuture`, `ResolveFuture`,
 `LoadOwnSlot` and `InitializeSlotProvisionally` (wire tags 36 to 39).
 Designed with the user on 2026-09-28; every decision below was taken with
 them unless it says otherwise
@@ -825,8 +825,10 @@ event loop. SOMns parses `|| ... ||` and does not support it.
 
 A future still being computed is observable, as §6.3.2 intends: touching one
 forces it, and forcing one that is already being computed — ill-founded
-recursion — raises an ordinary, catchable `Error`, "divergent evaluation of
-a simultaneous slot's initializer". **A clause abandoned by an exception** —
+recursion — raises an ordinary, catchable `Error`, "divergent evaluation: a
+future was forced while it was being computed", a text that names the
+future rather than a slot because a program's own `Future computing:`
+diverges the same way. **A clause abandoned by an exception** —
 an initializer raises and a handler outside the instantiation takes it —
 leaves the futures it had not resolved as they are, wherever they escaped
 to: the next message forces one and runs its initializer then, and one
@@ -836,14 +838,17 @@ future unresolved again rather than stuck resolving (`Mutator::abandon`).
 Nothing answers wrongly, and it costs nothing; marking them broken would put
 an `ifCurtailed:` around every simultaneous clause.
 
-**The future.** `Kernel.ns`'s private `Future`, which no program can name
-(as `Activation`), follows Primordial Soup's `Proxy`: every public member of
-`Object` — `class`, `==`, `=`, `hash`, `printString`, the nil protocol — is
-overridden as protected, and `doesNotUnderstand:` forces the future through
-the mirror row `futureValue:ifFail:` (`builtins/future.rs`) and forwards the
-message to the value with `Message>>sendTo:`. A member added to `Object`
-without its override fails
-`future_overrides_every_public_member_of_object_as_protected`. Its state is
+**The future.** `Kernel.ns`'s private `FutureImplementation`, which no
+program can name (as `Activation`), is a subclass of the public `Proxy`,
+after Primordial Soup's: `Proxy` overrides every public member of `Object`
+— `class`, `==`, `=`, `hash`, `yourself`, `identityHash`, `printString`,
+the class accessors, the nil protocol, `halt` — as protected, so every
+message from outside reaches `doesNotUnderstand:`, and
+`FutureImplementation`'s forces the future through the mirror row
+`futureValue:ifFail:` (`builtins/future.rs`) and forwards the message to
+the value with `Message>>sendTo:`. A member added to `Object` without its
+override in `Proxy` fails
+`a_proxy_overrides_every_public_member_of_object_as_protected`. Its state is
 two private slots, `computation` — its block until it is resolved, then its
 value — and `state`, 0 unresolved, 1 resolving, 2 resolved, which only
 `interpreter/future.rs` reads and writes. It reads them as untrusted, since
@@ -862,9 +867,20 @@ next, the waiting forcing chained behind it, so both resolve to its value —
 §6.3.2's pipelined promise, as Primordial Soup's `resolve` loops. Nothing
 bounds that chain's length, so every walk of it loops rather than recursing
 once per link. No message a program sends forces a future, since a public
-`resolve` would tell an escaped future from its value, and there is no
-class-side factory: the runtime makes every instance (`Mutator::new_future`,
-which `MakeFuture` calls). It carries builtin class tag 30 because the
+`resolve` would tell an escaped future from its value. The runtime makes
+every instance (`Mutator::new_future`): `MakeFuture` calls it for a
+simultaneous clause, and the mirror row `futureComputing:ifFail:` for
+`Future computing:`, a program's way to make one. `Future` is a public
+class with that one class-side method and no instances: `computing:` sends
+a computation that is no block `value` when the future is forced, by
+wrapping it in a block of its own, and `Future new` — or the instantiation
+of a subclass, which does not inherit `computing:` since a class side is
+not inherited (§3.2) — signals a `CannotInstantiate` from its initializer.
+A program cannot subclass `FutureImplementation` itself: an instance of a
+subclass would be a future the runtime does not know, which it neither
+forces, sees through, nor replaces, so a forwarding object a program wants
+is a subclass of `Proxy` instead. `FutureImplementation` carries builtin
+class tag 30, `Proxy` 36 and `Future` 37, because the
 collector, the leaves and the image must recognize it. The first future a
 heap makes sets `Mutator::futures_made`, which is never cleared, and the
 two checks that would otherwise run for every program — the leaves' search
@@ -898,11 +914,11 @@ first write — the future — is `InitializeSlotProvisionally`, which skips
 `InitializeSlot` and is checked. A value whose clause is done therefore
 meets §3.1.1 exactly as strictly as one whose clause is sequential.
 
-**Where Rust sees a future.** Nothing on a program's paths looks for one
-until the program has made one.
+**Where Rust sees a future.** Nothing on a program's paths looks for an
+instance of `FutureImplementation` until the program has made one.
 
-- *As a receiver* it needs nothing: every send reaches its
-  `doesNotUnderstand:`. The inlined conditionals fall back to a real send
+- *As a receiver* it needs nothing: every send reaches
+  `FutureImplementation>>doesNotUnderstand:`. The inlined conditionals fall back to a real send
   on a receiver that is no Boolean, and `IntegerBinary` on anything but two
   small integers; the compiler inlines neither `==` nor `isNil`.
 - *As a leaf's argument or subject*, a future is looked for only on the
@@ -962,8 +978,9 @@ has the future as `self`, and would otherwise read its own slots from the
 value ([memory.md](memory.md), "A resolved future is traced as its value").
 
 **The image** never holds a resolved future: the encoder writes its value in
-its place. An unresolved one, which outlives its clause only when the clause
-was abandoned, is an ordinary record of its class with its closure, and the
+its place. An unresolved one — of an abandoned clause, or a
+`Future computing:` nothing has touched yet — is an ordinary record of its
+class with its closure, and the
 decoder refuses the class's tag wherever a graph names a class, as it
 refuses `Activation`'s ([image-format.md](image-format.md), "Futures in a
 graph").
@@ -2118,7 +2135,8 @@ no program can observe, since a value has no identity.
   observable by no program once it is resolved — messages are forwarded,
   and identity, equality and every leaf see through it — and the collector
   replaces it with its value in object fields; a value never holds one. The
-  future is a kernel-private class after Primordial Soup's `Proxy`, forced
+  future is a kernel-private subclass of the public `Proxy`, after Primordial
+  Soup's, made by a clause or by `Future computing:` and forced
   as a trampoline step, and an instruction or a leaf that meets an
   unresolved one forces it and runs again, which rests on a leaf that
   declines or raises having changed nothing.

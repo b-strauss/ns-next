@@ -1,0 +1,15 @@
+(* A future handed to `Future computing:`, resolved or not, is taken as its
+   value: a future whose value is a block makes a future of that block, and
+   a future of anything else is sent `value` when it is forced, as that
+   object would be. *)
+class AFutureHandedToFutureComputingIsItsValue = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. Future = platform kernel Future. Error = platform kernel Error. ofBlock ofNumber |
+        ofBlock:: Future computing: [[6 * 7]].
+        transcript show: ((Future computing: ofBlock) + 0) printString; newLine.
+        ofNumber:: Future computing: [5].
+        ofNumber + 0.
+        transcript show: ([(Future computing: ofNumber) + 1] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([(Future computing: 5) + 1] on: Error do: [:error | error messageText]); newLine.
+    )
+) : ()

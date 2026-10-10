@@ -127,9 +127,9 @@ pub enum BuiltinClass {
     /// `message`.
     Message,
     Halt,
-    /// §6.3.2's pull future, kernel-private as `Activation` is; its
-    /// instances are made by the runtime (`interpreter/future.rs`).
-    Future,
+    /// §6.3.2's pull future, kernel-private; its instances are made by
+    /// the runtime (`interpreter/future.rs`).
+    FutureImplementation,
     /// §5.1.1's unbounded integers: an `Integer` beyond 61 bits. A
     /// subclass of `Integer`, whose instances are the immediates, so
     /// `3 class` stays `Integer`.
@@ -145,6 +145,12 @@ pub enum BuiltinClass {
     /// An `Error` for a class that refused the factory it was sent; carries
     /// the class.
     CannotInstantiate,
+    /// A forwarding object's superclass: it overrides every public member
+    /// of `Object` as protected.
+    Proxy,
+    /// The public class whose class side makes a `FutureImplementation`;
+    /// it has no instances.
+    Future,
 }
 
 impl BuiltinClass {
@@ -157,7 +163,7 @@ impl BuiltinClass {
     /// superclass-first order: the kernel phase sorts the kinds by their
     /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 30] = [
+    pub const ALL: [BuiltinClass; 32] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -182,12 +188,14 @@ impl BuiltinClass {
         BuiltinClass::MessageNotUnderstood,
         BuiltinClass::Message,
         BuiltinClass::Halt,
-        BuiltinClass::Future,
+        BuiltinClass::FutureImplementation,
         BuiltinClass::LargeInteger,
         BuiltinClass::ArgumentError,
         BuiltinClass::CannotReturn,
         BuiltinClass::NonBooleanReceiver,
         BuiltinClass::CannotInstantiate,
+        BuiltinClass::Proxy,
+        BuiltinClass::Future,
     ];
 }
 

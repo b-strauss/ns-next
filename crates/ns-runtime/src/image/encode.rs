@@ -257,12 +257,14 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::MessageNotUnderstood => 26,
         BuiltinClass::Message => 27,
         BuiltinClass::Halt => 28,
-        BuiltinClass::Future => 30,
+        BuiltinClass::FutureImplementation => 30,
         BuiltinClass::LargeInteger => 31,
         BuiltinClass::ArgumentError => 32,
         BuiltinClass::CannotReturn => 33,
         BuiltinClass::NonBooleanReceiver => 34,
         BuiltinClass::CannotInstantiate => 35,
+        BuiltinClass::Proxy => 36,
+        BuiltinClass::Future => 37,
     }
 }
 
@@ -380,18 +382,18 @@ pub fn root_levels<'gc>(
 }
 
 /// The builtin a level's `<:` clause named, as the format can name it: a
-/// builtin a program can name at all. `Top`, the VM mirror's class and
-/// `Activation` are refused here because the decoder refuses their tags
-/// wherever a program names a class (`decode::read_program_builtin_class`),
-/// so writing one would produce an image nothing can load; no source can
-/// name any of them.
+/// builtin a program can name at all. `Top`, the VM mirror's class,
+/// `Activation` and `FutureImplementation` are refused here because the
+/// decoder refuses their tags wherever a program names a class
+/// (`decode::read_program_builtin_class`), so writing one would produce an
+/// image nothing can load; no source can name any of them.
 fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, String> {
     match applied.named_builtin {
         Some(
             BuiltinClass::Top
             | BuiltinClass::VmMirror
             | BuiltinClass::Activation
-            | BuiltinClass::Future,
+            | BuiltinClass::FutureImplementation,
         )
         | None => Err(format!(
             "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
@@ -939,7 +941,8 @@ fn is_class_tag<'gc>(
 }
 
 /// `object` described, when it is a class object an image may not name:
-/// `Top`, the VM mirror's class, `Activation` or `Future`, which the decoder
+/// `Top`, the VM mirror's class, `Activation` or `FutureImplementation`,
+/// which the decoder
 /// refuses wherever the graph names a class
 /// (`decode::read_referenced_builtin_class`), or the metaclass of one of
 /// them, which it refuses behind a `CLASS_METACLASS` reference the same way.
@@ -948,8 +951,8 @@ fn is_class_tag<'gc>(
 /// writing one would produce an image nothing loads, so the encoder refuses
 /// it instead. The header of a frame record (`OBJECT_FRAME`) or of an
 /// unresolved future is not such a reference: `GraphTable::visit_value`
-/// never walks it, and the decoder accepts `Activation` and `Future` there
-/// and only there.
+/// never walks it, and the decoder accepts `Activation` and
+/// `FutureImplementation` there and only there.
 fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
     let (class, suffix) = match heap.class_this_class(object) {
         Some(this_class) => (this_class, " class"),
@@ -959,7 +962,7 @@ fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Opti
         Some(BuiltinClass::Top) => Some(format!("Top{suffix}")),
         Some(BuiltinClass::VmMirror) => Some(format!("the VM mirror's class{suffix}")),
         Some(BuiltinClass::Activation) => Some(format!("Activation{suffix}")),
-        Some(BuiltinClass::Future) => Some(format!("Future{suffix}")),
+        Some(BuiltinClass::FutureImplementation) => Some(format!("FutureImplementation{suffix}")),
         _ => None,
     }
 }
@@ -1030,7 +1033,8 @@ pub struct GraphTable<'gc> {
     objects: Vec<ObjectReference<'gc>>,
     object_ids: HashMap<usize, u32>,
     /// The first class the traversal reached that no program may name --
-    /// `Top`, the VM mirror's class, `Activation`, `Future`, or the metaclass
+    /// `Top`, the VM mirror's class, `Activation`, `FutureImplementation`,
+    /// or the metaclass
     /// of one of them -- which
     /// `encode_graph_section` refuses (`unnameable_class`).
     unnameable: Option<String>,
@@ -1146,13 +1150,13 @@ impl<'gc> GraphTable<'gc> {
             // graph reaches it -- the header of a frame record is the one
             // place an image may name it. An unresolved future's is not
             // walked either, for the same reason: its header names the
-            // kernel-private `Future` by tag.
+            // kernel-private `FutureImplementation` by tag.
             let activation = shape == ObjectShape::Activation;
             debug_assert!(
                 !activation || heap.class_builtin(class) == Some(BuiltinClass::Activation),
                 "a frame object's header names the builtin `Activation`"
             );
-            let future = heap.class_builtin(class) == Some(BuiltinClass::Future);
+            let future = heap.class_builtin(class) == Some(BuiltinClass::FutureImplementation);
             if !activation && !future {
                 stack.push(Value::object(class));
             }
@@ -1703,7 +1707,9 @@ fn encode_object<'gc>(
         // written unresolved even while its block runs
         // (`future::fields_for_an_image`). One whose fields crafted code
         // corrupted is refused: the decoder would refuse it.
-        ObjectShape::Instance if heap.class_builtin(class) == Some(BuiltinClass::Future) => {
+        ObjectShape::Instance
+            if heap.class_builtin(class) == Some(BuiltinClass::FutureImplementation) =>
+        {
             let Some(fields) = future::fields_for_an_image(heap, object) else {
                 return Err("image encoding cannot serialize a malformed future".to_string());
             };
@@ -2018,7 +2024,7 @@ pub fn encode_tag_named_hashes<'gc>(
                 BuiltinClass::Top
                     | BuiltinClass::VmMirror
                     | BuiltinClass::Activation
-                    | BuiltinClass::Future
+                    | BuiltinClass::FutureImplementation
             )
         })
         .map(|kind| {

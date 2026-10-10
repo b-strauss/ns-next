@@ -1,6 +1,7 @@
 //! §6.3.2's pull future (`docs/design/object-model.md`, "Simultaneous
-//! slots"): an instance of the kernel-private `Future`, whose two slots this
-//! module alone reads and writes. Forcing one runs its block as a trampoline
+//! slots"): an instance of the kernel-private `FutureImplementation`, which
+//! a simultaneous slot clause or `Future computing:` makes, and whose two
+//! slots this module alone reads and writes. Forcing one runs its block as a trampoline
 //! step under `Continuation::Future`, never by calling back into Newspeak;
 //! what happens once the block returns -- deliver the value to the send that
 //! forced it, or run the instruction that met the future again -- is
@@ -17,14 +18,15 @@ const UNRESOLVED: i64 = 0;
 const RESOLVING: i64 = 1;
 const RESOLVED: i64 = 2;
 
-/// The position of each of `Future`'s two slots in its field vector: the
-/// declaration order in `Kernel.ns`, behind `Object`, which declares none.
+/// The position of each of `FutureImplementation`'s two slots in its field
+/// vector: the declaration order in `Kernel.ns`, behind `Proxy` and
+/// `Object`, which declare none.
 /// `a_futures_slots_are_where_this_module_reads_them` pins both.
 const COMPUTATION_FIELD: usize = 0;
 const STATE_FIELD: usize = 1;
 /// How many fields a future has, and so how many a decoded record under the
-/// `Future` header must carry: the image decoder refuses any other count
-/// before it allocates the record (`decode::decode_graph_section`).
+/// `FutureImplementation` header must carry: the image decoder refuses any
+/// other count before it allocates the record (`decode::decode_graph_section`).
 pub(crate) const FIELD_COUNT: usize = 2;
 
 /// Where a future is in its life.
@@ -153,12 +155,12 @@ pub(crate) enum FutureOutcome<'gc> {
 
 impl<'gc> Mutator<'gc> {
     /// The future `value` is, if it is one. The class check is one compare:
-    /// no program can subclass the private `Future`.
+    /// no program can subclass the private `FutureImplementation`.
     pub fn as_future(&self, value: Value<'gc>) -> Option<ObjectReference<'gc>> {
         let object = value.as_object()?;
         self.heap
             .object_class(object)
-            .same(self.builtin_class(BuiltinClass::Future))
+            .same(self.builtin_class(BuiltinClass::FutureImplementation))
             .then_some(object)
     }
 
@@ -176,7 +178,7 @@ impl<'gc> Mutator<'gc> {
             "internal: a future computes a closure"
         );
         self.futures_made = true;
-        let class = self.builtin_class(BuiltinClass::Future);
+        let class = self.builtin_class(BuiltinClass::FutureImplementation);
         let future = self.heap.allocate_instance(class, FIELD_COUNT);
         if !self
             .heap
@@ -293,8 +295,8 @@ impl<'gc> Mutator<'gc> {
 
 /// Where `future` is in its life, read from the heap alone, so that the
 /// encoder, which holds nothing more, reads a future as the run loop does.
-/// `future` is an instance of `Future`; its fields are read as untrusted
-/// (`FutureState::Malformed`).
+/// `future` is an instance of `FutureImplementation`; its fields are read
+/// as untrusted (`FutureState::Malformed`).
 fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<'gc> {
     let (Some(computation), Some(state)) = (
         heap.instance_field(future, COMPUTATION_FIELD),
@@ -318,7 +320,7 @@ fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<
 /// a collection about to mark (`World::collect`). `Heap::replace_resolved_futures`
 /// says why registers and host roots keep theirs. Answers the count.
 pub(crate) fn replace_resolved_futures(mutator: &mut Mutator<'_>) -> usize {
-    let future_class = mutator.builtin_class(BuiltinClass::Future);
+    let future_class = mutator.builtin_class(BuiltinClass::FutureImplementation);
     mutator
         .heap
         .replace_resolved_futures(future_class, COMPUTATION_FIELD, STATE_FIELD, RESOLVED)
@@ -335,7 +337,7 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
     let Some(object) = value.as_object() else {
         return value;
     };
-    if heap.class_builtin(heap.object_class(object)) != Some(BuiltinClass::Future) {
+    if heap.class_builtin(heap.object_class(object)) != Some(BuiltinClass::FutureImplementation) {
         return value;
     }
     match state_in(heap, object) {
@@ -378,11 +380,11 @@ pub(crate) fn fields_for_an_image<'gc>(
     Some(written)
 }
 
-/// Whether a decoded record under the `Future` header is what the encoder
-/// writes: exactly two fields, a closure and the state 0. `computation` may
-/// name a record decoded later, so the closure half is checked once every
-/// record is in (`decode::decode_graph_section`); this answers the closure
-/// it names, if the rest holds.
+/// Whether a decoded record under the `FutureImplementation` header is what
+/// the encoder writes: exactly two fields, a closure and the state 0.
+/// `computation` may name a record decoded later, so the closure half is
+/// checked once every record is in (`decode::decode_graph_section`); this
+/// answers the closure it names, if the rest holds.
 pub(crate) fn decoded_future_computation<'gc>(fields: &[Value<'gc>]) -> Option<Value<'gc>> {
     if fields.len() != FIELD_COUNT {
         return None;
@@ -426,12 +428,14 @@ pub(crate) fn force<'gc>(
 }
 
 /// §6.3.2 resolves only "well founded" recursion: a future forced while its
-/// own block runs is not, and says so as an ordinary, catchable error.
+/// own block runs is not, and says so as an ordinary, catchable error. The
+/// text names the future rather than a slot, since a program's own
+/// `Future computing:` diverges the same way.
 fn divergent<'gc>(future: Value<'gc>) -> Signal<'gc> {
     Signal::Error(NewspeakError::error(
         Symbol::intern("value"),
         future,
-        "divergent evaluation of a simultaneous slot's initializer",
+        "divergent evaluation: a future was forced while it was being computed",
     ))
 }
 
@@ -659,16 +663,17 @@ mod tests {
 
     /// `future_state` and `set_future_fields` read and write by position:
     /// the two agree with `Kernel.ns` only while it declares `computation`
-    /// first, and `Object` declares no slot ahead of them.
+    /// first, and neither `Proxy` nor `Object` declares a slot ahead of
+    /// them.
     #[test]
     fn a_futures_slots_are_where_this_module_reads_them() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(application) = mutator
                 .heap()
-                .class_application(mutator.builtin_class(BuiltinClass::Future))
+                .class_application(mutator.builtin_class(BuiltinClass::FutureImplementation))
             else {
-                panic!("Future is a class");
+                panic!("FutureImplementation is a class");
             };
             let names: Vec<&str> = application
                 .mixin
@@ -677,7 +682,10 @@ mod tests {
                 .map(|slot| slot.name.as_str())
                 .collect();
             assert_eq!(names, ["computation", "state"]);
-            assert_eq!(application.own_slot_base, 0, "Object declares no slot");
+            assert_eq!(
+                application.own_slot_base, 0,
+                "Proxy and Object declare no slot"
+            );
             assert_eq!(super::COMPUTATION_FIELD, 0);
             assert_eq!(super::STATE_FIELD, 1);
         });

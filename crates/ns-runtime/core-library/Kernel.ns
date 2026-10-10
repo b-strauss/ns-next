@@ -546,21 +546,17 @@ class Kernel vmMirror: theMirror = Object <: Value (
        capability Newspeak hands out only through mirrors. *)
     private class Activation = Object new () (
     )
-    (* §6.3.2's pull future: what a simultaneous slot clause stores in a slot
-       until the clause's end resolves it (docs/design/object-model.md,
-       "Simultaneous slots"). Private, as `Activation` is, and no program
-       names it: every public member of `Object` is overridden as protected,
-       so §5.5's lookupPublic stops here for each of them, and every message
-       a program sends reaches `doesNotUnderstand:`, which forwards it to the
-       forced value -- §5.5's proxy, indistinguishable from its target.
-       Forcing is the runtime's (`interpreter/future.rs`), which alone reads
-       and writes the two slots: the computation, a block until it is
-       resolved and then the value, and the state, 0 unresolved, 1
-       resolving, 2 resolved. The runtime makes every instance; `new` is
-       never sent. *)
-    private class Future = Object new (
-        | private computation. private state ::= 0. |
-    ) (
+    (* An object that answers none of `Object`'s public messages itself:
+       each is overridden as protected, so a message from outside reaches
+       `doesNotUnderstand:`. A subclass that implements only
+       `doesNotUnderstand:` forwards every message it is sent. *)
+    (* §5.5's proxy, "Otherwise it would be possible to distinguish
+       between an object and a proxy": lookupPublic stops at a protected
+       method, and the failing send falls to `doesNotUnderstand:`. Inside
+       the proxy, a self send still reaches each of them. A member added to
+       `Object` without its override here fails
+       `a_proxy_overrides_every_public_member_of_object_as_protected`. *)
+    public class Proxy = Object new () (
         protected class = ( ^super class )
         protected == other = ( ^super == other )
         protected = other = ( ^super = other )
@@ -588,8 +584,42 @@ class Kernel vmMirror: theMirror = Object <: Value (
         protected ifNil: nilBlock ifNotNil: notNilBlock = ( ^super ifNil: nilBlock ifNotNil: notNilBlock )
         protected ifNotNil: notNilBlock ifNil: nilBlock = ( ^super ifNotNil: notNilBlock ifNil: nilBlock )
         protected halt = ( ^super halt )
+    )
+    (* §6.3.2's pull future: what a simultaneous slot clause stores in a slot
+       until the clause's end resolves it (docs/design/object-model.md,
+       "Simultaneous slots"), and what `Future computing:` answers. Private,
+       as `Activation` is, and no program names it: as a `Proxy`, every
+       message a program sends it reaches `doesNotUnderstand:`, which
+       forwards it to the forced value -- §5.5's proxy, indistinguishable
+       from its target. Forcing is the runtime's (`interpreter/future.rs`),
+       which alone reads and writes the two slots: the computation, a block
+       until it is resolved and then the value, and the state, 0
+       unresolved, 1 resolving, 2 resolved. `Future computing:` and a
+       simultaneous slot clause make every instance; `new` is never sent. *)
+    private class FutureImplementation = Proxy new (
+        | private computation. private state ::= 0. |
+    ) (
         protected doesNotUnderstand: message = (
             ^message sendTo: (vmMirror futureValue: self ifFail: [^nil])
+        )
+    )
+    (* The class whose `computing:` answers a future of a block: an object
+       that runs the block on its first message and behaves as the block's
+       value from then on. `Future new` signals a `CannotInstantiate`. *)
+    (* A class only for its class side: the future it answers is a
+       `FutureImplementation`, the one class the runtime forces and sees
+       through, which no program can name or subclass, so every future
+       keeps the rules of docs/design/object-model.md, "Simultaneous
+       slots". Its initializer refuses, so a subclass's instances are
+       refused too; a subclass does not inherit `computing:` (§3.2). *)
+    public class Future = Object new (
+        (outer Kernel CannotInstantiate behavior: self class) signal: 'a Future is made by Future computing:'
+    ) (
+    ) : (
+        (* A new future of `computation`'s value: a block, or any object,
+           which the future sends `value` when it is first forced. *)
+        public computing: computation = (
+            ^vmMirror futureComputing: computation ifFail: [^self computing: [computation value]]
         )
     )
     (* The superclass of every value class: its instances are deeply

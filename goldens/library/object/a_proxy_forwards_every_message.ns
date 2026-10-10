@@ -1,0 +1,26 @@
+(* A `Proxy` overrides every public member of `Object` as protected, so a
+   subclass that implements only `doesNotUnderstand:` forwards every
+   message a program sends it, `Object`'s included. A bare `Proxy`
+   understands none of them. *)
+class AProxyForwardsEveryMessage = Object new (
+    | Proxy ::= nil. |
+) (
+    class Forwarder on: theTarget = Proxy new (
+        | private target = theTarget. |
+    ) (
+        protected doesNotUnderstand: message = ( ^message sendTo: target )
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. forwarder |
+        Proxy:: platform kernel Proxy.
+        forwarder:: Forwarder on: 3.
+        transcript show: (forwarder + 4) printString; newLine.
+        transcript show: forwarder printString; newLine.
+        transcript show: (forwarder = 3) printString; newLine.
+        transcript show: (forwarder hash = 3 hash) printString; newLine.
+        transcript show: (forwarder yourself == 3) printString; newLine.
+        transcript show: forwarder class printString; newLine.
+        transcript show: (Forwarder on: nil) isNil printString; newLine.
+        transcript show: ([Proxy new printString] on: Error do: [:error | error class name]); newLine.
+    )
+) : ()

@@ -9713,10 +9713,10 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
         let activation_metaclass = mutator
             .metaclass_of(activation)
             .expect("Activation has a metaclass");
-        let future = mutator.builtin_class(BuiltinClass::Future);
+        let future = mutator.builtin_class(BuiltinClass::FutureImplementation);
         let future_metaclass = mutator
             .metaclass_of(future)
-            .expect("Future has a metaclass");
+            .expect("FutureImplementation has a metaclass");
         for (unnameable, described) in [
             (top, "Top"),
             (mirror_class, "the VM mirror's class"),
@@ -9724,8 +9724,8 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
             (mirror_metaclass, "the VM mirror's class class"),
             (activation, "Activation"),
             (activation_metaclass, "Activation class"),
-            (future, "Future"),
-            (future_metaclass, "Future class"),
+            (future, "FutureImplementation"),
+            (future_metaclass, "FutureImplementation class"),
         ] {
             let refused = snapshot_one(
                 mutator,
@@ -10562,10 +10562,10 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
     );
 }
 
-/// The VM mirror's class, `Top`, `Activation` and `Future` are refused
-/// wherever a program names a class, and a level's builtin mixin is such a place: a
-/// level applying the mirror's mixin would hand its instances every
-/// primitive.
+/// The VM mirror's class, `Top`, `Activation` and `FutureImplementation` are
+/// refused wherever a program names a class, and a level's builtin mixin is
+/// such a place: a level applying the mirror's mixin would hand its instances
+/// every primitive.
 #[test]
 fn a_level_applying_a_builtin_no_program_may_name_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
@@ -10574,7 +10574,7 @@ fn a_level_applying_a_builtin_no_program_may_name_is_refused() {
         BuiltinClass::VmMirror,
         BuiltinClass::Top,
         BuiltinClass::Activation,
-        BuiltinClass::Future,
+        BuiltinClass::FutureImplementation,
     ] {
         let tag = encode::builtin_class_tag(kind);
         assert_eq!(
@@ -10729,12 +10729,12 @@ fn activation_named_anywhere_else_is_refused() {
     assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
 }
 
-/// Everywhere but a future record's header, `Future` is refused like
-/// `Activation`: as a value, and behind a metaclass reference. Its class is
-/// kernel-private, and no program names it (`unnameable_class`).
+/// Everywhere but a future record's header, `FutureImplementation` is refused
+/// like `Activation`: as a value, and behind a metaclass reference. Its class
+/// is kernel-private, and no program names it (`unnameable_class`).
 #[test]
-fn a_graph_naming_future_as_a_class_is_refused() {
-    let tag = encode::builtin_class_tag(BuiltinClass::Future);
+fn a_graph_naming_the_future_implementation_as_a_class_is_refused() {
+    let tag = encode::builtin_class_tag(BuiltinClass::FutureImplementation);
     let refused = decode::DecodeError::InvalidTag {
         what: "builtin class a program may name",
         tag: 30,
@@ -10754,23 +10754,25 @@ fn a_graph_naming_future_as_a_class_is_refused() {
     assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
 }
 
-/// One record under the `Future` header, its body written by `body`, and no
-/// roots.
+/// One record under the `FutureImplementation` header, its body written by
+/// `body`, and no roots.
 fn future_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     class_records(1, |writer| {
         writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Future));
+        writer.write_u8(encode::builtin_class_tag(
+            BuiltinClass::FutureImplementation,
+        ));
         writer.write_u32(5); // identity hash
         body(writer);
     })
 }
 
 /// The encoder writes only an unresolved future -- two fields, its closure
-/// and state 0 -- so a record under the `Future` header that is anything
-/// else describes a future no encoder wrote: another body, another field
-/// count, a resolving or resolved state, a state that is none of the three,
-/// or a computation that is not a closure. Each is refused at decode rather
-/// than left for `future_state` to meet.
+/// and state 0 -- so a record under the `FutureImplementation` header that is
+/// anything else describes a future no encoder wrote: another body, another
+/// field count, a resolving or resolved state, a state that is none of the
+/// three, or a computation that is not a closure. Each is refused at decode
+/// rather than left for `future_state` to meet.
 #[test]
 fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     let array = future_record(|writer| {
@@ -10814,14 +10816,14 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     }
     assert_eq!(
         decode::DecodeError::FutureRecord.to_string(),
-        "an object in the image is a Future without an unresolved future's record"
+        "an object in the image is a FutureImplementation without an unresolved future's record"
     );
 }
 
-/// A record under the `Future` header has exactly a future's two fields, so
-/// the first pass refuses any other count before anything is allocated:
-/// neither the record's placeholder nor a copy of its fields ever exists,
-/// however many fields it claims and carries.
+/// A record under the `FutureImplementation` header has exactly a future's
+/// two fields, so the first pass refuses any other count before anything is
+/// allocated: neither the record's placeholder nor a copy of its fields ever
+/// exists, however many fields it claims and carries.
 #[test]
 fn a_future_record_with_another_field_count_is_refused_before_allocating() {
     let bytes = future_record(|writer| {
@@ -10857,11 +10859,11 @@ const DATA_CYCLE: &str = indoc! {"
 "};
 
 /// Whether any object reachable from `value` through instance fields, array
-/// elements and closure values is a `Future`. A graph is only what its roots
-/// reach, so this covers every object an image decoded.
+/// elements and closure values is a `FutureImplementation`. A graph is only
+/// what its roots reach, so this covers every object an image decoded.
 fn reaches_a_future<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> bool {
     let heap = mutator.heap();
-    let future_class = mutator.builtin_class(BuiltinClass::Future);
+    let future_class = mutator.builtin_class(BuiltinClass::FutureImplementation);
     let mut seen: Vec<ns_runtime::ObjectReference<'gc>> = Vec::new();
     let mut pending = vec![value];
     while let Some(value) = pending.pop() {
@@ -10993,9 +10995,9 @@ fn a_resolved_future_is_written_as_its_value() {
 }
 
 /// An abandoned clause leaves `escaped` holding an unresolved future
-/// (`spec_6_3_2_an_abandoned_clause_recomputes_on_the_next_touch`). The
-/// image writes it as a record under the `Future` header, with its closure,
-/// and the loaded world forces it on the first touch, which runs the
+/// (`spec_6_3_2_an_abandoned_clause_recomputes_on_the_next_touch`). The image
+/// writes it as a record under the `FutureImplementation` header, with its
+/// closure, and the loaded world forces it on the first touch, which runs the
 /// initializer again. The first touch is an argument to a leaf, which sees
 /// through it only once the loaded world knows it holds a future: the load
 /// sets `futures_made` as `Mutator::new_future` does.
@@ -11075,6 +11077,101 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
     loaded.interpreter.enter(|mutator| {
         assert!(mutator.fetch(&sum).as_small_integer() == Some(4));
         assert!(mutator.fetch(&next).as_small_integer() == Some(4));
+    });
+}
+
+/// A program's objects of the kernel's newer classes survive an image: a
+/// caught `ArgumentError` keeps its argument, an instance of a `Proxy`
+/// subclass still forwards to its target, and an unresolved
+/// `Future computing:` is written as the runtime's future and computes its
+/// block after the load.
+#[test]
+fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
+    let source = indoc! {"
+        class Holder = Object new (
+            | Proxy ::= nil. public error. public proxy. public future. |
+        ) (
+            class Forwarder on: theTarget = Proxy new (
+                | private target = theTarget. |
+            ) (
+                protected doesNotUnderstand: message = ( ^message sendTo: target )
+            )
+            public capture: platform = (
+                | kernel = platform kernel. |
+                Proxy:: kernel Proxy.
+                error:: [(Array new: 2) at: 7] on: kernel ArgumentError do: [:caught | caught].
+                proxy:: Forwarder on: 3.
+                future:: kernel Future computing: [6 * 7]
+            )
+            public argument = ( ^error argument )
+            public proxied = ( ^proxy + 4 )
+            public computed = ( ^future + 0 )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(
+            &holder,
+            Symbol::intern("capture:"),
+            std::slice::from_ref(&platform),
+        ),
+        "capture:",
+    );
+    let bytes = interpreter.enter(|mutator| {
+        let holder = mutator.fetch(&holder);
+        let future = mutator
+            .heap()
+            .instance_field(object(holder), 3)
+            .expect("the holder has its future slot");
+        let future = mutator
+            .as_future(future)
+            .expect("future holds the runtime's future");
+        assert!(
+            matches!(
+                mutator.future_state(future),
+                ns_runtime::interpreter::future::FutureState::Unresolved(_)
+            ),
+            "the future is unresolved when the image is written"
+        );
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            Some(source),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            platform,
+            &[holder],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let holder = loaded.roots[0].clone();
+    let argument = expect_ok(
+        loaded
+            .interpreter
+            .send(&holder, Symbol::intern("argument"), &[]),
+        "argument",
+    );
+    let proxied = expect_ok(
+        loaded
+            .interpreter
+            .send(&holder, Symbol::intern("proxied"), &[]),
+        "proxied",
+    );
+    let computed = expect_ok(
+        loaded
+            .interpreter
+            .send(&holder, Symbol::intern("computed"), &[]),
+        "computed",
+    );
+    loaded.interpreter.enter(|mutator| {
+        assert_eq!(mutator.fetch(&argument).as_small_integer(), Some(7));
+        assert_eq!(mutator.fetch(&proxied).as_small_integer(), Some(7));
+        assert_eq!(mutator.fetch(&computed).as_small_integer(), Some(42));
     });
 }
 

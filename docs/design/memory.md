@@ -810,9 +810,9 @@ records one, and one whose fields crafted code made so is malformed and
 left in place), so one pass leaves none behind.
 
 Registers and host roots are exempt -- a reified frame's, the activation
-stack's, and every `Root`. The `Future`'s own `doesNotUnderstand:`, whose
-activation forced it and is still returning its answer, runs with the
-future as `self` -- a register that must keep naming an instance of the
+stack's, and every `Root`. `FutureImplementation`'s own
+`doesNotUnderstand:`, whose activation forced it and is still returning its
+answer, runs with the future as `self` -- a register that must keep naming an instance of the
 class whose method runs -- and a host that holds the future holds that
 object and may ask for its state; rewriting either would change what they
 read. A future held there
@@ -1140,7 +1140,7 @@ peak during loading, not a leak for the process's life.
 every record as the second will and allocates nothing beyond transient,
 bounded buffers; it sizes each record's object from the record's own bytes,
 refuses what the second pass would refuse about counts, ids, a symbol named
-twice and a `Future` record of another field count, and refuses before
+twice and a `FutureImplementation` record of another field count, and refuses before
 anything is allocated when the objects would take more than eight words a
 byte of the input left. Then each record's placeholder is allocated at the
 size the first pass read, and the second pass fills each in place, every

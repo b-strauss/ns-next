@@ -652,7 +652,7 @@ rather than on a corpus module's demand. `show:` does not send
 (`goldens/library/platform/the_transcript_prints_any_object`,
 `goldens/library/platform/show_of_something_that_is_no_string_is_an_error`).
 
-**The namespace members are ordinary methods.** `KernelNamespace`'s five
+**The namespace members are ordinary methods.** `KernelNamespace`'s
 answer the kernel instance's nested classes. The class-accessor fast path
 ("The predefined classes are accessors on `Object`" below) is recognized
 only in the form `^outer Kernel <Name>`, which no module but the kernel can
@@ -1812,8 +1812,9 @@ Exception.` appears 16 times, `platform kernel MessageNotUnderstood` 11 —
 and as Primordial Soup's `Kernel wrapping:` facet provides them: the
 platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
-`MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`
-and `CannotInstantiate` from the kernel instance the platform was handed.
+`MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`,
+`CannotInstantiate`, `Closure`, `Future` and `Proxy` from the kernel
+instance the platform was handed.
 `Object` gains no accessor, so its set stays what §3.2 names.
 
 `Closure` has `on: exceptionClass do: handler`, `ensure: aBlock` and
@@ -2700,10 +2701,12 @@ Each decision below was taken with the user.
 §3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a
 capability; `Platform` and its members' classes are no kernel classes at
 all, and a program is handed the platform through its factory.
-Nor do the classes the exceptions added: a program names `Exception`,
-`Error`, `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`,
-`CannotReturn` and `CannotInstantiate` through `platform kernel`, and
-`Activation` and `NonBooleanReceiver` not at all ("Exceptions" above).
+Nor do the classes the exceptions and the futures added: a program names
+`Exception`, `Error`, `MessageNotUnderstood`, `Halt`, `Message`,
+`ArgumentError`, `CannotReturn`, `CannotInstantiate`, `Future` and `Proxy`
+through `platform kernel`, and `Activation`, `NonBooleanReceiver` and
+`FutureImplementation` not at all ("Exceptions" above, "The pull future"
+below).
 Each is an ordinary public method of `Kernel.ns`'s `Object`,
 `public String = ( ^outer Kernel String )`, whose body sends the kernel
 instance its nested-class accessor. The `outer Kernel` is required, not
@@ -2799,17 +2802,24 @@ grew from 6,507 to 6,626 instructions and is still one function.
 
 ### The pull future
 
-`Kernel.ns`'s private `Future`, after Primordial Soup's `Proxy`, overrides
-every public member of `Object` as protected and forwards through
-`doesNotUnderstand:`, which forces the future through the mirror row
-`futureValue:ifFail:` (`builtins/future.rs`) and sends the message on to its
-value with `Message>>sendTo:`; its state is the two slots `computation` and
-`state`, and forcing is `interpreter/future.rs`'s, a trampoline step under
-`Continuation::Future`. Like `Activation`, it is private, `Object` declares
-no accessor for it, and builtin class tag 30 names it only where the image
-must (an unresolved future's record). It has no class side of its own: the
+`Kernel.ns`'s public `Proxy`, after Primordial Soup's, overrides every
+public member of `Object` as protected, so a message from outside reaches
+`doesNotUnderstand:`: a program's subclass that implements only
+`doesNotUnderstand:` forwards every message, `Object`'s included, and a
+bare `Proxy` understands none of them. The private `FutureImplementation`
+is such a subclass: its `doesNotUnderstand:` forces the future through the
+mirror row `futureValue:ifFail:` (`builtins/future.rs`) and sends the
+message on to its value with `Message>>sendTo:`; its state is the two slots
+`computation` and `state`, and forcing is `interpreter/future.rs`'s, a
+trampoline step under `Continuation::Future`. Like `Activation`, it is
+private, `Object` declares no accessor for it, and builtin class tag 30
+names it only where the image must (an unresolved future's record). The
 instructions `MakeFuture` and `ResolveFuture` make and resolve the futures
-of a simultaneous slot clause. Once a program has made a future, the
+of a simultaneous slot clause, and the public `Future`, a class without
+instances, makes one for a program with `Future computing:` through the
+mirror row `futureComputing:ifFail:`; `Future new` signals a
+`CannotInstantiate` ([object-model.md](object-model.md), "Simultaneous
+slots", "The future"). Once a program has made a future, the
 callers of a leaf look for one among its operands on the leaf's failure
 path (`future::after_a_failed_leaf`), and identity and the equality leaves
 decline for one where they would answer "no"

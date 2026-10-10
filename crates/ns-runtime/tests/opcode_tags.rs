@@ -405,12 +405,14 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::MessageNotUnderstood), 26);
     assert_eq!(builtin_class_tag(BuiltinClass::Message), 27);
     assert_eq!(builtin_class_tag(BuiltinClass::Halt), 28);
-    assert_eq!(builtin_class_tag(BuiltinClass::Future), 30);
+    assert_eq!(builtin_class_tag(BuiltinClass::FutureImplementation), 30);
     assert_eq!(builtin_class_tag(BuiltinClass::LargeInteger), 31);
     assert_eq!(builtin_class_tag(BuiltinClass::ArgumentError), 32);
     assert_eq!(builtin_class_tag(BuiltinClass::CannotReturn), 33);
     assert_eq!(builtin_class_tag(BuiltinClass::NonBooleanReceiver), 34);
     assert_eq!(builtin_class_tag(BuiltinClass::CannotInstantiate), 35);
+    assert_eq!(builtin_class_tag(BuiltinClass::Proxy), 36);
+    assert_eq!(builtin_class_tag(BuiltinClass::Future), 37);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);
