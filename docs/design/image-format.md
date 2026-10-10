@@ -1202,7 +1202,7 @@ future exists runs in the loaded world
 `goldens/language/slot/simultaneous/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose build/load
 round trip carries a data cycle through resolved futures).
 
-**`LargeInteger` carries builtin tag 31**, the next free number. A
+**`LargeInteger` carries builtin tag 31**. A
 program never names the class -- `Object` declares no accessor for it --
 but reaches it as an integer's class (`(9223372036854775807 + 1) class`)
 and may keep it in a slot or subclass it, so an image may name tag 31
