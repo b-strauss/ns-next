@@ -127,7 +127,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
              longer holds. *)
           private data ::= Array new: capacity.
           (* The number of changes to the number of elements so far; an
-             iteration compares it after every block. *)
+             iteration compares it after every block that does not end
+             it, and `sort:` once its copy is sorted. *)
           private modifications ::= 0. |
     ) (
         (* Answers true: the receiver is a List. *)
@@ -386,7 +387,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            Signals a ConcurrentModification, once the copy is sorted, when
            an evaluation of `lessOrEqual` added or removed an element; the
            sorted copy is then not written back, and the list stays as the
-           block left it. *)
+           block left it. A store the block makes at an existing index
+           changes no count, so it is overwritten when the copy is written
+           back: `lessOrEqual` compares, and changes nothing. *)
         (* The copy holds the elements the sort started with, so writing it
            back over a list whose block changed it would bring back a
            removed element or drop an added one, silently. *)
@@ -590,7 +593,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
              entry's key is `data_` itself and its value nil. *)
           private data_ ::= nil.
           (* The number of keys added or removed so far; an iteration
-             compares it after every block. *)
+             compares it after every block that does not end it. *)
           private modifications ::= 0. |
         createTable: capacity
     ) (
@@ -1043,7 +1046,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
              itself. *)
           private data_ ::= nil.
           (* The number of elements added or removed so far; an iteration
-             compares it after every block. *)
+             compares it after every block that does not end it. *)
           private modifications ::= 0. |
         createTable: capacity
     ) (

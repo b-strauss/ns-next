@@ -2640,7 +2640,9 @@ its class. That needs its own decision when the first such module arrives.
   and writes it back; when its block adds or removes an element, it
   signals the same `ConcurrentModification` once the copy is sorted and
   writes nothing back, so the list stays as the block left it, since the
-  copy would bring back a removed element or drop an added one. Without
+  copy would bring back a removed element or drop an added one. A store
+  its block makes at an existing index changes no count and is
+  overwritten when the copy is written back. Without
   the check a change inside `do:`
   would visit an element twice, skip one or end early, silently (decided
   with the user on 2026-10-10;

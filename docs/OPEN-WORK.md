@@ -840,8 +840,8 @@ reachable only from a crafted artifact, except the first three, which a
 program can reach and which end the process, and five a program meets as a
 gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
-that only answers `isKindOfArray`, and the error of a `hash` that is no
-Integer.
+that only answers `isKindOfArray` or `isKindOfString`, and the error of a
+`hash` that is no Integer.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -966,17 +966,17 @@ Integer.
   sub-project's scope. [core-library.md](design/core-library.md),
   "Exceptions".
 - **`String withAll:` answers nil for an argument that answers
-  `isKindOfArray` true without being an `Array`.** The class side
-  (`Kernel.ns`, `String class>>withAll:`) asks the leaf, and when the leaf
-  declines it gathers the argument into an Array -- unless the argument
-  claims to be an Array or a String, in which case it answers nil, the
-  answer meant for a subclass of `String` as receiver. A program's class
-  that answers `isKindOfArray` true and `do:` its code points gets nil at
-  exit status 0 instead of a String. Telling the two declines apart -- a
-  subject that is not `String` itself from an argument the leaf does not
-  read -- would close it. Found by the collections and strings
-  sub-project's review, 2026-10-10. [core-library.md](design/core-library.md),
-  "What exists".
+  `isKindOfArray` or `isKindOfString` true without being one.** The class
+  side (`Kernel.ns`, `String class>>withAll:`) asks the leaf, and when the
+  leaf declines it gathers the argument into an Array -- unless the
+  argument claims to be an Array or a String, in which case it answers
+  nil, the answer meant for a subclass of `String` as receiver. A
+  program's class that answers `isKindOfArray` (or `isKindOfString`) true
+  and `do:` its code points gets nil at exit status 0 instead of a String.
+  Telling the two declines apart -- a subject that is not `String` itself
+  from an argument the leaf does not read -- would close it. Found by the
+  collections and strings sub-project's review, 2026-10-10.
+  [core-library.md](design/core-library.md), "What exists".
 - **A `hash` that answers no Integer surfaces as "does not understand
   `#\\`" from a `Map` or a `Set`.** The probes
   (`CollectionsFactory.ns`, `scanFor:in:` and `emptyBucketFor:in:`) send
