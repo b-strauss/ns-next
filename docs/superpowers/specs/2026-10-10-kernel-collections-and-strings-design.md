@@ -69,6 +69,15 @@ present, 16 present in part and 95 missing.
     `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`: public,
     protected and private, existing and new. `CLAUDE.md`'s "one to four
     lines" rule is rewritten (see "Documentation" below).
+12. **`Object>>subclassResponsibility`**, protected, as canonical
+    Newspeak's Squeak kernel and SOMns have it (Primordial Soup sends it
+    but defines it nowhere). It signals an `Error` naming the abstract
+    method and the receiver's class, `'Collection>>do: is abstract:
+    Nothing must implement it'`, read off the sending activation as
+    canonical Newspeak's `vmmirror currentActivation sender` does. A new
+    leaf on the kernel-private `Activation` answers an activation's method
+    name; `Activation` stays unreachable to programs, which see only the
+    Error. `Collection>>do:` and `newForCollectUsingAdd:` send it.
 
 ## The hierarchy
 
@@ -111,8 +120,8 @@ Unless said otherwise a selector answers the receiver.
 
 ### Collection (kernel, abstract)
 
-- `do: action` — `subclassResponsibility`. Every other selector here is
-  written over it.
+- `do: action` — `self subclassResponsibility`. Every other selector
+  here is written over it.
 - `allSatisfy: predicate`, `anySatisfy: predicate`,
   `noneSatisfy: predicate` — answer a Boolean, stopping at the first
   element that decides. An empty collection answers `true`, `false`,
@@ -138,12 +147,21 @@ Unless said otherwise a selector answers the receiver.
 - `collect: transform`, `select: predicate`, `reject: predicate` — a new
   collection obtained from `self newForCollectUsingAdd: self size` and
   filled with `add:`. The hook `newForCollectUsingAdd: capacity` is
-  protected and `subclassResponsibility` here (the kernel does not know
+  protected and sends `self subclassResponsibility` here (the kernel does not know
   `List`): a program's own subclass defines `do:` and, for these three, the
   hook. `List` answers a `List`, `Set` a `Set`; `Array` and `Map` override
   the three.
 - `size` — counts the elements through `do:`.
 - `isKindOfCollection` — `true`.
+
+### Object>>subclassResponsibility (kernel)
+
+`protected subclassResponsibility` — signals an `Error` with the text
+`'<Class>>><selector> is abstract: <receiver's class> must implement it'`,
+where `<Class>>><selector>` names the method that sent it (the class whose
+mixin declares it); `'a method is abstract: …'` when the sender is no
+method (a block, or no activation at all). What an abstract method's body
+sends: `^self subclassResponsibility`.
 
 ### Array (kernel, under Collection)
 
@@ -386,6 +404,7 @@ New leaves on the VM mirror, registered in `builtins/primitive.rs`:
 | `String indexOf:startingAt:` | `string:indexOf:startingAt:ifFail:` | `builtins/text.rs` |
 | `String lastIndexOf:startingAt:` | `string:lastIndexOf:startingAt:ifFail:` | `builtins/text.rs` |
 | `String withAll:` (class side) | `stringClass:withAll:ifFail:` | `builtins/text.rs` |
+| `Activation>>methodName` (kernel-private) | `activationMethodName:ifFail:` | `builtins/activation.rs` |
 
 - Errors are `NewspeakError::argument_error`, the text naming the argument
   and the valid range, in the style of today's index errors.

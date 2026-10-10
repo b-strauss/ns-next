@@ -36,9 +36,11 @@ Where this plan departs from it, it says so and why:
   (`BuiltinClass::Collection`, wire tag **38**):
   `interpreter/kernel.rs`'s `superclass_kind` panics for a builtin whose
   superclass clause names a class that is no builtin, and `Array` is one.
-- `Collection>>do:` and the hook signal an `Error` with a text of their
-  own. Primordial Soup sends `subclassResponsibility`, which neither it nor
-  ns-next defines; adding an `Object` member is outside this sub-project.
+- `Object>>subclassResponsibility` (spec, decision 12) reads the sending
+  activation's method name through a new leaf, `activationMethodName:ifFail:`,
+  which finds the method among the methods of the activation's
+  `current_class`'s mixin by the identity of its compiled code:
+  `CompiledCode` carries no selector.
 - `Map`'s `collect:`, `select:` and `reject:` build their result through
   the same protected hook `newForCollectUsingAdd:` that `List` and `Set`
   answer, so that an `IdentityMap`'s answer an `IdentityMap`. A program's
@@ -352,7 +354,11 @@ Commit: `docs: document every member of the kernel and the platform`.
 
 **Files:**
 - Modify: `crates/ns-runtime/core-library/Kernel.ns` (`Collection` new,
-  before `Array`; `Array`'s clause)
+  before `Array`; `Array`'s clause; `Object>>subclassResponsibility`)
+- Modify: `crates/ns-runtime/src/builtins/activation.rs`,
+  `crates/ns-runtime/src/builtins/primitive.rs`
+  (`ActivationPrimitive::MethodName`, the row `activationMethodName:ifFail:`)
+- Create: `goldens/library/object/subclass_responsibility_names_the_abstract_method.{ns,toml}`
 - Modify: `crates/ns-runtime/src/types.rs` (`BuiltinClass::Collection`,
   appended; `ALL` grows to 33)
 - Modify: `crates/ns-runtime/src/image/encode.rs` (`builtin_class_tag`:
@@ -370,7 +376,8 @@ Commit: `docs: document every member of the kernel and the platform`.
 
 **Interfaces:**
 - Consumes: the documentation rule (Task 1).
-- Produces: `BuiltinClass::Collection` (tag 38); the kernel class
+- Produces: `Object>>subclassResponsibility` (protected); the mirror row
+  `activationMethodName:ifFail:`; `BuiltinClass::Collection` (tag 38); the kernel class
   `Collection` with the public protocol below and the protected hook
   `newForCollectUsingAdd: capacity`; `platform kernel Collection`; `Array`
   as a subclass of `Collection`.
@@ -449,7 +456,7 @@ true
 true
 false
 3, 1, 4
-Collection>>newForCollectUsingAdd: is abstract: a subclass implements it to collect:, select: or reject:
+Collection>>newForCollectUsingAdd: is abstract: Digits must implement it
 true
 Cannot reduce an empty collection
 #none
@@ -461,6 +468,46 @@ true
 6
 true
 Collection
+'''
+```
+
+`goldens/library/object/subclass_responsibility_names_the_abstract_method.ns`:
+
+```newspeak
+(* `self subclassResponsibility` signals an Error naming the abstract
+   method -- the class that declares it and its selector -- and the class
+   of the receiver that should have implemented it. It is protected: a
+   send from outside is not understood. *)
+class SubclassResponsibilityNamesTheAbstractMethod = Object new () (
+    class Shape = Object new () (
+        public area = ( ^self subclassResponsibility )
+        public describe = ( ^'area ', self area printString )
+    )
+    class Square side: theSide = Shape new (
+        | side = theSide. |
+    ) (
+        public area = ( ^side * side )
+    )
+    class Circle = Shape new () (
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. kernel = platform kernel. |
+        transcript show: (Square side: 3) describe; newLine.
+        transcript show: ([Circle new describe] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Shape new area] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Circle new subclassResponsibility] on: kernel MessageNotUnderstood do: [:error | #protected]) printString; newLine.
+    )
+) : ()
+```
+
+`subclass_responsibility_names_the_abstract_method.toml`:
+
+```toml
+stdout = '''
+area 9
+Shape>>area is abstract: Circle must implement it
+Shape>>area is abstract: Shape must implement it
+#protected
 '''
 ```
 
@@ -476,7 +523,7 @@ and in its `.toml` the line `Collection` after `Proxy`.
 
 - [ ] **Step 2: Run them to see them fail**
 
-Run: `cargo nextest run -p ns-cli --test run_goldens a_collection_is_built_on_do the_kernel_namespace`
+Run: `cargo nextest run -p ns-cli --test run_goldens a_collection_is_built_on_do the_kernel_namespace subclass_responsibility`
 Expected: FAIL -- `platform kernel` does not understand `Collection`.
 
 - [ ] **Step 3: `Collection` and `Array`'s clause in `Kernel.ns`**
@@ -498,26 +545,22 @@ Insert before `Array`'s class comment:
            action: a one-argument block, or anything understanding
                `value:`.
 
-           Here, signals an Error, 'Collection>>do: is abstract: a subclass
-           implements it': every subclass defines it. *)
-        public do: action = (
-            ^(outer Kernel Error new) signal: 'Collection>>do: is abstract: a subclass implements it'
-        )
+           Here, signals the Error of `subclassResponsibility`,
+           'Collection>>do: is abstract: … must implement it': every
+           subclass defines it. *)
+        public do: action = ( ^self subclassResponsibility )
         (* Answers a new, empty collection that `collect:`, `select:` and
            `reject:` fill by sending it `add:` once per element they keep.
 
            capacity: an Integer of at least 0, the receiver's size: room
                enough for every element.
 
-           Here, signals an Error, 'Collection>>newForCollectUsingAdd: is
-           abstract: a subclass implements it to collect:, select: or
-           reject:'. *)
+           Here, signals the Error of `subclassResponsibility`,
+           'Collection>>newForCollectUsingAdd: is abstract: … must
+           implement it'. *)
         (* The kernel cannot name the collections module's `List`, so a
            collection says itself what its `collect:` answers. *)
-        protected newForCollectUsingAdd: capacity = (
-            ^(outer Kernel Error new)
-                signal: 'Collection>>newForCollectUsingAdd: is abstract: a subclass implements it to collect:, select: or reject:'
-        )
+        protected newForCollectUsingAdd: capacity = ( ^self subclassResponsibility )
         (* Answers whether `predicate` answers true for every element; true
            for an empty collection. Stops at the first element for which it
            answers false.
@@ -680,7 +723,68 @@ Insert before `Array`'s class comment:
 Update `Array`'s class comment: "A fixed-size sequence of objects, indexed
 from 1, and a Collection: …".
 
-- [ ] **Step 4: The builtin**
+- [ ] **Step 4: `subclassResponsibility` and its leaf**
+
+`Kernel.ns`, in `Object`, after `identityHash`:
+
+```newspeak
+        (* Signals an Error saying that the method which sent it is
+           abstract: 'Collection>>do: is abstract: Nothing must implement
+           it' -- the class declaring the sending method and its selector,
+           then the class of the receiver -- or 'a method is abstract: …'
+           when the sender is no method. What an abstract method's body
+           sends, `^self subclassResponsibility`; answers what a handler
+           that resumes the Error answers. *)
+        (* The name is read off the sending activation, which only the
+           kernel reaches: a program sees the Error, never the activation. *)
+        protected subclassResponsibility = (
+            | current method |
+            current:: vmMirror currentActivation: self ifFail: [nil].
+            method:: vmMirror activationMethodName: (vmMirror activationSender: current ifFail: [nil]) ifFail: [nil].
+            ^(outer Kernel Error new)
+                signal: (method isNil ifTrue: ['a method'] ifFalse: [method]), ' is abstract: ',
+                    self class name, ' must implement it'
+        )
+```
+
+`primitive.rs`: `ActivationPrimitive::MethodName`, `false` in the
+"answers no" match beside the other activation leaves; the row beside
+`activationSender:ifFail:`:
+
+```rust
+    mirror(
+        "activationMethodName:ifFail:",
+        "methodName",
+        Primitive::Activation(ActivationPrimitive::MethodName),
+    ),
+```
+
+`activation.rs`: `SubjectLeaf::MethodName`, run by `activation_leaf`:
+for a live activation, take `heap.activation_code(activation)` and
+`heap.activation_current_class(activation)`; find, among the methods of
+that class's mixin (the class object's application's mixin; for a
+metaclass the class side's methods), the selector whose compiled code is
+`Rc::ptr_eq` the activation's code. Find the reader with
+`grep -rn "fn methods\|method_table\|fn compiled_method" crates/ns-runtime/src`
+(a reader of compiled code takes the mixin, CLAUDE.md). Answer the String
+`"{class name}>>{selector}"`, the class name as `className:ifFail:`
+answers it (`Class>>name`; a metaclass's `"X class"`). Answer `nil` for
+an activation that has returned, one running a block, an initializer or
+a clause (a `CodeKind` other than `Method`), or one whose code no method
+of the mixin holds.
+
+A Rust test beside the activation leaves' tests (find them with
+`grep -rln "activationSender" crates/ns-runtime/tests crates/ns-runtime/src`):
+a module whose `Shape>>area` is `^self subclassResponsibility`, run under
+both lowerings as the neighbours run them, whose error's `messageText` for
+`Circle new area` is `'Shape>>area is abstract: Circle must implement it'`.
+
+The test `a_proxy_overrides_every_public_member_of_object_as_protected`
+concerns public members only; `subclassResponsibility` is protected, so
+`Proxy` needs no override. If a kernel table test (quick methods,
+forwarders) names it, add what it reports.
+
+- [ ] **Step 5: The builtin**
 
 - `types.rs`: append `Collection` to `BuiltinClass` and `ALL` (33
   entries), doc comment "The abstract superclass of `Array` and of the
@@ -703,7 +807,7 @@ from 1, and a Collection: …".
   entries as the failing test names them. If a check refuses a builtin with
   no leaf at all, stop and report.
 
-- [ ] **Step 5: The facet**
+- [ ] **Step 6: The facet**
 
 `PlatformFactory.ns`'s `KernelNamespace`, after `Proxy`:
 
@@ -713,16 +817,18 @@ from 1, and a Collection: …".
         public Collection = ( ^kernelModule Collection )
 ```
 
-- [ ] **Step 6: Run the goldens and the kernel and image tests**
+- [ ] **Step 7: Run the goldens and the kernel and image tests**
 
 Run: `cargo nextest run -p ns-cli --test run_goldens`
 Run: `cargo nextest run -p ns-runtime`
 Expected: PASS. (`Array`'s instances and leaves are unchanged; only its
 superclass moved, so every Array golden still passes.)
 
-- [ ] **Step 7: Documentation**
+- [ ] **Step 8: Documentation**
 
-- `docs/design/core-library.md`: the hierarchy drawing near the top (the
+- `docs/design/core-library.md`: `subclassResponsibility` where `Object`'s
+  protocol is described, and the activation leaf where the activation
+  leaves are listed ("Exceptions"); the hierarchy drawing near the top (the
   tree with `Object`, `Value`, … at about line 53) gains `Collection` under
   `Object` with `Array` under it; the paragraph listing the builtins names
   `Collection` and why it is one; the "Planned: …" section's sub-project 3
@@ -730,9 +836,9 @@ superclass moved, so every Array golden still passes.)
 - `docs/design/image-format.md`: the builtin class tag table gains 38,
   `Collection`.
 
-- [ ] **Step 8: Gates and commit**
+- [ ] **Step 9: Gates and commit**
 
-Commit: `feat: an abstract Collection in the kernel, with Array under it`.
+Commit: `feat: an abstract Collection in the kernel, with Array under it, and subclassResponsibility`.
 
 ---
 
