@@ -6,8 +6,9 @@
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
 > with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/` and much
-> of Primordial Soup's core API, whose names and loops are aligned and the
-> rest planned in full ("Planned: the kernel completed to Primordial Soup's
+> of Primordial Soup's core API, whose names and loops are aligned, whose
+> foundations -- the error classes, `Proxy` and a public `Future` -- are
+> built, and the rest planned in full ("Planned: the kernel completed to Primordial Soup's
 > core API"). Every public member of the three shipped modules is
 > documented in place, by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
@@ -64,10 +65,17 @@ Top                     (private; no superclass, declares nothing)
     ├── Array
     ├── Closure         ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
-    │   ├── Error       └── MessageNotUnderstood
+    │   ├── Error       ├── MessageNotUnderstood
+    │   │               ├── ArgumentError       argument
+    │   │               ├── CannotReturn        result
+    │   │               ├── NonBooleanReceiver  receiver (private)
+    │   │               └── CannotInstantiate   behavior
     │   └── Halt
     ├── Message         selector, arguments, sendTo:
     ├── Activation      (private; a running activation, for the kernel only)
+    ├── Proxy           every public member of Object, as protected
+    │   └── FutureImplementation  (private; the runtime's future)
+    ├── Future          class side computing:; no instances
     └── Behavior        =, ==, hash (a class object's, derived from its state
         │               when it is a value)
         ├── Class       name, printString, handles:
@@ -94,8 +102,9 @@ below `Behavior` can be instantiated
 That is §3.2's shape and §3.1.1's, taken literally. §3.2 says "a class is
 either the empty class `Top` or the application of a mixin to another class",
 and "only the class `Object` may have `Top` as its superclass", so `Top`
-exists, declares nothing, and is the one class `Kernel.ns` keeps private —
-every other class says `public`, because §6.3.1 makes an undeclared member
+exists, declares nothing, and is private, as are only the classes no
+program may name (`Activation`, `NonBooleanReceiver`,
+`FutureImplementation`) — every other class says `public`, because §6.3.1 makes an undeclared member
 protected and a protected class is unreachable from any other module, which
 is where a program's `Integer` or `String` has to come from. §3.1.1 says a
 value object's "class inherits from class `Value`", so every class whose
@@ -1780,7 +1789,12 @@ an error is the VM's business.
   `ArgumentError` does not pass for a block, and `behavior`, not `class`,
   which would override `Object>>class`. `NonBooleanReceiver` is private to
   the kernel: a program catches it as an `Error`, and `platform kernel`
-  answers the other three.
+  answers the other three. `CannotInstantiate` is ns-next's own, not
+  Primordial Soup's, which marks a class nobody may instantiate by naming
+  its primary factory `_cannotInstantiate`; it is public so that a program
+  can catch it and signal it for classes of its own. `NotFound`, the
+  fifth, is the collections module's ("The collections module (plan 2)"
+  below).
 - `Message`: `selector`, `arguments`, and `sendTo: receiver`, which sends the
   message as an ordinary *public* send (§5.5) — a program can obtain and
   build messages, so a send through one must not reach a protected or
@@ -1814,7 +1828,9 @@ platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`,
 `CannotInstantiate`, `Closure`, `Future` and `Proxy` from the kernel
-instance the platform was handed.
+instance the platform was handed. `NotFound` is answered by
+`platform collections`, as Primordial Soup keeps it in its collections
+module, and `NonBooleanReceiver` by nothing.
 `Object` gains no accessor, so its set stays what §3.2 names.
 
 `Closure` has `on: exceptionClass do: handler`, `ensure: aBlock` and
@@ -1994,7 +2010,16 @@ with an argument that is no `Message` fails inside the handler, on
   where the error arose; nothing is popped. The Rust site that raises the
   error decides its class, through the constructor it calls
   (`NewspeakError::error`, `argument_error`, `cannot_return`,
-  `non_boolean_receiver`, `cannot_instantiate`). So `on: Error do:`
+  `non_boolean_receiver`, `cannot_instantiate`), but does not build the
+  exception itself: signalling runs Newspeak, which a leaf never calls
+  back into, and a leaf that declines or raises has changed nothing
+  ([object-model.md](object-model.md), "Where Rust sees a future"), which
+  an allocation would break. The optimized lowering, the reference
+  lowering and a later JIT all reach the one `signal_vm_error`.
+  `NewspeakError` holds its text as a `Box<str>`, 16 bytes rather than a
+  `String`'s 24, which frees the word `subject` takes, so `Signal` keeps
+  the size `a_signal_fits_in_the_niche_of_its_one_unboxed_error` pins.
+  So `on: Error do:`
   catches an index error from `Array>>at:`, a wrong block arity, an
   instantiation refusal or a `cannotReturn`, and an uncaught one ends the
   host's run with the same `HostError` and the same line as before. An
@@ -2012,12 +2037,25 @@ with an argument that is no `Message` fails inside the handler, on
   divisor for a division by zero, the bound out of range for
   `copyFrom:to:`, the block for its arity, the receiver for `asInteger`).
   A `^` whose home has returned, and a `returnValue:` or `restart` aimed
-  at an activation that has, signal a `CannotReturn` carrying the value
-  returned (nil for `restart`, which returns none). Every instantiation
+  at an activation that has -- as `return:`, `resume:` and `retry` on a
+  handler whose `on:do:` has returned are -- signal a `CannotReturn`
+  carrying the value returned (nil for `restart`, which returns none). A
+  `whileTrue:` or `whileFalse:` whose condition answers no Boolean, inlined
+  or native, under either lowering, signals a `NonBooleanReceiver`
+  carrying that answer, its selector `value`, the send whose answer was
+  no Boolean ([compiler.md](compiler.md), "Control-flow inlining"). An
+  inlined conditional is not such a site: a receiver that is no Boolean is
+  sent the real message, and one that does not understand it signals
+  `MessageNotUnderstood`, because the specification has no inlining and
+  Primordial Soup's own tests call its `NonBooleanReceiver` for a
+  conditional a cheat (`prior-art/primordialsoup/newspeak/KernelTests.ns:5932`),
+  while a loop's behaviour is the library's to define. Every instantiation
   refusal whose text begins "cannot instantiate" signals a
   `CannotInstantiate` carrying the class, and nil for the VM mirror's
-  class, which a program must not be handed. What stays a plain `Error`
-  is the depth limit, a future that diverged or is malformed, a
+  class, so that no path to that class rests on the argument that only
+  the mirror's holder can reach the refusal. What stays a plain `Error`
+  is the depth limit, a future that diverged (an `Error` in Primordial
+  Soup too) or is malformed, a
   superclass or mixin clause that is no class, a wrong number of
   factory or method arguments, the refusal to store a non-value in a
   value object's slot, and every `internal:` error. Until the
@@ -2909,15 +2947,22 @@ on its own (decided with the user on 2026-10-06):
   `CannotReturn`, `NonBooleanReceiver` and `CannotInstantiate` exist as
   subclasses of `Error`, so that `on: Error do:` still catches them and
   today's texts stay their `messageText`; Primordial Soup has no `Error` and
-  its classes no text. The leaves and the VM signal `ArgumentError`,
-  `CannotReturn` and `CannotInstantiate` where it signals them
-  ("Exceptions"). `NotFound element:` and the signalling of
-  `NonBooleanReceiver` remain planned.
+  its classes no text. The leaves, the VM and the kernel's and the
+  collections' Newspeak signal them where it signals them, and
+  `CollectionsFactory.ns` adds `NotFound` ("Exceptions"; "The collections
+  module (plan 2)"); the collections' further removals signal `NotFound`
+  as they arrive (sub-project 3 below).
 - **`isKindOf…` answers `false` for what a receiver does not declare**:
   `Object>>doesNotUnderstand:` answers `false` for a unary selector that
   begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's
   (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
-  its own with `true`. A program can introduce a question of its own
+  its own with `true`: `isKindOfArray`, `isKindOfBehavior`,
+  `isKindOfBoolean`, `isKindOfClosure`, `isKindOfFloat`,
+  `isKindOfInteger`, `isKindOfNumber`, `isKindOfString`, `isKindOfList`,
+  `isKindOfMap` and `isKindOfSet`; a class a later sub-project adds brings
+  its own answer, and its accessor on `platform kernel` or
+  `platform collections`, when it is built. A program can introduce a
+  question of its own
   without touching `Object`, which no Newspeak program can. `Number`
   declares `isKindOfFloat`, `isKindOfInteger` and `isKindOfFraction` as
   `false` so that a subclass's `true` overrides a known answer rather than
@@ -2946,12 +2991,14 @@ a non-integral literal is a binary float" above), and there is no
 
 1. **Aligning** -- built (2026-10-06, [its
    plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
-2. **Foundations**: the error classes, the `isKindOf…` rule, `yourself`,
-   `identityHash`, the kernel facet's accessors, `Proxy` and a public
-   `Future`.
+2. **Foundations** -- built (2026-10-10, [its
+   plan](../superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md)):
+   the error classes, the `isKindOf…` rule, `yourself`, `identityHash`, the
+   kernel facet's accessors, `Proxy` and a public `Future`.
 3. **Collections and strings**: `Collection`, the whole protocol of
-   `Array`, `List`, `Map` and `Set`, `IdentityMap`, `NotFound`, `List`,
-   `Map` and `Set` rewritten, and `String`'s protocol in code points.
+   `Array`, `List`, `Map` and `Set` (their `removeKey:` and `remove:`
+   signalling `NotFound`), `IdentityMap`, `List`, `Map` and `Set`
+   rewritten, and `String`'s protocol in code points.
 4. **Numbers**: `Float`'s mathematics, `Integer`'s and `Number`'s
    protocol, then `Fraction` and the tower.
 5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions.
@@ -2966,6 +3013,23 @@ a non-integral literal is a binary float" above), and there is no
   `value`/`value:` to a non-block through `Closure>>valueOf:` and
   `valueOf:with:`
   ([plan](../superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md)).
+
+- **The kernel's foundations** (decided with the user on 2026-10-06, built
+  on 2026-10-10): Primordial Soup's error classes under `Error`, so that
+  `on: Error do:` still catches them, each carrying its subject in a public
+  slot -- `ArgumentError`'s is `argument`, not `value`, since an exception
+  answering `value` would pass for a block; `CannotInstantiate` added as
+  ns-next's own, public so that a program can catch and signal it;
+  `NonBooleanReceiver` only for a loop's condition, since the
+  specification has no inlining and an inlined conditional keeps its real
+  send; the Rust site that finds an error naming its class
+  (`ErrorClass`), built by the one `Mutator::signal_vm_error`; `Future` a
+  public class only for its class side's `computing:`, over the private
+  `FutureImplementation` under the public `Proxy`; and the `isKindOf…`
+  rule, `false` for a unary question nobody declared ("Exceptions", "The
+  pull future", "Planned: the kernel completed to Primordial Soup's core
+  API" above;
+  [plan](../superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md)).
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:
@@ -3059,8 +3123,9 @@ a non-integral literal is a binary float" above), and there is no
   native as SOMns; the scope — `Exception`, `Error`, `MessageNotUnderstood`,
   `Halt`, `Message` and the kernel-private `Activation`, ANSI's protocol
   with `on:do:`, `ensure:` and `ifCurtailed:`, and `ExceptionSet`,
-  `Notification`, `outer`, `retryUsing:`, `signalerContext`,
-  `Object>>error:` and the finer `Error` subclasses left out;
+  `Notification`, `outer`, `retryUsing:`, `signalerContext` and
+  `Object>>error:` left out, and the finer `Error` subclasses left to
+  the foundations (above);
   `doesNotUnderstand:` is Squeak's, re-sending with `sendTo:` when the
   default handler resumed it; every VM error becomes a signalled `Error`
   with today's text; the depth limit keeps a reserve of 1,000; one unwinder

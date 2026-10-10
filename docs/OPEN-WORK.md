@@ -21,12 +21,13 @@ when they were written.
 selectors and behaviour adopted, every body written here -- in six
 sub-projects, in this order: aligning, which is built (`Block` is
 `Closure`, `sentTo:` is `sendTo:`, `Array>>at:put:` answers the value, the
-loops send `value` to a non-block); foundations (the error classes under
-`Error`, the `isKindOf…` rule, `yourself`, `identityHash`, the kernel
-facet's accessors, `Proxy`, a public `Future`); collections and strings;
-numbers, the symmetric tower with `Fraction` among them; `ByteArray` and
-`StringBuilder`; weak references. Each has its own design and plan; the
-foundations sub-project is next and has no plan yet. The decisions and the
+loops send `value` to a non-block); foundations, which is built too (the
+error classes under `Error`, the `isKindOf…` rule, `yourself`,
+`identityHash`, the kernel facet's accessors, `Proxy`, a public `Future`);
+collections and strings; numbers, the symmetric tower with `Fraction` among
+them; `ByteArray` and `StringBuilder`; weak references. Each has its own
+design and plan; the collections and strings sub-project is next and has no
+design or plan yet. The decisions and the
 scope are [core-library.md](design/core-library.md), "Planned: the kernel
 completed to Primordial Soup's core API".
 

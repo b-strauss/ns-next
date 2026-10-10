@@ -31,7 +31,7 @@ first.
 | Road step 4 — generations | Complete | 2026-10-04 | [generations](superpowers/plans/2026-10-04-2030-ns-next-generations.md) |
 | The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Running a module from the play button beside its `main:args:` in the JetBrains plugin | Complete | 2026-10-05 | [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md) |
-| The kernel completed to Primordial Soup's core API, in six sub-projects | In progress | 2026-10-06 | [kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md) (the first of six) |
+| The kernel completed to Primordial Soup's core API, in six sub-projects | In progress | 2026-10-10 | [kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md), [kernel-foundations](superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md) (the first two of six) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4511,7 +4511,51 @@ lowerings with the same depth count.
 - `9b326f76` -- `whileTrue:` and `whileFalse:` send `value` to a body that is
   no block.
 
+What the branch left open, the foundations sub-project, is built
+("The kernel's foundations sub-project" below).
+
+## The kernel's foundations sub-project (2026-10-10)
+
+Plan: [ns-next-kernel-foundations](superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md);
+[core-library.md](design/core-library.md), "Exceptions", "The pull future",
+"Planned: the kernel completed to Primordial Soup's core API", "Decisions".
+
+The second of the six sub-projects. Primordial Soup's error classes exist
+under `Error` -- `ArgumentError`, `CannotReturn` and the kernel-private
+`NonBooleanReceiver` in `Kernel.ns`, `NotFound` in `CollectionsFactory.ns`
+-- with ns-next's own `CannotInstantiate` beside them, each carrying what
+it was signalled for in a public slot and keeping today's text as its
+`messageText`. The Rust site that finds an error names its class through
+`ErrorClass`, and `Mutator::signal_vm_error` builds it; a loop's condition
+that answers no Boolean signals `NonBooleanReceiver` through the new
+instruction `SignalNonBoolean` (tag 40) or the native loop's continuation,
+and `mustBeBoolean` is gone. `Object` gains `yourself` and `identityHash`,
+an `isKindOf…` question nobody declared answers `false`, and every core
+class answers its own. `Proxy` is public; the runtime's future is the
+private `FutureImplementation` below it (tag 30), and the public `Future`'s
+class-side `computing:` makes one through the mirror row
+`futureComputing:ifFail:`. `platform kernel` answers `ArgumentError`,
+`CannotReturn`, `CannotInstantiate`, `Closure`, `Future` and `Proxy`, and
+`platform collections` `NotFound`; the new builtins take tags 32 to 37.
+
+- `c99dbaf1`, `84646626` -- the error classes, and the class a VM error is
+  signalled as.
+- `36b96bf9` -- the leaves and the VM signal `ArgumentError`,
+  `CannotReturn` and `CannotInstantiate`.
+- `680c7684` -- a loop's non-Boolean condition signals
+  `NonBooleanReceiver`.
+- `b9a19626` -- the collections signal `NotFound` and `ArgumentError`.
+- `bec7f070` -- `yourself`, `identityHash` and the `isKindOf…` rule.
+- `602baca5` -- `Proxy`, and a public `Future` whose `computing:` makes the
+  runtime's future.
+
+Recorded outcomes changed in three ways, each established as right
+first: the two loop-condition goldens report a `NonBooleanReceiver` where
+a missing `#mustBeBoolean` was; the three index-error goldens that print
+the class of the caught error print `ArgumentError`; and the
+divergent-future text names a future rather than a simultaneous slot,
+since a program's own future can diverge too. The kernel-namespace golden
+gained the six classes `platform kernel` now answers.
+
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
-foundations sub-project (the error classes under `Error`, the `isKindOf…`
-rule, `yourself`, `identityHash`, the kernel facet's accessors, `Proxy`, a
-public `Future`) is next and has no plan yet.
+collections and strings sub-project is next and has no design or plan yet.

@@ -472,7 +472,12 @@ kernel's.
   ([core-library.md](core-library.md), "Gap: an integer has no `/`").
   `Array` and `Closure` stay directly under `Object`,
   since their instances are not values, and so does `Behavior`, with `Class`
-  and `Metaclass` below it ("Class sides and metaclasses" below). The VM mirror's class,
+  and `Metaclass` below it ("Class sides and metaclasses" below), and so do
+  `Proxy`, with the runtime's `FutureImplementation` below it, and the
+  public `Future`, which has no instances ("Simultaneous slots" below). The
+  error classes `ArgumentError`, `CannotReturn`, `NonBooleanReceiver` and
+  `CannotInstantiate` are below `Error` ([core-library.md](core-library.md),
+  "Exceptions"). The VM mirror's class,
   which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
   value ("A value object's four conditions" below). The clause is read by name
   at bootstrap, never run, and the class object's `superclass` link is set to
@@ -483,8 +488,9 @@ kernel's.
   `self String` by §5.7, so a class that declares or inherits a member of
   that name reaches its own ([core-library.md](core-library.md), "The
   predefined classes are accessors on `Object`").
-- **`Top` is not nameable.** It is the one class of `Kernel.ns` declared
-  private, so §6.3.1 keeps it out of every other module's reach; `Object`
+- **`Top` is not nameable.** It is declared private in `Kernel.ns`, as
+  only `Activation`, `NonBooleanReceiver` and `FutureImplementation` are
+  besides it, so §6.3.1 keeps it out of every other module's reach; `Object`
   declares no accessor for it among §3.2's accessors for the predefined
   classes, so a bare `Top` is `self Top` and ends in `doesNotUnderstand:`
   (`goldens/language/builtin-names/top_is_not_a_name.ns`); and the image
@@ -505,7 +511,8 @@ kernel's.
   `Interpreter::instantiate` of a builtin class with factory arguments is
   refused. `Array new` builds its own payload
   (`instantiate::decide_factory`), and the VM mirror's class is refused
-  outright — there is exactly one mirror.
+  outright, with a `CannotInstantiate` carrying nil rather than the class a
+  program must not be handed — there is exactly one mirror.
 - **A user subclass of a builtin inherits its methods but not its payload.**
   `class MyArray = Array new` answers `Array`'s kernel methods, whose leaves
   decline on an instance that carries no array, and each method's failure
@@ -879,7 +886,14 @@ not inherited (§3.2) — signals a `CannotInstantiate` from its initializer.
 A program cannot subclass `FutureImplementation` itself: an instance of a
 subclass would be a future the runtime does not know, which it neither
 forces, sees through, nor replaces, so a forwarding object a program wants
-is a subclass of `Proxy` instead. `FutureImplementation` carries builtin
+is a subclass of `Proxy` instead. Such a proxy is pure Newspeak: it
+forwards every message it is sent, but as an argument it is itself —
+`target == proxy` answers `false` — as in Primordial Soup; only
+`FutureImplementation` gets the runtime's symmetric see-through, so every
+future a program can hold keeps "The four rules" above.
+`FutureImplementation` declares no `isKindOfFuture`: answering it would
+tell a future from its value, so that message is forwarded to the value
+like any other. `FutureImplementation` carries builtin
 class tag 30, `Proxy` 36 and `Future` 37, because the
 collector, the leaves and the image must recognize it. The first future a
 heap makes sets `Mutator::futures_made`, which is never cleared, and the
