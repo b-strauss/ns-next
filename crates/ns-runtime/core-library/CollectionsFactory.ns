@@ -21,23 +21,19 @@
    A value (§3.1.1), so that its facet is one and the platform, a value,
    may hold the facet in a slot.
 
-   `List`, `Map` and `Set` are adapted from Primordial Soup's Collections.ns
+   `List` is a `Collection` of the kernel written here; `Map` and `Set`
+   are adapted from Primordial Soup's Collections.ns
    (https://github.com/rmacnak/primordialsoup, commit
-   338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Collections.ns), and
-   `List>>sort:`'s merge sort from `Array>>sortFrom:to:by:` in its
-   newspeak/KernelForPrimordialSoup.ns. Changed for ns-next: only the
-   selectors the corpus, the goldens and the Are We Fast Yet benchmarks
-   send (the on-demand rule); `List` keeps the index of its first element,
-   so that `removeFirst` runs in amortized constant time, as SOMns's
-   `Vector` does, where Primordial Soup's shifts every element; a
-   `removeAll` keeps the capacity, as the Are We Fast Yet `Vector` and
-   `Dictionary` do; `Map` and `Set` have no removal of single elements and
-   so no deleted marks; a hash table lookup answers the element's index in
-   the data array, so that no operation reads the hash table twice; errors
-   are the kernel's `ArgumentError` and this module's `NotFound` where
-   those apply, and `Error`s with texts of their own otherwise, where
-   Primordial Soup sends the undefined `errorEmpty`; `>>` and `|` on
-   integers are written with `//` and `bitOr:`; names are written out.
+   338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Collections.ns).
+   Changed for ns-next: only the selectors the corpus, the goldens and the
+   Are We Fast Yet benchmarks send (the on-demand rule); `Map` and `Set`
+   have no removal of single elements and so no deleted marks; a hash
+   table lookup answers the element's index in the data array, so that no
+   operation reads the hash table twice; errors are the kernel's
+   `ArgumentError` and this module's `NotFound` where those apply, and
+   `Error`s with texts of their own otherwise, where Primordial Soup sends
+   the undefined `errorEmpty`; `>>` and `|` on integers are written with
+   `//` and `bitOr:`; names are written out.
 
    Copyright 2008, the Newspeak project authors.
 
@@ -46,12 +42,19 @@
    obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
    and in THIRD-PARTY-NOTICES.md at the repository root. *)
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | private kernelModule = theKernel.
+    | (* The kernel module, which the classes here reach `Array`'s errors
+         and `ArgumentError` through. *)
+      private kernelModule = theKernel.
+      (* The kernel's `Error`, the superclass of `NotFound` and
+         `ConcurrentModification`. *)
       (* An inheritance clause is one name, optionally after `outer`,
-         `self` or `super`, and at most one message (§6.1), so `NotFound`'s
-         cannot reach the kernel's Error through `kernelModule` and names it
-         through this slot. *)
-      private kernelError = theKernel Error. |
+         `self` or `super`, and at most one message (§6.1), so a clause
+         cannot reach the kernel's classes through `kernelModule` and
+         names them through these slots. *)
+      private kernelError = theKernel Error.
+      (* The kernel's `Collection`, the superclass of `List`, `Map` and
+         `Set`. *)
+      private kernelCollection = theKernel Collection. |
 ) (
     (* `platform collections`: the module's namespace. It names its own
        class as `Platform` does, so that the class has a path too. `List`
@@ -91,136 +94,200 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
            `Set` and `IdentitySet`. *)
         public Set = ( ^outer CollectionsFactory Set )
+        (* Answers the kernel's `Collection` class, the abstract superclass
+           of `List`, `Map` and `Set`, for a program to subclass. *)
+        public Collection = ( ^kernelCollection )
+        (* Answers the `ConcurrentModification` class: the Error a `List`,
+           `Map` or `Set` signals when it is changed while it is iterated.
+           It carries the collection in `collection`. *)
+        public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
     )
-    (* An ordered, growable sequence with the protocol the corpus, the
-       goldens and the Are We Fast Yet benchmarks ask for (the on-demand
-       rule, docs/design/core-library.md). The elements live in `data` from
-       `firstIndex` on, `size_` of them, so that `removeFirst` moves nothing
-       and a queue of `add:` and `removeFirst` runs in amortized constant
-       time. When `add:` finds the array full at its end, the elements move
-       to its start if at least half of it lies empty before them, and
-       otherwise into an Array half as large again; nothing grows in place.
+    (* An ordered, growable sequence, indexed from 1, that adds and removes
+       at both ends in amortized constant time: `List new`, `List new: 20`,
+       `List withAll: {1. 2}`. A Collection: `collect:`, `select:` and
+       `reject:` answer Lists.
+
+       Changing its elements' number -- adding, removing -- while `do:`,
+       `keysAndValuesDo:`, `anySatisfy:`, `removeAllSuchThat:` or anything
+       built on `do:` runs over it signals a ConcurrentModification after
+       the block that did it. Storing at an existing index does not.
+
        The primary factory takes the capacity, so a program may write
-       `List new: 15` as a superclass clause, as DeltaBlue's `Plan` does.
-       The representation is private, so that it can change -- to a ring
-       buffer, say -- without a subclass noticing; `size_` alone stays
+       `List new: 15` as a superclass clause. *)
+    (* The elements lie in `data` from `firstIndex` on, so that removing at
+       either end moves nothing; the representation is private, so that it
+       can change without a subclass noticing, and `size_` alone is
        protected, as a subclass's view of the size. *)
-    (* Primordial Soup's `List`, whose primary factory also takes the
-       capacity and whose representation is protected. The `firstIndex`
-       is SOMns's `Vector`'s `firstIdx`. *)
-    private class List new: capacity = Object new (
-        | protected size_ ::= 0.
-          private firstIndex ::= 1.
-          private data ::= Array new: capacity. |
-    ) (
-        (* True: the receiver is a List. *)
-        public isKindOfList = ( ^true )
+    private class List new: capacity = kernelCollection new (
         (* The number of elements. *)
+        | protected size_ ::= 0.
+          (* The index in `data` of the first element; 1 whenever the list
+             is empty. *)
+          private firstIndex ::= 1.
+          (* The elements, `size_` of them from `firstIndex` on; every
+             other slot holds nil, so the list keeps nothing alive it no
+             longer holds. *)
+          private data ::= Array new: capacity.
+          (* The number of changes to the number of elements so far; an
+             iteration compares it after every block. *)
+          private modifications ::= 0. |
+    ) (
+        (* Answers true: the receiver is a List. *)
+        public isKindOfList = ( ^true )
+        (* Answers the number of elements. *)
         public size = ( ^size_ )
-        (* Whether the list holds no element. *)
-        (* `benchmarks/are-we-fast-yet/DeltaBlue.ns`, `DeltaBlueTon80.ns`
-           and `Havlak.ns` ask whether a work list is empty. *)
+        (* Answers whether the list holds no element. *)
+        (* The size is at hand; `Collection`'s would send `size`. *)
         public isEmpty = ( ^0 = size_ )
-        (* Appends `element` at the end, in amortized constant time, and
-           answers it. *)
-        (* Answers the element, as Smalltalk's and Newspeak's `add:` do. *)
-        public add: element = (
-            | end |
-            end:: firstIndex + size_.
-            end > data size ifTrue: [end:: makeRoomAtEnd].
-            data at: end put: element.
-            size_:: size_ + 1.
-            ^element
-        )
-        (* The element at `index`, 1-based. Signals an ArgumentError, 'index … out of
-           range: valid indices are 1..size (size …)', for an index outside 1
-           to `size`, an index that is no Integer included. *)
-        (* The index check is written out here rather than sent, since
-           every `at:` pays for it. An index that is no Integer is out of
-           range too, rather than an error of the comparison. *)
+        (* Answers the element at `index`.
+
+           index: an Integer from 1 to `size`.
+
+           Signals an ArgumentError carrying `index`, 'index … out of
+           range: valid indices are 1..size (size …)', for any other
+           index, an index that is no Integer included. *)
+        (* The check is written out, since every `at:` pays for it; an
+           index that is no Integer is out of range too. *)
         public at: index = (
             ((index class == Integer) and: [(1 <= index) and: [index <= size_]])
                 ifFalse: [^self indexOutOfRange: index].
             ^data at: firstIndex + index - 1
         )
-        (* Replaces the element at `index`, 1-based, with `value` and
-           answers `value`. Signals an ArgumentError, as `at:` does, for an index
-           outside 1 to `size`. *)
-        (* Answers the value, as `add:` answers the element. *)
+        (* Replaces the element at `index` with `value` and answers `value`.
+           Not a change of the number of elements: an iteration running
+           meanwhile carries on, and sees `value` if it has not passed
+           `index` yet.
+
+           index: an Integer from 1 to `size`.
+
+           Signals the ArgumentError `at:` signals for any other index. *)
         public at: index put: value = (
             ((index class == Integer) and: [(1 <= index) and: [index <= size_]])
                 ifFalse: [^self indexOutOfRange: index].
             data at: firstIndex + index - 1 put: value.
             ^value
         )
+        (* Answers the first element.
+
+           Signals the ArgumentError of `at:`, carrying 1, for an empty
+           list. *)
+        public first = ( ^self at: 1 )
+        (* Answers the last element.
+
+           Signals the ArgumentError of `at:`, carrying 0, for an empty
+           list. *)
+        public last = ( ^self at: size_ )
+        (* Appends `element` at the end, in amortized constant time, and
+           answers it. *)
+        public add: element = (
+            | end |
+            end:: firstIndex + size_.
+            end > data size ifTrue: [end:: makeRoomAtEnd].
+            data at: end put: element.
+            size_:: size_ + 1.
+            modifications:: modifications + 1.
+            ^element
+        )
+        (* Appends `element` at the end and answers it, as `add:` does. *)
+        public addLast: element = ( ^self add: element )
+        (* Inserts `element` before the first, in amortized constant time,
+           and answers it. *)
+        public addFirst: element = (
+            firstIndex = 1 ifTrue: [makeRoomAtFront].
+            firstIndex:: firstIndex - 1.
+            data at: firstIndex put: element.
+            size_:: size_ + 1.
+            modifications:: modifications + 1.
+            ^element
+        )
+        (* Appends each element of `collection`, in its `do:` order, and
+           answers `collection`. The list itself as `collection` appends a
+           copy of its elements: `list addAll: list` doubles it.
+
+           collection: a Collection, or anything understanding `do:`. *)
+        public addAll: collection = (
+            (collection == self ifTrue: [self asArray] ifFalse: [collection])
+                do: [:element | self add: element].
+            ^collection
+        )
         (* Evaluates `action` with each element in turn, from the first, and
-           answers the receiver. Elements added meanwhile are not visited;
-           an element replaced meanwhile is visited as it is then. *)
-        (* Visits the elements the list holds when it starts: the size is
-           read once, so an `add:` inside the block does not extend the
-           walk, while `data` and `firstIndex` are read for every element,
-           so an `at:put:` inside it is seen, as in Primordial Soup's `1 to:
-           size_ do:`. *)
+           answers the receiver. Each element is read when the walk reaches
+           it, so one stored meanwhile by `at:put:` is seen.
+
+           action: a one-argument block, or anything understanding
+               `value:`.
+
+           Signals a ConcurrentModification after the evaluation of
+           `action` that added or removed an element. *)
         public do: action = (
-            | end index |
+            | expected end index |
+            expected:: modifications.
             end:: size_.
             index:: 0.
             [index < end] whileTrue: [
                 action value: (data at: firstIndex + index).
+                expected = modifications ifFalse: [^signalModificationOf: self].
                 index:: index + 1]
         )
-        (* Whether `predicate` answers true for some element, tried in turn
-           from the first until one does. *)
-        (* Primordial Soup's `Collection>>anySatisfy:`, a walk like `do:`'s
-           written out, which needs no non-local return.
-           `benchmarks/are-we-fast-yet/Havlak.ns` sends it. *)
+        (* Evaluates `action` with each index and the element there, from
+           the first, and answers the receiver.
+
+           action: a two-argument block, given the index and the element.
+
+           Signals a ConcurrentModification as `do:` does. *)
+        public keysAndValuesDo: action = (
+            | expected end index |
+            expected:: modifications.
+            end:: size_.
+            index:: 0.
+            [index < end] whileTrue: [
+                action value: index + 1 value: (data at: firstIndex + index).
+                expected = modifications ifFalse: [^signalModificationOf: self].
+                index:: index + 1]
+        )
+        (* Answers whether `predicate` answers true for some element, tried
+           in turn from the first until one does; false for an empty list.
+
+           predicate: a one-argument block answering a Boolean.
+
+           Signals a ConcurrentModification as `do:` does. *)
+        (* Written out rather than inherited: `Collection`'s returns from a
+           block, and the benchmarks ask it of their work lists. *)
         public anySatisfy: predicate = (
-            | end index |
+            | expected end index |
+            expected:: modifications.
             end:: size_.
             index:: 0.
             [index < end] whileTrue: [
                 (predicate value: (data at: firstIndex + index)) ifTrue: [^true].
+                expected = modifications ifFalse: [^signalModificationOf: self].
                 index:: index + 1].
             ^false
         )
-        (* Removes the first element and answers it, in constant time.
-           Signals an Error, 'removeFirst: the List is empty', for an empty
-           List. *)
-        (* Moves nothing: the vacated slot is cleared, so that the list
-           keeps no element alive, and an emptied list starts its next
-           element at the front again. `benchmarks/are-we-fast-yet/DeltaBlue.ns`
-           and `Havlak.ns` use a list as a queue. *)
-        public removeFirst = (
-            | element |
-            0 = size_ ifTrue: [^kernelModule Error signal: 'removeFirst: the List is empty'].
-            element:: data at: firstIndex.
-            data at: firstIndex put: nil.
-            size_:: size_ - 1.
-            0 = size_
-                ifTrue: [firstIndex:: 1]
-                ifFalse: [firstIndex:: firstIndex + 1].
-            ^element
+        (* Answers the index of the first element `=` to `element`, or 0
+           when there is none. Each element is sent `=` with `element`,
+           from the first, until one answers true. *)
+        public indexOf: element = (
+            | index |
+            index:: 0.
+            [index < size_] whileTrue: [
+                (data at: firstIndex + index) = element ifTrue: [^index + 1].
+                index:: index + 1].
+            ^0
         )
-        (* Removes the last element and answers it, in constant time.
-           Signals an Error, 'removeLast: the List is empty', for an empty
-           List. *)
-        (* `benchmarks/are-we-fast-yet/DeltaBlueTon80.ns` uses a list as a
-           stack. *)
-        public removeLast = (
-            | last element |
-            0 = size_ ifTrue: [^kernelModule Error signal: 'removeLast: the List is empty'].
-            last:: firstIndex + size_ - 1.
-            element:: data at: last.
-            data at: last put: nil.
-            size_:: size_ - 1.
-            0 = size_ ifTrue: [firstIndex:: 1].
-            ^element
+        (* Removes the first element `=` to `element` and answers it.
+
+           Signals a NotFound carrying `element`, 'element not found: …'
+           and its `printString`, when there is none. *)
+        public remove: element = (
+            ^self remove: element ifAbsent: [
+                (NotFound element: element) signal: 'element not found: ', element printString]
         )
         (* Removes the first element `=` to `element` and answers
-           `element`, or, when there is none, answers the value of
-           `onAbsent`. *)
-        (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `DeltaBlueTon80.ns`
-           remove a constraint from a variable's list. *)
+           `element`; when there is none, answers the value of `onAbsent`
+           and leaves the list unchanged.
+
+           onAbsent: anything understanding `value`. *)
         public remove: element ifAbsent: onAbsent = (
             | position end |
             position:: firstIndex.
@@ -232,155 +299,227 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 position:: position + 1].
             ^onAbsent value
         )
-        (* Removes every element and answers the receiver. *)
-        (* Keeps the capacity, as the Are We Fast Yet `Vector>>removeAll`
-           does, since a list emptied is usually filled again to about its
-           old size: `benchmarks/are-we-fast-yet/Havlak.ns` empties and
-           refills its predecessor lists for every loop search. *)
+        (* Removes the first element and answers it, in constant time.
+
+           Signals an Error, 'removeFirst: the List is empty', for an empty
+           list. *)
+        public removeFirst = (
+            | element |
+            0 = size_ ifTrue: [^(kernelModule Error new) signal: 'removeFirst: the List is empty'].
+            element:: data at: firstIndex.
+            data at: firstIndex put: nil.
+            size_:: size_ - 1.
+            0 = size_
+                ifTrue: [firstIndex:: 1]
+                ifFalse: [firstIndex:: firstIndex + 1].
+            modifications:: modifications + 1.
+            ^element
+        )
+        (* Removes the last element and answers it, in constant time.
+
+           Signals an Error, 'removeLast: the List is empty', for an empty
+           list. *)
+        public removeLast = (
+            | last element |
+            0 = size_ ifTrue: [^(kernelModule Error new) signal: 'removeLast: the List is empty'].
+            last:: firstIndex + size_ - 1.
+            element:: data at: last.
+            data at: last put: nil.
+            size_:: size_ - 1.
+            0 = size_ ifTrue: [firstIndex:: 1].
+            modifications:: modifications + 1.
+            ^element
+        )
+        (* Removes every element and answers the receiver; the capacity
+           stays. *)
+        (* A list emptied is usually filled again to about its old size:
+           `benchmarks/are-we-fast-yet/Havlak.ns` empties and refills its
+           lists for every loop search. *)
         public removeAll = (
             data:: Array new: data size.
             firstIndex:: 1.
-            size_:: 0
+            size_:: 0.
+            modifications:: modifications + 1
         )
-        (* Sorts the elements in place, stably, and answers the receiver:
-           `lessOrEqual`, a two-argument block, answers whether its first
-           argument may precede its second. *)
-        (* Primordial Soup's meaning: `lessOrEqual` answers whether its
-           first argument may precede its second, and the sort is a stable
-           merge sort, `Array>>sortFrom:to:by:`'s, run over the first
-           `size_` slots of `data` with a copy of them as the other buffer.
-           `benchmarks/are-we-fast-yet/DeltaBlue.ns` sorts its unsatisfied
-           constraints by strength. *)
-        public sort: lessOrEqual = (
-            | buffer index |
-            size_ < 2 ifTrue: [^self].
-            moveToFront.
-            buffer:: Array new: size_.
-            index:: 1.
-            [index <= size_] whileTrue: [
-                buffer at: index put: (data at: index).
-                index:: index + 1].
-            sort: buffer into: data from: 1 to: size_ by: lessOrEqual
-        )
-        (* The elements start at 1 afterwards, so that a sort's buffer
-           needs only as many slots as there are elements. *)
-        private moveToFront = (
-            | index |
-            firstIndex = 1 ifTrue: [^self].
-            index:: 1.
-            [index <= size_] whileTrue: [
-                data at: index put: (data at: firstIndex + index - 1).
-                index:: index + 1].
-            [index < (firstIndex + size_)] whileTrue: [
-                data at: index put: nil.
-                index:: index + 1].
-            firstIndex:: 1
-        )
-        (* `source` and `destination` hold the same elements from `start`
-           to `stop`; this leaves them sorted in `destination`, sorting each
-           half into `source` first. *)
-        private sort: source into: destination from: start to: stop by: lessOrEqual = (
-            | middle |
-            start >= stop ifTrue: [^self].
-            middle:: (start + stop) // 2.
-            sort: destination into: source from: start to: middle by: lessOrEqual.
-            sort: destination into: source from: middle + 1 to: stop by: lessOrEqual.
-            merge: source into: destination start: start middle: middle stop: stop by: lessOrEqual
-        )
-        (* Takes from the left run while its element may precede the right
-           run's, which is what makes the sort stable. *)
-        private merge: source into: destination start: start middle: middle stop: stop
-                by: lessOrEqual = (
-            | leftCursor rightCursor destinationCursor |
-            leftCursor:: start.
-            rightCursor:: middle + 1.
-            destinationCursor:: start.
-            [(leftCursor <= middle) and: [rightCursor <= stop]] whileTrue: [
-                (lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor))
-                    ifTrue: [
-                        destination at: destinationCursor put: (source at: leftCursor).
-                        leftCursor:: leftCursor + 1]
-                    ifFalse: [
-                        destination at: destinationCursor put: (source at: rightCursor).
-                        rightCursor:: rightCursor + 1].
-                destinationCursor:: destinationCursor + 1].
-            [leftCursor <= middle] whileTrue: [
-                destination at: destinationCursor put: (source at: leftCursor).
-                leftCursor:: leftCursor + 1.
-                destinationCursor:: destinationCursor + 1].
-            [rightCursor <= stop] whileTrue: [
-                destination at: destinationCursor put: (source at: rightCursor).
-                rightCursor:: rightCursor + 1.
-                destinationCursor:: destinationCursor + 1]
-        )
-        (* Closes the gap from the shorter side, so that removing the first
-           or the last element moves nothing. *)
-        private removeAtDataIndex: position = (
-            | last index |
-            last:: firstIndex + size_ - 1.
-            position - firstIndex < (last - position)
-                ifTrue: [
-                    index:: position.
-                    [index > firstIndex] whileTrue: [
-                        data at: index put: (data at: index - 1).
-                        index:: index - 1].
-                    data at: firstIndex put: nil.
-                    firstIndex:: firstIndex + 1]
-                ifFalse: [
-                    index:: position.
-                    [index < last] whileTrue: [
-                        data at: index put: (data at: index + 1).
-                        index:: index + 1].
-                    data at: last put: nil].
-            size_:: size_ - 1.
-            0 = size_ ifTrue: [firstIndex:: 1]
-        )
-        (* Moves the elements to the start of `data`, or of a larger Array,
-           and answers the index after the last. Moving within `data` only
-           when at least as many slots lie empty before the elements as
-           they fill pays for the move with the `removeFirst`s that emptied
-           those slots; growing by half pays for the copy with the `add:`s
-           that fill the new room. Primordial Soup's growth, `capacity >> 1
-           + capacity | 7`, also gives an Array of size 0 room. *)
-        private makeRoomAtEnd = (
-            | target index |
-            ((firstIndex > 1) and: [firstIndex - 1 >= size_]) ifTrue: [
-                moveToFront.
-                ^size_ + 1].
-            target:: Array new: (data size // 2 + data size bitOr: 7).
-            index:: 0.
-            [index < size_] whileTrue: [
-                target at: index + 1 put: (data at: firstIndex + index).
-                index:: index + 1].
-            data:: target.
+        (* Removes every element for which `predicate` answers true, keeping
+           the order of the rest, and answers the receiver. `predicate` sees
+           every element once, in order, before anything is removed.
+
+           predicate: a one-argument block answering a Boolean.
+
+           Signals a ConcurrentModification after the evaluation of
+           `predicate` that added or removed an element. *)
+        public removeAllSuchThat: predicate = (
+            | elements expected kept count |
+            elements:: self asArray.
+            expected:: modifications.
+            kept:: Array new: elements size.
+            count:: 0.
+            elements do: [:element |
+                (predicate value: element) ifFalse: [
+                    count:: count + 1.
+                    kept at: count put: element].
+                expected = modifications ifFalse: [^signalModificationOf: self]].
+            count = size_ ifTrue: [^self].
+            data:: Array new: data size.
+            data replaceFrom: 1 to: count with: kept startingAt: 1.
             firstIndex:: 1.
-            ^size_ + 1
+            size_:: count.
+            modifications:: modifications + 1
         )
-        (* `Array>>at:`'s text, so a program sees one error from either. *)
+        (* Sorts the elements in place, stably, and answers the receiver.
+           Not a change of the number of elements: an iteration running
+           meanwhile carries on.
+
+           lessOrEqual: a two-argument block answering whether its first
+               argument may precede its second. *)
+        public sort: lessOrEqual = (
+            | sorted |
+            size_ < 2 ifTrue: [^self].
+            sorted:: self asArray.
+            sorted sort: lessOrEqual.
+            data replaceFrom: firstIndex to: firstIndex + size_ - 1 with: sorted startingAt: 1
+        )
+        (* Answers a new Array of the elements, in order. *)
+        public asArray = ( ^data copyFrom: firstIndex to: firstIndex + size_ - 1 )
+        (* Answers a new List of the receiver's elements followed by those of
+           `collection`. The receiver is unchanged.
+
+           collection: a Collection, or anything answering `size` and
+               `do:`. *)
+        public , collection = (
+            | result |
+            result:: List new: size_ + collection size.
+            result addAll: self; addAll: collection.
+            ^result
+        )
+        (* Answers a new List of the elements from `start` to `stop`; empty
+           when `stop` is `start - 1`. The receiver is unchanged.
+
+           Signals the ArgumentError of `Array>>copyFrom:to:` for a range
+           the list does not hold. *)
+        public copyFrom: start to: stop = ( ^List withAll: (self asArray copyFrom: start to: stop) )
+        (* Answers a new, empty List with room for `capacity` elements:
+           what `collect:`, `select:` and `reject:` fill. *)
+        (* `List`, not `self class`: a subclass's primary factory may take
+           no capacity, as DeltaBlue's `Plan` takes none. *)
+        protected newForCollectUsingAdd: capacity = ( ^List new: capacity )
+        (* Signals the ArgumentError `Array>>at:` signals for `index`, with
+           the list's size, so a program sees one text from either. *)
         private indexOutOfRange: index = (
             ^(kernelModule ArgumentError value: index) signal: 'index ', index printString,
                 ' out of range: valid indices are 1..', size_ printString,
                 ' (size ', size_ printString, ')'
         )
+        (* Removes the element at `position` in `data`, closing the gap from
+           the shorter side so that removing near either end moves little,
+           and counts the change. *)
+        private removeAtDataIndex: position = (
+            | last |
+            last:: firstIndex + size_ - 1.
+            position - firstIndex < (last - position)
+                ifTrue: [
+                    data replaceFrom: firstIndex + 1 to: position with: data startingAt: firstIndex.
+                    data at: firstIndex put: nil.
+                    firstIndex:: firstIndex + 1]
+                ifFalse: [
+                    data replaceFrom: position to: last - 1 with: data startingAt: position + 1.
+                    data at: last put: nil].
+            size_:: size_ - 1.
+            0 = size_ ifTrue: [firstIndex:: 1].
+            modifications:: modifications + 1
+        )
+        (* Makes room after the last element and answers the index in
+           `data` where the next one goes: slides the elements to the start
+           when at least as many slots lie empty before them as they fill
+           -- the `removeFirst`s that emptied those slots pay for the move --
+           and otherwise copies them into an Array half as large again, plus
+           four, so that an Array of size 0 grows too. *)
+        private makeRoomAtEnd = (
+            | grown |
+            ((firstIndex > 1) and: [firstIndex - 1 >= size_]) ifTrue: [
+                data replaceFrom: 1 to: size_ with: data startingAt: firstIndex.
+                size_ + 1 to: firstIndex + size_ - 1 do: [:index | data at: index put: nil].
+                firstIndex:: 1.
+                ^size_ + 1].
+            grown:: Array new: data size + (data size // 2) + 4.
+            grown replaceFrom: 1 to: size_ with: data startingAt: firstIndex.
+            data:: grown.
+            firstIndex:: 1.
+            ^size_ + 1
+        )
+        (* Makes room before the first element, which lies at index 1 of
+           `data`: slides the elements right by half the empty slots after
+           them, rounded up, or, when there are none, copies them into an
+           Array half as large again, plus four, leaving that room in
+           front. *)
+        private makeRoomAtFront = (
+            | free shift target |
+            free:: data size - size_.
+            free > 0
+                ifTrue: [
+                    shift:: free + 1 // 2.
+                    target:: data]
+                ifFalse: [
+                    shift:: data size // 2 + 4.
+                    target:: Array new: data size + shift].
+            target replaceFrom: firstIndex + shift to: firstIndex + shift + size_ - 1 with: data startingAt: firstIndex.
+            target == data ifTrue: [
+                firstIndex to: firstIndex + shift - 1 do: [:index | data at: index put: nil]].
+            data:: target.
+            firstIndex:: firstIndex + shift
+        )
     ) : (
-        (* An empty List, `List new: 3`. *)
+        (* Answers an empty List with room for 3 elements, `List new: 3`. *)
         public new = ( ^self new: 3 )
+        (* Answers a new List of `collection`'s elements, in its `do:`
+           order.
+
+           collection: a Collection, or anything answering `size` and
+               `do:`. *)
+        public withAll: collection = ( ^(self new: collection size) addAll: collection; yourself )
     )
-    (* An element or key a collection was asked for and does not hold.
-       Carries it. *)
+    (* The Error a List, Map or Set signals when an iteration over it finds
+       it changed -- an element added or removed -- by the block it ran.
+       Carries the collection.
+
+       Iteration means `do:`, `keysAndValuesDo:` and everything built on
+       them; storing at an existing index or key, and sorting, are no
+       change. *)
+    (* Without it a change inside `do:` would visit an element twice, skip
+       one or end early, silently. *)
+    private class ConcurrentModification = kernelError new (
+        (* The collection that was changed while it was iterated. *)
+        | public collection ::= nil. |
+    ) (
+    ) : (
+        (* Answers a new ConcurrentModification carrying `modified`, not
+           yet signalled. *)
+        public collection: modified = ( ^self new collection: modified )
+    )
+    (* Signals a ConcurrentModification carrying `collection`, its
+       messageText 'the collection was modified while it was being
+       iterated', and answers what a handler that resumes it answers. The
+       one place the error is raised, so every collection's text is one. *)
+    private signalModificationOf: collection = (
+        ^(ConcurrentModification collection: collection)
+            signal: 'the collection was modified while it was being iterated'
+    )
+    (* The Error a collection signals when it is asked for an element or
+       key it does not hold. Carries it in `element`. *)
     private class NotFound = kernelError new (
         (* The element or key that was not found. *)
         | public element ::= nil. |
     ) (
-        (* `messageText`, or the class's name and the element's
-           `printString` when it is nil. *)
+        (* Answers `messageText`, or, when it is nil, 'NotFound: ' and the
+           `printString` of the element. *)
         public description = (
             ^messageText isNil
                 ifTrue: ['NotFound: ', element printString]
                 ifFalse: [messageText]
         )
     ) : (
-        (* A new NotFound carrying `missing`. *)
+        (* Answers a new NotFound carrying `missing`, not yet signalled. *)
         public element: missing = ( ^self new element: missing )
     )
     (* A map holding keys and values side by side in `data_`, in insertion

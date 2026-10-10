@@ -1,0 +1,12 @@
+stdout = '''
+the collection was modified while it was being iterated
+3
+true
+#signalled
+2
+1 2 2
+ConcurrentModification
+#collect
+#anySatisfy
+#removeAllSuchThat
+'''

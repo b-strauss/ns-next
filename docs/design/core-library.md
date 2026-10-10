@@ -601,16 +601,19 @@ way (2026-09-28, "The collections module (plan 2)" below):
 
 ```newspeak
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | private kernelModule = theKernel. |
+    | private kernelModule = theKernel. private kernelCollection = theKernel Collection. |
 ) (
     private class Collections = Value new () (
         public Collections = ( ^outer CollectionsFactory Collections )
+        public Collection = ( ^kernelCollection )
+        public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
         public List = ( ^outer CollectionsFactory List )
         public Map = ( ^outer CollectionsFactory Map )
         public Set = ( ^outer CollectionsFactory Set )
     )
-    private class List new: capacity = Object new (
-        | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity. |
+    private class List new: capacity = kernelCollection new (
+        | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity.
+          private modifications ::= 0. |
     ) ( ... ) : ( public new = ( ^self new: 3 ) )
     private class Map new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     private class Set new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
@@ -2567,54 +2570,57 @@ its class. That needs its own decision when the first such module arrives.
   accessor `public List = ( ^outer CollectionsFactory List )`, path
   `collections List`; a program may still subclass it
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`).
-- **`List`, built,** is Primordial Soup's `List` in this runtime's
-  Newspeak, with the index of its first element added. Its elements live
-  in `data` from `firstIndex` on, `size_` of them, in an `Array` of three
-  to start. When `add:` finds the array full at its end, the elements move
-  to the front of the same array if at least half of it lies empty before
-  them, and otherwise into an `Array` half as large again, Primordial
-  Soup's growth (`capacity // 2 + capacity bitOr: 7`: 3, 7, 15, 23, …) --
-  nothing grows in place. The first index is what makes a queue cheap:
-  `removeFirst` moves nothing, where Primordial Soup's shifts every
-  element, so a queue of `add:` and `removeFirst` runs in amortized
-  constant time, as SOMns's `Vector` keeps its `firstIdx`; DeltaBlue at
-  12000 took 52 s with the shifting `removeFirst`, against 0.9 s
-  (decided with the user on 2026-10-01: the benchmarks use a `List` as the
-  upstream benchmark uses its `Vector`, and `List` is made fast rather than
-  a port rewritten around a slow operation). The primary factory is
-  `new: capacity`, as Primordial Soup's is, so a program may write `List
-  new: 15` as a superclass clause, as DeltaBlue's `Plan` does; the class
-  side's `new` is `new: 3`.
-  Its protocol follows the on-demand rule: `new`, `add:`, `at:`,
-  `at:put:`, `do:` and `size`, what the corpus and the goldens ask of
-  `OrderedCollection`, plus `at:put:`, which `Array` has; and what the Are
-  We Fast Yet benchmarks send: `isEmpty` (DeltaBlue, `DeltaBlueTon80`,
-  Havlak), `removeFirst` (DeltaBlue's and Havlak's queues), `removeLast`
-  (`DeltaBlueTon80`'s stack), `remove:ifAbsent:` (both DeltaBlues),
-  `removeAll` (Havlak, keeping the capacity, as the Are We Fast Yet
-  `Vector` does), `anySatisfy:` (Havlak) and `sort:` (DeltaBlue), a
-  stable merge sort whose block answers whether its first argument may
-  precede its second, Primordial Soup's `lessOrEqual`
-  (`goldens/library/collection/a_list_is_a_queue_a_stack_and_sorts`). An empty
+- **`List`, built,** is a kernel `Collection` written here. Its elements
+  live in `data` from `firstIndex` on, `size_` of them, in an `Array` of
+  three to start, so that `removeFirst` moves nothing and a queue of
+  `add:` and `removeFirst` runs in amortized constant time (DeltaBlue at
+  12000 took 52 s with a shifting `removeFirst`, against 0.9 s; decided
+  with the user on 2026-10-01). `add:` finds the array full at its end and
+  either slides the elements to the front of the same array, when at least
+  as many slots lie empty before them as they fill, or copies them into an
+  `Array` half as large again plus four; `addFirst:` finds `firstIndex` at
+  1 and makes room at the front the same way, by sliding right by half the
+  empty slots after the elements, or by copying into a larger `Array` with
+  the new room in front. The primary factory is `new: capacity`, so a
+  program may write `List new: 15` as a superclass clause, as DeltaBlue's
+  `Plan` does; the class side's `new` is `new: 3`, and `withAll:` copies
+  any collection.
+  Its protocol: `size`, `isEmpty`, `at:`, `at:put:`, `first`, `last`,
+  `add:`, `addLast:`, `addFirst:`, `addAll:` (a list given itself is read
+  as a copy first), `do:`, `keysAndValuesDo:`, `anySatisfy:`, `indexOf:`,
+  `remove:` (a `NotFound` for an absent element), `remove:ifAbsent:`,
+  `removeFirst`, `removeLast`, `removeAll` (keeping the capacity),
+  `removeAllSuchThat:`, `sort:` (a stable merge sort in `Array`'s leaves
+  whose block answers whether its first argument may precede its second),
+  `asArray`, `,` and `copyFrom:to:`; the rest is `Collection`'s, written
+  over `do:`, and `collect:`, `select:` and `reject:` answer Lists through
+  the hook `newForCollectUsingAdd:`
+  (`goldens/library/collection/a_list_has_the_whole_protocol`). An empty
   `List`'s `removeFirst` and `removeLast` are `Error`s. Its representation
-  -- `data`, `firstIndex` and every helper method -- is private, where
-  Primordial Soup's is protected, so that it can change later, to a ring
-  buffer say, or under a fuller protocol, without a subclass noticing;
-  only `size_` stays protected, as a subclass's view of the size
-  (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`
-  reads it; decided with the user on 2026-10-01). `add:` answers
-  the element, and `at:put:` the value, as `Array>>at:put:` does
-  (decided with the user on 2026-09-28). `do:` reads the size once, as
-  Primordial Soup's `1 to: size_ do:` does, so an `add:` inside the block
-  does not extend the walk while an `at:put:` inside it is seen, and it
-  sends `value:` to any argument, as any loop written over `at:` would --
-  as the `Array>>do:` leaf does too (decided with the user on 2026-09-28;
-  `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`).
-  An index outside `1..size` -- whatever capacity the array has spare --
-  or one that is no `Integer` is an `ArgumentError` carrying the index,
-  with `Array>>at:`'s text, "index 3 out of range:
-  valid indices are 1..2 (size 2)", so a program sees one error from
-  either (`goldens/library/collection/a_list_index_error_is_caught_as_an_error`).
+  is private so that it can change without a subclass noticing; only
+  `size_` stays protected, as a subclass's view of the size
+  (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`;
+  decided with the user on 2026-10-01).
+  **Changing a `List` while it is iterated signals.** Every change of the
+  number of elements -- `add:`, `addFirst:`, a removal, `removeAll`, the
+  compaction `removeAllSuchThat:` ends in -- adds one to the private
+  `modifications`; `do:`, `keysAndValuesDo:`, `anySatisfy:` and
+  `removeAllSuchThat:` compare it with the count they started at after
+  every block, the last included, and signal a `ConcurrentModification`
+  (a kernel `Error` subclass, public as `platform collections
+  ConcurrentModification`, carrying the `collection`, messageText "the
+  collection was modified while it was being iterated"), raised in one
+  place, the module's `signalModificationOf:`. Storing at an existing
+  index and sorting change no count: a `do:` re-reads each element, so a
+  store inside its block is seen. Without the check a change inside `do:`
+  would visit an element twice, skip one or end early, silently (decided
+  with the user on 2026-10-10;
+  `goldens/library/collection/a_list_changed_while_iterated_signals`). An
+  index outside `1..size` -- whatever capacity the array has spare -- or
+  one that is no `Integer` is an `ArgumentError` carrying the index, with
+  `Array>>at:`'s text, "index 3 out of range: valid indices are 1..2
+  (size 2)", so a program sees one error from either
+  (`goldens/library/collection/a_list_index_error_is_caught_as_an_error`).
 - **`Map` and `Set`, built** (2026-10-01), adapted from Primordial Soup's
   `newspeak/Collections.ns` (Apache 2.0) for DeltaBlue and Havlak, which
   use SOMns's `Dictionary`, `IdentityDictionary`, `Set` and `IdentitySet`.

@@ -133,7 +133,7 @@ fn array_do_sums_elements_via_a_mutable_slot_accumulator() {
 /// is seen by the step that reaches that index. Pins
 /// `builtins/collections.rs`'s `element_step`, which reads
 /// `Heap::array_element` for each element in turn.
-/// `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`
+/// `goldens/library/collection/a_list_changed_while_iterated_signals`
 /// pins `List>>do:`, a Newspeak loop that never reaches this leaf, so it
 /// cannot stand in for this test.
 #[test]
