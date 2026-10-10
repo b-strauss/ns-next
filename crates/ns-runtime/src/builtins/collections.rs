@@ -36,13 +36,11 @@ pub(crate) fn out_of_range<'gc>(
     index: impl std::fmt::Display,
     length: usize,
 ) -> NewspeakError<'gc> {
-    NewspeakError {
+    NewspeakError::error(
         selector,
         receiver,
-        message: format!(
-            "index {index} out of range: valid indices are 1..{length} (size {length})"
-        ),
-    }
+        format!("index {index} out of range: valid indices are 1..{length} (size {length})"),
+    )
 }
 
 pub(crate) fn not_an_integer<'gc>(
@@ -51,14 +49,14 @@ pub(crate) fn not_an_integer<'gc>(
     selector: Symbol,
     got: Option<Value<'gc>>,
 ) -> NewspeakError<'gc> {
-    NewspeakError {
+    NewspeakError::error(
         selector,
         receiver,
-        message: format!(
+        format!(
             "{selector} requires an Integer index, got {}",
             heap.describe_argument(got)
         ),
-    }
+    )
 }
 
 /// `size`. `None` if `receiver` isn't `ObjectShape::Array` at all.
@@ -164,11 +162,7 @@ fn allocate<'gc>(
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::Array) {
         return None;
     }
-    let refusal = |message: String| NewspeakError {
-        selector,
-        receiver,
-        message,
-    };
+    let refusal = |message: String| NewspeakError::error(selector, receiver, message);
     let size = match integer_argument(&mutator.heap, arguments.first().copied()) {
         Some(IntegerArgument::Small(size)) => size,
         Some(IntegerArgument::Large { negative }) => {
@@ -256,11 +250,11 @@ fn do_step<'gc>(
     let object = receiver.as_object()?;
     let size = mutator.heap.array_element_count(object)?;
     let Some(action) = arguments.first().copied() else {
-        return Some(Err(Signal::Error(NewspeakError {
+        return Some(Err(Signal::Error(NewspeakError::error(
             selector,
             receiver,
-            message: "do: requires a block argument".to_string(),
-        })));
+            "do: requires a block argument",
+        ))));
     };
     // No element, nothing to run or send: the loop is over before it starts,
     // so it needs no state either.

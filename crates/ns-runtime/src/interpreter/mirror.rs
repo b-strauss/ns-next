@@ -123,11 +123,11 @@ fn see_through_a_failed_row<'gc>(
 /// the one the bootstrap checked. This is unreachable while that holds. It
 /// is an error rather than a panic so that it stays one if it ever does not.
 fn not_the_mirror<'gc>(primitive: MirrorPrimitive, receiver: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern(mirror_entry(primitive).selector),
+    Signal::Error(NewspeakError::error(
+        Symbol::intern(mirror_entry(primitive).selector),
         receiver,
-        message: "internal: a mirror send's receiver is not the VM mirror".to_string(),
-    })
+        "internal: a mirror send's receiver is not the VM mirror",
+    ))
 }
 
 /// The leaf of `row`, on `subject` with `leaf_arguments`; `None` when it
@@ -210,15 +210,15 @@ fn failure_step<'gc>(mutator: &Mutator<'gc>, block: Value<'gc>) -> Step<'gc> {
 }
 
 fn arity_error<'gc>(entry: &MirrorEntry, given: usize) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern(entry.selector),
-        receiver: Value::nil(),
-        message: format!(
+    Signal::Error(NewspeakError::error(
+        Symbol::intern(entry.selector),
+        Value::nil(),
+        format!(
             "the VM mirror's {} takes {} arguments, got {given}",
             entry.selector,
             entry.leaf_arity() + 2
         ),
-    })
+    ))
 }
 
 #[cfg(test)]

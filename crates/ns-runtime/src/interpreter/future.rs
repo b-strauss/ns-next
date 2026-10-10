@@ -428,11 +428,11 @@ pub(crate) fn force<'gc>(
 /// §6.3.2 resolves only "well founded" recursion: a future forced while its
 /// own block runs is not, and says so as an ordinary, catchable error.
 fn divergent<'gc>(future: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern("value"),
-        receiver: future,
-        message: "divergent evaluation of a simultaneous slot's initializer".to_string(),
-    })
+    Signal::Error(NewspeakError::error(
+        Symbol::intern("value"),
+        future,
+        "divergent evaluation of a simultaneous slot's initializer",
+    ))
 }
 
 /// A future whose fields no forcing wrote (`FutureState::Malformed`): an
@@ -440,24 +440,23 @@ fn divergent<'gc>(future: Value<'gc>) -> Signal<'gc> {
 /// code must never make the runtime panic (`CLAUDE.md`, "An image is
 /// untrusted input").
 fn malformed<'gc>(future: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern("value"),
-        receiver: future,
-        message: "a malformed future: its fields are no future's".to_string(),
-    })
+    Signal::Error(NewspeakError::error(
+        Symbol::intern("value"),
+        future,
+        "a malformed future: its fields are no future's",
+    ))
 }
 
 /// A forcing that was to run its caller's instruction again found no
 /// caller: a host's send handed the future straight to a leaf, and a host
 /// has no instruction to run again (`vm::reexecute`).
 pub(crate) fn host_passed_a_future<'gc>() -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern("value"),
-        receiver: Value::nil(),
-        message: "a future reached a native through a host's send, which has no instruction to \
-                  run again"
-            .to_string(),
-    })
+    Signal::Error(NewspeakError::error(
+        Symbol::intern("value"),
+        Value::nil(),
+        "a future reached a native through a host's send, which has no instruction to \
+                  run again",
+    ))
 }
 
 /// A leaf's answer on its caller's failure path -- the leaf declined or
@@ -647,11 +646,11 @@ pub(crate) fn value_for_a_value_slot<'gc>(
 /// `MakeFuture` -- whose operand is always the block `MakeClosure` just
 /// made -- would never trigger.
 pub(crate) fn not_a_closure<'gc>(value: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern("value"),
-        receiver: value,
-        message: "MakeFuture needs a block".to_string(),
-    })
+    Signal::Error(NewspeakError::error(
+        Symbol::intern("value"),
+        value,
+        "MakeFuture needs a block",
+    ))
 }
 
 #[cfg(test)]

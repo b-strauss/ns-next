@@ -106,15 +106,15 @@ fn from_code_point<'gc>(
         Some(code_points) => Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
         )),
-        None => Err(NewspeakError {
+        None => Err(NewspeakError::error(
             selector,
             receiver,
-            message: format!(
+            format!(
                 "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
                  outside 55296 to 57343, got {}",
                 mutator.heap.describe_argument(arguments.first().copied())
             ),
-        }),
+        )),
     })
 }
 
@@ -165,16 +165,16 @@ fn copy_range<'gc>(
         Some(code_points) => Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
         )),
-        None => Err(NewspeakError {
+        None => Err(NewspeakError::error(
             selector,
             receiver,
-            message: format!(
+            format!(
                 "copyFrom: {} to: {} out of range: valid ranges lie within \
                  1..{size}, an empty range ends just before it starts (size {size})",
                 describe(start, arguments.first().copied()),
                 describe(stop, arguments.get(1).copied()),
             ),
-        }),
+        )),
     }
 }
 
@@ -234,14 +234,14 @@ pub(crate) fn execute_string<'gc>(
                 Some(code_points) => Ok(Value::object(
                     mutator.new_string_from_code_points(code_points),
                 )),
-                None => Err(NewspeakError {
+                None => Err(NewspeakError::error(
                     selector,
                     receiver,
-                    message: format!(
+                    format!(
                         "String concatenation (,) requires a String argument, got {}",
                         mutator.heap.describe_argument(arguments.first().copied())
                     ),
-                }),
+                )),
             })
         }
         StringPrimitive::Equal => {

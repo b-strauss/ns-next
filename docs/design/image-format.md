@@ -1199,6 +1199,13 @@ wherever it names a class. A `LargeInteger` itself is never a record
 that holds no digits, which only `LargeInteger new` makes, is an ordinary
 instance record.
 
+**The error classes that carry a subject take tags 32 to 35**:
+`ArgumentError` **32**, `CannotReturn` **33**, `NonBooleanReceiver` **34**,
+`CannotInstantiate` **35** ([core-library.md](core-library.md),
+"Exceptions"). Like the other exception classes they are ordinary
+nameable builtins: a caught one is an ordinary instance record, and an
+image may name any of the four wherever it names a class.
+
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
 in the shipped `CollectionsFactory.ns`

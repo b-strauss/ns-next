@@ -66,14 +66,14 @@ impl<'gc> Mutator<'gc> {
         selector: Symbol,
         field: usize,
     ) -> Signal<'gc> {
-        Signal::Error(NewspeakError {
+        Signal::Error(NewspeakError::error(
             selector,
             receiver,
-            message: format!(
+            format!(
                 "{} has no field {field} for the slot accessor {}",
                 self.heap.describe(receiver),
                 selector
             ),
-        })
+        ))
     }
 }

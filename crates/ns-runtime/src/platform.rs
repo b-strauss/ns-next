@@ -59,14 +59,14 @@ fn stream<'gc>(
                 .and_then(|value| value.as_object())
                 .and_then(|string| mutator.heap().str_value(string));
             let Some(text) = text else {
-                return Err(NewspeakError {
+                return Err(NewspeakError::error(
                     selector,
                     receiver,
-                    message: format!(
+                    format!(
                         "{selector} requires a String, got {}",
                         mutator.heap().describe_argument(arguments.first().copied())
                     ),
-                });
+                ));
             };
             print!("{text}");
             let _ = std::io::stdout().flush();

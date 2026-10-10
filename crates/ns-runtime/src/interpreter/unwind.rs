@@ -248,11 +248,11 @@ fn exit_signal(pending: PendingUnwind<'_>) -> Signal<'_> {
 /// §7.2's `cannotReturn` for an activation that has already returned,
 /// named after the leaf that aimed at it.
 pub(crate) fn dead_activation_error<'gc>(selector: Symbol) -> NewspeakError<'gc> {
-    NewspeakError {
+    NewspeakError::error(
         selector,
-        receiver: Value::nil(),
-        message: "cannotReturn: the activation has already returned".to_string(),
-    }
+        Value::nil(),
+        "cannotReturn: the activation has already returned",
+    )
 }
 
 /// Starts signalling `error` as an `Error`, once the kernel is installed:
@@ -317,7 +317,9 @@ fn start_signalling<'gc>(
 
 impl<'gc> Mutator<'gc> {
     /// §8.6 and `docs/design/core-library.md`, "Exceptions": a VM
-    /// error becomes an `Error` -- its `messageText` the error's text, its
+    /// error becomes an instance of the kernel class its `class` names --
+    /// an `Error`, or an `Error` subclass that carries the error's subject
+    /// in a slot of its own -- its `messageText` the error's text, its
     /// private `originSelector` and `originReceiver` the selector and
     /// receiver the host received before there were exceptions, which
     /// `defaultAction` hands back -- and the step that sends it `signal`.
@@ -327,16 +329,26 @@ impl<'gc> Mutator<'gc> {
         &mut self,
         error: NewspeakError<'gc>,
     ) -> Result<Step<'gc>, Signal<'gc>> {
-        let text = Value::object(self.new_string(error.message));
+        let text = Value::object(self.new_string(String::from(error.message)));
         let selector = self.new_symbol(error.selector);
         let receiver = error.receiver;
-        let exception = self.new_kernel_instance(BuiltinClass::Error, |name| match name {
+        let subject = error.subject;
+        // The slot each class adds for what it carries; an `Error` adds none.
+        let (kind, subject_slot) = match error.class {
+            ErrorClass::Error => (BuiltinClass::Error, None),
+            ErrorClass::ArgumentError => (BuiltinClass::ArgumentError, Some("argument")),
+            ErrorClass::CannotReturn => (BuiltinClass::CannotReturn, Some("result")),
+            ErrorClass::NonBooleanReceiver => (BuiltinClass::NonBooleanReceiver, Some("receiver")),
+            ErrorClass::CannotInstantiate => (BuiltinClass::CannotInstantiate, Some("behavior")),
+        };
+        let exception = self.new_kernel_instance(kind, |name| match name {
             "messageText" => text,
             "originSelector" => selector,
             "originReceiver" => receiver,
             "reachedDefault" | "searching" => Value::boolean(false),
             "signalActivation" | "handlerActivation" => Value::nil(),
-            other => panic!("internal: Kernel.ns's Error has a slot {other} the VM does not fill"),
+            other if subject_slot == Some(other) => subject,
+            other => panic!("internal: Kernel.ns's {other} slot is one the VM does not fill"),
         });
         self.decide_send(Value::object(exception), Symbol::SIGNAL, &[])
     }
@@ -424,11 +436,11 @@ impl<'gc> Mutator<'gc> {
             .kernel_slot(message, BuiltinClass::Message, "selector")?
             .as_object()?;
         let selector = self.heap.symbol_value(selector)?;
-        Some(NewspeakError {
+        Some(NewspeakError::error(
             selector,
-            receiver: self.heap.activation_receiver(activation),
-            message: format!("an object does not understand #{}", selector.as_str()),
-        })
+            self.heap.activation_receiver(activation),
+            format!("an object does not understand #{}", selector.as_str()),
+        ))
     }
 
     /// Whether `exception`'s `signal` is still in the kernel's own hands:
@@ -648,18 +660,18 @@ mod tests {
                 mutator,
                 PendingUnwind {
                     target: None,
-                    action: UnwindAction::Terminate(NewspeakError {
-                        selector: crate::Symbol::intern("signal"),
-                        receiver: Value::nil(),
-                        message: "boom".to_string(),
-                    }),
+                    action: UnwindAction::Terminate(NewspeakError::error(
+                        crate::Symbol::intern("signal"),
+                        Value::nil(),
+                        "boom",
+                    )),
                 },
                 floor,
             );
             let UnwindOutcome::Exit(Err(crate::interpreter::Signal::Error(error))) = outcome else {
                 panic!("a termination must exit with its error");
             };
-            assert_eq!(error.message, "boom");
+            assert_eq!(&*error.message, "boom");
             assert_eq!(mutator.heap.activation_depth(), floor);
         });
     }
@@ -675,11 +687,11 @@ mod tests {
         interpreter.enter(|mutator| {
             let class = mutator.builtin_class(BuiltinClass::Object);
             let signalling = |class| ActivationHeader {
-                then: Continuation::VmErrorSignalled(Box::new(NewspeakError {
-                    selector: crate::Symbol::SIGNAL,
-                    receiver: Value::nil(),
-                    message: "boom".to_string(),
-                })),
+                then: Continuation::VmErrorSignalled(Box::new(NewspeakError::error(
+                    crate::Symbol::SIGNAL,
+                    Value::nil(),
+                    "boom",
+                ))),
                 ..header(class)
             };
             let raised = mutator.heap.push_activation(header(class), &[], 1);

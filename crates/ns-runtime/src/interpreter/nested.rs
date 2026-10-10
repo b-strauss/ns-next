@@ -505,27 +505,25 @@ pub(super) fn end_creation<'gc>(mutator: &mut Mutator<'gc>, creation: &NestedCla
 /// to a class object C." A program error, raised through the ordinary
 /// `NewspeakError` channel.
 fn not_a_class_error<'gc>(name: Symbol, value: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: name,
-        receiver: value,
-        message: format!(
-            "the superclass clause of class {name} did not evaluate to a class object"
-        ),
-    })
+    Signal::Error(NewspeakError::error(
+        name,
+        value,
+        format!("the superclass clause of class {name} did not evaluate to a class object"),
+    ))
 }
 
 /// §6.1's run time error for a `<:` clause (§6.2 reuses its production),
 /// naming the clause by its position, since a decoded mixin keeps no
 /// receiver name to name it by.
 fn not_a_mixin_error<'gc>(name: Symbol, index: usize, value: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: name,
-        receiver: value,
-        message: format!(
+    Signal::Error(NewspeakError::error(
+        name,
+        value,
+        format!(
             "mixin application clause {} of class {name} did not evaluate to a class object",
             index + 1
         ),
-    })
+    ))
 }
 
 /// A class whose own creation depends on itself: `class N = N new (...)`,
@@ -542,14 +540,14 @@ fn not_a_mixin_error<'gc>(name: Symbol, index: usize, value: Value<'gc>) -> Sign
 /// cycle. The cache slot detects it, holding `creation_in_progress()` while the
 /// first entry's clause runs.
 fn cyclic_definition_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: name,
+    Signal::Error(NewspeakError::error(
+        name,
         receiver,
-        message: format!(
+        format!(
             "cyclic class definition: evaluating the superclass clause of class {name} \
              requires class {name} itself"
         ),
-    })
+    ))
 }
 
 /// A receiver with no hidden slot to cache the nested class in. Reachable
@@ -560,11 +558,11 @@ fn cyclic_definition_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'g
 /// keeps §6's "subsequent calls on r always return the same class object"
 /// from silently becoming "a fresh class object every call".
 fn no_cache_slot_error<'gc>(receiver: Value<'gc>, name: Symbol) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: name,
+    Signal::Error(NewspeakError::error(
+        name,
         receiver,
-        message: format!(
+        format!(
             "cannot access nested class {name}: this object has no slot storage to cache it in"
         ),
-    })
+    ))
 }

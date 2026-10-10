@@ -957,6 +957,10 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         28 => BuiltinClass::Halt,
         30 => BuiltinClass::Future,
         31 => BuiltinClass::LargeInteger,
+        32 => BuiltinClass::ArgumentError,
+        33 => BuiltinClass::CannotReturn,
+        34 => BuiltinClass::NonBooleanReceiver,
+        35 => BuiltinClass::CannotInstantiate,
         _ => return None,
     })
 }

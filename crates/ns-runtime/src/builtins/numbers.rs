@@ -67,14 +67,14 @@ fn type_mismatch<'gc>(
         Accepted::Integer => "an integer",
         Accepted::Number => "a numeric",
     };
-    NewspeakError {
+    NewspeakError::error(
         selector,
         receiver,
-        message: format!(
+        format!(
             "{selector} requires {required} argument, got {}",
             heap.describe_argument(got)
         ),
-    }
+    )
 }
 
 /// `Integer>>=`'s rule: an argument of any other type is plainly unequal,
@@ -207,11 +207,7 @@ fn promote<'gc>(mutator: &mut Mutator<'gc>, wide: i128) -> Value<'gc> {
 /// Division by zero, raised in the same words by `Integer`'s and
 /// `LargeInteger`'s `//` and `\\`, naming the selector sent.
 fn division_by_zero<'gc>(receiver: Value<'gc>, selector: &str) -> NewspeakError<'gc> {
-    NewspeakError {
-        selector: Symbol::intern(selector),
-        receiver,
-        message: "division by zero".to_string(),
-    }
+    NewspeakError::error(Symbol::intern(selector), receiver, "division by zero")
 }
 
 /// `<<` for either integer class, once the fast path of a `SmallInteger`
@@ -226,11 +222,7 @@ fn shift_left<'gc>(
     arguments: &[Value<'gc>],
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = Symbol::intern("<<");
-    let refusal = |message: String| NewspeakError {
-        selector,
-        receiver,
-        message,
-    };
+    let refusal = |message: String| NewspeakError::error(selector, receiver, message);
     let Some(count) = integer_operand(&mutator.heap, arguments.first().copied()) else {
         return Err(type_mismatch(
             &mutator.heap,
@@ -837,11 +829,11 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::AsInteger => Some(
             match crate::ArbitraryInteger::from_f64_truncated(receiver_float) {
                 Some(integer) => Ok(mutator.new_integer(integer)),
-                None => Err(NewspeakError {
-                    selector: Symbol::intern("asInteger"),
+                None => Err(NewspeakError::error(
+                    Symbol::intern("asInteger"),
                     receiver,
-                    message: format!("asInteger requires a finite Float, got {receiver_float}"),
-                }),
+                    format!("asInteger requires a finite Float, got {receiver_float}"),
+                )),
             },
         ),
         FloatPrimitive::PrintString => Some(Ok(Value::object(
@@ -856,20 +848,20 @@ pub(crate) fn execute_float<'gc>(
                 // (which allows 100): its `DoubleToCStringAsFixed` fixes 20 digits
                 // either side of the point to size its buffer, so its primitive
                 // fails outside 0 to 20 and its method raises.
-                Some(IntegerArgument::Small(count)) => Err(NewspeakError {
-                    selector: Symbol::intern("asStringFixed:"),
+                Some(IntegerArgument::Small(count)) => Err(NewspeakError::error(
+                    Symbol::intern("asStringFixed:"),
                     receiver,
-                    message: format!("asStringFixed: takes 0 to 20 fraction digits, got {count}"),
-                }),
+                    format!("asStringFixed: takes 0 to 20 fraction digits, got {count}"),
+                )),
                 // A `LargeInteger` is past 20 as surely as a `SmallInteger` is.
-                Some(IntegerArgument::Large { .. }) => Err(NewspeakError {
-                    selector: Symbol::intern("asStringFixed:"),
+                Some(IntegerArgument::Large { .. }) => Err(NewspeakError::error(
+                    Symbol::intern("asStringFixed:"),
                     receiver,
-                    message: format!(
+                    format!(
                         "asStringFixed: takes 0 to 20 fraction digits, got {}",
                         mutator.heap.describe_argument(arguments.first().copied())
                     ),
-                }),
+                )),
                 None => Err(mismatch("asStringFixed:")),
             },
         ),

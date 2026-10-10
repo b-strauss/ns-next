@@ -480,11 +480,11 @@ impl<'gc> Mutator<'gc> {
             // The VM mirror is a capability: there is exactly one, and it is
             // the bootstrap's to hand out (`docs/design/core-library.md`, "The
             // VM mirror is the whole Rust boundary").
-            Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError {
-                selector: Symbol::NEW,
-                receiver: Value::object(class),
-                message: "the VM mirror's class cannot be instantiated".to_string(),
-            })),
+            Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError::error(
+                Symbol::NEW,
+                Value::object(class),
+                "the VM mirror's class cannot be instantiated",
+            ))),
             // `Array`'s shape is `ObjectShape::Array`, not
             // `decide_instantiation`'s `ObjectShape::Instance` --
             // `builtins::collections`' primitives read the array accessors
@@ -501,13 +501,11 @@ impl<'gc> Mutator<'gc> {
             ))),
             // A Symbol is canonical, one object per text (§5.1.6), made only
             // by a literal or `asSymbol`; `new` would mint a second one.
-            Some(BuiltinClass::Symbol) => Err(Signal::Error(NewspeakError {
-                selector: Symbol::NEW,
-                receiver: Value::object(class),
-                message:
-                    "cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol"
-                        .to_string(),
-            })),
+            Some(BuiltinClass::Symbol) => Err(Signal::Error(NewspeakError::error(
+                Symbol::NEW,
+                Value::object(class),
+                "cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol",
+            ))),
             // A flat String payload, as `Array`'s above: a slotless instance
             // would answer none of `size`, `at:` or `,`.
             Some(BuiltinClass::String) => Ok(Step::Value(Value::object(
@@ -1022,15 +1020,15 @@ impl<'gc> Mutator<'gc> {
         });
         if let Some(declared_arity) = declared_arity {
             if factory_arguments.len() != declared_arity {
-                return Err(Signal::Error(NewspeakError {
-                    selector: Symbol::NEW,
-                    receiver: Value::object(class),
-                    message: format!(
+                return Err(Signal::Error(NewspeakError::error(
+                    Symbol::NEW,
+                    Value::object(class),
+                    format!(
                         "wrong number of factory arguments: factory takes {}, got {}",
                         declared_arity,
                         factory_arguments.len()
                     ),
-                }));
+                )));
             }
         }
         Ok(())
@@ -1158,17 +1156,17 @@ impl<'gc> Mutator<'gc> {
         {
             return Ok(());
         }
-        Err(Signal::Error(NewspeakError {
+        Err(Signal::Error(NewspeakError::error(
             // The factory message the program sent to the applying class.
-            selector: primary_factory_selector(&self.heap, applying).unwrap_or(Symbol::NEW),
-            receiver: Value::object(applying),
-            message: format!(
+            primary_factory_selector(&self.heap, applying).unwrap_or(Symbol::NEW),
+            Value::object(applying),
+            format!(
                 "a clause message of class {} takes {} factory arguments, got {}",
                 class_name(&self.heap, applying),
                 code.argument_count,
                 arguments.len()
             ),
-        }))
+        )))
     }
 }
 
@@ -1229,14 +1227,14 @@ fn not_the_primary_factory_error<'gc>(
         // rather than swallowed.
         None => "no factory (it is not a class)".to_string(),
     };
-    Signal::Error(NewspeakError {
+    Signal::Error(NewspeakError::error(
         selector,
-        receiver: Value::object(superclass),
-        message: format!(
+        Value::object(superclass),
+        format!(
             "{clause} of class {subclass_name} sends #{selector}, \
              but the primary factory of class {superclass_name} is {expected}"
         ),
-    })
+    ))
 }
 
 /// The evaluated clause message's arguments, unpacked from the array
@@ -1270,15 +1268,15 @@ fn not_an_argument_list_error<'gc>(
     class: ClassReference<'gc>,
     value: Value<'gc>,
 ) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::NEW,
-        receiver: value,
-        message: format!(
+    Signal::Error(NewspeakError::error(
+        Symbol::NEW,
+        value,
+        format!(
             "the superclass clause of class {} did not evaluate its message \
              arguments to an argument list",
             class_name(heap, class)
         ),
-    })
+    ))
 }
 
 /// The refusal `decide_instantiation` raises, named under the class's own
@@ -1301,25 +1299,25 @@ fn instantiation_refusal_error<'gc>(
         // public struct a host can build without resolving, and the encoder
         // reads the same verdict to keep such a root out of an image, which
         // is untrusted input (`image-format.md`, "Verification").
-        crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError {
-            selector: factory_selector(application),
-            receiver: Value::object(class),
-            message: format!(
+        crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError::error(
+factory_selector(application),
+Value::object(class),
+format!(
                 "cannot instantiate {}: {}",
                 application.mixin.name,
                 defect.describe()
             ),
-        },
+),
         crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
             identity_method_error(class, application, *declaring)
         }
-        crate::mixin::InstantiationRefusal::ClassObject => NewspeakError {
-            selector: factory_selector(application),
-            receiver: Value::object(class),
-            message: format!(
+        crate::mixin::InstantiationRefusal::ClassObject => NewspeakError::error(
+factory_selector(application),
+Value::object(class),
+format!(
                 "cannot instantiate {display_name}: a class object is made only by evaluating its declaration"
             ),
-        },
+),
     }
 }
 
@@ -1345,15 +1343,15 @@ fn mutable_value_slot_error<'gc>(
     } else {
         format!("{} declares", violation.class)
     };
-    NewspeakError {
-        selector: factory_selector(application),
-        receiver: Value::object(class),
-        message: format!(
+    NewspeakError::error(
+        factory_selector(application),
+        Value::object(class),
+        format!(
             "cannot instantiate {instantiated}: a value object is deeply immutable, and \
              {declares} the mutable slot {}",
             violation.slot
         ),
-    }
+    )
 }
 
 /// §3.1.1's third condition on a value class -- "does not define an
@@ -1371,14 +1369,14 @@ fn identity_method_error<'gc>(
     application: &crate::mixin::MixinApplication,
     declaring: Symbol,
 ) -> NewspeakError<'gc> {
-    NewspeakError {
-        selector: factory_selector(application),
-        receiver: Value::object(class),
-        message: format!(
+    NewspeakError::error(
+        factory_selector(application),
+        Value::object(class),
+        format!(
             "cannot instantiate {}: a value class may not define ==, and {declaring} defines it",
             application.mixin.name
         ),
-    }
+    )
 }
 
 /// §3.1.1's other class-level condition -- every enclosing object a value --
@@ -1412,11 +1410,7 @@ fn value_class_refusal_error<'gc>(
              values, and {level}'s enclosing object, {described}, is not one"
         ),
     };
-    NewspeakError {
-        selector: factory_selector(application),
-        receiver: Value::object(class),
-        message,
-    }
+    NewspeakError::error(factory_selector(application), Value::object(class), message)
 }
 
 /// §3.1.1's second condition, asked of every slot an initializer writes on
@@ -1559,15 +1553,15 @@ fn non_value_slot_error<'gc>(
             .as_ref()
             .map_or(Symbol::NEW, |application| factory_selector(application)),
     };
-    NewspeakError {
+    NewspeakError::error(
         selector,
         receiver,
-        message: format!(
+        format!(
             "cannot store {} in {class}'s slot {slot}: a value object is deeply immutable, \
              so every slot it declares holds a value",
             mutator.heap().describe(value)
         ),
-    }
+    )
 }
 
 /// A class's primary factory selector, defaulted to `new` for a class that

@@ -82,21 +82,19 @@ pub(crate) fn decide_super_send<'gc>(
     arguments: &[Value<'gc>],
 ) -> Result<Step<'gc>, Signal<'gc>> {
     let Some(current_class) = mutator.heap.activation_current_class(activation) else {
-        return Err(Signal::Error(NewspeakError {
+        return Err(Signal::Error(NewspeakError::error(
             selector,
-            receiver: mutator.heap.activation_receiver(activation),
-            message:
-                "super send with no enclosing current_class (used outside a method activation)"
-                    .to_string(),
-        }));
+            mutator.heap.activation_receiver(activation),
+            "super send with no enclosing current_class (used outside a method activation)",
+        )));
     };
     let superclass = mutator.heap.class_superclass(current_class);
     let Some(superclass) = superclass else {
-        return Err(Signal::Error(NewspeakError {
+        return Err(Signal::Error(NewspeakError::error(
             selector,
-            receiver: mutator.heap.activation_receiver(activation),
-            message: "super send with no superclass (current class is Object or Top)".to_string(),
-        }));
+            mutator.heap.activation_receiver(activation),
+            "super send with no superclass (current class is Object or Top)",
+        )));
     };
     let self_value = mutator.heap.activation_receiver(activation);
     let resolved = mutator.resolve_super(superclass, selector);

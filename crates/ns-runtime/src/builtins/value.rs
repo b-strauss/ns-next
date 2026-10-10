@@ -135,14 +135,14 @@ pub(crate) fn execute<'gc>(
                         mutator.heap.describe_argument(arguments.first().copied()),
                         count,
                     ),
-                    None => NewspeakError {
+                    None => NewspeakError::error(
                         selector,
                         receiver,
-                        message: format!(
+                        format!(
                             "{selector} requires an Integer index, got {}",
                             mutator.heap.describe_argument(arguments.first().copied())
                         ),
-                    },
+                    ),
                 }));
             };
             Some(Ok(mutator

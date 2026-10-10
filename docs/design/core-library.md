@@ -1769,6 +1769,17 @@ an error is the VM's business.
   Squeak rather than SOMns's `vmMirror halt: self` breakpoint primitive: a
   halt and an unhandled error reach the debugger through the same place,
   `defaultAction` on an intact stack.
+- `ArgumentError`, `CannotReturn`, `NonBooleanReceiver` and
+  `CannotInstantiate` under `Error`, each carrying what it was signalled
+  for in a public slot of its own -- `argument`, `result`, `receiver` and
+  `behavior` -- and made with a class-side factory naming it (`value:`,
+  `result:`, `receiver:`, `behavior:`). With no `messageText`, the
+  `description` is the class's name and that slot's `printString`
+  (`ArgumentError: 3`). The slot is `argument`, not `value`, so that an
+  `ArgumentError` does not pass for a block, and `behavior`, not `class`,
+  which would override `Object>>class`. `NonBooleanReceiver` is private to
+  the kernel: a program catches it as an `Error`, and `platform kernel`
+  answers the other three.
 - `Message`: `selector`, `arguments`, and `sendTo: receiver`, which sends the
   message as an ordinary *public* send (§5.5) — a program can obtain and
   build messages, so a send through one must not reach a protected or
@@ -1789,7 +1800,7 @@ declared on `Exception` alone would not reach `Error`. The default
 every class object answers it and a class side that declares its own
 `handles:` overrides it. `signal` and `signal:` (`^self new signal`) are
 declared on the class side of each of `Exception`, `Error`,
-`MessageNotUnderstood` and `Halt`. A program's own subclass answers
+`MessageNotUnderstood`, `Halt` and the four classes that carry a subject. A program's own subclass answers
 `signal:` only if its own class side declares it; otherwise it is signalled
 as `MyError new signal: 'text'`, which the goldens use.
 
@@ -1969,18 +1980,24 @@ with an argument that is no `Message` fails inside the handler, on
   `FrameReference`.
 - **Every VM error becomes a signalled `Error`.** Where a step answers
   `Signal::Error(NewspeakError)`, the unwinder (`start_signalling`) creates
-  an `Error` whose `messageText` is the error's text and whose
-  `originSelector` and `originReceiver` are its selector and receiver
-  (`Mutator::signal_vm_error`, filling the slots by name as the platform's
-  are filled), and pushes `signal` on it above the activation where the
-  error arose; nothing is popped. So `on: Error do:` catches an index error
+  an instance of the class the error's `ErrorClass` names -- `Error`, or
+  one of the four classes under it that carry a subject, the error's
+  `subject` then in that class's slot -- whose `messageText` is the error's
+  text and whose `originSelector` and `originReceiver` are its selector and
+  receiver (`Mutator::signal_vm_error`, filling the slots by name as the
+  platform's are filled), and pushes `signal` on it above the activation
+  where the error arose; nothing is popped. The Rust site that raises the
+  error decides its class, through the constructor it calls
+  (`NewspeakError::error`, `argument_error`, `cannot_return`,
+  `non_boolean_receiver`, `cannot_instantiate`). So `on: Error do:` catches an index error
   from `Array>>at:`, a wrong block arity, an instantiation refusal or a
   `cannotReturn`, and an uncaught one ends the host's run with the same
   `HostError` and the same line as before. An `Error` cannot be resumed, so
   that `signal` returns only if the debugger resumes its default action;
   its continuation, `Continuation::VmErrorSignalled`, then ends the run
-  with the error. Finer classes (`ArgumentError`, `CannotReturn`, …) come
-  when something wants to catch one alone. Until the kernel is installed,
+  with the error. `ArgumentError`, `CannotReturn`, `NonBooleanReceiver`
+  and `CannotInstantiate` are the finer classes a site may name. Until the
+  kernel is installed,
   errors stay host errors, popped to the floor without running any block,
   as there is no `Error` class yet.
 - **The depth limit keeps a reserve** of 1,000 activations

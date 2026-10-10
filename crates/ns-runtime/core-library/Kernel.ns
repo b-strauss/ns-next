@@ -429,6 +429,80 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public signal = ( ^self new signal )
         public signal: text = ( ^self new signal: text )
     )
+    (* An argument a method cannot take: an index out of range, a size, an
+       object of the wrong kind, a divisor of zero, a block given the wrong
+       number of arguments. Carries the argument. *)
+    public class ArgumentError = Error new (
+        (* The argument that was refused. *)
+        (* Named `argument`, not `value`: an exception answering `value`
+           would pass for a block wherever the kernel sends `value` to an
+           argument. *)
+        | public argument ::= nil. |
+    ) (
+        (* `messageText`, or the class's name and the argument's
+           `printString` when it is nil. *)
+        public description = ( ^messageText isNil ifTrue: ['ArgumentError: ', argument printString] ifFalse: [messageText] )
+    ) : (
+        (* A new ArgumentError carrying `offending`. *)
+        public value: offending = ( ^self new argument: offending )
+        (* `signal` and `signal: text` signal a new instance. *)
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    (* A return to an activation that has already returned: a `^` from a
+       block whose home has returned, or a `return:`, `retry` or `resume:`
+       aimed at one. Carries the value that was being returned. *)
+    public class CannotReturn = Error new (
+        (* The value that could not be returned. *)
+        | public result ::= nil. |
+    ) (
+        (* `messageText`, or the class's name and the result's
+           `printString` when it is nil. *)
+        public description = ( ^messageText isNil ifTrue: ['CannotReturn: ', result printString] ifFalse: [messageText] )
+    ) : (
+        (* A new CannotReturn carrying `value`. *)
+        public result: value = ( ^self new result: value )
+        (* `signal` and `signal: text` signal a new instance. *)
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    (* What a `whileTrue:` or `whileFalse:` signals when its condition
+       answers an object that is no Boolean. Carries that object. *)
+    (* Private, so a program catches it as an `Error`: no program needs to
+       name the one mistake it reports. *)
+    private class NonBooleanReceiver = Error new (
+        (* The condition's answer. *)
+        | public receiver ::= nil. |
+    ) (
+        (* `messageText`, or the class's name and the receiver's
+           `printString` when it is nil. *)
+        public description = ( ^messageText isNil ifTrue: ['NonBooleanReceiver: ', receiver printString] ifFalse: [messageText] )
+    ) : (
+        (* A new NonBooleanReceiver carrying `value`. *)
+        public receiver: value = ( ^self new receiver: value )
+        (* `signal` and `signal: text` signal a new instance. *)
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
+    (* A class that refused to make an instance through the factory it was
+       sent: one made only by a literal, by its declaration, or by another
+       factory. Carries the class, or nil when it may not be named. *)
+    public class CannotInstantiate = Error new (
+        (* The class that refused. *)
+        (* Named `behavior`, not `class`, which would override
+           `Object>>class`. *)
+        | public behavior ::= nil. |
+    ) (
+        (* `messageText`, or the class's name and the refusing class's
+           `printString` when it is nil. *)
+        public description = ( ^messageText isNil ifTrue: ['CannotInstantiate: ', behavior printString] ifFalse: [messageText] )
+    ) : (
+        (* A new CannotInstantiate carrying `refusing`. *)
+        public behavior: refusing = ( ^self new behavior: refusing )
+        (* `signal` and `signal: text` signal a new instance. *)
+        public signal = ( ^self new signal )
+        public signal: text = ( ^self new signal: text )
+    )
     (* A message: a selector and its arguments. `doesNotUnderstand:`
        receives one, and a program may build one and send it. *)
     (* What a `doesNotUnderstand:` handler receives. `sendTo:` sends it as

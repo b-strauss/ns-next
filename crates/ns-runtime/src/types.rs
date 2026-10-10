@@ -134,6 +134,17 @@ pub enum BuiltinClass {
     /// subclass of `Integer`, whose instances are the immediates, so
     /// `3 class` stays `Integer`.
     LargeInteger,
+    /// An `Error` for an argument a method cannot take; carries it.
+    ArgumentError,
+    /// An `Error` for a return to an activation that has returned; carries
+    /// the value being returned.
+    CannotReturn,
+    /// An `Error` for a loop condition that answered no Boolean; carries
+    /// that answer. Kernel-private: a program catches it as an `Error`.
+    NonBooleanReceiver,
+    /// An `Error` for a class that refused the factory it was sent; carries
+    /// the class.
+    CannotInstantiate,
 }
 
 impl BuiltinClass {
@@ -146,7 +157,7 @@ impl BuiltinClass {
     /// superclass-first order: the kernel phase sorts the kinds by their
     /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
-    pub const ALL: [BuiltinClass; 26] = [
+    pub const ALL: [BuiltinClass; 30] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -173,6 +184,10 @@ impl BuiltinClass {
         BuiltinClass::Halt,
         BuiltinClass::Future,
         BuiltinClass::LargeInteger,
+        BuiltinClass::ArgumentError,
+        BuiltinClass::CannotReturn,
+        BuiltinClass::NonBooleanReceiver,
+        BuiltinClass::CannotInstantiate,
     ];
 }
 
@@ -519,7 +534,102 @@ pub struct ResolveError {
 pub struct NewspeakError<'gc> {
     pub selector: Symbol,
     pub receiver: Value<'gc>,
-    pub message: String,
+    /// What the class carries: `ArgumentError`'s `argument`,
+    /// `CannotReturn`'s `result`, `NonBooleanReceiver`'s `receiver`,
+    /// `CannotInstantiate`'s `behavior`; nil for an `Error`.
+    pub subject: Value<'gc>,
+    pub class: ErrorClass,
+    pub message: Box<str>,
+}
+
+/// The kernel class `Mutator::signal_vm_error` signals for an error: an
+/// `Error`, or one of the classes that carry what they were signalled
+/// for in `NewspeakError::subject`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorClass {
+    Error,
+    ArgumentError,
+    CannotReturn,
+    NonBooleanReceiver,
+    CannotInstantiate,
+}
+
+impl<'gc> NewspeakError<'gc> {
+    /// An `Error`, which carries nothing.
+    pub fn error(selector: Symbol, receiver: Value<'gc>, message: impl Into<Box<str>>) -> Self {
+        NewspeakError {
+            selector,
+            receiver,
+            subject: Value::nil(),
+            class: ErrorClass::Error,
+            message: message.into(),
+        }
+    }
+
+    /// An `ArgumentError` carrying the `argument` that was refused.
+    pub fn argument_error(
+        selector: Symbol,
+        receiver: Value<'gc>,
+        argument: Value<'gc>,
+        message: impl Into<Box<str>>,
+    ) -> Self {
+        NewspeakError {
+            selector,
+            receiver,
+            subject: argument,
+            class: ErrorClass::ArgumentError,
+            message: message.into(),
+        }
+    }
+
+    /// A `CannotReturn` carrying the `result` that could not be returned.
+    pub fn cannot_return(
+        selector: Symbol,
+        receiver: Value<'gc>,
+        result: Value<'gc>,
+        message: impl Into<Box<str>>,
+    ) -> Self {
+        NewspeakError {
+            selector,
+            receiver,
+            subject: result,
+            class: ErrorClass::CannotReturn,
+            message: message.into(),
+        }
+    }
+
+    /// A `NonBooleanReceiver` carrying the condition's answer `value`, which
+    /// is also the receiver of the send that found it no Boolean.
+    pub fn non_boolean_receiver(
+        selector: Symbol,
+        value: Value<'gc>,
+        message: impl Into<Box<str>>,
+    ) -> Self {
+        NewspeakError {
+            selector,
+            receiver: value,
+            subject: value,
+            class: ErrorClass::NonBooleanReceiver,
+            message: message.into(),
+        }
+    }
+
+    /// A `CannotInstantiate` carrying the `behavior` that refused, nil when
+    /// it may not be named.
+    pub fn cannot_instantiate(
+        selector: Symbol,
+        receiver: Value<'gc>,
+        behavior: Value<'gc>,
+        message: impl Into<Box<str>>,
+    ) -> Self {
+        NewspeakError {
+            selector,
+            receiver,
+            subject: behavior,
+            class: ErrorClass::CannotInstantiate,
+            message: message.into(),
+        }
+    }
 }
 
 #[cfg(test)]

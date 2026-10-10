@@ -891,7 +891,7 @@ impl<'gc> Mutator<'gc> {
         HostSignal::Error(HostError {
             selector: error.selector,
             receiver: self.stash(error.receiver),
-            message: error.message,
+            message: String::from(error.message),
         })
     }
 
@@ -1485,13 +1485,11 @@ impl<'gc> Mutator<'gc> {
             Some(home) => match self.heap.frame_activation(home) {
                 Some(_) => home,
                 None => {
-                    return Signal::Error(NewspeakError {
-                        selector: Symbol::CARET,
-                        receiver: value,
-                        message:
-                            "cannotReturn: the enclosing method activation has already returned"
-                                .to_string(),
-                    })
+                    return Signal::Error(NewspeakError::error(
+                        Symbol::CARET,
+                        value,
+                        "cannotReturn: the enclosing method activation has already returned",
+                    ))
                 }
             },
         };
@@ -1959,14 +1957,14 @@ fn check_method_arity<'gc>(
     if given == method.argument_count {
         return Ok(());
     }
-    Err(Signal::Error(NewspeakError {
-        selector: method.selector,
+    Err(Signal::Error(NewspeakError::error(
+        method.selector,
         receiver,
-        message: format!(
+        format!(
             "wrong number of arguments: `{}` takes {}, got {}",
             method.selector, method.argument_count, given
         ),
-    }))
+    )))
 }
 
 /// A block given a different number of arguments than it declares is refused
@@ -1982,13 +1980,11 @@ fn check_block_arity<'gc>(
     if given == parameter_count {
         return Ok(());
     }
-    Err(Signal::Error(NewspeakError {
-        selector: Symbol::VALUE,
-        receiver: heap.frame_receiver(captured_frame),
-        message: format!(
-            "wrong number of block arguments: block takes {parameter_count}, got {given}"
-        ),
-    }))
+    Err(Signal::Error(NewspeakError::error(
+        Symbol::VALUE,
+        heap.frame_receiver(captured_frame),
+        format!("wrong number of block arguments: block takes {parameter_count}, got {given}"),
+    )))
 }
 
 /// L's error, for the activation `header` describes. The error does not name
@@ -2007,11 +2003,11 @@ pub(crate) fn recursion_too_deep_error<'gc>(header: &ActivationHeader<'gc>) -> N
         FrameKind::Closure(_) => Symbol::VALUE,
         _ => Symbol::NEW,
     };
-    NewspeakError {
+    NewspeakError::error(
         selector,
-        receiver: header.receiver,
-        message: "stack overflow: recursion too deep".to_string(),
-    }
+        header.receiver,
+        "stack overflow: recursion too deep",
+    )
 }
 
 /// Every `BuiltinClass` -- including `Object` itself -- gets the same shared

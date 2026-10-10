@@ -13,11 +13,11 @@ use super::Signal;
 ///
 /// Raised by `vm::make_value` for `bytecode::Literal::UnresolvedIdentifier`.
 pub(crate) fn unresolved_identifier_error<'gc>(name: &str, receiver: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern(name),
+    Signal::Error(NewspeakError::error(
+        Symbol::intern(name),
         receiver,
-        message: format!("internal: unresolved identifier `{name}`"),
-    })
+        format!("internal: unresolved identifier `{name}`"),
+    ))
 }
 
 /// The program-level error a body past the register ceiling raises when it
@@ -41,14 +41,14 @@ pub(crate) fn body_too_large_error<'gc>(
             (Symbol::NEW, "inheritance clause message")
         }
     };
-    Signal::Error(NewspeakError {
+    Signal::Error(NewspeakError::error(
         selector,
         receiver,
-        message: format!(
+        format!(
             "{body} too large: it needs more than {} registers",
             u16::MAX
         ),
-    })
+    ))
 }
 
 /// An integer literal's value: `Small` whenever it fits a `SmallInteger`'s

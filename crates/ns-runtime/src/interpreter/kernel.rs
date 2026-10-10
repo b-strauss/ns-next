@@ -92,6 +92,10 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Halt => "Halt",
         BuiltinClass::Future => "Future",
         BuiltinClass::LargeInteger => "LargeInteger",
+        BuiltinClass::ArgumentError => "ArgumentError",
+        BuiltinClass::CannotReturn => "CannotReturn",
+        BuiltinClass::NonBooleanReceiver => "NonBooleanReceiver",
+        BuiltinClass::CannotInstantiate => "CannotInstantiate",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -503,6 +507,10 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
                         | BuiltinClass::MessageNotUnderstood
                         | BuiltinClass::Message
                         | BuiltinClass::Halt
+                        | BuiltinClass::ArgumentError
+                        | BuiltinClass::CannotReturn
+                        | BuiltinClass::NonBooleanReceiver
+                        | BuiltinClass::CannotInstantiate
                         | BuiltinClass::Future
                 ),
             "internal: Kernel.ns's {name} declares a slot; a builtin's instances have none"
@@ -859,6 +867,27 @@ mod tests {
         (BuiltinClass::MessageNotUnderstood, "signal:"),
         (BuiltinClass::Halt, "signal"),
         (BuiltinClass::Halt, "signal:"),
+        (BuiltinClass::ArgumentError, "signal"),
+        (BuiltinClass::ArgumentError, "signal:"),
+        (BuiltinClass::CannotReturn, "signal"),
+        (BuiltinClass::CannotReturn, "signal:"),
+        (BuiltinClass::NonBooleanReceiver, "signal"),
+        (BuiltinClass::NonBooleanReceiver, "signal:"),
+        (BuiltinClass::CannotInstantiate, "signal"),
+        (BuiltinClass::CannotInstantiate, "signal:"),
+        // The secondary factories of the error classes that carry a
+        // subject, `^self new argument: offending` and its siblings: an
+        // instantiation and a send.
+        (BuiltinClass::ArgumentError, "value:"),
+        (BuiltinClass::CannotReturn, "result:"),
+        (BuiltinClass::NonBooleanReceiver, "receiver:"),
+        (BuiltinClass::CannotInstantiate, "behavior:"),
+        // Their `description`: a test of `messageText`, and a send of
+        // `printString` to the subject.
+        (BuiltinClass::ArgumentError, "description"),
+        (BuiltinClass::CannotReturn, "description"),
+        (BuiltinClass::NonBooleanReceiver, "description"),
+        (BuiltinClass::CannotInstantiate, "description"),
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -1253,6 +1282,9 @@ mod tests {
                 "MessageNotUnderstood",
                 "Halt",
                 "Message",
+                "ArgumentError",
+                "CannotReturn",
+                "CannotInstantiate",
             ] {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),
@@ -1606,6 +1638,10 @@ mod tests {
                 "MessageNotUnderstood",
                 "Halt",
                 "Message",
+                "ArgumentError",
+                "CannotReturn",
+                "NonBooleanReceiver",
+                "CannotInstantiate",
                 "Activation",
                 "Future",
                 "KernelNamespace",
@@ -1627,12 +1663,13 @@ mod tests {
     /// §6.3.1 defaults an undeclared member to protected, and a protected
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
-    /// every one but `Top`, which §3.2 lets only `Object` name, and
-    /// `Activation` and `Future`, which no program may reach at all
+    /// every one but `Top`, which §3.2 lets only `Object` name,
+    /// `Activation` and `Future`, which no program may reach at all, and
+    /// `NonBooleanReceiver`, which a program catches as an `Error`
     /// (`docs/design/core-library.md`, "Exceptions";
     /// `docs/design/object-model.md`, "Simultaneous slots").
     #[test]
-    fn only_top_activation_and_future_are_private() {
+    fn only_top_activation_future_and_non_boolean_receiver_are_private() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
@@ -1647,9 +1684,10 @@ mod tests {
             let top = super::kernel_class_name(BuiltinClass::Top);
             let activation = super::kernel_class_name(BuiltinClass::Activation);
             let future = super::kernel_class_name(BuiltinClass::Future);
+            let non_boolean_receiver = super::kernel_class_name(BuiltinClass::NonBooleanReceiver);
             for nested in &application.mixin.nested {
                 let name = nested.name.as_str();
-                let expected = if name == top || name == activation || name == future {
+                let expected = if [top, activation, future, non_boolean_receiver].contains(&name) {
                     ns_syntax::ast::AccessModifier::Private
                 } else {
                     ns_syntax::ast::AccessModifier::Public

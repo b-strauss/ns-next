@@ -129,11 +129,11 @@ pub(crate) fn store_vector<'gc>(
 /// The error both `load_vector` and `store_vector` raise. Built here, never
 /// in `vm.rs`: error text lives in `interpreter/`.
 fn vector_error<'gc>(vector: Value<'gc>) -> Signal<'gc> {
-    Signal::Error(NewspeakError {
-        selector: Symbol::intern("indirectionVector"),
-        receiver: vector,
-        message: "internal: an indirection vector is not the Array its code expects".to_string(),
-    })
+    Signal::Error(NewspeakError::error(
+        Symbol::intern("indirectionVector"),
+        vector,
+        "internal: an indirection vector is not the Array its code expects",
+    ))
 }
 
 /// The value of the running activation's receiver's own slot `own_index`

@@ -4,5 +4,8 @@ Error
 MessageNotUnderstood
 Halt
 Message
+ArgumentError
+CannotReturn
+CannotInstantiate
 true
 '''

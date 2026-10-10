@@ -255,7 +255,7 @@ mod tests {
             ];
             for (class, name) in refused {
                 let message = match mutator.decide_instantiation(class, Vec::new()) {
-                    Err(Signal::Error(error)) => error.message,
+                    Err(Signal::Error(error)) => String::from(error.message),
                     Err(_) => panic!("{name}: refused with something other than an error"),
                     Ok(_) => panic!("{name}: instantiated"),
                 };
