@@ -1,0 +1,11 @@
+(* `yourself` answers the receiver, so a cascade that ends with it answers
+   the object its messages went to rather than the last one's answer. *)
+class YourselfAnswersTheReceiverOfACascade = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. array = (Array new: 2) at: 1 put: 'a'; at: 2 put: 'b'; yourself. |
+        transcript show: array size printString; newLine.
+        transcript show: (array at: 2); newLine.
+        transcript show: (3 yourself + 1) printString; newLine.
+        transcript show: (nil yourself) printString; newLine.
+    )
+) : ()

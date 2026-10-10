@@ -774,6 +774,9 @@ mod tests {
         // declines: both send `=` or `hash` to a slot, which a leaf may not.
         (BuiltinClass::Value, "valueEquals:"),
         (BuiltinClass::Value, "valueHashOfSlots"),
+        // A send of `hash`, which no leaf could answer for a value.
+        (BuiltinClass::Value, "identityHash"),
+        (BuiltinClass::Behavior, "identityHash"),
         // Forwarders in shape, but of their subject rather than of `self`:
         // §5.9 reaches a private member only through a lexical send, so the
         // other side's state has to be read by naming it as an argument,
@@ -901,6 +904,9 @@ mod tests {
     const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] = &[
         (BuiltinClass::Behavior, "==", "="),
         (BuiltinClass::Metaclass, "==", "="),
+        // `objectHash:ifFail:` reports `hash`, the selector `identityHash`
+        // asks for an object without an `=` of its own.
+        (BuiltinClass::Object, "identityHash", "hash"),
     ];
 
     /// The kernel's quick methods: `True`'s and `False`'s, the nil
@@ -1018,6 +1024,62 @@ mod tests {
             BuiltinClass::Object,
             "ifNotNil:ifNil:",
             MethodFastPath::CullParameter(0),
+        ),
+        (BuiltinClass::Object, "yourself", MethodFastPath::Receiver),
+        (
+            BuiltinClass::Array,
+            "isKindOfArray",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Behavior,
+            "isKindOfBehavior",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Boolean,
+            "isKindOfBoolean",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Closure,
+            "isKindOfClosure",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Number,
+            "isKindOfNumber",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Number,
+            "isKindOfFloat",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::Number,
+            "isKindOfInteger",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::Number,
+            "isKindOfFraction",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::Integer,
+            "isKindOfInteger",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Float,
+            "isKindOfFloat",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::String,
+            "isKindOfString",
+            MethodFastPath::Constant(QuickConstant::True),
         ),
         (
             BuiltinClass::UndefinedObject,

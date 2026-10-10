@@ -1,0 +1,16 @@
+(* `identityHash` is an object's identity hash, which `hash` answers for
+   an object without an `=` of its own; for a value, whose identity is its
+   equality, it is its `hash`. *)
+class IdentityHashIsAValuesHash = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. object = Object new. |
+        transcript show: (object identityHash = object hash) printString; newLine.
+        transcript show: (object identityHash = object identityHash) printString; newLine.
+        transcript show: (3 identityHash = 3 hash) printString; newLine.
+        transcript show: ('abc' identityHash = 'abc' hash) printString; newLine.
+        transcript show: (#abc identityHash = #abc hash) printString; newLine.
+        transcript show: (1.5 identityHash = 1.5 hash) printString; newLine.
+        transcript show: (true identityHash = true hash) printString; newLine.
+        transcript show: (Object identityHash = Object hash) printString; newLine.
+    )
+) : ()

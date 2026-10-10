@@ -111,6 +111,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
           private firstIndex ::= 1.
           private data ::= Array new: capacity. |
     ) (
+        (* True: the receiver is a List. *)
+        public isKindOfList = ( ^true )
         (* The number of elements. *)
         public size = ( ^size_ )
         (* Whether the list holds no element. *)
@@ -388,6 +390,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
           private data_ ::= nil. |
         createTable: capacity
     ) (
+        (* True: the receiver is a Map. *)
+        public isKindOfMap = ( ^true )
         (* Primordial Soup's transient slot, rebuilt from `data_` whenever
            it is nil. Every read runs its getter, so each operation reads
            it once and hands the table on. *)
@@ -510,6 +514,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
           private data_ ::= nil. |
         createTable: capacity
     ) (
+        (* True: the receiver is a Set. *)
+        public isKindOfSet = ( ^true )
         (* As `Map`'s. *)
         private lazy hashtable_ ::= rehash.
         (* The number of elements. *)

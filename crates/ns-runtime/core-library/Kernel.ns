@@ -44,6 +44,13 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public hash = ( ^vmMirror objectHash: self ifFail: [^super hash] )
         (* The String 'an Object'. *)
         public printString = ( ^vmMirror objectPrintString: self ifFail: [^super printString] )
+        (* The receiver. *)
+        (* For a cascade: `(Array new: 2) at: 1 put: x; yourself` answers
+           the array, not the last message's answer. *)
+        public yourself = ( ^self )
+        (* The receiver's identity hash, an Integer that stays the same for
+           its lifetime; a value's is its `hash`. *)
+        public identityHash = ( ^vmMirror objectHash: self ifFail: [^super identityHash] )
         (* The class accessors: each answers the kernel class it is named
            after. *)
         (* §3.2: Object "provides ... accessors for predefined classes and
@@ -73,9 +80,17 @@ class Kernel vmMirror: theMirror = Object <: Value (
            §5.5: Object's default `doesNotUnderstand:` throws a
            `MessageNotUnderstood`. As in Squeak, if the default handler
            resumed it -- the debugger, once the missing method has been
-           created -- the message is sent again, into the new method. *)
+           created -- the message is sent again, into the new method. A
+           unary selector that begins with `isKindOf` answers false
+           instead. *)
         protected doesNotUnderstand: message = (
-            | exception value |
+            | exception value selector |
+            (* An `isKindOf…` question nobody declared answers false, so a
+               program can ask one of any object; a keyword selector is no
+               such question. *)
+            selector:: message selector asString.
+            (message arguments isNil or: [message arguments size = 0]) ifTrue: [
+                (selector size >= 8 and: [(selector copyFrom: 1 to: 8) = 'isKindOf']) ifTrue: [^false]].
             exception:: outer Kernel MessageNotUnderstood new.
             exception message: message.
             exception receiver: self.
@@ -133,6 +148,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public = other = ( ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other] )
         public == other = ( ^vmMirror value: self sameAs: other ifFail: [^self behaviorEquals: other] )
         public hash = ( ^vmMirror valueHash: self ifFail: [^super hash] )
+        (* Its `hash`: a value's identity is its equality. *)
+        public identityHash = ( ^self hash )
+        (* True: the receiver is a Behavior. *)
+        public isKindOfBehavior = ( ^true )
         private behaviorEquals: other = (
             (vmMirror behavior: self sharesApplicationWith: other ifFail: [^false]) ifFalse: [^false].
             ((self enclosingOf: self) = (self enclosingOf: other)) ifFalse: [^false].
@@ -546,6 +565,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         protected == other = ( ^super == other )
         protected = other = ( ^super = other )
         protected hash = ( ^super hash )
+        protected yourself = ( ^super yourself )
+        protected identityHash = ( ^super identityHash )
         protected printString = ( ^super printString )
         protected Object = ( ^super Object )
         protected Value = ( ^super Value )
@@ -602,6 +623,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public == other = ( ^self = other )
         (* A hash of the slots, so that equal values hash alike. *)
         public hash = ( ^vmMirror valueHash: self ifFail: [^self valueHashOfSlots] )
+        (* Its `hash`: a value's identity is its equality. *)
+        public identityHash = ( ^self hash )
         private valueEquals: other = (
             | index count |
             (self class == other class) ifFalse: [^false].
@@ -640,6 +663,12 @@ class Kernel vmMirror: theMirror = Object <: Value (
        and a `Float` receiver share one body. Primordial Soup's compiler
        inlines both; ours sends them. *)
     public class Number = Value new () (
+        (* True: the receiver is a Number. *)
+        public isKindOfNumber = ( ^true )
+        (* False: a Number is none of these unless its class says so. *)
+        public isKindOfFloat = ( ^false )
+        public isKindOfInteger = ( ^false )
+        public isKindOfFraction = ( ^false )
         (* Evaluates `action` with the receiver, then with each number one
            greater, while it is at most `stop`; answers nil. *)
         public to: stop do: action = (
@@ -673,6 +702,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     )
     (* The superclass of `True` and `False`. *)
     public class Boolean = Value new () (
+        (* True: the receiver is a Boolean. *)
+        public isKindOfBoolean = ( ^true )
     )
     (* The class of `true`. *)
     (* §5.1.2: `true` is the unique instance of `True` and `false` of
@@ -732,6 +763,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* The integers, of any size: a literal such as `3` is one, and an
        integer that does not fit 64 bits is a `LargeInteger`. *)
     public class Integer = Number new () (
+        (* True: the receiver is an Integer. *)
+        public isKindOfInteger = ( ^true )
         (* Arithmetic: an integer argument answers an integer, a LargeInteger
            only when it does not fit 64 bits; a Float argument converts the
            receiver and answers a Float. Any other signals an Error, '+
@@ -844,6 +877,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* The 64-bit IEEE 754 floating-point numbers: a literal such as `1.5`
        is one. *)
     public class Float = Number new () (
+        (* True: the receiver is a Float. *)
+        public isKindOfFloat = ( ^true )
         (* Arithmetic: a numeric argument, an integer converted to the
            nearest Float, answers a Float as IEEE 754 computes it, so dividing
            by zero answers an infinity or a NaN. Any other signals an Error,
@@ -893,6 +928,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* An immutable sequence of Unicode code points: a literal such as
        `'abc'` is one. *)
     public class String = Value new () (
+        (* True: the receiver is a String. *)
+        public isKindOfString = ( ^true )
         (* The number of code points. *)
         public size = ( ^vmMirror stringSize: self ifFail: [^super size] )
         (* The code point at `index`, 1-based, as an Integer. Signals an
@@ -951,6 +988,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* A fixed-size sequence of objects, indexed from 1: `Array new: 3`, or a
        literal such as `{1. 2}`. *)
     public class Array = Object new () (
+        (* True: the receiver is an Array. *)
+        public isKindOfArray = ( ^true )
         (* Evaluates `action` with each element in turn, from the first,
            reading each element when it reaches it; an `action` that is no
            block is sent `value:`. Answers the receiver. *)
@@ -998,6 +1037,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* A closure, `[:argument | …]`: code that runs when it is sent
        `value`, in the scope it was written in (§5.1.8). *)
     public class Closure = Object new () (
+        (* True: the receiver is a Closure. *)
+        public isKindOfClosure = ( ^true )
         (* `value` to `value:value:value:` evaluate the block with the
            arguments given and answer its value. Each signals an Error,
            'wrong number of block arguments: block takes …, got …', when

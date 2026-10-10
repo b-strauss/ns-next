@@ -49,8 +49,9 @@ family, saying what it answers, what it takes and which `Error` it signals
 
 ```
 Top                     (private; no superclass, declares nothing)
-└── Object              class, ==, =, hash, printString, doesNotUnderstand:,
-    │                   halt, and an accessor per nameable builtin (String, ...)
+└── Object              class, ==, =, hash, identityHash, printString, yourself,
+    │                   doesNotUnderstand:, halt, and an accessor per nameable
+    │                   builtin (String, ...)
     ├── Value           =, ==, hash, and the two slot-reading leaves
     │   ├── Boolean     ├── True
     │   │               └── False
@@ -1911,7 +1912,9 @@ terminating, as a debugger that resumed the exception would.
 `MessageNotUnderstood` with the message, the receiver and the text "an
 object does not understand #…", signals it, and when the default handler
 resumed it (`reachedDefaultHandler`) re-sends the message with
-`message sendTo: self`; otherwise it answers the resumption value. The
+`message sendTo: self`; otherwise it answers the resumption value. A
+unary selector that begins with `isKindOf` never gets that far: the method
+answers `false` before it makes the exception. The
 default handler today ends the program; the live system replaces that one
 place with "open the debugger and wait", where creating the method and
 proceeding re-sends the message into it — the user's requirement for a live
@@ -2905,7 +2908,16 @@ on its own (decided with the user on 2026-10-06):
   begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's
   (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
   its own with `true`. A program can introduce a question of its own
-  without touching `Object`, which no Newspeak program can.
+  without touching `Object`, which no Newspeak program can. `Number`
+  declares `isKindOfFloat`, `isKindOfInteger` and `isKindOfFraction` as
+  `false` so that a subclass's `true` overrides a known answer rather than
+  the rule; a keyword selector that begins with `isKindOf` is no such
+  question and still ends in the exception.
+- **`yourself` and `identityHash`.** `Object>>yourself` answers the
+  receiver (a quick method), so a cascade can end with it. `identityHash`
+  is the object's identity hash, the leaf `hash` uses; `Value` and
+  `Behavior` answer their `hash` instead, since their identity is their
+  equality.
 - **A weak collection refuses a value as a key.** `WeakMap` and
   `Ephemeron` signal an `ArgumentError` for a key that is a value
   (§3.1.1): a value has no identity, an equal one can always be made
