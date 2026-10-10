@@ -314,3 +314,90 @@ fn strings_answer_their_code_points_across_words_in_either_width() {
         });
     }
 }
+
+/// The `SmallInteger` a send answered.
+fn as_integer<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> i64 {
+    match value.kind() {
+        ValueKind::SmallInteger(number) => number,
+        _ => panic!("expected a SmallInteger, got {}", heap.describe(value)),
+    }
+}
+
+/// Each selector of a loaded module, sent to a new instance, with the
+/// SmallInteger it must answer.
+fn assert_answers(source: &str, expected: &[(&str, i64)]) {
+    let (mut interpreter, class) = load(source);
+    for (selector, answer) in expected {
+        let result = instantiate_and_send(&mut interpreter, &class, selector);
+        interpreter.enter(|mutator| {
+            assert_eq!(
+                as_integer(mutator.heap(), mutator.fetch(&result)),
+                *answer,
+                "{selector}"
+            );
+        });
+    }
+}
+
+#[test]
+fn index_of_finds_a_wide_needle_in_a_wide_string() {
+    let source = indoc! {"
+        class Search usingPlatform: p = Object new () (
+            public forwards = ( ^'xé😀é😀' indexOf: 'é😀' startingAt: 3 )
+            public backwards = ( ^'xé😀é😀' lastIndexOf: 'é😀' startingAt: 3 )
+        ) : ()
+    "};
+    assert_answers(source, &[("forwards", 4), ("backwards", 2)]);
+}
+
+#[test]
+fn an_empty_needle_is_found_at_the_start_itself() {
+    let source = indoc! {"
+        class Search usingPlatform: p = Object new () (
+            public forwards = ( ^'abc' indexOf: '' startingAt: 4 )
+            public backwards = ( ^'abc' lastIndexOf: '' startingAt: 1 )
+        ) : ()
+    "};
+    assert_answers(source, &[("forwards", 4), ("backwards", 1)]);
+}
+
+#[test]
+fn a_needle_longer_than_the_string_is_not_found() {
+    let source = indoc! {"
+        class Search usingPlatform: p = Object new () (
+            public forwards = ( ^'ab' indexOf: 'abc' )
+            public backwards = ( ^'ab' lastIndexOf: 'abc' )
+        ) : ()
+    "};
+    assert_answers(source, &[("forwards", 0), ("backwards", 0)]);
+}
+
+/// `Heap::strings_equal` compares the stored format before the units, so
+/// a String equal to one built from a Rust literal -- narrow exactly when
+/// every code point fits Latin-1 -- is stored in the same width.
+#[test]
+fn with_all_of_a_latin_one_array_makes_a_narrow_string() {
+    let source = indoc! {"
+        class Build usingPlatform: p = Object new () (
+            public latinOne = ( ^String withAll: {104. 233} )
+            public beyondLatinOne = ( ^String withAll: {104. 128512} )
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    for (selector, text) in [("latinOne", "hé"), ("beyondLatinOne", "h😀")] {
+        let result = instantiate_and_send(&mut interpreter, &class, selector);
+        let expected = string(&mut interpreter, text);
+        interpreter.enter(|mutator| {
+            let built = mutator.fetch(&result).as_object();
+            let literal = mutator.fetch(&expected).as_object();
+            let (Some(built), Some(literal)) = (built, literal) else {
+                panic!("{selector}: expected two Strings");
+            };
+            assert_eq!(
+                mutator.heap().strings_equal(built, literal),
+                Some(true),
+                "{selector}"
+            );
+        });
+    }
+}

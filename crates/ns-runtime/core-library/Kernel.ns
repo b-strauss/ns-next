@@ -1521,6 +1521,111 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public printString = ( ^vmMirror stringPrintString: self ifFail: [^super printString] )
         (* Answers the receiver itself. *)
         public asString = ( ^self )
+        (* Evaluates `action` with each code point, an Integer, from the
+           first. Answers the receiver.
+
+           action: a one-argument block, or anything understanding
+               `value:`. *)
+        public do: action = (
+            1 to: self size do: [:index | action value: (self at: index)]
+        )
+        (* Answers whether the String has no code point. *)
+        public isEmpty = ( ^self size = 0 )
+        (* Answers the first code point, an Integer.
+
+           Signals the ArgumentError of `at:`, carrying 1, for an empty
+           String. *)
+        public first = ( ^self at: 1 )
+        (* Answers the last code point, an Integer.
+
+           Signals the ArgumentError of `at:`, carrying 0, for an empty
+           String. *)
+        public last = ( ^self at: self size )
+        (* Answers a new String of the one code point at `index`; for a
+           Symbol too.
+
+           index: an Integer from 1 to `size`.
+
+           Signals the ArgumentError of `at:` for any other index. *)
+        public stringAt: index = (
+            self at: index.
+            ^self copyFrom: index to: index
+        )
+        (* Answers what `copyFrom: start to: stop` answers: a new String of
+           the code points from `start` to `stop`.
+
+           Signals what `copyFrom:to:` signals. *)
+        public copyStringFrom: start to: stop = ( ^self copyFrom: start to: stop )
+        (* Answers the index of the first occurrence of `substring`, or 0;
+           `indexOf: substring startingAt: 1`. *)
+        public indexOf: substring = ( ^self indexOf: substring startingAt: 1 )
+        (* Answers the code-point index at which the first occurrence of
+           `substring` that starts at or after `start` begins, or 0 when
+           there is none. An empty `substring` is found at `start`.
+
+           substring: a String or a Symbol.
+           start: an Integer from 1 to `size + 1`.
+
+           Signals an ArgumentError carrying `substring`,
+           'indexOf:startingAt: requires a String argument, got …', for a
+           `substring` that is no String, and one carrying `start`,
+           'indexOf:startingAt: … out of range: valid starts are 1..…
+           (size …)', for a `start` outside 1 to `size + 1`, or
+           'indexOf:startingAt: requires an Integer index, got …'. *)
+        public indexOf: substring startingAt: start = (
+            ^vmMirror string: self indexOf: substring startingAt: start
+                ifFail: [^super indexOf: substring startingAt: start]
+        )
+        (* Answers the index of the last occurrence of `substring`, or 0;
+           `lastIndexOf: substring startingAt: size + 1`. *)
+        public lastIndexOf: substring = ( ^self lastIndexOf: substring startingAt: self size + 1 )
+        (* Answers the code-point index at which the last occurrence of
+           `substring` that starts at or before `start` begins, or 0 when
+           there is none. An empty `substring` is found at `start`.
+
+           substring: a String or a Symbol.
+           start: an Integer from 1 to `size + 1`.
+
+           Signals the ArgumentErrors `indexOf:startingAt:` signals, their
+           texts naming 'lastIndexOf:startingAt:'. *)
+        public lastIndexOf: substring startingAt: start = (
+            ^vmMirror string: self lastIndexOf: substring startingAt: start
+                ifFail: [^super lastIndexOf: substring startingAt: start]
+        )
+        (* Answers whether the receiver begins with `prefix`; true for an
+           empty `prefix`.
+
+           prefix: a String or a Symbol.
+
+           Signals an ArgumentError carrying `prefix`, 'startsWith:
+           requires a String argument, got …' and its `printString`, for a
+           `prefix` that is no String. *)
+        (* Looks for an occurrence starting at 1 at the latest, so only the
+           first position is compared, whatever the receiver's length. *)
+        public startsWith: prefix = (
+            prefix isKindOfString ifFalse: [
+                ^(outer Kernel ArgumentError value: prefix)
+                    signal: 'startsWith: requires a String argument, got ', prefix printString].
+            ^(self lastIndexOf: prefix startingAt: 1) = 1
+        )
+        (* Answers whether the receiver ends with `suffix`; true for an
+           empty `suffix`.
+
+           suffix: a String or a Symbol.
+
+           Signals an ArgumentError carrying `suffix`, 'endsWith: requires
+           a String argument, got …' and its `printString`, for a `suffix`
+           that is no String. *)
+        (* The last occurrence is the one at the end when there is one
+           there. *)
+        public endsWith: suffix = (
+            | position |
+            suffix isKindOfString ifFalse: [
+                ^(outer Kernel ArgumentError value: suffix)
+                    signal: 'endsWith: requires a String argument, got ', suffix printString].
+            position:: self lastIndexOf: suffix startingAt: self size + 1.
+            ^(position > 0) and: [position = (self size - suffix size + 1)]
+        )
     ) : (
         (* Answers a new String of one code point, `code`.
 
@@ -1533,6 +1638,26 @@ class Kernel vmMirror: theMirror = Object <: Value (
            subject that is not `String` itself, which a flat class side
            cannot be sent from. *)
         public with: code = ( ^vmMirror stringClass: self with: code ifFail: [nil] )
+        (* Answers a new String of the code points of `codePoints`, in its
+           `do:` order, or a new String of the same code points when
+           `codePoints` is a String.
+
+           codePoints: a String, or a Collection of Integers, each a
+               Unicode code point: from 0 to 1114111 and outside 55296 to
+               57343. Anything else answering `size` and `do:` is gathered
+               into an Array first.
+
+           Signals an ArgumentError carrying the first element that is no
+           code point, 'withAll: requires Unicode code points, Integers
+           from 0 to 1114111 outside 55296 to 57343, got …', and the
+           MessageNotUnderstood of `size` or `do:` for an argument that
+           lacks it. Sent to a subclass, answers nil, as `with:` does. *)
+        public withAll: codePoints = (
+            ^vmMirror stringClass: self withAll: codePoints ifFail: [
+                (codePoints isKindOfArray or: [codePoints isKindOfString])
+                    ifTrue: [nil]
+                    ifFalse: [self withAll: (outer Kernel Array withAll: codePoints)]]
+        )
     )
     (* A canonical String: one object per text (§5.1.6), made only by a
        literal such as `#at:put:` or by `asSymbol`, never by `new`. It

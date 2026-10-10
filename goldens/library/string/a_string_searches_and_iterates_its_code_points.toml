@@ -1,0 +1,24 @@
+stdout = '''
+97 98 99 
+97 233 128512 98 
+104 100
+😀 1
+true false
+5
+8
+0
+12
+8
+5
+10
+3
+true false true false true false
+true
+'b' String
+'bc'
+hi
+é
+true
+1
+104 105 
+'''

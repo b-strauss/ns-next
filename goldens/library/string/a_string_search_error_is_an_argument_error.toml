@@ -1,0 +1,11 @@
+stdout = '''
+13
+indexOf:startingAt: 0 out of range: valid starts are 1..12 (size 11)
+13
+indexOf:startingAt: requires a String argument, got 3
+3
+endsWith: requires a String argument, got 3
+55296
+withAll: requires Unicode code points, Integers from 0 to 1114111 outside 55296 to 57343, got 55296
+12
+'''

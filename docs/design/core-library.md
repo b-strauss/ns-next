@@ -179,7 +179,9 @@ Primordial Soup's `^-1 - self`, and reaches no leaf; `LargeInteger`'s the same
 leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
 `hash`, `sqrt`, `sin`, `cos`, `asInteger`, `asStringFixed:`, `printString` and
 `asString`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
-`asSymbol` and `printString`, and on its class side `with:`; `Symbol`'s
+`asSymbol`, `printString`, `indexOf:startingAt:` and
+`lastIndexOf:startingAt:`, and on its class side `with:` and `withAll:`;
+`Symbol`'s
 `asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`,
 `at:`, `copyFrom:to:` and `replaceFrom:to:with:startingAt:`; `Closure`'s
 `value` to `value:value:value:`, `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
@@ -294,6 +296,40 @@ code points rather than its bytes:
 `goldens/library/string/a_string_answers_its_code_points` and
 `goldens/library/string/a_string_is_its_code_points` pin them in either width,
 `goldens/library/string/a_string_index_error_is_caught` their errors.
+
+A String's elements are its code points, so the rest of its protocol is
+Newspeak over `size`, `at:` and `copyFrom:to:` that deals in them: `do:`,
+`first` and `last` answer Integers, and `isEmpty`, `copyStringFrom:to:`,
+`startsWith:` and `endsWith:` follow. **`stringAt:`** answers a new String
+of the one code point at an index -- what a `Character` would be elsewhere,
+and no `Character` exists: an element is an Integer, and the String of one
+is how a program gets text back out of a position. Three more leaves:
+
+- **`indexOf:startingAt:`** and **`lastIndexOf:startingAt:`**, one function
+  in `builtins/text.rs`, search for a String or a Symbol in code points,
+  either width against either: the index of the first occurrence starting
+  at or after the start, or of the last starting at or before it, or 0. The
+  start lies in 1 to `size + 1`, and an empty argument is found at the start
+  itself. Anything else is an `ArgumentError`, "indexOf:startingAt: 0 out
+  of range: valid starts are 1..12 (size 11)" carrying the start, or
+  "indexOf:startingAt: requires a String argument, got 3" carrying the
+  argument. `indexOf:` and `lastIndexOf:` start at 1 and at `size + 1`, and
+  `startsWith:` and `endsWith:` ask `lastIndexOf:startingAt:`, after
+  refusing an argument that is no String in their own words.
+- **`String withAll:`** answers a new String of an Array's code points or
+  of a String's, in the canonical width; an element that is no code point is
+  an `ArgumentError` carrying it, "withAll: requires Unicode code points,
+  Integers from 0 to 1114111 outside 55296 to 57343, got …". Its class side
+  gathers any other collection into an Array (`Array withAll:`) and asks
+  again.
+
+`asByteArray` and the forms that take or answer a `ByteArray` wait for
+sub-project 5, which brings `ByteArray`. Primordial Soup's `out`, which
+writes a string to the standard output, is not adopted: a program writes
+through the platform's `Transcript`.
+`goldens/library/string/a_string_searches_and_iterates_its_code_points` and
+`goldens/library/string/a_string_search_error_is_an_argument_error` pin
+them.
 
 **`Symbol` is a subclass of `String`**, as in every reference kernel: a
 symbol's words are a string's, in either width, and only its class tells it
@@ -944,6 +980,7 @@ zero" from either class's leaf
 the wrong class.** It is still an `Integer`, and no index, size or count
 reaches one, so `at:`, `at:put:`, `Array new:`, `Array`'s `copyFrom:to:`
 and `replaceFrom:to:with:startingAt:`, `String`'s `at:`, `copyFrom:to:`,
+the start of `indexOf:startingAt:` and `lastIndexOf:startingAt:`,
 `Value`'s `slotAt:` and `asStringFixed:` refuse it in the
 words they use for a `SmallInteger` out of range -- "index
 18446744073709551616 out of range: valid indices are 1..3 (size 3)", "new:

@@ -1,0 +1,41 @@
+(* A String's elements are its code points, Integers, in both widths and
+   past U+FFFF: `do:`, `first`, `last` and `withAll:` deal in them, and
+   `stringAt:` answers the String of one. Searching answers a code-point
+   index, or 0; a Symbol answers what its text does, as Strings. *)
+class AStringSearchesAndIteratesItsCodePoints = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. text wide |
+        text:: 'hello world'.
+        wide:: 'aé😀b'.
+        'abc' do: [:codePoint | transcript show: codePoint printString; show: ' '].
+        transcript newLine.
+        wide do: [:codePoint | transcript show: codePoint printString; show: ' '].
+        transcript newLine.
+        transcript show: text first printString; show: ' '; show: text last printString; newLine.
+        transcript show: (wide stringAt: 3); show: ' '; show: (wide stringAt: 3) size printString; newLine.
+        transcript show: '' isEmpty printString; show: ' '; show: text isEmpty printString; newLine.
+        transcript show: (text indexOf: 'o') printString; newLine.
+        transcript show: (text indexOf: 'o' startingAt: 6) printString; newLine.
+        transcript show: (text indexOf: 'xyz') printString; newLine.
+        transcript show: (text indexOf: '' startingAt: 12) printString; newLine.
+        transcript show: (text lastIndexOf: 'o') printString; newLine.
+        transcript show: (text lastIndexOf: 'o' startingAt: 7) printString; newLine.
+        transcript show: (text lastIndexOf: 'l') printString; newLine.
+        transcript show: (wide indexOf: '😀b') printString; newLine.
+        transcript show: (text startsWith: 'hello') printString; show: ' ';
+            show: (text startsWith: 'world') printString; show: ' ';
+            show: (text endsWith: 'world') printString; show: ' ';
+            show: (text endsWith: 'hello') printString; show: ' ';
+            show: (text endsWith: '') printString; show: ' ';
+            show: ('' startsWith: 'a') printString; newLine.
+        transcript show: (#hello: startsWith: 'hel') printString; newLine.
+        transcript show: (#abc stringAt: 2) printString; show: ' '; show: (#abc stringAt: 2) class printString; newLine.
+        transcript show: (#abc copyStringFrom: 2 to: 3) printString; newLine.
+        transcript show: (String withAll: {104. 105}); newLine.
+        transcript show: (String withAll: 'é'); newLine.
+        transcript show: ((String withAll: (Array withAll: wide)) = wide) printString; newLine.
+        transcript show: (String withAll: {128512}) size printString; newLine.
+        (Array withAll: 'hi') do: [:codePoint | transcript show: codePoint printString; show: ' '].
+        transcript newLine.
+    )
+) : ()

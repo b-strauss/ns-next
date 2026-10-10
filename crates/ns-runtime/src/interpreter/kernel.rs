@@ -888,6 +888,19 @@ mod tests {
         (BuiltinClass::Array, "sortFrom:to:by:"),
         (BuiltinClass::Array, "merge:into:from:width:count:by:"),
         (BuiltinClass::Array, "withAll:"),
+        // `String`'s code-point protocol is Newspeak over its leaves --
+        // `size`, `at:`, `copyFrom:to:` and the two searches: every method
+        // sends, none forwards to a leaf.
+        (BuiltinClass::String, "do:"),
+        (BuiltinClass::String, "isEmpty"),
+        (BuiltinClass::String, "first"),
+        (BuiltinClass::String, "last"),
+        (BuiltinClass::String, "stringAt:"),
+        (BuiltinClass::String, "copyStringFrom:to:"),
+        (BuiltinClass::String, "indexOf:"),
+        (BuiltinClass::String, "lastIndexOf:"),
+        (BuiltinClass::String, "startsWith:"),
+        (BuiltinClass::String, "endsWith:"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
         (BuiltinClass::MessageNotUnderstood, "hostSelector"),

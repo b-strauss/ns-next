@@ -144,6 +144,9 @@ impl Primitive {
                 | StringPrimitive::ElementAt
                 | StringPrimitive::CopyRange
                 | StringPrimitive::FromCodePoint
+                | StringPrimitive::IndexOf
+                | StringPrimitive::LastIndexOf
+                | StringPrimitive::FromCodePoints
                 | StringPrimitive::PrintString,
             ) => false,
             Primitive::Symbol(SymbolPrimitive::Equal) => true,
@@ -312,6 +315,15 @@ pub enum StringPrimitive {
     /// `String with: code`, on `String`'s class side: its subject is the
     /// class.
     FromCodePoint,
+    /// `indexOf:startingAt:`: the code-point index of the first occurrence
+    /// at or after a start, or 0.
+    IndexOf,
+    /// `lastIndexOf:startingAt:`: the code-point index of the last
+    /// occurrence at or before a start, or 0.
+    LastIndexOf,
+    /// `String withAll: codePoints`, on `String`'s class side: its subject
+    /// is the class.
+    FromCodePoints,
     PrintString,
 }
 
@@ -1033,6 +1045,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "string:copyFrom:to:ifFail:",
         "copyFrom:to:",
         Primitive::String(StringPrimitive::CopyRange),
+    ),
+    mirror(
+        "string:indexOf:startingAt:ifFail:",
+        "indexOf:startingAt:",
+        Primitive::String(StringPrimitive::IndexOf),
+    ),
+    mirror(
+        "string:lastIndexOf:startingAt:ifFail:",
+        "lastIndexOf:startingAt:",
+        Primitive::String(StringPrimitive::LastIndexOf),
+    ),
+    mirror(
+        "stringClass:withAll:ifFail:",
+        "withAll:",
+        Primitive::String(StringPrimitive::FromCodePoints),
     ),
     mirror(
         "stringClass:with:ifFail:",

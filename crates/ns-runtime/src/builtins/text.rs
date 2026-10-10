@@ -120,6 +120,149 @@ fn from_code_point<'gc>(
     })
 }
 
+/// The code point an element of `String withAll:`'s Array must be, as
+/// `from_code_point` asks of its one argument: a `SmallInteger` that is a
+/// Unicode scalar value.
+fn code_point_of(element: Value<'_>) -> Option<u32> {
+    element
+        .as_small_integer()
+        .and_then(|code| u32::try_from(code).ok())
+        .filter(|code| char::from_u32(*code).is_some())
+}
+
+/// `String withAll: codePoints` for an Array of code points or a String:
+/// a new String of them. `None` -- the class side gathers any other
+/// collection into an Array and asks again -- for any other argument, or
+/// a subject that is not `String` itself.
+fn from_code_points<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let class = receiver.as_object()?;
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
+        return None;
+    }
+    let argument = arguments.first()?.as_object()?;
+    if let Some(code_points) = mutator.heap.string_code_points(argument) {
+        return Some(Ok(Value::object(
+            mutator.new_string_from_code_points(code_points),
+        )));
+    }
+    let elements = mutator.heap.array_elements(argument)?;
+    let mut code_points = Vec::with_capacity(elements.len());
+    for element in elements {
+        match code_point_of(element) {
+            Some(code_point) => code_points.push(code_point),
+            None => {
+                return Some(Err(NewspeakError::argument_error(
+                    selector,
+                    receiver,
+                    element,
+                    format!(
+                        "{selector} requires Unicode code points, Integers from 0 to 1114111 \
+                         outside 55296 to 57343, got {}",
+                        mutator.heap.describe(element)
+                    ),
+                )))
+            }
+        }
+    }
+    // Every element was checked to be a scalar value above, which is what
+    // `from_wide` asks; it narrows a Latin-1 text, so the String is canonical.
+    let code_points = crate::CodePoints::from_wide(code_points.into_boxed_slice());
+    Some(Ok(Value::object(
+        mutator.new_string_from_code_points(code_points),
+    )))
+}
+
+/// `indexOf:startingAt:` and `lastIndexOf:startingAt:` over code points:
+/// the 1-based index of the first occurrence of the argument that starts
+/// at or after the start, or of the last that starts at or before it, or
+/// 0. The start must lie in 1..size + 1; an empty argument is found at
+/// the start itself.
+fn search<'gc>(
+    mutator: &Mutator<'gc>,
+    object: ObjectReference<'gc>,
+    size: usize,
+    backwards: bool,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let heap = &mutator.heap;
+    let needle = arguments
+        .first()
+        .and_then(|value| value.as_object())
+        .and_then(|needle| heap.string_code_points(needle));
+    let Some(needle) = needle else {
+        return Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!(
+                "{selector} requires a String argument, got {}",
+                heap.describe_argument(arguments.first().copied())
+            ),
+        ));
+    };
+    let start_argument = arguments.get(1).copied();
+    // A `LargeInteger` start lies outside every string, so it takes the
+    // out-of-range error, described as it is written.
+    let start = match collections::integer_argument(heap, start_argument) {
+        Some(IntegerArgument::Small(start)) => Some(start),
+        Some(IntegerArgument::Large { .. }) => None,
+        None => {
+            return Err(collections::not_an_integer(
+                heap,
+                receiver,
+                selector,
+                start_argument,
+            ))
+        }
+    };
+    let position = match start.map(usize::try_from) {
+        Some(Ok(start)) if (1..=size + 1).contains(&start) => start - 1,
+        _ => {
+            let described = match start {
+                Some(number) => number.to_string(),
+                None => heap.describe_argument(start_argument),
+            };
+            return Err(NewspeakError::argument_error(
+                selector,
+                receiver,
+                start_argument.unwrap_or(Value::nil()),
+                format!(
+                    "{selector} {described} out of range: valid starts are 1..{} (size {size})",
+                    size + 1
+                ),
+            ));
+        }
+    };
+    let needle: Vec<u32> = needle.elements().collect();
+    let Some(last_position) = size.checked_sub(needle.len()) else {
+        return Ok(Value::small_integer(0));
+    };
+    let haystack: Vec<u32> = heap
+        .string_code_points(object)
+        .map(|code_points| code_points.elements().collect())
+        .unwrap_or_default();
+    let occurs_at = |position: &usize| {
+        haystack
+            .get(*position..*position + needle.len())
+            .is_some_and(|candidate| candidate == needle.as_slice())
+    };
+    let found = if backwards {
+        (0..=position.min(last_position)).rev().find(occurs_at)
+    } else {
+        (position..=last_position).find(occurs_at)
+    };
+    Ok(Value::small_integer(
+        found.map_or(0, |position| position as i64 + 1),
+    ))
+}
+
 /// `copyFrom: start to: stop`, 1-based and inclusive, over code points:
 /// the range lies within the string, and the empty range is the one that
 /// stops just before it starts, at either end. Its errors are `Array`'s
@@ -157,15 +300,32 @@ pub(crate) fn execute_string<'gc>(
     selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    if primitive == StringPrimitive::FromCodePoint {
-        return from_code_point(mutator, receiver, selector, arguments);
+    // The class-side leaves: their subject is the class, not a String.
+    match primitive {
+        StringPrimitive::FromCodePoint => {
+            return from_code_point(mutator, receiver, selector, arguments)
+        }
+        StringPrimitive::FromCodePoints => {
+            return from_code_points(mutator, receiver, selector, arguments)
+        }
+        _ => {}
     }
     let object = receiver.as_object()?;
     // Declines for anything that is no String, before any leaf reads it.
     let size = mutator.heap.string_size(object)?;
     match primitive {
-        // Unreachable: the early return above handles it; the arm keeps the match exhaustive.
-        StringPrimitive::FromCodePoint => None,
+        // Unreachable: the early return above handles them; the arm keeps
+        // the match exhaustive.
+        StringPrimitive::FromCodePoint | StringPrimitive::FromCodePoints => None,
+        StringPrimitive::IndexOf | StringPrimitive::LastIndexOf => Some(search(
+            mutator,
+            object,
+            size,
+            primitive == StringPrimitive::LastIndexOf,
+            receiver,
+            selector,
+            arguments,
+        )),
         // Array's errors, so that a program sees one text from either.
         StringPrimitive::ElementAt => Some(
             match collections::integer_argument(&mutator.heap, arguments.first().copied()) {
