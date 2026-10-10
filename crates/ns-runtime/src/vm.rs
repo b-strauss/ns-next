@@ -1809,7 +1809,7 @@ fn finish<'gc>(
             std::mem::forget(deliver);
             value
         }
-        // A future's block returned: what happens next is
+        // A future's computation returned: what happens next is
         // `interpreter::future`'s to decide, and the loop carries it out.
         Continuation::Future(forcing) => match mutator.future_computed(*forcing, value) {
             Ok(FutureOutcome::Deliver(value)) => value,

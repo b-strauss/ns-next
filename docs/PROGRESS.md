@@ -4533,8 +4533,10 @@ and `mustBeBoolean` is gone. `Object` gains `yourself` and `identityHash`,
 an `isKindOf…` question nobody declared answers `false`, and every core
 class answers its own. `Proxy` is public; the runtime's future is the
 private `FutureImplementation` below it (tag 30), and the public `Future`'s
-class-side `computing:` makes one through the mirror row
-`futureComputing:ifFail:`. `platform kernel` answers `ArgumentError`,
+class-side `computing:` makes one through `FutureImplementation`'s factory,
+which stores the computation untouched, so a future handed to it is forced
+only with the new one, as in the canonical implementation. `platform
+kernel` answers `ArgumentError`,
 `CannotReturn`, `CannotInstantiate`, `Closure`, `Future` and `Proxy`, and
 `platform collections` `NotFound`; the new builtins take tags 32 to 37.
 

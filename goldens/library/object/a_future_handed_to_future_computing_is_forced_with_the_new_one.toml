@@ -1,6 +1,6 @@
 stdout = '''
 false
-true
+false
 42
 true
 '''

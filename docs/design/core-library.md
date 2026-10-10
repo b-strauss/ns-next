@@ -2855,8 +2855,9 @@ private, `Object` declares no accessor for it, and builtin class tag 30
 names it only where the image must (an unresolved future's record). The
 instructions `MakeFuture` and `ResolveFuture` make and resolve the futures
 of a simultaneous slot clause, and the public `Future`, a class without
-instances, makes one for a program with `Future computing:` through the
-mirror row `futureComputing:ifFail:`; `Future new` signals a
+instances, makes one for a program with `Future computing:`, which sends
+`FutureImplementation`'s factory `computing:` and stores the computation
+untouched; `Future new` signals a
 `CannotInstantiate` ([object-model.md](object-model.md), "Simultaneous
 slots", "The future"). Once a program has made a future, the
 callers of a leaf look for one among its operands on the leaf's failure

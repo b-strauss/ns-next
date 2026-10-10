@@ -3742,7 +3742,7 @@ pub fn decode_graph_section<'gc>(
     let mut max_identity_hash = 0;
     let mut pending_classes: Vec<PendingClass> = Vec::new();
     let mut pending_metaclasses: Vec<usize> = Vec::new();
-    let mut pending_futures: Vec<Value<'gc>> = Vec::new();
+    let mut decoded_a_future = false;
     // Each frame record's frame and where its body starts, for the fill
     // after `rebuild_applications`.
     let mut frames: Vec<FrameReference<'gc>> = Vec::new();
@@ -3857,10 +3857,10 @@ pub fn decode_graph_section<'gc>(
                             heap.instance_field(*object, index)
                                 .unwrap_or_else(Value::nil)
                         });
-                    let computation =
-                        crate::interpreter::future::decoded_future_computation(&fields)
-                            .ok_or(DecodeError::FutureRecord)?;
-                    pending_futures.push(computation);
+                    if !crate::interpreter::future::is_a_decoded_future_record(&fields) {
+                        return Err(DecodeError::FutureRecord);
+                    }
+                    decoded_a_future = true;
                 }
                 None
             }
@@ -3992,18 +3992,9 @@ pub fn decode_graph_section<'gc>(
                 .record_canonical_symbol(symbol, *object);
         }
     }
-    // Every record is in, so a future's computation is a closure now or
-    // never: `future_state` reads an unresolved future with anything else
-    // there as malformed.
-    for computation in &pending_futures {
-        match computation.as_object() {
-            Some(closure) if context.mutator.heap.is_closure(closure) => {}
-            _ => return Err(DecodeError::FutureRecord),
-        }
-    }
     // Every check for a future stays off a program's paths until one exists
-    // (`Mutator::new_future`); a loaded one exists as surely as a made one.
-    if !pending_futures.is_empty() {
+    // (`Mutator::futures_made`); a loaded one exists as surely as a made one.
+    if decoded_a_future {
         context.mutator.futures_made = true;
     }
     rebuild_applications(context, &objects, pending_classes, &pending_metaclasses)?;

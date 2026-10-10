@@ -632,12 +632,17 @@ class Kernel vmMirror: theMirror = Object <: Value (
        message a program sends it reaches `doesNotUnderstand:`, which
        forwards it to the forced value -- §5.5's proxy, indistinguishable
        from its target. Forcing is the runtime's (`interpreter/future.rs`),
-       which alone reads and writes the two slots: the computation, a block
-       until it is resolved and then the value, and the state, 0
-       unresolved, 1 resolving, 2 resolved. `Future computing:` and a
-       simultaneous slot clause make every instance; `new` is never sent. *)
-    private class FutureImplementation = Proxy new (
-        | private computation. private state ::= 0. |
+       which alone reads and writes the two slots after the factory: the
+       computation, until it is resolved, and then the value, and the state,
+       0 unresolved, 1 resolving, 2 resolved. A simultaneous slot clause
+       makes its futures in the runtime, of a block; `Future computing:`
+       sends the factory, which stores the computation as it is, so a
+       future handed to it is not forced until this one is. The
+       initializer tells the runtime a future exists, which is what turns
+       on its seeing through futures. *)
+    private class FutureImplementation computing: theComputation = Proxy new (
+        | private computation ::= theComputation. private state ::= 0. |
+        vmMirror futureMade: self ifFail: [nil]
     ) (
         protected doesNotUnderstand: message = (
             ^message sendTo: (vmMirror futureValue: self ifFail: [^nil])
@@ -657,10 +662,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
             signal: 'a Future is made by Future computing:'
     ) (
     ) : (
-        (* A new future of `computation`'s value: a block, or any object,
-           which the future sends `value` when it is first forced. *)
+        (* A new future of `computation`'s value: a block, which the future
+           runs when it is first forced, or any other object, which it then
+           sends `value`. A future handed in is forced only then. *)
         public computing: computation = (
-            ^vmMirror futureComputing: computation ifFail: [^self computing: [computation value]]
+            ^outer Kernel FutureImplementation computing: computation
         )
     )
     (* The superclass of every value class: its instances are deeply

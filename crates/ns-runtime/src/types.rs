@@ -366,9 +366,9 @@ pub enum Continuation<'gc> {
     /// exceptions. Boxed so that every other continuation stays as small as
     /// it was.
     VmErrorSignalled(Box<NewspeakError<'gc>>),
-    /// A future's block returned (`interpreter::future`): record its value,
-    /// then deliver it or run the instruction that forced it again. Boxed,
-    /// as every continuation that carries state is.
+    /// A future's computation returned (`interpreter::future`): record its
+    /// value, then deliver it or run the instruction that forced it again.
+    /// Boxed, as every continuation that carries state is.
     Future(Box<crate::interpreter::future::FutureForcing<'gc>>),
 }
 

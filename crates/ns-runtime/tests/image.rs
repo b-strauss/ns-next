@@ -10767,12 +10767,14 @@ fn future_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     })
 }
 
-/// The encoder writes only an unresolved future -- two fields, its closure
-/// and state 0 -- so a record under the `FutureImplementation` header that is
-/// anything else describes a future no encoder wrote: another body, another
-/// field count, a resolving or resolved state, a state that is none of the
-/// three, or a computation that is not a closure. Each is refused at decode
-/// rather than left for `future_state` to meet.
+/// The encoder writes only an unresolved future -- two fields, its
+/// computation and state 0 -- so a record under the `FutureImplementation`
+/// header that is anything else describes a future no encoder wrote:
+/// another body, another field count, a resolving or resolved state, or a
+/// state that is none of the three. Each is refused at decode rather than
+/// left for `future_state` to meet. The computation may be any value, the
+/// record itself included: forcing that one is the divergent-evaluation
+/// error, as a program's own would be.
 #[test]
 fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     let array = future_record(|writer| {
@@ -10797,7 +10799,7 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
         })
     };
     let nil: fn(&mut encode::Writer) = |writer| writer.write_u8(VALUE_NIL);
-    // The record itself, id 0: an object, but no closure.
+    // The record itself, id 0.
     let itself: fn(&mut encode::Writer) = |writer| {
         writer.write_u8(VALUE_OBJECT_ID);
         writer.write_u32(0);
@@ -10805,8 +10807,6 @@ fn a_future_record_that_is_not_an_unresolved_future_is_refused() {
     for (bytes, described) in [
         (array, "an array body"),
         (three_fields, "three fields"),
-        (with_state(nil, 0), "an unresolved future of nil"),
-        (with_state(itself, 0), "an unresolved future of itself"),
         (with_state(itself, 1), "a resolving future"),
         (with_state(nil, 2), "a resolved future"),
         (with_state(nil, 7), "state 7"),
@@ -11084,12 +11084,13 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
 /// caught `ArgumentError` keeps its argument, an instance of a `Proxy`
 /// subclass still forwards to its target, and an unresolved
 /// `Future computing:` is written as the runtime's future and computes its
-/// block after the load.
+/// block after the load -- as does one whose computation is another
+/// unresolved future, which only its forcing after the load forces.
 #[test]
 fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
     let source = indoc! {"
         class Holder = Object new (
-            | Proxy ::= nil. public error. public proxy. public future. |
+            | Proxy ::= nil. public error. public proxy. public future. public chain. |
         ) (
             class Forwarder on: theTarget = Proxy new (
                 | private target = theTarget. |
@@ -11101,11 +11102,13 @@ fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
                 Proxy:: kernel Proxy.
                 error:: [(Array new: 2) at: 7] on: kernel ArgumentError do: [:caught | caught].
                 proxy:: Forwarder on: 3.
-                future:: kernel Future computing: [6 * 7]
+                future:: kernel Future computing: [6 * 7].
+                chain:: kernel Future computing: (kernel Future computing: [[6 * 7]])
             )
             public argument = ( ^error argument )
             public proxied = ( ^proxy + 4 )
             public computed = ( ^future + 0 )
+            public chained = ( ^chain + 0 )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -11168,10 +11171,17 @@ fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
             .send(&holder, Symbol::intern("computed"), &[]),
         "computed",
     );
+    let chained = expect_ok(
+        loaded
+            .interpreter
+            .send(&holder, Symbol::intern("chained"), &[]),
+        "chained",
+    );
     loaded.interpreter.enter(|mutator| {
         assert_eq!(mutator.fetch(&argument).as_small_integer(), Some(7));
         assert_eq!(mutator.fetch(&proxied).as_small_integer(), Some(7));
         assert_eq!(mutator.fetch(&computed).as_small_integer(), Some(42));
+        assert_eq!(mutator.fetch(&chained).as_small_integer(), Some(42));
     });
 }
 
@@ -11188,7 +11198,7 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
           public block = ( ^[3] )
         ) : ()
     "};
-    for corruption in ["no closure", "state 7", "resolved to each other"] {
+    for corruption in ["state 7", "resolved to each other"] {
         let (mut interpreter, class) = load(source);
         let holder = expect_ok(interpreter.instantiate(&class, &[]), "Holder new");
         let block = expect_ok(
@@ -11205,9 +11215,6 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             let other = mutator.new_future(closure);
             let heap = mutator.heap_mut();
             match corruption {
-                "no closure" => {
-                    heap.instance_set_field(future, 0, Value::small_integer(5));
-                }
                 "state 7" => {
                     heap.instance_set_field(future, 1, Value::small_integer(7));
                 }

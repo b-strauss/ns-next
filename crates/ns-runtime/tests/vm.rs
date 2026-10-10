@@ -990,11 +990,6 @@ fn make_future_of_a_non_closure_is_an_error_not_a_panic() {
 /// `InitializeSlot` stores into `self` without a class check.
 #[derive(Clone, Copy)]
 enum Corruption {
-    /// `computation` a small integer, the state still "unresolved".
-    ComputationNoObject,
-    /// `computation` an object that is no closure, the state still
-    /// "unresolved".
-    ComputationNoClosure,
     /// The state none of the three, the closure intact.
     StateNoneOfTheThree,
     /// Two futures "resolved", each to the other.
@@ -1019,12 +1014,6 @@ fn a_corrupted_future(
         let future = mutator.new_future(closure);
         let heap = mutator.heap_mut();
         match corruption {
-            Corruption::ComputationNoObject => {
-                heap.instance_set_field(future, 0, Value::small_integer(5));
-            }
-            Corruption::ComputationNoClosure => {
-                heap.instance_set_field(future, 0, Value::object(receiver));
-            }
             Corruption::StateNoneOfTheThree => {
                 heap.instance_set_field(future, 1, Value::small_integer(7));
             }
@@ -1092,8 +1081,6 @@ fn forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic() {
     });
     let block = expect_ok(send(&mut interpreter, &instance, "block", &[]), "block");
     for corruption in [
-        Corruption::ComputationNoObject,
-        Corruption::ComputationNoClosure,
         Corruption::StateNoneOfTheThree,
         Corruption::ResolvedToEachOther,
     ] {

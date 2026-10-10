@@ -182,7 +182,7 @@ impl Primitive {
             ) => false,
             Primitive::Message(MessagePrimitive::SendTo) => false,
             Primitive::Module(ModulePrimitive::Named) => false,
-            Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Computing) => false,
+            Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Made) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
             // operands.
@@ -385,8 +385,9 @@ pub enum ModulePrimitive {
 pub enum FuturePrimitive {
     /// The future's value, forcing it first when it is unresolved.
     Value,
-    /// A new unresolved future of a closure, for `Future computing:`.
-    Computing,
+    /// Notes that `FutureImplementation`'s factory made a future, which
+    /// turns on the runtime's looking for one (`Mutator::futures_made`).
+    Made,
 }
 
 /// A row of `MIRROR`. A `u8`, because `Primitive` must stay two bytes: a
@@ -1028,11 +1029,12 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Float(FloatPrimitive::AsInteger),
     ),
     mirror(
-        "futureComputing:ifFail:",
-        // Unary: the computation is the row's subject, as the future is
-        // `futureValue:ifFail:`'s.
+        "futureMade:ifFail:",
+        // Unary: the new future is the row's subject, as the future is
+        // `futureValue:ifFail:`'s. It never fails, so the selector names
+        // what the program sent.
         "computing",
-        Primitive::Future(FuturePrimitive::Computing),
+        Primitive::Future(FuturePrimitive::Made),
     ),
 ];
 

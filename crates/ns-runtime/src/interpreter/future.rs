@@ -1,11 +1,12 @@
 //! §6.3.2's pull future (`docs/design/object-model.md`, "Simultaneous
 //! slots"): an instance of the kernel-private `FutureImplementation`, which
 //! a simultaneous slot clause or `Future computing:` makes, and whose two
-//! slots this module alone reads and writes. Forcing one runs its block as a trampoline
-//! step under `Continuation::Future`, never by calling back into Newspeak;
-//! what happens once the block returns -- deliver the value to the send that
-//! forced it, or run the instruction that met the future again -- is
-//! `AfterForcing`.
+//! slots this module alone reads and writes once it is made. Forcing one
+//! runs its block, or sends `value` to a computation that is no block, as a
+//! trampoline step under `Continuation::Future`, never by calling back into
+//! Newspeak; what happens once that returns -- deliver the value to the
+//! send that forced it, or run the instruction that met the future again --
+//! is `AfterForcing`.
 
 use crate::builtins::primitive::Primitive;
 use crate::heap::Heap;
@@ -31,17 +32,18 @@ pub(crate) const FIELD_COUNT: usize = 2;
 
 /// Where a future is in its life.
 pub enum FutureState<'gc> {
-    /// Not yet forced, or forced and abandoned: the closure that computes it.
-    Unresolved(ObjectReference<'gc>),
-    /// Its closure is running; forcing it again is §6.3.2's ill-founded
-    /// recursion.
+    /// Not yet forced, or forced and abandoned: what computes it -- a
+    /// closure, which forcing runs, or any other object, which forcing
+    /// sends `value`, a future among them, which is forced only then.
+    Unresolved(Value<'gc>),
+    /// Its computation is running; forcing it again is §6.3.2's
+    /// ill-founded recursion.
     Resolving,
     /// Its value, which is never itself a future: `future_computed` follows
     /// a future of a future before it records one.
     Resolved(Value<'gc>),
-    /// Fields no forcing wrote: a state that is none of the three, an
-    /// unresolved future whose `computation` is no closure, or a resolved
-    /// one whose value is a future. Nothing the runtime does makes one, and
+    /// Fields no forcing wrote: a state that is none of the three, or a
+    /// resolved future whose value is a future. Nothing the runtime does makes one, and
     /// the decoder refuses one in an image, but crafted code can store into
     /// a future's slots once it holds one -- a decoded frame may carry any
     /// receiver, and `InitializeSlot` stores into `self` unchecked -- so a
@@ -64,8 +66,8 @@ pub enum AfterForcing {
 }
 
 /// A forcing in progress, boxed in the `Continuation::Future` of the
-/// activation running its future's block, and owned by exactly one stack
-/// entry.
+/// activation computing its future -- its block, or the send of `value` to
+/// a computation that is none -- and owned by exactly one stack entry.
 ///
 /// The chain behind `then` is as long as a program makes it -- each future's
 /// block answering the next -- and nothing bounds it: the run loop pops each
@@ -204,11 +206,31 @@ impl<'gc> Mutator<'gc> {
             .instance_set_field(future, STATE_FIELD, Value::small_integer(state));
     }
 
-    /// Marks `future` resolving, its closure kept for an abandonment to
-    /// restore.
+    /// Marks `future` resolving, its computation kept for an abandonment
+    /// to restore.
     fn set_future_resolving(&mut self, future: ObjectReference<'gc>) {
         self.heap
             .instance_set_field(future, STATE_FIELD, Value::small_integer(RESOLVING));
+    }
+
+    /// The step that computes `forcing`'s future: its block's activation
+    /// when the computation is a closure, and otherwise a send of `value`
+    /// to it, which forces a future only now -- either under
+    /// `Continuation::Future`, so its answer reaches `future_computed`.
+    fn computing_step(
+        &mut self,
+        computation: Value<'gc>,
+        forcing: FutureForcing<'gc>,
+    ) -> Step<'gc> {
+        let then = Continuation::Future(Box::new(forcing));
+        match computation.as_object() {
+            Some(closure) if self.heap.is_closure(closure) => Step::Block {
+                closure,
+                arguments: StepArguments::Owned(Vec::new()),
+                then,
+            },
+            _ => self.send_value_then(computation, computation, None, then),
+        }
     }
 
     /// `forcing`'s activation returned `value`: record it, unless it is
@@ -238,19 +260,18 @@ impl<'gc> Mutator<'gc> {
                     self.future_abandoned(forcing);
                     return Err(malformed(Value::object(inner)));
                 }
-                FutureState::Unresolved(closure) => {
+                FutureState::Unresolved(computation) => {
                     // Force the inner one, then come back to this one, which
                     // stays resolving meanwhile.
                     self.set_future_resolving(inner);
-                    return Ok(FutureOutcome::Force(Step::Block {
-                        closure,
-                        arguments: StepArguments::Owned(Vec::new()),
-                        then: Continuation::Future(Box::new(FutureForcing {
+                    return Ok(FutureOutcome::Force(self.computing_step(
+                        computation,
+                        FutureForcing {
                             future: inner,
                             after: forcing.after,
                             then: Some(Box::new(forcing)),
-                        })),
-                    }));
+                        },
+                    )));
                 }
             },
         };
@@ -279,9 +300,8 @@ impl<'gc> Mutator<'gc> {
         let mut next = Some(Box::new(forcing));
         while let Some(mut forcing) = next {
             if let FutureState::Resolving = self.future_state(forcing.future) {
-                // Its closure, kept there while it resolved -- or whatever
-                // crafted code stored since, which the next read finds
-                // `Malformed`.
+                // Its computation, kept there while it resolved -- or
+                // whatever crafted code stored since.
                 let computation = self
                     .heap
                     .instance_field(forcing.future, COMPUTATION_FIELD)
@@ -311,7 +331,7 @@ fn state_in<'gc>(heap: &Heap<'gc>, future: ObjectReference<'gc>) -> FutureState<
         }
         (RESOLVED, _) => FutureState::Resolved(computation),
         (RESOLVING, _) => FutureState::Resolving,
-        (UNRESOLVED, Some(closure)) if heap.is_closure(closure) => FutureState::Unresolved(closure),
+        (UNRESOLVED, _) => FutureState::Unresolved(computation),
         _ => FutureState::Malformed,
     }
 }
@@ -347,60 +367,45 @@ pub(crate) fn seen_through<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Value<'g
 }
 
 /// The fields an image writes for an unresolved or resolving `future`: its
-/// closure and the state 0. A future is resolving only while its block
-/// runs, and `image::snapshot` refuses a world with a running activation,
-/// so no snapshot meets one today; the case is defensive. Should one be
-/// met, it is written as what `future_abandoned` would make of it -- its
-/// closure is still in `computation`, kept there for exactly that -- since a
-/// load starts no block, so nothing could finish resolving it.
+/// computation and the state 0. A future is resolving only while its
+/// computation runs, and `image::snapshot` refuses a world with a running
+/// activation, so no snapshot meets one today; the case is defensive.
+/// Should one be met, it is written as what `future_abandoned` would make
+/// of it -- its computation is still in `computation`, kept there for
+/// exactly that -- since a load starts no computation, so nothing could
+/// finish resolving it.
 ///
 /// `None` for a future whose fields are no future's
-/// (`FutureState::Malformed`, or one "resolving" whose `computation` is no
-/// closure), a malformed "resolved" one among them -- `seen_through` does
-/// not see through that one: the decoder would refuse any of them, so the
-/// encoder refuses to write one.
+/// (`FutureState::Malformed`), a malformed "resolved" one among them --
+/// `seen_through` does not see through that one: the decoder would refuse
+/// it, so the encoder refuses to write one.
 pub(crate) fn fields_for_an_image<'gc>(
     heap: &Heap<'gc>,
     future: ObjectReference<'gc>,
 ) -> Option<Vec<Value<'gc>>> {
-    let closure = match state_in(heap, future) {
-        FutureState::Unresolved(closure) => closure,
-        FutureState::Resolving => match heap
-            .instance_field(future, COMPUTATION_FIELD)
-            .and_then(|value| value.as_object())
-        {
-            Some(closure) if heap.is_closure(closure) => closure,
-            _ => return None,
-        },
+    let computation = match state_in(heap, future) {
+        FutureState::Unresolved(computation) => computation,
+        FutureState::Resolving => heap.instance_field(future, COMPUTATION_FIELD)?,
         FutureState::Resolved(_) | FutureState::Malformed => return None,
     };
     let mut written = vec![Value::nil(); FIELD_COUNT];
-    written[COMPUTATION_FIELD] = Value::object(closure);
+    written[COMPUTATION_FIELD] = computation;
     written[STATE_FIELD] = Value::small_integer(UNRESOLVED);
     Some(written)
 }
 
 /// Whether a decoded record under the `FutureImplementation` header is what
-/// the encoder writes: exactly two fields, a closure and the state 0.
-/// `computation` may name a record decoded later, so the closure half is
-/// checked once every record is in (`decode::decode_graph_section`); this
-/// answers the closure it names, if the rest holds.
-pub(crate) fn decoded_future_computation<'gc>(fields: &[Value<'gc>]) -> Option<Value<'gc>> {
-    if fields.len() != FIELD_COUNT {
-        return None;
-    }
-    match (
-        fields.get(COMPUTATION_FIELD),
-        fields
+/// the encoder writes: exactly two fields, the second the state 0. The
+/// computation may be any value, as an unresolved future's may.
+pub(crate) fn is_a_decoded_future_record(fields: &[Value<'_>]) -> bool {
+    fields.len() == FIELD_COUNT
+        && fields
             .get(STATE_FIELD)
-            .and_then(|state| state.as_small_integer()),
-    ) {
-        (Some(computation), Some(UNRESOLVED)) => Some(*computation),
-        _ => None,
-    }
+            .and_then(|state| state.as_small_integer())
+            == Some(UNRESOLVED)
 }
 
-/// Forces `future`: its value when it is resolved, its block's activation
+/// Forces `future`: its value when it is resolved, its computation's step
 /// under `Continuation::Future` when it is not, and §6.3.2's error when it
 /// is already being computed.
 pub(crate) fn force<'gc>(
@@ -412,17 +417,16 @@ pub(crate) fn force<'gc>(
         FutureState::Resolved(value) => Ok(Step::Value(value)),
         FutureState::Resolving => Err(divergent(Value::object(future))),
         FutureState::Malformed => Err(malformed(Value::object(future))),
-        FutureState::Unresolved(closure) => {
+        FutureState::Unresolved(computation) => {
             mutator.set_future_resolving(future);
-            Ok(Step::Block {
-                closure,
-                arguments: StepArguments::Owned(Vec::new()),
-                then: Continuation::Future(Box::new(FutureForcing {
+            Ok(mutator.computing_step(
+                computation,
+                FutureForcing {
                     future,
                     after,
                     then: None,
-                })),
-            })
+                },
+            ))
         }
     }
 }

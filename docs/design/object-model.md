@@ -856,15 +856,17 @@ message from outside reaches `doesNotUnderstand:`, and
 the value with `Message>>sendTo:`. A member added to `Object` without its
 override in `Proxy` fails
 `a_proxy_overrides_every_public_member_of_object_as_protected`. Its state is
-two private slots, `computation` — its block until it is resolved, then its
-value — and `state`, 0 unresolved, 1 resolving, 2 resolved, which only
-`interpreter/future.rs` reads and writes. It reads them as untrusted, since
-crafted code can store into them once it holds a future: any other state,
-an unresolved future without a closure, or a resolved one whose value is a
-future is `FutureState::Malformed`, and forcing it is an ordinary error
-([image-format.md](image-format.md), "Futures in a graph"). Forcing is a trampoline step that
-activates the future's block under `Continuation::Future`, never a call
-back into Newspeak; once the block returns, `vm::finish` hands its value to
+two private slots, `computation` — what computes it until it is resolved,
+then its value — and `state`, 0 unresolved, 1 resolving, 2 resolved,
+which only `interpreter/future.rs` reads and writes once the future is
+made. It reads them as untrusted, since crafted code can store into them
+once it holds a future: any other state, or a resolved future whose value
+is a future, is `FutureState::Malformed`, and forcing it is an ordinary
+error ([image-format.md](image-format.md), "Futures in a graph"). Forcing
+is a trampoline step under `Continuation::Future`, never a call back into
+Newspeak: it activates the computation when it is a block, and otherwise
+sends it `value` (`Mutator::send_value_then`); once that returns,
+`vm::finish` hands its value to
 `Mutator::future_computed`, which records it and either delivers it to the
 send that forced the future (`AfterForcing::Deliver`) or runs the
 instruction that met the future again (`AfterForcing::Reexecute`;
@@ -877,31 +879,24 @@ once per link. A program has no message of its own that forces a future,
 since a public `resolve` would tell an escaped future from its value: a
 future is forced only where the runtime needs the value it stands for -- a
 message sent to it, an instruction that must not hold one, or a leaf that
-could not answer for it as an operand, as `Future computing:` below does
-with the future it is handed. The runtime makes
-every instance (`Mutator::new_future`): `MakeFuture` calls it for a
-simultaneous clause, and the mirror row `futureComputing:ifFail:` for
-`Future computing:`, a program's way to make one. `Future` is a public
-class with that one class-side method and no instances: `computing:` sends
-a computation that is no block `value` when the future is forced, by
-wrapping it in a block of its own, and `Future new` — or the instantiation
-of a subclass, which does not inherit `computing:` since a class side is
-not inherited (§3.2) — signals a `CannotInstantiate` from its initializer.
-A future handed to `computing:` is forced at the call, not when the new
-future is. The row's leaf declines for it, since it is no closure, but
-once a program has made a future, a mirror row that declines goes through
-`after_a_failed_leaf` (`interpreter/mirror.rs`, `see_through_a_failed_row`),
-which sees through a future among the leaf's operands
-(`interpreter/future.rs`, `see_through`), the computation among them. An
-unresolved future is forced at once under `AfterForcing::Reexecute`, and
-the `futureComputing:ifFail:` send then runs again; a resolved one is
-replaced by its value and the leaf runs again on that. A value that is a
-block makes a future of that block directly; any other value declines
-again, and only then does the failure path wrap the computation in a block
-that sends it `value`, which the handed future forwards to its value when
-the new future is forced. A future still being computed is a divergent
-evaluation, an error at the call
-(`goldens/library/object/a_future_handed_to_future_computing_is_forced_at_the_call.ns`,
+could not answer for it as an operand. A simultaneous clause's futures are
+made by the runtime (`Mutator::new_future`, which `MakeFuture` calls), of
+a block. `Future computing:`, a program's way to make one, sends
+`FutureImplementation`'s factory `computing:` instead -- the one kernel
+builtin with a factory of its own -- whose slot initializer stores the
+computation as it is; its initializer tells the runtime a future exists
+through the mirror row `futureMade:ifFail:`, which sets
+`Mutator::futures_made`. `Future` is a public class with that one
+class-side method and no instances, and `Future new` — or the
+instantiation of a subclass, which does not inherit `computing:` since a
+class side is not inherited (§3.2) — signals a `CannotInstantiate` from
+its initializer. Storing is no send, so a future handed to `computing:`
+is not forced at the call but when the new future is, which sends it
+`value` — the canonical implementation's timing, whose `Future` likewise
+stores its argument in a slot and sends it `value` when it resolves; the
+specification is silent on it. A future still being computed by then is
+the divergent-evaluation error, raised by that forcing
+(`goldens/library/object/a_future_handed_to_future_computing_is_forced_with_the_new_one.ns`,
 `a_future_handed_to_future_computing_is_its_value.ns`).
 A program cannot subclass `FutureImplementation` itself: an instance of a
 subclass would be a future the runtime does not know, which it neither
@@ -967,7 +962,7 @@ instance of `FutureImplementation` until the program has made one.
   `builtins::execute` itself is the plain dispatch to the leaf. A resolved one
   is replaced by its value and the leaf runs again, in Rust. An unresolved one
   cannot be forced in Rust, since nothing re-enters the loop: the answer is a
-  step that activates the future's block under `Continuation::Future` with
+  step that runs the future's computation under `Continuation::Future` with
   `AfterForcing::Reexecute`, which records that activation's value and runs
   the caller's instruction again instead of the next one (`vm::reexecute`);
   the second time the future is resolved. This rests on an invariant written

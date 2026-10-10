@@ -6306,17 +6306,17 @@ it did and how far that reasoning is evidence.
 
 ## Running an instruction again after forcing a future
 
-An instruction that meets an unresolved future of a simultaneous slot clause
-where it needs the value -- `ResolveFuture`, `InitializeSlot` into a value's
+An instruction that meets an unresolved future where it needs the value -- `ResolveFuture`, `InitializeSlot` into a value's
 slot, and a send whose leaf declined, raised or answered "no" because an
 operand is a future -- cannot force it in Rust, since nothing re-enters the
-loop. It answers a step instead: the future's block, activated under
+loop. It answers a step instead: the future's computation -- its block
+activated, or `value` sent to anything else -- under
 `Continuation::Future`, whose `FutureForcing` carries
 `AfterForcing::Reexecute`. For `ResolveFuture` and `InitializeSlot`,
 `vm::force_and_reexecute` stores the instruction's `program_counter` -- `run`'s
 doc comment lists the instructions that must -- and pushes that step; a send
 has stored its `program_counter` already, and pushes a leaf's step as it
-pushes any. When the block returns, `vm::finish` hands its value
+pushes any. When the computation returns, `vm::finish` hands its value
 to `Mutator::future_computed`, which records it and answers a
 `FutureOutcome`: `Reexecute`, and `vm::reexecute` switches back to the
 caller at the stored `program_counter`, so the same instruction runs again

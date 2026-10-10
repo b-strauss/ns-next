@@ -522,8 +522,11 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
             .declaration
             .as_ref()
             .unwrap_or_else(|| panic!("internal: Kernel.ns's {name} was built from no source"));
+        // `FutureImplementation` alone takes its computation through its
+        // factory, so that `Future computing:` stores it untouched; a
+        // simultaneous slot clause makes its futures without sending it.
         assert!(
-            declaration.factory.is_none(),
+            declaration.factory.is_none() || kind == BuiltinClass::FutureImplementation,
             "internal: Kernel.ns's {name} declares a factory; a builtin's is `new`"
         );
         match (&declaration.superclass, kind) {

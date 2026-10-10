@@ -1158,33 +1158,35 @@ the value a collection would have put in its place anyway
 (`OBJECT_INSTANCE`) whose header is `CLASS_BUILTIN` followed by tag 30, the
 one other header besides an activation record's that names a
 kernel-private class; the walk does not visit that header as a reference, as
-it does not an activation's. Its two fields are its closure and the state 0.
-A future is *resolving* only while its block runs, and the image writer
-refuses a world with a running activation, so no image meets one; the
-encoder handles the case defensively all the same, writing it as
-unresolved, its closure still in the first field
-(`future::fields_for_an_image`), which is what an abandonment would make of
-it — a load starts no block, so nothing could finish resolving it.
+it does not an activation's. Its two fields are its computation -- a
+block, or any other value, `Future computing:`'s argument as it was handed
+over -- and the state 0. A future is *resolving* only while its
+computation runs, and the image writer refuses a world with a running
+activation, so no image meets one; the encoder handles the case
+defensively all the same, writing it as unresolved, its computation still
+in the first field (`future::fields_for_an_image`), which is what an
+abandonment would make of it — a load starts no computation, so nothing
+could finish resolving it.
 
 The decoder accepts tag 30 in an object's header alone
 (`decode_object_header`) and holds the record to what the encoder writes: an
-instance body of exactly two fields whose second is the state 0 and whose
-first, once every record is read, is a closure. Anything else under that
-header — another body, another field count, the state 1 or 2 or one that is
-none of the three, a computation that is no closure — is `FutureRecord`,
+instance body of exactly two fields whose second is the state 0; the
+first may be any value. Anything else under that header — another body,
+another field count, the state 1 or 2 or one that is none of the three —
+is `FutureRecord`,
 refused rather than decoded, so no image hands the runtime a future whose
 fields are no future's, and no resolved future stands apart from the value
 every other reference was written as. Crafted code can still store into a
 future's slots once it holds one -- a decoded frame may carry any receiver,
 and `InitializeSlot` stores into `self` unchecked -- so
 `Mutator::future_state` reads the fields as untrusted: a state that is none
-of the three, an unresolved future without a closure, or a resolved one
-whose value is a future is `FutureState::Malformed`, which forcing raises as
+of the three, or a resolved future whose value is a future, is
+`FutureState::Malformed`, which forcing raises as
 an ordinary error, the collector leaves in place, and the encoder refuses to
 write (`forcing_a_future_with_corrupted_fields_is_an_error_not_a_panic`,
 `tests/vm.rs`; `a_future_with_corrupted_fields_is_refused_by_the_encoder`,
 `tests/image.rs`). A graph that decodes a future sets the
-loading world's `futures_made`, as `Mutator::new_future` does, so the leaves
+loading world's `futures_made`, as making one does, so the leaves
 see through it and every check that stays off a program's paths until a
 future exists runs in the loaded world
 (`a_resolved_future_is_written_as_its_value`,

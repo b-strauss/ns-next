@@ -1,9 +1,8 @@
-(* A future handed to `Future computing:` is forced at the call, not when
-   the new future is: the row declines for it, since it is no closure, and
-   its failure path sees through the future it was handed, forcing it and
-   running the send again. Its value here is a block, so the new future is
-   a future of that block. *)
-class AFutureHandedToFutureComputingIsForcedAtTheCall = Object new (
+(* A future handed to `Future computing:` is not forced at the call, but
+   when the new future is: the factory stores it as it is, and forcing the
+   new future sends it `value`, which forces it then. Its value here is a
+   block, so the new future answers that block's value. *)
+class AFutureHandedToFutureComputingIsForcedWithTheNewOne = Object new (
     | ran ::= false. |
 ) (
     public main: platform args: arguments = (
