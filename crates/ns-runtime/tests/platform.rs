@@ -184,7 +184,7 @@ fn platform_collections_answers_the_collections_modules_list() {
 /// collections protocol) names a class this runtime does not have, and must
 /// fail loudly rather than quietly alias onto some other collection.
 #[test]
-fn platform_collections_does_not_invent_an_identity_map() {
+fn platform_collections_does_not_invent_an_identity_set() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
 
@@ -192,14 +192,14 @@ fn platform_collections_does_not_invent_an_identity_map() {
         interpreter.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
-    match interpreter.send(&collections, Symbol::intern("IdentityMap"), &[]) {
+    match interpreter.send(&collections, Symbol::intern("IdentitySet"), &[]) {
         Err(HostSignal::Error(error)) => assert!(
             error.message.contains("does not understand"),
             "message was: {}",
             error.message
         ),
         Err(HostSignal::Return) => panic!("unexpected HostSignal::Return"),
-        Ok(_) => panic!("expected `collections IdentityMap` to be refused"),
+        Ok(_) => panic!("expected `collections IdentitySet` to be refused"),
     }
 }
 

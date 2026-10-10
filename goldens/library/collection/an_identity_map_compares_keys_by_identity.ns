@@ -1,0 +1,37 @@
+(* An IdentityMap compares keys with `==` and hashes them with
+   `identityHash`: two equal keys that are distinct objects are two keys,
+   where a Map holds one. A value as key is found by an equal value, since
+   a value's `==` is `=`. It answers Map's protocol and its own
+   `at:putReplace:`, `at:ifAbsentPutVal:` and `atOrItself:`. *)
+class AnIdentityMapComparesKeysByIdentity = Object new () (
+    class Key named: theName = Object new (
+        | public name = theName. |
+    ) (
+        public = other = ( ^name = other name )
+        public hash = ( ^name hash )
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. collections = platform collections. first second equal identity |
+        first:: Key named: #k.
+        second:: Key named: #k.
+        equal:: collections Map new.
+        equal at: first put: 1.
+        equal at: second put: 2.
+        transcript show: equal size printString; show: ' '; show: (equal at: first) printString; newLine.
+        identity:: collections IdentityMap new.
+        identity at: first put: 1.
+        identity at: second put: 2.
+        transcript show: identity size printString; show: ' '; show: (identity at: first) printString; show: ' ';
+            show: (identity at: second) printString; newLine.
+        transcript show: (identity at: 'abc' put: 3; at: 'ab' , 'c') printString; newLine.
+        transcript show: (identity at: first putReplace: 10) printString; show: ' '; show: (identity at: first) printString; newLine.
+        transcript show: ([identity at: #missing putReplace: 1] on: collections NotFound do: [:error | error element]) printString; newLine.
+        transcript show: (identity at: first ifAbsentPutVal: 99) printString; show: ' ';
+            show: (identity at: (Key named: #new) ifAbsentPutVal: 7) printString; newLine.
+        transcript show: (identity atOrItself: #absent) printString; show: ' '; show: (identity atOrItself: first) printString; newLine.
+        transcript show: (identity collect: [:value | value]) class printString; newLine.
+        transcript show: identity isKindOfIdentityMap printString; show: ' '; show: identity isKindOfMap printString; show: ' ';
+            show: equal isKindOfIdentityMap printString; newLine.
+        transcript show: (identity removeKey: second) printString; show: ' '; show: identity size printString; newLine.
+    )
+) : ()

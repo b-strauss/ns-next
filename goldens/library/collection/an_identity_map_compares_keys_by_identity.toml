@@ -1,0 +1,12 @@
+stdout = '''
+1 2
+2 1 2
+3
+10 10
+#missing
+false true
+#absent 10
+IdentityMap
+true true false
+2 3
+'''

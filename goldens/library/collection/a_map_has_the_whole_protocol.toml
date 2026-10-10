@@ -1,0 +1,26 @@
+stdout = '''
+#a->1 #b->2 #c->3 
+3 false
+0
+4 4
+true false
+2
+#gone
+#b
+key not found: #b
+#a->1 #c->3 #d->4 
+1 3 4 
+true false
+8
+#a->10 #c->30 #d->40 
+#c->3 #d->4 
+#a->1 
+Map
+#a #c #d
+1 3 4
+3 4
+#a->1 #c->3 #d->4 #e->5 
+4
+#a->100 #c->3 #d->4 #e->5 
+0 true
+'''

@@ -615,7 +615,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity.
           private modifications ::= 0. |
     ) ( ... ) : ( public new = ( ^self new: 3 ) )
-    private class Map new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class Map new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class IdentityMap new: capacity = Map new: capacity () ( ... ) : ( ... )
     private class Set new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     public newCollections = ( ^Collections new )
 ) : ()
@@ -910,8 +911,8 @@ with the selectors the programs that asked for it send: `List` because
 collections List`, and the Are We Fast Yet benchmarks of stage 3 widen it;
 `Map` and `Set` because DeltaBlue and Havlak need them ("The collections
 module (plan 2)" below). The corpus also asks that namespace for
-`IdentityMap`, `IdentitySet`, `WeakArray` and `Collection`; `IdentityMap`,
-`WeakArray` and `Collection` come with the completed core, and
+`IdentitySet`, `WeakArray` and `Collection`; `WeakArray` and
+`Collection` come with the completed core, and
 `IdentitySet`, which Primordial Soup does not have, does not. None is ever
 an alias of `List`, `Map` or `Set`, which compare by `=` and hold their
 elements strongly.
@@ -2621,16 +2622,9 @@ its class. That needs its own decision when the first such module arrives.
   `Array>>at:`'s text, "index 3 out of range: valid indices are 1..2
   (size 2)", so a program sees one error from either
   (`goldens/library/collection/a_list_index_error_is_caught_as_an_error`).
-- **`Map` and `Set`, built** (2026-10-01), adapted from Primordial Soup's
-  `newspeak/Collections.ns` (Apache 2.0) for DeltaBlue and Havlak, which
-  use SOMns's `Dictionary`, `IdentityDictionary`, `Set` and `IdentitySet`.
-  Each is an insertion-ordered hash table: the elements, or a `Map`'s keys
-  and values side by side, in `data_` in the order they were first added,
-  and `hashtable_`, an open-addressing table of their indices in `data_`,
-  0 marking an empty bucket, kept at most three quarters full. A key or an
-  element is found by its `hash` and compared with `=`; a `Map`'s `at:`
-  signals a `NotFound` for an absent key, "key not found: …", and a
-  negative capacity is an `ArgumentError`. `NotFound` is the collections
+- **`Map` and `Set`, built** (2026-10-01), for DeltaBlue and Havlak, which
+  use SOMns's `Dictionary`, `IdentityDictionary`, `Set` and `IdentitySet`;
+  `Map` has since been written anew, below. `NotFound` is the collections
   module's own class, an `Error` carrying the key in its slot `element`,
   reached as `platform collections NotFound` and built by
   `NotFound element: key`; its `description` is `messageText`, or
@@ -2638,22 +2632,50 @@ its class. That needs its own decision when the first such module arrives.
   (`goldens/library/collection/a_missing_key_signals_not_found`). The
   errors of a `List` or a `Set` that have no such class stay `Error`s with
   texts of their own: an empty `List`'s `removeFirst` and `removeLast`.
-  Primordial Soup's `transient` slot
-  `hashtable_ ::= rehash` is ns-next's `lazy` slot, the same getter
-  (§6.3.3), so the table is rebuilt from `data_` whenever it is `nil`;
-  that an image writes a lazy slot's value, where §6.3.3 intends it never
-  be persisted, is [OPEN-WORK.md](../OPEN-WORK.md)'s "Whether an image
-  carries a lazy slot's value". Changed from Primordial Soup's: only what
-  the benchmarks send -- `Map`'s `new`, `new:`, `at:`, `at:put:`, `keys`
-  and `removeAll`, `Set`'s `new`, `new:`, `add:`, `do:` and `size` --
-  so there is no removal of single elements and no deleted marks; a lookup
-  answers the element's index in `data_`, so that no operation reads the
-  table twice; `removeAll` keeps the capacity, as the Are We Fast Yet
-  `Dictionary` does, because Havlak empties and refills its map for every
-  loop search. As `List`'s, the representation -- `size_`, `data_`,
-  `hashtable_` and every helper -- is private, where Primordial Soup's is
-  protected. `goldens/library/collection/a_map_and_a_set_keep_insertion_order`
-  pins both.
+  `Set` is an insertion-ordered hash table: its elements in `data_` in the
+  order they were first added, and `hashtable_`, an open-addressing table
+  of their indices in `data_`, 0 marking an empty bucket, kept at most
+  three quarters full, an element found by its `hash` and compared with
+  `=`. The `transient` slot `hashtable_ ::= rehash` is ns-next's `lazy`
+  slot, the same getter (§6.3.3), so the table is rebuilt from `data_`
+  whenever it is `nil`; that an image writes a lazy slot's value, where
+  §6.3.3 intends it never be persisted, is
+  [OPEN-WORK.md](../OPEN-WORK.md)'s "Whether an image carries a lazy
+  slot's value". `Set` has only what the benchmarks send -- `new`, `new:`,
+  `add:`, `do:` and `size` -- so no removal of single elements and no
+  deleted marks; a lookup answers the element's index in `data_`, so that
+  no operation reads the table twice. As `List`'s, the representation --
+  `size_`, `data_`, `hashtable_` and every helper -- is private.
+  `goldens/library/collection/a_map_and_a_set_keep_insertion_order` pins
+  both.
+- **`Map` under `Collection`, with removal, and `IdentityMap`, built.**
+  A `Map` is a `Collection` whose elements are its values: `do:`,
+  `includes:`, `inject:into:` and the rest visit them, and `collect:`,
+  `select:` and `reject:` answer Maps of the same keys, built by the
+  protected `newForCollectUsingAdd:`. It keeps the layout above -- keys and
+  values side by side in `data_`, `hashtable_` a `lazy` slot rebuilt by
+  `rehash` -- and adds removal: `removeKey:` overwrites the key in `data_`
+  with the per-instance `removed` mark, an `Array` no program can reach, so
+  no key is ever `==` to it, and the key's bucket stays in the probe chain
+  as a tombstone that lookups pass. Growth, when `data_` is full, copies
+  only the live entries, in order, into new arrays, which drops the marks
+  and the tombstones together; so a key stored again after its removal
+  comes last in the order, and a long run of removals and insertions never
+  fills the table with tombstones. `removeAll` keeps the capacity, as the
+  Are We Fast Yet `Dictionary` does, because Havlak empties and refills its
+  map for every loop search. Adding or removing a key counts as a
+  modification, and an iteration signals `ConcurrentModification` after the
+  block that did it; storing under an existing key does not
+  (`goldens/library/collection/a_map_changed_while_iterated_signals`).
+  `IdentityMap` is a subclass of `Map` that overrides only the protected
+  `hashOf:`, `is:sameAs:` and `newForCollectUsingAdd:` -- `identityHash` and
+  `==` where `Map` uses `hash` and `=` -- and adds `at:putReplace:`,
+  `at:ifAbsentPutVal:` and `atOrItself:`. It is not a separate kernel class
+  because nothing in the kernel needs one: the table is the collections
+  module's, and the two differ in two private-protocol hooks, not in a
+  representation. A class side is not inherited, so `IdentityMap` declares
+  its own `new` and `withAll:`
+  (`goldens/library/collection/an_identity_map_compares_keys_by_identity`).
 - **The handler search keeps no `OrderedCollection`, built.** `invokeNextHandler`
   counts the enabled `on:do:` activations it passes, and
   `invokeHandlerAt:disabling:` fills an `Array new: count` by walking the same range
@@ -3008,7 +3030,7 @@ answers and error cases follow Primordial Soup's, so its behaviour may be
 reproduced exactly, but every body is written from that description, not
 adapted from Primordial Soup's source, and the shipped modules name no
 other project in their comments (decided with the user on 2026-10-06).
-`List`, `Map` and `Set`, adapted today, are rewritten in the same way, so
+`List` and `Map` are rewritten in the same way, as is `Set` to come, so
 that `CollectionsFactory.ns` loses its licence header and
 `THIRD-PARTY-NOTICES.md` its entry for it.
 

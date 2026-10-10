@@ -21,13 +21,13 @@
    A value (§3.1.1), so that its facet is one and the platform, a value,
    may hold the facet in a slot.
 
-   `List` is a `Collection` of the kernel written here; `Map` and `Set`
-   are adapted from Primordial Soup's Collections.ns
+   `List` and `Map` are `Collection`s of the kernel written here; `Set`
+   is adapted from Primordial Soup's Collections.ns
    (https://github.com/rmacnak/primordialsoup, commit
    338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Collections.ns).
    Changed for ns-next: only the selectors the corpus, the goldens and the
-   Are We Fast Yet benchmarks send (the on-demand rule); `Map` and `Set`
-   have no removal of single elements and so no deleted marks; a hash
+   Are We Fast Yet benchmarks send (the on-demand rule); `Set`
+   has no removal of single elements and so no deleted marks; a hash
    table lookup answers the element's index in the data array, so that no
    operation reads the hash table twice; errors are the kernel's
    `ArgumentError` and this module's `NotFound` where those apply, and
@@ -72,17 +72,22 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* The `NotFound` class: an Error carrying the element or key a
            collection was asked for and does not hold. *)
         public NotFound = ( ^outer CollectionsFactory NotFound )
-        (* The `Map` class: `Map new`, or `Map new: capacity`. A negative
-           capacity signals an ArgumentError, 'new: requires a capacity of at
-           least 0, got …', a Float, a LargeInteger or a capacity whose array size
-           `(capacity + 1) * 2` passes the SmallInteger range, from 2^62 - 1
-           on, 'new: requires an Integer size, got …', any other capacity
-           too large to allocate 'new: cannot allocate an Array of …
-           elements', and one that is no number a MessageNotUnderstood for
-           `<`. Both texts show the array size, not the capacity. *)
+        (* Answers the `Map` class: `Map new`, `Map new: capacity` or
+           `Map withAll: aMap`. Signals an ArgumentError, 'new: requires a
+           capacity of at least 0, got …', for a negative capacity; a Float,
+           a LargeInteger or a capacity whose array size `(capacity + 1) * 2`
+           passes the SmallInteger range, from 2^62 - 1 on, 'new: requires an
+           Integer size, got …'; any other capacity too large to allocate
+           'new: cannot allocate an Array of … elements'; and one that is no
+           number a MessageNotUnderstood for `<`. Both texts show the array
+           size, not the capacity. *)
         (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
-           it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
+           it. *)
         public Map = ( ^outer CollectionsFactory Map )
+        (* Answers the `IdentityMap` class: a Map comparing keys with `==`.
+           `IdentityMap new`, or `IdentityMap new: capacity`, which
+           signals what `Map new:` signals. *)
+        public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
         (* The `Set` class: `Set new`, or `Set new: capacity`. A negative
            capacity signals an ArgumentError, 'new: requires a capacity of at
            least 0, got …', a Float, a LargeInteger or a capacity of 2^63 - 1 or more
@@ -535,29 +540,58 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* Answers a new NotFound carrying `missing`, not yet signalled. *)
         public element: missing = ( ^self new element: missing )
     )
-    (* A map holding keys and values side by side in `data_`, in insertion
-       order, and `hashtable_`, an open-addressing table of the keys'
-       indices in `data_`, 0 marking an empty bucket. A key is found by its
-       `hash` and compared with `=`; `at:` signals when the key is absent.
-       The table is kept at most three quarters full, so a probe always
-       meets an empty bucket. Only what
-       `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` send is
-       here: `new`, `at:`, `at:put:`, `keys` and `removeAll`. *)
-    (* Primordial Soup's `Map`. *)
-    private class Map new: capacity = Object new (
+    (* A table from keys to values: `Map new`, `Map new: 20`,
+       `Map withAll: aMap`. A key is found by its `hash` and compared with
+       `=`; every key's `hash` must agree with its `=`. Keys keep the order
+       they were first stored in: storing an existing key keeps its place,
+       a removed key leaves the order, and one stored again after its
+       removal comes last.
+
+       A Collection whose elements are the values: `do:`, `includes:` and
+       the rest of Collection's protocol visit them, and `collect:`,
+       `select:` and `reject:` answer Maps of the same keys.
+
+       Adding or removing a key while `do:`, `keysAndValuesDo:` or anything
+       built on them runs over the map signals a ConcurrentModification
+       after the block that did it; storing a value under an existing key
+       does not. *)
+    (* The keys and values lie side by side in `data_`, in the order they
+       were stored, and `hashtable_` is an open-addressing table of their
+       indices in `data_`, 0 marking an empty bucket. A removal overwrites
+       the key with `removed`, which no lookup can match, so its bucket
+       stays in the probe chain as a tombstone; growing copies only the
+       live entries, which compacts both. *)
+    private class Map new: capacity = kernelCollection new (
+        (* The number of keys the map holds. *)
         | private size_ ::= 0.
-          private data_ ::= nil. |
+          (* The number of entries `data_` has been given since the table
+             was last built, removed ones included: the next entry goes at
+             `used_ * 2 + 1`. *)
+          private used_ ::= 0.
+          (* The keys and values, side by side in storing order; a removed
+             entry's key is `removed` and its value nil. *)
+          private data_ ::= nil.
+          (* The number of keys added or removed so far; an iteration
+             compares it after every block. *)
+          private modifications ::= 0.
+          (* The removed mark: an object no program can reach, so no key is
+             ever `==` to it. *)
+          private removed = Array new: 0. |
         createTable: capacity
     ) (
-        (* True: the receiver is a Map. *)
+        (* Answers true: the receiver is a Map. *)
         public isKindOfMap = ( ^true )
-        (* Primordial Soup's transient slot, rebuilt from `data_` whenever
-           it is nil. Every read runs its getter, so each operation reads
-           it once and hands the table on. *)
+        (* The table of the indices in `data_`, rebuilt from `data_` by
+           `rehash` whenever it is nil. *)
         private lazy hashtable_ ::= rehash.
-        (* The value stored under `key`, found by `hash` and `=`. Signals a
-           NotFound carrying the key, 'key not found: …' with the key's
-           `printString`, for a key that is absent. *)
+        (* Answers the number of keys. *)
+        public size = ( ^size_ )
+        (* Answers whether the map holds no key. *)
+        public isEmpty = ( ^0 = size_ )
+        (* Answers the value stored under `key`.
+
+           Signals a NotFound carrying `key`, 'key not found: …' and the
+           key's `printString`, when the map holds no such key. *)
         public at: key = (
             | keyIndex |
             keyIndex:: scanFor: key in: hashtable_.
@@ -565,96 +599,265 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 ^(NotFound element: key) signal: 'key not found: ', key printString].
             ^data_ at: keyIndex + 1
         )
+        (* Answers the value stored under `key`, or the value of `onAbsent`
+           when the map holds no such key.
+
+           onAbsent: anything understanding `value`; sent it only when the
+               key is absent. *)
+        public at: key ifAbsent: onAbsent = (
+            | keyIndex |
+            keyIndex:: scanFor: key in: hashtable_.
+            keyIndex < 0 ifTrue: [^onAbsent value].
+            ^data_ at: keyIndex + 1
+        )
+        (* Answers the value stored under `key`; when the map holds no such
+           key, stores the value of `generator` under it and answers that.
+
+           generator: anything understanding `value`; sent it only when the
+               key is absent. *)
+        public at: key ifAbsentPut: generator = (
+            ^self at: key ifAbsent: [self at: key put: generator value]
+        )
         (* Stores `value` under `key` and answers `value`. A new key comes
-           last in the order; a key already present keeps its place. *)
+           last in the order and counts as a change for an iteration
+           running meanwhile; an existing key keeps its place and does not. *)
         public at: key put: value = (
             | table keyIndex |
             table:: hashtable_.
             keyIndex:: scanFor: key in: table.
-            keyIndex < 0 ifTrue: [^insert: 0 - keyIndex in: table key: key value: value].
+            keyIndex < 0 ifTrue: [^insert: key value: value at: 0 - keyIndex in: table].
             data_ at: keyIndex + 1 put: value.
             ^value
         )
-        (* A new Array of the keys, in the order they were first stored. *)
-        public keys = (
-            | result data index |
-            result:: Array new: size_.
+        (* Answers whether the map holds `key`. *)
+        public includesKey: key = ( ^(scanFor: key in: hashtable_) > 0 )
+        (* Removes `key` and answers the value it had.
+
+           Signals a NotFound carrying `key`, 'key not found: …' and the
+           key's `printString`, when the map holds no such key. *)
+        public removeKey: key = (
+            ^self removeKey: key ifAbsent: [
+                (NotFound element: key) signal: 'key not found: ', key printString]
+        )
+        (* Removes `key` and answers the value it had; when the map holds no
+           such key, answers the value of `onAbsent` and leaves the map
+           unchanged.
+
+           onAbsent: anything understanding `value`. *)
+        public removeKey: key ifAbsent: onAbsent = (
+            | keyIndex value |
+            keyIndex:: scanFor: key in: hashtable_.
+            keyIndex < 0 ifTrue: [^onAbsent value].
+            value:: data_ at: keyIndex + 1.
+            data_ at: keyIndex put: removed.
+            data_ at: keyIndex + 1 put: nil.
+            size_:: size_ - 1.
+            modifications:: modifications + 1.
+            ^value
+        )
+        (* Removes every key and answers the receiver; the capacity stays. *)
+        (* `benchmarks/are-we-fast-yet/Havlak.ns` empties its map for every
+           loop search and fills it again with as many nodes. *)
+        public removeAll = (
+            createTable: data_ size // 2 - 1.
+            modifications:: modifications + 1
+        )
+        (* Stores every key and value of `aMap` in the receiver, in
+           `aMap`'s order, and answers `aMap`. The receiver itself as
+           `aMap` changes nothing.
+
+           aMap: a Map, or anything understanding `keysAndValuesDo:`. *)
+        public addAll: aMap = (
+            aMap keysAndValuesDo: [:key :value | self at: key put: value].
+            ^aMap
+        )
+        (* Evaluates `action` with each value, in the order of the keys, and
+           answers the receiver.
+
+           action: a one-argument block, or anything understanding
+               `value:`.
+
+           Signals a ConcurrentModification after the evaluation of
+           `action` that added or removed a key. *)
+        public do: action = (
+            | data end expected keyIndex |
             data:: data_.
-            index:: 1.
-            [index <= size_] whileTrue: [
-                result at: index put: (data at: index * 2 - 1).
-                index:: index + 1].
+            end:: used_ * 2.
+            expected:: modifications.
+            keyIndex:: 1.
+            [keyIndex < end] whileTrue: [
+                (data at: keyIndex) == removed ifFalse: [
+                    action value: (data at: keyIndex + 1).
+                    expected = modifications ifFalse: [^signalModificationOf: self]].
+                keyIndex:: keyIndex + 2]
+        )
+        (* Evaluates `action` with each key and its value, in the order of
+           the keys, and answers the receiver.
+
+           action: a two-argument block, given the key and the value.
+
+           Signals a ConcurrentModification as `do:` does. *)
+        public keysAndValuesDo: action = (
+            | data end expected keyIndex |
+            data:: data_.
+            end:: used_ * 2.
+            expected:: modifications.
+            keyIndex:: 1.
+            [keyIndex < end] whileTrue: [
+                (data at: keyIndex) == removed ifFalse: [
+                    action value: (data at: keyIndex) value: (data at: keyIndex + 1).
+                    expected = modifications ifFalse: [^signalModificationOf: self]].
+                keyIndex:: keyIndex + 2]
+        )
+        (* Answers a new Array of the keys, in their order. *)
+        public keys = ( ^self entriesAt: 0 )
+        (* Answers a new Array of the values, in the order of the keys. *)
+        public values = ( ^self entriesAt: 1 )
+        (* Answers a new map, from `newForCollectUsingAdd:` -- a Map, an
+           IdentityMap for an IdentityMap -- holding each key with
+           `transform`'s answer for its value, in the same order.
+
+           transform: a one-argument block, given a value.
+
+           Signals a ConcurrentModification as `keysAndValuesDo:` does. *)
+        public collect: transform = (
+            | result |
+            result:: self newForCollectUsingAdd: size_.
+            self keysAndValuesDo: [:key :value | result at: key put: (transform value: value)].
             ^result
         )
-        (* Removes every key and its value, and answers the receiver. *)
-        (* Keeps the capacity, as the Are We Fast Yet `Dictionary>>removeAll`
-           does: `benchmarks/are-we-fast-yet/Havlak.ns` empties its map of
-           depth-first numbers for every loop search and fills it again with
-           as many nodes. *)
-        public removeAll = (
-            createTable: data_ size // 2 - 1
+        (* Answers a new map, from `newForCollectUsingAdd:`, holding the
+           keys whose values `predicate` answers true for, with their
+           values, in the same order.
+
+           predicate: a one-argument block answering a Boolean, given a
+               value.
+
+           Signals a ConcurrentModification as `keysAndValuesDo:` does. *)
+        public select: predicate = (
+            | result |
+            result:: self newForCollectUsingAdd: size_.
+            self keysAndValuesDo: [:key :value |
+                (predicate value: value) ifTrue: [result at: key put: value]].
+            ^result
         )
-        (* Answers the new hash table. *)
+        (* Answers a new map, from `newForCollectUsingAdd:`, holding the
+           keys whose values `predicate` answers false for, with their
+           values, in the same order.
+
+           predicate: a one-argument block answering a Boolean, given a
+               value.
+
+           Signals a ConcurrentModification as `keysAndValuesDo:` does. *)
+        public reject: predicate = ( ^self select: [:value | (predicate value: value) not] )
+        (* Answers a new, empty Map with room for `capacity` keys: what
+           `collect:`, `select:` and `reject:` fill. *)
+        protected newForCollectUsingAdd: capacity = ( ^Map new: capacity )
+        (* Answers the hash a key is found by: its `hash`. A subclass that
+           overrides it overrides `is:sameAs:` to agree. *)
+        protected hashOf: key = ( ^key hash )
+        (* Answers whether `key` is the key `stored`: `key = stored`. *)
+        protected is: key sameAs: stored = ( ^key = stored )
+        (* Answers a new Array of the live entries' keys (`offset` 0) or
+           values (`offset` 1), in storing order. *)
+        private entriesAt: offset = (
+            | result data end count keyIndex |
+            result:: Array new: size_.
+            data:: data_.
+            end:: used_ * 2.
+            count:: 0.
+            keyIndex:: 1.
+            [keyIndex < end] whileTrue: [
+                (data at: keyIndex) == removed ifFalse: [
+                    count:: count + 1.
+                    result at: count put: (data at: keyIndex + offset)].
+                keyIndex:: keyIndex + 2].
+            ^result
+        )
+        (* Empties the map with room for `count + 1` entries -- `data_` of
+           twice that, the table a third larger so it stays at most three
+           quarters full -- and answers the new table.
+
+           count: an Integer of at least 0.
+
+           Signals an ArgumentError carrying `count`, 'new: requires a
+           capacity of at least 0, got …', for a negative `count`, and what
+           `Array new:` signals for a size that is no Integer or too large. *)
         private createTable: count = (
-            | table index |
+            | table |
             count < 0 ifTrue: [
                 ^(kernelModule ArgumentError value: count)
                     signal: 'new: requires a capacity of at least 0, got ', count printString].
             size_:: 0.
+            used_:: 0.
             data_:: Array new: count + 1 * 2.
             table:: Array new: count + 1 * 4 // 3.
-            index:: table size.
-            [index > 0] whileTrue: [
-                table at: index put: 0.
-                index:: index - 1].
+            1 to: table size do: [:index | table at: index put: 0].
             hashtable_:: table.
             ^table
         )
-        private insert: bucketIndex in: table key: key value: value = (
+        (* Stores a new entry at the end of `data_`, its index in the empty
+           bucket `bucketIndex` of `table`, counts it as a change, grows the
+           map when `data_` is full, and answers `value`. *)
+        private insert: key value: value at: bucketIndex in: table = (
             | keyIndex |
-            keyIndex:: size_ * 2 + 1.
-            size_:: size_ + 1.
+            keyIndex:: used_ * 2 + 1.
             data_ at: keyIndex put: key.
             data_ at: keyIndex + 1 put: value.
             table at: bucketIndex put: keyIndex.
+            used_:: used_ + 1.
+            size_:: size_ + 1.
+            modifications:: modifications + 1.
             keyIndex + 2 > data_ size ifTrue: [rehash].
             ^value
         )
-        (* With no removal, every entry keeps its index in `data_`. *)
+        (* Builds a new table, with room for twice the live entries, from
+           the live entries of `data_` in their order, dropping the removed
+           ones, and answers it. Runs when `data_` is full, and when the
+           table slot is nil. *)
         private rehash = (
-            | oldData end table newData keyIndex |
+            | oldData oldEnd table keyIndex key newIndex |
             oldData:: data_.
-            end:: size_ * 2.
+            oldEnd:: used_ * 2.
             table:: createTable: size_ * 2.
-            newData:: data_.
             keyIndex:: 1.
-            [keyIndex < end] whileTrue: [
-                table at: (emptyBucketFor: (oldData at: keyIndex) in: table) put: keyIndex.
-                newData at: keyIndex put: (oldData at: keyIndex).
-                newData at: keyIndex + 1 put: (oldData at: keyIndex + 1).
+            [keyIndex < oldEnd] whileTrue: [
+                key:: oldData at: keyIndex.
+                key == removed ifFalse: [
+                    newIndex:: used_ * 2 + 1.
+                    data_ at: newIndex put: key.
+                    data_ at: newIndex + 1 put: (oldData at: keyIndex + 1).
+                    table at: (emptyBucketFor: key in: table) put: newIndex.
+                    used_:: used_ + 1.
+                    size_:: size_ + 1].
                 keyIndex:: keyIndex + 2].
-            size_:: end // 2.
             ^table
         )
-        (* Answers the key's index in `data_`, or the negated index of the
-           empty bucket where it belongs. *)
+        (* Answers the index in `data_` of `key`, or the negated index of the
+           empty bucket of `table` where it belongs. Probes from the key's
+           `hashOf:` bucket onwards, passing removed entries. *)
         private scanFor: key in: table = (
-            | data tableSize bucketIndex keyIndex |
+            | data tableSize bucketIndex keyIndex stored |
             data:: data_.
             tableSize:: table size.
-            bucketIndex:: key hash \\ tableSize + 1.
+            bucketIndex:: (self hashOf: key) \\ tableSize + 1.
             [true] whileTrue: [
                 keyIndex:: table at: bucketIndex.
                 0 = keyIndex ifTrue: [^0 - bucketIndex].
-                key = (data at: keyIndex) ifTrue: [^keyIndex].
+                stored:: data at: keyIndex.
+                (stored == removed) ifFalse: [
+                    (self is: key sameAs: stored) ifTrue: [^keyIndex]].
                 bucketIndex = tableSize
                     ifTrue: [bucketIndex:: 1]
                     ifFalse: [bucketIndex:: bucketIndex + 1]]
         )
+        (* Answers the index of the first empty bucket of `table` from
+           `key`'s `hashOf:` bucket onwards: where a key not yet in it
+           goes. *)
         private emptyBucketFor: key in: table = (
             | tableSize bucketIndex |
             tableSize:: table size.
-            bucketIndex:: key hash \\ tableSize + 1.
+            bucketIndex:: (self hashOf: key) \\ tableSize + 1.
             [0 = (table at: bucketIndex)] whileFalse: [
                 bucketIndex = tableSize
                     ifTrue: [bucketIndex:: 1]
@@ -662,8 +865,63 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^bucketIndex
         )
     ) : (
-        (* An empty Map, `Map new: 3`. *)
+        (* Answers an empty map with room for 3 keys, `new: 3`. *)
         public new = ( ^self new: 3 )
+        (* Answers a new map of `aMap`'s keys and values, in its order.
+
+           aMap: a Map, or anything answering `size` and understanding
+               `keysAndValuesDo:`. *)
+        public withAll: aMap = ( ^(self new: aMap size) addAll: aMap; yourself )
+    )
+    (* A Map that compares keys with `==` and finds them by their
+       `identityHash`: two distinct objects are two keys however `=` they
+       are, and no key's `=` or `hash` is ever sent. A value as key behaves
+       as in a Map, since a value's `==` is its `=` and its `identityHash`
+       its `hash`. Everything else is Map's: the order, removal,
+       ConcurrentModification. *)
+    private class IdentityMap new: capacity = Map new: capacity (
+    ) (
+        (* Answers true: the receiver is an IdentityMap. *)
+        public isKindOfIdentityMap = ( ^true )
+        (* Answers the hash a key is found by: its `identityHash`. *)
+        protected hashOf: key = ( ^key identityHash )
+        (* Answers whether `key` is the key `stored`: `key == stored`. *)
+        protected is: key sameAs: stored = ( ^key == stored )
+        (* Answers a new, empty IdentityMap with room for `capacity` keys:
+           what `collect:`, `select:` and `reject:` fill. *)
+        protected newForCollectUsingAdd: capacity = ( ^IdentityMap new: capacity )
+        (* Stores `value` under `key`, which the map must hold already, and
+           answers `value`.
+
+           Signals a NotFound carrying `key`, 'key not found: …' and the
+           key's `printString`, when the map holds no such key, and stores
+           nothing. *)
+        public at: key putReplace: value = (
+            (self includesKey: key) ifFalse: [
+                ^(NotFound element: key) signal: 'key not found: ', key printString].
+            ^self at: key put: value
+        )
+        (* Stores `value` under `key` when the map holds no such key, and
+           answers true; answers false, storing nothing, when it does. *)
+        public at: key ifAbsentPutVal: value = (
+            (self includesKey: key) ifTrue: [^false].
+            self at: key put: value.
+            ^true
+        )
+        (* Answers the value stored under `key`, or `key` itself when the
+           map holds no such key. *)
+        public atOrItself: key = ( ^self at: key ifAbsent: [key] )
+    ) : (
+        (* Answers an empty identity map with room for 3 keys, `new: 3`. *)
+        (* A class side is not inherited, so the factories `Map` declares
+           are declared here again. *)
+        public new = ( ^self new: 3 )
+        (* Answers a new identity map of `aMap`'s keys and values, in its
+           order.
+
+           aMap: a Map, or anything answering `size` and understanding
+               `keysAndValuesDo:`. *)
+        public withAll: aMap = ( ^(self new: aMap size) addAll: aMap; yourself )
     )
     (* A set holding its elements in `data_`, in insertion order, and
        `hashtable_`, an open-addressing table of their indices, as `Map`
