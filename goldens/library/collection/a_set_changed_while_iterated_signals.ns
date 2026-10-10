@@ -1,0 +1,15 @@
+(* A Set changed while it is iterated -- an element added or removed
+   inside the block -- signals a ConcurrentModification; adding an element
+   equal to one it holds replaces it and does not. *)
+class ASetChangedWhileIteratedSignals = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. collections = platform collections. Modified = collections ConcurrentModification. set |
+        set:: collections Set withAll: {1. 2}.
+        transcript show: ([set do: [:each | set add: each + 10]] on: Modified do: [:error | #added]) printString; newLine.
+        transcript show: ([set do: [:each | set remove: each]] on: Modified do: [:error | #removed]) printString; newLine.
+        set:: collections Set withAll: {1. 2}.
+        set do: [:each | set add: each].
+        set do: [:each | transcript show: each printString; show: ' '].
+        transcript newLine.
+    )
+) : ()

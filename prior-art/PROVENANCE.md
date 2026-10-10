@@ -99,11 +99,8 @@ code. `ns-next`'s own license is at `LICENSE`.
   `benchmarks/are-we-fast-yet/AreWeFastYet.ns` from
   `newspeak/BenchmarkRunner.ns`, `RichardsTon80.ns` from
   `newspeak/Richards.ns` and `DeltaBlueTon80.ns` from
-  `newspeak/DeltaBlue.ns`, and `List`, `Map` and `Set` in
-  `crates/ns-runtime/core-library/CollectionsFactory.ns` from
-  `newspeak/Collections.ns` (with `List>>sort:`'s merge sort from
-  `newspeak/KernelForPrimordialSoup.ns`), with its notice and the licence
-  text in `THIRD-PARTY-NOTICES.md`.
+  `newspeak/DeltaBlue.ns`, with its notice and the licence text in
+  `THIRD-PARTY-NOTICES.md`.
 - `somns` — MIT, Stefan Marr and Michael Haupt / Hasso Plattner Institute; see
   `prior-art/somns/LICENSE`. Code is adapted from it: the benchmarks in
   `benchmarks/are-we-fast-yet/`, from `core-lib/Benchmarks/`, with its
@@ -125,12 +122,11 @@ code. `ns-next`'s own license is at `LICENSE`.
 
 Reading these to understand a design is fine. Copying code out of any of them
 into `ns-next` is a licensing decision, not a technical one. It has been made
-three times: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
+twice: `crates/ns-runtime/src/arbitrary_integer/` adapts code from `num-bigint`
 and `num-integer`, taken under MIT, and `benchmarks/are-we-fast-yet/` adapts
 the Are We Fast Yet benchmarks from `somns` (MIT) and its harness,
 `RichardsTon80.ns` and `DeltaBlueTon80.ns` from `primordialsoup` (Apache
-2.0), from which `CollectionsFactory.ns` adapts its `List`, `Map` and `Set`
-too. `THIRD-PARTY-NOTICES.md` at the repository
+2.0). `THIRD-PARTY-NOTICES.md` at the repository
 root carries every one of those notices and licence texts. Each adapted file
 names its source in a header. Nothing has been copied from any other
 submodule.

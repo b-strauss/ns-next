@@ -1,13 +1,19 @@
-(* The Core Library's collections module (§8.3: the platform "provides
-   accessors to various modules"; docs/design/core-library.md, "The
-   collections module"), in the factory pattern `PlatformFactory.ns` is
-   written in.
+(* The collections module: the growable Collections a program computes
+   with -- `List`, `Map`, `IdentityMap` and `Set` -- and the Errors they
+   signal, `NotFound` and `ConcurrentModification`, reached through
+   `platform collections`. Built once per kernel by the platform
+   (`PlatformFactory`'s `collectionsModule`), with the kernel it was built
+   on, from which it takes `Collection`, `Error`, `ArgumentError` and
+   `Array`.
 
-   This root holds what is privileged -- the kernel instance -- and nothing
-   hands its instance to a program: `PlatformFactory`'s root builds it once,
-   through the mirror's `moduleNamed:`, sends it `newCollections`, its one
-   public member, and keeps it in a private lazy slot. What a program gets
-   is the `Collections` facet `newCollections` answers, which hands out this
+   theKernel: the kernel module instance; its `Collection` and `Error` are
+       the superclasses of the classes here. *)
+(* The factory pattern `PlatformFactory.ns` is written in. This root holds
+   what is privileged -- the kernel instance -- and nothing hands its
+   instance to a program: the platform's root builds it once, through the
+   mirror's `moduleNamed:`, sends it `newCollections`, its one public
+   member, and keeps it in a private lazy slot. What a program gets is the
+   `Collections` facet `newCollections` answers, which hands out this
    module's classes by class accessors, each exactly `^outer
    CollectionsFactory <Name>` -- a lexical send, which reaches the root's
    private classes (§5.9), and which an image names by its path from the
@@ -16,34 +22,14 @@
    no program can build one over something that is not the kernel. Keep it
    so: no code whose receiver is this root's instance may send it anything
    it does not understand, since a `MessageNotUnderstood` hands its
-   receiver to whoever catches it.
-
-   A value (§3.1.1), so that its facet is one and the platform, a value,
-   may hold the facet in a slot.
-
-   `List` and `Map` are `Collection`s of the kernel written here; `Set`
-   is adapted from Primordial Soup's Collections.ns
-   (https://github.com/rmacnak/primordialsoup, commit
-   338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/Collections.ns).
-   Changed for ns-next: only the selectors the corpus, the goldens and the
-   Are We Fast Yet benchmarks send (the on-demand rule); `Set`
-   has no removal of single elements and so no deleted marks; a hash
-   table lookup answers the element's index in the data array, so that no
-   operation reads the hash table twice; errors are the kernel's
-   `ArgumentError` and this module's `NotFound` where those apply, and
-   `Error`s with texts of their own otherwise, where Primordial Soup sends
-   the undefined `errorEmpty`; `>>` and `|` on integers are written with
-   `//` and `bitOr:`; names are written out.
-
-   Copyright 2008, the Newspeak project authors.
-
-   Licensed under the Apache License, Version 2.0 (the ''License''); you
-   may not use this file except in compliance with the License. You may
-   obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
-   and in THIRD-PARTY-NOTICES.md at the repository root. *)
+   receiver to whoever catches it. *)
+(* A value (§3.1.1), so that every platform shares the one module and its
+   classes -- `platform collections List` is one class however many
+   platforms a program makes -- and so that the platform, a value, may hold
+   the facet in a slot. *)
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | (* The kernel module, which the classes here reach `Array`'s errors
-         and `ArgumentError` through. *)
+    | (* The kernel module, which the classes here reach `ArgumentError`
+         through. *)
       private kernelModule = theKernel.
       (* The kernel's `Error`, the superclass of `NotFound` and
          `ConcurrentModification`. *)
@@ -56,48 +42,51 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
          `Set`. *)
       private kernelCollection = theKernel Collection. |
 ) (
-    (* `platform collections`: the module's namespace. It names its own
-       class as `Platform` does, so that the class has a path too. `List`
-       is here because `Ducts.ns`, `NewspeakASTs.ns` and
-       `V5BytecodeSimulation.ns` on `corpus/runnable.toml` bind `platform
-       collections List` (docs/design/core-library.md, "The on-demand
-       rule"). *)
+    (* The namespace `platform collections` answers: it hands out the
+       module's classes, one accessor each, and nothing else. *)
+    (* It names its own class as `Platform` does, so that the class has a
+       path too. *)
     private class Collections = Value new () (
-        (* The `Collections` class. *)
+        (* Answers the `Collections` class. *)
         public Collections = ( ^outer CollectionsFactory Collections )
-        (* The `List` class: `List new`, or `List new: capacity`, which
-           signals what `Array new:` does for a capacity that is no Integer
-           or is negative. *)
+        (* Answers the `List` class: `List new`, `List new: capacity` or
+           `List withAll: collection`.
+
+           Signals what `Array new:` signals for a capacity that is no
+           Integer or is negative. *)
         public List = ( ^outer CollectionsFactory List )
-        (* The `NotFound` class: an Error carrying the element or key a
-           collection was asked for and does not hold. *)
+        (* Answers the `NotFound` class: an Error carrying the element or
+           key a collection was asked for and does not hold. *)
         public NotFound = ( ^outer CollectionsFactory NotFound )
         (* Answers the `Map` class: `Map new`, `Map new: capacity` or
-           `Map withAll: aMap`. Signals an ArgumentError, 'new: requires a
-           capacity of at least 0, got …', for a negative capacity; a Float,
-           a LargeInteger or a capacity whose array size `(capacity + 1) * 2`
-           passes the SmallInteger range, from 2^62 - 1 on, 'new: requires an
-           Integer size, got …'; any other capacity too large to allocate
-           'new: cannot allocate an Array of … elements'; and one that is no
-           number a MessageNotUnderstood for `<`. Both texts show the array
-           size, not the capacity. *)
-        (* `benchmarks/are-we-fast-yet/DeltaBlue.ns` and `Havlak.ns` need
-           it. *)
+           `Map withAll: aMap`.
+
+           Signals an ArgumentError, 'new: requires a capacity of at least
+           0, got …', for a negative capacity; for a Float, a LargeInteger
+           or a capacity whose array size `(capacity + 1) * 2` passes the
+           SmallInteger range, from 2^62 - 1 on, 'new: requires an Integer
+           size, got …'; for any other capacity too large to allocate,
+           'new: cannot allocate an Array of … elements'; and a
+           MessageNotUnderstood for `<` for one that is no number. Both
+           texts show the array size, not the capacity. *)
         public Map = ( ^outer CollectionsFactory Map )
         (* Answers the `IdentityMap` class: a Map comparing keys with `==`.
-           `IdentityMap new`, or `IdentityMap new: capacity`, which
-           signals what `Map new:` signals. *)
+           `IdentityMap new`, `IdentityMap new: capacity` or
+           `IdentityMap withAll: aMap`.
+
+           Signals what `Map new:` signals for a capacity. *)
         public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
-        (* The `Set` class: `Set new`, or `Set new: capacity`. A negative
-           capacity signals an ArgumentError, 'new: requires a capacity of at
-           least 0, got …', a Float, a LargeInteger or a capacity of 2^63 - 1 or more
-           'new: requires an Integer size, got …', any other capacity too
-           large to allocate 'new: cannot allocate an Array of … elements',
-           and one that is no number a MessageNotUnderstood for `<`. Both
-           texts show `capacity + 1`, the size of the Set's `data_`, not the
-           capacity. *)
-        (* `benchmarks/are-we-fast-yet/Havlak.ns` needs it, for SOMns's
-           `Set` and `IdentitySet`. *)
+        (* Answers the `Set` class: `Set new`, `Set new: capacity` or
+           `Set withAll: collection`.
+
+           Signals an ArgumentError, 'new: requires a capacity of at least
+           0, got …', for a negative capacity; for a Float, a LargeInteger
+           or a capacity of 2^63 - 1 or more, 'new: requires an Integer
+           size, got …'; for any other capacity too large to allocate,
+           'new: cannot allocate an Array of … elements'; and a
+           MessageNotUnderstood for `<` for one that is no number. Both
+           texts show `capacity + 1`, the size of the Set's `data_`, not
+           the capacity. *)
         public Set = ( ^outer CollectionsFactory Set )
         (* Answers the kernel's `Collection` class, the abstract superclass
            of `List`, `Map` and `Set`, for a program to subclass. *)
@@ -124,8 +113,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        can change without a subclass noticing, and `size_` alone is
        protected, as a subclass's view of the size. *)
     private class List new: capacity = kernelCollection new (
-        (* The number of elements. *)
-        | protected size_ ::= 0.
+        | (* The number of elements. *)
+          protected size_ ::= 0.
           (* The index in `data` of the first element; 1 whenever the list
              is empty. *)
           private firstIndex ::= 1.
@@ -507,8 +496,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     (* Without it a change inside `do:` would visit an element twice, skip
        one or end early, silently. *)
     private class ConcurrentModification = kernelError new (
-        (* The collection that was changed while it was iterated. *)
-        | public collection ::= nil. |
+        | (* The collection that was changed while it was iterated. *)
+          public collection ::= nil. |
     ) (
     ) : (
         (* Answers a new ConcurrentModification carrying `modified`, not
@@ -526,8 +515,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     (* The Error a collection signals when it is asked for an element or
        key it does not hold. Carries it in `element`. *)
     private class NotFound = kernelError new (
-        (* The element or key that was not found. *)
-        | public element ::= nil. |
+        | (* The element or key that was not found. *)
+          public element ::= nil. |
     ) (
         (* Answers `messageText`, or, when it is nil, 'NotFound: ' and the
            `printString` of the element. *)
@@ -562,8 +551,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        stays in the probe chain as a tombstone; growing copies only the
        live entries, which compacts both. *)
     private class Map new: capacity = kernelCollection new (
-        (* The number of keys the map holds. *)
-        | private size_ ::= 0.
+        | (* The number of keys the map holds. *)
+          private size_ ::= 0.
           (* The number of entries `data_` has been given since the table
              was last built, removed ones included: the next entry goes at
              `used_ * 2 + 1`. *)
@@ -923,100 +912,243 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                `keysAndValuesDo:`. *)
         public withAll: aMap = ( ^(self new: aMap size) addAll: aMap; yourself )
     )
-    (* A set holding its elements in `data_`, in insertion order, and
-       `hashtable_`, an open-addressing table of their indices, as `Map`
-       keeps its keys; elements are compared with `=` and found by their
-       `hash`. Only what `benchmarks/are-we-fast-yet/Havlak.ns` sends is
-       here: `new`, `add:`, `do:` and `size`. *)
-    (* Primordial Soup's `Set`. *)
-    private class Set new: capacity = Object new (
-        | private size_ ::= 0.
-          private data_ ::= nil. |
+    (* A collection of distinct elements: `Set new`, `Set new: 20`,
+       `Set withAll: {1. 2}`. An element is found by its `hash` and
+       compared with `=`; every element's `hash` must agree with its `=`.
+       Elements keep the order they were first added in; adding an element
+       `=` to one the set holds replaces it in place.
+
+       A Collection: `collect:`, `select:` and `reject:` answer Sets, so
+       equal results of `collect:` merge.
+
+       Adding or removing an element while `do:` or anything built on it
+       runs over the set signals a ConcurrentModification after the block
+       that did it; replacing an equal element does not. *)
+    (* Map's representation with elements instead of key-value pairs: the
+       elements in `data_` in adding order, `hashtable_` of their indices,
+       the removed mark overwriting a removed element. *)
+    private class Set new: capacity = kernelCollection new (
+        | (* The number of elements the set holds. *)
+          private size_ ::= 0.
+          (* The number of entries `data_` has been given since the table
+             was last built, removed ones included: the next goes at
+             `used_ + 1`. *)
+          private used_ ::= 0.
+          (* The elements in adding order; a removed one is `removed`. *)
+          private data_ ::= nil.
+          (* The number of elements added or removed so far; an iteration
+             compares it after every block. *)
+          private modifications ::= 0.
+          (* The removed mark: an object no program can reach, so no
+             element is ever `==` to it. *)
+          private removed = Array new: 0. |
         createTable: capacity
     ) (
-        (* True: the receiver is a Set. *)
+        (* Answers true: the receiver is a Set. *)
         public isKindOfSet = ( ^true )
-        (* As `Map`'s. *)
+        (* The table of the indices in `data_`, rebuilt from `data_` by
+           `rehash` whenever it is nil. *)
         private lazy hashtable_ ::= rehash.
-        (* The number of elements. *)
+        (* Answers the number of elements. *)
         public size = ( ^size_ )
-        (* Adds `element` last in the order, or replaces an `=` element
-           already present, which keeps its place in the order; answers
-           `element`. *)
-        (* The replacement is Primordial Soup's. *)
+        (* Answers whether the set holds no element. *)
+        public isEmpty = ( ^0 = size_ )
+        (* Adds `element` last in the order, or replaces the element `=` to
+           it that the set holds, which keeps its place; answers `element`.
+           Only adding counts as a change for an iteration running
+           meanwhile. *)
         public add: element = (
-            | table keyIndex |
+            | table index |
             table:: hashtable_.
-            keyIndex:: scanFor: element in: table.
-            keyIndex < 0 ifTrue: [^insert: 0 - keyIndex in: table element: element].
-            data_ at: keyIndex put: element.
+            index:: scanFor: element in: table.
+            index < 0 ifTrue: [^insert: element at: 0 - index in: table].
+            data_ at: index put: element.
             ^element
         )
-        (* Evaluates `action` with each element in the order they were added,
-           and answers the receiver. Elements added meanwhile are not
-           visited. *)
-        (* The size and the data array are read once, as in Primordial
-           Soup. *)
+        (* Adds each element of `collection`, in its `do:` order, and
+           answers `collection`. The set itself as `collection` changes
+           nothing.
+
+           collection: a Collection, or anything understanding `do:`. *)
+        public addAll: collection = (
+            (collection == self ifTrue: [self asArray] ifFalse: [collection])
+                do: [:element | self add: element].
+            ^collection
+        )
+        (* Answers whether the set holds an element `=` to `element`, found
+           by its `hash`. *)
+        public includes: element = ( ^(scanFor: element in: hashtable_) > 0 )
+        (* Removes the element `=` to `element` and answers `element`.
+
+           Signals a NotFound carrying `element`, 'element not found: …'
+           and its `printString`, when the set holds none. *)
+        public remove: element = (
+            ^self remove: element ifAbsent: [
+                (NotFound element: element) signal: 'element not found: ', element printString]
+        )
+        (* Removes the element `=` to `element` and answers `element`; when
+           the set holds none, answers the value of `onAbsent` and leaves
+           the set unchanged.
+
+           onAbsent: anything understanding `value`. *)
+        public remove: element ifAbsent: onAbsent = (
+            | index |
+            index:: scanFor: element in: hashtable_.
+            index < 0 ifTrue: [^onAbsent value].
+            data_ at: index put: removed.
+            size_:: size_ - 1.
+            modifications:: modifications + 1.
+            ^element
+        )
+        (* Removes each element of `collection`, in its `do:` order, and
+           answers `collection`. The set itself as `collection` empties it.
+
+           Signals a NotFound carrying the first element of `collection`
+           the set does not hold, as `remove:` does; the elements before it
+           are removed. *)
+        public removeAll: collection = (
+            (collection == self ifTrue: [self asArray] ifFalse: [collection])
+                do: [:element | self remove: element].
+            ^collection
+        )
+        (* Removes every element for which `predicate` answers true and
+           answers the receiver. `predicate` sees every element once, in
+           order, before anything is removed.
+
+           predicate: a one-argument block answering a Boolean.
+
+           Signals a ConcurrentModification after the evaluation of
+           `predicate` that added or removed an element. *)
+        public removeAllSuchThat: predicate = (
+            | elements expected doomed count |
+            elements:: self asArray.
+            expected:: modifications.
+            doomed:: Array new: elements size.
+            count:: 0.
+            elements do: [:element |
+                (predicate value: element) ifTrue: [
+                    count:: count + 1.
+                    doomed at: count put: element].
+                expected = modifications ifFalse: [^signalModificationOf: self]].
+            1 to: count do: [:index | self remove: (doomed at: index)]
+        )
+        (* Removes every element and answers the receiver; the capacity
+           stays. *)
+        public removeAll = (
+            createTable: data_ size - 1.
+            modifications:: modifications + 1
+        )
+        (* Evaluates `action` with each element, in adding order, and
+           answers the receiver.
+
+           action: a one-argument block, or anything understanding
+               `value:`.
+
+           Signals a ConcurrentModification after the evaluation of
+           `action` that added or removed an element. *)
         public do: action = (
-            | data end index |
+            | data end expected index element |
             data:: data_.
-            end:: size_.
+            end:: used_.
+            expected:: modifications.
             index:: 1.
             [index <= end] whileTrue: [
-                action value: (data at: index).
+                element:: data at: index.
+                element == removed ifFalse: [
+                    action value: element.
+                    expected = modifications ifFalse: [^signalModificationOf: self]].
                 index:: index + 1]
         )
+        (* Answers a new Array of the elements, in adding order. *)
+        public asArray = (
+            | result data count |
+            result:: Array new: size_.
+            data:: data_.
+            count:: 0.
+            1 to: used_ do: [:index |
+                (data at: index) == removed ifFalse: [
+                    count:: count + 1.
+                    result at: count put: (data at: index)]].
+            ^result
+        )
+        (* Answers a new, empty Set with room for `capacity` elements: what
+           `collect:`, `select:` and `reject:` fill. *)
+        protected newForCollectUsingAdd: capacity = ( ^Set new: capacity )
+        (* Empties the set with room for `count + 1` elements, the table a
+           third larger so it stays at most three quarters full, and
+           answers the new table.
+
+           count: an Integer of at least 0.
+
+           Signals an ArgumentError carrying `count`, 'new: requires a
+           capacity of at least 0, got …', for a negative `count`, and what
+           `Array new:` signals for a size that is no Integer or too large. *)
         private createTable: count = (
-            | table index |
+            | table |
             count < 0 ifTrue: [
                 ^(kernelModule ArgumentError value: count)
                     signal: 'new: requires a capacity of at least 0, got ', count printString].
             size_:: 0.
+            used_:: 0.
             data_:: Array new: count + 1.
             table:: Array new: count + 1 * 4 // 3.
-            index:: table size.
-            [index > 0] whileTrue: [
-                table at: index put: 0.
-                index:: index - 1].
+            1 to: table size do: [:index | table at: index put: 0].
             hashtable_:: table.
             ^table
         )
-        private insert: bucketIndex in: table element: element = (
-            | keyIndex |
-            keyIndex:: size_ + 1.
-            size_:: keyIndex.
-            data_ at: keyIndex put: element.
-            table at: bucketIndex put: keyIndex.
-            keyIndex + 1 > data_ size ifTrue: [rehash].
+        (* Stores `element` at the end of `data_`, its index in the empty
+           bucket `bucketIndex` of `table`, counts it as a change, grows the
+           set when `data_` is full, and answers `element`. *)
+        private insert: element at: bucketIndex in: table = (
+            | index |
+            index:: used_ + 1.
+            data_ at: index put: element.
+            table at: bucketIndex put: index.
+            used_:: index.
+            size_:: size_ + 1.
+            modifications:: modifications + 1.
+            index + 1 > data_ size ifTrue: [rehash].
             ^element
         )
+        (* Builds a new table, with room for twice the live elements, from
+           the live elements of `data_` in their order, dropping the
+           removed ones, and answers it. Runs when `data_` is full, and when
+           the table slot is nil. *)
         private rehash = (
-            | oldData end table newData keyIndex |
+            | oldData oldEnd table element |
             oldData:: data_.
-            end:: size_.
+            oldEnd:: used_.
             table:: createTable: size_ * 2.
-            newData:: data_.
-            keyIndex:: 1.
-            [keyIndex <= end] whileTrue: [
-                table at: (emptyBucketFor: (oldData at: keyIndex) in: table) put: keyIndex.
-                newData at: keyIndex put: (oldData at: keyIndex).
-                keyIndex:: keyIndex + 1].
-            size_:: end.
+            1 to: oldEnd do: [:index |
+                element:: oldData at: index.
+                element == removed ifFalse: [
+                    used_:: used_ + 1.
+                    size_:: size_ + 1.
+                    data_ at: used_ put: element.
+                    table at: (emptyBucketFor: element in: table) put: used_]].
             ^table
         )
+        (* Answers the index in `data_` of the element `=` to `element`, or
+           the negated index of the empty bucket of `table` where it
+           belongs. Probes from its `hash` bucket onwards, passing removed
+           elements. *)
         private scanFor: element in: table = (
-            | data tableSize bucketIndex keyIndex |
+            | data tableSize bucketIndex index stored |
             data:: data_.
             tableSize:: table size.
             bucketIndex:: element hash \\ tableSize + 1.
             [true] whileTrue: [
-                keyIndex:: table at: bucketIndex.
-                0 = keyIndex ifTrue: [^0 - bucketIndex].
-                element = (data at: keyIndex) ifTrue: [^keyIndex].
+                index:: table at: bucketIndex.
+                0 = index ifTrue: [^0 - bucketIndex].
+                stored:: data at: index.
+                (stored == removed) ifFalse: [element = stored ifTrue: [^index]].
                 bucketIndex = tableSize
                     ifTrue: [bucketIndex:: 1]
                     ifFalse: [bucketIndex:: bucketIndex + 1]]
         )
+        (* Answers the index of the first empty bucket of `table` from
+           `element`'s `hash` bucket onwards: where an element not yet in it
+           goes. *)
         private emptyBucketFor: element in: table = (
             | tableSize bucketIndex |
             tableSize:: table size.
@@ -1028,10 +1160,16 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^bucketIndex
         )
     ) : (
-        (* An empty Set, `Set new: 3`. *)
+        (* Answers an empty Set with room for 3 elements, `Set new: 3`. *)
         public new = ( ^self new: 3 )
+        (* Answers a new Set of `collection`'s elements, in its `do:` order,
+           equal ones merged.
+
+           collection: a Collection, or anything answering `size` and
+               `do:`. *)
+        public withAll: collection = ( ^(self new: collection size) addAll: collection; yourself )
     )
-    (* A new `Collections` namespace. The one public member: the facet
-       `platform collections` answers. *)
+    (* Answers a new `Collections` namespace: the facet `platform
+       collections` answers, and the one public member of the module. *)
     public newCollections = ( ^Collections new )
 ) : ()

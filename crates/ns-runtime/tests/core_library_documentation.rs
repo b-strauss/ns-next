@@ -7,7 +7,7 @@ use std::path::Path;
 use ns_syntax::ast::{ClassBody, ClassDeclaration, MessagePattern, Module};
 
 /// The modules the rule holds today.
-const DOCUMENTED_MODULES: [&str; 2] = ["Kernel.ns", "PlatformFactory.ns"];
+const DOCUMENTED_MODULES: [&str; 3] = ["Kernel.ns", "PlatformFactory.ns", "CollectionsFactory.ns"];
 
 #[test]
 fn every_member_of_a_documented_module_has_a_comment() {

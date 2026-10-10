@@ -340,8 +340,7 @@ before adding a runtime rule; `unsafe` behind a safe abstraction is acceptable.
 Ground each decision in `prior-art/` (the `making-design-decisions` skill;
 `prior-art/PROVENANCE.md`). Copying code out of `prior-art/` is a licensing
 decision, made so far only for `num-bigint` and `num-integer`
-(`arbitrary_integer/`), SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`),
-and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
+(`arbitrary_integer/`), and SOMns and Primordial Soup (`benchmarks/are-we-fast-yet/`).
 
 ## Conventions
 

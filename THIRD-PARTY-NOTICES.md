@@ -12,10 +12,6 @@ any names the upstream file it comes from in a header:
   License 2.0 and BSD-3); and the harness, `RichardsTon80.ns` and
   `DeltaBlueTon80.ns` from Primordial Soup, licensed under the Apache
   License 2.0.
-- Newspeak code in `crates/ns-runtime/core-library/CollectionsFactory.ns`,
-  its `List`, `Map` and `Set`, adapted from Primordial Soup's
-  `newspeak/Collections.ns` and `newspeak/KernelForPrimordialSoup.ns`,
-  licensed under the Apache License 2.0.
 
 Each of these licences requires its notice below to accompany every copy.
 
