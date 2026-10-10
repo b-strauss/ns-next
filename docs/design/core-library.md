@@ -9,8 +9,11 @@
 > of Primordial Soup's core API, whose names and loops are aligned, whose
 > foundations -- the error classes, `Proxy` and a public `Future` -- are
 > built, and the rest planned in full ("Planned: the kernel completed to Primordial Soup's
-> core API"). Every public member of the three shipped modules is
-> documented in place, by a comment above it.
+> core API"). Every member of `Kernel.ns` and `PlatformFactory.ns` --
+> public, protected and private -- is documented in place to the standard
+> of Javadoc, by a comment directly above it, which
+> `crates/ns-runtime/tests/core_library_documentation.rs` checks; every
+> public member of `CollectionsFactory.ns` by a comment above it.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections

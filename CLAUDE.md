@@ -374,14 +374,17 @@ and Primordial Soup again for `CollectionsFactory.ns`'s `List`, `Map` and `Set`.
   indented with spaces with the Rust around it, the closing `"}` on its own
   line — not a one-line literal of `\n` escapes.
 - Comments explain the decision — what a check prevents — not the mechanics.
-- **A public member of a shipped core-library module is documented.** Every
-  `public` method, slot and class of `Kernel.ns`, `PlatformFactory.ns` and
-  `CollectionsFactory.ns` has a `(* … *)` comment directly above it, or shares
-  one with the family it belongs to (`+ - *`, the comparisons, the class
-  accessors on `Object`). It describes what the member does as it stands: what
-  it answers, what it takes, and which Error it signals and when — one to four
-  lines, no more. It names no other implementation. A comment that explains a
-  decision, as the rule above asks, goes after it.
+- **Every member of a shipped core-library module is documented** to the
+  standard of Javadoc. Every method, slot and class of `Kernel.ns`,
+  `PlatformFactory.ns` and `CollectionsFactory.ns` -- public, protected and
+  private -- has a `(* … *)` comment directly above it that says what it
+  does and what it answers, each argument and what it must be, every Error
+  it signals and when, and what it guarantees about order, identity,
+  copying and mutation, as long as that takes; a section that would say
+  nothing is left out. It names no other implementation. A comment that
+  explains a decision, as the rule above asks, goes after it.
+  `crates/ns-runtime/tests/core_library_documentation.rs` holds every
+  member to having one.
 - **Object, frame and activation access goes through
   `crates/ns-runtime/src/heap.rs`.** The handles' inner index is private to the
   `heap` module (`heap.rs` and its submodules, `heap/value.rs` among them, which

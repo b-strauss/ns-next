@@ -3830,8 +3830,8 @@ The decisions, each the user's (2026-10-01):
     stay IEEE's.
 12. The public API of the shipped modules is documented: every `public`
     member of `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`
-    has a comment of one to four lines saying what it answers, takes and
-    signals, and `CLAUDE.md` holds the rule.
+    has a comment saying what it answers, takes and signals, and
+    `CLAUDE.md` holds the rule.
 
 - `192c6d0` — the plan, and whether an image carries a lazy slot's value
   recorded in [OPEN-WORK.md](OPEN-WORK.md).
