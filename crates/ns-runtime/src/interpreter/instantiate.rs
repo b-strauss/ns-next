@@ -1679,6 +1679,25 @@ pub(crate) fn mixin_needs_initializer_code(mixin: &crate::mixin::Mixin) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use crate::types::{BuiltinClass, ErrorClass};
+    use crate::Interpreter;
+
+    /// The mirror's class is the capability's own class, so the refusal
+    /// carries nil as its `behavior`: a handler reading it must not be
+    /// handed the class, and with it a way to the mirror.
+    #[test]
+    fn refusing_the_mirrors_class_signals_a_cannot_instantiate_whose_subject_is_nil() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(BuiltinClass::VmMirror);
+            let Err(super::Signal::Error(error)) = mutator.decide_factory(class, &[]) else {
+                panic!("instantiating the VM mirror's class is refused with an error");
+            };
+            assert_eq!(error.class, ErrorClass::CannotInstantiate);
+            assert!(error.subject.is_nil(), "the refusal names no behavior");
+        });
+    }
+
     #[test]
     fn a_root_class_is_a_value_class_exactly_when_the_root_rule_builds_it_over_value() {
         let is_value = |header: &str| {

@@ -546,8 +546,9 @@ fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
 
 /// A kernel class's clause is read, never run: a bare name, no message
 /// arguments, and a kernel class. §3.2 reserves `Top` for `Object` alone,
-/// so no other class may name it -- and, since `Top` is the one private
-/// class here, no module outside the kernel can either.
+/// so no other class may name it -- and, since `Top` is private, as only
+/// the kernel classes no program may name are, no module outside the
+/// kernel can either.
 fn check_clause(name: &str, kind: BuiltinClass, clause: &ast::SuperclassClause) {
     assert!(
         clause.prefix.is_none()
@@ -1306,7 +1307,7 @@ mod tests {
     /// `Collections>>List`, are recognized too, as `MixinMethod::class_accessor`,
     /// but only the image code reads that recognition, to step a platform
     /// path through the accessor; a send runs the method like any other.
-    /// `KernelNamespace`'s five send to the kernel instance the platform was
+    /// `KernelNamespace`'s members send to the kernel instance the platform was
     /// handed, so they are neither. Each costs one activation more than a
     /// kernel accessor; a namespace member is asked for once, typically in a
     /// slot initializer, not in a loop. `Transcript`'s two and `Stopwatch`'s
@@ -1358,6 +1359,9 @@ mod tests {
                 "ArgumentError",
                 "CannotReturn",
                 "CannotInstantiate",
+                "Closure",
+                "Future",
+                "Proxy",
             ] {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),

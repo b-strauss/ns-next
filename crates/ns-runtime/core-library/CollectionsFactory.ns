@@ -36,8 +36,8 @@
    the data array, so that no operation reads the hash table twice; errors
    are the kernel's `ArgumentError` and this module's `NotFound` where
    those apply, and `Error`s with texts of their own otherwise, where
-   Primordial Soup sends the undefined `errorEmpty`; `>>` and `|` on integers are written with `//` and
-   `bitOr:`; names are written out.
+   Primordial Soup sends the undefined `errorEmpty`; `>>` and `|` on
+   integers are written with `//` and `bitOr:`; names are written out.
 
    Copyright 2008, the Newspeak project authors.
 
@@ -47,8 +47,10 @@
    and in THIRD-PARTY-NOTICES.md at the repository root. *)
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
     | private kernelModule = theKernel.
-      (* The superclass clause of `NotFound` may send one message only, so
-         it names the kernel's Error through this slot. *)
+      (* An inheritance clause is one name, optionally after `outer`,
+         `self` or `super`, and at most one message (§6.1), so `NotFound`'s
+         cannot reach the kernel's Error through `kernelModule` and names it
+         through this slot. *)
       private kernelError = theKernel Error. |
 ) (
     (* `platform collections`: the module's namespace. It names its own
@@ -287,7 +289,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         )
         (* Takes from the left run while its element may precede the right
            run's, which is what makes the sort stable. *)
-        private merge: source into: destination start: start middle: middle stop: stop by: lessOrEqual = (
+        private merge: source into: destination start: start middle: middle stop: stop
+                by: lessOrEqual = (
             | leftCursor rightCursor destinationCursor |
             leftCursor:: start.
             rightCursor:: middle + 1.
@@ -371,7 +374,11 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     ) (
         (* `messageText`, or the class's name and the element's
            `printString` when it is nil. *)
-        public description = ( ^messageText isNil ifTrue: ['NotFound: ', element printString] ifFalse: [messageText] )
+        public description = (
+            ^messageText isNil
+                ifTrue: ['NotFound: ', element printString]
+                ifFalse: [messageText]
+        )
     ) : (
         (* A new NotFound carrying `missing`. *)
         public element: missing = ( ^self new element: missing )
@@ -402,7 +409,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public at: key = (
             | keyIndex |
             keyIndex:: scanFor: key in: hashtable_.
-            keyIndex < 0 ifTrue: [^(NotFound element: key) signal: 'key not found: ', key printString].
+            keyIndex < 0 ifTrue: [
+                ^(NotFound element: key) signal: 'key not found: ', key printString].
             ^data_ at: keyIndex + 1
         )
         (* Stores `value` under `key` and answers `value`. A new key comes
@@ -437,7 +445,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* Answers the new hash table. *)
         private createTable: count = (
             | table index |
-            count < 0 ifTrue: [^(kernelModule ArgumentError value: count) signal: 'new: requires a capacity of at least 0, got ', count printString].
+            count < 0 ifTrue: [
+                ^(kernelModule ArgumentError value: count)
+                    signal: 'new: requires a capacity of at least 0, got ', count printString].
             size_:: 0.
             data_:: Array new: count + 1 * 2.
             table:: Array new: count + 1 * 4 // 3.
@@ -548,7 +558,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         )
         private createTable: count = (
             | table index |
-            count < 0 ifTrue: [^(kernelModule ArgumentError value: count) signal: 'new: requires a capacity of at least 0, got ', count printString].
+            count < 0 ifTrue: [
+                ^(kernelModule ArgumentError value: count)
+                    signal: 'new: requires a capacity of at least 0, got ', count printString].
             size_:: 0.
             data_:: Array new: count + 1.
             table:: Array new: count + 1 * 4 // 3.

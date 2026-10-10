@@ -4,11 +4,13 @@
    `i64` edges, which are `LargeInteger`s; `String with:` refuses what is no
    code point -- a negative Integer, a surrogate, anything past U+10FFFF,
    and what is no Integer. Each is a signalled Error, caught here; its
-   class is `ArgumentError`, as the leaf refuses an argument. *)
+   class is `ArgumentError`, as the leaf refuses an argument, and a
+   `copyFrom:to:` error's `argument` is the bound out of range, the stop
+   when the start is valid. *)
 class AStringIndexErrorIsCaught = Object new (
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. largest smallest |
+        | transcript = platform transcript. Error = platform kernel Error. ArgumentError = platform kernel ArgumentError. largest smallest |
         largest:: 9223372036854775807.
         smallest:: 0 - largest - 1.
         transcript show: (['abc' at: 4] on: Error do: [:error | error messageText]); newLine.
@@ -24,6 +26,7 @@ class AStringIndexErrorIsCaught = Object new (
         transcript show: ([String with: 55296] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([String with: 1114112] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([String with: nil] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' at: 4] on: Error do: [:error | error class name]); newLine
+        transcript show: (['abc' at: 4] on: Error do: [:error | error class name]); newLine.
+        transcript show: (['abc' copyFrom: 2 to: 4] on: ArgumentError do: [:error | error argument printString]); newLine
     )
 ) : ()

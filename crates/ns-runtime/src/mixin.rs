@@ -1010,7 +1010,7 @@ mod dispatch_id_tests {
 
 #[cfg(test)]
 mod applied_clause_tests {
-    use super::{AppliedClause, CLAUSE_INDEX_LIMIT};
+    use super::{AppliedClause, BUILTIN_TAG_MASK, BUILTIN_TAG_SHIFT, CLAUSE_INDEX_LIMIT};
     use crate::heap::MixinId;
     use crate::types::BuiltinClass;
 
@@ -1037,18 +1037,26 @@ mod applied_clause_tests {
     #[test]
     fn a_negative_pattern_with_bit_sixty_set_is_read_back_through_its_sign_extension() {
         // A tag of 32 or more sets bit 60, so the packed SmallInteger is
-        // negative, and `unpack` must answer by the 61-bit pattern: tag 33
-        // names no builtin, and the last builtin's tag, 32, names it.
-        let packed = ((33i64 << 55) << 3) >> 3;
+        // negative, and `unpack` must answer by the 61-bit pattern: the tag
+        // one past the last builtin's names no builtin, and the last
+        // builtin's tag, `BuiltinClass::ALL.len()`, names it. Both are
+        // derived from the list, so a new builtin keeps the test's meaning.
+        let unused_tag = BuiltinClass::ALL.len() as i64 + 1;
+        assert!(BuiltinClass::ALL.len() >= 32, "the largest tag sets bit 60");
+        let packed = ((unused_tag << 55) << 3) >> 3;
         assert!(packed < 0);
         assert_eq!(AppliedClause::unpack(packed), None);
-        let largest_tag = *BuiltinClass::ALL.last().expect("builtins exist");
+        let largest = *BuiltinClass::ALL.last().expect("builtins exist");
         let mixin = MixinId::from_index(0).expect("fits");
-        let packed = AppliedClause::pack(mixin, 0, Some(largest_tag));
+        let packed = AppliedClause::pack(mixin, 0, Some(largest));
         assert!(packed < 0);
         assert_eq!(
+            (packed as u64 >> BUILTIN_TAG_SHIFT) & BUILTIN_TAG_MASK,
+            BuiltinClass::ALL.len() as u64
+        );
+        assert_eq!(
             AppliedClause::unpack(packed),
-            Some((mixin, 0, Some(largest_tag)))
+            Some((mixin, 0, Some(largest)))
         );
     }
 

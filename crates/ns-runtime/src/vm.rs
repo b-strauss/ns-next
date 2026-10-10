@@ -135,7 +135,10 @@ impl Handoff {
 /// `ResolveFuture` and `InitializeSlot` when either meets an unresolved
 /// future (`force_and_reexecute` pushes the forcing above it, and the loop
 /// must come back to this same instruction once the future resolves).
-/// Nothing reads `program_counter` while a straight-line instruction
+/// An instruction that raises an error -- `SignalNonBoolean`, `LoadLiteral`'s
+/// error path -- leaves with a signal too but stores none: nothing resumes
+/// the raising activation, since an `Error` is not resumable and a handler's
+/// `retry` or `return:` pops it. Nothing reads `program_counter` while a straight-line instruction
 /// executes.
 pub(crate) fn run(interpreter: &mut Interpreter, base: ActivationReference) -> HostResult {
     let (floor, mut frame) = interpreter.enter(|mutator| {

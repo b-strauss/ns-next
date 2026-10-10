@@ -24,8 +24,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
     (* §3.2: "A class is either the empty class `Top` or the application of
        a mixin to another class known as its superclass", and "Only the
        class `Object` may have `Top` as its superclass" -- which is why it
-       is the one private class here: no other module may name it. It stays
-       empty, so that all code, `Object`'s included, resides in a mixin. *)
+       is private, as are only the classes here that no program may name:
+       no other module may name it. It stays empty, so that all code,
+       `Object`'s included, resides in a mixin. *)
     private class Top = () (
     )
     (* The root of every class a program declares: the protocol every object

@@ -163,6 +163,17 @@ impl BuiltinClass {
     /// superclass-first order: the kernel phase sorts the kinds by their
     /// depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
+    ///
+    /// A new builtin must also appear in `interpreter::kernel`'s
+    /// `kernel_class_name`; in `check_kernel_shape`'s slot whitelist if it
+    /// declares slots; in `Mutator::signal_vm_error`'s subject-slot match if
+    /// it is an error class carrying a subject; in the image's tag tables --
+    /// `image::encode::builtin_class_tag`, `image::decode::builtin_class_from_tag`,
+    /// `tests/opcode_tags.rs` and, for a class no program may name, the
+    /// filter in `image::encode::encode_tag_named_hashes`; and in the class
+    /// accessor lists, `OBJECT_CLASS_ACCESSORS` if `Object` declares an
+    /// accessor for it and otherwise the absent-list of
+    /// `objects_class_accessors_are_exactly_the_nameable_builtins`.
     pub const ALL: [BuiltinClass; 32] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
