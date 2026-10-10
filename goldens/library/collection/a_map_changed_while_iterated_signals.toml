@@ -3,4 +3,6 @@ stdout = '''
 #removed
 10 20 
 #removeAll
+#select
+#reject
 '''

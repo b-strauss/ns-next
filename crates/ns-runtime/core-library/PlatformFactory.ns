@@ -74,9 +74,10 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         (* The program's standard output, a `Transcript`, written as UTF-8.
            Built on first use; every later send answers the same one. *)
         lazy public transcript = Transcript new.
-        (* The namespace of the collection classes `List`, `Map` and
-           `Set`. Built on first use; every later send answers the same
-           one. *)
+        (* The namespace of the collections module's classes -- `List`,
+           `Map`, `IdentityMap`, `Set` and the Errors `NotFound` and
+           `ConcurrentModification` -- and of the kernel's `Collection`.
+           Built on first use; every later send answers the same one. *)
         lazy public collections = collectionsModule newCollections.
         (* The namespace of the kernel classes a program may name, a
            `KernelNamespace`. Built on first use; every later send answers

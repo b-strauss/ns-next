@@ -1619,7 +1619,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
            requires a String argument, got …' and its `printString`, for a
            `prefix` that is no String. *)
         (* Looks for an occurrence starting at 1 at the latest, so only the
-           first position is compared, whatever the receiver's length. *)
+           first position is compared, whatever the receiver's length; the
+           search leaf still reads the whole receiver before it compares. *)
         public startsWith: prefix = (
             prefix isKindOfString ifFalse: [
                 ^(outer Kernel ArgumentError value: prefix)
@@ -1669,7 +1670,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
            code point, 'withAll: requires Unicode code points, Integers
            from 0 to 1114111 outside 55296 to 57343, got …', and the
            MessageNotUnderstood of `size` or `do:` for an argument that
-           lacks it. Sent to a subclass, answers nil, as `with:` does. *)
+           lacks it. Sent to a subclass, answers nil, as `with:` does, and
+           so it does for an argument that answers `isKindOfArray` or
+           `isKindOfString` true without being an Array or a String. *)
         public withAll: codePoints = (
             ^vmMirror stringClass: self withAll: codePoints ifFail: [
                 (codePoints isKindOfArray or: [codePoints isKindOfString])

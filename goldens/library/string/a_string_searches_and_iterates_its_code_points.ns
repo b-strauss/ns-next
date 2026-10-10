@@ -1,7 +1,8 @@
 (* A String's elements are its code points, Integers, in both widths and
    past U+FFFF: `do:`, `first`, `last` and `withAll:` deal in them, and
    `stringAt:` answers the String of one. Searching answers a code-point
-   index, or 0; a Symbol answers what its text does, as Strings. *)
+   index, or 0; a Symbol answers what its text does, as receiver and as argument.
+   `String withAll:` gathers any Collection, a List or a Set among them. *)
 class AStringSearchesAndIteratesItsCodePoints = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. text wide |
@@ -37,5 +38,10 @@ class AStringSearchesAndIteratesItsCodePoints = Object new () (
         transcript show: (String withAll: {128512}) size printString; newLine.
         (Array withAll: 'hi') do: [:codePoint | transcript show: codePoint printString; show: ' '].
         transcript newLine.
+        transcript show: (text indexOf: #world) printString; show: ' ';
+            show: (text startsWith: #hello) printString; show: ' ';
+            show: (text endsWith: #world) printString; newLine.
+        transcript show: (String withAll: (platform collections List withAll: {104. 105})); newLine.
+        transcript show: (String withAll: (platform collections Set withAll: {104. 105. 104})); newLine.
     )
 ) : ()

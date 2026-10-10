@@ -2,5 +2,6 @@ stdout = '''
 area 9
 Shape>>area is abstract: Circle must implement it
 Shape>>area is abstract: Shape must implement it
+Shape class>>make is abstract: Shape class must implement it
 #protected
 '''

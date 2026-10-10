@@ -2624,14 +2624,24 @@ its class. That needs its own decision when the first such module arrives.
   compaction `removeAllSuchThat:` ends in -- adds one to the private
   `modifications`; `do:`, `keysAndValuesDo:`, `anySatisfy:` and
   `removeAllSuchThat:` compare it with the count they started at after
-  every block, the last included, and signal a `ConcurrentModification`
+  every block that does not end the iteration, the last included, and
+  signal a `ConcurrentModification`
   (a class of the collections module under the kernel's `Error`, public
   as `platform collections ConcurrentModification`, carrying the
   `collection`, messageText "the
   collection was modified while it was being iterated"), raised in one
-  place, the module's `signalModificationOf:`. Storing at an existing
+  place, the module's `signalModificationOf:`. A block that ends the
+  iteration by returning -- the deciding one of `anySatisfy:`,
+  `allSatisfy:`, `noneSatisfy:` or `detect:` -- leaves before the check,
+  so a change it makes is not reported; no element is skipped or visited
+  twice by it. Storing at an existing
   index and sorting change no count: a `do:` re-reads each element, so a
-  store inside its block is seen. Without the check a change inside `do:`
+  store inside its block is seen. `sort:` sorts a copy of the elements
+  and writes it back; when its block adds or removes an element, it
+  signals the same `ConcurrentModification` once the copy is sorted and
+  writes nothing back, so the list stays as the block left it, since the
+  copy would bring back a removed element or drop an added one. Without
+  the check a change inside `do:`
   would visit an element twice, skip one or end early, silently (decided
   with the user on 2026-10-10;
   `goldens/library/collection/a_list_changed_while_iterated_signals`). An
@@ -2658,7 +2668,10 @@ its class. That needs its own decision when the first such module arrives.
   `newForCollectUsingAdd:`. Its keys and values lie side by side in
   `data_`, in the order the keys were first stored, and `hashtable_` is an
   open-addressing table of their indices in `data_`, 0 marking an empty
-  bucket, kept at most three quarters full. `hashtable_ ::= rehash` is a
+  bucket, of `(capacity + 1) * 4 // 3` buckets for room for `capacity + 1`
+  entries: never fewer buckets than `data_` has entries, and `insert:`
+  rebuilds the map the moment `data_` is full, so no probe runs on a full
+  table and every probe ends at an empty bucket. `hashtable_ ::= rehash` is a
   `lazy` slot (§6.3.3), so the table is rebuilt from `data_` whenever it
   is `nil`; that an image writes a lazy slot's value, where §6.3.3 intends
   it never be persisted, is [OPEN-WORK.md](../OPEN-WORK.md)'s "Whether an
@@ -3261,7 +3274,9 @@ a non-integral literal is a binary float" above), and there is no
   while storing at an existing index or key and sorting do not; a `List`'s,
   `Map`'s or `Set`'s `do:`, `keysAndValuesDo:` and everything built on
   `do:` read the count before the first element and compare it after every
-  block, the last included, and a removal selector's own changes while it
+  block that does not end the iteration by returning, the last included,
+  a `List`'s `sort:` compares it once its copy is sorted and then writes
+  nothing back, and a removal selector's own changes while it
   scans (`removeAllSuchThat:`) are not reported. Every member of
   `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`, public,
   protected and private, is documented to the standard of Javadoc

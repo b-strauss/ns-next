@@ -106,7 +106,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        Changing its elements' number -- adding, removing -- while `do:`,
        `keysAndValuesDo:`, `anySatisfy:`, `removeAllSuchThat:` or anything
        built on `do:` runs over it signals a ConcurrentModification after
-       the block that did it. Storing at an existing index does not.
+       the block that did it, unless that block ends the iteration; inside
+       the block of `sort:`, once the sort is done. Storing at an existing
+       index does not.
 
        The primary factory takes the capacity, so a program may write
        `List new: 15` as a superclass clause. *)
@@ -375,15 +377,26 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         )
         (* Sorts the elements in place, stably, and answers the receiver.
            Not a change of the number of elements: an iteration running
-           meanwhile carries on.
+           meanwhile carries on. The elements are sorted as a copy and
+           written back once the sort is done.
 
            lessOrEqual: a two-argument block answering whether its first
-               argument may precede its second. *)
+               argument may precede its second.
+
+           Signals a ConcurrentModification, once the copy is sorted, when
+           an evaluation of `lessOrEqual` added or removed an element; the
+           sorted copy is then not written back, and the list stays as the
+           block left it. *)
+        (* The copy holds the elements the sort started with, so writing it
+           back over a list whose block changed it would bring back a
+           removed element or drop an added one, silently. *)
         public sort: lessOrEqual = (
-            | sorted |
+            | sorted expected |
             size_ < 2 ifTrue: [^self].
             sorted:: self asArray.
+            expected:: modifications.
             sorted sort: lessOrEqual.
+            expected = modifications ifFalse: [^signalModificationOf: self].
             data replaceFrom: firstIndex to: firstIndex + size_ - 1 with: sorted startingAt: 1
         )
         (* Answers a new Array of the elements, in order. *)
@@ -493,8 +506,12 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        Carries the collection.
 
        Iteration means `do:`, `keysAndValuesDo:`, `anySatisfy:`,
-       `removeAllSuchThat:` and everything built on `do:`; storing at an
-       existing index or key, and sorting, are no change. *)
+       `removeAllSuchThat:` and everything built on `do:`, each checked
+       after every block that does not end it -- a block that ends the
+       iteration by returning, as the deciding one of `anySatisfy:` or
+       `detect:` does, leaves before the check -- and a List's `sort:`,
+       checked once its sort is done. Storing at an existing index or key,
+       and sorting, are no change. *)
     (* Without it a change inside `do:` would visit an element twice, skip
        one or end early, silently. *)
     private class ConcurrentModification = kernelError new (
@@ -774,15 +791,21 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^result
         )
         (* Empties the map with room for `count + 1` entries -- `data_` of
-           twice that, the table a third larger so it stays at most three
-           quarters full -- and answers the new table.
+           twice that, the table of `(count + 1) * 4 // 3` buckets, never
+           fewer than the entries `data_` has room for -- and answers the
+           new table.
 
            count: an Integer of at least 0.
 
            Signals an ArgumentError carrying `count`, 'new: requires a
            capacity of at least 0, got …', for a negative `count`, and what
            `Array new:` signals for a size that is no Integer or too large. *)
-        (* The table is filled by `whileTrue:`, which the compiler inlines,
+        (* The table has at least as many buckets as `data_` has entries,
+           and `insert:` rebuilds the map the moment `data_` is full, so no
+           probe runs on a full table: every one meets an empty bucket,
+           which is what ends `scanFor:in:` and `emptyBucketFor:in:`.
+
+           The table is filled by `whileTrue:`, which the compiler inlines,
            rather than `to:do:`, which is a send: a closure and an activation
            per bucket, on every growth and every `removeAll`. *)
         private createTable: count = (
@@ -848,7 +871,10 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            table: the table of the indices in `data_`, `hashtable_` or
                the one `rehash` is building.
 
-           Signals what `key`'s `hash` and `=` signal. *)
+           Signals what `key`'s `hash` and `=` signal. A `hash` answering
+           no Integer is sent `\\` with the table's size, and signals what
+           that signals: a MessageNotUnderstood of `\\` for an object that
+           does not define it, a Float among them. *)
         (* The probe is written out here and again, with `identityHash` and
            `==`, in IdentityMap, rather than sending a protected hook for
            the hash and the comparison: a self-send per probe step is a
@@ -874,7 +900,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
 
            table: a table of indices in `data_` with an empty bucket.
 
-           Signals what `key`'s `hash` signals. *)
+           Signals what `key`'s `hash` signals, and for a `hash` answering
+           no Integer what `scanFor:in:` signals for one. *)
         (* Written out again in IdentityMap, as `scanFor:in:` is. *)
         protected emptyBucketFor: key in: table = (
             | tableSize bucketIndex |
@@ -1150,16 +1177,19 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* Answers a new, empty Set with room for `capacity` elements: what
            `collect:`, `select:` and `reject:` fill. *)
         protected newForCollectUsingAdd: capacity = ( ^Set new: capacity )
-        (* Empties the set with room for `count + 1` elements, the table a
-           third larger so it stays at most three quarters full, and
-           answers the new table.
+        (* Empties the set with room for `count + 1` elements, the table of
+           `(count + 1) * 4 // 3` buckets, never fewer than the elements
+           `data_` has room for, and answers the new table.
 
            count: an Integer of at least 0.
 
            Signals an ArgumentError carrying `count`, 'new: requires a
            capacity of at least 0, got …', for a negative `count`, and what
            `Array new:` signals for a size that is no Integer or too large. *)
-        (* Filled by `whileTrue:` rather than `to:do:`, as Map's table is. *)
+        (* As in Map: the table has at least as many buckets as `data_` has
+           slots, and `insert:` rebuilds the set the moment `data_` is
+           full, so no probe runs on a full table. Filled by `whileTrue:`
+           rather than `to:do:`, as Map's table is. *)
         private createTable: count = (
             | table index |
             count < 0 ifTrue: [
@@ -1216,7 +1246,10 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            the negated index of the empty bucket of `table` where it
            belongs. Probes from its `hash` bucket onwards, passing removed
            elements without comparing them; `element` is the receiver of
-           every `=`. *)
+           every `=`.
+
+           Signals what `element`'s `hash` and `=` signal, and for a `hash`
+           answering no Integer what Map's `scanFor:in:` signals for one. *)
         private scanFor: element in: table = (
             | data tableSize bucketIndex index stored |
             data:: data_.

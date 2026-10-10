@@ -1,11 +1,13 @@
 (* A List changed while it is iterated -- an element added or removed
    inside the block of `do:`, `keysAndValuesDo:`, `anySatisfy:`,
    `removeAllSuchThat:` or anything built on `do:` -- signals a
-   ConcurrentModification carrying the list, checked after every block,
-   the last one included. Storing at an existing index or sorting is no
-   such change. This replaces the earlier rule that `do:` visited the
-   elements the list held when it started (decided with the user on
-   2026-10-10). *)
+   ConcurrentModification carrying the list, checked after every block
+   that does not end the iteration, the last one included. Storing at an
+   existing index or sorting is no such change, but a `sort:` whose block
+   adds or removes an element signals once the sort is done and writes
+   nothing back, leaving the list as the block left it. This replaces the
+   earlier rule that `do:` visited the elements the list held when it
+   started (decided with the user on 2026-10-10). *)
 class AListChangedWhileIteratedSignals = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. List = collections List. Modified = collections ConcurrentModification. list |
@@ -26,5 +28,13 @@ class AListChangedWhileIteratedSignals = Object new () (
         transcript show: ([list collect: [:each | list add: 0]] on: Modified do: [:error | #collect]) printString; newLine.
         transcript show: ([list anySatisfy: [:each | list add: 0. false]] on: Modified do: [:error | #anySatisfy]) printString; newLine.
         transcript show: ([list removeAllSuchThat: [:each | list add: 0. false]] on: Modified do: [:error | #removeAllSuchThat]) printString; newLine.
+        list:: List withAll: {3. 1. 2}.
+        transcript show: ([list sort: [:left :right | list size = 3 ifTrue: [list removeLast]. left <= right]] on: Modified do: [:error | error collection == list]) printString; newLine.
+        list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
+        transcript newLine.
+        list:: List withAll: {3. 1. 2}.
+        transcript show: ([list sort: [:left :right | list add: 0. left <= right]] on: Modified do: [:error | #sortAdded]) printString; newLine.
+        (list copyFrom: 1 to: 4) do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
+        transcript newLine.
     )
 ) : ()

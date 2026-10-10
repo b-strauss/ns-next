@@ -9,4 +9,8 @@ ConcurrentModification
 #collect
 #anySatisfy
 #removeAllSuchThat
+true
+3 1
+#sortAdded
+3 1 2 0
 '''
