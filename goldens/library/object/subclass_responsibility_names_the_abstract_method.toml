@@ -1,0 +1,6 @@
+stdout = '''
+area 9
+Shape>>area is abstract: Circle must implement it
+Shape>>area is abstract: Shape must implement it
+#protected
+'''

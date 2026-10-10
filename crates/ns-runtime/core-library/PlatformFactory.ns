@@ -149,6 +149,9 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public Future = ( ^kernelModule Future )
         (* Answers the kernel's class `Proxy`. *)
         public Proxy = ( ^kernelModule Proxy )
+        (* Answers the kernel's `Collection` class, the abstract superclass
+           of `Array`, `List`, `Map` and `Set`, for a program to subclass. *)
+        public Collection = ( ^kernelModule Collection )
     )
     (* `platform time`: the namespace of the clock's classes, today only
        `Stopwatch`. *)

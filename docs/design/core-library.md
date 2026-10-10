@@ -54,8 +54,8 @@ family, saying what it answers, what it takes and which `Error` it signals
 ```
 Top                     (private; no superclass, declares nothing)
 └── Object              class, ==, =, hash, identityHash, printString, yourself,
-    │                   doesNotUnderstand:, halt, and an accessor per nameable
-    │                   builtin (String, ...)
+    │                   doesNotUnderstand:, halt, subclassResponsibility, and an
+    │                   accessor per nameable builtin (String, ...)
     ├── Value           =, ==, hash, and the two slot-reading leaves
     │   ├── Boolean     ├── True
     │   │               └── False
@@ -65,7 +65,9 @@ Top                     (private; no superclass, declares nothing)
     │   ├── String
     │   ├── Symbol
     │   └── UndefinedObject
-    ├── Array
+    ├── Collection      do: (abstract), and the read protocol over it: size,
+    │   │               includes:, inject:into:, detect:, reduce:, collect:, ...
+    │   └── Array
     ├── Closure         ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
     │   ├── Error       isResumable false
@@ -89,6 +91,26 @@ Top                     (private; no superclass, declares nothing)
 The mirror's class is the one builtin `Kernel.ns` does not declare; the
 bootstrap builds it below `Value`, so the mirror is a value ("The bootstrap:
 placeholders first, kernel second" below).
+
+`Collection` is the abstract superclass of `Array` and of the collections
+module's `List`, `Map` and `Set`. It reaches no leaf: a subclass defines
+`do:`, and every other member is Newspeak written over it, which a subclass
+overrides where it can answer faster; `collect:`, `select:` and `reject:`
+also need the protected hook `newForCollectUsingAdd:`, since the kernel
+cannot name the collections module's `List` and a collection says itself
+what they answer. It is a builtin -- `BuiltinClass::Collection`, builtin
+class tag 38 -- only because `Array`'s superclass clause names it.
+`Object` declares no accessor for it; a program reaches it through
+`platform kernel Collection`.
+
+`Object>>subclassResponsibility`, protected, is what an abstract method's
+body sends: it signals an `Error` whose `messageText` names the abstract
+method -- the class declaring the method that sent it and its selector --
+and the class of the receiver, `'Collection>>do: is abstract: Nothing must
+implement it'`. The name is read off the sending activation through the
+activation leaf `activationMethodName:ifFail:` ("Exceptions" below), which
+only the kernel reaches, so a program sees the `Error` and never the
+activation.
 
 `Behavior`, `Class` and `Metaclass` are §3.2's reified class hierarchy: every
 class object's class is its own metaclass — its class side applied to
@@ -1390,9 +1412,10 @@ is. SOMns uses the same shape for its I/O primitives
 The one rule `[^super …]` reproduces what a declining native used to do by
 itself: a receiver of the wrong shape — an instance of a user subclass of
 `Array`, which carries no array, or a platform object sent another platform
-object's selector — reaches the superclass's method, `Object`'s, and a
-selector `Object` does not have ends in `Object`'s `doesNotUnderstand:`
-through §5.10's super failure path, with the same message text.
+object's selector — reaches the superclass's method, `Object`'s, or for
+`Array` `Collection`'s, and a selector neither has ends in `Object`'s
+`doesNotUnderstand:` through §5.10's super failure path, with the same
+message text.
 `goldens/language/send/native_that_fails_on_its_receiver_falls_to_objects` and
 `goldens/runtime/cache/cached_primitive_that_fails_on_a_receiver_of_the_same_class`
 pin it, and `goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`
@@ -1831,8 +1854,8 @@ and as Primordial Soup's `Kernel wrapping:` facet provides them: the
 platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`,
-`CannotInstantiate`, `Closure`, `Future` and `Proxy` from the kernel
-instance the platform was handed. `NotFound` is answered by
+`CannotInstantiate`, `Closure`, `Future`, `Proxy` and `Collection` from the
+kernel instance the platform was handed. `NotFound` is answered by
 `platform collections`, as Primordial Soup keeps it in its collections
 module, and `NonBooleanReceiver` by nothing.
 `Object` gains no accessor, so its set stays what §3.2 names.
@@ -1958,13 +1981,18 @@ with an argument that is no `Message` fails inside the handler, on
   as `Top`'s is everywhere. An
   activation reads another frame's temporaries and unwinds stacks, so it is a
   capability, and Newspeak hands those out only through mirrors, which the
-  reflection step builds on it. The ten leaves (`builtins/activation.rs`, rows
-  appended to the end of `MIRROR`): `currentActivation` — the activation of
+  reflection step builds on it. The eleven leaves (`builtins/activation.rs`,
+  rows of `MIRROR`): `currentActivation` — the activation of
   the kernel method making the mirror send, reified, answered as its frame
   object, so two calls for one activation answer the same object and the
   coming `ActivationMirror` has an identity by frame already; an activation's
   `sender` — the stack entry below it, or nil at the bottom or once it has
-  returned; the three the `on:do:` marker's registers answer,
+  returned; an activation's `methodName` -- `'Shape>>area'`, the class
+  declaring the method it runs, named as `Class>>name` and `Metaclass>>name`
+  answer, and the selector its mixin holds that code under, or nil for a
+  returned activation or one running a block, an initializer or a clause --
+  for `Object>>subclassResponsibility`; the three the `on:do:` marker's
+  registers answer,
   `isActiveHandler` (false for a returned activation or one with no marker),
   `handlerClass` and `handlerBlock`, and `handlerActive:`, which writes the
   flag; `returnValue:` and `restart`, which answer the signals the unwinder
@@ -2674,10 +2702,10 @@ observable only through a program no golden had recorded, below.
 **A builtin subclass's own `doesNotUnderstand:` is passed by, as §5.10 says**
 (decided with the user on 2026-09-22). When a leaf declines on an instance of
 a user subclass of a builtin, the kernel method's failure block sends
-`super …`, which reaches `Object`; a selector `Object` does not have then ends
-in "the `#doesNotUnderstand:` method defined for S" (§5.10) — `Object`'s,
-since S is the superclass of the class declaring the `super` send — and not
-in a handler the subclass declares. Before the move a declining native passed
+`super …`, which reaches the builtin's superclass; a selector it does not
+have then ends in "the `#doesNotUnderstand:` method defined for S" (§5.10)
+— `Object`'s, which S, the superclass of the class declaring the `super`
+send, inherits — and not in a handler the subclass declares. Before the move a declining native passed
 its level over and the *receiver's* own lookup continued, which reached that
 handler.
 
@@ -2687,7 +2715,7 @@ continues a public lookup above a given level. No golden had pinned the old
 behaviour.
 `goldens/library/builtin-subclass/a_builtin_subclass_handler_is_passed_by_as_section_5_10_says`
 pins the new one: `Handled = Array new`, declaring `doesNotUnderstand:`,
-answers `Handled new size` with `Object`'s error, not with `'handled here'`.
+answers `Handled new at: 1` with `Object`'s error, not with `'handled here'`.
 
 ### The ordering, and what it cost
 
@@ -2745,8 +2773,8 @@ capability; `Platform` and its members' classes are no kernel classes at
 all, and a program is handed the platform through its factory.
 Nor do the classes the exceptions and the futures added: a program names
 `Exception`, `Error`, `MessageNotUnderstood`, `Halt`, `Message`,
-`ArgumentError`, `CannotReturn`, `CannotInstantiate`, `Future` and `Proxy`
-through `platform kernel`, and `Activation`, `NonBooleanReceiver` and
+`ArgumentError`, `CannotReturn`, `CannotInstantiate`, `Future`, `Proxy` and
+`Collection` through `platform kernel`, and `Activation`, `NonBooleanReceiver` and
 `FutureImplementation` not at all ("Exceptions" above, "The pull future"
 below).
 Each is an ordinary public method of `Kernel.ns`'s `Object`,

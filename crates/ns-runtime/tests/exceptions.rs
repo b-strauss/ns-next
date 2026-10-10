@@ -369,3 +369,41 @@ ns_runtime::for_each_lowering! {
         );
     }
 }
+
+const SHAPES: &str = indoc! {"
+    class Shapes = Object new () (
+        class Shape = Object new () (
+            public area = ( ^self subclassResponsibility )
+        )
+        class Circle = Shape new () (
+        )
+        public circleArea = ( ^Circle new area )
+    ) : ()
+"};
+
+ns_runtime::for_each_lowering! {
+    /// `subclassResponsibility` names the abstract method through the
+    /// activation leaf `activationMethodName:ifFail:`: the class declaring
+    /// the method that sent it and its selector, read off the sending
+    /// activation, then the class of the receiver.
+    fn subclass_responsibility_names_the_sending_method(lowering) {
+        let module = ns_syntax::parse(SHAPES).expect("parse");
+        let resolved = ns_runtime::resolve(
+            module,
+            SHAPES.into(),
+            ns_runtime::SourceOrigin::File("shapes.ns".into()),
+        )
+        .expect("resolve");
+        let mut interpreter = Interpreter::bootstrap_with(lowering);
+        let class = interpreter.load_module(&resolved);
+        let shapes = expect_ok(interpreter.instantiate(&class, &[]), "Shapes new");
+        let error = expect_error(
+            interpreter.send(&shapes, Symbol::intern("circleArea"), &[]),
+            "circleArea",
+        );
+        assert_eq!(
+            error.message, "Shape>>area is abstract: Circle must implement it",
+            "{lowering:?}"
+        );
+    }
+}

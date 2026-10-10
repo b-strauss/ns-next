@@ -1,7 +1,10 @@
 (* A user subclass of a builtin inherits its kernel methods but none of its
    payload, so each leaf those methods forward to declines, and the failure
    block's `super` send reaches Object's method: `=` is identity and
-   `printString` the generic default, family by family.
+   `printString` the generic default, family by family. `size` is the
+   exception: Array's superclass is Collection, whose `size` counts through
+   `do:`, whose leaf declines in turn and whose failure block reaches
+   Collection's abstract `do:`.
 
    The module is a value (`Object <: Value`) because §3.1.1 asks a value
    class's enclosing object to be one; the transcript lives in `Script`,

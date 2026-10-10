@@ -10,5 +10,6 @@ CannotInstantiate
 Closure
 Future
 Proxy
+Collection
 true
 '''

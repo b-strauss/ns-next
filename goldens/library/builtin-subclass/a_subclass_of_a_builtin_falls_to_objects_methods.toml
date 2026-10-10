@@ -8,5 +8,5 @@ true an Object
 true an Object
 '''
 stderr = '''
-Uncaught Newspeak error: an object does not understand #size
+Uncaught Newspeak error: Collection>>do: is abstract: MyArray must implement it
 '''

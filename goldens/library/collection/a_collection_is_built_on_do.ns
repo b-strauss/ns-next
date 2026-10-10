@@ -1,0 +1,50 @@
+(* A program's own Collection defines `do:` and inherits the rest of the
+   read protocol; `collect:`, `select:` and `reject:` also need the hook
+   `newForCollectUsingAdd:`, and without it signal an Error. An Array is a
+   Collection and inherits what it does not define itself. *)
+class ACollectionIsBuiltOnDo = Object new (
+    | Collection ::= nil. |
+) (
+    class Digits = Collection new () (
+        public do: action = (
+            action value: 3.
+            action value: 1.
+            action value: 4
+        )
+    )
+    class Nothing = Collection new () (
+        public do: action = ( )
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. kernel = platform kernel. digits nothing |
+        Collection:: kernel Collection.
+        digits:: Digits new.
+        nothing:: Nothing new.
+        transcript show: digits size printString; newLine.
+        transcript show: digits isEmpty printString; newLine.
+        transcript show: (digits includes: 4) printString; newLine.
+        transcript show: (digits includes: 5) printString; newLine.
+        transcript show: (digits inject: 0 into: [:sum :each | sum + each]) printString; newLine.
+        transcript show: (digits reduce: [:left :right | left * 10 + right]) printString; newLine.
+        transcript show: (digits detect: [:each | each < 3]) printString; newLine.
+        transcript show: (digits detect: [:each | each > 9] ifNone: [0]) printString; newLine.
+        transcript show: ([digits detect: [:each | each > 9]] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: (digits allSatisfy: [:each | each > 0]) printString; newLine.
+        transcript show: (digits anySatisfy: [:each | each > 3]) printString; newLine.
+        transcript show: (digits noneSatisfy: [:each | each > 3]) printString; newLine.
+        digits do: [:each | transcript show: each printString] separatedBy: [transcript show: ', '].
+        transcript newLine.
+        transcript show: ([digits collect: [:each | each]] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: nothing isEmpty printString; newLine.
+        transcript show: ([nothing reduce: [:left :right | left]] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: (nothing reduce: [:left :right | left] ifEmpty: [#none]) printString; newLine.
+        transcript show: (nothing allSatisfy: [:each | false]) printString; newLine.
+        transcript show: (nothing anySatisfy: [:each | true]) printString; newLine.
+        transcript show: digits isKindOfCollection printString; newLine.
+        transcript show: 3 isKindOfCollection printString; newLine.
+        transcript show: {1. 2. 3} isKindOfCollection printString; newLine.
+        transcript show: ({1. 2. 3} inject: 0 into: [:sum :each | sum + each]) printString; newLine.
+        transcript show: ({1. 2. 3} includes: 2) printString; newLine.
+        transcript show: kernel Collection printString; newLine.
+    )
+) : ()

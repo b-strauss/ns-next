@@ -151,6 +151,10 @@ pub enum BuiltinClass {
     /// The public class whose class side makes a `FutureImplementation`;
     /// it has no instances.
     Future,
+    /// The abstract superclass of `Array` and of the collections module's
+    /// `List`, `Map` and `Set`; a builtin because `Array`'s superclass
+    /// clause names it.
+    Collection,
 }
 
 impl BuiltinClass {
@@ -176,7 +180,7 @@ impl BuiltinClass {
     /// accessor lists, `OBJECT_CLASS_ACCESSORS` if `Object` declares an
     /// accessor for it and otherwise the absent-list of
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`.
-    pub const ALL: [BuiltinClass; 32] = [
+    pub const ALL: [BuiltinClass; 33] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -209,6 +213,7 @@ impl BuiltinClass {
         BuiltinClass::CannotInstantiate,
         BuiltinClass::Proxy,
         BuiltinClass::Future,
+        BuiltinClass::Collection,
     ];
 }
 

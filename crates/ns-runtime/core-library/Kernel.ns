@@ -68,6 +68,23 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers the receiver's identity hash, an Integer that stays the
            same for its lifetime; a value overrides it with its `hash`. *)
         public identityHash = ( ^vmMirror objectHash: self ifFail: [^super identityHash] )
+        (* Signals an Error saying that the method which sent it is
+           abstract: 'Collection>>do: is abstract: Nothing must implement
+           it' -- the class declaring the sending method and its selector,
+           then the class of the receiver -- or 'a method is abstract: …'
+           when the sender is no method. What an abstract method's body
+           sends, `^self subclassResponsibility`; answers what a handler
+           that resumes the Error answers. *)
+        (* The name is read off the sending activation, which only the
+           kernel reaches: a program sees the Error, never the activation. *)
+        protected subclassResponsibility = (
+            | current method |
+            current:: vmMirror currentActivation: self ifFail: [nil].
+            method:: vmMirror activationMethodName: (vmMirror activationSender: current ifFail: [nil]) ifFail: [nil].
+            ^(outer Kernel Error new)
+                signal: (method isNil ifTrue: ['a method'] ifFalse: [method]), ' is abstract: ',
+                    self class name, ' must implement it'
+        )
         (* Answers the kernel's class `Object`. *)
         (* §3.2: Object "provides ... accessors for predefined classes and
            objects, such as the classes of the built-in literals", so a bare
@@ -1533,9 +1550,195 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers a new String of the Symbol's text after a '#'. *)
         public printString = ( ^vmMirror symbolPrintString: self ifFail: [^super printString] )
     )
-    (* A fixed-size sequence of objects, indexed from 1: `Array new: 3`, or a
-       literal such as `{1. 2}`. *)
-    public class Array = Object new () (
+    (* A group of elements that can be visited one by one: the abstract
+       superclass of `Array` and of the collections module's `List`, `Map`
+       and `Set`. A subclass defines `do:`, and inherits every other public
+       member here, each written over `do:`; to `collect:`, `select:` or
+       `reject:` it also defines `newForCollectUsingAdd:`. A subclass
+       overrides any member it can answer faster. *)
+    public class Collection = Object new () (
+        (* Answers true: the receiver is a Collection. *)
+        public isKindOfCollection = ( ^true )
+        (* Evaluates `action` with each element in turn.
+
+           action: a one-argument block, or anything understanding
+               `value:`.
+
+           Here, signals the Error of `subclassResponsibility`,
+           'Collection>>do: is abstract: … must implement it': every
+           subclass defines it. *)
+        public do: action = ( ^self subclassResponsibility )
+        (* Answers a new, empty collection that `collect:`, `select:` and
+           `reject:` fill by sending it `add:` once per element they keep.
+
+           capacity: an Integer of at least 0, the receiver's size: room
+               enough for every element.
+
+           Here, signals the Error of `subclassResponsibility`,
+           'Collection>>newForCollectUsingAdd: is abstract: … must
+           implement it'. *)
+        (* The kernel cannot name the collections module's `List`, so a
+           collection says itself what its `collect:` answers. *)
+        protected newForCollectUsingAdd: capacity = ( ^self subclassResponsibility )
+        (* Answers whether `predicate` answers true for every element; true
+           for an empty collection. Stops at the first element for which it
+           answers false.
+
+           predicate: a one-argument block answering a Boolean. *)
+        public allSatisfy: predicate = (
+            self do: [:element | (predicate value: element) ifFalse: [^false]].
+            ^true
+        )
+        (* Answers whether `predicate` answers true for some element; false
+           for an empty collection. Stops at the first element for which it
+           answers true.
+
+           predicate: a one-argument block answering a Boolean. *)
+        public anySatisfy: predicate = (
+            self do: [:element | (predicate value: element) ifTrue: [^true]].
+            ^false
+        )
+        (* Answers whether `predicate` answers false for every element; true
+           for an empty collection. Stops at the first element for which it
+           answers true.
+
+           predicate: a one-argument block answering a Boolean. *)
+        public noneSatisfy: predicate = (
+            self do: [:element | (predicate value: element) ifTrue: [^false]].
+            ^true
+        )
+        (* Answers the first element, in `do:` order, for which `predicate`
+           answers true.
+
+           predicate: a one-argument block answering a Boolean.
+
+           Signals an Error, 'No matching element detected', when it answers
+           true for none. *)
+        public detect: predicate = (
+            ^self detect: predicate ifNone: [(outer Kernel Error new) signal: 'No matching element detected']
+        )
+        (* Answers the first element, in `do:` order, for which `predicate`
+           answers true, or the value of `onNone` when it answers true for
+           none.
+
+           predicate: a one-argument block answering a Boolean.
+           onNone: anything understanding `value`; sent it only when no
+               element matches. *)
+        public detect: predicate ifNone: onNone = (
+            self do: [:element | (predicate value: element) ifTrue: [^element]].
+            ^onNone value
+        )
+        (* Evaluates `action` with each element in `do:` order, and
+           `between` between every two of them: not before the first, not
+           after the last. Answers the receiver.
+
+           action: a one-argument block, or anything understanding `value:`.
+           between: anything understanding `value`. *)
+        public do: action separatedBy: between = (
+            | first ::= true. |
+            self do: [:element |
+                first ifTrue: [first:: false] ifFalse: [between value].
+                action value: element]
+        )
+        (* Answers whether some element is `=` to `object`; each element is
+           sent `=` with `object` as its argument, in `do:` order, until one
+           answers true. *)
+        public includes: object = (
+            self do: [:element | element = object ifTrue: [^true]].
+            ^false
+        )
+        (* Folds the elements from the left: answers `initial` for an empty
+           collection, otherwise the last answer of `fold value: accumulated
+           value: element`, where `accumulated` starts as `initial` and
+           becomes each answer in turn.
+
+           fold: a two-argument block. *)
+        public inject: initial into: fold = (
+            | accumulated ::= initial. |
+            self do: [:element | accumulated:: fold value: accumulated value: element].
+            ^accumulated
+        )
+        (* Answers whether the collection holds no element. *)
+        public isEmpty = ( ^self size = 0 )
+        (* Folds the elements from the left, starting with the first: a
+           one-element collection answers that element without sending
+           `merge`; a longer one answers the last answer of `merge value:
+           accumulated value: element` over the rest.
+
+           merge: a two-argument block.
+
+           Signals an Error, 'Cannot reduce an empty collection', for an
+           empty collection. *)
+        public reduce: merge = (
+            ^self reduce: merge ifEmpty: [(outer Kernel Error new) signal: 'Cannot reduce an empty collection']
+        )
+        (* As `reduce:`, but answers the value of `onEmpty` for an empty
+           collection.
+
+           merge: a two-argument block.
+           onEmpty: anything understanding `value`; sent it only when the
+               collection is empty. *)
+        public reduce: merge ifEmpty: onEmpty = (
+            | first ::= true. accumulated |
+            self do: [:element |
+                first
+                    ifTrue: [first:: false. accumulated:: element]
+                    ifFalse: [accumulated:: merge value: accumulated value: element]].
+            first ifTrue: [^onEmpty value].
+            ^accumulated
+        )
+        (* Answers a new collection, from `newForCollectUsingAdd:`, holding
+           `transform`'s answer for each element, added in `do:` order. The
+           receiver is unchanged.
+
+           transform: a one-argument block.
+
+           Signals what `newForCollectUsingAdd:` signals when the subclass
+           does not define it. *)
+        public collect: transform = (
+            | result |
+            result:: self newForCollectUsingAdd: self size.
+            self do: [:element | result add: (transform value: element)].
+            ^result
+        )
+        (* Answers a new collection, from `newForCollectUsingAdd:`, holding
+           the elements for which `predicate` answers true, in `do:` order.
+           The receiver is unchanged.
+
+           predicate: a one-argument block answering a Boolean.
+
+           Signals what `newForCollectUsingAdd:` signals when the subclass
+           does not define it. *)
+        public select: predicate = (
+            | result |
+            result:: self newForCollectUsingAdd: self size.
+            self do: [:element | (predicate value: element) ifTrue: [result add: element]].
+            ^result
+        )
+        (* Answers a new collection, from `newForCollectUsingAdd:`, holding
+           the elements for which `predicate` answers false, in `do:` order.
+           The receiver is unchanged.
+
+           predicate: a one-argument block answering a Boolean.
+
+           Signals what `newForCollectUsingAdd:` signals when the subclass
+           does not define it. *)
+        public reject: predicate = (
+            | result |
+            result:: self newForCollectUsingAdd: self size.
+            self do: [:element | (predicate value: element) ifFalse: [result add: element]].
+            ^result
+        )
+        (* Answers the number of elements, counted through `do:`. *)
+        public size = (
+            | count ::= 0. |
+            self do: [:element | count:: count + 1].
+            ^count
+        )
+    )
+    (* A fixed-size sequence of objects, indexed from 1, and a Collection:
+       `Array new: 3`, or a literal such as `{1. 2}`. *)
+    public class Array = Collection new () (
         (* Answers true: the receiver is an Array. *)
         public isKindOfArray = ( ^true )
         (* Evaluates `action` with each element in turn, from the first,

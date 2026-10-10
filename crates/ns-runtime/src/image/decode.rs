@@ -964,6 +964,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         35 => BuiltinClass::CannotInstantiate,
         36 => BuiltinClass::Proxy,
         37 => BuiltinClass::Future,
+        38 => BuiltinClass::Collection,
         _ => return None,
     })
 }

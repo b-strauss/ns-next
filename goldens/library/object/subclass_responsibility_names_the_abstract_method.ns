@@ -1,0 +1,24 @@
+(* `self subclassResponsibility` signals an Error naming the abstract
+   method -- the class that declares it and its selector -- and the class
+   of the receiver that should have implemented it. It is protected: a
+   send from outside is not understood. *)
+class SubclassResponsibilityNamesTheAbstractMethod = Object new () (
+    class Shape = Object new () (
+        public area = ( ^self subclassResponsibility )
+        public describe = ( ^'area ', self area printString )
+    )
+    class Square side: theSide = Shape new (
+        | side = theSide. |
+    ) (
+        public area = ( ^side * side )
+    )
+    class Circle = Shape new () (
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. kernel = platform kernel. |
+        transcript show: (Square side: 3) describe; newLine.
+        transcript show: ([Circle new describe] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Shape new area] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Circle new subclassResponsibility] on: kernel MessageNotUnderstood do: [:error | #protected]) printString; newLine.
+    )
+) : ()

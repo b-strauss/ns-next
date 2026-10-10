@@ -1224,6 +1224,11 @@ nameable builtins an image may name wherever it names a class; an
 instance of a program's `Proxy` subclass is an ordinary instance record,
 and a program's future is a `FutureImplementation`, under tag 30 as above.
 
+**`Collection` takes tag 38** ([core-library.md](core-library.md), "What
+exists"). A program names it through `platform kernel Collection` and
+subclasses it, so an image may name it wherever it names a class; an
+instance of a program's subclass is an ordinary instance record.
+
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
 in the shipped `CollectionsFactory.ns`

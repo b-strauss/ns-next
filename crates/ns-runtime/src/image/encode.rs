@@ -265,6 +265,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::CannotInstantiate => 35,
         BuiltinClass::Proxy => 36,
         BuiltinClass::Future => 37,
+        BuiltinClass::Collection => 38,
     }
 }
 

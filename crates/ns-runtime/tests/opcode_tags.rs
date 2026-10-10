@@ -413,6 +413,7 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::CannotInstantiate), 35);
     assert_eq!(builtin_class_tag(BuiltinClass::Proxy), 36);
     assert_eq!(builtin_class_tag(BuiltinClass::Future), 37);
+    assert_eq!(builtin_class_tag(BuiltinClass::Collection), 38);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);

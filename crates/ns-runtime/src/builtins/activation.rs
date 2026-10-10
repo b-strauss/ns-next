@@ -10,7 +10,7 @@
 use std::rc::Rc;
 
 use crate::builtins::primitive::{ActivationPrimitive, Primitive};
-use crate::bytecode::UnwindMarker;
+use crate::bytecode::{CodeKind, UnwindMarker};
 use crate::heap::ActivationReference;
 use crate::interpreter::{unwind, Signal, Step};
 use crate::types::*;
@@ -78,6 +78,9 @@ pub(crate) fn execute<'gc>(
         ActivationPrimitive::Sender => {
             activation_leaf(mutator, SubjectLeaf::Sender, subject, arguments)
         }
+        ActivationPrimitive::MethodName => {
+            activation_leaf(mutator, SubjectLeaf::MethodName, subject, arguments)
+        }
         ActivationPrimitive::IsActiveHandler => {
             activation_leaf(mutator, SubjectLeaf::IsActiveHandler, subject, arguments)
         }
@@ -105,6 +108,7 @@ pub(crate) fn execute<'gc>(
 #[derive(Clone, Copy)]
 enum SubjectLeaf {
     Sender,
+    MethodName,
     IsActiveHandler,
     HandlerClass,
     HandlerBlock,
@@ -129,6 +133,12 @@ fn activation_leaf<'gc>(
         SubjectLeaf::Sender => {
             match live.and_then(|activation| mutator.heap.activation_sender(activation)) {
                 Some(sender) => activation_object(mutator, sender),
+                None => Value::nil(),
+            }
+        }
+        SubjectLeaf::MethodName => {
+            match live.and_then(|activation| method_name(mutator, activation)) {
+                Some(name) => Value::object(mutator.new_string(name)),
                 None => Value::nil(),
             }
         }
@@ -194,6 +204,29 @@ fn activation_object<'gc>(
 ) -> Value<'gc> {
     let frame = mutator.heap.reify(activation);
     Value::object(mutator.new_activation_object(frame))
+}
+
+/// `"{class}>>{selector}"` for an activation running a method: the class
+/// that declares it, named as `Class>>name` and `Metaclass>>name` answer,
+/// and the selector its mixin holds the method's code under. `None` for an
+/// activation running a block, an initializer or a clause, which have no
+/// selector to report.
+fn method_name(mutator: &Mutator<'_>, activation: ActivationReference) -> Option<String> {
+    let code = mutator.heap.activation_code(activation);
+    if code.kind != CodeKind::Method {
+        return None;
+    }
+    let class = mutator.heap.activation_current_class(activation)?;
+    let application = mutator.heap.class_application(class)?;
+    let method = application
+        .mixin
+        .compiled_methods()
+        .find(|method| Rc::ptr_eq(&method.code, &code))?;
+    Some(format!(
+        "{}>>{}",
+        mutator.heap.class_display_name(class),
+        method.selector
+    ))
 }
 
 /// The registers of `activation`'s `on:do:` marker, if its code carries one.

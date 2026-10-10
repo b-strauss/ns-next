@@ -98,6 +98,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::CannotInstantiate => "CannotInstantiate",
         BuiltinClass::Proxy => "Proxy",
         BuiltinClass::Future => "Future",
+        BuiltinClass::Collection => "Collection",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -842,6 +843,28 @@ mod tests {
         // `Object>>doesNotUnderstand:` signals a `MessageNotUnderstood` and
         // may send the message again: sends, no leaf.
         (BuiltinClass::Object, "doesNotUnderstand:"),
+        // `Object>>subclassResponsibility` makes several mirror sends and
+        // signals an `Error`: sends, no leaf.
+        (BuiltinClass::Object, "subclassResponsibility"),
+        // `Collection`'s protocol is written over `do:`, which a subclass
+        // defines: every method sends, none forwards to a leaf.
+        (BuiltinClass::Collection, "do:"),
+        (BuiltinClass::Collection, "newForCollectUsingAdd:"),
+        (BuiltinClass::Collection, "allSatisfy:"),
+        (BuiltinClass::Collection, "anySatisfy:"),
+        (BuiltinClass::Collection, "noneSatisfy:"),
+        (BuiltinClass::Collection, "detect:"),
+        (BuiltinClass::Collection, "detect:ifNone:"),
+        (BuiltinClass::Collection, "do:separatedBy:"),
+        (BuiltinClass::Collection, "includes:"),
+        (BuiltinClass::Collection, "inject:into:"),
+        (BuiltinClass::Collection, "isEmpty"),
+        (BuiltinClass::Collection, "reduce:"),
+        (BuiltinClass::Collection, "reduce:ifEmpty:"),
+        (BuiltinClass::Collection, "collect:"),
+        (BuiltinClass::Collection, "select:"),
+        (BuiltinClass::Collection, "reject:"),
+        (BuiltinClass::Collection, "size"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
         (BuiltinClass::MessageNotUnderstood, "hostSelector"),
@@ -1042,6 +1065,11 @@ mod tests {
             MethodFastPath::Constant(QuickConstant::True),
         ),
         (
+            BuiltinClass::Collection,
+            "isKindOfCollection",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
             BuiltinClass::Behavior,
             "isKindOfBehavior",
             MethodFastPath::Constant(QuickConstant::True),
@@ -1161,8 +1189,9 @@ mod tests {
     /// every builtin a program can name, which is every one but `Top`, the
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
     /// `FutureImplementation`, `LargeInteger`, which a program meets only as
-    /// an integer's class, and the exception classes, `Message`, `Proxy` and
-    /// `Future`, which a program reaches through `platform kernel`.
+    /// an integer's class, and the exception classes, `Message`, `Proxy`,
+    /// `Future` and `Collection`, which a program reaches through
+    /// `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -1732,6 +1761,7 @@ mod tests {
                 "Time",
                 "Stopwatch",
                 "LargeInteger",
+                "Collection",
             ] {
                 assert!(
                     application
@@ -1805,7 +1835,8 @@ mod tests {
                 (BuiltinClass::String, Some(BuiltinClass::Value)),
                 (BuiltinClass::Symbol, Some(BuiltinClass::String)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
-                (BuiltinClass::Array, Some(BuiltinClass::Object)),
+                (BuiltinClass::Collection, Some(BuiltinClass::Object)),
+                (BuiltinClass::Array, Some(BuiltinClass::Collection)),
                 (BuiltinClass::Closure, Some(BuiltinClass::Object)),
                 (BuiltinClass::Proxy, Some(BuiltinClass::Object)),
                 (

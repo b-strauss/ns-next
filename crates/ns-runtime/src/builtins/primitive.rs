@@ -172,6 +172,7 @@ impl Primitive {
             Primitive::Activation(
                 ActivationPrimitive::Current
                 | ActivationPrimitive::Sender
+                | ActivationPrimitive::MethodName
                 | ActivationPrimitive::IsActiveHandler
                 | ActivationPrimitive::HandlerClass
                 | ActivationPrimitive::HandlerBlock
@@ -355,6 +356,10 @@ pub enum PlatformPrimitive {
 pub enum ActivationPrimitive {
     Current,
     Sender,
+    /// The name `Object>>subclassResponsibility` reports: the class that
+    /// declares the activation's method and its selector, `nil` for an
+    /// activation running no method.
+    MethodName,
     IsActiveHandler,
     HandlerClass,
     HandlerBlock,
@@ -848,6 +853,11 @@ pub const MIRROR: &[MirrorEntry] = &[
         "activationSender:ifFail:",
         "sender",
         Primitive::Activation(ActivationPrimitive::Sender),
+    ),
+    mirror(
+        "activationMethodName:ifFail:",
+        "methodName",
+        Primitive::Activation(ActivationPrimitive::MethodName),
     ),
     mirror(
         "activationIsActiveHandler:ifFail:",
