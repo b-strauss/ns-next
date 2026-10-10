@@ -29,7 +29,7 @@
    the facet in a slot. *)
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
     | (* The kernel module, which the classes here reach `ArgumentError`
-         through. *)
+         and `Error` through. *)
       private kernelModule = theKernel.
       (* The kernel's `Error`, the superclass of `NotFound` and
          `ConcurrentModification`. *)
@@ -43,7 +43,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
       private kernelCollection = theKernel Collection. |
 ) (
     (* The namespace `platform collections` answers: it hands out the
-       module's classes, one accessor each, and nothing else. *)
+       module's classes, one accessor each, and the kernel's `Collection`;
+       nothing else. *)
     (* It names its own class as `Platform` does, so that the class has a
        path too. *)
     private class Collections = Value new () (
@@ -62,11 +63,11 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            `Map withAll: aMap`.
 
            Signals an ArgumentError, 'new: requires a capacity of at least
-           0, got …', for a negative capacity; for a Float, a LargeInteger
-           or a capacity whose array size `(capacity + 1) * 2` passes the
-           SmallInteger range, from 2^62 - 1 on, 'new: requires an Integer
-           size, got …'; for any other capacity too large to allocate,
-           'new: cannot allocate an Array of … elements'; and a
+           0, got …', for a negative capacity; for a Float,
+           'new: requires an Integer size, got …'; for an Integer whose
+           array size `(capacity + 1) * 2` is past the SmallInteger range
+           (a capacity from 2^59 - 1 on, or a LargeInteger) or too large to
+           allocate, 'new: cannot allocate an Array of … elements'; and a
            MessageNotUnderstood for `<` for one that is no number. Both
            texts show the array size, not the capacity. *)
         public Map = ( ^outer CollectionsFactory Map )
@@ -80,13 +81,14 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            `Set withAll: collection`.
 
            Signals an ArgumentError, 'new: requires a capacity of at least
-           0, got …', for a negative capacity; for a Float, a LargeInteger
-           or a capacity of 2^63 - 1 or more, 'new: requires an Integer
-           size, got …'; for any other capacity too large to allocate,
-           'new: cannot allocate an Array of … elements'; and a
-           MessageNotUnderstood for `<` for one that is no number. Both
-           texts show `capacity + 1`, the size of the Set's `data_`, not
-           the capacity. *)
+           0, got …', for a negative capacity; for a Float,
+           'new: requires an Integer size, got …'; for an Integer whose
+           `capacity + 1`, the size of the Set's `data_`, is past the
+           SmallInteger range (a capacity from 2^60 - 1 on, or a
+           LargeInteger) or too large to allocate, 'new: cannot allocate an
+           Array of … elements'; and a MessageNotUnderstood for `<` for one
+           that is no number. Both texts show `capacity + 1`, not the
+           capacity. *)
         public Set = ( ^outer CollectionsFactory Set )
         (* Answers the kernel's `Collection` class, the abstract superclass
            of `List`, `Map` and `Set`, for a program to subclass. *)
