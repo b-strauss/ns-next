@@ -122,7 +122,8 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         public print: object = ( ^self show: object printString )
     )
     (* `platform kernel`: the kernel classes a program may name that
-       `Object`'s class accessors do not answer. *)
+       `Object`'s class accessors do not answer, and `Closure`, which they
+       answer too. *)
     (* The facet over the kernel module that Primordial Soup's `Kernel
        wrapping:` answers. *)
     private class KernelNamespace = Value new () (

@@ -316,12 +316,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Exception = Object new (
         | (* The activation of the `signal` that raised the exception, which
              `resume:` returns from; nil before `signal` and once a handler
-             has left it. *)
+             has left through `resume:`, `return:`, `retry` or by
+             answering. A `^` out of the handler leaves it set. *)
           private signalActivation ::= nil.
           (* The `on:do:` activation whose handler runs, which `return:`
              and `retry` leave, and where the search for the next handler
              starts; the `signal` activation while a search starts, nil
-             once a handler has left or no handler was found. *)
+             once a handler has left through `resume:`, `return:`, `retry`
+             or by answering, or no handler was found. A `^` out of the
+             handler leaves it set. *)
           private handlerActivation ::= nil.
           (* Whether a search has found no handler and run `defaultAction`;
              once true, it stays true. *)
@@ -782,7 +785,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
            Signals an Error, 'sendTo: needs a Symbol selector and an Array
            of arguments', when `selector` is no Symbol or `arguments` is
-           neither an Array nor nil. *)
+           neither an Array nor nil; and an Error, 'wrong number of
+           arguments: `…` takes …, got …', when the method found is
+           written in Newspeak and takes another number of arguments than
+           `arguments` holds. For a slot's accessor or a method backed by
+           a native operation the number is not checked. *)
         (* A message built without `arguments:` holds nil there, and is
            sent with none. *)
         public sendTo: receiver = (
@@ -1168,13 +1175,13 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public hash = ( ^0 )
     )
     (* The integers, of any size: a literal such as `3` is one, and an
-       integer that does not fit 64 bits is a `LargeInteger`. *)
+       integer outside -2^60 to 2^60 - 1 is a `LargeInteger`. *)
     public class Integer = Number new () (
         (* Answers true: the receiver is an Integer. *)
         public isKindOfInteger = ( ^true )
         (* Answers the sum of the receiver and `other`: an integer for an
-           integer `other`, a LargeInteger only when it does not fit 64
-           bits, and a Float for a Float `other`, the receiver converted to
+           integer `other`, a LargeInteger only when it lies outside -2^60
+           to 2^60 - 1, and a Float for a Float `other`, the receiver converted to
            the nearest Float first.
 
            other: an Integer, a LargeInteger or a Float.
@@ -1218,7 +1225,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^vmMirror integer: self bitXor: other ifFail: [^super bitXor: other]
         )
         (* Answers the receiver times 2 to the power `other`; 0 for a zero
-           receiver, whatever the count.
+           receiver, whatever non-negative count.
 
            other: an Integer or a LargeInteger, at least 0.
 
@@ -1279,9 +1286,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers what `printString` answers. *)
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
     )
-    (* An integer that does not fit 64 bits. It answers `Integer`'s
-       protocol with the same answers and errors; any result that fits 64
-       bits again is an `Integer`. *)
+    (* An integer outside -2^60 to 2^60 - 1. It answers `Integer`'s
+       protocol with the same answers and errors; any result within that
+       range again is an `Integer`. *)
     (* §5.1.1: "integers are not limited in size". An `Integer` whose value
        does not fit a `SmallInteger`; every leaf answers an `Integer` when
        the result fits again, so each integer has one representation.
@@ -1336,8 +1343,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         )
         (* Answers whether `other` is a LargeInteger of the same value.
 
-           other: any object; never signals. An Integer that fits 64 bits
-           never equals a LargeInteger. *)
+           other: any object; never signals. An Integer within -2^60 to
+           2^60 - 1 never equals a LargeInteger. *)
         public = other = ( ^vmMirror largeInteger: self equals: other ifFail: [^super = other] )
         (* Answers a hash of the value, alike for equal LargeIntegers. *)
         public hash = ( ^vmMirror largeIntegerHash: self ifFail: [^super hash] )
