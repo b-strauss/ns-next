@@ -5,11 +5,13 @@
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with Newspeak `List`, `Map` and `Set`; missing is `Integer>>/` and much
-> of Primordial Soup's core API, whose names and loops are aligned, whose
-> foundations -- the error classes, `Proxy` and a public `Future` -- are
-> built, and the rest planned in full ("Planned: the kernel completed to Primordial Soup's
-> core API"). Every member of `Kernel.ns`, `PlatformFactory.ns` and
+> with Newspeak `List`, `Map`, `IdentityMap` and `Set`; missing is
+> `Integer>>/` and part of Primordial Soup's core API, whose names and
+> loops are aligned, whose foundations -- the error classes, `Proxy` and a
+> public `Future` -- and whose collections and strings are built, and the
+> rest -- numbers, `ByteArray` and `StringBuilder`, weak references --
+> planned ("Planned: the kernel completed to Primordial Soup's core API").
+> Every member of `Kernel.ns`, `PlatformFactory.ns` and
 > `CollectionsFactory.ns` -- public, protected and private -- is documented
 > in place to the standard of Javadoc, by a comment directly above it,
 > which `crates/ns-runtime/tests/core_library_documentation.rs` checks.
@@ -42,11 +44,13 @@ comparison in [image-format.md](image-format.md).
 
 ## What exists
 
-The shipped modules document their public members in place: every `public`
-method, slot and class of `Kernel.ns`, `PlatformFactory.ns` and
-`CollectionsFactory.ns` has a comment above it, or shares one with its
-family, saying what it answers, what it takes and which `Error` it signals
-(`CLAUDE.md`, "Conventions"). This document gives the reasons behind them.
+The shipped modules document their members in place: every method, slot
+and class of `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`
+-- public, protected and private -- has a comment directly above it saying
+what it does and answers, what each argument must be, which `Error` it
+signals and when, and what it guarantees about order, identity, copying and
+mutation (`CLAUDE.md`, "Conventions"). This document gives the reasons
+behind them.
 
 `Kernel.ns` declares one nested class per builtin class but the mirror's:
 
@@ -112,8 +116,9 @@ replacing leaf reads every source element before it stores any, through the
 write barrier, so overlapping ranges of one array copy as if through a
 buffer, and a source that is no Array is first copied into one in Newspeak,
 so every error text is the leaf's. `sortFrom:to:by:` is a stable bottom-up
-merge sort: no recursion, so its depth does not grow with the range, and a
-buffer the size of the range.
+merge sort: no recursion, so its depth does not grow with the range, and
+two Arrays the size of the range as extra memory, a copy of the range and
+a buffer, which trade places each pass.
 
 `Object>>subclassResponsibility`, protected, is what an abstract method's
 body sends: it signals an `Error` whose `messageText` names the abstract
@@ -554,7 +559,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 111 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 118 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -600,14 +605,17 @@ way (2026-09-28, "The collections module (plan 2)" below):
 
 ```newspeak
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | private kernelModule = theKernel. private kernelCollection = theKernel Collection. |
+    | private kernelModule = theKernel. private kernelError = theKernel Error.
+      private kernelCollection = theKernel Collection. |
 ) (
     private class Collections = Value new () (
         public Collections = ( ^outer CollectionsFactory Collections )
         public Collection = ( ^kernelCollection )
         public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
+        public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
         public List = ( ^outer CollectionsFactory List )
         public Map = ( ^outer CollectionsFactory Map )
+        public NotFound = ( ^outer CollectionsFactory NotFound )
         public Set = ( ^outer CollectionsFactory Set )
     )
     private class List new: capacity = kernelCollection new (
@@ -616,7 +624,9 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     ) ( ... ) : ( public new = ( ^self new: 3 ) )
     private class Map new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     private class IdentityMap new: capacity = Map new: capacity () ( ... ) : ( ... )
-    private class Set new: capacity = Object new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class Set new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class NotFound = kernelError new ( | public element ::= nil. | ) ( ... ) : ( ... )
+    private class ConcurrentModification = kernelError new ( | public collection ::= nil. | ) () : ( ... )
     public newCollections = ( ^Collections new )
 ) : ()
 ```
@@ -657,7 +667,8 @@ reaches the mirror (`tests/platform.rs`,
 `the_platform_factory_answers_only_new_platform`,
 `the_platforms_class_accessors_reach_the_private_classes`).
 `CollectionsFactory.ns` follows the same pattern: its root holds the kernel
-instance, its nested `Collections`, `List`, `Map` and `Set` are private, and its one
+instance, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
+`Set`, `NotFound` and `ConcurrentModification` -- is private, and its one
 public member, `newCollections`, answers the facet `platform collections`
 is (`the_collections_factory_answers_only_new_collections`).
 
@@ -672,15 +683,15 @@ which fetches `CollectionsFactory`'s root class through the mirror's
 with the kernel instance, on the first `platform collections` of any
 platform; `Platform`'s `collections` answers that instance's
 `newCollections`. So every platform's facet comes from one factory and
-hands out one `List`, one `Map` and one `Set` class, and the facets,
-values, are all equal
-(`goldens/library/collection/every_platform_shares_one_collections_module`). The
-facet names its own class, `^outer CollectionsFactory Collections`, as
-`Platform>>Platform` does, and `List`, `Map` and `Set` by `^outer
+hands out one class of each name, and the facets, values, are all equal
+(`goldens/library/collection/every_platform_shares_one_collections_module`).
+The facet names its own class, `^outer CollectionsFactory Collections`, as
+`Platform>>Platform` does, and each of the module's classes by `^outer
 CollectionsFactory <Name>`: class accessors the compiler recognizes in
 every shipped module but the kernel, so the platform paths `collections
-Collections`, `collections List`, `collections Map` and `collections Set`
-needed no wider recognition.
+Collections`, `collections List`, `collections IdentityMap` and the rest
+needed no wider recognition. `Collection` it answers from the root's
+`kernelCollection`, the kernel's own class.
 
 **The boot.** `Interpreter::install_platform`, run by `bootstrap_with`
 right after `install_kernel`, takes `PlatformFactory` from the table of
@@ -904,17 +915,16 @@ speculative platform. The core is different: Primordial Soup's API is the
 specification it is completed to, and each sub-project pins what it adds
 with goldens of its own.
 
-The `collections` namespace hands out `List`, `Map` and `Set` today, each
-with the selectors the programs that asked for it send: `List` because
-`Ducts.ns`, `NewspeakASTs.ns` and `V5BytecodeSimulation.ns` bind `platform
-collections List`, and the Are We Fast Yet benchmarks of stage 3 widen it;
-`Map` and `Set` because DeltaBlue and Havlak need them ("The collections
-module (plan 2)" below). The corpus also asks that namespace for
-`IdentitySet`, `WeakArray` and `Collection`; `WeakArray` and
-`Collection` come with the completed core, and
-`IdentitySet`, which Primordial Soup does not have, does not. None is ever
-an alias of `List`, `Map` or `Set`, which compare by `=` and hold their
-elements strongly.
+The `collections` namespace hands out `Collection`, the kernel's, and the
+module's `List`, `Map`, `IdentityMap`, `Set`, `NotFound` and
+`ConcurrentModification`, each with Primordial Soup's protocol ("The
+collections module (plan 2)" below). The corpus also asks that namespace
+for `IdentitySet` and `WeakArray`; `WeakArray` comes with the weak
+references, sub-project 6 ("Planned: the kernel completed to Primordial
+Soup's core API" below), and `IdentitySet`, which Primordial Soup does not
+have, does not. Neither is ever an alias of `Set` or `List`, which compare
+by `=` and hold their elements strongly
+(`tests/platform.rs`, `platform_collections_does_not_invent_an_identity_set`).
 
 ## Large integers
 
@@ -1471,12 +1481,18 @@ object's selector — reaches the superclass's method, `Object`'s, or for
 `Array` `Collection`'s, and a selector neither has ends in `Object`'s
 `doesNotUnderstand:` through §5.10's super failure path, with the same
 message text.
-`goldens/language/send/native_that_fails_on_its_receiver_falls_to_objects` and
+`goldens/language/send/native_that_fails_on_its_receiver_falls_to_objects`
+and
 `goldens/runtime/cache/cached_primitive_that_fails_on_a_receiver_of_the_same_class`
-pin it, and `goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`
-pins it family by family. `Object`'s own leaves never decline, so its
-blocks are unreachable; they keep the shape so that one rule, and one
-recognizer, covers every method. The exception machinery's mirror sends
+pin it, and
+`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`
+pins it family by family: `Object`'s `=` and `printString` for each, and
+for `Array`'s `size` `Collection`'s, which counts through `do:`, whose leaf
+declines in turn and reaches `Collection`'s abstract `do:`, so the golden
+ends in the `Error` `subclassResponsibility` signals, 'Collection>>do: is
+abstract: MyArray must implement it'. `Object`'s own leaves never decline,
+so its blocks are unreachable; they keep the shape so that one rule, and
+one recognizer, covers every method. The exception machinery's mirror sends
 are the exception to the shape: they name another subject — an activation,
 an exception — and their failure blocks answer a value (`ifFail: [nil]`,
 `ifFail: [false]`) rather than resend to `super`. Every method is `public`
@@ -2053,11 +2069,11 @@ with an argument that is no `Message` fails inside the handler, on
   flag; `returnValue:` and `restart`, which answer the signals the unwinder
   carries out (a returned target is §7.2's "cannotReturn: the activation has
   already returned"); `inheritsMixinOf:` for `Class>>handles:`; and
-  `terminate…` for `defaultAction`. `Message>>sendTo:`'s row,
-  `message:sendTo:ifFail:`, is the last row (`builtins/message.rs`), and the
-  row `Object>>doesNotUnderstand:` used to forward to retired with the Rust
-  handler it ran, which moved the rows after it down by one. The tracer
-  follows the frame reference, so the stress modes cover it.
+  `terminate…` for `defaultAction`. `Message>>sendTo:`'s row is
+  `message:sendTo:ifFail:` (`builtins/message.rs`);
+  `Object>>doesNotUnderstand:` forwards to no row: it is Newspeak that
+  signals a `MessageNotUnderstood`. The tracer follows the frame
+  reference, so the stress modes cover it.
 - **Markers.** Whether a method is `on:do:`, `ensure:` or `ifCurtailed:` is
   a property of its compiled code (`bytecode::UnwindMarker`, naming the
   registers of the method's arguments and of its `handlerActive` or
@@ -2551,8 +2567,9 @@ its class. That needs its own decision when the first such module arrives.
   platform" above): `class CollectionsFactory usingKernel: theKernel =
   Object <: Value`, a root that holds the kernel in a private slot and is
   never handed out, with the private nested classes a program reaches
-  through the platform -- the `Collections` facet, `List`, `Map` and `Set`
-  -- as SOMns's and Primordial Soup's collections modules are values; it
+  through the platform -- the `Collections` facet, `List`, `Map`,
+  `IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` -- as
+  SOMns's and Primordial Soup's collections modules are values; it
   needs no mirror.
   `PlatformFactory`'s root fetches the module (`vmMirror moduleNamed:
   #CollectionsFactory ifFail: [nil]`) and instantiates it with
@@ -2621,72 +2638,78 @@ its class. That needs its own decision when the first such module arrives.
   `Array>>at:`'s text, "index 3 out of range: valid indices are 1..2
   (size 2)", so a program sees one error from either
   (`goldens/library/collection/a_list_index_error_is_caught_as_an_error`).
-- **`Map` and `Set`, built** (2026-10-01), for DeltaBlue and Havlak, which
-  use SOMns's `Dictionary`, `IdentityDictionary`, `Set` and `IdentitySet`;
-  `Map` and `Set` have since been written anew, below. `NotFound` is the collections
-  module's own class, an `Error` carrying the key in its slot `element`,
-  reached as `platform collections NotFound` and built by
-  `NotFound element: key`; its `description` is `messageText`, or
-  "NotFound: " and the element's `printString` when there is none
+- **`NotFound`, built.** The collections module's own class, an `Error`
+  carrying the missing key or element in its slot `element`, reached as
+  `platform collections NotFound` and built by `NotFound element: key`;
+  its `description` is `messageText`, or "NotFound: " and the element's
+  `printString` when there is none. `Map>>at:` and `removeKey:` signal it
+  with 'key not found: …', `List>>remove:`, `Set>>remove:` and
+  `removeAll:` with 'element not found: …'
   (`goldens/library/collection/a_missing_key_signals_not_found`). The
-  errors of a `List` or a `Set` that have no such class stay `Error`s with
-  texts of their own: an empty `List`'s `removeFirst` and `removeLast`.
-  A `Set` is an insertion-ordered hash table: its elements in `data_` in
-  the order they were first added, and `hashtable_`, an open-addressing
-  table of their indices in `data_`, 0 marking an empty bucket, kept at
-  most three quarters full, an element found by its `hash` and compared
-  with `=`. The slot `hashtable_ ::= rehash` is a `lazy` slot (§6.3.3), so
-  the table is rebuilt from `data_` whenever it is `nil`; that an image
-  writes a lazy slot's value, where §6.3.3 intends it never be persisted,
-  is [OPEN-WORK.md](../OPEN-WORK.md)'s "Whether an image carries a lazy
-  slot's value". A lookup answers the element's index in `data_`, so that
-  no operation reads the table twice. As `List`'s, the representation --
-  `size_`, `data_`, `hashtable_` and every helper -- is private.
-  `goldens/library/collection/a_map_and_a_set_keep_insertion_order` pins
-  the order of both.
-- **`Map` under `Collection`, with removal, and `IdentityMap`, built.**
-  A `Map` is a `Collection` whose elements are its values: `do:`,
-  `includes:`, `inject:into:` and the rest visit them, and `collect:`,
-  `select:` and `reject:` answer Maps of the same keys, built by the
-  protected `newForCollectUsingAdd:`. It keeps the layout above -- keys and
-  values side by side in `data_`, `hashtable_` a `lazy` slot rebuilt by
-  `rehash` -- and adds removal: `removeKey:` overwrites the key in `data_`
-  with `data_` itself, and the key's bucket stays in the probe chain as a
-  tombstone that lookups pass. The public protocol never hands the array
-  out (`keys` and `values` answer new Arrays), so no key is ever it; a
-  program's subclass reaches it through the protected `dataForScan` and
-  probes, and one that stores it as a key or hands it on breaks only its
-  own map. The mark costs no slot and no allocation, and every test has
-  it as the receiver of `==`, so a key's own `==` is never sent it.
-  Growth, when `data_` is full, copies only the live entries, in order,
-  into new arrays, which drops the marks and the tombstones together; so
-  a key stored again after its removal comes last in the order, and a
-  long run of removals and insertions never fills the table with
-  tombstones. `removeAll` keeps the capacity, as the
-  Are We Fast Yet `Dictionary` does, because Havlak empties and refills its
-  map for every loop search. Adding or removing a key counts as a
-  modification, and an iteration signals `ConcurrentModification` after the
-  block that did it; storing under an existing key does not
-  (`goldens/library/collection/a_map_changed_while_iterated_signals`).
-  Unlike the rest of the representation, `Map`'s probes `scanFor:in:`
-  and `emptyBucketFor:in:` and the accessor `dataForScan` are protected,
-  and so visible to a program's subclass of `Map`.
-  `IdentityMap` is a subclass of `Map` that overrides the probes --
-  written out again with `identityHash` and `==` where `Map`'s use `hash`
-  and `=` inline, since a self-send per probe step for the hash and the
-  comparison costs a send and an activation on every lookup; the probe
-  key is the receiver of `==`, sent each stored key past the removed
-  marks -- and `newForCollectUsingAdd:`, reading the data array through
-  `dataForScan`, and adds `at:putReplace:`, `at:ifAbsentPutVal:` and
-  `atOrItself:`. It is not a separate kernel class because nothing in the
-  kernel needs one: the table is the collections module's, and the two
-  differ in their probe, not in a representation. The tables of both are
-  filled by `whileTrue:` loops, which the compiler inlines, rather than
-  `to:do:`. A class side is not inherited, so `IdentityMap` declares its
-  own `new` and `withAll:`
+  errors that have no such class stay `Error`s with texts of their own: an
+  empty `List`'s `removeFirst` and `removeLast`.
+- **`Map` under `Collection`, with removal, built.** Keys are found by
+  their `hash`, compared with `=` and kept in insertion order. A `Map`
+  is a `Collection` whose elements are its values: `do:`, `includes:`,
+  `inject:into:` and the rest visit them, and `collect:`, `select:` and
+  `reject:` answer Maps of the same keys, built by the protected
+  `newForCollectUsingAdd:`. Its keys and values lie side by side in
+  `data_`, in the order the keys were first stored, and `hashtable_` is an
+  open-addressing table of their indices in `data_`, 0 marking an empty
+  bucket, kept at most three quarters full. `hashtable_ ::= rehash` is a
+  `lazy` slot (§6.3.3), so the table is rebuilt from `data_` whenever it
+  is `nil`; that an image writes a lazy slot's value, where §6.3.3 intends
+  it never be persisted, is [OPEN-WORK.md](../OPEN-WORK.md)'s "Whether an
+  image carries a lazy slot's value". A lookup answers the key's index in
+  `data_`, so that no operation reads the table twice. `removeKey:`
+  overwrites the key in `data_` with `data_` itself, and the key's bucket
+  stays in the probe chain as a tombstone that lookups pass. The public
+  protocol never hands the array out (`keys` and `values` answer new
+  Arrays), so no key is ever it; a program's subclass reaches it through
+  the protected `dataForScan` and probes, and one that stores it as a key
+  or hands it on breaks only its own map. The mark costs no slot and no
+  allocation, and every test has it as the receiver of `==`, so a key's
+  own `==` is never sent it. Growth, when `data_` is full, copies only the
+  live entries, in order, into new arrays, which drops the marks and the
+  tombstones together; so a key stored again after its removal comes last
+  in the order, and a long run of removals and insertions never fills the
+  table with tombstones. `removeAll` keeps the capacity, as the Are We
+  Fast Yet `Dictionary` does, because Havlak empties and refills its map
+  for every loop search. Adding or removing a key counts as a
+  modification, and an iteration signals `ConcurrentModification` after
+  the block that did it; storing under an existing key does not
+  (`goldens/library/collection/a_map_changed_while_iterated_signals`). The
+  representation -- `size_`, `used_`, `data_`, `hashtable_`,
+  `modifications` and the helpers -- is private, but for the three hooks a
+  subclass changes the comparison through: the probes `scanFor:in:`, which
+  answers a key's index in `data_` or the negated index of the empty
+  bucket it belongs in, and `emptyBucketFor:in:`, which a rebuild fills
+  the table through, and the accessor `dataForScan`, which answers
+  `data_`. `Map`'s own probes send `hash` and `=` inline rather than
+  through a hook of their own, since a self-send per probe step costs a
+  send and an activation on every lookup. The tables are filled by
+  `whileTrue:` loops, which the compiler inlines, rather than by `to:do:`.
+- **`IdentityMap`, built,** is a subclass of `Map` that finds keys by
+  `identityHash` and compares them with `==`, and inherits everything else
+  -- insertion order, removal, the modification count. It overrides the
+  three hooks' two probes, written out again with `identityHash` and `==`
+  and reading the data array through `dataForScan`, the probe key the
+  receiver of `==`, sent each stored key past the removed marks; and
+  `newForCollectUsingAdd:`, so that `collect:`, `select:` and `reject:`
+  answer IdentityMaps. It adds `at:putReplace:`, `at:ifAbsentPutVal:` and
+  `atOrItself:`, and its `at:put:` replaces the value of a present key, as
+  `Map`'s does. A value as key (§3.1.1) behaves as in a `Map`, since a
+  value's `==` is `=` and its `identityHash` its `hash`. It is a subclass
+  of `Map`, not a kernel class of its own beside it, because the two
+  differ only in how a key is found and compared, not in representation or
+  protocol, and nothing in the kernel needs one: its first user is to be
+  road step 5's atomic install, which maps old objects to new ones and
+  must not run a program's `=`. A class side is not inherited, so
+  `IdentityMap` declares its own `new` and `withAll:`
   (`goldens/library/collection/an_identity_map_compares_keys_by_identity`).
 - **`Set` under `Collection`, with removal, built; the collections module
-  holds no adapted code.** A `Set` keeps `Map`'s representation with
+  holds no adapted code.** A `Set` finds its elements by their `hash` and
+  compares them with `=`, and keeps `Map`'s representation with
   elements for key-value pairs -- the elements in `data_` in adding order,
   `hashtable_` of their indices, `data_` itself as the removed mark
   overwriting a removed element and leaving a tombstone in the probe chain
@@ -2751,9 +2774,8 @@ Done in plan 2: `CollectionsFactory.ns` joins the shipped modules resolved
 with `resolve_kernel` and whose root no program reaches -- its one instance
 is kept by `PlatformFactory`'s private lazy `collectionsModule`, and what a
 program gets is the facet `platform collections` answers. It declares no
-`vmMirror` and needs none. The on-demand rule is its too: every selector
-of `List`, `Map` and `Set` exists because the corpus, a golden or an Are
-We Fast Yet benchmark asks for it.
+`vmMirror` and needs none. The on-demand rule is not its: it carries
+Primordial Soup's collections API ("The on-demand rule" above).
 
 #### What is measured
 
@@ -2796,6 +2818,19 @@ every head build. A start that builds one `List` costs about 0.28 ms
 compiling and instantiating `CollectionsFactory.ns`, which the lazy
 `collectionsModule` defers to the first `platform collections`, as
 intended.
+
+**The collections written here, measured 2026-10-10** (sub-project 3 of
+"Planned: the kernel completed to Primordial Soup's core API" below), the
+Are We Fast Yet benchmarks, release builds, three builds by three rounds a
+side against `eeaa1d90`: Havlak is 6.3% slower (3,491 ms to 3,711 ms) and
+DeltaBlue 4.7% (670.5 ms to 702.3 ms), the other fourteen within noise,
+-1.7% to +2.3%; Havlak was 23.4% slower before `Map`'s probes sent `hash`
+and `=` inline, the tables were filled by `whileTrue:` and the data array
+became the removed mark. The remainder is the read of a private slot per
+element, a getter send in this VM, and the modification check after every
+block, which is all of DeltaBlue's loss; it was accepted with the user on
+2026-10-10, and the ways out are [OPEN-WORK.md](../OPEN-WORK.md)'s "The
+collections' remaining cost on Havlak and DeltaBlue".
 
 ### What this step did not break
 
@@ -3092,17 +3127,18 @@ on its own (decided with the user on 2026-10-06):
   today's texts stay their `messageText`; Primordial Soup has no `Error` and
   its classes no text. The leaves, the VM and the kernel's and the
   collections' Newspeak signal them where it signals them, and
-  `CollectionsFactory.ns` adds `NotFound` ("Exceptions"; "The collections
-  module (plan 2)"); the collections' further removals signal `NotFound`
-  as they arrive (sub-project 3 below).
+  `CollectionsFactory.ns` adds `NotFound`, which the collections' lookups
+  and removals signal, and `ConcurrentModification` ("Exceptions"; "The
+  collections module (plan 2)").
 - **`isKindOf…` answers `false` for what a receiver does not declare**:
   `Object>>doesNotUnderstand:` answers `false` for a unary selector that
   begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's
   (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
   its own with `true`: `isKindOfArray`, `isKindOfBehavior`,
-  `isKindOfBoolean`, `isKindOfClosure`, `isKindOfFloat`,
-  `isKindOfInteger`, `isKindOfNumber`, `isKindOfString`, `isKindOfList`,
-  `isKindOfMap` and `isKindOfSet`; a class a later sub-project adds brings
+  `isKindOfBoolean`, `isKindOfClosure`, `isKindOfCollection`,
+  `isKindOfFloat`, `isKindOfInteger`, `isKindOfNumber`, `isKindOfString`,
+  `isKindOfList`, `isKindOfMap`, `isKindOfIdentityMap` and
+  `isKindOfSet`; a class a later sub-project adds brings
   its own answer, and its accessor on `platform kernel` or
   `platform collections`, when it is built. A program can introduce a
   question of its own
@@ -3138,10 +3174,16 @@ a non-integral literal is a binary float" above), and there is no
    plan](../superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md)):
    the error classes, the `isKindOf…` rule, `yourself`, `identityHash`, the
    kernel facet's accessors, `Proxy` and a public `Future`.
-3. **Collections and strings**: `Collection`, the whole protocol of
-   `Array`, `List`, `Map` and `Set` (their `removeKey:` and `remove:`
-   signalling `NotFound`), `IdentityMap`, `List`, `Map` and `Set`
-   rewritten, and `String`'s protocol in code points.
+3. **Collections and strings** -- built (2026-10-10, [its
+   plan](../superpowers/plans/2026-10-10-1800-ns-next-kernel-collections-and-strings.md)):
+   an abstract `Collection` in the kernel with `Array` under it and
+   `Object>>subclassResponsibility`; the whole protocol of `Array`, `List`,
+   `Map` and `Set`, their removals signalling `NotFound` and a change
+   during an iteration `ConcurrentModification`; `IdentityMap` under
+   `Map`; `List`, `Map` and `Set` written here; `String`'s protocol in
+   code points, with `stringAt:`; and every member of the three shipped
+   modules documented ("Collections and strings" under "Decisions"
+   below).
 4. **Numbers**: `Float`'s mathematics, `Integer`'s and `Number`'s
    protocol, then `Fraction` and the tower.
 5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions.
@@ -3173,6 +3215,54 @@ a non-integral literal is a binary float" above), and there is no
   pull future", "Planned: the kernel completed to Primordial Soup's core
   API" above;
   [plan](../superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md)).
+
+- **Collections and strings** (decided with the user on 2026-10-10, built
+  the same day; "What exists", "The collections module (plan 2)" above;
+  [plan](../superpowers/plans/2026-10-10-1800-ns-next-kernel-collections-and-strings.md)):
+  the element of a `String` is a code point, an `Integer` -- `do:`, `first`
+  and `last` answer one, `String withAll:` takes them, as `at:` and `String
+  with:` already did -- and `stringAt:`, beyond Primordial Soup's API,
+  answers the `String` of the one code point at an index, a name that says
+  what it answers and suggests no `Character`. A `String` is no
+  `Collection`, as in Primordial Soup, the canonical Newspeak and SOMns; it
+  stays under `Value` with its own protocol. `Collection` is a kernel
+  builtin under `Object`, because `Array` is a kernel builtin and needs it
+  as its superclass; `List`, `Map` and `Set` reach it through
+  `CollectionsFactory`'s `kernelCollection`. `IdentityMap` is a subclass of
+  `Map` in the collections module, not a separate kernel class: it compares
+  keys with `==` and hashes them with `identityHash` and inherits
+  everything else, insertion order and removal among it; its `at:put:`
+  replaces a present key's value as `Map`'s does, and it keeps Primordial
+  Soup's `at:putReplace:`, `at:ifAbsentPutVal:` and `atOrItself:` but not
+  the public `size:` setter. Road step 5's atomic install is to be its
+  first user: it maps old objects to new ones and must not run a program's
+  `=`. `NotFound` stays in the collections module, under `Error`. No
+  immutable variants yet: no `ReadOnlyTuple` (§5.1.7 stays a recorded
+  deviation) and no value collections, and `Collection` being a class bars
+  neither -- a `ReadOnlyTuple` is only shallowly immutable and fits under
+  it, and a deeply immutable value collection would turn `Collection` into
+  a mixin applied to `Object` and to `Value`
+  ([OPEN-WORK.md](../OPEN-WORK.md)). Leaves stand where Primordial Soup has
+  primitives -- `Array`'s `copyFrom:to:` and
+  `replaceFrom:to:with:startingAt:`, `String`'s two searches and
+  `withAll:`, and the kernel-private activation's `methodName` for
+  `Object>>subclassResponsibility` -- and Newspeak everywhere else. Every
+  body is written here from the protocol's description, not from the
+  bodies of Primordial Soup's, SOMns's or Strongtalk's collections, and no
+  test of another project is adapted. A structural change while an iteration
+  runs signals `ConcurrentModification`, a collections-module `Error`
+  beyond Primordial Soup's API, which, like the specification, leaves it
+  undefined: every `add:`, `addFirst:`, `addLast:`, `addAll:`, removal and
+  `removeAll`, and an `at:put:` of a key a `Map` did not hold, counts,
+  while storing at an existing index or key and sorting do not; a `List`'s,
+  `Map`'s or `Set`'s `do:`, `keysAndValuesDo:` and everything built on
+  `do:` read the count before the first element and compare it after every
+  block, the last included, and a removal selector's own changes while it
+  scans (`removeAllSuchThat:`) are not reported. Every member of
+  `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`, public,
+  protected and private, is documented to the standard of Javadoc
+  (`CLAUDE.md`, "Conventions";
+  `crates/ns-runtime/tests/core_library_documentation.rs`).
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:
@@ -3256,7 +3346,8 @@ a non-integral literal is a binary float" above), and there is no
   index so that `removeFirst` moves nothing, rather than a port being
   rewritten around a slow operation; `Map` and `Set` keep their keys in
   insertion order and rebuild their table from them, in a `lazy` slot; the
-  representation of all three is private.
+  representation of all three is private, but for `List`'s `size_` and
+  the three hooks through which `IdentityMap` changes `Map`'s comparison.
 - **A NaN equals a NaN** (decided with the user on 2026-10-01, built the
   same day; "A NaN equals a NaN" above).
 - **Exceptions** (nine decisions taken with the user on 2026-09-25, built

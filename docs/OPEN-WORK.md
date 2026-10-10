@@ -24,12 +24,17 @@ sub-projects, in this order: aligning, which is built (`Block` is
 loops send `value` to a non-block); foundations, which is built too (the
 error classes under `Error`, the `isKindOf…` rule, `yourself`,
 `identityHash`, the kernel facet's accessors, `Proxy`, a public `Future`);
-collections and strings; numbers, the symmetric tower with `Fraction` among
-them; `ByteArray` and `StringBuilder`; weak references. Each has its own
-design and plan; the collections and strings sub-project is next and has no
-design or plan yet. The decisions and the
-scope are [core-library.md](design/core-library.md), "Planned: the kernel
-completed to Primordial Soup's core API".
+collections and strings, which is built too (an abstract `Collection` in
+the kernel with `Array` under it, the whole protocol of `Array`, `List`,
+`Map` and `Set`, `IdentityMap`, `ConcurrentModification`, `String`'s
+protocol in code points, every member of the shipped modules documented);
+numbers, the symmetric tower with `Fraction` among them; `ByteArray` and
+`StringBuilder`; weak references. Each has its own design and plan; the
+numbers sub-project is next -- `Float`'s mathematics, `Integer`'s and
+`Number`'s protocol, then `Fraction` and the tower -- and has no design or
+plan yet. The decisions and the scope are
+[core-library.md](design/core-library.md), "Planned: the kernel completed
+to Primordial Soup's core API".
 
 **Then road step 5, mirrors and atomic installation** ("Step 5, mirrors and
 atomic installation" below; decided with the user on 2026-10-05). Its
@@ -436,6 +441,24 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   reflection; an embedded compiled kernel image if the kernel grows. What
   Primordial Soup's core API has comes with "Next" above.
   [core-library.md](design/core-library.md).
+- **`String`'s `ByteArray` forms.** `asByteArray`, `copyByteArrayFrom:to:`,
+  and a `ByteArray` as the argument of `indexOf:`, `indexOf:startingAt:`,
+  `lastIndexOf:`, `lastIndexOf:startingAt:`, `startsWith:`, `endsWith:`
+  and `String withAll:` wait for `ByteArray`, the kernel completion's fifth
+  sub-project ("Next" above). The collections and strings sub-project left
+  them out on 2026-10-10. [core-library.md](design/core-library.md), "What
+  exists".
+- **`ReadOnlyTuple` and value collections.** Neither is built (decided
+  with the user on 2026-10-10): tuple literals stay mutable `Array`s, the
+  recorded deviation from §5.1.7 ("Deviations from the specification"
+  below), and there is no deeply immutable collection a value may hold. A
+  `ReadOnlyTuple` is only shallowly immutable and fits under the kernel's
+  `Collection` class as it is. A value collection does not: its class must
+  inherit `Value` (§3.1.1), and `Collection` is under `Object` beside
+  `Value`, so building one turns `Collection` into a mixin applied both to
+  `Object` and to `Value`, as SOMns's `ArrayReadMixin` is.
+  [core-library.md](design/core-library.md), "Decisions", "Collections and
+  strings".
 
 ## Planned: images, liveness and reflection
 
@@ -535,7 +558,9 @@ program wrongly at exit status 0**:
   literal is not normalized to NFC".
 
 The others: no character literals and no
-`Character` (§5.1.4); a modifier needs no whitespace after it (§6.3.3,
+`Character` (§5.1.4); a tuple literal is a mutable `Array`, not a
+`ReadOnlyTuple` (§5.1.7; "`ReadOnlyTuple` and value collections" above);
+a modifier needs no whitespace after it (§6.3.3,
 §6.3.4); `outer N` without a message answers the enclosing object (§5.9);
 value objects are never copied across an actor boundary (§3.1.1); there is
 no mirror-based reflection (§8.2), which road step 5 closes but for
@@ -624,14 +649,18 @@ activation.
   any other slot's. A `Map` or `Set` whose table was filled before a
   snapshot would then answer wrongly after the load wherever a key's hash
   does not survive it, as a `Symbol`'s does not
-  ([core-library.md](design/core-library.md), "What exists"). `Map` and
-  `Set` exist ([core-library.md](design/core-library.md), "The collections
-  module (plan 2)"), but nothing reaches this yet: no image holds one, and
-  the benchmarks build theirs at run time. `Map`'s and `Set`'s `rehash`,
-  which their lazy `hashtable_` runs when the slot is nil, therefore runs
-  today only after growth; the path that rebuilds a table after a load has
-  no test, and gets one when this item is settled. Noted with the user on
-  2026-10-01, while planning the Are We Fast Yet benchmarks' stage 3.
+  ([core-library.md](design/core-library.md), "What exists"). `Map`,
+  `IdentityMap` and `Set` exist and remove
+  ([core-library.md](design/core-library.md), "The collections module
+  (plan 2)"), their table still the lazy `hashtable_ ::= rehash`, but
+  nothing reaches this yet: no image holds one, and the benchmarks build
+  theirs at run time. `rehash`, which the lazy
+  `hashtable_` runs when the slot is nil, therefore runs today only when
+  the data array is full, where it is the growth that drops removed
+  entries and their tombstones; the path that rebuilds a table after a
+  load has no test, and gets one when this item is settled. Noted with
+  the user on 2026-10-01, while planning the Are We Fast Yet benchmarks'
+  stage 3.
 
 ## Unexplained measurements and unmeasured decisions
 
@@ -737,6 +766,23 @@ activation.
   is unmeasured; measure it per the `measuring-performance` skill
   ([execution.md](design/execution.md)'s protocol) before the next
   performance step.
+- **The collections' remaining cost on Havlak and DeltaBlue.** With `List`,
+  `Map` and `Set` written here and their modification count, measured at
+  `7a661484` against `master` `eeaa1d90` (release builds, three builds by
+  three rounds): Havlak 3,491 ms to 3,711 ms, +6.3%, and DeltaBlue
+  670.5 ms to 702.3 ms, +4.7%, both separated; the other fourteen within
+  noise, -1.7% to +2.3%. Before `Map`'s probes sent `hash` and `=` inline,
+  the tables were filled by `whileTrue:` and the data array became the
+  removed mark, Havlak was +23.4%. The remainder is the read of a private
+  slot per element, a getter send in this VM, and the modification check
+  after every block, which is all of DeltaBlue's loss: removing the
+  per-block checks was measured at Havlak +4.0% and DeltaBlue -2.2%, and
+  was not done, since the check is the decided semantics. Accepted with
+  the user on 2026-10-10. Two ways out were identified and not measured: a
+  compiler-side direct load for a read of a private slot, in place of the
+  getter send, and an inlined `to:do:` ("Inlining `to:do:` and
+  `to:by:do:`" above). [core-library.md](design/core-library.md), "What is
+  measured".
 
 ## Defects that change a correct program's output
 
@@ -896,6 +942,18 @@ text and `to:by:do:`'s zero step.
   method's comment says only that a zero step never ends. Noted
   2026-10-01.
   [core-library.md](design/core-library.md), "What exists".
+- **`Message>>sendTo:` with too few arguments for a native-backed method
+  answers nil silently.** `(Message new selector: #at:put:; arguments:
+  {1}) sendTo: anArray` stores nil at index 1 and answers nil, at exit
+  status 0, where the same message sent to a method written in Newspeak
+  signals the arity `Error`. Not yet diagnosed: the leaf
+  `message:sendTo:ifFail:` (`crates/ns-runtime/src/builtins/message.rs`)
+  hands the message's arguments to `Mutator::decide_send` without
+  comparing their count with the selector's, which the activation of a
+  Newspeak method checks and a primitive method's leaf apparently does
+  not. Found 2026-10-10, outside the collections and strings
+  sub-project's scope. [core-library.md](design/core-library.md),
+  "Exceptions".
 - **A `.ns` root declaring `packageUsing:`** is refused with the message
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that

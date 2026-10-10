@@ -3382,8 +3382,10 @@ two walks. Every program uses `List`; `OrderedCollection`, its `add:` leaf
 and `Heap::array_push` are removed, builtin class tag 10 retired, so no
 payload grows in place any more. Three semantics were confirmed with the
 user: `moduleNamed:` keeps nothing, `List>>at:put:` answers the value, and
-`List>>do:` reads the size once. Image tests cover a `List` record, a second
-facet and the refusal of the factory. The one golden whose output changed is
+`List>>do:` never visits an element its block adds, which since the
+collections and strings sub-project signals `ConcurrentModification`.
+Image tests cover a `List` record, a second facet and the refusal of the
+factory. The one golden whose output changed is
 `goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods`, seven
 lines to six: there is no builtin `OrderedCollection` left to subclass.
 
@@ -3770,28 +3772,31 @@ widths", "The collections module (plan 2)" and "A NaN equals a NaN".
 Commits: `192c6d0` (the plan's) to the commit of this entry.
 
 DeltaBlue, Havlak, CD and Json, the last four Are We Fast Yet benchmarks,
-join the eleven programs of stages 1 and 2 in `benchmarks/are-we-fast-yet/`,
-ported from SOMns into Primordial Soup's module shape, and Primordial Soup's
-own DeltaBlue comes in beside them as `DeltaBlueTon80`: sixteen programs
-under the one harness. A `String` is now its code points, one byte or four
-each, so `size` and `at:` are one access. The kernel gained six `MIRROR`
-rows, 111 in all -- `String`'s `at:` and `copyFrom:to:`, `String with:`,
-and `Float`'s `sin`, `cos` and `asInteger` -- and `Integer>>timesRepeat:`
-and `Number>>max:` in Newspeak; `Float>>=` makes a NaN equal to a NaN. The
-collections module's `List` became Primordial Soup's, with a first index,
-and `Map` and `Set` joined it. Every public member of the three shipped
-modules is documented in place, and `CLAUDE.md`'s "Conventions" holds the
-rule. No wire tag changed. Of the existing goldens, only
-`goldens/tool/awfy/all_benchmarks_verify.toml` records a different outcome, a
-`<Name>: ok` line for each of the five new programs, and the four
-`goldens/tool/awfy/*/newspeak.json` project files list the five new modules. Four
-other existing goldens' sources changed, their outcomes not: the comments of
+join the eleven programs of stages 1 and 2 in
+`benchmarks/are-we-fast-yet/`, ported from SOMns into Primordial Soup's
+module shape, and Primordial Soup's own DeltaBlue comes in beside them as
+`DeltaBlueTon80`: sixteen programs under the one harness. A `String` is now
+its code points, one byte or four each, so `size` and `at:` are one access.
+The kernel gained six `MIRROR` rows, 111 in all -- `String`'s `at:` and
+`copyFrom:to:`, `String with:`, and `Float`'s `sin`, `cos` and `asInteger`
+-- and `Integer>>timesRepeat:` and `Number>>max:` in Newspeak; `Float>>=`
+makes a NaN equal to a NaN. The collections module's `List` gained a first
+index, and `Map` and `Set`, insertion-ordered hash tables, joined it; all
+three are written here since the collections and strings sub-project. Every
+public member of the three shipped modules is documented in place, and
+`CLAUDE.md`'s "Conventions" holds the rule. No wire tag changed. Of the
+existing goldens, only `goldens/tool/awfy/all_benchmarks_verify.toml`
+records a different outcome, a `<Name>: ok` line for each of the five new
+programs, and the four `goldens/tool/awfy/*/newspeak.json` project files
+list the five new modules. Four other existing goldens' sources changed,
+their outcomes not: the comments of
 `goldens/library/collection/a_list_grows_past_its_first_array` and
 `a_list_index_error_is_caught_as_an_error` name the new growth;
 `a_user_subclass_of_list_inherits_its_protocol`'s superclass clause sends
-`new: 3`, `List`'s primary factory; and `goldens/language/class/nesting/nested_override`'s
-slot starts at `Stopwatch` rather than `List`, whose primary factory,
-`new:`, is not the `new` that `Nested`'s superclass clause sends.
+`new: 3`, `List`'s primary factory; and
+`goldens/language/class/nesting/nested_override`'s slot starts at
+`Stopwatch` rather than `List`, whose primary factory, `new:`, is not the
+`new` that `Nested`'s superclass clause sends.
 
 The decisions, each the user's (2026-10-01):
 
@@ -3805,9 +3810,9 @@ The decisions, each the user's (2026-10-01):
    Primordial Soup's `List`, a queue is `add:` and `removeFirst`, no port
    rewrites an algorithm around a slow operation, and `removeFirst` runs in
    amortized constant time.
-4. `Map` and `Set` are adapted from Primordial Soup's `Collections.ns`
-   (Apache 2.0), its `transient` slot as ns-next's `lazy` slot; that an
-   image carries a lazy slot's value is recorded in
+4. `Map` and `Set` keep their entries in insertion order and their hash
+   table in a `lazy` slot, as Primordial Soup's keep it in a `transient`
+   one; that an image carries a lazy slot's value is recorded in
    [OPEN-WORK.md](OPEN-WORK.md).
 5. Strings are optimized now: the two widths come forward onto today's
    arena.
@@ -3824,7 +3829,8 @@ The decisions, each the user's (2026-10-01):
    with no `THIRD-PARTY-NOTICES.md` entry of their own; the notices'
    introduction is corrected.
 10. The collections' representation is private, where Primordial Soup's is
-    protected; only `List`'s `size_` stays protected.
+    protected; only `List`'s `size_` stays protected, and the three hooks
+    through which `IdentityMap` changes `Map`'s comparison.
 11. A NaN equals a NaN, and every NaN hashes alike, so that a `Float`'s
     equality is an equivalence (§3.1.1); the ordering and the arithmetic
     stay IEEE's.
@@ -3842,12 +3848,11 @@ The decisions, each the user's (2026-10-01):
   class header.
 - `7488e1d` — `Float` answers `sin`, `cos` and `asInteger`; `Integer`
   `timesRepeat:` and `Number` `max:`.
-- `2e1b437` — `List` is Primordial Soup's, with a first index so that
-  `removeFirst` moves nothing.
+- `2e1b437` — `List` keeps a first index so that `removeFirst` moves
+  nothing.
 - `98b19e3` — its golden pins a queue moving its elements to the front, and
   a sort from an offset.
-- `cf924c3` — `Map` and `Set`, adapted from Primordial Soup's
-  `Collections.ns`.
+- `cf924c3` — `Map` and `Set`, insertion-ordered hash tables.
 - `fb090fd` — a NaN equals a NaN, so a `Float`'s equality is an
   equivalence.
 - `d1bca4f` — a unit test pins NaNs of different bit patterns equal and
@@ -4559,5 +4564,92 @@ divergent-future text names a future rather than a simultaneous slot,
 since a program's own future can diverge too. The kernel-namespace golden
 gained the six classes `platform kernel` now answers.
 
-What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md), "Next": the
-collections and strings sub-project is next and has no design or plan yet.
+What the branch left open, the collections and strings sub-project, is
+built ("The kernel's collections and strings sub-project" below).
+
+## The kernel's collections and strings sub-project (2026-10-10)
+
+Plan: [ns-next-kernel-collections-and-strings](superpowers/plans/2026-10-10-1800-ns-next-kernel-collections-and-strings.md);
+[core-library.md](design/core-library.md), "What exists", "The collections
+module (plan 2)", "What is measured", "Planned: the kernel completed to
+Primordial Soup's core API", "Decisions".
+
+The third of the six sub-projects. An abstract `Collection` is a kernel
+builtin under `Object` (builtin class tag 38), its protocol Newspeak over
+an abstract `do:`, and `Array` moves under it; `Object>>subclassResponsibility`,
+protected, signals an `Error` naming the abstract method, read off the
+sending activation through a new activation leaf. `Array` has its whole
+protocol, `copyFrom:to:` and `replaceFrom:to:with:startingAt:` as leaves;
+`String` has its protocol in code points, its elements Integers, with
+`stringAt:` for the String of one, and `indexOf:startingAt:`,
+`lastIndexOf:startingAt:` and `String withAll:` as leaves; the `MIRROR`
+table has 118 rows. `List`, `Map` and `Set` are written here, under
+`Collection`, each with its whole protocol and removal, `NotFound` for
+what is absent; `IdentityMap` is a subclass of `Map` that finds keys by
+`identityHash` and `==`; and a `List`, `Map` or `Set` changed while it is
+iterated signals the new `ConcurrentModification`. `CollectionsFactory.ns`
+lost its licence header and `THIRD-PARTY-NOTICES.md` its entry for it.
+Every member of `Kernel.ns`, `PlatformFactory.ns` and
+`CollectionsFactory.ns`, public, protected and private, is documented to
+the standard of Javadoc, and `CLAUDE.md`'s "Conventions" holds the rule.
+`platform kernel` answers `Collection`, and `platform collections`
+`Collection`, `IdentityMap` and `ConcurrentModification`. No wire tag
+changed.
+
+The decisions, each the user's (2026-10-10): a String's element is a code
+point and `stringAt:` answers the String of one; a String is no
+`Collection`; `Collection` is a kernel builtin because `Array` is;
+`IdentityMap` is a subclass of `Map`, so that it inherits insertion order
+and removal; `NotFound` stays in the collections module; no
+`ReadOnlyTuple` and no value collections yet; leaves where Primordial
+Soup has primitives, Newspeak elsewhere; every body written here from the
+protocol's description; `ConcurrentModification` on a structural change
+during an iteration, checked after every block; and the documentation
+rule ([core-library.md](design/core-library.md), "Decisions",
+"Collections and strings").
+
+Recorded outcomes changed in four ways, each established as right first:
+`goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`
+is gone, since an element added during `do:` now signals, and
+`a_list_changed_while_iterated_signals` pins that; in
+`a_subclass_of_a_builtin_falls_to_objects_methods` an Array subclass's
+`size` reaches `Collection`'s, which ends in `subclassResponsibility`'s
+`Error` rather than a missing `#size`; in
+`a_builtin_subclass_handler_is_passed_by_as_section_5_10_says` the
+program sends `at:` rather than `size`, which `Collection` now defines
+over `do:`, so the uncaught selector is `#at:`; and the kernel-namespace
+golden gained `Collection`.
+
+**Measured** ([core-library.md](design/core-library.md), "What is
+measured"), the Are We Fast Yet benchmarks, release builds, three builds
+by three rounds a side against `eeaa1d90`: Havlak 6.3% slower (3,491 ms
+to 3,711 ms) and DeltaBlue 4.7% (670.5 ms to 702.3 ms), the other fourteen
+within noise, -1.7% to +2.3%. Havlak was 23.4% slower until `Map`'s probes
+sent `hash` and `=` inline, the tables were filled by `whileTrue:` and the
+data array became the removed mark. The remainder -- a private slot's
+getter send per element, and the modification check after every block,
+all of DeltaBlue's loss -- was accepted with the user.
+
+- `6368827f`, `2163ded7`, `e2aff2ff` -- the design and the plan.
+- `025ac278`, `f779071e` -- every member of the kernel and the platform
+  documented.
+- `b9147c7f` -- an abstract `Collection` in the kernel, with `Array` under
+  it, and `subclassResponsibility`.
+- `8ba5b836` -- `Array`'s whole protocol, with its two range leaves.
+- `2c5b3147` -- `String`'s protocol in code points, with `stringAt:` and
+  the search leaves.
+- `6776d895`, `d0b04a78` -- `List` under `Collection` with its whole
+  protocol, and `ConcurrentModification`.
+- `c4094d2a` -- `Map` under `Collection` with removal, and `IdentityMap`.
+- `f9e7a065`, `1639a30b` -- `Set` under `Collection` with removal; the
+  collections module is written here.
+- `91d25b79`, `7a661484` -- `Map`'s probes inline, the tables filled by
+  `whileTrue:`, the data array as the removed mark.
+- This commit -- the documentation describes the built state.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
+numbers sub-project is next ("Next") and has no design or plan yet;
+`String`'s `ByteArray` forms wait for `ByteArray`; `ReadOnlyTuple` and
+value collections are not built; the collections' remaining cost on Havlak
+and DeltaBlue; and `Message>>sendTo:`, which answers nil for a
+native-backed method given too few arguments.

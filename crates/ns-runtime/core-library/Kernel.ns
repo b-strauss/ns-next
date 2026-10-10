@@ -73,8 +73,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
            it' -- the class declaring the sending method and its selector,
            then the class of the receiver -- or 'a method is abstract: …'
            when the sender is no method. What an abstract method's body
-           sends, `^self subclassResponsibility`; answers what a handler
-           that resumes the Error answers. *)
+           sends, `^self subclassResponsibility`. It never answers: an
+           Error is not resumable, so a handler can only end the `on:do:`
+           that caught it. *)
         (* The name is read off the sending activation, which only the
            kernel reaches: a program sees the Error, never the activation. *)
         protected subclassResponsibility = (
@@ -1074,7 +1075,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
            `value:`; sent `value:` with each number.
 
            Signals the ArgumentError the receiver's `<=` signals for a
-           `stop` that is no number. *)
+           `stop` that is no number, and an ArgumentError carrying the
+           block, 'wrong number of block arguments: block takes …, got
+           1', for a block that does not take one argument. *)
         public to: stop do: action = (
             | current |
             current:: self.
@@ -1094,7 +1097,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
            action: as `to:do:`'s.
 
            Signals the ArgumentError the receiver's comparison signals for
-           a `stop` that is no number. *)
+           a `stop` that is no number, and `to:do:`'s ArgumentError for a
+           block that does not take one argument. *)
         public to: stop by: step do: action = (
             | current |
             current:: self.
@@ -1150,7 +1154,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public not = ( ^false )
         (* Answers `other`, unevaluated: any object. *)
         public & other = ( ^other )
-        (* Answers the value of `block`, sent `value`. *)
+        (* Answers the value of `block`, sent `value`.
+
+           Signals an ArgumentError carrying the block, 'wrong number of
+           block arguments: block takes …, got 0', for a block that
+           declares any parameter. *)
         public and: block = ( ^block value )
         (* Answers true; `other` is not looked at. *)
         public | other = ( ^true )
@@ -1184,7 +1192,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public and: block = ( ^false )
         (* Answers `other`, unevaluated: any object. *)
         public | other = ( ^other )
-        (* Answers the value of `block`, sent `value`. *)
+        (* Answers the value of `block`, sent `value`.
+
+           Signals an ArgumentError carrying the block, 'wrong number of
+           block arguments: block takes …, got 0', for a block that
+           declares any parameter. *)
         public or: block = ( ^block value )
         (* Answers the String 'false'. *)
         public printString = ( ^'false' )
@@ -1258,7 +1270,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
            a receiver below 1; answers nil.
 
            action: a block of no argument, or anything understanding
-           `value`; sent `value` each time. *)
+           `value`; sent `value` each time.
+
+           Signals an ArgumentError carrying the block, 'wrong number of
+           block arguments: block takes …, got 0', for a block that
+           declares any parameter, when the receiver is at least 1. *)
         (* The compiler does not inline it; it is sent. *)
         public timesRepeat: action = (
             1 to: self do: [:ignored | action value].
@@ -2065,9 +2081,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
            receiver does not hold. *)
         (* A bottom-up merge sort over a copy of the range and a buffer of
            the same size, trading the two each pass: no recursion, so its
-           depth does not grow with the range, and at most `size` extra
-           slots. Taking from the left run while its element may precede
-           the right run's keeps it stable. *)
+           depth does not grow with the range, and two Arrays the size of
+           the range as extra memory. Taking from the left run while its
+           element may precede the right run's keeps it stable. *)
         public sortFrom: start to: stop by: lessOrEqual = (
             | source target count width left swap |
             source:: self copyFrom: start to: stop.

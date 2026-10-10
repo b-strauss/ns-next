@@ -179,10 +179,10 @@ fn platform_collections_answers_the_collections_modules_list() {
     });
 }
 
-/// The namespace answers exactly what a whitelisted module or a benchmark
-/// asks for, and nothing more: `IdentityMap` (and the rest of the corpus's
-/// collections protocol) names a class this runtime does not have, and must
-/// fail loudly rather than quietly alias onto some other collection.
+/// The namespace answers the collections module's classes and nothing
+/// more: `IdentitySet`, which the corpus asks for, names a class this
+/// runtime does not have, and must fail loudly rather than quietly alias
+/// onto `Set` or `IdentityMap`.
 #[test]
 fn platform_collections_does_not_invent_an_identity_set() {
     let mut interpreter = Interpreter::bootstrap();

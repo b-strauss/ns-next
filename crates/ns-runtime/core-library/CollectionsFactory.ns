@@ -493,8 +493,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
        Carries the collection.
 
        Iteration means `do:`, `keysAndValuesDo:`, `anySatisfy:`,
-       `removeAllSuchThat:` and everything built on `do:`; storing at an existing index or key, and sorting, are no
-       change. *)
+       `removeAllSuchThat:` and everything built on `do:`; storing at an
+       existing index or key, and sorting, are no change. *)
     (* Without it a change inside `do:` would visit an element twice, skip
        one or end early, silently. *)
     private class ConcurrentModification = kernelError new (
@@ -508,8 +508,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     )
     (* Signals a ConcurrentModification carrying `collection`, its
        messageText 'the collection was modified while it was being
-       iterated', and answers what a handler that resumes it answers. The
-       one place the error is raised, so every collection's text is one. *)
+       iterated'. It never answers: an Error is not resumable. The one
+       place the error is raised, so every collection's text is one. *)
     private signalModificationOf: collection = (
         ^(ConcurrentModification collection: collection)
             signal: 'the collection was modified while it was being iterated'
