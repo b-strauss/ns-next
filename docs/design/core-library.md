@@ -2651,9 +2651,11 @@ its class. That needs its own decision when the first such module arrives.
   protected `newForCollectUsingAdd:`. It keeps the layout above -- keys and
   values side by side in `data_`, `hashtable_` a `lazy` slot rebuilt by
   `rehash` -- and adds removal: `removeKey:` overwrites the key in `data_`
-  with the per-instance `removed` mark, an `Array` no program can reach, so
-  no key is ever `==` to it, and the key's bucket stays in the probe chain
-  as a tombstone that lookups pass. Growth, when `data_` is full, copies
+  with `data_` itself, which is never handed out, so no key is ever it,
+  and the key's bucket stays in the probe chain as a tombstone that
+  lookups pass. The mark costs no slot and no allocation, and every test
+  has it as the receiver of `==`, so a key's own `==` is never sent it.
+  Growth, when `data_` is full, copies
   only the live entries, in order, into new arrays, which drops the marks
   and the tombstones together; so a key stored again after its removal
   comes last in the order, and a long run of removals and insertions never
@@ -2663,19 +2665,23 @@ its class. That needs its own decision when the first such module arrives.
   modification, and an iteration signals `ConcurrentModification` after the
   block that did it; storing under an existing key does not
   (`goldens/library/collection/a_map_changed_while_iterated_signals`).
-  `IdentityMap` is a subclass of `Map` that overrides only the protected
-  `hashOf:`, `is:sameAs:` and `newForCollectUsingAdd:` -- `identityHash` and
-  `==` where `Map` uses `hash` and `=` -- and adds `at:putReplace:`,
-  `at:ifAbsentPutVal:` and `atOrItself:`. It is not a separate kernel class
-  because nothing in the kernel needs one: the table is the collections
-  module's, and the two differ in two private-protocol hooks, not in a
-  representation. A class side is not inherited, so `IdentityMap` declares
+  `IdentityMap` is a subclass of `Map` that overrides the protected probe
+  methods `scanFor:in:` and `emptyBucketFor:in:` -- written out again with
+  `identityHash` and `==` where `Map`'s use `hash` and `=` inline, since a
+  self-send per probe step for the hash and the comparison costs a send
+  and an activation on every lookup -- and `newForCollectUsingAdd:`,
+  reading the data array through the protected `dataForScan`, and adds
+  `at:putReplace:`, `at:ifAbsentPutVal:` and `atOrItself:`. It is not a
+  separate kernel class because nothing in the kernel needs one: the
+  table is the collections module's, and the two differ in their probe,
+  not in a representation. The tables of both are filled by `whileTrue:`
+  loops, which the compiler inlines, rather than `to:do:`. A class side is not inherited, so `IdentityMap` declares
   its own `new` and `withAll:`
   (`goldens/library/collection/an_identity_map_compares_keys_by_identity`).
 - **`Set` under `Collection`, with removal, built; the collections module
   holds no adapted code.** A `Set` keeps `Map`'s representation with
   elements for key-value pairs -- the elements in `data_` in adding order,
-  `hashtable_` of their indices, the per-instance `removed` mark
+  `hashtable_` of their indices, `data_` itself as the removed mark
   overwriting a removed element and leaving a tombstone in the probe chain
   -- and `Map`'s modification count. `add:` of an element `=` to a held one
   replaces it in place, which keeps its place and is no modification;
