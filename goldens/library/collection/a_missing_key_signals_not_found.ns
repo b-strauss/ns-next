@@ -1,0 +1,17 @@
+(* `Map>>at:` of an absent key signals a `NotFound` carrying the key, an
+   Error with the text an uncaught one ends the run with; a List index out
+   of range and a negative capacity signal an `ArgumentError`, as an
+   Array's do. *)
+class AMissingKeySignalsNotFound = Object new () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. collections = platform collections. kernel = platform kernel. map list |
+        map:: collections Map new.
+        map at: #present put: 1.
+        transcript show: ([map at: #missing] on: collections NotFound do: [:error | error element]) printString; newLine.
+        transcript show: ([map at: #missing] on: kernel Error do: [:error | error messageText]); newLine.
+        list:: collections List new.
+        transcript show: ([list at: 2] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
+        transcript show: ([collections Map new: -1] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
+        transcript show: ([(collections NotFound element: 3) signal] on: kernel Error do: [:error | error description]); newLine.
+    )
+) : ()

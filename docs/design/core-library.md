@@ -2485,8 +2485,8 @@ its class. That needs its own decision when the first such module arrives.
   as the `Array>>do:` leaf does too (decided with the user on 2026-09-28;
   `goldens/library/collection/do_visits_the_elements_a_list_held_when_it_started`).
   An index outside `1..size` -- whatever capacity the array has spare --
-  or one that is no `Integer` is an `Error` signalled through
-  `kernelModule Error` with `Array>>at:`'s text, "index 3 out of range:
+  or one that is no `Integer` is an `ArgumentError` carrying the index,
+  with `Array>>at:`'s text, "index 3 out of range:
   valid indices are 1..2 (size 2)", so a program sees one error from
   either (`goldens/library/collection/a_list_index_error_is_caught_as_an_error`).
 - **`Map` and `Set`, built** (2026-10-01), adapted from Primordial Soup's
@@ -2497,8 +2497,16 @@ its class. That needs its own decision when the first such module arrives.
   and `hashtable_`, an open-addressing table of their indices in `data_`,
   0 marking an empty bucket, kept at most three quarters full. A key or an
   element is found by its `hash` and compared with `=`; a `Map`'s `at:`
-  signals an `Error` for an absent key, "key not found: …", and a negative
-  capacity is an `Error` too. Primordial Soup's `transient` slot
+  signals a `NotFound` for an absent key, "key not found: …", and a
+  negative capacity is an `ArgumentError`. `NotFound` is the collections
+  module's own class, an `Error` carrying the key in its slot `element`,
+  reached as `platform collections NotFound` and built by
+  `NotFound element: key`; its `description` is `messageText`, or
+  "NotFound: " and the element's `printString` when there is none
+  (`goldens/library/collection/a_missing_key_signals_not_found`). The
+  errors of a `List` or a `Set` that have no such class stay `Error`s with
+  texts of their own: an empty `List`'s `removeFirst` and `removeLast`.
+  Primordial Soup's `transient` slot
   `hashtable_ ::= rehash` is ns-next's `lazy` slot, the same getter
   (§6.3.3), so the table is rebuilt from `data_` whenever it is `nil`;
   that an image writes a lazy slot's value, where §6.3.3 intends it never

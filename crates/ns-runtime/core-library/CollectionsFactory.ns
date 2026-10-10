@@ -34,9 +34,9 @@
    `Dictionary` do; `Map` and `Set` have no removal of single elements and
    so no deleted marks; a hash table lookup answers the element's index in
    the data array, so that no operation reads the hash table twice; errors
-   are `kernelModule Error`s with texts of their own, where Primordial Soup
-   signals `NotFound` or `ArgumentError`, or sends the undefined
-   `errorEmpty`; `>>` and `|` on integers are written with `//` and
+   are the kernel's `ArgumentError` and this module's `NotFound` where
+   those apply, and `Error`s with texts of their own otherwise, where
+   Primordial Soup sends the undefined `errorEmpty`; `>>` and `|` on integers are written with `//` and
    `bitOr:`; names are written out.
 
    Copyright 2008, the Newspeak project authors.
@@ -46,7 +46,10 @@
    obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
    and in THIRD-PARTY-NOTICES.md at the repository root. *)
 class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | private kernelModule = theKernel. |
+    | private kernelModule = theKernel.
+      (* The superclass clause of `NotFound` may send one message only, so
+         it names the kernel's Error through this slot. *)
+      private kernelError = theKernel Error. |
 ) (
     (* `platform collections`: the module's namespace. It names its own
        class as `Platform` does, so that the class has a path too. `List`
@@ -58,12 +61,15 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* The `Collections` class. *)
         public Collections = ( ^outer CollectionsFactory Collections )
         (* The `List` class: `List new`, or `List new: capacity`, which
-           signals the Errors `Array new:` does for a capacity that is no
-           Integer or is negative. *)
+           signals what `Array new:` does for a capacity that is no Integer
+           or is negative. *)
         public List = ( ^outer CollectionsFactory List )
+        (* The `NotFound` class: an Error carrying the element or key a
+           collection was asked for and does not hold. *)
+        public NotFound = ( ^outer CollectionsFactory NotFound )
         (* The `Map` class: `Map new`, or `Map new: capacity`. A negative
-           capacity signals an Error, 'new: requires a capacity of at least 0,
-           got …', a Float, a LargeInteger or a capacity whose array size
+           capacity signals an ArgumentError, 'new: requires a capacity of at
+           least 0, got …', a Float, a LargeInteger or a capacity whose array size
            `(capacity + 1) * 2` passes the SmallInteger range, from 2^62 - 1
            on, 'new: requires an Integer size, got …', any other capacity
            too large to allocate 'new: cannot allocate an Array of …
@@ -73,8 +79,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            it, for SOMns's `Dictionary` and `IdentityDictionary`. *)
         public Map = ( ^outer CollectionsFactory Map )
         (* The `Set` class: `Set new`, or `Set new: capacity`. A negative
-           capacity signals an Error, 'new: requires a capacity of at least 0,
-           got …', a Float, a LargeInteger or a capacity of 2^63 - 1 or more
+           capacity signals an ArgumentError, 'new: requires a capacity of at
+           least 0, got …', a Float, a LargeInteger or a capacity of 2^63 - 1 or more
            'new: requires an Integer size, got …', any other capacity too
            large to allocate 'new: cannot allocate an Array of … elements',
            and one that is no number a MessageNotUnderstood for `<`. Both
@@ -122,7 +128,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             size_:: size_ + 1.
             ^element
         )
-        (* The element at `index`, 1-based. Signals an Error, 'index … out of
+        (* The element at `index`, 1-based. Signals an ArgumentError, 'index … out of
            range: valid indices are 1..size (size …)', for an index outside 1
            to `size`, an index that is no Integer included. *)
         (* The index check is written out here rather than sent, since
@@ -134,7 +140,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^data at: firstIndex + index - 1
         )
         (* Replaces the element at `index`, 1-based, with `value` and
-           answers `value`. Signals an Error, as `at:` does, for an index
+           answers `value`. Signals an ArgumentError, as `at:` does, for an index
            outside 1 to `size`. *)
         (* Answers the value, as `add:` answers the element. *)
         public at: index put: value = (
@@ -347,13 +353,26 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         )
         (* `Array>>at:`'s text, so a program sees one error from either. *)
         private indexOutOfRange: index = (
-            ^kernelModule Error signal: 'index ', index printString,
+            ^(kernelModule ArgumentError value: index) signal: 'index ', index printString,
                 ' out of range: valid indices are 1..', size_ printString,
                 ' (size ', size_ printString, ')'
         )
     ) : (
         (* An empty List, `List new: 3`. *)
         public new = ( ^self new: 3 )
+    )
+    (* An element or key a collection was asked for and does not hold.
+       Carries it. *)
+    private class NotFound = kernelError new (
+        (* The element or key that was not found. *)
+        | public element ::= nil. |
+    ) (
+        (* `messageText`, or the class's name and the element's
+           `printString` when it is nil. *)
+        public description = ( ^messageText isNil ifTrue: ['NotFound: ', element printString] ifFalse: [messageText] )
+    ) : (
+        (* A new NotFound carrying `missing`. *)
+        public element: missing = ( ^self new element: missing )
     )
     (* A map holding keys and values side by side in `data_`, in insertion
        order, and `hashtable_`, an open-addressing table of the keys'
@@ -373,13 +392,13 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
            it is nil. Every read runs its getter, so each operation reads
            it once and hands the table on. *)
         private lazy hashtable_ ::= rehash.
-        (* The value stored under `key`, found by `hash` and `=`. Signals an
-           Error, 'key not found: …' with the key's `printString`, for a key
-           that is absent. *)
+        (* The value stored under `key`, found by `hash` and `=`. Signals a
+           NotFound carrying the key, 'key not found: …' with the key's
+           `printString`, for a key that is absent. *)
         public at: key = (
             | keyIndex |
             keyIndex:: scanFor: key in: hashtable_.
-            keyIndex < 0 ifTrue: [^kernelModule Error signal: 'key not found: ', key printString].
+            keyIndex < 0 ifTrue: [^(NotFound element: key) signal: 'key not found: ', key printString].
             ^data_ at: keyIndex + 1
         )
         (* Stores `value` under `key` and answers `value`. A new key comes
@@ -414,7 +433,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         (* Answers the new hash table. *)
         private createTable: count = (
             | table index |
-            count < 0 ifTrue: [^kernelModule Error signal: 'new: requires a capacity of at least 0, got ', count printString].
+            count < 0 ifTrue: [^(kernelModule ArgumentError value: count) signal: 'new: requires a capacity of at least 0, got ', count printString].
             size_:: 0.
             data_:: Array new: count + 1 * 2.
             table:: Array new: count + 1 * 4 // 3.
@@ -523,7 +542,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         )
         private createTable: count = (
             | table index |
-            count < 0 ifTrue: [^kernelModule Error signal: 'new: requires a capacity of at least 0, got ', count printString].
+            count < 0 ifTrue: [^(kernelModule ArgumentError value: count) signal: 'new: requires a capacity of at least 0, got ', count printString].
             size_:: 0.
             data_:: Array new: count + 1.
             table:: Array new: count + 1 * 4 // 3.

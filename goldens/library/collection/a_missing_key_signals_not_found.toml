@@ -1,0 +1,7 @@
+stdout = '''
+#missing
+key not found: #missing
+2
+-1
+NotFound: 3
+'''
