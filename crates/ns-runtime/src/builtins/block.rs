@@ -78,7 +78,7 @@ pub(crate) fn after_condition<'gc>(
         Some(boolean) if boolean == state.expect => Ok(body_step(mutator, state)),
         Some(_) => Ok(Step::Value(Value::nil())),
         None => Err(Signal::Error(
-            crate::interpreter::unwind::non_boolean_condition(&mutator.heap, value),
+            crate::interpreter::unwind::non_boolean_condition(mutator.heap(), value),
         )),
     }
 }

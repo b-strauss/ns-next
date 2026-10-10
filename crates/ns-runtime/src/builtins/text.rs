@@ -1,6 +1,7 @@
 //! `String` and `Symbol` native methods.
 
 use crate::builtins::collections::{self, IntegerArgument};
+use crate::builtins::first_argument;
 use crate::builtins::primitive::{Primitive, StringPrimitive, SymbolPrimitive};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
@@ -109,7 +110,7 @@ fn from_code_point<'gc>(
         None => Err(NewspeakError::argument_error(
             selector,
             receiver,
-            arguments.first().copied().unwrap_or(Value::nil()),
+            first_argument(arguments),
             format!(
                 "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
                  outside 55296 to 57343, got {}",
@@ -222,7 +223,7 @@ pub(crate) fn execute_string<'gc>(
                             receiver,
                             selector,
                             index,
-                            arguments.first().copied().unwrap_or(Value::nil()),
+                            first_argument(arguments),
                             size,
                         )),
                     }
@@ -231,7 +232,7 @@ pub(crate) fn execute_string<'gc>(
                     receiver,
                     selector,
                     mutator.heap.describe_argument(arguments.first().copied()),
-                    arguments.first().copied().unwrap_or(Value::nil()),
+                    first_argument(arguments),
                     size,
                 )),
                 None => Err(collections::not_an_integer(
@@ -258,7 +259,7 @@ pub(crate) fn execute_string<'gc>(
                 None => Err(NewspeakError::argument_error(
                     selector,
                     receiver,
-                    arguments.first().copied().unwrap_or(Value::nil()),
+                    first_argument(arguments),
                     format!(
                         "String concatenation (,) requires a String argument, got {}",
                         mutator.heap.describe_argument(arguments.first().copied())

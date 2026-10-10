@@ -24,6 +24,7 @@
 
 use std::io::Write;
 
+use crate::builtins::first_argument;
 use crate::builtins::primitive::PlatformPrimitive;
 use crate::types::*;
 use crate::{ArbitraryInteger, Mutator, Symbol};
@@ -62,7 +63,7 @@ fn stream<'gc>(
                 return Err(NewspeakError::argument_error(
                     selector,
                     receiver,
-                    arguments.first().copied().unwrap_or(Value::nil()),
+                    first_argument(arguments),
                     format!(
                         "{selector} requires a String, got {}",
                         mutator.heap().describe_argument(arguments.first().copied())

@@ -940,19 +940,17 @@ fn is_class_tag<'gc>(
     }
 }
 
-/// `object` described, when it is a class object an image may not name:
-/// `Top`, the VM mirror's class, `Activation` or `FutureImplementation`,
-/// which the decoder
-/// refuses wherever the graph names a class
-/// (`decode::read_referenced_builtin_class`), or the metaclass of one of
-/// them, which it refuses behind a `CLASS_METACLASS` reference the same way.
-/// No source module can name any of the eight -- `Object` declares no
-/// accessor for them -- so only a graph reaching into the kernel can;
-/// writing one would produce an image nothing loads, so the encoder refuses
-/// it instead. The header of a frame record (`OBJECT_FRAME`) or of an
-/// unresolved future is not such a reference: `GraphTable::visit_value`
-/// never walks it, and the decoder accepts `Activation` and
-/// `FutureImplementation` there and only there.
+/// `object` described, when it is a class object an image may not name: `Top`,
+/// the VM mirror's class, `Activation` or `FutureImplementation`, which the
+/// decoder refuses wherever the graph names a class
+/// (`decode::read_referenced_builtin_class`), or the metaclass of one of them,
+/// which it refuses behind a `CLASS_METACLASS` reference the same way. No
+/// source module can name any of the eight -- `Object` declares no accessor for
+/// them -- so only a graph reaching into the kernel can; writing one would
+/// produce an image nothing loads, so the encoder refuses it instead. The
+/// header of a frame record (`OBJECT_FRAME`) or of an unresolved future is not
+/// such a reference: `GraphTable::visit_value` never walks it, and the decoder
+/// accepts `Activation` and `FutureImplementation` there and only there.
 fn unnameable_class<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<String> {
     let (class, suffix) = match heap.class_this_class(object) {
         Some(this_class) => (this_class, " class"),
@@ -1032,11 +1030,10 @@ fn shipped_without_path<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> 
 pub struct GraphTable<'gc> {
     objects: Vec<ObjectReference<'gc>>,
     object_ids: HashMap<usize, u32>,
-    /// The first class the traversal reached that no program may name --
-    /// `Top`, the VM mirror's class, `Activation`, `FutureImplementation`,
-    /// or the metaclass
-    /// of one of them -- which
-    /// `encode_graph_section` refuses (`unnameable_class`).
+    /// The first class the traversal reached that no program may name -- `Top`,
+    /// the VM mirror's class, `Activation`, `FutureImplementation`, or the
+    /// metaclass of one of them -- which `encode_graph_section` refuses
+    /// (`unnameable_class`).
     unnameable: Option<String>,
     /// The first shipped object the traversal reached that no platform path
     /// names (`shipped_without_path`), refused the same way.

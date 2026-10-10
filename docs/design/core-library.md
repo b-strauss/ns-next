@@ -65,11 +65,12 @@ Top                     (private; no superclass, declares nothing)
     ├── Array
     ├── Closure         ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
-    │   ├── Error       ├── MessageNotUnderstood
-    │   │               ├── ArgumentError       argument
-    │   │               ├── CannotReturn        result
-    │   │               ├── NonBooleanReceiver  receiver (private)
-    │   │               └── CannotInstantiate   behavior
+    │   ├── Error       isResumable false
+    │   │   ├── MessageNotUnderstood  message, receiver
+    │   │   ├── ArgumentError         argument
+    │   │   ├── CannotReturn          result
+    │   │   ├── NonBooleanReceiver    receiver (private)
+    │   │   └── CannotInstantiate     behavior
     │   └── Halt
     ├── Message         selector, arguments, sendTo:
     ├── Activation      (private; a running activation, for the kernel only)

@@ -548,7 +548,8 @@ activation's frame, and `retry` answers `Signal::Restart`, aimed at the
 `on:do:` activation's, which the unwinder carries down exactly as a `^`; at
 a restart's target it sets the program counter to 0 and the loop switches
 to it, its registers as they are. A restart whose target has returned
-meanwhile ends the run with §7.2's `cannotReturn`, a `CannotReturn`. An unhandled exception's
+meanwhile ends the run with a `CannotReturn`, the error §7.2 calls
+`cannotReturn`: the unwind has passed every handler by then. An unhandled exception's
 `defaultAction` answers `Signal::Terminate`, an unwind with no target: it
 runs every pending block down to the floor and leaves the run with the
 error, which the host receives as it received every error before there were

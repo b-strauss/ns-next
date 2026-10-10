@@ -1,0 +1,25 @@
+(* A loop whose condition answers no Boolean signals its
+   `NonBooleanReceiver` from the same depth under both lowerings: the
+   optimized lowering's inlined loop from the method's own activation, the
+   reference lowering's native loop once the condition's activation has
+   been popped. `descend:to:` reaches the depth `probe:` measured, level
+   for level, and runs the loop there, three levels below the last, one
+   below it, at it and one past it; every line is the same under both. *)
+class ANonBooleanLoopConditionJustBelowTheDepthLimitIsCaught = Object new (
+    |
+      deepest ::= 0. |
+) (
+    probe: n = ( deepest:: n. ^self probe: n + 1 )
+    descend: n to: bottom = (
+        n = bottom ifTrue: [[#notABoolean] whileTrue: [nil]. ^'the loop ended'].
+        ^self descend: n + 1 to: bottom
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
+        transcript show: ([self probe: 1] on: Error do: [:e | e messageText]); newLine.
+        transcript show: ([self descend: 1 to: deepest - 3] on: Error do: [:e | e messageText]); newLine.
+        transcript show: ([self descend: 1 to: deepest - 1] on: Error do: [:e | e messageText]); newLine.
+        transcript show: ([self descend: 1 to: deepest] on: Error do: [:e | e messageText]); newLine.
+        transcript show: ([self descend: 1 to: deepest + 1] on: Error do: [:e | e messageText]); newLine.
+    )
+) : ()

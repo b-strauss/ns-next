@@ -1208,9 +1208,13 @@ instance record.
 **The error classes that carry a subject take tags 32 to 35**:
 `ArgumentError` **32**, `CannotReturn` **33**, `NonBooleanReceiver` **34**,
 `CannotInstantiate` **35** ([core-library.md](core-library.md),
-"Exceptions"). Like the other exception classes they are ordinary
-nameable builtins: a caught one is an ordinary instance record, and an
-image may name any of the four wherever it names a class.
+"Exceptions"). A caught one is an ordinary instance record, and an image
+may name any of the four wherever it names a class. Three are nameable in
+source like the other exception classes; `NonBooleanReceiver` is
+kernel-private, so no source names it, but a program reaches the class
+through a caught instance's `class`, and so an image names it as that
+record's class or as a class object the graph holds. Unlike `Activation`'s
+and `FutureImplementation`'s, its tag is no capability to refuse.
 
 **`Proxy` takes tag 36 and the public `Future` 37**
 ([object-model.md](object-model.md), "Simultaneous slots"). Both are

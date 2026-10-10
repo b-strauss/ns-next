@@ -1,5 +1,7 @@
 (* A future handed to `Future computing:`, resolved or not, is taken as its
-   value: a future whose value is a block makes a future of that block, and
+   value, forced at the call
+   (`a_future_handed_to_future_computing_is_forced_at_the_call.ns` pins
+   when): a future whose value is a block makes a future of that block, and
    a future of anything else is sent `value` when it is forced, as that
    object would be. *)
 class AFutureHandedToFutureComputingIsItsValue = Object new () (

@@ -127,12 +127,12 @@ pub enum DecodeError {
     /// which no live world has. The other half -- `Activation`'s header on
     /// another record -- is refused as `Activation` named anywhere else is.
     FrameRecordUnderAnotherClass,
-    /// A record under the builtin `FutureImplementation` header that is not
-    /// an unresolved future's: an instance record of exactly two fields, a
-    /// closure and the state 0. The encoder writes a resolved future as its value and a
-    /// resolving one as unresolved (`docs/design/image-format.md`, "Futures
-    /// in a graph"), so any other record describes a future no encoder
-    /// wrote -- one `Mutator::future_state` reads as malformed, or a resolved one
+    /// A record under the builtin `FutureImplementation` header that is not an
+    /// unresolved future's: an instance record of exactly two fields, a closure
+    /// and the state 0. The encoder writes a resolved future as its value and a
+    /// resolving one as unresolved (`docs/design/image-format.md`, "Futures in
+    /// a graph"), so any other record describes a future no encoder wrote --
+    /// one `Mutator::future_state` reads as malformed, or a resolved one
     /// standing apart from the value every other reference was written as.
     FutureRecord,
     /// An object record that is not a class object is an instance of a class
@@ -988,16 +988,14 @@ pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeErr
 /// methods. `Activation`: a running activation as an object reads other
 /// frames and unwinds stacks, a capability Newspeak hands out only through
 /// mirrors, so no artifact may name its class either
-/// (`docs/design/core-library.md`, "Exceptions") -- except as the
-/// header of a frame record, which `decode_object_header` reads.
-/// `FutureImplementation`: §6.3.2's pull future is kernel-private as
-/// `Activation` is, and no program names its class -- except as the header
-/// of an unresolved future's record, which `decode_object_header` reads
-/// too. `Object`
-/// declares an accessor for none of the four, for the same reasons, which
-/// is what keeps source and artifact agreed on the names a program has.
-/// Only the closing hash table names them, by tag, as it names every
-/// builtin.
+/// (`docs/design/core-library.md`, "Exceptions") -- except as the header of a
+/// frame record, which `decode_object_header` reads. `FutureImplementation`:
+/// §6.3.2's pull future is kernel-private as `Activation` is, and no program
+/// names its class -- except as the header of an unresolved future's record,
+/// which `decode_object_header` reads too. `Object` declares an accessor for
+/// none of the four, for the same reasons, which is what keeps source and
+/// artifact agreed on the names a program has. Only the closing hash table
+/// names them, by tag, as it names every builtin.
 pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
     referenced_builtin_class(read_builtin_class(reader)?)
 }
@@ -2305,13 +2303,13 @@ struct ObjectHeader<'gc> {
 
 /// An object record's header: its class tag, which is `decode_class_tag`'s
 /// except that it also accepts the builtin `Activation` -- the header of a
-/// frame record, the one place an image may name that class -- and the
-/// builtin `FutureImplementation`, the header of an unresolved future's
-/// record, for the same reason. Answers whether it did, so the caller can hold the header
-/// and the body to each other (`DecodeError::FrameRecordUnderAnotherClass`,
-/// `DecodeError::FutureRecord`) once it has read the body, and whether it
-/// named its class by platform path, so the caller can hold an instance's
-/// fields to that class's layout.
+/// frame record, the one place an image may name that class -- and the builtin
+/// `FutureImplementation`, the header of an unresolved future's record, for the
+/// same reason. Answers whether it did, so the caller can hold the header and
+/// the body to each other (`DecodeError::FrameRecordUnderAnotherClass`,
+/// `DecodeError::FutureRecord`) once it has read the body, and whether it named
+/// its class by platform path, so the caller can hold an instance's fields to
+/// that class's layout.
 fn decode_object_header<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
@@ -3824,8 +3822,8 @@ pub fn decode_graph_section<'gc>(
                 // The loading binary lays a shipped class out, not the image,
                 // so an instance of one must fit that layout exactly.
                 // The first pass refused any other count under the
-                // `FutureImplementation` header; restated here, beside the layout check, as what
-                // reading the two fields below rests on.
+                // `FutureImplementation` header; restated here, beside the
+                // layout check, as what reading the two fields below rests on.
                 if future_header && count != crate::interpreter::future::FIELD_COUNT {
                     return Err(DecodeError::FutureRecord);
                 }

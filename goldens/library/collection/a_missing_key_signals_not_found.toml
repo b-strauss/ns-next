@@ -3,5 +3,6 @@ stdout = '''
 key not found: #missing
 2
 -1
+-1
 NotFound: 3
 '''

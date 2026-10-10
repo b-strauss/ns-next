@@ -37,6 +37,7 @@
 use std::cmp::Ordering;
 
 use crate::builtins::collections::{self, IntegerArgument};
+use crate::builtins::first_argument;
 use crate::builtins::primitive::{
     FloatPrimitive, IntegerPrimitive, LargeIntegerPrimitive, Primitive,
 };
@@ -230,12 +231,7 @@ fn shift_left<'gc>(
 ) -> Result<Value<'gc>, NewspeakError<'gc>> {
     let selector = Symbol::intern("<<");
     let refusal = |message: String| {
-        NewspeakError::argument_error(
-            selector,
-            receiver,
-            arguments.first().copied().unwrap_or(Value::nil()),
-            message,
-        )
+        NewspeakError::argument_error(selector, receiver, first_argument(arguments), message)
     };
     let Some(count) = integer_operand(&mutator.heap, arguments.first().copied()) else {
         return Err(type_mismatch(
@@ -873,7 +869,7 @@ pub(crate) fn execute_float<'gc>(
                 Some(IntegerArgument::Large { .. }) => Err(NewspeakError::argument_error(
                     Symbol::intern("asStringFixed:"),
                     receiver,
-                    arguments.first().copied().unwrap_or(Value::nil()),
+                    first_argument(arguments),
                     format!(
                         "asStringFixed: takes 0 to 20 fraction digits, got {}",
                         mutator.heap.describe_argument(arguments.first().copied())

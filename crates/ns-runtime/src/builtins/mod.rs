@@ -107,3 +107,9 @@ fn wrap_error<'gc>(
 ) -> Result<Step<'gc>, Signal<'gc>> {
     result.map(Step::Value).map_err(Signal::Error)
 }
+
+/// The first argument, or nil when there is none: the subject an
+/// `ArgumentError` carries for a leaf whose first argument is wrong.
+pub(crate) fn first_argument<'gc>(arguments: &[Value<'gc>]) -> Value<'gc> {
+    arguments.first().copied().unwrap_or(Value::nil())
+}

@@ -3,6 +3,7 @@
 //! sequence is `List`, Newspeak in `CollectionsFactory.ns`, over arrays it
 //! replaces when full.
 
+use crate::builtins::first_argument;
 use crate::builtins::primitive::CollectionPrimitive;
 use crate::interpreter::{Signal, Step, StepArguments};
 use crate::types::*;
@@ -96,7 +97,7 @@ fn element_at<'gc>(
                         receiver,
                         selector,
                         index,
-                        arguments.first().copied().unwrap_or(Value::nil()),
+                        first_argument(arguments),
                         length,
                     ))
                 }
@@ -105,7 +106,7 @@ fn element_at<'gc>(
                 receiver,
                 selector,
                 mutator.heap.describe_argument(arguments.first().copied()),
-                arguments.first().copied().unwrap_or(Value::nil()),
+                first_argument(arguments),
                 length,
             )),
             None => Err(not_an_integer(
@@ -134,7 +135,7 @@ fn element_at_put<'gc>(
                 receiver,
                 selector,
                 mutator.heap.describe_argument(arguments.first().copied()),
-                arguments.first().copied().unwrap_or(Value::nil()),
+                first_argument(arguments),
                 length,
             )));
         }
@@ -152,7 +153,7 @@ fn element_at_put<'gc>(
             receiver,
             selector,
             index,
-            arguments.first().copied().unwrap_or(Value::nil()),
+            first_argument(arguments),
             length,
         )));
     }
@@ -180,12 +181,7 @@ fn allocate<'gc>(
         return None;
     }
     let refusal = |message: String| {
-        NewspeakError::argument_error(
-            selector,
-            receiver,
-            arguments.first().copied().unwrap_or(Value::nil()),
-            message,
-        )
+        NewspeakError::argument_error(selector, receiver, first_argument(arguments), message)
     };
     let size = match integer_argument(&mutator.heap, arguments.first().copied()) {
         Some(IntegerArgument::Small(size)) => size,

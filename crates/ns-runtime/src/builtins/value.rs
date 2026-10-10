@@ -46,6 +46,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::builtins::collections::{self, IntegerArgument};
+use crate::builtins::first_argument;
 use crate::builtins::primitive::{Primitive, ValuePrimitive};
 use crate::builtins::{numbers, text};
 use crate::dispatch::{self, Lookup};
@@ -130,20 +131,20 @@ pub(crate) fn execute<'gc>(
                         receiver,
                         selector,
                         index,
-                        arguments.first().copied().unwrap_or(Value::nil()),
+                        first_argument(arguments),
                         count,
                     ),
                     Some(IntegerArgument::Large { .. }) => collections::out_of_range(
                         receiver,
                         selector,
                         mutator.heap.describe_argument(arguments.first().copied()),
-                        arguments.first().copied().unwrap_or(Value::nil()),
+                        first_argument(arguments),
                         count,
                     ),
                     None => NewspeakError::argument_error(
                         selector,
                         receiver,
-                        arguments.first().copied().unwrap_or(Value::nil()),
+                        first_argument(arguments),
                         format!(
                             "{selector} requires an Integer index, got {}",
                             mutator.heap.describe_argument(arguments.first().copied())

@@ -786,14 +786,14 @@ fn operands(instruction: &Instruction) -> Vec<u16> {
         // "The reference lowering"), never this instruction. Named here anyway,
         // so a real addition still has to say what it reads.
         Instruction::IntegerBinary { left, right, .. } => vec![*left, *right],
-        // Unreachable in reference-lowered code, for the same reason: the
-        // reference lowering sends `whileTrue:`/`whileFalse:` to a real
+        // Unreachable in reference-lowered code: the reference lowering
+        // inlines no loop, but sends `whileTrue:`/`whileFalse:` to a real
         // closure, whose native loop signals the error itself. Named so an
         // addition still decides.
         Instruction::SignalNonBoolean { register } => vec![*register],
-        // Unreachable in reference-lowered code, for the same reason: the
-        // reference lowering sends a mirror send as `SendInlinable`, its
-        // failure block a real closure. Named so an addition still decides.
+        // Unreachable in reference-lowered code: the reference lowering
+        // sends a mirror send as `SendInlinable`, its failure block a real
+        // closure. Named so an addition still decides.
         Instruction::SendMirror {
             mirror_register,
             subject_register,

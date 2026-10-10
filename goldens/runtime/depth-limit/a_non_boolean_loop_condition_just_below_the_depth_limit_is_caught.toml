@@ -1,0 +1,7 @@
+stdout = '''
+stack overflow: recursion too deep
+a loop's condition answered the Symbol #notABoolean, which is no Boolean
+a loop's condition answered the Symbol #notABoolean, which is no Boolean
+a loop's condition answered the Symbol #notABoolean, which is no Boolean
+stack overflow: recursion too deep
+'''

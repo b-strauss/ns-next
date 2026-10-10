@@ -939,12 +939,6 @@ text and `to:by:do:`'s zero step.
 
 ## Missing tests
 
-- The kernel foundations' (noted 2026-10-10): no golden signals a
-  `NonBooleanReceiver` near the depth limit under both lowerings
-  (`compiler.md` states the two raise it from the same depth: the inlined
-  loop from the method's frame, the native one in `resume` after the
-  condition's activation is popped); no golden exercises `Set new: -1`'s
-  `ArgumentError`, only `Map new: -1`'s.
 - `ns_syntax::parse_for_editor`'s answer to a source too long for a span --
   an empty module and the one `source_too_long` diagnostic -- has no test,
   since it needs a source past 4 GiB.
@@ -1028,21 +1022,6 @@ text and `to:by:do:`'s zero step.
 
 Small, deliberately left, none affecting an outcome.
 
-- The kernel foundations' (noted 2026-10-10): `Kernel.ns` names Primordial
-  Soup in 14 comments, against the rule that the core modules name no other
-  project (`core-library.md`, "Planned: the kernel completed to Primordial
-  Soup's core API"; `CollectionsFactory.ns` loses its references when the
-  collections sub-project rewrites `List`, `Map` and `Set`), and has lines
-  past 100 columns; `arguments.first().copied().unwrap_or(Value::nil())`
-  repeats about twelve times across `builtins/` and `platform.rs`, a helper
-  when the next builtins arrive; `Object>>doesNotUnderstand:` converts the
-  selector `asString` for the `isKindOf…` test on every send nothing
-  understood, before it knows the message is unary; the
-  `SignalNonBoolean` arm in `compiler/reference.rs` breaks the "for the
-  same reason" chain of its neighbours' comments; `builtins/block.rs`'s
-  `after_condition` reads `mutator.heap` where the file elsewhere calls
-  `heap()`; a few doc comments in `image/decode.rs` and `image/encode.rs`
-  reflowed unevenly after the `FutureImplementation` rename.
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is
@@ -1106,15 +1085,6 @@ Small, deliberately left, none affecting an outcome.
 
 ## Goldens and documentation
 
-- The kernel foundations' (noted 2026-10-10): `execution.md` (~1105)
-  reads "§7.2's `cannotReturn`, a `CannotReturn`"; `core-library.md`'s
-  class tree (~66-72) draws `Error`'s subclasses unclearly;
-  `image-format.md` calls the builtin classes of tags 32-35 nameable,
-  though `NonBooleanReceiver` is kernel-private (an image names it only as
-  a caught instance's class); the header comment of
-  `goldens/library/object/a_future_handed_to_future_computing_is_its_value.ns`
-  does not say the handed future is forced at the call, which
-  `a_future_handed_to_future_computing_is_forced_at_the_call.ns` pins.
 - `goldens/language/class/class-side/spec_6_3_factory_is_a_class_side_member.ns` has no rationale
   comment citing §6.3.
 - `goldens/language/slot/accessor/spec_6_3_3_a_lazy_slot_is_initialized_on_first_use.toml`
