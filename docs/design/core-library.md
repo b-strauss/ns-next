@@ -1790,19 +1790,20 @@ an error is the VM's business.
   ([dispatch.md](dispatch.md), "The reified message is a `Message`").
 - `Activation`: private to the kernel, like `Top` (below).
 
-**Class sides are not inherited, so `signal` is declared four times.**
-§3.2's metaclasses are flat ([object-model.md](object-model.md), "Class
-sides and metaclasses"): a class side is its own mixin applied to `Class`,
-not a subclass of its superclass's class side, so a class-side method
-declared on `Exception` alone would not reach `Error`. The default
-`handles: anException` — "an instance of me or of a subclass", the
-`inheritsMixinOf:` leaf — is therefore on `Class`'s instance side, where
-every class object answers it and a class side that declares its own
-`handles:` overrides it. `signal` and `signal:` (`^self new signal`) are
-declared on the class side of each of `Exception`, `Error`,
-`MessageNotUnderstood`, `Halt` and the four classes that carry a subject. A program's own subclass answers
-`signal:` only if its own class side declares it; otherwise it is signalled
-as `MyError new signal: 'text'`, which the goldens use.
+**Class sides are not inherited, so `signal` is declared on each kernel
+exception class.** §3.2's metaclasses are flat
+([object-model.md](object-model.md), "Class sides and metaclasses"): a
+class side is its own mixin applied to `Class`, not a subclass of its
+superclass's class side, so a class-side method declared on `Exception`
+alone would not reach `Error`. The default `handles: anException` — "an
+instance of me or of a subclass", the `inheritsMixinOf:` leaf — is
+therefore on `Class`'s instance side, where every class object answers it
+and a class side that declares its own `handles:` overrides it. `signal`
+and `signal:` (`^self new signal`) are declared on the class side of each
+of the eight: `Exception`, `Error`, `MessageNotUnderstood`, `Halt` and the
+four classes that carry a subject. A program's own subclass answers
+`signal:` only if its own class side declares it; otherwise it is
+signalled as `MyError new signal: 'text'`, which the goldens use.
 
 **Programs name them through `platform kernel`** (decided with the user on
 2026-09-25), as the corpus does — `private Exception = platform kernel
@@ -1810,8 +1811,8 @@ Exception.` appears 16 times, `platform kernel MessageNotUnderstood` 11 —
 and as Primordial Soup's `Kernel wrapping:` facet provides them: the
 platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
-`MessageNotUnderstood`, `Halt` and `Message` from the kernel instance the
-platform was handed.
+`MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`
+and `CannotInstantiate` from the kernel instance the platform was handed.
 `Object` gains no accessor, so its set stays what §3.2 names.
 
 `Closure` has `on: exceptionClass do: handler`, `ensure: aBlock` and
@@ -1989,17 +1990,17 @@ with an argument that is no `Message` fails inside the handler, on
   where the error arose; nothing is popped. The Rust site that raises the
   error decides its class, through the constructor it calls
   (`NewspeakError::error`, `argument_error`, `cannot_return`,
-  `non_boolean_receiver`, `cannot_instantiate`). So `on: Error do:` catches an index error
-  from `Array>>at:`, a wrong block arity, an instantiation refusal or a
-  `cannotReturn`, and an uncaught one ends the host's run with the same
-  `HostError` and the same line as before. An `Error` cannot be resumed, so
-  that `signal` returns only if the debugger resumes its default action;
-  its continuation, `Continuation::VmErrorSignalled`, then ends the run
-  with the error. `ArgumentError`, `CannotReturn`, `NonBooleanReceiver`
-  and `CannotInstantiate` are the finer classes a site may name. Until the
-  kernel is installed,
-  errors stay host errors, popped to the floor without running any block,
-  as there is no `Error` class yet.
+  `non_boolean_receiver`, `cannot_instantiate`). So `on: Error do:`
+  catches an index error from `Array>>at:`, a wrong block arity, an
+  instantiation refusal or a `cannotReturn`, and an uncaught one ends the
+  host's run with the same `HostError` and the same line as before. An
+  `Error` cannot be resumed, so that `signal` returns only if the debugger
+  resumes its default action; its continuation,
+  `Continuation::VmErrorSignalled`, then ends the run with the error.
+  `ArgumentError`, `CannotReturn`, `NonBooleanReceiver` and
+  `CannotInstantiate` are the finer classes a site may name. Until the
+  kernel is installed, errors stay host errors, popped to the floor
+  without running any block, as there is no `Error` class yet.
 - **The depth limit keeps a reserve** of 1,000 activations
   (`DEPTH_RESERVE`), as Python's `RecursionError` and the JVM's yellow zone
   do, because `signal`, the search and the handler are activations too:
@@ -2671,9 +2672,9 @@ Each decision below was taken with the user.
 capability; `Platform` and its members' classes are no kernel classes at
 all, and a program is handed the platform through its factory.
 Nor do the classes the exceptions added: a program names `Exception`,
-`Error`, `MessageNotUnderstood`, `Halt` and `Message` through
-`platform kernel`, and `Activation` not at all
-("Exceptions" above).
+`Error`, `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`,
+`CannotReturn` and `CannotInstantiate` through `platform kernel`, and
+`Activation` and `NonBooleanReceiver` not at all ("Exceptions" above).
 Each is an ordinary public method of `Kernel.ns`'s `Object`,
 `public String = ( ^outer Kernel String )`, whose body sends the kernel
 instance its nested-class accessor. The `outer Kernel` is required, not

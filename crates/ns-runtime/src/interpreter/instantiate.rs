@@ -1300,24 +1300,25 @@ fn instantiation_refusal_error<'gc>(
         // reads the same verdict to keep such a root out of an image, which
         // is untrusted input (`image-format.md`, "Verification").
         crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError::error(
-factory_selector(application),
-Value::object(class),
-format!(
+            factory_selector(application),
+            Value::object(class),
+            format!(
                 "cannot instantiate {}: {}",
                 application.mixin.name,
                 defect.describe()
             ),
-),
+        ),
         crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
             identity_method_error(class, application, *declaring)
         }
         crate::mixin::InstantiationRefusal::ClassObject => NewspeakError::error(
-factory_selector(application),
-Value::object(class),
-format!(
-                "cannot instantiate {display_name}: a class object is made only by evaluating its declaration"
+            factory_selector(application),
+            Value::object(class),
+            format!(
+                "cannot instantiate {display_name}: a class object is made only by evaluating \
+                 its declaration"
             ),
-),
+        ),
     }
 }
 

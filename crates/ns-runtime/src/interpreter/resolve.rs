@@ -609,10 +609,13 @@ fn handler_method_step<'gc>(
 /// A send nothing handles, not even `doesNotUnderstand:`.
 fn unhandled_error<'gc>(receiver: Value<'gc>, selector: Symbol) -> Signal<'gc> {
     Signal::Error(NewspeakError::error(
-selector,
-receiver,
-format!("doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the class chain)"),
-))
+        selector,
+        receiver,
+        format!(
+            "doesNotUnderstand: {selector} (and no doesNotUnderstand: found anywhere in the \
+             class chain)"
+        ),
+    ))
 }
 
 #[cfg(test)]
