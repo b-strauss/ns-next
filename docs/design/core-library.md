@@ -662,7 +662,7 @@ rather than on a corpus module's demand. `show:` does not send
 `goldens/library/platform/show_of_something_that_is_no_string_is_an_error`).
 
 **The namespace members are ordinary methods.** `KernelNamespace`'s
-answer the kernel instance's nested classes. The class-accessor fast path
+methods answer the kernel instance's nested classes. The class-accessor fast path
 ("The predefined classes are accessors on `Object`" below) is recognized
 only in the form `^outer Kernel <Name>`, which no module but the kernel can
 write, so each costs one activation more than it did as a kernel accessor

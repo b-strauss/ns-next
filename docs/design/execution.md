@@ -6131,7 +6131,7 @@ Tags follow "assigned once, never renumbered or reused"
 - `MakeClosure`'s payload changed, so tag 11 is **retired** and `MakeClosure`
   is 29; `MakeVector`, `LoadVector` and `StoreVector` are 30, 31 and 32.
   `IntegerBinary` ("What leaf inlining moved", above) took the next number,
-  33, and the next free instruction number is now 34.
+  33. The next free instruction number is 41.
 - A closure's object record carries its copied values and no longer its
   parameter names or home, so `OBJECT_CLOSURE` 4 is retired
   (`RETIRED_OBJECT_BODIES`, the first retired body tag) and the record is 6.

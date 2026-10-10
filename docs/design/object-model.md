@@ -883,6 +883,13 @@ a computation that is no block `value` when the future is forced, by
 wrapping it in a block of its own, and `Future new` — or the instantiation
 of a subclass, which does not inherit `computing:` since a class side is
 not inherited (§3.2) — signals a `CannotInstantiate` from its initializer.
+A future handed to `computing:`, resolved or not, is taken as its value:
+the row declines for it, since it is no closure, and the failure path wraps
+it in a block that sends it `value`, so forcing the new future forces the
+handed one and forwards `value` to its value -- a future whose value is a
+block computes what the block answers, and one of anything else is sent
+`value` as that object would be
+(`goldens/library/object/a_future_handed_to_future_computing_is_its_value.ns`).
 A program cannot subclass `FutureImplementation` itself: an instance of a
 subclass would be a future the runtime does not know, which it neither
 forces, sees through, nor replaces, so a forwarding object a program wants
@@ -894,8 +901,9 @@ future a program can hold keeps "The four rules" above.
 `FutureImplementation` declares no `isKindOfFuture`: answering it would
 tell a future from its value, so that message is forwarded to the value
 like any other. `FutureImplementation` carries builtin
-class tag 30, `Proxy` 36 and `Future` 37, because the
-collector, the leaves and the image must recognize it. The first future a
+class tag 30 because the collector, the leaves and the image must
+recognize it; `Proxy` carries 36 and `Future` 37 only because every kernel
+class is a builtin with a tag. The first future a
 heap makes sets `Mutator::futures_made`, which is never cleared, and the
 two checks that would otherwise run for every program — the leaves' search
 among their operands and the collector's replacement — stay behind that
@@ -1787,7 +1795,10 @@ as a `SmallInteger` full-width index, separate from the 22-bit guard id in
 instances' headers; the behaviour stays Rust. A class object is 80 bytes
 with its header and class word. The builtin tag, the applied clause and the
 application are numbers, the other five fields objects or `nil`, and the
-tracer sees only those.
+tracer sees only those. The applied clause packs the named builtin into a
+6-bit field, as its position in `BuiltinClass::ALL` plus one (0 for none),
+which caps the builtins: `mixin.rs`'s compile-time assertion keeps
+`BuiltinClass::ALL` shorter than 63, so there are at most 62.
 
 The refusal is held as heap data rather than as an index into a Rust-side
 table of refusals, because class objects are made at run time, one per

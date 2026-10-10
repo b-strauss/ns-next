@@ -3412,8 +3412,8 @@ never holds one. The mechanism: the parser keeps the `simultaneous` flag;
 one desugaring before both lowerings (`compiler/simultaneous.rs`) emits
 `MakeFuture`, `InitializeSlotProvisionally` or a store, then `LoadOwnSlot`
 or a read, `ResolveFuture` and a checked write at the clause's end
-(instruction tags 36 to 39); `Kernel.ns`'s private `Future` (builtin class
-tag 30), after Primordial Soup's `Proxy`, forwards through
+(instruction tags 36 to 39); `Kernel.ns`'s private `FutureImplementation`
+(builtin class tag 30), after Primordial Soup's `Proxy`, forwards through
 `doesNotUnderstand:`; forcing is a trampoline step under
 `Continuation::Future`, and an instruction or a leaf that meets an
 unresolved future forces it and runs again (`vm::reexecute`), which rests on
