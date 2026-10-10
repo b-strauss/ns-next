@@ -5,7 +5,8 @@
    that collide on their `hash` are found past the tombstone, and one
    stored again after its removal comes last. An IdentityMap keeps two
    equal keys that are distinct objects apart through removal and storing
-   again, and sends no key `=`. *)
+   again, and sends no key `=`; a key whose `==` answers true for anything
+   finds no removed entry in its bucket. *)
 class ARemovedEntryIsPassedByEveryProbe = Object new (
     | comparisons ::= 0. |
 ) (
@@ -24,6 +25,11 @@ class ARemovedEntryIsPassedByEveryProbe = Object new (
     )
     class Colliding = Object new () (
         public hash = ( ^7 )
+        public identityHash = ( ^7 )
+    )
+    class AnythingIdentical = Object new () (
+        public == other = ( ^true )
+        public identityHash = ( ^7 )
     )
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. names first second identity map anything colliding set |
@@ -42,6 +48,12 @@ class ARemovedEntryIsPassedByEveryProbe = Object new (
             show: ((identity keys at: 2) == first) printString; show: ' ';
             show: (identity at: first) printString; show: ' '; show: (identity at: second) printString; newLine.
         transcript show: comparisons printString; newLine.
+        identity:: collections IdentityMap new.
+        colliding:: Colliding new.
+        identity at: colliding put: 1.
+        identity removeKey: colliding.
+        transcript show: (identity includesKey: AnythingIdentical new) printString; show: ' ';
+            show: (identity at: AnythingIdentical new ifAbsent: [#absent]) printString; newLine.
         map:: collections Map new.
         map at: (Key named: #a) put: 1; at: (Key named: #b) put: 2; at: (Key named: #c) put: 3.
         transcript show: (map removeKey: (Key named: #b)) printString; newLine.

@@ -2,6 +2,7 @@ stdout = '''
 1 1 2 false
 2 true true 3 2
 0
+false #absent
 2
 3 false
 a c b

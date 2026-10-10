@@ -555,11 +555,13 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
 
        The removed mark is the data array because it costs nothing and no
        key can be it: no slot is read and nothing allocated to test for
-       it, and the array is never handed out -- `keys`, `values` and
-       `asArray` answer new Arrays -- so no program holds it to store as a
-       key. Every test has the mark as the receiver of `==`, so a key's
-       own `==` is never sent the array; and a rebuild replaces `data_`,
-       dropping exactly the entries it marked. *)
+       it, and the public protocol never hands the array out -- `keys` and
+       `values` answer new Arrays -- so no key is ever it. A subclass
+       reaches it through the protected `dataForScan` and probes; one that
+       stores it as a key or hands it on breaks only its own map. Every
+       test has the mark as the receiver of `==`, so a key's own `==` is
+       never sent the array; and a rebuild replaces `data_`, dropping
+       exactly the entries it marked. *)
     private class Map new: capacity = kernelCollection new (
         | (* The number of keys the map holds. *)
           private size_ ::= 0.
@@ -903,18 +905,21 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     ) (
         (* Answers true: the receiver is an IdentityMap. *)
         public isKindOfIdentityMap = ( ^true )
-        (* Answers the index in the map's data array of `key` itself, or the
-           negated index of the empty bucket of `table` where it belongs.
-           Probes from the bucket of `key`'s `identityHash` onwards, passing
-           every entry that is not `key` itself, removed ones included;
-           sends `key` only `identityHash`.
+        (* Answers the index in the map's data array of the key `==` to
+           `key`, or the negated index of the empty bucket of `table` where
+           `key` belongs. Probes from the bucket of `key`'s `identityHash`
+           onwards, passing removed entries without comparing them; each
+           stored key on the way is compared by sending `==` to `key` with
+           it as the argument, so `identityHash` and `==` are all `key` is
+           sent.
 
            table: the table of the indices in the data array, as Map's
-               `scanFor:in:` takes it. *)
+               `scanFor:in:` takes it.
+
+           Signals what `key`'s `identityHash` and `==` signal. *)
         (* Map's probe written out with `identityHash` and `==`, for the
-           reason Map's gives. The stored key is the receiver of `==`, so
-           when it is the removed mark, `key`'s own `==` is not sent the
-           data array. *)
+           reason Map's gives. The removed-mark test has the mark as its
+           receiver, so `key`'s own `==` is never sent the data array. *)
         protected scanFor: key in: table = (
             | data tableSize bucketIndex keyIndex stored |
             data:: self dataForScan.
@@ -924,7 +929,8 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
                 keyIndex:: table at: bucketIndex.
                 0 = keyIndex ifTrue: [^0 - bucketIndex].
                 stored:: data at: keyIndex.
-                stored == key ifTrue: [^keyIndex].
+                (data == stored) ifFalse: [
+                    key == stored ifTrue: [^keyIndex]].
                 bucketIndex = tableSize
                     ifTrue: [bucketIndex:: 1]
                     ifFalse: [bucketIndex:: bucketIndex + 1]]
