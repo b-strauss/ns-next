@@ -12,5 +12,5 @@ with: requires a Unicode code point, an Integer from 0 to 1114111 outside 55296 
 with: requires a Unicode code point, an Integer from 0 to 1114111 outside 55296 to 57343, got 55296
 with: requires a Unicode code point, an Integer from 0 to 1114111 outside 55296 to 57343, got 1114112
 with: requires a Unicode code point, an Integer from 0 to 1114111 outside 55296 to 57343, got nil
-Error
+ArgumentError
 '''

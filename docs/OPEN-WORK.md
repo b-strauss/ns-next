@@ -394,14 +394,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   digits. Whether it should print an exponent past some magnitude is to be
   checked against Primordial Soup's float printing. Noted 2026-10-02.
   [core-library.md](design/core-library.md), "Large integers" (`asFloat`).
-- **Failure blocks and Primordial Soup's error classes.** Every kernel
-  forwarder's failure block is `ifFail: [^super <selector> …]`, reached only
-  for a receiver of the wrong shape, while Primordial Soup's methods signal
-  `ArgumentError` when the primitive fails (e.g.
-  `newspeak/KernelForPrimordialSoup.ns:1599-1602` for `<<`). Our leaves raise
-  their errors themselves, so whether the Newspeak side should signal
-  Primordial Soup's error classes is open.
-  [core-library.md](design/core-library.md), "The shape of a kernel method".
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
   is silent. Primordial Soup exits through an explicit `exit:` primitive

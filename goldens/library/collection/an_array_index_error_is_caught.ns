@@ -1,7 +1,8 @@
 (* Every VM error is a signalled `Error` (docs/design/core-library.md,
    "Exceptions"): an index out of range in `Array>>at:` is caught
    by `on: Error do:`, its `messageText` the text an uncaught one ends the
-   run with, and the program carries on after the handler. *)
+   run with, and the program carries on after the handler. Its class is
+   `ArgumentError`, as the leaf refuses an argument. *)
 class AnArrayIndexErrorIsCaught = Object new (
     
 ) (

@@ -240,17 +240,25 @@ pub(crate) fn signal_of(pending: PendingUnwind<'_>) -> Signal<'_> {
 fn exit_signal(pending: PendingUnwind<'_>) -> Signal<'_> {
     match pending.action {
         UnwindAction::Terminate(error) => Signal::Error(error),
-        UnwindAction::Restart => Signal::Error(dead_activation_error(Symbol::intern("restart"))),
+        UnwindAction::Restart => Signal::Error(dead_activation_error(
+            Symbol::intern("restart"),
+            Value::nil(),
+        )),
         UnwindAction::Return(_) => signal_of(pending),
     }
 }
 
 /// §7.2's `cannotReturn` for an activation that has already returned,
-/// named after the leaf that aimed at it.
-pub(crate) fn dead_activation_error<'gc>(selector: Symbol) -> NewspeakError<'gc> {
-    NewspeakError::error(
+/// named after the leaf that aimed at it. `result` is the value the leaf
+/// tried to return; a restart returns none, so it passes nil.
+pub(crate) fn dead_activation_error<'gc>(
+    selector: Symbol,
+    result: Value<'gc>,
+) -> NewspeakError<'gc> {
+    NewspeakError::cannot_return(
         selector,
         Value::nil(),
+        result,
         "cannotReturn: the activation has already returned",
     )
 }
@@ -716,5 +724,12 @@ mod tests {
             mutator.heap.pop_activation(other_signal);
             mutator.heap.pop_activation(other);
         });
+    }
+
+    #[test]
+    fn an_activation_that_has_returned_is_refused_as_a_cannot_return() {
+        // No golden reaches a restart whose activation has returned.
+        let error = super::dead_activation_error(crate::Symbol::intern("restart"), Value::nil());
+        assert_eq!(error.class, ErrorClass::CannotReturn);
     }
 }

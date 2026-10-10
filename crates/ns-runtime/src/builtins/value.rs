@@ -126,18 +126,24 @@ pub(crate) fn execute<'gc>(
                 // never a decline, which would answer the `ifFail:` block
                 // and hide it. A `LargeInteger` index is outside it too.
                 return Some(Err(match index {
-                    Some(IntegerArgument::Small(index)) => {
-                        collections::out_of_range(receiver, selector, index, count)
-                    }
+                    Some(IntegerArgument::Small(index)) => collections::out_of_range(
+                        receiver,
+                        selector,
+                        index,
+                        arguments.first().copied().unwrap_or(Value::nil()),
+                        count,
+                    ),
                     Some(IntegerArgument::Large { .. }) => collections::out_of_range(
                         receiver,
                         selector,
                         mutator.heap.describe_argument(arguments.first().copied()),
+                        arguments.first().copied().unwrap_or(Value::nil()),
                         count,
                     ),
-                    None => NewspeakError::error(
+                    None => NewspeakError::argument_error(
                         selector,
                         receiver,
+                        arguments.first().copied().unwrap_or(Value::nil()),
                         format!(
                             "{selector} requires an Integer index, got {}",
                             mutator.heap.describe_argument(arguments.first().copied())

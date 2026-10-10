@@ -1,0 +1,13 @@
+(* `Symbol new` and a value class that defines `==` refuse to instantiate:
+   each signals a `CannotInstantiate` carrying the class. *)
+class ARefusedInstantiationIsACannotInstantiate = Object new () (
+    class Odd = Value new () (
+        public == other = ( ^true )
+    )
+    public main: platform args: arguments = (
+        | transcript = platform transcript. kernel = platform kernel. |
+        transcript show: ([Symbol new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
+        transcript show: ([Odd new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
+        transcript show: ([Symbol new] on: kernel Error do: [:error | error messageText]); newLine.
+    )
+) : ()

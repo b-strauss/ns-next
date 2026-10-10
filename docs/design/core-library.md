@@ -1998,7 +1998,25 @@ with an argument that is no `Message` fails inside the handler, on
   resumes its default action; its continuation,
   `Continuation::VmErrorSignalled`, then ends the run with the error.
   `ArgumentError`, `CannotReturn`, `NonBooleanReceiver` and
-  `CannotInstantiate` are the finer classes a site may name. Until the
+  `CannotInstantiate` are the finer classes a site may name. The rule is
+  the class Primordial Soup signals in the same situation, carrying what
+  its slot holds. A leaf that refuses an argument -- an index out of
+  range or no Integer, a size, a capacity, a code point, a `String` to
+  concatenate or to show, a division by zero, a non-finite `asInteger`,
+  `asStringFixed:`'s count, a non-block `do:`, a wrong number of block
+  arguments -- signals an `ArgumentError` carrying that argument (the
+  divisor for a division by zero, the bound out of range for
+  `copyFrom:to:`, the block for its arity, the receiver for `asInteger`).
+  A `^` whose home has returned, and a `returnValue:` or `restart` aimed
+  at an activation that has, signal a `CannotReturn` carrying the value
+  returned (nil for `restart`, which returns none). Every instantiation
+  refusal whose text begins "cannot instantiate" signals a
+  `CannotInstantiate` carrying the class, and nil for the VM mirror's
+  class, which a program must not be handed. What stays a plain `Error`
+  is the depth limit, a future that diverged or is malformed, a
+  superclass or mixin clause that is no class, a wrong number of
+  factory or method arguments, the refusal to store a non-value in a
+  value object's slot, and every `internal:` error. Until the
   kernel is installed, errors stay host errors, popped to the floor
   without running any block, as there is no `Error` class yet.
 - **The depth limit keeps a reserve** of 1,000 activations
@@ -2866,12 +2884,14 @@ on its own (decided with the user on 2026-10-06):
   `asByteArray` answers the UTF-8 bytes, a `String` is decoded from a
   `ByteArray` as UTF-8, and `StringBuilder` takes strings and code points.
   §5.1.5 leaves the encoding to an API that "encapsulates this decision".
-- **Primordial Soup's error classes, under `Error`.** `ArgumentError
-  value:`, `NotFound element:`, `CannotReturn result:` and
-  `NonBooleanReceiver receiver:` exist with Primordial Soup's factories and
-  are signalled where it signals them, as subclasses of `Error`, so that
-  `on: Error do:` still catches them and today's texts stay their
-  `messageText`; Primordial Soup has no `Error` and its classes no text.
+- **Primordial Soup's error classes, under `Error`.** `ArgumentError`,
+  `CannotReturn`, `NonBooleanReceiver` and `CannotInstantiate` exist as
+  subclasses of `Error`, so that `on: Error do:` still catches them and
+  today's texts stay their `messageText`; Primordial Soup has no `Error` and
+  its classes no text. The leaves and the VM signal `ArgumentError`,
+  `CannotReturn` and `CannotInstantiate` where it signals them
+  ("Exceptions"). `NotFound element:` and the signalling of
+  `NonBooleanReceiver` remain planned.
 - **`isKindOf…` answers `false` for what a receiver does not declare**:
   `Object>>doesNotUnderstand:` answers `false` for a unary selector that
   begins with `isKindOf`, as Primordial Soup's and the canonical Newspeak's

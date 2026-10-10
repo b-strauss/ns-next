@@ -59,9 +59,10 @@ fn stream<'gc>(
                 .and_then(|value| value.as_object())
                 .and_then(|string| mutator.heap().str_value(string));
             let Some(text) = text else {
-                return Err(NewspeakError::error(
+                return Err(NewspeakError::argument_error(
                     selector,
                     receiver,
+                    arguments.first().copied().unwrap_or(Value::nil()),
                     format!(
                         "{selector} requires a String, got {}",
                         mutator.heap().describe_argument(arguments.first().copied())

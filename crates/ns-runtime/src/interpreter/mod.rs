@@ -1151,6 +1151,7 @@ impl<'gc> Mutator<'gc> {
                     &self.heap,
                     code.argument_count as usize,
                     captured_frame,
+                    Value::object(closure),
                     arguments.len(),
                 ) {
                     // The block never runs, so its continuation is thrown
@@ -1485,8 +1486,9 @@ impl<'gc> Mutator<'gc> {
             Some(home) => match self.heap.frame_activation(home) {
                 Some(_) => home,
                 None => {
-                    return Signal::Error(NewspeakError::error(
+                    return Signal::Error(NewspeakError::cannot_return(
                         Symbol::CARET,
+                        value,
                         value,
                         "cannotReturn: the enclosing method activation has already returned",
                     ))
@@ -1975,14 +1977,16 @@ fn check_block_arity<'gc>(
     heap: &Heap<'gc>,
     parameter_count: usize,
     captured_frame: FrameReference<'gc>,
+    closure: Value<'gc>,
     given: usize,
 ) -> Result<(), Signal<'gc>> {
     if given == parameter_count {
         return Ok(());
     }
-    Err(Signal::Error(NewspeakError::error(
+    Err(Signal::Error(NewspeakError::argument_error(
         Symbol::VALUE,
         heap.frame_receiver(captured_frame),
+        closure,
         format!("wrong number of block arguments: block takes {parameter_count}, got {given}"),
     )))
 }

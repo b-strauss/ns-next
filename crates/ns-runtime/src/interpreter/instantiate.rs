@@ -480,9 +480,12 @@ impl<'gc> Mutator<'gc> {
             // The VM mirror is a capability: there is exactly one, and it is
             // the bootstrap's to hand out (`docs/design/core-library.md`, "The
             // VM mirror is the whole Rust boundary").
-            Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError::error(
+            // Its class is no value the refusal may carry: the error would
+            // hand a program the class and with it the capability.
+            Some(BuiltinClass::VmMirror) => Err(Signal::Error(NewspeakError::cannot_instantiate(
                 Symbol::NEW,
                 Value::object(class),
+                Value::nil(),
                 "the VM mirror's class cannot be instantiated",
             ))),
             // `Array`'s shape is `ObjectShape::Array`, not
@@ -501,8 +504,9 @@ impl<'gc> Mutator<'gc> {
             ))),
             // A Symbol is canonical, one object per text (§5.1.6), made only
             // by a literal or `asSymbol`; `new` would mint a second one.
-            Some(BuiltinClass::Symbol) => Err(Signal::Error(NewspeakError::error(
+            Some(BuiltinClass::Symbol) => Err(Signal::Error(NewspeakError::cannot_instantiate(
                 Symbol::NEW,
+                Value::object(class),
                 Value::object(class),
                 "cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol",
             ))),
@@ -1299,20 +1303,24 @@ fn instantiation_refusal_error<'gc>(
         // public struct a host can build without resolving, and the encoder
         // reads the same verdict to keep such a root out of an image, which
         // is untrusted input (`image-format.md`, "Verification").
-        crate::mixin::InstantiationRefusal::RootClause(defect) => NewspeakError::error(
-            factory_selector(application),
-            Value::object(class),
-            format!(
-                "cannot instantiate {}: {}",
-                application.mixin.name,
-                defect.describe()
-            ),
-        ),
+        crate::mixin::InstantiationRefusal::RootClause(defect) => {
+            NewspeakError::cannot_instantiate(
+                factory_selector(application),
+                Value::object(class),
+                Value::object(class),
+                format!(
+                    "cannot instantiate {}: {}",
+                    application.mixin.name,
+                    defect.describe()
+                ),
+            )
+        }
         crate::mixin::InstantiationRefusal::IdentityMethod { declaring } => {
             identity_method_error(class, application, *declaring)
         }
-        crate::mixin::InstantiationRefusal::ClassObject => NewspeakError::error(
+        crate::mixin::InstantiationRefusal::ClassObject => NewspeakError::cannot_instantiate(
             factory_selector(application),
+            Value::object(class),
             Value::object(class),
             format!(
                 "cannot instantiate {display_name}: a class object is made only by evaluating \
@@ -1344,8 +1352,9 @@ fn mutable_value_slot_error<'gc>(
     } else {
         format!("{} declares", violation.class)
     };
-    NewspeakError::error(
+    NewspeakError::cannot_instantiate(
         factory_selector(application),
+        Value::object(class),
         Value::object(class),
         format!(
             "cannot instantiate {instantiated}: a value object is deeply immutable, and \
@@ -1370,8 +1379,9 @@ fn identity_method_error<'gc>(
     application: &crate::mixin::MixinApplication,
     declaring: Symbol,
 ) -> NewspeakError<'gc> {
-    NewspeakError::error(
+    NewspeakError::cannot_instantiate(
         factory_selector(application),
+        Value::object(class),
         Value::object(class),
         format!(
             "cannot instantiate {}: a value class may not define ==, and {declaring} defines it",
@@ -1411,7 +1421,12 @@ fn value_class_refusal_error<'gc>(
              values, and {level}'s enclosing object, {described}, is not one"
         ),
     };
-    NewspeakError::error(factory_selector(application), Value::object(class), message)
+    NewspeakError::cannot_instantiate(
+        factory_selector(application),
+        Value::object(class),
+        Value::object(class),
+        message,
+    )
 }
 
 /// §3.1.1's second condition, asked of every slot an initializer writes on

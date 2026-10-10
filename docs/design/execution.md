@@ -521,7 +521,7 @@ It is not a field: `Heap::closure_home` derives it from the closure's
 `Signal::Return` carries a `FrameReference`, its target, and `raise_return` picks
 it: for a closure activation, its closure's `home`, while the stack entry that
 frame is married to (`Heap::frame_activation`) is still running, and
-`cannotReturn` if it is dead, either divorced because the activation returned or
+a `CannotReturn` if it is dead, either divorced because the activation returned or
 built by the image decoder, which never marries a frame. For any other activation
 — an initializer's `^` from an inlined block — the target is the activation
 itself, reified for the purpose.
@@ -547,7 +547,7 @@ activation's frame, and `retry` answers `Signal::Restart`, aimed at the
 `on:do:` activation's, which the unwinder carries down exactly as a `^`; at
 a restart's target it sets the program counter to 0 and the loop switches
 to it, its registers as they are. A restart whose target has returned
-meanwhile ends the run with §7.2's `cannotReturn`. An unhandled exception's
+meanwhile ends the run with §7.2's `cannotReturn`, a `CannotReturn`. An unhandled exception's
 `defaultAction` answers `Signal::Terminate`, an unwind with no target: it
 runs every pending block down to the floor and leaves the run with the
 error, which the host receives as it received every error before there were
@@ -595,7 +595,7 @@ below).
 
 **An initializer home follows the same rule.** A block created during
 initialization — `| blk = [ ^2 ]. |` — whose `^` runs after initialization has
-finished raises `cannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
+finished signals a `CannotReturn`, as `newspeak-spec.pdf` §7.2 requires, because
 the initializer's frame was divorced when its activation returned. A `^` into an
 initializer that is still running escapes: an initializer activation catches
 no return, so the unwind pops it with everything else down to the floor of the
@@ -606,7 +606,7 @@ non-local return escaped the entry send", a known gap
 
 A method body's own `^` is an ordinary `Return` and raises no signal. The
 observable discipline — a block invoked after its home has returned gets
-`cannotReturn` — comes from the pop, which divorces a reified home on every exit
+a `CannotReturn` — comes from the pop, which divorces a reified home on every exit
 path, without a signal round-trip on the common path.
 
 **Never `.unwrap()`, `.expect()` or `{:?}` an `EvaluationResult`.** `Signal`

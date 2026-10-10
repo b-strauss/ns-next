@@ -3,7 +3,8 @@
    or stops more than one before it starts, without overflowing on the
    `i64` edges, which are `LargeInteger`s; `String with:` refuses what is no
    code point -- a negative Integer, a surrogate, anything past U+10FFFF,
-   and what is no Integer. Each is a signalled Error, caught here. *)
+   and what is no Integer. Each is a signalled Error, caught here; its
+   class is `ArgumentError`, as the leaf refuses an argument. *)
 class AStringIndexErrorIsCaught = Object new (
 ) (
     public main: platform args: arguments = (

@@ -1,0 +1,5 @@
+stdout = '''
+Symbol
+Odd
+cannot instantiate Symbol: a Symbol is made only by a literal or by asSymbol
+'''

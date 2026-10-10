@@ -167,15 +167,19 @@ fn activation_leaf<'gc>(
             let value = *arguments.first()?;
             return Some(Err(match live {
                 Some(_) => Signal::Return(frame, value),
-                None => Signal::Error(unwind::dead_activation_error(Symbol::intern(
-                    "returnValue:",
-                ))),
+                None => Signal::Error(unwind::dead_activation_error(
+                    Symbol::intern("returnValue:"),
+                    value,
+                )),
             }));
         }
         SubjectLeaf::Restart => {
             return Some(Err(match live {
                 Some(_) => Signal::Restart(frame),
-                None => Signal::Error(unwind::dead_activation_error(Symbol::intern("restart"))),
+                None => Signal::Error(unwind::dead_activation_error(
+                    Symbol::intern("restart"),
+                    Value::nil(),
+                )),
             }));
         }
     };

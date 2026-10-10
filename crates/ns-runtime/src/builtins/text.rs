@@ -106,9 +106,10 @@ fn from_code_point<'gc>(
         Some(code_points) => Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
         )),
-        None => Err(NewspeakError::error(
+        None => Err(NewspeakError::argument_error(
             selector,
             receiver,
+            arguments.first().copied().unwrap_or(Value::nil()),
             format!(
                 "{selector} requires a Unicode code point, an Integer from 0 to 1114111 \
                  outside 55296 to 57343, got {}",
@@ -165,16 +166,29 @@ fn copy_range<'gc>(
         Some(code_points) => Ok(Value::object(
             mutator.new_string_from_code_points(code_points),
         )),
-        None => Err(NewspeakError::error(
-            selector,
-            receiver,
-            format!(
-                "copyFrom: {} to: {} out of range: valid ranges lie within \
-                 1..{size}, an empty range ends just before it starts (size {size})",
-                describe(start, arguments.first().copied()),
-                describe(stop, arguments.get(1).copied()),
-            ),
-        )),
+        None => {
+            // The refused argument is the bound out of range: the start
+            // unless it is a position the string has (one past the end
+            // included, for the empty range), then the stop.
+            let start_in_range =
+                matches!(start, Some(position) if position >= 1 && position - 1 <= size as i64);
+            let refused = if start_in_range {
+                arguments.get(1)
+            } else {
+                arguments.first()
+            };
+            Err(NewspeakError::argument_error(
+                selector,
+                receiver,
+                refused.copied().unwrap_or(Value::nil()),
+                format!(
+                    "copyFrom: {} to: {} out of range: valid ranges lie within \
+                     1..{size}, an empty range ends just before it starts (size {size})",
+                    describe(start, arguments.first().copied()),
+                    describe(stop, arguments.get(1).copied()),
+                ),
+            ))
+        }
     }
 }
 
@@ -204,13 +218,20 @@ pub(crate) fn execute_string<'gc>(
                         .and_then(|position| mutator.heap.string_code_point_at(object, position))
                     {
                         Some(code_point) => Ok(Value::small_integer(i64::from(code_point))),
-                        None => Err(collections::out_of_range(receiver, selector, index, size)),
+                        None => Err(collections::out_of_range(
+                            receiver,
+                            selector,
+                            index,
+                            arguments.first().copied().unwrap_or(Value::nil()),
+                            size,
+                        )),
                     }
                 }
                 Some(IntegerArgument::Large { .. }) => Err(collections::out_of_range(
                     receiver,
                     selector,
                     mutator.heap.describe_argument(arguments.first().copied()),
+                    arguments.first().copied().unwrap_or(Value::nil()),
                     size,
                 )),
                 None => Err(collections::not_an_integer(
@@ -234,9 +255,10 @@ pub(crate) fn execute_string<'gc>(
                 Some(code_points) => Ok(Value::object(
                     mutator.new_string_from_code_points(code_points),
                 )),
-                None => Err(NewspeakError::error(
+                None => Err(NewspeakError::argument_error(
                     selector,
                     receiver,
+                    arguments.first().copied().unwrap_or(Value::nil()),
                     format!(
                         "String concatenation (,) requires a String argument, got {}",
                         mutator.heap.describe_argument(arguments.first().copied())

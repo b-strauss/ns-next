@@ -34,11 +34,13 @@ pub(crate) fn out_of_range<'gc>(
     receiver: Value<'gc>,
     selector: Symbol,
     index: impl std::fmt::Display,
+    argument: Value<'gc>,
     length: usize,
 ) -> NewspeakError<'gc> {
-    NewspeakError::error(
+    NewspeakError::argument_error(
         selector,
         receiver,
+        argument,
         format!("index {index} out of range: valid indices are 1..{length} (size {length})"),
     )
 }
@@ -49,9 +51,10 @@ pub(crate) fn not_an_integer<'gc>(
     selector: Symbol,
     got: Option<Value<'gc>>,
 ) -> NewspeakError<'gc> {
-    NewspeakError::error(
+    NewspeakError::argument_error(
         selector,
         receiver,
+        got.unwrap_or(Value::nil()),
         format!(
             "{selector} requires an Integer index, got {}",
             heap.describe_argument(got)
@@ -89,13 +92,20 @@ fn element_at<'gc>(
                         .array_element(object, (index as usize) - 1)
                         .unwrap_or(Value::nil()))
                 } else {
-                    Err(out_of_range(receiver, selector, index, length))
+                    Err(out_of_range(
+                        receiver,
+                        selector,
+                        index,
+                        arguments.first().copied().unwrap_or(Value::nil()),
+                        length,
+                    ))
                 }
             }
             Some(IntegerArgument::Large { .. }) => Err(out_of_range(
                 receiver,
                 selector,
                 mutator.heap.describe_argument(arguments.first().copied()),
+                arguments.first().copied().unwrap_or(Value::nil()),
                 length,
             )),
             None => Err(not_an_integer(
@@ -124,6 +134,7 @@ fn element_at_put<'gc>(
                 receiver,
                 selector,
                 mutator.heap.describe_argument(arguments.first().copied()),
+                arguments.first().copied().unwrap_or(Value::nil()),
                 length,
             )));
         }
@@ -137,7 +148,13 @@ fn element_at_put<'gc>(
         }
     };
     if index < 1 || (index as usize) > length {
-        return Some(Err(out_of_range(receiver, selector, index, length)));
+        return Some(Err(out_of_range(
+            receiver,
+            selector,
+            index,
+            arguments.first().copied().unwrap_or(Value::nil()),
+            length,
+        )));
     }
     let value = arguments.get(1).copied().unwrap_or(Value::nil());
     mutator
@@ -162,7 +179,14 @@ fn allocate<'gc>(
     if mutator.heap.class_builtin(class) != Some(BuiltinClass::Array) {
         return None;
     }
-    let refusal = |message: String| NewspeakError::error(selector, receiver, message);
+    let refusal = |message: String| {
+        NewspeakError::argument_error(
+            selector,
+            receiver,
+            arguments.first().copied().unwrap_or(Value::nil()),
+            message,
+        )
+    };
     let size = match integer_argument(&mutator.heap, arguments.first().copied()) {
         Some(IntegerArgument::Small(size)) => size,
         Some(IntegerArgument::Large { negative }) => {
@@ -250,9 +274,10 @@ fn do_step<'gc>(
     let object = receiver.as_object()?;
     let size = mutator.heap.array_element_count(object)?;
     let Some(action) = arguments.first().copied() else {
-        return Some(Err(Signal::Error(NewspeakError::error(
+        return Some(Err(Signal::Error(NewspeakError::argument_error(
             selector,
             receiver,
+            Value::nil(),
             "do: requires a block argument",
         ))));
     };
