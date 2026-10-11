@@ -5,12 +5,13 @@
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
 > `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with Newspeak `List`, `Map`, `IdentityMap` and `Set`; missing is
-> `Integer>>/` and part of Primordial Soup's core API, whose names and
-> loops are aligned, whose foundations -- the error classes, `Proxy` and a
-> public `Future` -- and whose collections and strings are built, and the
-> rest -- numbers, `ByteArray` and `StringBuilder`, weak references --
-> planned ("Planned: the kernel completed to Primordial Soup's core API").
+> with Newspeak `List`, `Map`, `IdentityMap` and `Set`; missing is part
+> of Primordial Soup's core API, whose names and loops are aligned, whose
+> foundations -- the error classes, `Proxy` and a public `Future` --, whose
+> collections and strings and whose numbers -- `Fraction` and a symmetric
+> numeric tower among them ("The numeric tower") -- are built, and the
+> rest -- `ByteArray` and `StringBuilder`, weak references -- planned
+> ("Planned: the kernel completed to Primordial Soup's core API").
 > Every member of `Kernel.ns`, `PlatformFactory.ns` and
 > `CollectionsFactory.ns` -- public, protected and private -- is documented
 > in place to the standard of Javadoc, by a comment directly above it,

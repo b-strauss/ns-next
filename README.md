@@ -20,9 +20,10 @@ Every `.ns` file in the vendored corpus parses.
 
 Not built yet, and the limits worth knowing before trying it on real code:
 
-- **No numeric tower.** An `Integer` answers `//` and `\\` but not `/`, an integer
-  meeting a `Float` argument is a type mismatch, `1 = 1.0` is `false`, and a
-  non-integral literal is a binary float.
+- **No exact non-integral literal.** The numbers are a symmetric tower --
+  `7 / 2` is the `Fraction` `(7/2)` and `1 = 1.0` is `true` -- but there is no
+  fraction literal, and a non-integral literal such as `0.1` is a binary float,
+  not the exact decimal §5.1.1 names (a recorded deviation).
 - **The platform is minimal**, and widens only when a whitelisted corpus module or a
   program under `benchmarks/` needs something: a transcript, the kernel's classes
   and exceptions, a collections module with `List`, and `time` with its
