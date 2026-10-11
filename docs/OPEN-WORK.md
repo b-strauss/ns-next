@@ -529,6 +529,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   enclosing object and a module can be instantiated with different
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
+- **A hover with the comment above a declaration.** `textDocument/hover` on
+  a class, slot or method shows the `Comment::text` of the `///` block (or
+  `(* ... *)`) directly above its declaration, rendered as Markdown.
+  `ns_syntax::Comment` answers the text; nothing yet maps a declaration to
+  its comment ([frontend.md](design/frontend.md), "Comments";
+  [editor-support.md](design/editor-support.md)).
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.

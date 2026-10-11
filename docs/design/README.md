@@ -327,7 +327,7 @@ renamed, moved or re-extended. Deleting both halves together is not caught,
 and shows up in a diff as two deletions.
 
 A golden's rationale — why that outcome is the right one, and which
-specification section it comes from — is a `(* ... *)` comment at the top of
+specification section it comes from — is a `///` comment at the top of
 the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the

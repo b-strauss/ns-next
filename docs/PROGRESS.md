@@ -4751,3 +4751,37 @@ sub-project, `ByteArray`, `StringBuilder` and the typed arrays, is next
 rounding divisions; the tower's slow paths, unmeasured on their own; a
 subquadratic gcd for a huge decoded fraction; and the review's missing
 tests and leftovers.
+
+## Line comments (2026-10-11)
+
+Plan: [line-comments](superpowers/plans/2026-10-11-1750-ns-next-line-comments.md);
+[frontend.md](design/frontend.md), "Comments"; [README.md](design/README.md),
+"Deviations from the language specification"; [editor-support.md](design/editor-support.md).
+
+`///` is a line comment beside `(* ... *)`: it starts wherever it stands
+outside a string or a comment and runs to the end of its line, and a binary
+selector ends before it. That deviates from §4.2, whose `binSel` admits
+`///`; the deviation is recorded in the README's table. Consecutive `///`
+lines are one comment, a block, and `ns_syntax::Comment::text` answers a
+comment's content without its markers, for either form; the class comment is
+taken from either. The JetBrains plugin's lexer mirrors it (`LINE_COMMENT`)
+and its commenter toggles `///` lines and `(* *)` blocks. The repository's
+sources are rewritten to `///`: the core library, the goldens and the
+benchmarks. Where a member's documentation and the comment explaining a
+decision had been two comments, they stay two paragraphs of one `///` block,
+a bare `///` line between them. Two checks hold it:
+`core_library_documentation.rs` requires a `///` block above every
+core-library member, and `source_formatting.rs` refuses `(* ... *)` in any
+`.ns` outside `corpus/` but `goldens/language/syntax/line_comment.ns`, the
+golden that pins both forms.
+
+- `43ca7c11` -- the plan.
+- `c54b2085` -- the lexer's `///`, one comment per block, `Comment::text`,
+  the plugin's lexer and commenter.
+- `24522f1f`, `652a79fa` -- the core library documents every member with
+  `///`, separate comments staying separate paragraphs.
+- `9c75123e` -- the goldens and benchmarks comment with `///`.
+- This commit -- the conventions and the documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a hover
+showing the comment above a declaration.

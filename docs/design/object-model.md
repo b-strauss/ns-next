@@ -269,8 +269,8 @@ class ChildOfOuter = Outer () (
 )
 class GrandChildOfOuter = ChildOfOuter( | public Inner ::= String. |) ()
 
-g Nested.                (* a subclass of String, not of Inner *)
-(g Inner: Array) Nested. (* still the same subclass of String *)
+g Nested.                /// a subclass of String, not of Inner
+(g Inner: Array) Nested. /// still the same subclass of String
 ```
 
 — so "all nested classes must be compiled as mixins, as the superclass cannot be

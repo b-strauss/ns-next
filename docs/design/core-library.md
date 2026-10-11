@@ -14,7 +14,7 @@
 > ("Planned: the kernel completed to Primordial Soup's core API").
 > Every member of `Kernel.ns`, `PlatformFactory.ns` and
 > `CollectionsFactory.ns` -- public, protected and private -- is documented
-> in place to the standard of Javadoc, by a comment directly above it,
+> in place to the standard of Javadoc, by a `///` comment directly above it,
 > which `crates/ns-runtime/tests/core_library_documentation.rs` checks.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
@@ -47,11 +47,13 @@ comparison in [image-format.md](image-format.md).
 
 The shipped modules document their members in place: every method, slot
 and class of `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`
--- public, protected and private -- has a comment directly above it saying
+-- public, protected and private -- has a `///` comment directly above it saying
 what it does and answers, what each argument must be, which `Error` it
 signals and when, and what it guarantees about order, identity, copying and
-mutation (`CLAUDE.md`, "Conventions"). This document gives the reasons
-behind them.
+mutation (`CLAUDE.md`, "Conventions"). A comment that explains a decision
+rather than the member stays a separate paragraph of the same `///` block,
+a bare `///` line between the two. This document gives the reasons behind
+them.
 
 `Kernel.ns` declares one nested class per builtin class but the mirror's:
 
@@ -1738,8 +1740,8 @@ per branch, as every prior-art kernel does — SOMns's
 Newspeak on Squeak's (`prior-art/newspeak/squeak/KernelForSqueak.ns`):
 
 ```newspeak
-public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )   (* True *)
-public and: block = ( ^false )                                         (* False *)
+public ifTrue: trueBlock ifFalse: falseBlock = ( ^trueBlock value )   /// True
+public and: block = ( ^false )                                         /// False
 ```
 
 No method tests its receiver and none reaches the mirror; `Boolean` itself

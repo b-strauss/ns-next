@@ -17,7 +17,7 @@ should change for runtime work.
 
 ```
 class Name usingPlatform: platform = SuperclassClause (
-    (* optional class comment *)
+    /// optional class comment
     |
     private Foo = platform collections Foo.
     bar ::= 0.
@@ -30,6 +30,9 @@ class Name usingPlatform: platform = SuperclassClause (
     public classSideMethod = ( ... )
 )
 ```
+
+A comment is `(* ... *)` or a block of `///` lines (see "Comments"); the
+repository's own sources use `///`.
 
 Three bracketed sections in order: the class body (slots and initializer
 expressions), the instance side, and — after `) : (` — the class side.
