@@ -46,6 +46,8 @@ object NewspeakTokenTypes {
     @JvmField val SYMBOL = mirrored("Symbol")
     /** A `(* ... *)` comment, nested ones included. The Rust lexer skips comments. */
     @JvmField val COMMENT = NewspeakTokenType("Comment", null)
+    /** A `///` comment, one line of it; consecutive ones are separate tokens here. The Rust lexer skips comments. */
+    @JvmField val LINE_COMMENT = NewspeakTokenType("LineComment", null)
 
     /** `newspeak-spec.pdf` §4.1, as `crates/ns-syntax/src/parser/mod.rs`'s `RESERVED_WORDS`. */
     val RESERVED_WORDS: Set<String> = setOf("self", "super", "outer", "true", "false", "nil")

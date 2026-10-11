@@ -944,12 +944,31 @@ impl<'a> Parser<'a> {
     /// grammar line 165 it is the first `initExprs` expression (e.g. its
     /// receiver in `'hello' printLine.`). Consuming it here silently dropped a
     /// valid initializer expression, so that branch was removed.
+    ///
+    /// A block of ns-next's `///` lines in the same place is the class
+    /// comment too, as `Comment::text` answers it.
     fn take_class_comment(&mut self) -> Option<String> {
         let previous_end = self.tokens.get(self.position.checked_sub(1)?)?.span.end as usize;
         let current_start = self.current().span.start as usize;
-        let gap = self.source.get(previous_end..current_start)?.trim();
-        let inner = gap.strip_prefix("(*")?.strip_suffix("*)")?;
-        Some(inner.to_string())
+        let gap = self.source.get(previous_end..current_start)?;
+        let trimmed = gap.trim();
+        if let Some(inner) = trimmed
+            .strip_prefix("(*")
+            .and_then(|rest| rest.strip_suffix("*)"))
+        {
+            return Some(inner.to_string());
+        }
+        let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
+        match lexed.comments.as_slice() {
+            // The gap holds no token but the end of input: the block is all
+            // that stands there.
+            [comment]
+                if comment.kind == crate::comment::CommentKind::Line && lexed.tokens.len() == 1 =>
+            {
+                Some(comment.text(gap))
+            }
+            _ => None,
+        }
     }
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
@@ -2149,6 +2168,22 @@ mod class_tests {
         assert_eq!(
             module.root_class.class_comment.as_deref(),
             Some(" a comment ")
+        );
+    }
+
+    // A `///` block standing first in the header is the class comment too,
+    // as its text: the markers are syntax, not content.
+    #[test]
+    fn line_comment_block_in_header_is_the_class_comment() {
+        let module = module(indoc! {"
+            class C = (
+                /// a comment
+                /// on two lines
+            ) ()
+        "});
+        assert_eq!(
+            module.root_class.class_comment.as_deref(),
+            Some("a comment\non two lines")
         );
     }
 

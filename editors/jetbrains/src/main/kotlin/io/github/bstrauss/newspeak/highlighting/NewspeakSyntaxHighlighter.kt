@@ -40,6 +40,7 @@ class NewspeakSyntaxHighlighter : SyntaxHighlighterBase() {
             Types.STRING to NewspeakColors.STRING,
             Types.SYMBOL to NewspeakColors.SYMBOL,
             Types.COMMENT to NewspeakColors.COMMENT,
+            Types.LINE_COMMENT to NewspeakColors.COMMENT,
             Types.LEFT_PARENTHESIS to NewspeakColors.PARENTHESES,
             Types.RIGHT_PARENTHESIS to NewspeakColors.PARENTHESES,
             Types.LEFT_BRACKET to NewspeakColors.BRACKETS,

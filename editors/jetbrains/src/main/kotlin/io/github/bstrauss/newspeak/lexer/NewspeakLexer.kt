@@ -72,6 +72,10 @@ class NewspeakLexer : LexerBase() {
             lexBlockComment()
             return Types.COMMENT
         }
+        if (character == '/' && startsLineComment(0)) {
+            lexLineComment()
+            return Types.LINE_COMMENT
+        }
         // `lex_one`, arm by arm.
         return when {
             character == '(' -> single(Types.LEFT_PARENTHESIS)
@@ -92,7 +96,7 @@ class NewspeakLexer : LexerBase() {
                     position += 2
                     Types.DOUBLE_BAR
                 }
-                peek(1)?.let { next -> next in SPECIAL } == true -> lexOperator()
+                continuesBinarySelector(1) -> lexOperator()
                 else -> single(Types.BAR)
             }
             character == ':' -> when {
@@ -141,6 +145,19 @@ class NewspeakLexer : LexerBase() {
         }
     }
 
+    /** `starts_line_comment`: ns-next's `///`, a deviation from §4.2's `binSel`. */
+    private fun startsLineComment(offset: Int): Boolean =
+        peek(offset) == '/' && peek(offset + 1) == '/' && peek(offset + 2) == '/'
+
+    /** `continues_binary_selector`: a special character that starts no line comment. */
+    private fun continuesBinarySelector(offset: Int): Boolean =
+        peek(offset)?.let { next -> next in SPECIAL } == true && !startsLineComment(offset)
+
+    /** `skip_line_comment`, one line per token: the plugin merges nothing. */
+    private fun lexLineComment() {
+        while (peek()?.let { next -> next != '\n' && next != '\r' } == true) position += 1
+    }
+
     private fun lexWord(): IElementType {
         val start = position
         while (peek()?.let { next -> isWordCharacter(next) } == true) position += 1
@@ -182,7 +199,7 @@ class NewspeakLexer : LexerBase() {
             position += 3
             return Types.EVENTUAL_SEND_OPERATOR
         }
-        val runOfTwoPlus = next != null && next in SPECIAL
+        val runOfTwoPlus = continuesBinarySelector(1)
         if (!runOfTwoPlus) {
             when (character) {
                 '=' -> return single(Types.EQUALS)
@@ -191,7 +208,7 @@ class NewspeakLexer : LexerBase() {
             }
         }
         position += 1
-        while (peek()?.let { following -> following in SPECIAL } == true) position += 1
+        while (continuesBinarySelector(0)) position += 1
         return Types.BINARY_SELECTOR
     }
 
@@ -271,9 +288,9 @@ class NewspeakLexer : LexerBase() {
                     }
                 }
             }
-            next != null && startsBinarySelector(next) -> {
+            next != null && startsBinarySelector(next) && !startsLineComment(0) -> {
                 position += 1
-                while (peek()?.let { following -> following in SPECIAL } == true) position += 1
+                while (continuesBinarySelector(0)) position += 1
             }
             // A `#` followed by nothing a symbol can be: the Rust lexer reports
             // it and still emits the `#` as a symbol.

@@ -41,7 +41,7 @@ class NewspeakParserDefinition : ParserDefinition {
 
     companion object {
         @JvmField val FILE = IFileElementType(NewspeakLanguage)
-        @JvmField val COMMENTS: TokenSet = TokenSet.create(NewspeakTokenTypes.COMMENT)
+        @JvmField val COMMENTS: TokenSet = TokenSet.create(NewspeakTokenTypes.COMMENT, NewspeakTokenTypes.LINE_COMMENT)
         @JvmField val STRINGS: TokenSet = TokenSet.create(NewspeakTokenTypes.STRING)
     }
 }

@@ -183,10 +183,14 @@ The productions, and what the parser does with each:
   raised on only when it ran, is a syntax error.
 - comments are `(* ... *)` and nest; `(* :literalmessage: ... *)` and
   `(*:id: ... *)` metadata comments are comments.
+- `///` starts a line comment to the end of its line wherever it stands
+  outside a string or a comment, ending a binary selector before it —
+  ns-next's deviation from §4.2's `binSel` (see "Comments").
 
 ## Lexer
 
-Hand-written, single pass. It handles nested `(* *)` comments, literal-message
+Hand-written, single pass. It handles nested `(* *)` comments and `///` line
+comments, literal-message
 comments, both kinds of string literal, string escapes and radix numbers.
 
 **A string literal is `'...'` or `"..."`** (§5.1.5), and there are no
@@ -254,13 +258,61 @@ whatever code points it is given and does not depend on it.
   2026-09-27). Its image literal tag, 7, is retired
   ([image-format.md](image-format.md)).
 
-**Comments are trivia.** The lexer skips them with the whitespace, so no
-token stands for one and the parser never sees one. `Lexer::run_keeping_comments`
-also answers their spans, for an editor (`parse_for_editor`, "Recovery"): one
-span per outermost comment, from its outer `(*` to its outer `*)`, so a nested
-comment is inside its enclosing one's span; an unterminated one runs to the
-end of the source, beside its diagnostic. `run`, and with it `lex` and
-`parse`, drops the list, and the token stream is the same either way.
+### Comments
+
+Comments are trivia in both their forms. The lexer skips them with the
+whitespace, so no token stands for one and the parser never sees one.
+
+- **`(* ... *)`** is §4.2's comment. It nests, and an unterminated one runs
+  to the end of the source, beside its diagnostic.
+- **`///`** starts ns-next's line comment wherever it stands outside a
+  string or a comment, and the comment runs up to, not including, the next
+  `\n` or `\r` (or the end of the source); `////` is a comment too. A binary
+  selector ends before `///` (`starts_line_comment`,
+  `continues_binary_selector`): `a +/// x` is `a +` followed by a comment,
+  `#+/// x` the symbol `#+`, and `#/// x` a `#` with nothing after it,
+  which the lexer reports as it reports any `#` naming no symbol. `//` is
+  still a binary selector. This deviates from §4.2, whose `binSel →
+  (specialCharacter | "-") specialCharacter*` admits `///`, `+///`,
+  `<///>` and every other run containing `///`; a comment wherever it
+  stands is what a reader expects, and a selector containing `///`, which
+  can now be neither declared nor sent, is the price, accepted
+  ([README.md](README.md), "Deviations from the language specification").
+- **The two forms do not see each other.** Inside `(* ... *)`, `///` is
+  text; inside a `///` comment, `(*` opens nothing. Inside `'...'` and
+  `"..."` both are characters.
+
+`Lexer::run_keeping_comments` also answers the comments, for an editor
+(`parse_for_editor`, "Recovery"), each a `Comment`: its `kind`
+(`CommentKind::Block` or `CommentKind::Line`) and its `span`. A `(* ... *)`
+is one comment from its outer `(*` to its outer `*)`, so a nested comment is
+inside its enclosing one's span. Consecutive `///` lines are one comment, a
+block, from the first line's `///` to the end of the last line's text
+(`skip_line_comment`, `continues_line_block`): two `///` comments are one
+block when each is the first thing on its line and only whitespace with
+exactly one line break lies between them. A blank line or code starts a new
+block, and so does a `///` after code on its line: that one is a remark on
+its line, so it neither joins the block above nor takes the next line in. A
+`(* ... *)` is always a comment of its own. A reader thereby gets one
+comment, with one text, per block — one fold, one class comment.
+
+`Comment::text` answers a comment's content without its markers, its lines
+joined with `\n` whatever the source's line endings, for a reader that shows
+a comment rather than the source. A `Line` block loses each line's
+indentation, its `///` and one following space, and its trailing
+whitespace. A `Block` loses `(*` and `*)` (an unterminated one keeps
+everything after its `(*`); its first line is trimmed, the following lines
+lose the indentation they share and their trailing whitespace, and leading
+and trailing blank lines are dropped. It renders nothing (no Markdown);
+that is the reader's business.
+
+The class comment (`ClassDeclaration::class_comment`), the comment standing
+first in a class header, is taken from either form: a `(* ... *)` as the
+text between its markers, a `///` block as `Comment::text` answers it
+(`take_class_comment`).
+
+`run`, and with it `lex` and `parse`, drops the list, and the token stream
+is the same either way.
 
 ## AST
 
@@ -479,8 +531,8 @@ them.
   so nothing compiled ever sees a recovered module.
 - `ns_syntax::parse_for_editor` always answers an `EditorParse`: `tokens`,
   the lexer's, before the parser splits any; `module`, recovered where the
-  source has errors; `comments`, every comment's span in source order
-  ("Lexer"); and `diagnostics`, the lexer's, then the parser's. A lexer
+  source has errors; `comments`, every comment in source order,
+  consecutive `///` lines as one ("Comments"); and `diagnostics`, the lexer's, then the parser's. A lexer
   error does not stop the parse: the lexer answers a complete token stream
   beside its errors, an unterminated string or comment running to the end
   of the file. A source longer than a span can address answers a root class

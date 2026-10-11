@@ -1,5 +1,6 @@
 //! Single-pass lexer for Newspeak3 source.
 
+use crate::comment::{continues_line_block, Comment, CommentKind};
 use crate::diagnostic::Diagnostic;
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
@@ -9,7 +10,7 @@ pub struct Lexer<'a> {
     bytes: &'a [u8],
     position: usize,
     tokens: Vec<Token>,
-    comments: Vec<Span>,
+    comments: Vec<Comment>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -17,7 +18,7 @@ pub struct Lexer<'a> {
 /// the runtime never see a comment, so `run` drops them.
 pub struct Lexed {
     pub tokens: Vec<Token>,
-    pub comments: Vec<Span>,
+    pub comments: Vec<Comment>,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -69,6 +70,7 @@ impl<'a> Lexer<'a> {
             match self.peek() {
                 Some(byte) if byte.is_ascii_whitespace() => self.position += 1,
                 Some(b'(') if self.peek_at(1) == Some(b'*') => self.skip_block_comment(),
+                Some(b'/') if self.starts_line_comment(0) => self.skip_line_comment(),
                 _ => break,
             }
         }
@@ -88,8 +90,10 @@ impl<'a> Lexer<'a> {
                     self.position += 2;
                     depth -= 1;
                     if depth == 0 {
-                        self.comments
-                            .push(Span::new(start as u32, self.position as u32));
+                        self.comments.push(Comment {
+                            kind: CommentKind::Block,
+                            span: Span::new(start as u32, self.position as u32),
+                        });
                     }
                 }
                 (Some(_), _) => self.position += 1,
@@ -98,12 +102,55 @@ impl<'a> Lexer<'a> {
                         Span::new(start as u32, self.position as u32),
                         "unterminated comment",
                     ));
-                    self.comments
-                        .push(Span::new(start as u32, self.position as u32));
+                    self.comments.push(Comment {
+                        kind: CommentKind::Block,
+                        span: Span::new(start as u32, self.position as u32),
+                    });
                     return;
                 }
             }
         }
+    }
+
+    /// Whether ns-next's `///` line comment starts `offset` bytes ahead.
+    /// It is a deviation from §4.2, whose `binSel` admits `///` and every
+    /// run of special characters containing it; a comment wherever it
+    /// stands is what a reader expects (`docs/design/README.md`,
+    /// "Deviations from the language specification").
+    fn starts_line_comment(&self, offset: usize) -> bool {
+        let start = self.position + offset;
+        self.bytes.get(start..start + 3) == Some(b"///".as_slice())
+    }
+
+    /// Whether the byte `offset` ahead continues a binary selector: a
+    /// special character that does not start a line comment.
+    fn continues_binary_selector(&self, offset: usize) -> bool {
+        self.peek_at(offset)
+            .is_some_and(|byte| SPECIAL.contains(&byte))
+            && !self.starts_line_comment(offset)
+    }
+
+    /// A `///` comment, to the end of its line. It joins the comment before
+    /// it when the two form one block (`continues_line_block`), so a reader
+    /// gets one comment, with one text, per block.
+    fn skip_line_comment(&mut self) {
+        let start = self.position;
+        while matches!(self.peek(), Some(byte) if byte != b'\n' && byte != b'\r') {
+            self.position += 1;
+        }
+        let span = Span::new(start as u32, self.position as u32);
+        if let Some(previous) = self.comments.last_mut() {
+            if previous.kind == CommentKind::Line
+                && continues_line_block(self.source, previous.span, start)
+            {
+                previous.span = previous.span.merge(span);
+                return;
+            }
+        }
+        self.comments.push(Comment {
+            kind: CommentKind::Line,
+            span,
+        });
     }
 
     fn push(&mut self, kind: TokenKind, start: usize, end: usize) {
@@ -150,10 +197,7 @@ impl<'a> Lexer<'a> {
                 if self.peek_at(1) == Some(b'|') {
                     self.position += 2;
                     self.push(TokenKind::DoubleBar, start, self.position);
-                } else if self
-                    .peek_at(1)
-                    .is_some_and(|next_byte| SPECIAL.contains(&next_byte))
-                {
+                } else if self.continues_binary_selector(1) {
                     // `|` starting a multi-character run (`|>`, `|=`, ...) is a
                     // binary selector, not a slot/temporary delimiter.
                     self.lex_operator();
@@ -288,7 +332,7 @@ impl<'a> Lexer<'a> {
             self.push(TokenKind::EventualSendOperator, start, self.position);
             return;
         }
-        let is_run_of_two_plus = next.is_some_and(|next_byte| SPECIAL.contains(&next_byte));
+        let is_run_of_two_plus = self.continues_binary_selector(1);
         if !is_run_of_two_plus {
             match byte {
                 b'=' => return self.single(TokenKind::Equals),
@@ -301,7 +345,7 @@ impl<'a> Lexer<'a> {
         // binary selector is its first character and the special characters
         // after it.
         self.position += 1;
-        while matches!(self.peek(), Some(next_byte) if SPECIAL.contains(&next_byte)) {
+        while self.continues_binary_selector(0) {
             self.position += 1;
         }
         self.push(TokenKind::BinarySelector, start, self.position);
@@ -423,9 +467,9 @@ impl<'a> Lexer<'a> {
                     }
                 }
             }
-            Some(byte) if starts_binary_selector(byte) => {
+            Some(byte) if starts_binary_selector(byte) && !self.starts_line_comment(0) => {
                 self.position += 1;
-                while matches!(self.peek(), Some(next_byte) if SPECIAL.contains(&next_byte)) {
+                while self.continues_binary_selector(0) {
                     self.position += 1;
                 }
             }
@@ -485,6 +529,7 @@ fn is_extended_digit(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::comment::CommentKind;
     use crate::token::TokenKind::*;
 
     fn kinds(source: &str) -> Vec<crate::token::TokenKind> {
@@ -505,7 +550,7 @@ mod tests {
         let texts: Vec<&str> = lexed
             .comments
             .iter()
-            .map(|span| span.text(source))
+            .map(|comment| comment.span.text(source))
             .collect();
         assert_eq!(texts, ["(* outer (* inner *) still *)", "(* open"]);
         assert_eq!(lexed.diagnostics.len(), 1, "the unterminated comment");
@@ -794,11 +839,160 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
     }
 
+    /// Every comment of `source` as its kind and the text its span covers.
+    fn comments_of(source: &str) -> Vec<(CommentKind, &str)> {
+        Lexer::new(source)
+            .run_keeping_comments()
+            .comments
+            .iter()
+            .map(|comment| (comment.kind, comment.span.text(source)))
+            .collect()
+    }
+
     #[test]
     fn line_and_block_comments_are_trivia() {
         assert_eq!(
             kinds("a (* comment *) b"),
             vec![Identifier, Identifier, EndOfInput]
+        );
+        assert_eq!(
+            kinds("a /// comment\nb"),
+            vec![Identifier, Identifier, EndOfInput]
+        );
+        assert_eq!(kinds("a /// comment"), vec![Identifier, EndOfInput]);
+        assert_eq!(kinds("x///y"), vec![Identifier, EndOfInput]);
+        assert_eq!(
+            kinds("a //// four\nb"),
+            vec![Identifier, Identifier, EndOfInput]
+        );
+    }
+
+    /// §4.2's `binSel` would take `+///` whole; ns-next ends every selector
+    /// before `///`, the deviation `docs/design/README.md` records.
+    #[test]
+    fn a_line_comment_ends_every_selector_before_it() {
+        let texts = |source: &'static str| -> Vec<(crate::token::TokenKind, &'static str)> {
+            let (tokens, diagnostics) = Lexer::new(source).run();
+            assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+            tokens
+                .into_iter()
+                .map(|token| (token.kind, token.span.text(source)))
+                .collect()
+        };
+        assert_eq!(
+            texts("a +/// x\nb"),
+            vec![
+                (Identifier, "a"),
+                (BinarySelector, "+"),
+                (Identifier, "b"),
+                (EndOfInput, "")
+            ]
+        );
+        assert_eq!(
+            texts("a // b"),
+            vec![
+                (Identifier, "a"),
+                (BinarySelector, "//"),
+                (Identifier, "b"),
+                (EndOfInput, "")
+            ]
+        );
+        assert_eq!(texts("#+/// x"), vec![(Symbol, "#+"), (EndOfInput, "")]);
+        assert_eq!(
+            texts("| a |/// x"),
+            vec![(Bar, "|"), (Identifier, "a"), (Bar, "|"), (EndOfInput, "")]
+        );
+        assert_eq!(
+            texts("a =/// x"),
+            vec![(Identifier, "a"), (Equals, "="), (EndOfInput, "")]
+        );
+        assert_eq!(
+            texts("a </// x"),
+            vec![(Identifier, "a"), (LessThan, "<"), (EndOfInput, "")]
+        );
+        assert_eq!(
+            texts("a >/// x"),
+            vec![(Identifier, "a"), (GreaterThan, ">"), (EndOfInput, "")]
+        );
+        assert_eq!(
+            texts("a -/// x"),
+            vec![(Identifier, "a"), (BinarySelector, "-"), (EndOfInput, "")]
+        );
+    }
+
+    #[test]
+    fn a_hash_before_a_line_comment_names_no_symbol() {
+        let (_, diagnostics) = Lexer::new("#/// x").run();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].message, "expected symbol after `#`");
+    }
+
+    /// Neither form sees the other, and a string sees neither.
+    #[test]
+    fn the_two_comment_forms_do_not_see_each_other() {
+        assert_eq!(
+            comments_of("(* a /// b *) c /// d (* e\nf"),
+            [
+                (CommentKind::Block, "(* a /// b *)"),
+                (CommentKind::Line, "/// d (* e")
+            ]
+        );
+        assert_eq!(
+            kinds("'///' \"///\" '(*'"),
+            vec![String, String, String, EndOfInput]
+        );
+    }
+
+    #[test]
+    fn consecutive_line_comments_are_one_block() {
+        let source = "    /// one\n    /// two\n    run";
+        assert_eq!(
+            comments_of(source),
+            [(CommentKind::Line, "/// one\n    /// two")]
+        );
+    }
+
+    #[test]
+    fn a_blank_line_or_code_starts_a_new_block() {
+        assert_eq!(
+            comments_of("/// one\n\n/// two"),
+            [
+                (CommentKind::Line, "/// one"),
+                (CommentKind::Line, "/// two")
+            ]
+        );
+        assert_eq!(
+            comments_of("/// one\nx\n/// two"),
+            [
+                (CommentKind::Line, "/// one"),
+                (CommentKind::Line, "/// two")
+            ]
+        );
+        assert_eq!(
+            comments_of("(* one *)\n/// two"),
+            [
+                (CommentKind::Block, "(* one *)"),
+                (CommentKind::Line, "/// two")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_trailing_line_comment_starts_no_block_with_the_next_line() {
+        assert_eq!(
+            comments_of("x foo. /// remark\n/// documentation\nbar"),
+            [
+                (CommentKind::Line, "/// remark"),
+                (CommentKind::Line, "/// documentation")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_crlf_line_comment_block_is_one_comment() {
+        assert_eq!(
+            comments_of("/// one\r\n/// two\r\nx"),
+            [(CommentKind::Line, "/// one\r\n/// two")]
         );
     }
 

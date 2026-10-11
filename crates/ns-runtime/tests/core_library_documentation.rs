@@ -42,7 +42,7 @@ fn comment_spans(source: &str) -> Vec<(usize, usize)> {
         .run_keeping_comments()
         .comments
         .iter()
-        .map(|span| (span.start as usize, span.end as usize))
+        .map(|comment| (comment.span.start as usize, comment.span.end as usize))
         .collect()
 }
 

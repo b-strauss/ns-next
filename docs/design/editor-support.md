@@ -69,7 +69,7 @@ crates/ns-analyzer/     binary `ns-next-analyzer`: its `lsp` command serves
                         comparison; `parse`, `parse-corpus`, `disasm` and
                         `inspect` look at a module or an image from the shell
 crates/ns-syntax/       + an editor entry, `parse_for_editor`: a module for
-                        every source, recovered, with its comments' spans
+                        every source, recovered, with its comments
 crates/ns-runtime/      + a resolver entry answering bindings and errors together
 editors/jetbrains/      Gradle project: file type, Kotlin lexer, highlighter,
                         LSP client, structure view, settings, the project
@@ -190,7 +190,7 @@ Modules:
 - `analysis.rs` — run once per document version and cached:
   `ns_syntax::parse_for_editor`, then the resolver entry below on its module
   whether or not it was recovered, then the classification over the editor
-  parse's tokens and the folds over its module and comment spans. Its
+  parse's tokens and the folds over its module and comments. Its
   findings are every diagnostic together -- the lexer's, then the parser's,
   then the resolver's -- so a lexer error does not hide a parser error after
   it.
@@ -303,7 +303,7 @@ read as that expression -- folds worse there, never wrongly.
 ### Folding
 
 `folding.rs` computes a document's fold ranges once per version, with the
-analysis, from the AST and the comment spans `parse_for_editor` answers
+analysis, from the AST and the comments `parse_for_editor` answers
 beside it; `textDocument/foldingRange` answers them from the cache. A code
 fold runs from the opening token to the closing one inclusive, read off the
 AST's `Delimiters` ([frontend.md](frontend.md), "AST"), so a fold names what
@@ -316,7 +316,7 @@ it folds:
 | Method body | `(` to `)` | `(...)` | none |
 | Closure | `[` to `]` | `[...]`, or `[:x :y \| ...]` with its parameters | none |
 | Slot section -- a class header's, or a body's temporaries | `\|` to `\|`, or `\|\|` to `\|\|` | `\|...\|` | none |
-| Comment | `(*` to `*)`, an unterminated one to the end of the file | `(* `, the first non-blank line cut to 60 characters, ` ...*)`; `(*...*)` for a blank one | `comment` |
+| Comment | `(*` to `*)`, an unterminated one to the end of the file; a block of `///` lines, first to last | `(* `, the first non-blank line cut to 60 characters, ` ...*)`, or `/// `, that line, ` ...`; `(*...*)` or `///...` for a blank one | `comment` |
 
 - **Three ASCII dots** stand for what a fold hides, never the single
   character `…`, which the editor draws in a fallback font beside the
@@ -743,9 +743,13 @@ Components:
 - **Lexer** — hand-written Kotlin, a `LexerBase` that mirrors the Rust lexer
   function by function, so the two can be reviewed side by side and no
   generator step exists (JFlex was considered and rejected for that reason).
-  Every comment — nested `(* … *)` included — and every string is a single
-  token, so the lexer restarts in state 0 at any token boundary, which the
-  platform's incremental lexing needs. Unlike the Rust lexer it also emits
+  Every `(* … *)` comment — nested ones included — and every string is a
+  single token, so the lexer restarts in state 0 at any token boundary, which
+  the platform's incremental lexing needs. A `///` comment is one token per
+  line, of its own type `LINE_COMMENT`: a token that spanned a block of
+  lines would make the lexer's state depend on the lines before it, so the
+  plugin's lexer merges nothing and leaves blocks to the Rust side
+  ([frontend.md](frontend.md), "Comments"). Unlike the Rust lexer it also emits
   whitespace and comment tokens, since the platform requires every character
   to belong to a token.
 - **A flat `ParserDefinition`** — every token under a single file node, no
@@ -768,7 +772,7 @@ Components:
   server where they are sends. A parameter derives from
   `PARAMETER` and a slot from `INSTANCE_FIELD`, as in TypeScript.
 - **Editor features** — a `BraceMatcher` for `()`, `[]` and `{}`, a
-  `Commenter` for `(* *)`, a `QuoteHandler`. Not for `<>`: `<` and `>` are
+  `Commenter` for `///` lines and `(* *)` blocks, a `QuoteHandler`. Not for `<>`: `<` and `>` are
   also binary selectors, and pairing a comparison with a type's closing
   bracket would be worse than pairing nothing. TODO markers need only a
   `NewspeakIndexPatternBuilder` (the `indexPatternBuilder` extension point,
@@ -1209,7 +1213,7 @@ and resolves cleanly in a JetBrains IDE today.
   change to the plugin. A platform-native formatter (`FormattingModelBuilder`)
   would need a PSI tree, which is the second parser this design avoids. The
   work is in Rust. A formatter must keep each comment where it was; the
-  comments' spans exist (`parse_for_editor`'s `comments`, beside the AST),
+  comments exist (`parse_for_editor`'s `comments`, beside the AST),
   and what remains is attaching each to the nodes around it, and the
   formatter itself: one module that an `ns-next-analyzer fmt` command shares,
   so the editor, the command line and any later formatting gate use one

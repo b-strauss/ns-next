@@ -95,6 +95,8 @@ class LexerComparisonTest {
                         assertTrue("$file: whitespace at ${lexer.tokenStart}", tokenText.all { character -> character in " \t\n\u000C\r" })
                     type == NewspeakTokenTypes.COMMENT ->
                         assertTrue("$file: comment at ${lexer.tokenStart}", tokenText.startsWith("(*"))
+                    type == NewspeakTokenTypes.LINE_COMMENT ->
+                        assertTrue("$file: line comment at ${lexer.tokenStart}", tokenText.startsWith("///") && '\n' !in tokenText && '\r' !in tokenText)
                     type == TokenType.BAD_CHARACTER -> badCharacters += 1
                     else -> significant.add(ComparedToken((type as NewspeakTokenType).rustKind!!, lexer.tokenStart, lexer.tokenEnd))
                 }
