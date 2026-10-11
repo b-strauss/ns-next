@@ -1,8 +1,8 @@
-(* An `Integer` or `LargeInteger` receiver meets a `Float` argument as a
-   `Float` receiver meets an integer one: both become doubles, as Primordial
-   Soup's primitives convert them, so the integer is rounded first. `=`
-   stays class-tight until the numeric tower, and a NaN is ordered with
-   nothing. *)
+(* An `Integer` or `LargeInteger` receiver's arithmetic meets a `Float`
+   argument as a `Float` receiver meets an integer one: both become
+   doubles, as Primordial Soup's primitives convert them, so the integer is
+   rounded first. `=` and the orderings compare exact values instead, so
+   `3 = 3.0` is true, and a NaN is ordered with nothing. *)
 class IntegerMeetsFloat = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

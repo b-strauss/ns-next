@@ -210,11 +210,13 @@ already at hand, and a row for it would only repeat what `Kernel.ns` can
 say. Every value class
 declares the `hash` its own `=` demands — §3.1.1 lets a value be copied
 across an actor boundary, so a copy has to hash like its original, and none
-of them may inherit `Object`'s identity hash. `String`'s, `Symbol`'s and —
-since 2026-09-23 — `Float`'s `=` each require an argument of the receiver's
-own class: each class hashes by its own content, so a cross-class equality
-would break the rule, as `Float`'s widening did when it made `1.0 = 1` true
-while `1.0 hash` and `1 hash` differ ("What is still unchecked" below).
+of them may inherit `Object`'s identity hash. `String`'s and `Symbol`'s `=`
+each require an argument of the receiver's own class: each class hashes by
+its own content, so a cross-class equality would break the rule. A number's
+`=` is the other way round: it compares exact values across `Integer`,
+`LargeInteger`, `Fraction` and `Float`, so `1.0 = 1` is true, and every
+number's `hash` is the numeric hash of its exact value, so `1.0 hash` and
+`1 hash` agree (`builtins/numbers/tower.rs`, `numeric/numeric_hash.rs`).
 
 **`to:do:` and `to:by:do:` are sent, where Primordial Soup inlines them.**
 Both are `Number`'s, Newspeak bodies after Primordial Soup's
@@ -537,21 +539,20 @@ module a value.
   the derivation makes state-based, but two equal `String`s remain two
   distinct objects to the collector. Canonicalization is not required for
   the derived equality and was left out deliberately.
-- **`1 = 1.0` and `1.0 = 1` both answer `false`** (decided with the user on
-  2026-09-23). `Float>>=` widened an `Integer` argument until then, which
-  made `1.0 = 1` true while `1.0 hash` and `1 hash` differ — the one rule a
-  `hash` has — and made `Float`'s own `=` disagree with the derived
-  equality, which asks the classes first. Every value class's `=` is
-  class-tight now, `Float`'s like `String`'s and `Symbol`'s. **Only
-  equality is class-tight:** a `Float` receiver's `+`, `-`, `*`, `/`, `<`,
-  `>`, `<=` and `>=` take an integer argument of either class and convert it to
-  the nearest `double`, exact up to 2^53 (`argument_float` in
-  `builtins/numbers.rs`), so `1.5 < 2` answers; an integer receiver's `+`,
-  `-`, `*`, `<`, `>`, `<=` and `>=` convert themselves to a `double` the
-  same way for a `Float` argument, so `1 < 2.0` and `1 + 1.5` answer too,
-  while `=` stays class-tight. So this is a stopgap, not the answer: see
-  "Gap: an integer has no `/`" below, where the tower it needs is
-  recorded.
+- **`1 = 1.0` and `1.0 = 1` both answer `true`** (decided with the user on
+  2026-10-06). `=` and the orderings compare `Integer`, `LargeInteger`,
+  `Fraction` and `Float` by exact value in both directions, and every
+  number hashes as the numeric hash of that value, so equal numbers hash
+  alike -- the one rule a `hash` has. The derived equality agrees: it
+  compares the classes of every pair first, except that a pair of two
+  numbers is decided by the tower, so a value whose slot holds `3` equals
+  and hashes like one whose slot holds `3.0`
+  (`goldens/library/number/tower/numbers_hash_as_they_compare.ns`). The
+  arithmetic still converts: a `Float` receiver's `+`, `-`, `*` and `/`
+  take an integer argument of either class and convert it to the nearest
+  `double`, and an integer receiver's `+`, `-` and `*` convert themselves
+  the same way for a `Float` argument ("Gap: an integer has no `/`"
+  below).
 The builtin value classes' own immutability rests on there being no mutating
 leaf for a `String` or a `Symbol` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor
@@ -950,8 +951,9 @@ names it by builtin class tag 31. It is a value object (§3.1.1): `==` is
 magnitude, never from an identity hash, so a value whose slot holds one
 compares and hashes by state too
 (`goldens/library/value/a_value_with_a_large_integer_slot_compares_by_state.ns`).
-With one representation per integer, the class-tight `=` loses nothing: no
-`LargeInteger` is ever the same number as an `Integer`. An instance of a
+With one representation per integer, no `LargeInteger` is ever the same
+number as an `Integer`, so the two are never equal; a `LargeInteger` equals
+the `Float` of its exact value (`builtins/numbers/tower.rs`). An instance of a
 subclass of it, or `LargeInteger new`, holds no digits; every leaf
 declines it on the missing payload, never on the class, and the send falls
 to `Object`'s methods
@@ -973,14 +975,18 @@ a result that does not fit and falls back to the send, whose leaf promotes
 Both classes' arithmetic and ordering accept an argument of either integer class
 (`integer_operand`), so `5 + big` and `big + 5` both answer
 (`goldens/library/number/large-integer/large_integer_arithmetic.ns`). A
-`Float`'s leaves convert a `LargeInteger` argument to the nearest `double`
+`Float`'s arithmetic converts a `LargeInteger` argument to the nearest `double`
 (`ArbitraryInteger::to_f64`, rounded to nearest with ties to even, infinite
 beyond `f64::MAX`), as Primordial Soup's `LargeInteger::AsDouble`
-(`prior-art/primordialsoup/vm/large_integer.cc:1242`) serves, and as they
-convert an `Integer` argument; an integer's `+ - * < > <= >=` convert themselves
+(`prior-art/primordialsoup/vm/large_integer.cc:1242`) serves, and as it
+converts an `Integer` argument; an integer's `+ - *` convert themselves
 and a `Float` argument to doubles the same way, whichever integer class the
 receiver is, so the two directions agree
-(`goldens/library/number/float/a_float_meets_a_large_integer.ns`). An argument
+(`goldens/library/number/float/a_float_meets_a_large_integer.ns`). The
+orderings and `=` convert nothing: they compare exact values, a finite
+double being the dyadic rational it is, so 2^53 + 1 is greater than the
+double 2^53 it rounds to
+(`goldens/library/number/tower/numbers_compare_by_exact_value.ns`). An argument
 that is neither an integer nor a `Float` is a type mismatch naming "a numeric
 argument" (`goldens/library/number/large-integer/a_large_integer_meets_nil.ns`).
 That is a derived choice, pinned by goldens, which the numeric tower may revisit
@@ -1161,8 +1167,9 @@ so the deviation is recorded here instead.
 ## A NaN equals a NaN
 
 `Float>>=` is IEEE 754's equality except that every NaN equals every other,
-and every NaN hashes alike (`float_equals` and `float_hash` in
-`builtins/numbers.rs`). A `Float` is a value, so its `=` must be an
+and every NaN hashes alike (`tower::equal` and `tower::hash` in
+`builtins/numbers/tower.rs`, the two-`Float` fast path in
+`builtins/numbers/float.rs`). A `Float` is a value, so its `=` must be an
 equivalence, and its `==` answers what `=` does (§3.1.1); IEEE's equality is
 not one, since a NaN equals nothing, itself included, so a NaN would not even
 be identical to itself. This is JavaScript's SameValueZero, the equality its
@@ -1177,7 +1184,7 @@ Primordial Soup's `isNaN` is `^(self = self) not`, which no longer answers
 `true` here. Decided with the user on 2026-10-01;
 `goldens/library/number/float/not_a_number_equals_itself` pins it, a NaN found again
 as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`
-in `builtins/numbers.rs` NaNs of different bit patterns.
+in `builtins/numbers/float.rs` NaNs of different bit patterns.
 
 **Planned: `isNaN`** (noted with the user on 2026-10-01; added when a
 program sends it, by the on-demand rule): `Number>>isNaN` answers `false`,
@@ -3159,9 +3166,9 @@ on its own (decided with the user on 2026-10-06):
   `LargeInteger`, `Fraction` and `Float` by value in both directions, and
   `hash` agrees with it -- `3 asFloat hash = 3 hash`, as Primordial Soup's
   `testFloatHash` asks -- where Primordial Soup's `Fraction>>=` answers
-  `false` for a `Float` and the other order signals. The class-tight `=` of
-  2026-09-23 ("Gap: an integer has no `/`" above) gives way to it. A NaN
-  still equals a NaN.
+  `false` for a `Float` and the other order signals. `=`, the orderings
+  and `hash` are built so (`builtins/numbers/tower.rs`). A NaN still
+  equals a NaN.
 - **Strings stay code points** ("Strings are code points in two widths"
   above). Primordial Soup's `String` selectors are adopted with code-point
   meaning -- `size`, `at:`, `do:`, `indexOf:`, `withAll:` count and take

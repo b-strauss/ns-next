@@ -1,51 +1,49 @@
 //! `Integer` (`i64`), `LargeInteger` (`ArbitraryInteger`), `Float`
 //! (`f64`) and `Fraction` (`numeric::Rational`) native methods.
 //!
-//! # Integers are unbounded; the numeric tower is not there yet
+//! # One representation per number; the tower compares and hashes them
 //!
 //! §5.1.1's integers are not limited in size. Each integer has exactly one
 //! representation: a `SmallInteger` (class `Integer`) when it fits 61 bits
 //! (`SMALL_INTEGER_MIN` to `SMALL_INTEGER_MAX`), otherwise a `LargeInteger`
 //! object, and every leaf answers an integer through `Mutator::new_integer`,
-//! which picks the one that fits. Across the numeric classes:
+//! which picks the one that fits. A `Fraction` is made only in normal form
+//! (`fraction`), so it is never an integer and equal fractions have equal
+//! parts. Across the numeric classes:
 //!
-//! * `Integer`'s and `LargeInteger`'s arithmetic and ordering accept an
-//!   argument of either integer class (`integer_operand`): `5 + big` and
-//!   `big + 5` both answer.
-//! * A `Float`'s arithmetic and ordering convert an `Integer` or a
-//!   `LargeInteger` argument to the nearest `double` (`1.5 + 1` is `2.5`).
-//! * An integer's arithmetic and ordering meet a `Float` argument the same
-//!   way, converting the receiver (`4 * 3.5` is `14.0`), as Primordial
-//!   Soup's primitives do. `//`, `\\` and the bit operations take integers
-//!   only; `Float` has none of them.
-//! * `=` is the deliberate exception: an argument of another class makes it
-//!   plain `false`, never an error -- matching `Object`'s own `=` and the
-//!   usual Smalltalk convention -- and it is class-tight across `Integer`
-//!   and `Float`: `1 = 1.0` and `1.0 = 1` both answer `false`, as
-//!   `String>>=` and `Symbol>>=` are class-tight. `Float>>=` widened an
-//!   `Integer` argument until 2026-09-23, which made `1.0 = 1` true while
-//!   `1.0 hash` and `1 hash` differ -- the one rule a `hash` has. A real
-//!   numeric tower would answer `true` both ways *and* hash alike; until
-//!   there is one, `false` both ways keeps the `=`/`hash` contract. Between
-//!   `Integer` and `LargeInteger` class-tightness loses nothing: with one
-//!   representation per integer, no two of them are ever the same number.
-//!
-//! A `Fraction` is made, in normal form, and answers its parts
-//! (`fraction`); its arithmetic, `Integer>>/` and cross-class `=` are still
-//! to come, with the numeric tower (`docs/design/core-library.md`, "Gap: an
-//! integer has no `/`").
+//! * The tower (`tower`) compares any two numbers by their exact values,
+//!   a finite double being the dyadic rational it is, and hashes them so
+//!   that equal numbers hash alike: `1 = 1.0`, `(1/2) = 0.5`, and 2^53 + 1
+//!   is greater than the double 2^53. A NaN is ordered with nothing and
+//!   equals a NaN. `=` with anything that is no number is plain `false`,
+//!   never an error; an ordering with it is the type mismatch.
+//!   `Integer`'s, `LargeInteger`'s and `Float`'s own leaves keep only their
+//!   fast paths -- two `SmallInteger`s, two `Float`s -- and send every
+//!   other case to the tower, as `Number`'s rows, which `Fraction`
+//!   inherits, send all of theirs.
+//! * `Integer`'s and `LargeInteger`'s arithmetic accept an argument of
+//!   either integer class (`integer_operand`): `5 + big` and `big + 5` both
+//!   answer.
+//! * A `Float`'s arithmetic converts an `Integer` or a `LargeInteger`
+//!   argument to the nearest `double` (`1.5 + 1` is `2.5`), and an
+//!   integer's arithmetic meets a `Float` argument the same way, converting
+//!   the receiver (`4 * 3.5` is `14.0`). `//`, `\\` and the bit operations
+//!   take integers only; `Float` has none of them. These, and the
+//!   arithmetic across a `Fraction`, are still the leaves' own until Task 8
+//!   of the numbers plan (`docs/design/core-library.md`, "Gap: an integer
+//!   has no `/`").
 
 mod float;
 mod fraction;
 mod integer;
 mod large_integer;
+pub(crate) mod tower;
 
-pub(crate) use float::{execute_float, float_equals, float_hash};
+pub(crate) use float::execute_float;
 pub(crate) use fraction::execute_fraction;
-pub(crate) use integer::{execute_any_integer, execute_integer, integer_equals};
-pub(crate) use large_integer::{execute_large_integer, large_integer_equals, large_integer_hash};
-
-use std::cmp::Ordering;
+pub(crate) use integer::{execute_any_integer, execute_integer};
+pub(crate) use large_integer::execute_large_integer;
+pub(crate) use tower::execute_number;
 
 use crate::builtins::first_argument;
 use crate::types::*;
@@ -56,7 +54,7 @@ use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 pub(super) enum Accepted {
     /// `//`, `\\` and the bit operations: an `Integer` or a `LargeInteger`.
     Integer,
-    /// Arithmetic and ordering: any of the three number classes.
+    /// Arithmetic and ordering: any number.
     Number,
 }
 
@@ -197,40 +195,7 @@ pub(super) fn integer_operand<'gc>(
     }
 }
 
-/// A `SmallInteger` as a sign and a canonical magnitude, lent to `read`
-/// from the stack, so that it compares with a `LargeInteger`'s digits read
-/// in place.
-pub(super) fn with_small_integer_parts<T>(
-    integer: i64,
-    read: impl FnOnce((bool, &[u64])) -> T,
-) -> T {
-    let digit = [integer.unsigned_abs()];
-    // Zero's canonical magnitude is empty.
-    let digits: &[u64] = if integer == 0 { &[] } else { &digit };
-    read((integer < 0, digits))
-}
-
-/// The order of `receiver` -- a sign and a canonical magnitude -- against
-/// an integer argument of either representation, reading a `LargeInteger`
-/// argument in place; `None` for anything else, which a comparison then
-/// tries as a `Float`.
-pub(super) fn integer_ordering<'gc>(
-    heap: &Heap<'gc>,
-    receiver: (bool, &[u64]),
-    value: Option<Value<'gc>>,
-) -> Option<Ordering> {
-    match value?.kind() {
-        ValueKind::SmallInteger(integer) => Some(with_small_integer_parts(integer, |argument| {
-            crate::arbitrary_integer::compare_signed(receiver, argument)
-        })),
-        ValueKind::Object(object) => heap.with_large_integer(object, |negative, digits| {
-            crate::arbitrary_integer::compare_signed(receiver, (negative, digits))
-        }),
-        _ => None,
-    }
-}
-
-/// A `Float` argument, which an integer's arithmetic and ordering take by
+/// A `Float` argument, which an integer's arithmetic takes by
 /// converting the receiver to a double (this module's note).
 pub(super) fn float_operand<'gc>(heap: &Heap<'gc>, value: Option<Value<'gc>>) -> Option<f64> {
     heap.float_value(value?)

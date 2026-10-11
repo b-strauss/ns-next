@@ -1,24 +1,16 @@
 //! `Integer`'s leaves: the `i64` that fits a `SmallInteger`. The rules across
 //! the numeric classes are the module note's.
 
+use super::tower::{self, Comparison};
 use super::{
-    checked_floor_divide, division_by_zero, float_operand, floor_modulo, integer_operand,
-    integer_ordering, promote, shift_left, type_mismatch, with_small_integer_parts, Accepted,
-    Answer,
+    checked_floor_divide, division_by_zero, float_operand, floor_modulo, integer_operand, promote,
+    shift_left, type_mismatch, Accepted, Answer,
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{AnyIntegerPrimitive, IntegerPrimitive, Primitive};
 use crate::types::*;
 use crate::{ArbitraryInteger, Mutator, Symbol};
 use std::cmp::Ordering;
-
-/// `Integer>>=`'s rule: an argument of any other type is plainly unequal,
-/// never an error (this module's note says why). Named so that
-/// `builtins::value`'s derived equality decides an integer exactly as
-/// `Integer>>=` does rather than growing a second copy of the rule.
-pub(crate) fn integer_equals<'gc>(receiver: i64, argument: Option<Value<'gc>>) -> bool {
-    argument.and_then(|value| value.as_small_integer()) == Some(receiver)
-}
 
 pub(crate) fn execute_integer<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -76,27 +68,16 @@ pub(crate) fn execute_integer<'gc>(
             },
         }
     };
-    // Ordering comparisons: an argument of the wrong type is an error, not a
-    // silent `false`. `partial_cmp` answers `None` for a NaN, which is
-    // ordered with nothing, as `Float`'s own ordering answers.
-    let compare = |operator: &str, operation: fn(Ordering) -> bool| match arguments
+    // Ordering comparisons: two `SmallInteger`s compare here; every other
+    // argument -- a number of another class, or the type mismatch of one
+    // that is none -- is the tower's.
+    let compare = |comparison: Comparison, operation: fn(Ordering) -> bool| match arguments
         .first()
         .and_then(|argument| receiver.small_integer_order(*argument))
     {
         Some(order) => Ok(Value::boolean(operation(order))),
-        None => match with_small_integer_parts(receiver_integer, |receiver_parts| {
-            integer_ordering(&mutator.heap, receiver_parts, arguments.first().copied())
-        }) {
-            Some(order) => Ok(Value::boolean(operation(order))),
-            None => match float_operand(&mutator.heap, arguments.first().copied()) {
-                Some(argument) => Ok(Value::boolean(
-                    (receiver_integer as f64)
-                        .partial_cmp(&argument)
-                        .is_some_and(operation),
-                )),
-                None => Err(mismatch(operator, Accepted::Number)),
-            },
-        },
+        None => tower::compare(&mutator.heap, comparison, receiver, arguments)
+            .expect("an Integer receiver is a number"),
     };
     match primitive {
         IntegerPrimitive::Add => Some(
@@ -215,20 +196,28 @@ pub(crate) fn execute_integer<'gc>(
                 arguments,
             ),
         }),
-        IntegerPrimitive::Less => Some(compare("<", Ordering::is_lt)),
-        IntegerPrimitive::Greater => Some(compare(">", Ordering::is_gt)),
-        IntegerPrimitive::LessOrEqual => Some(compare("<=", Ordering::is_le)),
-        IntegerPrimitive::GreaterOrEqual => Some(compare(">=", Ordering::is_ge)),
-        // Deliberately *not* an error on a type mismatch -- see the
-        // module-level note.
-        IntegerPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
-            mutator,
-            Primitive::Integer(primitive),
-            integer_equals(receiver_integer, arguments.first().copied()),
-            receiver,
-            arguments,
-        )
-        .map(|answer| Ok(Value::boolean(answer))),
+        IntegerPrimitive::Less => Some(compare(Comparison::Less, Ordering::is_lt)),
+        IntegerPrimitive::Greater => Some(compare(Comparison::Greater, Ordering::is_gt)),
+        IntegerPrimitive::LessOrEqual => Some(compare(Comparison::LessOrEqual, Ordering::is_le)),
+        IntegerPrimitive::GreaterOrEqual => {
+            Some(compare(Comparison::GreaterOrEqual, Ordering::is_ge))
+        }
+        // Never an error: anything that is no number is unequal. A
+        // `SmallInteger` argument compares here, every other the tower's way.
+        IntegerPrimitive::Equal => {
+            let equal = match argument_integer() {
+                Some(argument) => argument == receiver_integer,
+                None => tower::values_equal(&mutator.heap, receiver, arguments.first().copied()),
+            };
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Integer(primitive),
+                equal,
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::boolean(answer)))
+        }
         // `SMALL_INTEGER_MIN` is the one receiver whose negation and
         // absolute value do not fit.
         IntegerPrimitive::Negated => Some(Ok(

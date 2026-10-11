@@ -5,9 +5,8 @@
 //! answers. `arbitrary_integer` beside it is the integers' arithmetic.
 
 pub(crate) mod float_text;
-// Used from Task 6 of the numbers plan on.
-#[allow(dead_code)]
 pub(crate) mod numeric_hash;
+// Its arithmetic and `to_f64` are used from Task 8 of the numbers plan on.
 #[allow(dead_code)]
 mod rational;
 

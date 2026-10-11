@@ -1,0 +1,43 @@
+(* Equal numbers hash alike whatever their classes, so `1`, `1.0` and
+   `2/2` are one key of a Map and one element of a Set, a NaN key is
+   found again, and a value whose slot holds `3` equals and hashes like
+   one whose slot holds `3.0`. An integer's hash is the integer, and an
+   integral Float's too.
+
+   The module is a value (`Object <: Value`) because §3.1.1 asks a value
+   class's enclosing object to be one; the transcript lives in `Script`,
+   which is no value. *)
+class NumbersHashAsTheyCompare = Object <: Value () (
+    class Box of: initialContents = Value new (
+        | public contents = initialContents. |
+    ) ()
+    class Script on: aPlatform = Object new (
+        | platform = aPlatform. transcript = aPlatform transcript. |
+    ) (
+        public run = (
+            | Fraction = platform kernel Fraction.
+              half = Fraction numerator: 1 denominator: 2.
+              nan = 0.0 / 0.0.
+              twoToThe70 = 1180591620717411303424.
+              map set |
+            transcript print: 3 hash = 3.0 hash; show: ' '; print: -3 hash = -3.0 hash; show: ' '; print: 0 hash = -0.0 hash; show: ' '; print: 3.0 hash; show: ' '; print: -3.0 hash; newLine.
+            transcript print: half hash = 0.5 hash; show: ' '; print: twoToThe70 hash = twoToThe70 asFloat hash; show: ' '; print: nan hash = (0.0 / 0.0) hash; show: ' '; print: (Fraction numerator: 2 denominator: 4) hash = half hash; newLine.
+            map:: platform collections Map new.
+            map at: 1 put: #one.
+            map at: half put: #half.
+            transcript print: (map at: 1.0); show: ' '; print: (map at: 0.5); show: ' '; print: map size; newLine.
+            map at: 2 put: #two.
+            map at: 2.0 put: #twoAgain.
+            transcript print: (map at: 2); show: ' '; print: map size; newLine.
+            map at: nan put: #nan.
+            transcript print: (map at: 0.0 / 0.0); newLine.
+            set:: platform collections Set new.
+            set add: 1; add: 1.0; add: (Fraction numerator: 2 denominator: 2); add: nan; add: 0.0 / 0.0.
+            transcript print: set size; newLine.
+            transcript print: (Box of: 3) = (Box of: 3.0); show: ' '; print: (Box of: 3) hash = (Box of: 3.0) hash; show: ' '; print: (Box of: half) = (Box of: 0.5); show: ' '; print: (Box of: 3) = (Box of: 4.0); newLine
+        )
+    )
+    public main: platform args: arguments = (
+        (Script on: platform) run
+    )
+) : ()

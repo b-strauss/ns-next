@@ -1,0 +1,9 @@
+stdout = '''
+true true true 3 -3
+true true true true
+#one #half 2
+#twoAgain 3
+#nan
+2
+true true true false
+'''

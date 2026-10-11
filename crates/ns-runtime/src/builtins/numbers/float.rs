@@ -1,46 +1,23 @@
 //! `Float`'s leaves: IEEE 754 doubles, immediate or boxed. The rules across
 //! the numeric classes are the module note's.
 
-use super::{float_operand, type_mismatch, Accepted};
+use super::tower::{self, Comparison};
+use super::{type_mismatch, Accepted};
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{FloatPrimitive, Primitive};
-use crate::numeric::float_text;
+use crate::numeric::{float_text, numeric_hash};
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
-/// `Float>>=`: IEEE 754's equality, except that every NaN equals every
-/// other. A Float is a value, so its `=` must be an equivalence and its
-/// `==` answers the same (§3.1.1); IEEE's is not reflexive. This is
-/// JavaScript's SameValueZero, the equality of its `Map` and `Set`: `0.0`
-/// and `-0.0` stay equal. The ordering stays IEEE's
-/// (`docs/design/core-library.md`, "A NaN equals a NaN").
-pub(crate) fn float_equals<'gc>(
-    heap: &Heap<'gc>,
-    receiver: f64,
-    argument: Option<Value<'gc>>,
-) -> bool {
-    float_operand(heap, argument)
-        .is_some_and(|other| other == receiver || (other.is_nan() && receiver.is_nan()))
-}
-
-/// A float's content hash: its bits, mixed and folded to 32 bits. `-0.0` is
-/// normalized to `0.0` and every NaN to one NaN first, because `=` makes
-/// each of them equal to the other, and a `hash` that told them apart would
-/// break the one rule a `hash` has ("if `x = y` ... then `x hash = y
-/// hash`").
-///
-/// Shared with `builtins::value`, whose derived hash must answer the same
-/// number for a float slot as `Float>>hash` does for the float itself.
-pub(crate) fn float_hash(value: f64) -> i64 {
-    let normalized = if value == 0.0 {
-        0.0
-    } else if value.is_nan() {
-        f64::NAN
-    } else {
-        value
-    };
-    crate::hash::content_hash(normalized.to_bits())
+/// `=` between two doubles: IEEE 754's equality, except that every NaN
+/// equals every other. A Float is a value, so its `=` must be an
+/// equivalence and its `==` answers the same (§3.1.1); IEEE's is not
+/// reflexive. `0.0` and `-0.0` stay equal; the ordering stays IEEE's
+/// (`docs/design/core-library.md`, "A NaN equals a NaN"). The same rule as
+/// `tower::equal`'s for two `Float`s, kept here as the fast path.
+fn doubles_equal(left: f64, right: f64) -> bool {
+    left == right || (left.is_nan() && right.is_nan())
 }
 
 pub(crate) fn execute_float<'gc>(
@@ -85,9 +62,16 @@ pub(crate) fn execute_float<'gc>(
         None => Err(mismatch(operator)),
         Some(argument) => Ok(operation(receiver_float, argument)),
     };
-    let compare = |operator: &str, operation: fn(f64, f64) -> bool| match argument_float() {
-        None => Err(mismatch(operator)),
+    // A `Float` argument compares here as IEEE 754 doubles; every other
+    // argument -- a number of another class, or the type mismatch of one
+    // that is none -- is the tower's.
+    let compare = |comparison: Comparison, operation: fn(f64, f64) -> bool| match arguments
+        .first()
+        .and_then(|argument| mutator.heap.float_value(*argument))
+    {
         Some(argument) => Ok(Value::boolean(operation(receiver_float, argument))),
+        None => tower::compare(&mutator.heap, comparison, receiver, arguments)
+            .expect("a Float receiver is a number"),
     };
     match primitive {
         FloatPrimitive::Add => {
@@ -102,20 +86,37 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::Divide => {
             Some(arithmetic("/", |left, right| left / right).map(|float| mutator.new_float(float)))
         }
-        FloatPrimitive::Less => Some(compare("<", |left, right| left < right)),
-        FloatPrimitive::Greater => Some(compare(">", |left, right| left > right)),
-        FloatPrimitive::LessOrEqual => Some(compare("<=", |left, right| left <= right)),
-        FloatPrimitive::GreaterOrEqual => Some(compare(">=", |left, right| left >= right)),
-        // Same exception as `Integer`'s `=`: never an error.
-        FloatPrimitive::Equal => crate::interpreter::future::declines_for_a_future(
-            mutator,
-            Primitive::Float(primitive),
-            float_equals(&mutator.heap, receiver_float, arguments.first().copied()),
-            receiver,
-            arguments,
-        )
-        .map(|answer| Ok(Value::boolean(answer))),
-        FloatPrimitive::Hash => Some(Ok(Value::small_integer(float_hash(receiver_float)))),
+        FloatPrimitive::Less => Some(compare(Comparison::Less, |left, right| left < right)),
+        FloatPrimitive::Greater => Some(compare(Comparison::Greater, |left, right| left > right)),
+        FloatPrimitive::LessOrEqual => Some(compare(Comparison::LessOrEqual, |left, right| {
+            left <= right
+        })),
+        FloatPrimitive::GreaterOrEqual => {
+            Some(compare(Comparison::GreaterOrEqual, |left, right| {
+                left >= right
+            }))
+        }
+        // Never an error: anything that is no number is unequal.
+        FloatPrimitive::Equal => {
+            let equal = match arguments
+                .first()
+                .and_then(|argument| mutator.heap.float_value(*argument))
+            {
+                Some(argument) => doubles_equal(receiver_float, argument),
+                None => tower::values_equal(&mutator.heap, receiver, arguments.first().copied()),
+            };
+            crate::interpreter::future::declines_for_a_future(
+                mutator,
+                Primitive::Float(primitive),
+                equal,
+                receiver,
+                arguments,
+            )
+            .map(|answer| Ok(Value::boolean(answer)))
+        }
+        FloatPrimitive::Hash => Some(Ok(Value::small_integer(numeric_hash::float_hash(
+            receiver_float,
+        )))),
         FloatPrimitive::SquareRoot => Some(Ok(mutator.new_float(receiver_float.sqrt()))),
         // Primordial Soup's are the C library's `sin` and `cos`; Rust's
         // call the same functions. No benchmark result depends on their
@@ -307,7 +308,7 @@ fn parse_text<'gc>(
 
 #[cfg(test)]
 mod tests {
-    use super::{float_equals, float_hash};
+    use super::tower::{equal, hash, Operand};
 
     #[test]
     fn every_nan_equals_every_other_and_hashes_alike() {
@@ -317,21 +318,15 @@ mod tests {
             f64::from_bits(0x7ff8_0000_0000_0001),
             f64::from_bits(0xfff0_0000_0000_0001),
         ];
-        let mut interpreter = crate::Interpreter::bootstrap();
-        interpreter.enter(|mutator| {
-            for first in not_a_numbers {
-                assert!(first.is_nan());
-                for second in not_a_numbers {
-                    let second_value = mutator.new_float(second);
-                    assert!(float_equals(&mutator.heap, first, Some(second_value)));
-                    assert_eq!(float_hash(first), float_hash(second));
-                }
+        for first in not_a_numbers {
+            assert!(first.is_nan());
+            for second in not_a_numbers {
+                assert!(equal(&Operand::Float(first), &Operand::Float(second)));
+                assert_eq!(hash(&Operand::Float(first)), hash(&Operand::Float(second)));
             }
-            let negative_zero = mutator.new_float(-0.0);
-            assert!(float_equals(&mutator.heap, 0.0, Some(negative_zero)));
-            assert_eq!(float_hash(0.0), float_hash(-0.0));
-            let one = mutator.new_float(1.0);
-            assert!(!float_equals(&mutator.heap, f64::NAN, Some(one)));
-        });
+        }
+        assert!(equal(&Operand::Float(0.0), &Operand::Float(-0.0)));
+        assert_eq!(hash(&Operand::Float(0.0)), hash(&Operand::Float(-0.0)));
+        assert!(!equal(&Operand::Float(f64::NAN), &Operand::Float(1.0)));
     }
 }

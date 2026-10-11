@@ -1,6 +1,6 @@
-(* A `Float`'s leaves convert a `LargeInteger` argument to the nearest
-   `double`, as they convert an `Integer` one; `=` stays class-tight. `big`
-   is 2^64, and `1.5 + 2^64` rounds to 2^64. *)
+(* A `Float`'s arithmetic converts a `LargeInteger` argument to the
+   nearest `double`, as it converts an `Integer` one; `<` and `=` compare
+   exact values. `big` is 2^64, and `1.5 + 2^64` rounds to 2^64. *)
 class FloatMeetsLarge = Object new (
 ) (
     public main: p args: a = (

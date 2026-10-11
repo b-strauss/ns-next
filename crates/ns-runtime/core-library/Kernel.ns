@@ -1069,6 +1069,36 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers false: a Number is no Fraction unless its class says
            so. *)
         public isKindOfFraction = ( ^false )
+        (* Answers whether the receiver is less than `other` by their exact
+           values, a Boolean: false whenever either is a NaN.
+
+           other: a number.
+
+           Signals an ArgumentError carrying `other`, '< requires a numeric
+           argument, got …', for any other argument. *)
+        public < other = ( ^vmMirror number: self lessThan: other ifFail: [^super < other] )
+        (* As `<`, whether the receiver is greater; its error text names
+           '>'. *)
+        public > other = ( ^vmMirror number: self greaterThan: other ifFail: [^super > other] )
+        (* As `<`, whether the receiver is less or equal; its error text
+           names '<='. *)
+        public <= other = ( ^vmMirror number: self lessOrEqual: other ifFail: [^super <= other] )
+        (* As `<`, whether the receiver is greater or equal; its error text
+           names '>='. *)
+        public >= other = (
+            ^vmMirror number: self greaterOrEqual: other ifFail: [^super >= other]
+        )
+        (* Answers whether `other` is a number of the same exact value,
+           whatever its class: `1 = 1.0`, `(1/2) = 0.5`; a NaN equals a
+           NaN.
+
+           other: any object; never signals. Anything that is no number is
+           unequal. *)
+        public = other = ( ^vmMirror number: self equals: other ifFail: [^super = other] )
+        (* Answers a hash of the exact value, alike for every two numbers
+           `=` makes equal, whatever their classes; an integer's is the
+           integer itself. *)
+        public hash = ( ^vmMirror numberHash: self ifFail: [^super hash] )
         (* Evaluates `action` with the receiver, then with each number one
            greater, in increasing order, while it is at most `stop`;
            answers nil. Nothing is evaluated for a receiver above `stop`.
@@ -1484,11 +1514,12 @@ class Kernel vmMirror: theMirror = Object <: Value (
             1 to: self do: [:ignored | action value].
             ^nil
         )
-        (* Answers whether the receiver is less than `other`, a Boolean:
-           false whenever `other` is a NaN. A Float `other` is compared
-           with the receiver converted to the nearest Float.
+        (* Answers whether the receiver is less than `other` by their exact
+           values, a Boolean: false whenever `other` is a NaN. A Float or a
+           Fraction `other` is compared by exact value, so 2^53 + 1 is
+           greater than the Float 2^53.
 
-           other: an Integer, a LargeInteger or a Float.
+           other: a number.
 
            Signals an ArgumentError carrying `other`, '< requires a numeric
            argument, got …', for any other argument. *)
@@ -1504,12 +1535,14 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public >= other = (
             ^vmMirror integer: self greaterOrEqual: other ifFail: [^super >= other]
         )
-        (* Answers whether `other` is an integer of the same value.
+        (* Answers whether `other` is a number of the same exact value:
+           `3 = 3.0` is true.
 
-           other: any object; never signals. A Float, even of the same
-           value, or any other object is unequal. *)
+           other: any object; never signals. Anything that is no number is
+           unequal. *)
         public = other = ( ^vmMirror integer: self equals: other ifFail: [^super = other] )
-        (* Answers the receiver itself. *)
+        (* Answers the receiver itself, the hash every number of its value
+           answers. *)
         public hash = ( ^self )
         (* Answers `0 - self`, an integer. *)
         public negated = ( ^vmMirror integerNegated: self ifFail: [^super negated] )
@@ -1588,8 +1621,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public << other = (
             ^vmMirror largeInteger: self shiftLeft: other ifFail: [^super << other]
         )
-        (* As `Integer>><`: a Boolean, false whenever `other` is a NaN, with
-           the same ArgumentError. *)
+        (* As `Integer>><`: a Boolean by the exact values, false whenever
+           `other` is a NaN, with the same ArgumentError. *)
         public < other = ( ^vmMirror largeInteger: self lessThan: other ifFail: [^super < other] )
         (* As `Integer>>>`, with the same ArgumentError. *)
         public > other = (
@@ -1603,12 +1636,16 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public >= other = (
             ^vmMirror largeInteger: self greaterOrEqual: other ifFail: [^super >= other]
         )
-        (* Answers whether `other` is a LargeInteger of the same value.
+        (* Answers whether `other` is a number of the same exact value,
+           whatever its class: a LargeInteger equals the Float or the
+           LargeInteger of its value, never an Integer within -2^60 to
+           2^60 - 1, which is another value.
 
-           other: any object; never signals. An Integer within -2^60 to
-           2^60 - 1 never equals a LargeInteger. *)
+           other: any object; never signals. Anything that is no number is
+           unequal. *)
         public = other = ( ^vmMirror largeInteger: self equals: other ifFail: [^super = other] )
-        (* Answers a hash of the value, alike for equal LargeIntegers. *)
+        (* Answers a hash of the value, alike for every number `=` makes
+           equal. *)
         public hash = ( ^vmMirror largeIntegerHash: self ifFail: [^super hash] )
         (* Answers `0 - self`, an integer. *)
         public negated = ( ^vmMirror largeIntegerNegated: self ifFail: [^super negated] )
@@ -1646,10 +1683,12 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* As `+`, the quotient: dividing by zero answers an infinity or a
            NaN, never an error; its error text names '/'. *)
         public / other = ( ^vmMirror float: self divide: other ifFail: [^super / other] )
-        (* Answers whether the receiver is less than `other`, a Boolean:
-           false whenever either side is a NaN.
+        (* Answers whether the receiver is less than `other` by their exact
+           values, a Boolean: false whenever either side is a NaN. An
+           integer or a Fraction `other` is not rounded to a Float first,
+           so the Float 2^53 is less than the integer 2^53 + 1.
 
-           other: as `+`'s, converted the same way.
+           other: a number.
 
            Signals an ArgumentError carrying `other`, '< requires a numeric
            argument, got …', for any other argument. *)
@@ -1663,14 +1702,16 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* As `<`, whether the receiver is greater or equal; its error text
            names '>='. *)
         public >= other = ( ^vmMirror float: self greaterOrEqual: other ifFail: [^super >= other] )
-        (* Answers whether `other` is a Float of the same value: `0.0`
-           equals `-0.0`, and every NaN equals every other NaN.
+        (* Answers whether `other` is a number of the same exact value,
+           whatever its class: `0.0` equals `-0.0` and `0`, every NaN every
+           other NaN, `0.5` the Fraction 1/2.
 
-           other: any object; never signals. An integer, even of the same
-           value, or any other object is unequal. *)
+           other: any object; never signals. Anything that is no number is
+           unequal. *)
         public = other = ( ^vmMirror float: self equals: other ifFail: [^super = other] )
-        (* Answers a hash of the value, alike for every pair `=` makes
-           equal. *)
+        (* Answers a hash of the exact value, alike for every number `=`
+           makes equal, whatever its class: an integral Float's is the
+           integer it is. *)
         public hash = ( ^vmMirror floatHash: self ifFail: [^super hash] )
         (* Answers the square root, a Float; a NaN for a negative
            receiver. *)

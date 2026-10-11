@@ -6,8 +6,8 @@ Symbol true true
 Boolean true true
 Symbol/String false false
 String/Symbol false false
-Float/Integer false false
-Integer/Float false false
+Float/Integer true true
+Integer/Float true true
 3
 0
 1

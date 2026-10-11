@@ -340,18 +340,19 @@ fn a_float_receiver_asks_for_a_numeric_argument() {
     }
 }
 
-/// `=` is the deliberate exception: a type-mismatched argument is `false`,
-/// never an error (Object's own `=` convention). This pins that making
-/// ordering comparisons strict did not turn equality into an error too.
+/// `=` is the deliberate exception: an argument that is no number is
+/// `false`, never an error (Object's own `=` convention). This pins that
+/// making ordering comparisons strict did not turn equality into an error
+/// too.
 #[test]
 fn equality_against_a_mismatched_type_stays_false_and_is_never_an_error() {
     let mut interpreter = Interpreter::bootstrap();
 
-    let one_point_zero = stash_float(&mut interpreter, 1.0);
+    let nothing = interpreter.stash(Value::nil());
     let one = interpreter.stash(Value::small_integer(1));
-    let result = interpreter.send(&one, Symbol::intern("="), &[one_point_zero]);
+    let result = interpreter.send(&one, Symbol::intern("="), &[nothing]);
 
-    let result = expect_ok(result, "1 = 1.0");
+    let result = expect_ok(result, "1 = nil");
     interpreter.enter(|mutator| match mutator.fetch(&result).kind() {
         ValueKind::Boolean(false) => {}
         _ => panic!(

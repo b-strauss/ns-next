@@ -38,8 +38,8 @@
 //! methods natively later.
 //!
 //! Every per-shape rule here is the one the shape's own class uses:
-//! `numbers`' and `text`'s named helpers, which their `=` and `hash`
-//! primitives call too. A second copy of those rules is how the derived
+//! `numbers::tower`'s and `text`'s named helpers, which their `=` and
+//! `hash` primitives call too. A second copy of those rules is how the derived
 //! answer and the class's own would drift apart.
 
 use std::collections::HashSet;
@@ -47,8 +47,9 @@ use std::rc::Rc;
 
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
+use crate::builtins::numbers::tower;
 use crate::builtins::primitive::{Primitive, ValuePrimitive};
-use crate::builtins::{numbers, text};
+use crate::builtins::text;
 use crate::dispatch::{self, Lookup};
 use crate::interpreter::instantiate::class_object_is_a_value;
 use crate::types::*;
@@ -286,36 +287,21 @@ fn compare_node<'gc>(
     first: Value<'gc>,
     second: Value<'gc>,
 ) -> Option<Pair<'gc>> {
+    // A number equals only a number of its value, whatever its class.
+    if let Some(left) = tower::operand(mutator.heap(), first) {
+        return Some(Pair::Decided(
+            tower::operand(mutator.heap(), second).is_some_and(|right| tower::equal(&left, &right)),
+        ));
+    }
     match (first.kind(), second.kind()) {
         (ValueKind::Nil, ValueKind::Nil) => Some(Pair::Decided(true)),
         (ValueKind::Boolean(left), ValueKind::Boolean(right)) => Some(Pair::Decided(left == right)),
-        (ValueKind::SmallInteger(left), _) => {
-            Some(Pair::Decided(numbers::integer_equals(left, Some(second))))
-        }
-        (ValueKind::SmallFloat(left), _) => Some(Pair::Decided(numbers::float_equals(
-            mutator.heap(),
-            left,
-            Some(second),
-        ))),
         (ValueKind::Object(left), ValueKind::Object(right)) => {
             if mutator.heap().is_class(left) && mutator.heap().is_class(right) {
                 return Some(Pair::Classes(left, right));
             }
             if mutator.heap().is_symbol(left) {
                 return Some(Pair::Decided(text::symbol_equals(left, Some(second))));
-            }
-            let heap = mutator.heap();
-            if let Some(equal) = heap.with_large_integer(left, |negative, digits| {
-                numbers::large_integer_equals(heap, (negative, digits), Some(second))
-            }) {
-                return Some(Pair::Decided(equal));
-            }
-            if let Some(number) = mutator.heap().float_value(Value::object(left)) {
-                return Some(Pair::Decided(numbers::float_equals(
-                    mutator.heap(),
-                    number,
-                    Some(second),
-                )));
             }
             if mutator.heap().is_string(left) {
                 return Some(Pair::Decided(text::text_equals(
@@ -335,18 +321,22 @@ fn compare_node<'gc>(
 
 /// One node of the hash walk: `None` declines the whole hash.
 fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>> {
+    // Every number's slot hash is its numeric hash folded by
+    // `content_hash`: equal numbers in two slots -- `3` and `3.0` -- hash
+    // alike, as `compare_node` makes them equal, and the fold keeps a
+    // slot's hash below 2^32, so the sum over a value's slots stays inside
+    // an `i64`.
+    if let Some(hash) = tower::value_hash(mutator.heap(), value) {
+        return Some(Node::Leaf(crate::hash::content_hash(hash)));
+    }
     match value.kind() {
         ValueKind::Nil => Some(Node::Leaf(NIL_HASH)),
         // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
         // boolean itself does.
         ValueKind::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
-        // Not `Integer>>hash`, which answers the integer itself and so can
-        // be negative or as large as an `i64`: a slot's hash has to stay
-        // below 2^32 for the sum below to stay inside one. Nothing requires
-        // the two to agree -- an `Integer` declares its own `hash` and never
-        // reaches this leaf as a receiver.
-        ValueKind::SmallInteger(integer) => Some(Node::Leaf(crate::hash::content_hash(integer))),
-        ValueKind::SmallFloat(float) => Some(Node::Leaf(numbers::float_hash(float))),
+        ValueKind::SmallInteger(_) | ValueKind::SmallFloat(_) => {
+            unreachable!("an immediate number is hashed by the tower above")
+        }
         ValueKind::Object(object) => {
             // A value class object hashes as its name: two equal ones share
             // an application, hence a mixin, hence a name, so this is a
@@ -366,15 +356,6 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
             }
             if let Some(symbol) = mutator.heap().symbol_value(object) {
                 return Some(Node::Leaf(text::symbol_hash(symbol)));
-            }
-            if let Some(hash) = mutator
-                .heap()
-                .with_large_integer(object, numbers::large_integer_hash)
-            {
-                return Some(Node::Leaf(hash));
-            }
-            if let Some(number) = mutator.heap().float_value(Value::object(object)) {
-                return Some(Node::Leaf(numbers::float_hash(number)));
             }
             if let Some(hash) = mutator.heap().string_hash(object) {
                 return Some(Node::Leaf(hash));
@@ -422,6 +403,18 @@ fn derived_equality<'gc>(
         // enclosing values -- so they are a pair of their own, pushed after
         // this node's own pairs and so examined next: a class that settles
         // the answer does so before a slot can decline it.
+        // Two numbers are equal by value across their classes -- `3` and
+        // `3.0` -- so the tower decides them before the classes are
+        // compared (`docs/design/core-library.md`, "The numeric tower").
+        if let (Some(left), Some(right)) = (
+            tower::operand(mutator.heap(), first),
+            tower::operand(mutator.heap(), second),
+        ) {
+            if !tower::equal(&left, &right) {
+                return Some(false);
+            }
+            continue;
+        }
         let first_class = mutator.class_of(first);
         let second_class = mutator.class_of(second);
         let classes = if first_class.same(second_class) {
@@ -912,24 +905,34 @@ mod tests {
         assert_eq!(first_hash, second_hash);
     }
 
-    /// The derived equality asks the classes first, and `Integer` is not
-    /// `Float`. `Float>>=` is class-tight for the same reason (2026-09-23),
-    /// so the leaf here and `Float`'s own `=` answer this pair alike --
-    /// while `Float>>=` widened an `Integer` argument, the two disagreed
-    /// about `1.0 = 1` and `1.0 hash = 1 hash` was false either way.
+    /// Two numbers are one value when their exact values are, whatever
+    /// their classes: the tower decides them before the classes are
+    /// compared, as `Float>>=` and `Integer>>=` decide them, and the
+    /// derived hash gives the two one hash.
     #[test]
-    fn an_integer_and_a_float_of_one_magnitude_are_not_one_value() {
+    fn an_integer_and_a_float_of_one_magnitude_are_one_value() {
         let (mut interpreter, _fixture) = a_fixture();
         let float = interpreter.enter(|mutator| {
             let float = mutator.new_float(1.0);
             mutator.stash(float)
         });
         let integer = interpreter.stash(Value::small_integer(1));
-        let compared = leaf(&mut interpreter, "value:sameAs:ifFail:", &float, &[integer]);
+        let compared = leaf(
+            &mut interpreter,
+            "value:sameAs:ifFail:",
+            &float,
+            std::slice::from_ref(&integer),
+        );
         assert_eq!(
             answered_boolean(&mut interpreter, compared, "1.0 sameAs: 1"),
-            Some(false)
+            Some(true)
         );
+        let float_hash = leaf(&mut interpreter, "valueHash:ifFail:", &float, &[]);
+        let float_hash = answered_integer(&mut interpreter, float_hash, "1.0 valueHash");
+        let integer_hash = leaf(&mut interpreter, "valueHash:ifFail:", &integer, &[]);
+        let integer_hash = answered_integer(&mut interpreter, integer_hash, "1 valueHash");
+        assert_ne!(float_hash, DECLINED);
+        assert_eq!(float_hash, integer_hash);
     }
 
     #[test]
@@ -1204,13 +1207,14 @@ mod tests {
         assert_eq!(first_hash, same_hash, "two equal Points hash alike");
     }
 
-    /// `hash_node` hashes an `Integer` slot with `hash::content_hash` while
-    /// `Integer>>hash`, which the Newspeak fallback sums, answers the
-    /// integer itself. The two are allowed to differ only because a value
-    /// the leaf hashes and a value the fallback hashes can never be equal:
-    /// the leaf's decision is a question about the slots' classes, and two
-    /// values of one class whose slots' classes differ are unequal slot by
-    /// slot.
+    /// `hash_node` hashes an `Integer` slot with `hash::content_hash` of
+    /// its numeric hash while `Integer>>hash`, which the Newspeak fallback
+    /// sums, answers the integer itself. The two are allowed to differ only
+    /// because a value the leaf hashes and a value the fallback hashes can
+    /// never be equal: the leaf's decision is a question about the slots'
+    /// classes, and two values of one class whose slots' classes differ are
+    /// unequal slot by slot -- a pair of numbers apart, which are both
+    /// shapes the leaf hashes, alike when they are equal.
     ///
     /// Both shapes of one class are built here -- a `Boxed` holding an
     /// `Integer`, which the leaf hashes, and a `Boxed` holding a `Tag`,

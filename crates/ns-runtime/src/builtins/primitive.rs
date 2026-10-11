@@ -23,6 +23,9 @@ pub enum Primitive {
     /// `Fraction`'s leaves: its two parts, and its making in normal form
     /// (`builtins::numbers::fraction`).
     Fraction(FractionPrimitive),
+    /// `Number`'s own leaves, over every representation: the tower
+    /// (`builtins::numbers::tower`).
+    Number(NumberPrimitive),
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
     Collection(CollectionPrimitive),
@@ -173,6 +176,14 @@ impl Primitive {
                 | FractionPrimitive::Denominator
                 | FractionPrimitive::Make
                 | FractionPrimitive::MakeReduced,
+            ) => false,
+            Primitive::Number(NumberPrimitive::Equal) => true,
+            Primitive::Number(
+                NumberPrimitive::Less
+                | NumberPrimitive::Greater
+                | NumberPrimitive::LessOrEqual
+                | NumberPrimitive::GreaterOrEqual
+                | NumberPrimitive::Hash,
             ) => false,
             Primitive::String(StringPrimitive::Equal) => true,
             Primitive::String(
@@ -349,6 +360,18 @@ pub enum FractionPrimitive {
     /// `Fraction class>>reducedNumerator:denominator:`: a pair already in
     /// normal form, checked.
     MakeReduced,
+}
+
+/// `Number`'s comparisons, `=` and `hash`, by exact value across every
+/// representation; `Fraction` inherits them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumberPrimitive {
+    Less,
+    Greater,
+    LessOrEqual,
+    GreaterOrEqual,
+    Equal,
+    Hash,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1324,6 +1347,36 @@ pub const MIRROR: &[MirrorEntry] = &[
         "fractionClass:reducedNumerator:denominator:ifFail:",
         "reducedNumerator:denominator:",
         Primitive::Fraction(FractionPrimitive::MakeReduced),
+    ),
+    mirror(
+        "number:lessThan:ifFail:",
+        "<",
+        Primitive::Number(NumberPrimitive::Less),
+    ),
+    mirror(
+        "number:greaterThan:ifFail:",
+        ">",
+        Primitive::Number(NumberPrimitive::Greater),
+    ),
+    mirror(
+        "number:lessOrEqual:ifFail:",
+        "<=",
+        Primitive::Number(NumberPrimitive::LessOrEqual),
+    ),
+    mirror(
+        "number:greaterOrEqual:ifFail:",
+        ">=",
+        Primitive::Number(NumberPrimitive::GreaterOrEqual),
+    ),
+    mirror(
+        "number:equals:ifFail:",
+        "=",
+        Primitive::Number(NumberPrimitive::Equal),
+    ),
+    mirror(
+        "numberHash:ifFail:",
+        "hash",
+        Primitive::Number(NumberPrimitive::Hash),
     ),
     mirror(
         "futureMade:ifFail:",
