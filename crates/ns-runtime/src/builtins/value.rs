@@ -287,11 +287,16 @@ fn compare_node<'gc>(
     first: Value<'gc>,
     second: Value<'gc>,
 ) -> Option<Pair<'gc>> {
-    // A number equals only a number of its value, whatever its class.
-    if let Some(left) = tower::operand(mutator.heap(), first) {
-        return Some(Pair::Decided(
-            tower::operand(mutator.heap(), second).is_some_and(|right| tower::equal(&left, &right)),
-        ));
+    // A number equals only a number of its value, whatever its class --
+    // decided whichever side is the number, so that a node with no number
+    // in it (`Fraction new`) is unequal to a number in both directions.
+    match (
+        tower::operand(mutator.heap(), first),
+        tower::operand(mutator.heap(), second),
+    ) {
+        (None, None) => {}
+        (Some(left), Some(right)) => return Some(Pair::Decided(tower::equal(&left, &right))),
+        _ => return Some(Pair::Decided(false)),
     }
     match (first.kind(), second.kind()) {
         (ValueKind::Nil, ValueKind::Nil) => Some(Pair::Decided(true)),
@@ -326,18 +331,20 @@ fn hash_node<'gc>(mutator: &Mutator<'gc>, value: Value<'gc>) -> Option<Node<'gc>
     // alike, as `compare_node` makes them equal, and the fold keeps a
     // slot's hash below 2^32, so the sum over a value's slots stays inside
     // an `i64`.
-    if let Some(hash) = tower::value_hash(mutator.heap(), value) {
-        return Some(Node::Leaf(crate::hash::content_hash(hash)));
-    }
+    let number = || {
+        tower::value_hash(mutator.heap(), value)
+            .map(|hash| Node::Leaf(crate::hash::content_hash(hash)))
+    };
     match value.kind() {
         ValueKind::Nil => Some(Node::Leaf(NIL_HASH)),
         // `True>>hash` and `False>>hash`, so a boolean slot hashes as the
         // boolean itself does.
         ValueKind::Boolean(flag) => Some(Node::Leaf(i64::from(flag))),
-        ValueKind::SmallInteger(_) | ValueKind::SmallFloat(_) => {
-            unreachable!("an immediate number is hashed by the tower above")
-        }
+        ValueKind::SmallInteger(_) | ValueKind::SmallFloat(_) => number(),
         ValueKind::Object(object) => {
+            if let Some(leaf) = number() {
+                return Some(leaf);
+            }
             // A value class object hashes as its name: two equal ones share
             // an application, hence a mixin, hence a name, so this is a
             // valid hash, and unlike one that folded in the enclosing

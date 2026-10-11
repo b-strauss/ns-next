@@ -121,7 +121,8 @@ pub(crate) fn execute_large_integer<'gc>(
         | LargeIntegerPrimitive::GreaterOrEqual
         | LargeIntegerPrimitive::Equal
         | LargeIntegerPrimitive::Hash => unreachable!(
-            "the comparisons, `=` and `hash` on a LargeInteger are answered by the              early returns before its digits are copied"
+            "the comparisons, `=` and `hash` on a LargeInteger are answered by the \
+             early returns before its digits are copied"
         ),
         LargeIntegerPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string(receiver_integer.to_decimal_string()),

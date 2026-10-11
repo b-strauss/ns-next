@@ -96,6 +96,14 @@ pub(crate) fn operand<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<Operan
 pub(crate) fn order(left: &Operand, right: &Operand) -> Option<Ordering> {
     match (left, right) {
         (Operand::Small(first), Operand::Small(second)) => Some(first.cmp(second)),
+        // Two integers compare as integers: no `Rational` is built.
+        (Operand::Large(first), Operand::Large(second)) => Some(first.cmp(second)),
+        (Operand::Small(first), Operand::Large(second)) => {
+            Some(ArbitraryInteger::from_i64(*first).cmp(second))
+        }
+        (Operand::Large(first), Operand::Small(second)) => {
+            Some(first.cmp(&ArbitraryInteger::from_i64(*second)))
+        }
         (Operand::Float(first), Operand::Float(second)) => first.partial_cmp(second),
         (Operand::Float(float), other) => float_order(*float, other),
         (other, Operand::Float(float)) => float_order(*float, other).map(Ordering::reverse),
