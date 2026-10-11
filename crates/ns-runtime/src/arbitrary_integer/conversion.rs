@@ -34,13 +34,20 @@ const fn radix_bases() -> [(u64, usize); 37] {
 
 /// The magnitude as decimal digits, most significant first, with no sign;
 /// `"0"` for zero.
-///
-/// num-bigint's small path: divide by `10^19`, the largest power of ten a
-/// digit holds, and write out each remainder's nineteen digits. Its
-/// divide-and-conquer path for very long numbers is not taken.
 pub(super) fn to_decimal(magnitude: &[u64]) -> String {
-    const RADIX: u64 = 10;
-    let (base, power) = RADIX_BASES[RADIX as usize];
+    to_radix(magnitude, 10)
+}
+
+/// The magnitude's digits in `radix` (2 to 36), upper case, most significant
+/// first, with no sign; `"0"` for zero.
+///
+/// Divides by the radix's largest power that fits a digit (num-bigint's small
+/// path) and writes out each remainder's digits; its divide-and-conquer path
+/// for very long numbers is not taken.
+pub(super) fn to_radix(magnitude: &[u64], radix: u32) -> String {
+    debug_assert!((2..=36).contains(&radix));
+    let (base, power) = RADIX_BASES[radix as usize];
+    let radix = u64::from(radix);
 
     if magnitude.is_empty() {
         return String::from("0");
@@ -52,16 +59,16 @@ pub(super) fn to_decimal(magnitude: &[u64]) -> String {
     while rest.len() > 1 {
         let (quotient, mut remainder) = divide_by_digit(&rest, base);
         for _ in 0..power {
-            digits.push((remainder % RADIX) as u8);
-            remainder /= RADIX;
+            digits.push((remainder % radix) as u8);
+            remainder /= radix;
         }
         rest = quotient;
     }
 
     let mut remainder = rest[0];
     while remainder != 0 {
-        digits.push((remainder % RADIX) as u8);
-        remainder /= RADIX;
+        digits.push((remainder % radix) as u8);
+        remainder /= radix;
     }
 
     // A non-empty magnitude has a non-zero top digit, and its last division
@@ -69,7 +76,13 @@ pub(super) fn to_decimal(magnitude: &[u64]) -> String {
     digits
         .iter()
         .rev()
-        .map(|&digit| char::from(b'0' + digit))
+        .map(|&digit| {
+            char::from(if digit < 10 {
+                b'0' + digit
+            } else {
+                b'A' + digit - 10
+            })
+        })
         .collect()
 }
 

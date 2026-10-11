@@ -1,0 +1,22 @@
+(* What an integer's own protocol refuses, each an ArgumentError carrying
+   the argument: an index past the digits, a radix outside 2 to 36, a
+   text that is no integer in its radix, a negative shift, an argument
+   that is no integer, and an inverse that does not exist. *)
+class IntegerProtocolErrors = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. ArgumentError = platform kernel ArgumentError. |
+        transcript show: ([256 digitAt: 3] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([256 digitAt: 0] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([255 asStringRadix: 37] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Integer parse: '12a'] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Integer parse: ''] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Integer parse: '-'] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Integer parse: '10' radix: 1] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Integer parse: 10] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([5 >> -1] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([5 gcd: 1.5] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([5 & nil] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([2 reciprocalModulo: 4] on: Error do: [:error | error messageText]); newLine.
+        transcript print: ([2 reciprocalModulo: 4] on: ArgumentError do: [:error | error argument]); newLine
+    )
+)

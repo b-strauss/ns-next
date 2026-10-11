@@ -126,6 +126,125 @@ impl ArbitraryInteger {
         }
     }
 
+    pub fn one() -> ArbitraryInteger {
+        ArbitraryInteger::from_u64(1)
+    }
+
+    pub fn from_u64(value: u64) -> ArbitraryInteger {
+        ArbitraryInteger::from_parts(false, vec![value])
+    }
+
+    /// The value as a `u64`; `None` for a negative value or one past it.
+    pub fn to_u64(&self) -> Option<u64> {
+        match (self.negative, &*self.magnitude) {
+            (_, []) => Some(0),
+            (false, [digit]) => Some(*digit),
+            _ => None,
+        }
+    }
+
+    pub fn is_one(&self) -> bool {
+        !self.negative && *self.magnitude == [1]
+    }
+
+    /// The magnitude's bit count: 0 for zero, n for 2^(n-1) up to 2^n - 1.
+    pub fn bit_length(&self) -> u64 {
+        match self.magnitude.last() {
+            None => 0,
+            Some(top) => {
+                (self.magnitude.len() as u64 - 1) * u64::from(u64::BITS)
+                    + u64::from(u64::BITS - top.leading_zeros())
+            }
+        }
+    }
+
+    /// The greatest common divisor, never negative; `0 gcd 0` is 0.
+    /// Euclid's algorithm on the magnitudes, a one-digit pair in `u64`.
+    pub fn gcd(&self, other: &ArbitraryInteger) -> ArbitraryInteger {
+        let mut larger = self.magnitude.to_vec();
+        let mut smaller = other.magnitude.to_vec();
+        if compare_magnitudes(&larger, &smaller) == Ordering::Less {
+            std::mem::swap(&mut larger, &mut smaller);
+        }
+        while !smaller.is_empty() {
+            if let ([first], [second]) = (larger.as_slice(), smaller.as_slice()) {
+                let (mut first, mut second) = (*first, *second);
+                while second != 0 {
+                    (first, second) = (second, first % second);
+                }
+                return ArbitraryInteger::from_u64(first);
+            }
+            let (_, remainder) = divide_remainder(&larger, &smaller);
+            larger = std::mem::replace(&mut smaller, remainder);
+        }
+        ArbitraryInteger::from_parts(false, larger)
+    }
+
+    /// The quotient rounded toward zero and the remainder, which takes the
+    /// dividend's sign; `None` for a zero divisor.
+    pub fn truncated_divide(
+        &self,
+        divisor: &ArbitraryInteger,
+    ) -> Option<(ArbitraryInteger, ArbitraryInteger)> {
+        if divisor.is_zero() {
+            return None;
+        }
+        let (quotient, remainder) = divide_remainder(&self.magnitude, &divisor.magnitude);
+        Some((
+            ArbitraryInteger::from_parts(self.negative != divisor.negative, quotient),
+            ArbitraryInteger::from_parts(self.negative, remainder),
+        ))
+    }
+
+    /// The value divided by two to the `count`, rounded toward negative
+    /// infinity: an arithmetic shift of the two's complement, so a
+    /// negative value never shifts past -1.
+    pub fn shift_right(&self, count: u64) -> ArbitraryInteger {
+        let shifted_magnitude = |magnitude: &[u64]| {
+            let digit_shift = usize::try_from(count / u64::from(u64::BITS)).unwrap_or(usize::MAX);
+            if digit_shift >= magnitude.len() {
+                return Vec::new();
+            }
+            let mut digits = magnitude[digit_shift..].to_vec();
+            shift_right_in_place(&mut digits, (count % u64::from(u64::BITS)) as u32);
+            digits
+        };
+        if !self.negative {
+            return ArbitraryInteger::from_parts(false, shifted_magnitude(&self.magnitude));
+        }
+        // -(((|n| - 1) >> count) + 1), the floor of n / 2^count.
+        let less_one = subtract_magnitudes(&self.magnitude, &[1]);
+        let shifted = shifted_magnitude(&less_one);
+        ArbitraryInteger::from_parts(true, add_magnitudes(&shifted, &[1]))
+    }
+
+    /// How many base-256 digits the magnitude has; 0 for zero.
+    pub fn base_256_length(&self) -> usize {
+        self.bit_length().div_ceil(8) as usize
+    }
+
+    /// The magnitude's base-256 digit at zero-based `index`, least
+    /// significant first; `None` past the last.
+    pub fn base_256_digit(&self, index: usize) -> Option<u8> {
+        if index >= self.base_256_length() {
+            return None;
+        }
+        let digit = self.magnitude[index / 8];
+        Some((digit >> ((index % 8) * 8)) as u8)
+    }
+
+    /// The text in `radix` (2 to 36), upper-case digits after a `-` for a
+    /// negative value.
+    pub fn to_radix_string(&self, radix: u32) -> String {
+        assert!((2..=36).contains(&radix), "a radix from 2 to 36");
+        let digits = conversion::to_radix(&self.magnitude, radix);
+        if self.negative {
+            format!("-{digits}")
+        } else {
+            digits
+        }
+    }
+
     pub fn add(&self, other: &ArbitraryInteger) -> ArbitraryInteger {
         ArbitraryInteger::sum(
             self.negative,
@@ -442,6 +561,68 @@ fn significant_length(digits: &[u64]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::ArbitraryInteger;
+
+    #[test]
+    fn gcd_is_non_negative_and_euclids() {
+        let integer = |value: i128| ArbitraryInteger::from_i128(value);
+        assert_eq!(integer(12).gcd(&integer(18)), integer(6));
+        assert_eq!(integer(-12).gcd(&integer(18)), integer(6));
+        assert_eq!(integer(0).gcd(&integer(-5)), integer(5));
+        assert_eq!(integer(0).gcd(&integer(0)), integer(0));
+        let power = ArbitraryInteger::one().shift_left(130).expect("small");
+        let multiple = power.multiply(&integer(3));
+        assert_eq!(power.gcd(&multiple), power);
+    }
+
+    #[test]
+    fn truncated_division_rounds_toward_zero() {
+        let integer = |value: i128| ArbitraryInteger::from_i128(value);
+        let divide = |dividend: i128, divisor: i128| {
+            integer(dividend)
+                .truncated_divide(&integer(divisor))
+                .expect("non-zero divisor")
+        };
+        assert_eq!(divide(7, 2), (integer(3), integer(1)));
+        assert_eq!(divide(-7, 2), (integer(-3), integer(-1)));
+        assert_eq!(divide(7, -2), (integer(-3), integer(1)));
+        assert_eq!(divide(-7, -2), (integer(3), integer(-1)));
+        assert!(integer(1).truncated_divide(&integer(0)).is_none());
+    }
+
+    #[test]
+    fn shift_right_rounds_toward_negative_infinity() {
+        let integer = |value: i128| ArbitraryInteger::from_i128(value);
+        assert_eq!(integer(-8).shift_right(1), integer(-4));
+        assert_eq!(integer(-7).shift_right(1), integer(-4));
+        assert_eq!(integer(7).shift_right(1), integer(3));
+        assert_eq!(integer(-1).shift_right(1000), integer(-1));
+        assert_eq!(integer(1 << 100).shift_right(98), integer(4));
+        assert_eq!(integer(-(1 << 100)).shift_right(200), integer(-1));
+        assert_eq!(integer(5).shift_right(u64::MAX), integer(0));
+    }
+
+    #[test]
+    fn digits_bit_length_and_radix_text() {
+        let integer = |value: i128| ArbitraryInteger::from_i128(value);
+        assert_eq!(integer(0).bit_length(), 0);
+        assert_eq!(integer(-255).bit_length(), 8);
+        assert_eq!(integer(1 << 64).bit_length(), 65);
+        assert_eq!(integer(256).base_256_length(), 2);
+        assert_eq!(integer(256).base_256_digit(1), Some(1));
+        assert_eq!(integer(256).base_256_digit(2), None);
+        assert_eq!(integer(0).base_256_length(), 0);
+        assert_eq!(integer(-255).to_radix_string(16), "-FF");
+        assert_eq!(integer(0).to_radix_string(2), "0");
+        assert_eq!(integer(1 << 64).to_radix_string(16), "10000000000000000");
+        assert_eq!(
+            integer(-(1 << 100)).to_radix_string(10),
+            integer(-(1 << 100)).to_decimal_string()
+        );
+        assert_eq!(integer(35).to_radix_string(36), "Z");
+        assert_eq!(integer(5).to_u64(), Some(5));
+        assert_eq!(integer(-5).to_u64(), None);
+        assert!(ArbitraryInteger::one().is_one());
+    }
 
     #[test]
     fn a_float_truncates_exactly_at_every_magnitude() {

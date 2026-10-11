@@ -94,7 +94,13 @@ impl Primitive {
                 | IntegerPrimitive::Negated
                 | IntegerPrimitive::Absolute
                 | IntegerPrimitive::AsFloat
-                | IntegerPrimitive::PrintString,
+                | IntegerPrimitive::PrintString
+                | IntegerPrimitive::Gcd
+                | IntegerPrimitive::ShiftRight
+                | IntegerPrimitive::DigitAt
+                | IntegerPrimitive::DigitLength
+                | IntegerPrimitive::AsStringRadix
+                | IntegerPrimitive::Parse,
             ) => false,
             Primitive::LargeInteger(LargeIntegerPrimitive::Equal) => true,
             Primitive::LargeInteger(
@@ -275,6 +281,12 @@ pub enum IntegerPrimitive {
     Absolute,
     AsFloat,
     PrintString,
+    Gcd,
+    ShiftRight,
+    DigitAt,
+    DigitLength,
+    AsStringRadix,
+    Parse,
 }
 
 /// `LargeInteger`'s leaves: `Integer`'s protocol for a receiver whose
@@ -1087,6 +1099,36 @@ pub const MIRROR: &[MirrorEntry] = &[
         "largeInteger:shiftLeft:ifFail:",
         "<<",
         Primitive::LargeInteger(LargeIntegerPrimitive::ShiftLeft),
+    ),
+    mirror(
+        "integer:gcd:ifFail:",
+        "gcd:",
+        Primitive::Integer(IntegerPrimitive::Gcd),
+    ),
+    mirror(
+        "integer:shiftRight:ifFail:",
+        ">>",
+        Primitive::Integer(IntegerPrimitive::ShiftRight),
+    ),
+    mirror(
+        "integer:digitAt:ifFail:",
+        "digitAt:",
+        Primitive::Integer(IntegerPrimitive::DigitAt),
+    ),
+    mirror(
+        "integerDigitLength:ifFail:",
+        "digitLength",
+        Primitive::Integer(IntegerPrimitive::DigitLength),
+    ),
+    mirror(
+        "integer:asStringRadix:ifFail:",
+        "asStringRadix:",
+        Primitive::Integer(IntegerPrimitive::AsStringRadix),
+    ),
+    mirror(
+        "integerClass:parse:radix:ifFail:",
+        "parse:radix:",
+        Primitive::Integer(IntegerPrimitive::Parse),
     ),
     mirror(
         "floatSquareRoot:ifFail:",

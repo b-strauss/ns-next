@@ -1,0 +1,15 @@
+stdout = '''
+digitAt: index 3 out of range: valid indices are 1..2 (digitLength 2)
+digitAt: index 0 out of range: valid indices are 1..2 (digitLength 2)
+asStringRadix: takes a radix from 2 to 36, got 37
+parse:radix: requires the digits of an Integer in radix 10, got the String "12a"
+parse:radix: requires the digits of an Integer in radix 10, got the String ""
+parse:radix: requires the digits of an Integer in radix 10, got the String "-"
+parse:radix: takes a radix from 2 to 36, got 1
+parse:radix: requires a String, got 10
+>> takes a non-negative shift count, got -1
+gcd: requires an integer argument, got 1.5
+bitAnd: requires an integer argument, got nil
+reciprocalModulo: 2 has no inverse modulo 4
+4
+'''

@@ -1,0 +1,25 @@
+(* An integer's own protocol: the greatest common divisor, never
+   negative; an arithmetic right shift, toward negative infinity; `&` and
+   `|` as `bitAnd:` and `bitOr:`; the base-256 digits of its magnitude,
+   least significant first; its text in any radix from 2 to 36, upper
+   case, and `Integer parse:radix:` back; the rounding selectors and
+   `numerator`/`denominator` of a fraction whose denominator is 1; and
+   modular exponentiation and inverse. A LargeInteger answers the same
+   way. *)
+class IntegerProtocol = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. big = 1180591620717411303424. |
+        transcript print: (12 gcd: 18); show: ' '; print: (-12 gcd: 18); show: ' '; print: (12 gcd: -18); show: ' '; print: (0 gcd: 5); show: ' '; print: (0 gcd: 0); newLine.
+        transcript print: (big gcd: 110680464442257309696); show: ' '; print: (big gcd: 3); newLine.
+        transcript print: -8 >> 1; show: ' '; print: 5 >> 1; show: ' '; print: -1 >> 100; show: ' '; print: big >> 68; show: ' '; print: 5 >> 0; show: ' '; print: big negated >> 200; newLine.
+        transcript print: (12 & 10); show: ' '; print: (12 | 3); show: ' '; print: (big | 1); newLine.
+        transcript print: (255 digitAt: 1); show: ' '; print: (256 digitAt: 2); show: ' '; print: (256 digitAt: 1); show: ' '; print: (-1 digitAt: 1); newLine.
+        transcript print: 256 digitLength; show: ' '; print: 0 digitLength; show: ' '; print: 18446744073709551616 digitLength; show: ' '; print: (18446744073709551616 digitAt: 9); newLine.
+        transcript show: (255 asStringRadix: 16); show: ' '; show: (-255 asStringRadix: 2); show: ' '; show: (18446744073709551616 asStringRadix: 16); show: ' '; show: (35 asStringRadix: 36); show: ' '; show: (0 asStringRadix: 2); newLine.
+        transcript print: (Integer parse: '42'); show: ' '; print: (Integer parse: '-0123'); show: ' '; print: (Integer parse: 'CAFE' radix: 16); show: ' '; print: (Integer parse: 'cafe' radix: 16); show: ' '; print: (Integer parse: 'z' radix: 36); newLine.
+        transcript print: (Integer parse: '18446744073709551616'); show: ' '; print: (Integer parse: '18446744073709551616') class; newLine.
+        transcript print: 7 floor; show: ' '; print: 7 ceiling; show: ' '; print: 7 rounded; show: ' '; print: 7 truncated; show: ' '; print: 7 asInteger; show: ' '; print: big floor = big; newLine.
+        transcript print: 7 numerator; show: ' '; print: 7 denominator; show: ' '; print: 7 isKindOfFraction; show: ' '; print: big isKindOfFraction; newLine.
+        transcript print: (4 raisedTo: 13 modulo: 497); show: ' '; print: (3 reciprocalModulo: 11); show: ' '; print: (3 raisedTo: -1 modulo: 11); show: ' '; print: (2 raisedTo: 0 modulo: 7); show: ' '; print: (big raisedTo: 2 modulo: 1000); newLine
+    )
+)

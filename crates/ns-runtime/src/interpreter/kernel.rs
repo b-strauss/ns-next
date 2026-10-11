@@ -810,6 +810,17 @@ mod tests {
         // Primordial Soup's Newspeak body, `-1 - self`: a send of `-` to
         // `self`, which no leaf could do, and which `LargeInteger` inherits.
         (BuiltinClass::Integer, "bitInvert"),
+        // Integer's methods written in Newspeak: `&` and `|` send `bitAnd:`
+        // and `bitOr:`, the modular pair loops over sends of arithmetic, and
+        // `denominator` answers the integer literal 1, which is no quick
+        // constant.
+        (BuiltinClass::Integer, "&"),
+        (BuiltinClass::Integer, "|"),
+        (BuiltinClass::Integer, "raisedTo:modulo:"),
+        (BuiltinClass::Integer, "reciprocalModulo:"),
+        (BuiltinClass::Integer, "denominator"),
+        // The class side: `parse:` sends `parse:radix:` to `self`.
+        (BuiltinClass::Integer, "parse:"),
         // Primordial Soup's Newspeak bodies: `timesRepeat:` sends `to:do:`
         // and `value`, and `max:` sends `>` to `self`, which no leaf could
         // do.
@@ -1109,6 +1120,17 @@ mod tests {
         ),
         (BuiltinClass::Object, "yourself", MethodFastPath::Receiver),
         (BuiltinClass::Float, "asFloat", MethodFastPath::Receiver),
+        (BuiltinClass::Integer, "floor", MethodFastPath::Receiver),
+        (BuiltinClass::Integer, "ceiling", MethodFastPath::Receiver),
+        (BuiltinClass::Integer, "rounded", MethodFastPath::Receiver),
+        (BuiltinClass::Integer, "truncated", MethodFastPath::Receiver),
+        (BuiltinClass::Integer, "asInteger", MethodFastPath::Receiver),
+        (BuiltinClass::Integer, "numerator", MethodFastPath::Receiver),
+        (
+            BuiltinClass::Integer,
+            "isKindOfFraction",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
         (
             BuiltinClass::Number,
             "isNaN",

@@ -6,6 +6,7 @@ use super::{
     integer_ordering, promote, shift_left, type_mismatch, with_small_integer_parts, Accepted,
     Answer,
 };
+use crate::builtins::first_argument;
 use crate::builtins::primitive::{IntegerPrimitive, Primitive};
 use crate::types::*;
 use crate::{ArbitraryInteger, Mutator, Symbol};
@@ -25,6 +26,9 @@ pub(crate) fn execute_integer<'gc>(
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    if let Some(answer) = integer_protocol(mutator, primitive, receiver, arguments) {
+        return answer;
+    }
     let receiver_integer = receiver.as_small_integer()?;
     let argument_integer = || arguments.first().and_then(|value| value.as_small_integer());
     let mismatch = |operator: &str, accepted: Accepted| {
@@ -255,5 +259,226 @@ pub(crate) fn execute_integer<'gc>(
         ))),
         // `as` rounds to the nearest double, ties to even.
         IntegerPrimitive::AsFloat => Some(Ok(mutator.new_float(receiver_integer as f64))),
+        IntegerPrimitive::Gcd
+        | IntegerPrimitive::ShiftRight
+        | IntegerPrimitive::DigitAt
+        | IntegerPrimitive::DigitLength
+        | IntegerPrimitive::AsStringRadix
+        | IntegerPrimitive::Parse => {
+            unreachable!("integer_protocol answers these before this match")
+        }
     }
+}
+
+/// The leaves that take an integer receiver of either representation, so
+/// that `LargeInteger` inherits `Integer`'s methods for them. `None` for
+/// every other primitive, which `execute_integer` goes on to; `Some(None)`
+/// declines a receiver that is no integer.
+fn integer_protocol<'gc>(
+    mutator: &mut Mutator<'gc>,
+    primitive: IntegerPrimitive,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Option<Result<Value<'gc>, NewspeakError<'gc>>>> {
+    let answer = match primitive {
+        IntegerPrimitive::Parse => return Some(parse(mutator, receiver, arguments)),
+        IntegerPrimitive::Gcd
+        | IntegerPrimitive::ShiftRight
+        | IntegerPrimitive::DigitAt
+        | IntegerPrimitive::DigitLength
+        | IntegerPrimitive::AsStringRadix => {
+            let Some(integer) = integer_operand(&mutator.heap, Some(receiver)) else {
+                return Some(None);
+            };
+            match primitive {
+                IntegerPrimitive::Gcd => gcd(mutator, receiver, &integer, arguments),
+                IntegerPrimitive::ShiftRight => shift_right(mutator, receiver, &integer, arguments),
+                IntegerPrimitive::DigitAt => digit_at(mutator, receiver, &integer, arguments),
+                IntegerPrimitive::DigitLength => {
+                    Ok(Value::small_integer(integer.base_256_length() as i64))
+                }
+                _ => radix_text(mutator, receiver, &integer, arguments),
+            }
+        }
+        _ => return None,
+    };
+    Some(Some(answer))
+}
+
+/// The argument of `selector` as an integer of either representation, or
+/// the type mismatch naming the selector.
+fn integer_argument<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    argument: Option<Value<'gc>>,
+) -> Result<ArbitraryInteger, NewspeakError<'gc>> {
+    integer_operand(&mutator.heap, argument).ok_or_else(|| {
+        type_mismatch(
+            &mutator.heap,
+            receiver,
+            selector,
+            Accepted::Integer,
+            argument,
+        )
+    })
+}
+
+/// `gcd:`.
+fn gcd<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    integer: &ArbitraryInteger,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let other = integer_argument(
+        mutator,
+        receiver,
+        Symbol::intern("gcd:"),
+        arguments.first().copied(),
+    )?;
+    Ok(mutator.new_integer(integer.gcd(&other)))
+}
+
+/// `>>`: a count past `u64` shifts every bit out, as `u64::MAX` does.
+fn shift_right<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    integer: &ArbitraryInteger,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let selector = Symbol::intern(">>");
+    let count = integer_argument(mutator, receiver, selector, arguments.first().copied())?;
+    if count.is_negative() {
+        return Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!(
+                ">> takes a non-negative shift count, got {}",
+                count.to_bounded_text()
+            ),
+        ));
+    }
+    Ok(mutator.new_integer(integer.shift_right(count.to_u64().unwrap_or(u64::MAX))))
+}
+
+/// `digitAt:`: the index counts from 1.
+fn digit_at<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    integer: &ArbitraryInteger,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let selector = Symbol::intern("digitAt:");
+    let index = integer_argument(mutator, receiver, selector, arguments.first().copied())?;
+    let length = integer.base_256_length();
+    let digit = index
+        .to_u64()
+        .and_then(|index| usize::try_from(index).ok())
+        .and_then(|index| index.checked_sub(1))
+        .and_then(|index| integer.base_256_digit(index));
+    match digit {
+        Some(digit) => Ok(Value::small_integer(i64::from(digit))),
+        None => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!(
+                "digitAt: index {} out of range: valid indices are 1..{length} (digitLength {length})",
+                index.to_bounded_text()
+            ),
+        )),
+    }
+}
+
+/// A radix from 2 to 36, or the ArgumentError that names `selector`
+/// (`asStringRadix:` or `parse:radix:`).
+fn radix_argument<'gc>(
+    mutator: &Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    radix: Value<'gc>,
+) -> Result<u32, NewspeakError<'gc>> {
+    let integer = integer_argument(mutator, receiver, selector, Some(radix))?;
+    match integer.to_u64() {
+        Some(radix_number @ 2..=36) => Ok(radix_number as u32),
+        _ => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            radix,
+            format!(
+                "{selector} takes a radix from 2 to 36, got {}",
+                integer.to_bounded_text()
+            ),
+        )),
+    }
+}
+
+/// `asStringRadix:`.
+fn radix_text<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    integer: &ArbitraryInteger,
+    arguments: &[Value<'gc>],
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let radix = radix_argument(
+        mutator,
+        receiver,
+        Symbol::intern("asStringRadix:"),
+        first_argument(arguments),
+    )?;
+    Ok(Value::object(
+        mutator.new_string(integer.to_radix_string(radix)),
+    ))
+}
+
+/// `Integer class>>parse:radix:`: the Integer a String writes in a radix,
+/// or an `ArgumentError` carrying the argument at fault. Declines for a
+/// subject that is not `Integer` itself, which a flat class side cannot be
+/// sent from.
+fn parse<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let class = receiver.as_object()?;
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::Integer) {
+        return None;
+    }
+    let selector = Symbol::intern("parse:radix:");
+    let text_value = first_argument(arguments);
+    let radix_value = arguments.get(1).copied().unwrap_or(Value::nil());
+    let radix = match radix_argument(mutator, receiver, selector, radix_value) {
+        Ok(radix) => radix,
+        Err(error) => return Some(Err(error)),
+    };
+    // A Symbol is refused: it is not the text of a number.
+    let text = text_value
+        .as_object()
+        .filter(|object| !mutator.heap.is_symbol(*object))
+        .and_then(|object| mutator.heap.str_value(object));
+    let Some(text) = text else {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            text_value,
+            format!(
+                "parse:radix: requires a String, got {}",
+                mutator.heap.describe(text_value)
+            ),
+        )));
+    };
+    Some(match ArbitraryInteger::parse(&text, radix) {
+        Some(integer) => Ok(mutator.new_integer(integer)),
+        None => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            text_value,
+            format!(
+                "parse:radix: requires the digits of an Integer in radix {radix}, got {}",
+                mutator.heap.describe(text_value)
+            ),
+        )),
+    })
 }

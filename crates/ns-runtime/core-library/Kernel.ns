@@ -1327,6 +1327,132 @@ class Kernel vmMirror: theMirror = Object <: Value (
            '<< cannot allocate the result of shifting by … bits' for a
            result too large to allocate. *)
         public << other = ( ^vmMirror integer: self shiftLeft: other ifFail: [^super << other] )
+        (* Answers the receiver divided by 2 to the power `count`, rounded
+           toward negative infinity: the two's-complement shift, so a
+           negative receiver shifts to -1 at the least.
+
+           count: an Integer or a LargeInteger, at least 0.
+
+           Signals an ArgumentError carrying `count`: '>> requires an
+           integer argument, got …' for an argument that is no integer and
+           '>> takes a non-negative shift count, got …' for a negative
+           one. *)
+        public >> count = ( ^vmMirror integer: self shiftRight: count ifFail: [^super >> count] )
+        (* As `bitAnd:`, whose ArgumentError's text names 'bitAnd:'. *)
+        public & other = ( ^self bitAnd: other )
+        (* As `bitOr:`, whose ArgumentError's text names 'bitOr:'. *)
+        public | other = ( ^self bitOr: other )
+        (* Answers the greatest common divisor of the receiver and `other`,
+           an integer never negative; 0 when both are 0.
+
+           other: an Integer or a LargeInteger.
+
+           Signals an ArgumentError carrying `other`, 'gcd: requires an
+           integer argument, got …', for any other argument. *)
+        public gcd: other = ( ^vmMirror integer: self gcd: other ifFail: [^super gcd: other] )
+        (* Answers the base-256 digit at `index` of the receiver's
+           magnitude, least significant first, an Integer from 0 to 255:
+           the sign is not a digit, so `-1 digitAt: 1` is 1.
+
+           index: an Integer from 1 to `digitLength`.
+
+           Signals an ArgumentError carrying `index`: 'digitAt: index …
+           out of range: valid indices are 1..… (digitLength …)' for an
+           Integer outside them, a LargeInteger included, and 'digitAt:
+           requires an integer argument, got …' for one that is no
+           integer. *)
+        public digitAt: index = (
+            ^vmMirror integer: self digitAt: index ifFail: [^super digitAt: index]
+        )
+        (* Answers how many base-256 digits the receiver's magnitude has,
+           an Integer: 0 for 0. *)
+        public digitLength = ( ^vmMirror integerDigitLength: self ifFail: [^super digitLength] )
+        (* Answers a new String of the receiver in `radix`: its digits from
+           '0' to '9' and 'A' to 'Z', most significant first, after a '-'
+           for a negative receiver.
+
+           radix: an Integer from 2 to 36.
+
+           Signals an ArgumentError carrying `radix`: 'asStringRadix: takes
+           a radix from 2 to 36, got …' for an Integer outside them, a
+           LargeInteger included, and 'asStringRadix: requires an integer
+           argument, got …' for one that is no integer. *)
+        public asStringRadix: radix = (
+            ^vmMirror integer: self asStringRadix: radix ifFail: [^super asStringRadix: radix]
+        )
+        (* Answers the receiver itself: an integer is its own floor. *)
+        public floor = ( ^self )
+        (* Answers the receiver itself: an integer is its own ceiling. *)
+        public ceiling = ( ^self )
+        (* Answers the receiver itself: an integer is already rounded. *)
+        public rounded = ( ^self )
+        (* Answers the receiver itself: an integer has no fraction. *)
+        public truncated = ( ^self )
+        (* Answers the receiver itself. *)
+        public asInteger = ( ^self )
+        (* Answers the receiver itself: an integer is the numerator of the
+           fraction it is, over 1. *)
+        public numerator = ( ^self )
+        (* Answers 1: an integer is a fraction whose denominator is 1. *)
+        public denominator = ( ^1 )
+        (* Answers true: an integer is a fraction whose denominator is 1. *)
+        public isKindOfFraction = ( ^true )
+        (* Answers the receiver raised to `exponent` modulo `modulus`, an
+           integer from 0 to `modulus` - 1 for a positive `modulus`, by
+           squaring and multiplying modulo `modulus` at each step; a
+           negative `exponent` raises the receiver's inverse modulo
+           `modulus` to `exponent negated`.
+
+           exponent: an integer.
+           modulus: an integer other than 0.
+
+           Signals the ArgumentError `reciprocalModulo:` signals for a
+           negative `exponent` when the receiver has no inverse, and the
+           ArgumentErrors of `\\` and `bitAnd:` for arguments that are no
+           integers or a zero `modulus`. *)
+        public raisedTo: exponent modulo: modulus = (
+            | result base remaining |
+            exponent < 0 ifTrue: [
+                ^(self reciprocalModulo: modulus) raisedTo: exponent negated modulo: modulus].
+            result:: 1 \\ modulus.
+            base:: self \\ modulus.
+            remaining:: exponent.
+            [remaining > 0] whileTrue: [
+                (remaining bitAnd: 1) = 1 ifTrue: [result:: result * base \\ modulus].
+                base:: base * base \\ modulus.
+                remaining:: remaining >> 1].
+            ^result
+        )
+        (* Answers the inverse of the receiver modulo `modulus`: the integer
+           from 0 to `modulus` - 1 whose product with the receiver is 1
+           modulo `modulus`, found by the extended Euclidean algorithm.
+
+           modulus: a positive integer.
+
+           Signals an ArgumentError carrying `modulus`, 'reciprocalModulo:
+           … has no inverse modulo …', when the receiver and `modulus` have
+           a common divisor other than 1, and the ArgumentErrors of `\\`
+           and `//` for a `modulus` that is no integer or is 0. *)
+        public reciprocalModulo: modulus = (
+            | remainder nextRemainder coefficient nextCoefficient |
+            remainder:: modulus.
+            nextRemainder:: self \\ modulus.
+            coefficient:: 0.
+            nextCoefficient:: 1.
+            [nextRemainder = 0] whileFalse: [
+                | quotient previousRemainder previousCoefficient |
+                quotient:: remainder // nextRemainder.
+                previousRemainder:: remainder.
+                remainder:: nextRemainder.
+                nextRemainder:: previousRemainder - (quotient * nextRemainder).
+                previousCoefficient:: coefficient.
+                coefficient:: nextCoefficient.
+                nextCoefficient:: previousCoefficient - (quotient * nextCoefficient)].
+            remainder = 1 ifFalse: [
+                ^(outer Kernel ArgumentError value: modulus)
+                    signal: 'reciprocalModulo: ', self printString, ' has no inverse modulo ', modulus printString].
+            ^coefficient \\ modulus
+        )
         (* Answers the bitwise complement, `-1 - self`. *)
         public bitInvert = ( ^-1 - self )
         (* Evaluates `action` as many times as the receiver says, none for
@@ -1381,10 +1507,35 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public printString = ( ^vmMirror integerPrintString: self ifFail: [^super printString] )
         (* Answers what `printString` answers. *)
         public asString = ( ^vmMirror integerAsString: self ifFail: [^super asString] )
+    ) : (
+        (* Answers the Integer `text` writes in decimal: `parse:radix:`
+           with radix 10, and its ArgumentErrors. *)
+        public parse: text = ( ^self parse: text radix: 10 )
+        (* Answers the Integer `text` writes in `radix`: an optional '-'
+           and at least one digit, '0' to '9' then 'A' to 'Z' in either
+           case, each below `radix`; a LargeInteger beyond -2^60 to
+           2^60 - 1.
+
+           text: a String.
+           radix: an Integer from 2 to 36.
+
+           Signals an ArgumentError: 'parse:radix: takes a radix from 2 to
+           36, got …' carrying `radix` for one outside them, 'parse:radix:
+           requires a String, got …' carrying `text` for one that is no
+           String, and 'parse:radix: requires the digits of an Integer in
+           radix …, got …' carrying `text` for a String that writes no
+           integer, an empty one or a lone '-' included. *)
+        (* The leaf answers only for `Integer` itself; any other receiver
+           falls to `super`. *)
+        public parse: text radix: radix = (
+            ^vmMirror integerClass: self parse: text radix: radix ifFail: [^super parse: text radix: radix]
+        )
     )
     (* An integer outside -2^60 to 2^60 - 1. It answers `Integer`'s
        protocol with the same answers and errors; any result within that
-       range again is an `Integer`. *)
+       range again is an `Integer`. It inherits `Integer`'s `gcd:`, `>>`,
+       `digitAt:`, `digitLength`, `asStringRadix:` and the methods written
+       in Newspeak, which take either representation. *)
     (* §5.1.1: "integers are not limited in size". An `Integer` whose value
        does not fit a `SmallInteger`; every leaf answers an `Integer` when
        the result fits again, so each integer has one representation.

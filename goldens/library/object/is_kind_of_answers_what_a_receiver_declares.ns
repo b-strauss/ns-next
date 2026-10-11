@@ -1,7 +1,8 @@
 (* A unary `isKindOf…` question answers true where the receiver declares
    it and false everywhere else, so a program can ask a question of its own
    of any object without touching `Object`. A keyword selector that begins
-   with `isKindOf` is not such a question. *)
+   with `isKindOf` is not such a question. An integer declares
+   `isKindOfFraction`, being a fraction whose denominator is 1. *)
 class IsKindOfAnswersWhatAReceiverDeclares = Object new () (
     class Shape = Object new () (
         public isKindOfShape = ( ^true )
