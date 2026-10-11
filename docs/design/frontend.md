@@ -291,9 +291,10 @@ whitespace, so no token stands for one and the parser never sees one.
 is one comment from its outer `(*` to its outer `*)`, so a nested comment is
 inside its enclosing one's span. Consecutive `///` lines are one comment, a
 block, from the first line's `///` up to the last line's line break, its
-trailing whitespace included (`skip_line_comment`, `continues_line_block`): two `///` comments are one
-block when each is the first thing on its line and only whitespace with
-exactly one line break lies between them. A blank line or code starts a new
+trailing whitespace included (`skip_line_comment`,
+`continues_line_block`): two `///` comments are one block when each is the
+first thing on its line and only whitespace with exactly one line break
+lies between them. A blank line or code starts a new
 block, and so does a `///` after code on its line: that one is a remark on
 its line, so it neither joins the block above nor takes the next line in. A
 `(* ... *)` is always a comment of its own. A reader thereby gets one

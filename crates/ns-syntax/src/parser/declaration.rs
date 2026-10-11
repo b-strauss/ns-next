@@ -960,18 +960,23 @@ impl<'a> Parser<'a> {
         {
             return Some(inner.to_string());
         }
-        let comment = lone_line_block(gap)?;
-        let comment_start = comment.span.start as usize;
-        if crate::comment::starts_its_line(self.source, previous_end + comment_start) {
-            return Some(comment.text(gap));
-        }
         // Lexed alone, the gap starts a line, so a `///` after the `(` would
         // seem to start its line and take the lines below into its block,
         // where the whole source's lexer (and with it the editor's folds)
-        // keeps it a remark on the `(`'s line. The class comment is the
-        // block below the remark, as the whole source forms it.
-        let line_end = gap[comment_start..].find(['\n', '\r'])? + comment_start;
-        let rest = &gap[line_end..];
+        // keeps it a remark on the `(`'s line. That line is cut off first;
+        // the class comment is the block the rest holds, as the whole
+        // source forms it.
+        let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
+        let mut rest = gap;
+        if let Some(first) = lexed.comments.first() {
+            let first_start = first.span.start as usize;
+            if first.kind == crate::comment::CommentKind::Line
+                && !crate::comment::starts_its_line(self.source, previous_end + first_start)
+            {
+                let line_end = gap[first_start..].find(['\n', '\r'])? + first_start;
+                rest = &gap[line_end..];
+            }
+        }
         let comment = lone_line_block(rest)?;
         Some(comment.text(rest))
     }
@@ -2225,6 +2230,22 @@ mod class_tests {
             .map(|comment| comment.text(source))
             .collect();
         assert_eq!(texts, ["a", "b"]);
+        assert_eq!(
+            module(source).root_class.class_comment.as_deref(),
+            Some("b")
+        );
+    }
+
+    // A blank line between the remark and the block changes nothing: the
+    // remark is still the `(`'s, and the block is all that remains.
+    #[test]
+    fn a_remark_and_a_blank_line_before_the_class_comment_leave_it_intact() {
+        let source = indoc! {"
+            class C = ( /// a
+
+                /// b
+            ) ()
+        "};
         assert_eq!(
             module(source).root_class.class_comment.as_deref(),
             Some("b")
