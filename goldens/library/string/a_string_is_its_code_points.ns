@@ -1,10 +1,10 @@
-(* A String is its code points (§5.1.5), stored one byte each while every
-   one fits Latin-1 and 32 bits each otherwise
-   (docs/design/core-library.md, "Strings are code points in two widths").
-   The width is invisible: `size` counts code points whatever the width,
-   `=` and `hash` agree across a concatenation that crosses widths, and
-   the transcript and `printString` write UTF-8. The strings sit in slots,
-   so the image round trip carries both widths. *)
+/// A String is its code points (§5.1.5), stored one byte each while every
+/// one fits Latin-1 and 32 bits each otherwise
+/// (docs/design/core-library.md, "Strings are code points in two widths").
+/// The width is invisible: `size` counts code points whatever the width,
+/// `=` and `hash` agree across a concatenation that crosses widths, and
+/// the transcript and `printString` write UTF-8. The strings sit in slots,
+/// so the image round trip carries both widths.
 class AStringIsItsCodePoints = Object new (
     | ascii = 'plain'.
       latin = 'café'.

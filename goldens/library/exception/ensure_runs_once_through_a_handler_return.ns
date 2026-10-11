@@ -1,7 +1,7 @@
-(* A handler's `return:` unwinds from the signal to its `on:do:` through
-   the one unwinder, which runs an `ensure:` block on the way -- once, since
-   the unwinder marks it run -- and an `ifCurtailed:` block, which runs only
-   on an unwind; both before the value is printed. *)
+/// A handler's `return:` unwinds from the signal to its `on:do:` through
+/// the one unwinder, which runs an `ensure:` block on the way -- once, since
+/// the unwinder marks it run -- and an `ifCurtailed:` block, which runs only
+/// on an unwind; both before the value is printed.
 class EnsureRunsOnceThroughAHandlerReturn = Object new (
     
 ) (

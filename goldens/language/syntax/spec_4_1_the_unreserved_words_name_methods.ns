@@ -1,10 +1,10 @@
-(* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
-   nil, so class, public, protected, private and lazy name methods like any
-   identifier. 6.3.4's methodDecl, [accessModifier] messagePattern, is a PEG
-   (4.2): an access modifier's word standing first is the modifier, so it
-   names a method only behind one, while class and lazy need none -- and
-   private lazy = ( ... ) is a private method named lazy, since 6.3.3's
-   lazySlotDecl, tried before it, does not match. Both sides alike. *)
+/// newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
+/// nil, so class, public, protected, private and lazy name methods like any
+/// identifier. 6.3.4's methodDecl, [accessModifier] messagePattern, is a PEG
+/// (4.2): an access modifier's word standing first is the modifier, so it
+/// names a method only behind one, while class and lazy need none -- and
+/// private lazy = ( ... ) is a private method named lazy, since 6.3.3's
+/// lazySlotDecl, tried before it, does not match. Both sides alike.
 class Spec41TheUnreservedWordsNameMethods = Object new () (
     class Holder = Object new () (
         public public = ( ^'public ' )

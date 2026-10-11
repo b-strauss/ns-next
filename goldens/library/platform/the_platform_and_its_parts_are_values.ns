@@ -1,10 +1,10 @@
-(* The platform, its transcript and its collections namespace are values
-   (§3.1.1): stateless but for what the module they belong to was handed,
-   so any two of a kind are equal and, a value having no identity,
-   identical. Each is an instance of its own class, so none answers
-   another's protocol. The platform's class answers `new`: what holds the
-   VM mirror is the `PlatformFactory` instance enclosing it, which no
-   program is handed, so a second platform is as harmless as the first. *)
+/// The platform, its transcript and its collections namespace are values
+/// (§3.1.1): stateless but for what the module they belong to was handed,
+/// so any two of a kind are equal and, a value having no identity,
+/// identical. Each is an instance of its own class, so none answers
+/// another's protocol. The platform's class answers `new`: what holds the
+/// VM mirror is the `PlatformFactory` instance enclosing it, which no
+/// program is handed, so a second platform is as harmless as the first.
 class PlatformValues = Object new () (
     public main: platform args: arguments = (
         | t c |

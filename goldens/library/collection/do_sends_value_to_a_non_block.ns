@@ -1,6 +1,6 @@
-(* `Array>>do:` sends `value:` to an argument that is no block, once per
-   element and in order, as it would evaluate a block; an empty array
-   sends nothing. *)
+/// `Array>>do:` sends `value:` to an argument that is no block, once per
+/// element and in order, as it would evaluate a block; an empty array
+/// sends nothing.
 class DoSendsValueToANonBlock = Object new (
 ) (
     class Collector = Object new (

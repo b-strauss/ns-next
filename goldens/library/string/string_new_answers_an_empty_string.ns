@@ -1,4 +1,4 @@
-(* `String new` answers an empty String, not a slotless instance. *)
+/// `String new` answers an empty String, not a slotless instance.
 class StringNewAnswersAnEmptyString = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |

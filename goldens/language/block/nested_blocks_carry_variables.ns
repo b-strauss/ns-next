@@ -1,11 +1,11 @@
-(* A block three levels down reads a variable of the method, so every
-   block between them has to carry it -- a copy when nothing writes it
-   after capture (first), the shared variable when something does
-   (second). threeDeep answers 1 + 20 + 100 + 1000 + 10000; second is
-   written after the blocks exist, so 20, not 10. innerWrites has the
-   innermost block writing the method's variable, which every level shares.
-   blockLocals captures a block's own temporary, one per activation of
-   that block, each written before the inner block is created. *)
+/// A block three levels down reads a variable of the method, so every
+/// block between them has to carry it -- a copy when nothing writes it
+/// after capture (first), the shared variable when something does
+/// (second). threeDeep answers 1 + 20 + 100 + 1000 + 10000; second is
+/// written after the blocks exist, so 20, not 10. innerWrites has the
+/// innermost block writing the method's variable, which every level shares.
+/// blockLocals captures a block's own temporary, one per activation of
+/// that block, each written before the inner block is created.
 class NestedBlocksCarryVariables = Object new (
     | private List ::= nil. |
 ) (

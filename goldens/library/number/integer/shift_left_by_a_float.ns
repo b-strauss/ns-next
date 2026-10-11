@@ -1,5 +1,5 @@
-(* The count must be an integer, as for `//`, `\\` and the bit operations:
-   a `Float` count is a type mismatch, not a truncation. *)
+/// The count must be an integer, as for `//`, `\\` and the bit operations:
+/// a `Float` count is a type mismatch, not a truncation.
 class FloatShift = () (
     public main: platform args: arguments = (
         platform transcript print: 1 << 1.5; newLine

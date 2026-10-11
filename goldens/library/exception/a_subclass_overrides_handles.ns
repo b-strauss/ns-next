@@ -1,11 +1,11 @@
-(* A class decides which exceptions it handles: `Picky`'s class side
-   declares its own `handles:`, which the handler search sends in place of
-   `Class`'s default ("an instance of me or of a subclass"), so
-   `on: Picky do:` catches any exception whose text is 'mine' -- a plain
-   `Error` included -- and no other. The default still holds for `Error`,
-   which catches a `Picky`. §3.2's metaclasses are flat, so `Picky` answers
-   no class-side `signal:` of its own: it is signalled as `Picky new
-   signal:`. The uncaught 'other' ends the run -- last. *)
+/// A class decides which exceptions it handles: `Picky`'s class side
+/// declares its own `handles:`, which the handler search sends in place of
+/// `Class`'s default ("an instance of me or of a subclass"), so
+/// `on: Picky do:` catches any exception whose text is 'mine' -- a plain
+/// `Error` included -- and no other. The default still holds for `Error`,
+/// which catches a `Picky`. §3.2's metaclasses are flat, so `Picky` answers
+/// no class-side `signal:` of its own: it is signalled as `Picky new
+/// signal:`. The uncaught 'other' ends the run -- last.
 class ASubclassOverridesHandles = Object new () (
     public class Picky = Error new () (
     ) : (

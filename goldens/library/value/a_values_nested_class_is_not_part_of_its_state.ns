@@ -1,30 +1,30 @@
-(* newspeak-spec.pdf 3.1.1: a value object is "globally unique, in the
-   sense that no other object is equal to it", so its equality and its hash
-   come from the state its class *declares*. A nested class declaration is
-   not that state. Per 6, "every instance of a class C has a distinct
-   nested class for each nested class declaration", cached in a hidden slot
-   of the enclosing instance -- so two equal values hold *different* class
-   objects there the moment each has been sent its own accessor.
-
-   Counting that slot made two equal values answer `false`, at exit status
-   0, as soon as the accessor had run on both. The rule is that a value's
-   state is its declared slots and nothing else, which is also what the
-   `slotCount` and `slotAt:` leaves the Newspeak fallback reads through
-   report, so the leaf and the fallback compare the same slots.
-
-   Each line prints `=`, then `==`, then whether the two hash alike. The
-   first two must always agree (3.1.1's condition on an identity method),
-   and the third must be true wherever the first is. `touch` is what runs
-   the nested-class accessor and fills the hidden slot.
-
-   `Labelled` inherits the nested declaration from `Point` and declares a
-   slot of its own *after* it, so its declared slots are not a prefix of
-   its fields: the hidden slot sits between `y` and `label`. A fix that
-   merely dropped a trailing slot would answer wrongly there.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript lives in `Script`,
-   which is no value. *)
+/// newspeak-spec.pdf 3.1.1: a value object is "globally unique, in the
+/// sense that no other object is equal to it", so its equality and its hash
+/// come from the state its class *declares*. A nested class declaration is
+/// not that state. Per 6, "every instance of a class C has a distinct
+/// nested class for each nested class declaration", cached in a hidden slot
+/// of the enclosing instance -- so two equal values hold *different* class
+/// objects there the moment each has been sent its own accessor.
+///
+/// Counting that slot made two equal values answer `false`, at exit status
+/// 0, as soon as the accessor had run on both. The rule is that a value's
+/// state is its declared slots and nothing else, which is also what the
+/// `slotCount` and `slotAt:` leaves the Newspeak fallback reads through
+/// report, so the leaf and the fallback compare the same slots.
+///
+/// Each line prints `=`, then `==`, then whether the two hash alike. The
+/// first two must always agree (3.1.1's condition on an identity method),
+/// and the third must be true wherever the first is. `touch` is what runs
+/// the nested-class accessor and fills the hidden slot.
+///
+/// `Labelled` inherits the nested declaration from `Point` and declares a
+/// slot of its own *after* it, so its declared slots are not a prefix of
+/// its fields: the hidden slot sits between `y` and `label`. A fix that
+/// merely dropped a trailing slot would answer wrongly there.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript lives in `Script`,
+/// which is no value.
 class NestedClassIsNotState = Object <: Value () (
     public class Point x: anX y: aY = Value new (
         | public x = anX. public y = aY. |

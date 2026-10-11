@@ -1,9 +1,9 @@
-(* `Fraction numerator:denominator:` makes a fraction in normal form --
-   reduced, its sign on the numerator -- and answers an Integer when the
-   denominator divides the numerator. `reducedNumerator:denominator:`
-   takes a pair already in that form and refuses any other. A fraction
-   prints as `(numerator/denominator)`; `Fraction new` holds no value and
-   is no number. *)
+/// `Fraction numerator:denominator:` makes a fraction in normal form --
+/// reduced, its sign on the numerator -- and answers an Integer when the
+/// denominator divides the numerator. `reducedNumerator:denominator:`
+/// takes a pair already in that form and refuses any other. A fraction
+/// prints as `(numerator/denominator)`; `Fraction new` holds no value and
+/// is no number.
 class AFractionIsMadeInNormalForm = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

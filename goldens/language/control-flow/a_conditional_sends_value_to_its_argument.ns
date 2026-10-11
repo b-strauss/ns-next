@@ -1,6 +1,6 @@
-(* True>>ifTrue: is ^trueBlock value: an argument that is no block is sent
-   value like any other object, and no Object>>value answers it, as in
-   Primordial Soup's kernel. *)
+/// True>>ifTrue: is ^trueBlock value: an argument that is no block is sent
+/// value like any other object, and no Object>>value answers it, as in
+/// Primordial Soup's kernel.
 class NotABlock = Object new (
 ) (
     public main: p args: a = (

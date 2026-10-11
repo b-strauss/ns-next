@@ -1,11 +1,11 @@
-(* A class that inherits a member named like a predefined class reaches the
-   inherited member. No construct enclosing `show` declares `Array`, so by
-   newspeak-spec.pdf 5.7 the bare `Array` is the self send `self Array`, and
-   2.3.1 says what that finds: "lookup proceeds up the lexical scope chain
-   ... and only if no lexically visible matching method is found, do we
-   proceed up the inheritance chain of self". `Derived`'s chain declares
-   `Array` in `Base` before it reaches `Object`, whose accessor for the
-   predefined class (3.2) is therefore overridden. *)
+/// A class that inherits a member named like a predefined class reaches the
+/// inherited member. No construct enclosing `show` declares `Array`, so by
+/// newspeak-spec.pdf 5.7 the bare `Array` is the self send `self Array`, and
+/// 2.3.1 says what that finds: "lookup proceeds up the lexical scope chain
+/// ... and only if no lexically visible matching method is found, do we
+/// proceed up the inheritance chain of self". `Derived`'s chain declares
+/// `Array` in `Base` before it reaches `Object`, whose accessor for the
+/// predefined class (3.2) is therefore overridden.
 class InheritedBuiltinName = Object new () (
     class Base = Object new () (
         public Array = ( ^'inherited' )

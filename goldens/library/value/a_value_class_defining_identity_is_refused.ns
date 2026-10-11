@@ -1,10 +1,10 @@
-(* newspeak-spec.pdf 3.1.1: a value's class "inherits from class Value and
-   does not define an identity method (==)". `Value`'s own `==` answers what
-   its `=` does, which is what makes a value globally unique; a class that
-   redefines it would break that silently. Decided where the class is
-   created, as SOMns checks a value class's conditions (InstantiationNode),
-   but refused only where an instance is made -- `Odd new`, right after the
-   line before it prints. *)
+/// newspeak-spec.pdf 3.1.1: a value's class "inherits from class Value and
+/// does not define an identity method (==)". `Value`'s own `==` answers what
+/// its `=` does, which is what makes a value globally unique; a class that
+/// redefines it would break that silently. Decided where the class is
+/// created, as SOMns checks a value class's conditions (InstantiationNode),
+/// but refused only where an instance is made -- `Odd new`, right after the
+/// line before it prints.
 class ValueDefiningIdentity = Object <: Value () (
     public class Odd = Value new () (
         public == other = ( ^false )

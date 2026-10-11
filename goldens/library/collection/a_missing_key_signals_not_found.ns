@@ -1,7 +1,7 @@
-(* `Map>>at:` of an absent key signals a `NotFound` carrying the key, an
-   Error with the text an uncaught one ends the run with; a List index out
-   of range and a negative capacity, a Map's or a Set's, signal an
-   `ArgumentError`, as an Array's do. *)
+/// `Map>>at:` of an absent key signals a `NotFound` carrying the key, an
+/// Error with the text an uncaught one ends the run with; a List index out
+/// of range and a negative capacity, a Map's or a Set's, signal an
+/// `ArgumentError`, as an Array's do.
 class AMissingKeySignalsNotFound = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. kernel = platform kernel. map list |

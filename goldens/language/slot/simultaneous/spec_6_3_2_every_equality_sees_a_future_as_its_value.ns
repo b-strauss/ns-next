@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf 6.3.2's futures are indistinguishable from their
-   values (5.5's proxy; docs/design/object-model.md, "Where Rust sees a
-   future"), so every equality leaf that answers false to an operand of
-   another kind answers for the value a future stands for: Float's `=`,
-   a value object's `=`, and the handler class `on:do:` tests an error
-   against, each met while the sibling is still its future. *)
+/// newspeak-spec.pdf 6.3.2's futures are indistinguishable from their
+/// values (5.5's proxy; docs/design/object-model.md, "Where Rust sees a
+/// future"), so every equality leaf that answers false to an operand of
+/// another kind answers for the value a future stands for: Float's `=`,
+/// a value object's `=`, and the handler class `on:do:` tests an error
+/// against, each met while the sibling is still its future.
 class Spec632EveryEqualitySeesAFuture = Object <: Value (
 ) (
     class Pair first: a second: b = Value new (| public first = a. public second = b. |) () : ()

@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 6.2: "Next, the instance initializer of I invokes the
-   instance initializer of S on o with the arguments of mu_s. Then, m is
-   evaluated to mu_m". Marker's clause message sends #fooBar to 3, which
-   does not understand it, so the error is raised in the middle of an
-   instantiation: after m_s has been evaluated and Base's initializer has
-   run, before Marker's initializer or Applied's own runs. The error is
-   uncaught -- exit status 1, the does-not-understand error naming
-   #fooBar -- and nothing after it prints. *)
+/// newspeak-spec.pdf 6.2: "Next, the instance initializer of I invokes the
+/// instance initializer of S on o with the arguments of mu_s. Then, m is
+/// evaluated to mu_m". Marker's clause message sends #fooBar to 3, which
+/// does not understand it, so the error is raised in the middle of an
+/// instantiation: after m_s has been evaluated and Base's initializer has
+/// run, before Marker's initializer or Applied's own runs. The error is
+/// uncaught -- exit status 1, the does-not-understand error naming
+/// #fooBar -- and nothing after it prints.
 class MixinClauseMessageThatRaisesFails = Object new (| t ::= nil. |) (
     class Base withBase: value = Object new (
         | baseSlot = outer MixinClauseMessageThatRaisesFails log: 'Base initializer receives ', value. |

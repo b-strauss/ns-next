@@ -1,11 +1,11 @@
-(* `on:do:` is an ordinary kernel method, so a recursion through it counts
-   its activations as any other (docs/design/compiler.md, "How the limit
-   counts"): each level of `down:` is three counted activations -- the
-   method, `on:do:` and its protected block -- as each level of `a:` is
-   three methods. Both start from the same depth, so both reach the limit at
-   the same level, under either lowering, and the innermost `on:do:` catches
-   the limit it reached. Their difference, not the level itself, is
-   printed, so that the limit's value is in no recorded answer. *)
+/// `on:do:` is an ordinary kernel method, so a recursion through it counts
+/// its activations as any other (docs/design/compiler.md, "How the limit
+/// counts"): each level of `down:` is three counted activations -- the
+/// method, `on:do:` and its protected block -- as each level of `a:` is
+/// three methods. Both start from the same depth, so both reach the limit at
+/// the same level, under either lowering, and the innermost `on:do:` catches
+/// the limit it reached. Their difference, not the level itself, is
+/// printed, so that the limit's value is in no recorded answer.
 class RecursionThroughOnDoCountsAlike = Object new (
     | plainLevel ::= 0.
       handlerLevel ::= 0. |

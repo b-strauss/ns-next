@@ -1,5 +1,5 @@
-(* A negative count is refused, as Primordial Soup's primitive fails for it
-   and its method raises. *)
+/// A negative count is refused, as Primordial Soup's primitive fails for it
+/// and its method raises.
 class NegativeShift = () (
     public main: platform args: arguments = (
         platform transcript print: 1 << -1; newLine

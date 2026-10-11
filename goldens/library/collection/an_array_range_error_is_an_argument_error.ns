@@ -1,6 +1,6 @@
-(* A range an Array does not hold is an ArgumentError carrying the bound
-   that is out of range, with copyFrom:to:'s text as a String's; a source
-   too short for replaceFrom:to:with:startingAt: refuses its start. *)
+/// A range an Array does not hold is an ArgumentError carrying the bound
+/// that is out of range, with copyFrom:to:'s text as a String's; a source
+/// too short for replaceFrom:to:with:startingAt: refuses its start.
 class AnArrayRangeErrorIsAnArgumentError = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. array |

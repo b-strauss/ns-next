@@ -1,5 +1,5 @@
-(* A `^` from a block whose home has returned signals a `CannotReturn`
-   carrying the value it tried to return. *)
+/// A `^` from a block whose home has returned signals a `CannotReturn`
+/// carrying the value it tried to return.
 class ACannotReturnCarriesTheReturnedValue = Object new (
     | stored ::= nil. |
 ) (

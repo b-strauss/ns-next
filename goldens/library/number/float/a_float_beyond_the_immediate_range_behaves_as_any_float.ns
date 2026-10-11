@@ -1,6 +1,6 @@
-(* A float outside the immediate range -- huge, denormal -- is a Float like
-   any other: same class, equality and hash by value, arithmetic in and out
-   of the range. *)
+/// A float outside the immediate range -- huge, denormal -- is a Float like
+/// any other: same class, equality and hash by value, arithmetic in and out
+/// of the range.
 class AFloatBeyondTheImmediateRangeBehavesAsAnyFloat = Object new (
 ) (
     public main: platform args: arguments = (

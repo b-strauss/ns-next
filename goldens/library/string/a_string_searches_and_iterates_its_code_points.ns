@@ -1,8 +1,8 @@
-(* A String's elements are its code points, Integers, in both widths and
-   past U+FFFF: `do:`, `first`, `last` and `withAll:` deal in them, and
-   `stringAt:` answers the String of one. Searching answers a code-point
-   index, or 0; a Symbol answers what its text does, as receiver and as argument.
-   `String withAll:` gathers any Collection, a List or a Set among them. *)
+/// A String's elements are its code points, Integers, in both widths and
+/// past U+FFFF: `do:`, `first`, `last` and `withAll:` deal in them, and
+/// `stringAt:` answers the String of one. Searching answers a code-point
+/// index, or 0; a Symbol answers what its text does, as receiver and as argument.
+/// `String withAll:` gathers any Collection, a List or a Set among them.
 class AStringSearchesAndIteratesItsCodePoints = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. text wide |

@@ -1,5 +1,5 @@
-(* A loop body that is no block and has no `value` ends in
-   `doesNotUnderstand:` the first time the condition lets it run. *)
+/// A loop body that is no block and has no `value` ends in
+/// `doesNotUnderstand:` the first time the condition lets it run.
 class ALoopWhoseBodyUnderstandsNothingFails = Object new (
 ) (
     public main: platform args: arguments = (

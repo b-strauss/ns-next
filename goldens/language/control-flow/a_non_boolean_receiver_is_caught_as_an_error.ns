@@ -1,5 +1,5 @@
-(* A `NonBooleanReceiver` is an Error carrying the condition's answer;
-   `whileFalse:` signals it as `whileTrue:` does, inlined and native. *)
+/// A `NonBooleanReceiver` is an Error carrying the condition's answer;
+/// `whileFalse:` signals it as `whileTrue:` does, inlined and native.
 class ANonBooleanReceiverIsCaughtAsAnError = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. condition |

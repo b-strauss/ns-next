@@ -1,7 +1,7 @@
-(* §5.1.1 bounds no literal: "integers are not limited in size". A decimal
-   and a radix literal beyond `i64`, a negative one, the two `i64` edges, and
-   the two 61-bit edges of an `Integer`, beyond which a literal is a
-   `LargeInteger`. *)
+/// §5.1.1 bounds no literal: "integers are not limited in size". A decimal
+/// and a radix literal beyond `i64`, a negative one, the two `i64` edges, and
+/// the two 61-bit edges of an `Integer`, beyond which a literal is a
+/// `LargeInteger`.
 class Literals = Object new (
 ) (
     public main: p args: a = (

@@ -1,6 +1,6 @@
-(* A leaf that refuses an argument signals an `ArgumentError` carrying it,
-   with the text an uncaught one ends the run with; `on: Error do:` still
-   catches it. Division by zero refuses its divisor. *)
+/// A leaf that refuses an argument signals an `ArgumentError` carrying it,
+/// with the text an uncaught one ends the run with; `on: Error do:` still
+/// catches it. Division by zero refuses its divisor.
 class ALeafsArgumentErrorIsCaughtByItsClass = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. array = Array new: 3. |

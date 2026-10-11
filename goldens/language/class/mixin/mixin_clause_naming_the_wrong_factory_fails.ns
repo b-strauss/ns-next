@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 6.2: "Class I has a primary factory method (6) with the
-   same selector as m", and 6.1, whose inheritance clause the part after <:
-   is: "It is a run time error if the message selector specified by the
-   inheritance clause is not the selector of the primary factory of the
-   class C." Marker's primary factory is withTag:, so a clause sending new
-   to it is that run time error, raised when Applied is instantiated: an
-   uncaught error naming the clause's class, the selector it sends and the
-   factory Marker has, exit status 1, and nothing after it prints. *)
+/// newspeak-spec.pdf 6.2: "Class I has a primary factory method (6) with the
+/// same selector as m", and 6.1, whose inheritance clause the part after <:
+/// is: "It is a run time error if the message selector specified by the
+/// inheritance clause is not the selector of the primary factory of the
+/// class C." Marker's primary factory is withTag:, so a clause sending new
+/// to it is that run time error, raised when Applied is instantiated: an
+/// uncaught error naming the clause's class, the selector it sends and the
+/// factory Marker has, exit status 1, and nothing after it prints.
 class MixinClauseNamingTheWrongFactoryFails = Object new () (
     class Marker withTag: aTag = Object new (| public tag = aTag. |) (
     ) : ()

@@ -1,20 +1,20 @@
-(* What `outer_reach` folds (docs/design/execution.md, "Converted
-   representation", "The divorce"). A fallback closure keeps the
-   by-reference model, and so does every block nested in it: the block
-   [x] inside the fallback copy of [held:: [x]] reads x two frames out --
-   its own, the fallback closure's, the method's.
-
-   The fallback closure itself reads nothing outer (held is a slot, so
-   `held::` is a send), so its body's reach is only what the nested
-   MakeClosure gives it: the block's 2, less one level. That one is what
-   marks the method's activation, so its frame keeps its registers when
-   it returns. Without the folding the method would return its registers
-   to nothing and x would read as nil.
-
-   nestedInAFallback runs to completion first, then runKept makes the
-   block, then the block is evaluated -- three steps apart, with the
-   method's activation gone after the first. x is 4 and nothing writes
-   it, so the answer is 4. *)
+/// What `outer_reach` folds (docs/design/execution.md, "Converted
+/// representation", "The divorce"). A fallback closure keeps the
+/// by-reference model, and so does every block nested in it: the block
+/// [x] inside the fallback copy of [held:: [x]] reads x two frames out --
+/// its own, the fallback closure's, the method's.
+///
+/// The fallback closure itself reads nothing outer (held is a slot, so
+/// `held::` is a send), so its body's reach is only what the nested
+/// MakeClosure gives it: the block's 2, less one level. That one is what
+/// marks the method's activation, so its frame keeps its registers when
+/// it returns. Without the folding the method would return its registers
+/// to nothing and x would read as nil.
+///
+/// nestedInAFallback runs to completion first, then runKept makes the
+/// block, then the block is evaluated -- three steps apart, with the
+/// method's activation gone after the first. x is 4 and nothing writes
+/// it, so the answer is 4.
 class ABlockInAFallbackClosureOutlivesItsMethod = Object new (
     |
       held ::= nil. |

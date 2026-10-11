@@ -1,10 +1,10 @@
-(* A Float's mathematical functions are the IEEE double's; only values
-   exact on every platform are printed, the others are bounded. Rounding
-   answers a Float -- `rounded` half away from zero -- and keeps an
-   infinity or a NaN as it is. An integer answers the same functions
-   through `asFloat`, and the questions about NaN and infinity as a
-   finite number does. `atan:` is the angle of the point (argument,
-   receiver). *)
+/// A Float's mathematical functions are the IEEE double's; only values
+/// exact on every platform are printed, the others are bounded. Rounding
+/// answers a Float -- `rounded` half away from zero -- and keeps an
+/// infinity or a NaN as it is. An integer answers the same functions
+/// through `asFloat`, and the questions about NaN and infinity as a
+/// finite number does. `atan:` is the angle of the point (argument,
+/// receiver).
 class FloatMathematicsAndRounding = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. quarter natural common |

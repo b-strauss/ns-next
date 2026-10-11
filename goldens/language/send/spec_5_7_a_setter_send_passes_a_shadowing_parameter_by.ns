@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 5.4.3 makes `v:: e` a send of v:, and 5.7 sends it to
-   the innermost lexically enclosing construct in which v: is declared. The
-   block's parameter v declares a getter only (3.6), so that construct is
-   the method, whose mutable local v declares v:. The write lands on the
-   method's v while v in the block still reads the parameter. This is what
-   the canonical compiler does: its scopes are keyed by selector, and a
-   setter send searches them outward
-   (prior-art/newspeak/NewspeakCompilation.ns, setterSendNode:). *)
+/// newspeak-spec.pdf 5.4.3 makes `v:: e` a send of v:, and 5.7 sends it to
+/// the innermost lexically enclosing construct in which v: is declared. The
+/// block's parameter v declares a getter only (3.6), so that construct is
+/// the method, whose mutable local v declares v:. The write lands on the
+/// method's v while v in the block still reads the parameter. This is what
+/// the canonical compiler does: its scopes are keyed by selector, and a
+/// setter send searches them outward
+/// (prior-art/newspeak/NewspeakCompilation.ns, setterSendNode:).
 class Spec57ASetterSendPassesAShadowingParameterBy = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. v |

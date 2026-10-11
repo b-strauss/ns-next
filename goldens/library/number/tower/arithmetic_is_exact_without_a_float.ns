@@ -1,11 +1,11 @@
-(* With no Float among the operands, arithmetic is exact: dividing
-   integers that do not divide answers a Fraction, and a Fraction whose
-   denominator becomes 1 answers an Integer. A Float among them makes
-   the answer a Float, the other operand rounded once to the nearest
-   double. `//` and `\\` round toward negative infinity, `quo:` and
-   `rem:` toward zero, over every pair of numbers; any of them by zero,
-   and an exact `/` by zero, is "division by zero", while a Float's `/`
-   by zero is an infinity. *)
+/// With no Float among the operands, arithmetic is exact: dividing
+/// integers that do not divide answers a Fraction, and a Fraction whose
+/// denominator becomes 1 answers an Integer. A Float among them makes
+/// the answer a Float, the other operand rounded once to the nearest
+/// double. `//` and `\\` round toward negative infinity, `quo:` and
+/// `rem:` toward zero, over every pair of numbers; any of them by zero,
+/// and an exact `/` by zero, is "division by zero", while a Float's `/`
+/// by zero is an infinity.
 class ArithmeticIsExactWithoutAFloat = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

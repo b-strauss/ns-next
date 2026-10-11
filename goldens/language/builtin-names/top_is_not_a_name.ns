@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 3.2 lets only `Object` name `Top`, as its superclass,
-   so `Object` provides no accessor for it among its "accessors for
-   predefined classes". `self Top` therefore finds nothing on the receiver's
-   inheritance chain (2.3.1) and is an ordinary `doesNotUnderstand:`; a bare
-   `Top` is the same send by 5.7. *)
+/// newspeak-spec.pdf 3.2 lets only `Object` name `Top`, as its superclass,
+/// so `Object` provides no accessor for it among its "accessors for
+/// predefined classes". `self Top` therefore finds nothing on the receiver's
+/// inheritance chain (2.3.1) and is an ordinary `doesNotUnderstand:`; a bare
+/// `Top` is the same send by 5.7.
 class TopIsNotAName = Object new () (
     public main: platform args: arguments = (
         platform transcript show: self Top printString; newLine

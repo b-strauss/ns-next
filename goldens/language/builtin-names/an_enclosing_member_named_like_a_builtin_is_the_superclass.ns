@@ -1,16 +1,16 @@
-(* A nested class's superclass clause that names a predefined class finds a
-   member of that name an enclosing class declares. newspeak-spec.pdf 6.1
-   evaluates the clause `String new` "as if it occurred inside an instance
-   method" of the enclosing class, so its `String` is an implicit receiver
-   send, and 5.7 answers it with the innermost lexically enclosing
-   declaration: the module's nested class `String`, i.e. `outer
-   EnclosingBuiltinName String`. `Object`'s accessor for the predefined
-   class (3.2) is reached only "if no lexically visible matching method is
-   found" (2.3.1), which is not the case here, so `Derived` inherits `tag`.
-
-   The member is a class named `String` rather than one named `Object`: a
-   nested class `Object = Object new` finds itself in its own clause by the
-   same rule and is refused as a cyclic class definition. *)
+/// A nested class's superclass clause that names a predefined class finds a
+/// member of that name an enclosing class declares. newspeak-spec.pdf 6.1
+/// evaluates the clause `String new` "as if it occurred inside an instance
+/// method" of the enclosing class, so its `String` is an implicit receiver
+/// send, and 5.7 answers it with the innermost lexically enclosing
+/// declaration: the module's nested class `String`, i.e. `outer
+/// EnclosingBuiltinName String`. `Object`'s accessor for the predefined
+/// class (3.2) is reached only "if no lexically visible matching method is
+/// found" (2.3.1), which is not the case here, so `Derived` inherits `tag`.
+///
+/// The member is a class named `String` rather than one named `Object`: a
+/// nested class `Object = Object new` finds itself in its own clause by the
+/// same rule and is refused as a cyclic class definition.
 class EnclosingBuiltinName = Object new () (
     class String = Object new () (
         public tag = ( ^'local' )

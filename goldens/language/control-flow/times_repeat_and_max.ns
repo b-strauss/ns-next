@@ -1,7 +1,7 @@
-(* `timesRepeat:` is Primordial Soup's `Integer>>timesRepeat:`, which
-   evaluates its block the receiver's number of times and answers nil;
-   `max:` is its `Number>>max:`, for any two numbers the ordering
-   compares. DeltaBlue and Havlak send them. *)
+/// `timesRepeat:` is Primordial Soup's `Integer>>timesRepeat:`, which
+/// evaluates its block the receiver's number of times and answers nil;
+/// `max:` is its `Number>>max:`, for any two numbers the ordering
+/// compares. DeltaBlue and Havlak send them.
 class TimesRepeatAndMax = Object new (
 ) (
     public main: platform args: arguments = (

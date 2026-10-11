@@ -1,8 +1,8 @@
-(* §5.5: `Object`'s `doesNotUnderstand:` signals a `MessageNotUnderstood`,
-   which is resumable although it is an `Error`: the value a handler
-   resumes it with is the value of the send nothing understood, and the
-   expression goes on from there. The exception names the message and the
-   receiver, and its text is the one an uncaught one ends the run with. *)
+/// §5.5: `Object`'s `doesNotUnderstand:` signals a `MessageNotUnderstood`,
+/// which is resumable although it is an `Error`: the value a handler
+/// resumes it with is the value of the send nothing understood, and the
+/// expression goes on from there. The exception names the message and the
+/// receiver, and its text is the one an uncaught one ends the run with.
 class AMessageNotUnderstoodIsResumed = Object new (
     
 ) (

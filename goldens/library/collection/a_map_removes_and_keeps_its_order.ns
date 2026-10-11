@@ -1,6 +1,6 @@
-(* Removing half a map's keys, storing a removed key again and growing past
-   several tables keeps every live key reachable and the order of first
-   storing: a key stored again after its removal comes last. *)
+/// Removing half a map's keys, storing a removed key again and growing past
+/// several tables keeps every live key reachable and the order of first
+/// storing: a key stored again after its removal comes last.
 class AMapRemovesAndKeepsItsOrder = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. Map = platform collections Map. map show |

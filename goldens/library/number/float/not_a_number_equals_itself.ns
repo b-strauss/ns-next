@@ -1,11 +1,11 @@
-(* A Float is a value, so its `=` must be an equivalence and its `==`
-   answers what `=` does (§3.1.1). IEEE 754's equality is not one: a NaN
-   equals nothing, itself included. So `=` is IEEE's except that every NaN
-   equals every other, and every NaN hashes alike -- JavaScript's
-   SameValueZero, the equality its Map and Set use: `0.0 = -0.0` stays
-   true. The ordering stays IEEE's, false whenever a NaN takes part, and
-   so does arithmetic. A NaN is thus itself, and a key a Map finds again
-   (docs/design/core-library.md, "A NaN equals a NaN"). *)
+/// A Float is a value, so its `=` must be an equivalence and its `==`
+/// answers what `=` does (§3.1.1). IEEE 754's equality is not one: a NaN
+/// equals nothing, itself included. So `=` is IEEE's except that every NaN
+/// equals every other, and every NaN hashes alike -- JavaScript's
+/// SameValueZero, the equality its Map and Set use: `0.0 = -0.0` stays
+/// true. The ordering stays IEEE's, false whenever a NaN takes part, and
+/// so does arithmetic. A NaN is thus itself, and a key a Map finds again
+/// (docs/design/core-library.md, "A NaN equals a NaN").
 class NotANumberEqualsItself = Object new (
 ) (
     public main: platform args: arguments = (

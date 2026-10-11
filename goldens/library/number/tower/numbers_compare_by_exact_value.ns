@@ -1,9 +1,9 @@
-(* `=` and the orderings compare an Integer, a LargeInteger, a Fraction
-   and a Float by their exact values, in both directions: 2^53 + 1 is
-   not the double 2^53 it rounds to, and is greater than it. A NaN is
-   ordered with nothing and equals only a NaN; an infinity lies beyond
-   every other number. `=` with something that is no number is false; an
-   ordering with it is an ArgumentError. *)
+/// `=` and the orderings compare an Integer, a LargeInteger, a Fraction
+/// and a Float by their exact values, in both directions: 2^53 + 1 is
+/// not the double 2^53 it rounds to, and is greater than it. A NaN is
+/// ordered with nothing and equals only a NaN; an infinity lies beyond
+/// every other number. `=` with something that is no number is false; an
+/// ordering with it is an ArgumentError.
 class NumbersCompareByExactValue = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

@@ -1,23 +1,23 @@
-(* Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
-   e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-   core-lib/Benchmarks/Havlak.ns), one of the Are We Fast Yet benchmarks.
-   Changed for ns-next: a module in Primordial Soup's shape, whose bench
-   runs once and checks its own result; it runs Are We Fast Yet's workload
-   at its size 1500, 1500 dummy loops, 50 loop-finding iterations and 10,
-   10 and 5 nested loops, where SOMns's harness derives all five from one
-   iteration count (50 n, 5 n, n, n and 5); Vector is Primordial Soup's
-   List, IdentityDictionary is Map and IdentitySet and Set are Set, the
-   basic blocks and loops being keys and elements by identity because they
-   define no =; BasicBlock's customHash, which only SOMns's collections
-   ask for, is left out; only Primordial Soup's protocol is sent; names are
-   written out, the basic block kinds included.
-
-   Copyright 2011 Google Inc.
-
-   Licensed under the Apache License, Version 2.0 (the ''License''); you
-   may not use this file except in compliance with the License. You may
-   obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
-   and in THIRD-PARTY-NOTICES.md at the repository root. *)
+/// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
+/// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
+/// core-lib/Benchmarks/Havlak.ns), one of the Are We Fast Yet benchmarks.
+/// Changed for ns-next: a module in Primordial Soup's shape, whose bench
+/// runs once and checks its own result; it runs Are We Fast Yet's workload
+/// at its size 1500, 1500 dummy loops, 50 loop-finding iterations and 10,
+/// 10 and 5 nested loops, where SOMns's harness derives all five from one
+/// iteration count (50 n, 5 n, n, n and 5); Vector is Primordial Soup's
+/// List, IdentityDictionary is Map and IdentitySet and Set are Set, the
+/// basic blocks and loops being keys and elements by identity because they
+/// define no =; BasicBlock's customHash, which only SOMns's collections
+/// ask for, is left out; only Primordial Soup's protocol is sent; names are
+/// written out, the basic block kinds included.
+///
+/// Copyright 2011 Google Inc.
+///
+/// Licensed under the Apache License, Version 2.0 (the ''License''); you
+/// may not use this file except in compliance with the License. You may
+/// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+/// and in THIRD-PARTY-NOTICES.md at the repository root.
 class Havlak usingPlatform: platform = (
     | private List = platform collections List.
       private Map = platform collections Map.
@@ -249,8 +249,8 @@ class Havlak usingPlatform: platform = (
           private last ::= nil.
           private nodes ::= nil. |
     ) (
-        (* The kinds of basic block: #nonHeader #reducible #selfLoop
-           #irreducible #dead. *)
+        /// The kinds of basic block: #nonHeader #reducible #selfLoop
+        /// #irreducible #dead.
         private isAncestor: ancestor of: descendant = (
             ^ancestor <= descendant and: [descendant <= (last at: ancestor)]
         )
@@ -337,7 +337,7 @@ class Havlak usingPlatform: platform = (
                             reducible: ((type at: candidate) = #irreducible) not.
                         setLoopAttribute: candidate nodePool: nodePool loop: loop]]]
         )
-        (* Step e of Havlak's algorithm. *)
+        /// Step e of Havlak's algorithm.
         private processNonBackPredecessors: candidate nodePool: nodePool workList: workList node: workNode = (
             (nonBackPredecessors at: workNode depthFirstNumber) do: [:predecessor |
                 | representative |
@@ -361,7 +361,7 @@ class Havlak usingPlatform: platform = (
                     ifTrue: [node loop parent: loop]
                     ifFalse: [loop addNode: node basicBlock]]
         )
-        (* Step d of Havlak's algorithm. *)
+        /// Step d of Havlak's algorithm.
         private collectBackPredecessors: candidate nodePool: nodePool = (
             (backPredecessors at: candidate) do: [:predecessor |
                 (predecessor = candidate) not

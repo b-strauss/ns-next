@@ -1,7 +1,7 @@
-(* An inlined loop whose condition answers no Boolean signals a
-   `NonBooleanReceiver` once the condition has run, and nothing after it
-   runs. A loop's behaviour is the library's to define: there is no
-   `mustBeBoolean` for a program to answer. *)
+/// An inlined loop whose condition answers no Boolean signals a
+/// `NonBooleanReceiver` once the condition has run, and nothing after it
+/// runs. A loop's behaviour is the library's to define: there is no
+/// `mustBeBoolean` for a program to answer.
 class ANonBooleanLoopConditionSignalsNonBooleanReceiver = Object new (
 ) (
     public main: platform args: arguments = (

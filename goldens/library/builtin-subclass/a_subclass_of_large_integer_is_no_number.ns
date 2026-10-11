@@ -1,10 +1,10 @@
-(* A user subclass of `LargeInteger`, and `LargeInteger new`, inherit its
-   methods but no integer payload, so every `LargeInteger` leaf declines,
-   then every `Integer` leaf, and the send reaches `Object`'s: nothing takes
-   such an instance for a number. `LargeInteger` is reached through an
-   instance's class, since `Object` declares no accessor for it. The module
-   is a value because `MyLarge`, a subclass of `Value`, asks its enclosing
-   object to be one (§3.1.1). *)
+/// A user subclass of `LargeInteger`, and `LargeInteger new`, inherit its
+/// methods but no integer payload, so every `LargeInteger` leaf declines,
+/// then every `Integer` leaf, and the send reaches `Object`'s: nothing takes
+/// such an instance for a number. `LargeInteger` is reached through an
+/// instance's class, since `Object` declares no accessor for it. The module
+/// is a value because `MyLarge`, a subclass of `Value`, asks its enclosing
+/// object to be one (§3.1.1).
 class LargeFallThrough = Object <: Value () (
     class MyLarge = largeIntegerClass new () ()
     class Script on: aTranscript = Object new (

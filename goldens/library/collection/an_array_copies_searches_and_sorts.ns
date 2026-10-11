@@ -1,7 +1,7 @@
-(* An Array's own protocol: concatenating, copying, searching, sorting --
-   stably -- and replacing a range from any source answering `at:`,
-   itself included with overlapping ranges. `collect:`, `select:` and
-   `reject:` answer Arrays. *)
+/// An Array's own protocol: concatenating, copying, searching, sorting --
+/// stably -- and replacing a range from any source answering `at:`,
+/// itself included with overlapping ranges. `collect:`, `select:` and
+/// `reject:` answer Arrays.
 class AnArrayCopiesSearchesAndSorts = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. array show shifted pairs |

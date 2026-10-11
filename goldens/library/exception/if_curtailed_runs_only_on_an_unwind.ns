@@ -1,6 +1,6 @@
-(* `ifCurtailed:` runs its block only when an unwind abandons the
-   protected block -- once, before the method's value is printed -- and
-   never when the block ends normally. *)
+/// `ifCurtailed:` runs its block only when an unwind abandons the
+/// protected block -- once, before the method's value is printed -- and
+/// never when the block ends normally.
 class IfCurtailedRuns = Object new (
     | private transcript ::= nil. |
 ) (

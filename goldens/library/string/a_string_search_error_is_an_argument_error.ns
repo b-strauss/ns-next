@@ -1,5 +1,5 @@
-(* A start a search cannot begin at, an argument that is no String and a
-   code point that is none are ArgumentErrors carrying what was refused. *)
+/// A start a search cannot begin at, an argument that is no String and a
+/// code point that is none are ArgumentErrors carrying what was refused.
 class AStringSearchErrorIsAnArgumentError = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. text |

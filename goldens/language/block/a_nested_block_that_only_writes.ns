@@ -1,17 +1,17 @@
-(* A block that only *assigns* an enclosing scope's variable still has to
-   reach it, so it is handed that scope's indirection vector exactly as a
-   reading block would be -- and every block between it and the declaring
-   scope has to carry that vector to it, even one that neither reads nor
-   writes the variable itself (docs/design/execution.md, "Closure
-   conversion").
-
-   writeThroughTwoBlocks: the innermost block only writes count, the middle
-   block only carries the vector, and the method reads count afterwards, so
-   7. writerAndReaderThreeDeep: a reader created before the write chain runs
-   shares the same variable, so it answers 42 rather than its value at
-   capture, 1. aBlockLocalOnlyWritten: the variable belongs to a block, not
-   to the method, and the two blocks below it carry that block's vector, so
-   9. *)
+/// A block that only *assigns* an enclosing scope's variable still has to
+/// reach it, so it is handed that scope's indirection vector exactly as a
+/// reading block would be -- and every block between it and the declaring
+/// scope has to carry that vector to it, even one that neither reads nor
+/// writes the variable itself (docs/design/execution.md, "Closure
+/// conversion").
+///
+/// writeThroughTwoBlocks: the innermost block only writes count, the middle
+/// block only carries the vector, and the method reads count afterwards, so
+/// 7. writerAndReaderThreeDeep: a reader created before the write chain runs
+/// shares the same variable, so it answers 42 rather than its value at
+/// capture, 1. aBlockLocalOnlyWritten: the variable belongs to a block, not
+/// to the method, and the two blocks below it carry that block's vector, so
+/// 9.
 class ANestedBlockThatOnlyWrites = Object new (
     
 ) (

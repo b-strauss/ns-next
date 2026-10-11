@@ -1,10 +1,10 @@
-(* A Fraction rounds to an Integer -- `floor` and `ceiling` outward,
-   `truncated` and `asInteger` toward zero, `rounded` to the nearest with
-   a half away from zero -- and converts to the nearest Float in one
-   rounding, so a fraction whose parts are both beyond the largest Float
-   still converts, and one beyond it or below the smallest converts to an
-   infinity or zero. It answers the mathematical functions through that
-   Float, and `negated` and `abs` exactly. *)
+/// A Fraction rounds to an Integer -- `floor` and `ceiling` outward,
+/// `truncated` and `asInteger` toward zero, `rounded` to the nearest with
+/// a half away from zero -- and converts to the nearest Float in one
+/// rounding, so a fraction whose parts are both beyond the largest Float
+/// still converts, and one beyond it or below the smallest converts to an
+/// infinity or zero. It answers the mathematical functions through that
+/// Float, and `negated` and `abs` exactly.
 class AFractionRoundsAndConverts = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. half = 1 / 2. third = 1 / 3. huge = 10 raisedTo: 400. |

@@ -1,8 +1,8 @@
-(* Repeated squaring of 3 crosses every threshold of both dispatches:
-   schoolbook, Karatsuba, Toom-3 and the number-theoretic transform for the
-   squares, half-Karatsuba for the lopsided product, Burnikel-Ziegler, Knuth's
-   algorithm D and one-digit division for the quotients. Each line is a
-   decimal digit count and the last six digits, which Python computed. *)
+/// Repeated squaring of 3 crosses every threshold of both dispatches:
+/// schoolbook, Karatsuba, Toom-3 and the number-theoretic transform for the
+/// squares, half-Karatsuba for the lopsided product, Burnikel-Ziegler, Knuth's
+/// algorithm D and one-digit division for the quotients. Each line is a
+/// decimal digit count and the last six digits, which Python computed.
 class Squares = Object new (
 ) (
     lastSixOf: integer = ( ^integer - (integer // 1000000 * 1000000) )

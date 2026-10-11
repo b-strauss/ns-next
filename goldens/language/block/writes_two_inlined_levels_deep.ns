@@ -1,18 +1,18 @@
-(* An assignment inside an inlined block is lowered into the body that
-   inlines it, so it writes that body's registers directly and an operand
-   read before it has to be copied out first (CLAUDE.md, "An expression's
-   value register must still hold that value when its consumer executes").
-   The resolver counts every block literal as a scope, inlined or not, so
-   the compiler has to subtract the inlined levels it has descended before
-   it can tell which register the assignment lands in -- and two levels is
-   where getting that wrong stops being visible as a crash.
-
-   Each method reads t as the left operand of a binary send and then
-   assigns t two inlined levels deep inside the right operand, so each
-   answers t's value at the moment it was read, plus one: 2 + 1, 5 + 1 and
-   7 + 1. The loops run once and leave nil, which is why the array's second
-   element is what `at: 2` answers. Reading t after the assignment instead
-   would answer 31, 41 and 51. *)
+/// An assignment inside an inlined block is lowered into the body that
+/// inlines it, so it writes that body's registers directly and an operand
+/// read before it has to be copied out first (CLAUDE.md, "An expression's
+/// value register must still hold that value when its consumer executes").
+/// The resolver counts every block literal as a scope, inlined or not, so
+/// the compiler has to subtract the inlined levels it has descended before
+/// it can tell which register the assignment lands in -- and two levels is
+/// where getting that wrong stops being visible as a crash.
+///
+/// Each method reads t as the left operand of a binary send and then
+/// assigns t two inlined levels deep inside the right operand, so each
+/// answers t's value at the moment it was read, plus one: 2 + 1, 5 + 1 and
+/// 7 + 1. The loops run once and leave nil, which is why the array's second
+/// element is what `at: 2` answers. Reading t after the assignment instead
+/// would answer 31, 41 and 51.
 class WritesTwoInlinedLevelsDeep = Object new (
     
 ) (

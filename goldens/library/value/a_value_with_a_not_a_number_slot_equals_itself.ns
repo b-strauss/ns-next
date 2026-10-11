@@ -1,19 +1,19 @@
-(* newspeak-spec.pdf 3.1.1: a value object's equality is that of its
-   state, so two values whose slots hold a not-a-number are equal: a
-   `Float`'s `=` and `hash` treat every NaN as the one NaN (so a Float
-   that is no number is equal to itself, as a Map key must be), and a
-   value's slots are compared and hashed the same way. `0.0` and `-0.0`
-   are one number, so they are equal and hash alike.
-
-   Each line prints `=`, then `==`, then whether the two hash alike. The
-   first two columns must always agree (3.1.1's condition on an identity
-   method), and the third must be true wherever the first is; for unequal
-   values the third column is informational, as in
-   `a_user_value_class_compares_by_its_slots`.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript lives in `Script`,
-   which is no value. *)
+/// newspeak-spec.pdf 3.1.1: a value object's equality is that of its
+/// state, so two values whose slots hold a not-a-number are equal: a
+/// `Float`'s `=` and `hash` treat every NaN as the one NaN (so a Float
+/// that is no number is equal to itself, as a Map key must be), and a
+/// value's slots are compared and hashed the same way. `0.0` and `-0.0`
+/// are one number, so they are equal and hash alike.
+///
+/// Each line prints `=`, then `==`, then whether the two hash alike. The
+/// first two columns must always agree (3.1.1's condition on an identity
+/// method), and the third must be true wherever the first is; for unequal
+/// values the third column is informational, as in
+/// `a_user_value_class_compares_by_its_slots`.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript lives in `Script`,
+/// which is no value.
 class ValueWithNotANumberSlot = Object <: Value () (
     public class Box value: aValue = Value new (
         | public value = aValue. |

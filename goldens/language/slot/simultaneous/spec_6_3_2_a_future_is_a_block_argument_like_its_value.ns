@@ -1,8 +1,8 @@
-(* A leaf that stores or activates a block argument must not take a
-   sibling's future for a non-block (docs/design/object-model.md, "Where
-   Rust sees a future"): `do:` and `whileTrue:` receive `printer`'s and
-   `step`'s futures during the clause, and run the blocks they stand for
-   rather than treating each as a value of its own. *)
+/// A leaf that stores or activates a block argument must not take a
+/// sibling's future for a non-block (docs/design/object-model.md, "Where
+/// Rust sees a future"): `do:` and `whileTrue:` receive `printer`'s and
+/// `step`'s futures during the clause, and run the blocks they stand for
+/// rather than treating each as a value of its own.
 class Spec632AFutureIsABlockArgument = Object new (| t ::= nil. |) (
     class Probe = Object new (||
         public count ::= 0.

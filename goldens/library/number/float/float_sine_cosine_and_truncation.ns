@@ -1,9 +1,9 @@
-(* `sin` and `cos` are Primordial Soup's `Float>>sin` and `cos`, the C
-   library's functions of radians; only values exact on every platform are
-   printed, the others are bounded. `asInteger` is Primordial Soup's
-   `Float>>asInteger`: it truncates toward zero, exactly at any magnitude,
-   into a LargeInteger beyond 64 bits, and refuses a NaN and an infinity.
-   CD sends all three. *)
+/// `sin` and `cos` are Primordial Soup's `Float>>sin` and `cos`, the C
+/// library's functions of radians; only values exact on every platform are
+/// printed, the others are bounded. `asInteger` is Primordial Soup's
+/// `Float>>asInteger`: it truncates toward zero, exactly at any magnitude,
+/// into a LargeInteger beyond 64 bits, and refuses a NaN and an infinity.
+/// CD sends all three.
 class FloatSineCosineAndTruncation = Object new (
 ) (
     public main: platform args: arguments = (

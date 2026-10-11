@@ -1,5 +1,5 @@
-(* `bitOr:` takes an integer only, as `bitAnd:` does; nil is a type mismatch
-   naming what the leaf takes. *)
+/// `bitOr:` takes an integer only, as `bitAnd:` does; nil is a type mismatch
+/// naming what the leaf takes.
 class BitOrNil = () (
     public main: platform args: arguments = (
         platform transcript print: (3 bitOr: nil); newLine

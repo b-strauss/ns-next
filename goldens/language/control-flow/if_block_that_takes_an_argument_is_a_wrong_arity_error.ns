@@ -1,5 +1,5 @@
-(* A block with a parameter passed where the native activates it with none
-   is the ordinary wrong-arity error. *)
+/// A block with a parameter passed where the native activates it with none
+/// is the ordinary wrong-arity error.
 class IfArity = Object new (
 ) (
     public main: p args: a = (

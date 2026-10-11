@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 6.3.2 resolves "any well founded mutual recursion";
-   `first` and `second` each need the other's value, which is not, and
-   forcing a future while its own block runs is an ordinary error, caught
-   here like any other. A program's own future (`Future computing:`)
-   diverges with the same error, so its text names the future. *)
+/// newspeak-spec.pdf 6.3.2 resolves "any well founded mutual recursion";
+/// `first` and `second` each need the other's value, which is not, and
+/// forcing a future while its own block runs is an ordinary error, caught
+/// here like any other. A program's own future (`Future computing:`)
+/// diverges with the same error, so its text names the future.
 class Spec632IllFoundedRecursion = Object new (
     
 ) (

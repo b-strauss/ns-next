@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 3.1.1: a slot of a value holds only another value, and
-   a lazy slot (6.3.3) is one of its slots even though it is filled later,
-   by its getter. So the refusal comes on the getter's send, not at
-   instantiation -- the line before it still prints -- and names the class
-   and the slot as an eager slot's refusal does. *)
+/// newspeak-spec.pdf 3.1.1: a slot of a value holds only another value, and
+/// a lazy slot (6.3.3) is one of its slots even though it is filled later,
+/// by its getter. So the refusal comes on the getter's send, not at
+/// instantiation -- the line before it still prints -- and names the class
+/// and the slot as an eager slot's refusal does.
 class ValueLazySlotHoldsAValue = Object <: Value () (
     class Point x: xValue = Value new (| public x = xValue. |) (
         lazy public both = {x. x}.

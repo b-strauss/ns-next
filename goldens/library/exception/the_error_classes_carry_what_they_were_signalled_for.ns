@@ -1,7 +1,7 @@
-(* `ArgumentError`, `CannotReturn` and `CannotInstantiate` are Errors, so
-   `on: Error do:` catches them, and each carries what it was signalled
-   for in a public slot; with no text, its description is its class's name
-   and that slot's `printString`. *)
+/// `ArgumentError`, `CannotReturn` and `CannotInstantiate` are Errors, so
+/// `on: Error do:` catches them, and each carries what it was signalled
+/// for in a public slot; with no text, its description is its class's name
+/// and that slot's `printString`.
 class TheErrorClassesCarryWhatTheyWereSignalledFor = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. |

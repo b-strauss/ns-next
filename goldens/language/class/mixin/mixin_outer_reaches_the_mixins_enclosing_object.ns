@@ -1,15 +1,15 @@
-(* newspeak-spec.pdf 6.2: "The enclosing object of I is the enclosing object
-   of C", where C is the class the inheritance clause after <: specifies.
-
-   Marker is declared in Library, so its enclosing object is the Library
-   instance the module holds; Applied is declared in Host, so its enclosing
-   object is a Host. Applied's <: clause names that Library's Marker, so
-   the level Applied gains from it has the Library as its enclosing object:
-   outer Library inside Marker's method answers the Library, even though the
-   receiver is an Applied, declared in a Host. outer Host inside Applied's
-   own method still answers the Host. Each of the three objects identifies
-   itself differently, so reaching the Host, or the module, from Marker's
-   method would print a different first line. *)
+/// newspeak-spec.pdf 6.2: "The enclosing object of I is the enclosing object
+/// of C", where C is the class the inheritance clause after <: specifies.
+///
+/// Marker is declared in Library, so its enclosing object is the Library
+/// instance the module holds; Applied is declared in Host, so its enclosing
+/// object is a Host. Applied's <: clause names that Library's Marker, so
+/// the level Applied gains from it has the Library as its enclosing object:
+/// outer Library inside Marker's method answers the Library, even though the
+/// receiver is an Applied, declared in a Host. outer Host inside Applied's
+/// own method still answers the Host. Each of the three objects identifies
+/// itself differently, so reaching the Host, or the module, from Marker's
+/// method would print a different first line.
 class MixinOuterReachesTheMixinsEnclosingObject = Object new (|
     library = Library named: 'the library'.
 |) (

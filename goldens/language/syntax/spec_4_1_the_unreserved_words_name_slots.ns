@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 4.1 reserves self, super, outer, true, false and nil and
-   nothing else, so class, public, protected, private and lazy are ordinary
-   identifiers. 6.3.2's slotDef, [accessModifier] slotDecl, is a PEG (4.2):
-   an access modifier's word standing first is taken as the modifier, so it
-   names a slot only behind a modifier, while class and lazy need none. Each
-   slot answers its getter and its setter, sent to self and to an explicit
-   receiver, like any other; the one named class answers #class in place of
-   the inherited method. *)
+/// newspeak-spec.pdf 4.1 reserves self, super, outer, true, false and nil and
+/// nothing else, so class, public, protected, private and lazy are ordinary
+/// identifiers. 6.3.2's slotDef, [accessModifier] slotDecl, is a PEG (4.2):
+/// an access modifier's word standing first is taken as the modifier, so it
+/// names a slot only behind a modifier, while class and lazy need none. Each
+/// slot answers its getter and its setter, sent to self and to an explicit
+/// receiver, like any other; the one named class answers #class in place of
+/// the inherited method.
 class Spec41TheUnreservedWordsNameSlots = Object new () (
     class Holder = Object new (|
         public public ::= 'a'.

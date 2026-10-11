@@ -1,17 +1,17 @@
-(* Closure conversion (docs/design/execution.md, "Closure conversion")
-   decides per captured mutable local whether a block gets a
-   copy of it or shares its scope's indirection vector. These are the shapes
-   that decision is made on, recorded before the conversion exists, so that
-   the conversion is held to them.
-
-   setOnceThenCaptured: written before the block is created and never
-   after -- a copy answers 7 just as a shared variable does.
-   writtenAfterCapture: the write happens after the block exists, so the
-   block must see 2, which a copy would not.
-   writtenByTheBlock: the block itself writes, so method and block share.
-   immutableCaptured: an immutable local is never written (3.6).
-   vectorVariableWithInitializer: a declared initializer runs before the
-   block exists and the block then writes, so the method reads 30. *)
+/// Closure conversion (docs/design/execution.md, "Closure conversion")
+/// decides per captured mutable local whether a block gets a
+/// copy of it or shares its scope's indirection vector. These are the shapes
+/// that decision is made on, recorded before the conversion exists, so that
+/// the conversion is held to them.
+///
+/// setOnceThenCaptured: written before the block is created and never
+/// after -- a copy answers 7 just as a shared variable does.
+/// writtenAfterCapture: the write happens after the block exists, so the
+/// block must see 2, which a copy would not.
+/// writtenByTheBlock: the block itself writes, so method and block share.
+/// immutableCaptured: an immutable local is never written (3.6).
+/// vectorVariableWithInitializer: a declared initializer runs before the
+/// block exists and the block then writes, so the method reads 30.
 class CopiedAndVectorVariables = Object new (
     
 ) (

@@ -1,6 +1,6 @@
-(* Only the non-short-circuited arms run, and the evaluated arm's value is
-   the answer as it is, a non-Boolean included, as in every prior-art
-   kernel. *)
+/// Only the non-short-circuited arms run, and the evaluated arm's value is
+/// the answer as it is, a non-Boolean included, as in every prior-art
+/// kernel.
 class AndOr = Object new (
     | log ::= ''. |
 ) (

@@ -1,10 +1,10 @@
-(* newspeak-spec.pdf 3.6: local slots "are defined by their corresponding
-   declarations (6.3.2)", and 6.3.2 gives an immutable slot no setter:
-   "There is no setter method associated with the slot". So the innermost
-   construct declaring x: (5.7) is the class, whose method x: records what
-   it is sent, and the local keeps its initial value. The canonical compiler
-   enters an immutable temporary's getter alone into its scope
-   (prior-art/newspeak/NewspeakCompilation.ns, codeBodyNode:). *)
+/// newspeak-spec.pdf 3.6: local slots "are defined by their corresponding
+/// declarations (6.3.2)", and 6.3.2 gives an immutable slot no setter:
+/// "There is no setter method associated with the slot". So the innermost
+/// construct declaring x: (5.7) is the class, whose method x: records what
+/// it is sent, and the local keeps its initial value. The canonical compiler
+/// enters an immutable temporary's getter alone into its scope
+/// (prior-art/newspeak/NewspeakCompilation.ns, codeBodyNode:).
 class Spec36AnImmutableLocalSlotHasNoSetter = Object new (| log ::= 'nothing'. |) (
     x: value = ( log:: value printString )
     public main: platform args: arguments = (

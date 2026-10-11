@@ -1,10 +1,10 @@
-(* A program may make a platform of its own: the platform's class is a
-   nested class of the `PlatformFactory` module, whose factory is `new`,
-   and its members reach the module's classes lexically, so a second
-   platform's transcript writes through the mirror the first one's does.
-   The platform hands out the module's classes by methods, and each answers
-   the class its own members are instances of; the collections facet hands
-   out its module's classes as the platform hands out its own. *)
+/// A program may make a platform of its own: the platform's class is a
+/// nested class of the `PlatformFactory` module, whose factory is `new`,
+/// and its members reach the module's classes lexically, so a second
+/// platform's transcript writes through the mirror the first one's does.
+/// The platform hands out the module's classes by methods, and each answers
+/// the class its own members are instances of; the collections facet hands
+/// out its module's classes as the platform hands out its own.
 class ASecondPlatformWritesLikeTheFirst = Object new () (
     public main: platform args: arguments = (
         | second |

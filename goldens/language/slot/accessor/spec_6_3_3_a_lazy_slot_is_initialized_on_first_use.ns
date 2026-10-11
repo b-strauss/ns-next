@@ -1,14 +1,14 @@
-(* newspeak-spec.pdf 6.3.3: "A lazy slot is a slot that is initialized
-   lazily, upon first use." "A lazy slot always has an initialization
-   expression e, but the slot value is initially nil. When the slot is read
-   by invoking its getter method m, if the slot contains nil, e is
-   evaluated to an object o, the slot's value is set to o (but not by means
-   of a setter method), and o is returned as the result of the send.
-   Otherwise, the result of getter method invocation m is the value the
-   slot contains."
-
-   So trace is still empty after the instance is created, and carries
-   exactly one mark after the getter has been sent twice. *)
+/// newspeak-spec.pdf 6.3.3: "A lazy slot is a slot that is initialized
+/// lazily, upon first use." "A lazy slot always has an initialization
+/// expression e, but the slot value is initially nil. When the slot is read
+/// by invoking its getter method m, if the slot contains nil, e is
+/// evaluated to an object o, the slot's value is set to o (but not by means
+/// of a setter method), and o is returned as the result of the send.
+/// Otherwise, the result of getter method invocation m is the value the
+/// slot contains."
+///
+/// So trace is still empty after the instance is created, and carries
+/// exactly one mark after the getter has been sent twice.
 class Spec633LazySlot = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public computed = mark.

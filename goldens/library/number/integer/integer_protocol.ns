@@ -1,11 +1,11 @@
-(* An integer's own protocol: the greatest common divisor, never
-   negative; an arithmetic right shift, toward negative infinity; `&` and
-   `|` as `bitAnd:` and `bitOr:`; the base-256 digits of its magnitude,
-   least significant first; its text in any radix from 2 to 36, upper
-   case, and `Integer parse:radix:` back; the rounding selectors and
-   `numerator`/`denominator` of a fraction whose denominator is 1; and
-   modular exponentiation and inverse. A LargeInteger answers the same
-   way. *)
+/// An integer's own protocol: the greatest common divisor, never
+/// negative; an arithmetic right shift, toward negative infinity; `&` and
+/// `|` as `bitAnd:` and `bitOr:`; the base-256 digits of its magnitude,
+/// least significant first; its text in any radix from 2 to 36, upper
+/// case, and `Integer parse:radix:` back; the rounding selectors and
+/// `numerator`/`denominator` of a fraction whose denominator is 1; and
+/// modular exponentiation and inverse. A LargeInteger answers the same
+/// way.
 class IntegerProtocol = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. big = 1180591620717411303424. |

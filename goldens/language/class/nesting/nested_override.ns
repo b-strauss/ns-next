@@ -1,20 +1,20 @@
-(* A nested class's superclass clause (newspeak-spec.pdf 6.1) is evaluated
-   once per enclosing instance, and `GrandChildOfOuter` overrides what its
-   `Inner` clause reads with a slot rather than a nested-class declaration.
-   `Nested`'s cached class is per receiver (6): once `g Nested` has resolved
-   `Inner` for `g`, changing `g`'s `Inner` slot afterwards must not change
-   the class `g Nested` already answers.
-
-   The slot starts at `Stopwatch`, an implicit-receiver send the module's
-   own slot answers -- the platform's `Stopwatch` -- not `Array`:
-   `setInner:` supplies `Array` later, to show the cached class does not
-   change, so the starting value has to differ from it. `Stopwatch` is no
-   value class -- this golden instantiates `Nested` (`n1 new` below), and a
-   value class whose enclosing object is mutable, as `g` is here, is
-   refused where an instance is made (newspeak-spec.pdf 3.1.1), which would
-   be `n1 new` itself rather than the line above it -- and its primary
-   factory is `new`, which `Nested`'s superclass clause sends; `List`'s is
-   `new:`. *)
+/// A nested class's superclass clause (newspeak-spec.pdf 6.1) is evaluated
+/// once per enclosing instance, and `GrandChildOfOuter` overrides what its
+/// `Inner` clause reads with a slot rather than a nested-class declaration.
+/// `Nested`'s cached class is per receiver (6): once `g Nested` has resolved
+/// `Inner` for `g`, changing `g`'s `Inner` slot afterwards must not change
+/// the class `g Nested` already answers.
+///
+/// The slot starts at `Stopwatch`, an implicit-receiver send the module's
+/// own slot answers -- the platform's `Stopwatch` -- not `Array`:
+/// `setInner:` supplies `Array` later, to show the cached class does not
+/// change, so the starting value has to differ from it. `Stopwatch` is no
+/// value class -- this golden instantiates `Nested` (`n1 new` below), and a
+/// value class whose enclosing object is mutable, as `g` is here, is
+/// refused where an instance is made (newspeak-spec.pdf 3.1.1), which would
+/// be `n1 new` itself rather than the line above it -- and its primary
+/// factory is `new`, which `Nested`'s superclass clause sends; `List`'s is
+/// `new:`.
 class NestedOverride = Object new (| private Stopwatch ::= nil. |) (
     class Outer = Object new () (
         class Inner = Object new () (

@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 3.1.1: a value object's slots "are immutable", all of
-   them -- not only the ones declared below `Value`. 6.2 lets `<: Value` put
-   `Value`'s level below an arbitrary class, so a class above that level can
-   bring a mutable slot into a value's instances: `Counted` inherits `Value`
-   through its `<:` clause, and `Counting`'s `count` is one of its slots.
-
-   `Counting` alone is no value and keeps its mutable slot legally; only an
-   instance of `Counted` is refused, where it would come into being. *)
+/// newspeak-spec.pdf 3.1.1: a value object's slots "are immutable", all of
+/// them -- not only the ones declared below `Value`. 6.2 lets `<: Value` put
+/// `Value`'s level below an arbitrary class, so a class above that level can
+/// bring a mutable slot into a value's instances: `Counted` inherits `Value`
+/// through its `<:` clause, and `Counting`'s `count` is one of its slots.
+///
+/// `Counting` alone is no value and keeps its mutable slot legally; only an
+/// instance of `Counted` is refused, where it would come into being.
 class MutableSlotAboveValue = Object <: Value () (
     public class Counting = Object new (
         | public count ::= 0. |

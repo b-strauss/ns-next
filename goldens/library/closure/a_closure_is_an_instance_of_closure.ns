@@ -1,6 +1,6 @@
-(* §5.1.8: a closure literal denotes a newly created instance of class
-   `Closure`, which `Object` names by its class accessor, and a closure
-   that is no number is described as one in an error's text. *)
+/// §5.1.8: a closure literal denotes a newly created instance of class
+/// `Closure`, which `Object` names by its class accessor, and a closure
+/// that is no number is described as one in an error's text.
 class AClosureIsAnInstanceOfClosure = Object new (
 ) (
     public main: platform args: arguments = (

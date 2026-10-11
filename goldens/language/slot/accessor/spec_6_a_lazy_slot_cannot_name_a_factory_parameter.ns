@@ -1,7 +1,7 @@
-(* newspeak-spec.pdf 6: the primary factory's parameters "are in scope in
-   the instance initializer but not in the rest of the class body", and a
-   lazy slot is declared in the class body. So `seed` in its initializer is
-   the implicit-receiver send `self seed`, which nothing understands. *)
+/// newspeak-spec.pdf 6: the primary factory's parameters "are in scope in
+/// the instance initializer but not in the rest of the class body", and a
+/// lazy slot is declared in the class body. So `seed` in its initializer is
+/// the implicit-receiver send `self seed`, which nothing understands.
 class Spec6LazyFactory = Object new () (
     class Holder seed: seed = Object new () (
         lazy public later = seed.

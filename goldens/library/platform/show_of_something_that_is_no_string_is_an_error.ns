@@ -1,7 +1,7 @@
-(* The transcript's `show:` writes a string only; anything else is an
-   ordinary Newspeak error, catchable like any other, where it used to be
-   written as nothing at all (decided with the user on 2026-09-27). `print:`
-   is the message that writes any object. *)
+/// The transcript's `show:` writes a string only; anything else is an
+/// ordinary Newspeak error, catchable like any other, where it used to be
+/// written as nothing at all (decided with the user on 2026-09-27). `print:`
+/// is the message that writes any object.
 class ShowOfANumber = Object new () (
     public main: platform args: arguments = (
         | t |

@@ -1,5 +1,5 @@
-(* Sends of three to eight arguments, explicit, implicit-receiver and
-   super, each the wide form of its kind. *)
+/// Sends of three to eight arguments, explicit, implicit-receiver and
+/// super, each the wide form of its kind.
 class SendsOfThreeToEightArguments = Object new (
 ) (
     class Base = Object new (

@@ -1,8 +1,8 @@
-(* A Map's elements are its values: `do:`, `includes:` and `inject:into:`
-   visit them, and `collect:`, `select:` and `reject:` answer Maps of the
-   same keys. Keys keep the order they were first stored in; a removed key
-   leaves the order, and storing an existing key keeps its place. A map
-   given itself to `addAll:` stays as it is. *)
+/// A Map's elements are its values: `do:`, `includes:` and `inject:into:`
+/// visit them, and `collect:`, `select:` and `reject:` answer Maps of the
+/// same keys. Keys keep the order they were first stored in; a removed key
+/// leaves the order, and storing an existing key keeps its place. A map
+/// given itself to `addAll:` stays as it is.
 class AMapHasTheWholeProtocol = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. Map = collections Map. map other show showMap |

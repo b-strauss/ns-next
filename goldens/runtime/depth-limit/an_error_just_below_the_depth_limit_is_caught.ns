@@ -1,8 +1,8 @@
-(* An error raised just below the depth limit, or at it, is signalled as
-   itself: its `signal` needs activations of its own, which the reserve
-   above the limit gives it, so it is not mistaken for the limit.
-   `descend:to:` reaches the depth `probe:` measured, level for level, and
-   fails there, three levels below the last, one below it and at it. *)
+/// An error raised just below the depth limit, or at it, is signalled as
+/// itself: its `signal` needs activations of its own, which the reserve
+/// above the limit gives it, so it is not mistaken for the limit.
+/// `descend:to:` reaches the depth `probe:` measured, level for level, and
+/// fails there, three levels below the last, one below it and at it.
 class AnErrorJustBelowTheDepthLimitIsCaught = Object new (
     |
       deepest ::= 0. |

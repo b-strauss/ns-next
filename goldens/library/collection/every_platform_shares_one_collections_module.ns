@@ -1,7 +1,7 @@
-(* Every platform's collections facet comes from one CollectionsFactory,
-   built on first use, so a List made through a second platform is an
-   instance of the same class. The facet is a value: any two are equal,
-   one a program makes from the facet's class included. *)
+/// Every platform's collections facet comes from one CollectionsFactory,
+/// built on first use, so a List made through a second platform is an
+/// instance of the same class. The facet is a value: any two are equal,
+/// one a program makes from the facet's class included.
 class EveryPlatformSharesOneCollectionsModule = Object new (
     
 ) (

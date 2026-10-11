@@ -1,33 +1,33 @@
-(* newspeak-spec.pdf 6.2: "Let m_s be the message pattern defined by the
-   superclass clause. The instance initializer for I evaluates m_s to mu_s,
-   the message determined by the superclass clause. Next, the instance
-   initializer of I invokes the instance initializer of S on o with the
-   arguments of mu_s. Then, m is evaluated to mu_m, the message determined
-   by the inheritance clause. The instance initializer of M is then
-   evaluated on o with the arguments of mu_m."
-
-   Applied is Base <: First <: Second, which is (Base <: First) <: Second:
-   the rule applied twice, the inner application being the outer one's S.
-   So, one line per step:
-
-   1. ms, Base's clause message, is evaluated first;
-   2. then S's whole initializer runs, which by 6.3 begins with Base's own
-      superclass clause message and Root's initializer, then Base's slot;
-   3. only then is m1, First's clause message, evaluated;
-   4. then First's initializer runs with m1's argument;
-   5. then m2, Second's clause message, is evaluated;
-   6. then Second's initializer runs with m2's argument;
-   7. then Applied's own initializer (6.3: slot clauses after the superclass
-      initializer), and the factory answers last.
-
-   Every clause message is written in Applied's factory scope, so each sees
-   Applied's factory argument (6.3: "the bindings of the formal parameters
-   of the factory method are available in the message clause of the
-   superclass clause").
-
-   What is applied is First's mixin, not First's superclass (the result "is
-   a class I with mixin M and superclass S"), so neither First's own
-   superclass clause nor Noisy's initializer runs: no line mentions them. *)
+/// newspeak-spec.pdf 6.2: "Let m_s be the message pattern defined by the
+/// superclass clause. The instance initializer for I evaluates m_s to mu_s,
+/// the message determined by the superclass clause. Next, the instance
+/// initializer of I invokes the instance initializer of S on o with the
+/// arguments of mu_s. Then, m is evaluated to mu_m, the message determined
+/// by the inheritance clause. The instance initializer of M is then
+/// evaluated on o with the arguments of mu_m."
+///
+/// Applied is Base <: First <: Second, which is (Base <: First) <: Second:
+/// the rule applied twice, the inner application being the outer one's S.
+/// So, one line per step:
+///
+/// 1. ms, Base's clause message, is evaluated first;
+/// 2. then S's whole initializer runs, which by 6.3 begins with Base's own
+///    superclass clause message and Root's initializer, then Base's slot;
+/// 3. only then is m1, First's clause message, evaluated;
+/// 4. then First's initializer runs with m1's argument;
+/// 5. then m2, Second's clause message, is evaluated;
+/// 6. then Second's initializer runs with m2's argument;
+/// 7. then Applied's own initializer (6.3: slot clauses after the superclass
+///    initializer), and the factory answers last.
+///
+/// Every clause message is written in Applied's factory scope, so each sees
+/// Applied's factory argument (6.3: "the bindings of the formal parameters
+/// of the factory method are available in the message clause of the
+/// superclass clause").
+///
+/// What is applied is First's mixin, not First's superclass (the result "is
+/// a class I with mixin M and superclass S"), so neither First's own
+/// superclass clause nor Noisy's initializer runs: no line mentions them.
 class MixinInitializerOrder = Object new (| t ::= nil. |) (
     class Root withRoot: value = Object new (
         | rootSlot = outer MixinInitializerOrder log: 'Root initializer receives ', value. |

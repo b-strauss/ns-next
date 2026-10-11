@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf 6.2 builds the part after <: from 6.1's inheritance
-   clause, and 6.1 says: "It is a run time error if e_c does not evaluate
-   to a class object C." notAClass answers 7, so reaching Applied is an
-   ordinary Newspeak error that names the clause: uncaught, exit status 1,
-   and nothing after it prints. The first line shows the program ran up to
-   Applied's first use. *)
+/// newspeak-spec.pdf 6.2 builds the part after <: from 6.1's inheritance
+/// clause, and 6.1 says: "It is a run time error if e_c does not evaluate
+/// to a class object C." notAClass answers 7, so reaching Applied is an
+/// ordinary Newspeak error that names the clause: uncaught, exit status 1,
+/// and nothing after it prints. The first line shows the program ran up to
+/// Applied's first use.
 class MixinClauseThatIsNotAClassFails = Object new () (
     class Applied = Object new <: notAClass () ()
     notAClass = ( ^7 )

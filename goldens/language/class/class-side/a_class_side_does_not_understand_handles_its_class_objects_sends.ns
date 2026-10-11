@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf §5.5: "the #doesNotUnderstand: method defined for
-   (3.5) the class of o is invoked" -- a class object's class is its
-   metaclass (§3.2), so a class side that declares `doesNotUnderstand:`
-   answers every unhandled send its class object gets, explicit-receiver,
-   implicit-receiver and keyword alike, while `new` still finds the
-   inherited factory and instantiates normally. *)
+/// newspeak-spec.pdf §5.5: "the #doesNotUnderstand: method defined for
+/// (3.5) the class of o is invoked" -- a class object's class is its
+/// metaclass (§3.2), so a class side that declares `doesNotUnderstand:`
+/// answers every unhandled send its class object gets, explicit-receiver,
+/// implicit-receiver and keyword alike, while `new` still finds the
+/// inherited factory and instantiates normally.
 class AClassSideDoesNotUnderstandHandlesItsClassObjectsSends = Object new () (
     class Foo = Object new () (
     ) : (

@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
-   nil, so class, public, protected, private and lazy name a method's, a
-   block's and a factory's parameters like any identifier (6.3.4's
-   keywordMsgPattern and binaryMsgPattern, 5.3's blockParameter, 6's
-   factory pattern; each a slotDecl, which is an identifier). A temporary is
-   a slotDef (5.3's temporaries) and follows 6.3.2's rule: class and lazy
-   need no modifier, an access modifier's word names one behind a
-   modifier. *)
+/// newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
+/// nil, so class, public, protected, private and lazy name a method's, a
+/// block's and a factory's parameters like any identifier (6.3.4's
+/// keywordMsgPattern and binaryMsgPattern, 5.3's blockParameter, 6's
+/// factory pattern; each a slotDecl, which is an identifier). A temporary is
+/// a slotDef (5.3's temporaries) and follows 6.3.2's rule: class and lazy
+/// need no modifier, an access modifier's word names one behind a
+/// modifier.
 class Spec41TheUnreservedWordsNameParametersAndTemporaries = Object new () (
     class Box value: public = Object new (| public held = public. |) ()
     class Holder = Object new () (

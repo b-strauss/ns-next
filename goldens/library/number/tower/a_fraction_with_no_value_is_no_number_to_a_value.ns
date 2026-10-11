@@ -1,11 +1,11 @@
-(* `Fraction new` holds no value and is no number, so a value whose slot
-   holds it is unequal to one whose slot holds a number, in both
-   directions: the derived equality decides a pair by the tower whichever
-   side the number is on.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript lives in `Script`,
-   which is no value. *)
+/// `Fraction new` holds no value and is no number, so a value whose slot
+/// holds it is unequal to one whose slot holds a number, in both
+/// directions: the derived equality decides a pair by the tower whichever
+/// side the number is on.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript lives in `Script`,
+/// which is no value.
 class AFractionWithNoValueIsNoNumberToAValue = Object <: Value () (
     class Box of: initialContents = Value new (
         | public contents = initialContents. |

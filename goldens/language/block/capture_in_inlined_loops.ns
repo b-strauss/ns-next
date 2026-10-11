@@ -1,18 +1,18 @@
-(* The compiler inlines whileTrue: and whileFalse:, and an inlined block
-   takes no temporaries, so every variable such a loop writes is its
-   method's. A block created in one iteration is written by the next, so
-   these variables are shared however early in the loop body the write
-   stands -- textual order alone would answer the value of the iteration
-   that created each block.
-
-   loopBody: x is written at the top of the body and the block created
-   below it; all three blocks answer the last value written, 2.
-   loopCondition and loopConditionWhileFalse: the write is in the
-   condition, which runs once more than the body, so all three blocks
-   answer 3. writtenBeforeTheLoop: the write is outside the loop and
-   before the capture, the case a copy is right for. readOnlyInABranch:
-   an inlined ifTrue: block is not a block at run time, so reading x
-   there captures nothing. *)
+/// The compiler inlines whileTrue: and whileFalse:, and an inlined block
+/// takes no temporaries, so every variable such a loop writes is its
+/// method's. A block created in one iteration is written by the next, so
+/// these variables are shared however early in the loop body the write
+/// stands -- textual order alone would answer the value of the iteration
+/// that created each block.
+///
+/// loopBody: x is written at the top of the body and the block created
+/// below it; all three blocks answer the last value written, 2.
+/// loopCondition and loopConditionWhileFalse: the write is in the
+/// condition, which runs once more than the body, so all three blocks
+/// answer 3. writtenBeforeTheLoop: the write is outside the loop and
+/// before the capture, the case a copy is right for. readOnlyInABranch:
+/// an inlined ifTrue: block is not a block at run time, so reading x
+/// there captures nothing.
 class CaptureInInlinedLoops = Object new (
     | transcript ::= nil. private List ::= nil. |
 ) (

@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 8.4: main:args: "accepts a platform object (8.3) as its
-   first parameter, and a list of any environment-specific (e.g., command
-   line) arguments as its second". The CLI passes the words after --, each a
-   String, in order, in an Array -- the list a tuple literal makes -- and an
-   argument that looks like an option or holds a space arrives unchanged. *)
+/// newspeak-spec.pdf 8.4: main:args: "accepts a platform object (8.3) as its
+/// first parameter, and a list of any environment-specific (e.g., command
+/// line) arguments as its second". The CLI passes the words after --, each a
+/// String, in order, in an Array -- the list a tuple literal makes -- and an
+/// argument that looks like an option or holds a space arrives unchanged.
 class Spec84MainArgsReceivesTheProgramArguments = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. |

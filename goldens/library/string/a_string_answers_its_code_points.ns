@@ -1,11 +1,11 @@
-(* Primordial Soup's `at:`, `copyFrom:to:` and `String with:`, over
-   ns-next's code points: `at:` answers the Integer code point, 1-based;
-   `copyFrom:to:` is inclusive and takes the empty range that stops just
-   before it starts; `String with:` takes any code point, where Primordial
-   Soup's takes a byte, since an ns-next String's elements are code points
-   (docs/design/core-library.md, "Strings are code points in two widths").
-   A copy whose code points all fit Latin-1 is equal to, and hashes like,
-   the same text written as a literal, whatever width it was cut from. *)
+/// Primordial Soup's `at:`, `copyFrom:to:` and `String with:`, over
+/// ns-next's code points: `at:` answers the Integer code point, 1-based;
+/// `copyFrom:to:` is inclusive and takes the empty range that stops just
+/// before it starts; `String with:` takes any code point, where Primordial
+/// Soup's takes a byte, since an ns-next String's elements are code points
+/// (docs/design/core-library.md, "Strings are code points in two widths").
+/// A copy whose code points all fit Latin-1 is equal to, and hashes like,
+/// the same text written as a literal, whatever width it was cut from.
 class AStringAnswersItsCodePoints = Object new (
     | wide = '€uro 😀'. |
 ) (

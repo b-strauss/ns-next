@@ -1,6 +1,6 @@
-(* newspeak-spec.pdf 3.6: "Parameter slots are immutable (6.3.2)", for a
-   closure activation as for a method activation. Nothing declares value:,
-   so 5.7 makes the setter send a self send, which nothing answers. *)
+/// newspeak-spec.pdf 3.6: "Parameter slots are immutable (6.3.2)", for a
+/// closure activation as for a method activation. Nothing declares value:,
+/// so 5.7 makes the setter send a self send, which nothing answers.
 class Spec36ABlockParameterIsImmutable = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. |

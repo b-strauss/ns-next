@@ -1,7 +1,7 @@
-(* `bitAnd:` is Primordial Soup's: an and over two's complement, where a
-   negative number's sign bits extend without end, for either
-   representation in either position. Bounce's and Storage's `Random`
-   masks with it. *)
+/// `bitAnd:` is Primordial Soup's: an and over two's complement, where a
+/// negative number's sign bits extend without end, for either
+/// representation in either position. Bounce's and Storage's `Random`
+/// masks with it.
 class BitAnd = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

@@ -1,7 +1,7 @@
-(* A handler for the depth limit runs in the reserve above it; one that
-   recurses itself overruns the reserve too, and that ends the run
-   unsignalled: the outer `on: Error do:` never runs, while the pending
-   `ensure:` block does, as for any run that ends. *)
+/// A handler for the depth limit runs in the reserve above it; one that
+/// recurses itself overruns the reserve too, and that ends the run
+/// unsignalled: the outer `on: Error do:` never runs, while the pending
+/// `ensure:` block does, as for any run that ends.
 class AHandlerOverrunningTheReserveEndsTheRun = Object new (
     
 ) (

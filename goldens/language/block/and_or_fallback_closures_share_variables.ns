@@ -1,16 +1,16 @@
-(* fallback_closures_share_variables.ns for and: and or:. The compiler
-   inlines both, and both keep a run-time guard whose failure path sends
-   the real message with a real closure; that closure keeps the
-   by-reference model (docs/design/execution.md, "Fallback blocks").
-
-   andWritesAfterCapture: a real block captured x before the and:, and an
-   inlinable branch assigns it, so rule 4 puts x in the method's vector
-   however early the write stands. The receiver is not a Boolean, so the
-   closure is kept rather than run; runKept then writes the vector slot,
-   and the reader -- which shares that vector -- answers 2.
-   orReadsLater: nothing captures x by a real block, so x stays in a
-   register and the kept closure reads that register. The method writes 5
-   after making the closure, so running it answers 5. *)
+/// fallback_closures_share_variables.ns for and: and or:. The compiler
+/// inlines both, and both keep a run-time guard whose failure path sends
+/// the real message with a real closure; that closure keeps the
+/// by-reference model (docs/design/execution.md, "Fallback blocks").
+///
+/// andWritesAfterCapture: a real block captured x before the and:, and an
+/// inlinable branch assigns it, so rule 4 puts x in the method's vector
+/// however early the write stands. The receiver is not a Boolean, so the
+/// closure is kept rather than run; runKept then writes the vector slot,
+/// and the reader -- which shares that vector -- answers 2.
+/// orReadsLater: nothing captures x by a real block, so x stays in a
+/// register and the kept closure reads that register. The method writes 5
+/// after making the closure, so running it answers 5.
 class AndOrFallbackClosuresShareVariables = Object new (
     
 ) (

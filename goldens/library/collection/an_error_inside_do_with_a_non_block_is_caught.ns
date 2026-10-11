@@ -1,6 +1,6 @@
-(* An error raised by the `value:` that `Array>>do:` sends to a non-block
-   unwinds out of the loop like an error raised inside a block, and the
-   loop does not carry on. *)
+/// An error raised by the `value:` that `Array>>do:` sends to a non-block
+/// unwinds out of the loop like an error raised inside a block, and the
+/// loop does not carry on.
 class AnErrorInsideDoWithANonBlockIsCaught = Object new (
 ) (
     class Failing = Object new (

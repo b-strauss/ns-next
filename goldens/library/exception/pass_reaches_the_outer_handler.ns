@@ -1,6 +1,6 @@
-(* `pass` hands the exception on to the next enclosing handler, whose value
-   is then the value of that handler's `on:do:`; a handler for a class the
-   exception is no instance of is passed by without running. *)
+/// `pass` hands the exception on to the next enclosing handler, whose value
+/// is then the value of that handler's `on:do:`; a handler for a class the
+/// exception is no instance of is passed by without running.
 class PassReachesTheOuterHandler = Object new (
     
 ) (

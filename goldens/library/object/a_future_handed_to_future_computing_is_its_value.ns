@@ -1,8 +1,8 @@
-(* A future handed to `Future computing:`, resolved or not, is sent
-   `value` when the new future is forced, as any other object would be
-   (`a_future_handed_to_future_computing_is_forced_with_the_new_one.ns`
-   pins when): a future whose value is a block answers that block's value,
-   and a future of anything else forwards `value` to it. *)
+/// A future handed to `Future computing:`, resolved or not, is sent
+/// `value` when the new future is forced, as any other object would be
+/// (`a_future_handed_to_future_computing_is_forced_with_the_new_one.ns`
+/// pins when): a future whose value is a block answers that block's value,
+/// and a future of anything else forwards `value` to it.
 class AFutureHandedToFutureComputingIsItsValue = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. Future = platform kernel Future. ofBlock ofNumber |

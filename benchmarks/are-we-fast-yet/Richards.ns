@@ -1,30 +1,30 @@
-(* Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
-   e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-   core-lib/Benchmarks/Richards.ns), one of the Are We Fast Yet benchmarks.
-   Changed for ns-next: a module in Primordial Soup's shape, whose bench
-   runs once and checks its own result; only Primordial Soup's protocol is
-   sent; the tracing, which SOMns never switches on, is left out; names are
-   written out.
-
-   Copyright (c) 2001-2015 see AUTHORS file
-
-   Permission is hereby granted, free of charge, to any person obtaining a copy
-   of this software and associated documentation files (the 'Software'), to deal
-   in the Software without restriction, including without limitation the rights
-   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-   copies of the Software, and to permit persons to whom the Software is
-   furnished to do so, subject to the following conditions:
-
-   The above copyright notice and this permission notice shall be included in
-   all copies or substantial portions of the Software.
-
-   THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-   THE SOFTWARE. *)
+/// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
+/// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
+/// core-lib/Benchmarks/Richards.ns), one of the Are We Fast Yet benchmarks.
+/// Changed for ns-next: a module in Primordial Soup's shape, whose bench
+/// runs once and checks its own result; only Primordial Soup's protocol is
+/// sent; the tracing, which SOMns never switches on, is left out; names are
+/// written out.
+///
+/// Copyright (c) 2001-2015 see AUTHORS file
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the 'Software'), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
 class Richards usingPlatform: platform = (
     | private NoTask = nil.
       private Idler = 1.
@@ -45,8 +45,8 @@ class Richards usingPlatform: platform = (
                 benchmarks queuePacketCount printString, ' and ', benchmarks holdCount printString].
         ^true
     )
-    (* SOMns's `Array new: 4 withAll: 0`; Primordial Soup's `Array` has no
-       `new:withAll:`. *)
+    /// SOMns's `Array new: 4 withAll: 0`; Primordial Soup's `Array` has no
+    /// `new:withAll:`.
     newArrayOfZeroes: size = (
         | array |
         array:: Array new: size.
@@ -173,7 +173,7 @@ class Richards usingPlatform: platform = (
                             1 to: 4 do: [:index |
                                 record count: record count + 1.
                                 record count > 26 ifTrue: [record count: 1].
-                                (* 65 is the character code of $A. *)
+                                /// 65 is the character code of $A.
                                 packet data at: index put: 65 + record count - 1].
                             self queuePacket: packet]]
                 data: data
@@ -212,8 +212,8 @@ class Richards usingPlatform: platform = (
         initScheduler = (
             queuePacketCount:: 0.
             holdCount:: 0.
-            (* SOMns's `Array new: 6 withAll: NoTask`: `NoTask` is nil, which
-               `Array new:` fills with. *)
+            /// SOMns's `Array new: 6 withAll: NoTask`: `NoTask` is nil, which
+            /// `Array new:` fills with.
             taskTable:: Array new: 6.
             taskList:: NoTask
         )

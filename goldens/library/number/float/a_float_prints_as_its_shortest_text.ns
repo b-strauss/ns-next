@@ -1,9 +1,9 @@
-(* A Float prints as the shortest text that reads back as the same
-   double: in decimal while the exponent of its first digit lies from -6
-   to 20, with `.0` when the text would look integral, and in exponent
-   form beyond; the infinities and NaN by name. `printString` and
-   `asString` answer the same, and so does the description an error
-   message gives. *)
+/// A Float prints as the shortest text that reads back as the same
+/// double: in decimal while the exponent of its first digit lies from -6
+/// to 20, with `.0` when the text would look integral, and in exponent
+/// form beyond; the infinities and NaN by name. `printString` and
+/// `asString` answer the same, and so does the description an error
+/// message gives.
 class AFloatPrintsAsItsShortestText = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |
