@@ -4764,7 +4764,8 @@ selector ends before it. That deviates from §4.2, whose `binSel` admits
 `///`; the deviation is recorded in the README's table. Consecutive `///`
 lines are one comment, a block, and `ns_syntax::Comment::text` answers a
 comment's content without its markers, for either form; the class comment is
-taken from either. The JetBrains plugin's lexer mirrors it (`LINE_COMMENT`)
+taken from either and kept in the AST as a `Comment`, its form and span, so a
+formatter can write it back as it was. The JetBrains plugin's lexer mirrors it (`LINE_COMMENT`)
 and its commenter toggles `///` lines and `(* *)` blocks. The repository's
 sources are rewritten to `///`: the core library, the goldens and the
 benchmarks. Where a member's documentation and the comment explaining a

@@ -28,7 +28,11 @@ pub struct ClassDeclaration {
     /// `superclass`, because §6.2's suffix is `(mixinOperator inheritanceClause)+`
     /// over §6.1's very production.
     pub mixin_applications: Vec<SuperclassClause>,
-    pub class_comment: Option<String>,
+    /// The comment standing first in the class header, `(* … *)` or a
+    /// block of `///` lines, kept as its form and the source it spans so a
+    /// formatter can write it back as it was; `Comment::text` answers its
+    /// text.
+    pub class_comment: Option<crate::comment::Comment>,
     pub instance_side: ClassBody,
     pub class_side: Option<ClassBody>, // the `: ( ... )` block
     pub span: Span,

@@ -311,10 +311,12 @@ and trailing blank lines are dropped. It renders nothing (no Markdown);
 that is the reader's business.
 
 The class comment (`ClassDeclaration::class_comment`), the comment standing
-first in a class header, is taken from either form: a `(* ... *)` as the
-text between its markers, a `///` block as `Comment::text` answers it
-(`take_class_comment`). The block is the one the whole source's lexer forms,
-so the parser and an editor agree on it: a `///` after the header's `(` on
+first in a class header, is taken from either form (`take_class_comment`)
+and kept as a `Comment`, its form and the source it spans, markers and
+layout included: the AST holds what a formatter needs to write the comment
+back as it was, and `Comment::text` answers its text for a reader. The
+block is the one the whole source's lexer forms, so the parser and an
+editor agree on it: a `///` after the header's `(` on
 its line is a remark there, no part of the class comment, and the block
 below it, if it is all that stands before the header's first token, is the
 class comment.
