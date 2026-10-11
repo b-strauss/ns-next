@@ -27,6 +27,7 @@ fn raw_slot_declaration(name: &str) -> Rc<ast::SlotDeclaration> {
         initializer: None,
         lazy: false,
         simultaneous: false,
+        comments: Vec::new(),
         span: Span::new(0, 0),
     })
 }

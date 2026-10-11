@@ -221,17 +221,17 @@ fn declared_names_of_class(class: &ast::ClassDeclaration, names: &mut Vec<String
         }
     }
     for body in std::iter::once(&class.instance_side).chain(&class.class_side) {
-        for slot in &body.slots {
+        for slot in body.slots() {
             declared_names_of_slot(slot, names);
         }
         for statement in &body.initializer_expressions {
             declared_names_of_statement(statement, names);
         }
-        for method in &body.methods {
+        for method in body.methods() {
             declared_names_of_pattern(&method.pattern, names);
             declared_names_of_body(&method.body, names);
         }
-        for nested in &body.nested_classes {
+        for nested in body.nested_classes() {
             declared_names_of_class(nested, names);
         }
     }
@@ -273,8 +273,8 @@ fn declared_names_of_body(body: &ast::CodeBody, names: &mut Vec<String>) {
 }
 
 fn declared_names_of_statement(statement: &ast::Statement, names: &mut Vec<String>) {
-    match statement {
-        ast::Statement::Expression(expression) | ast::Statement::Return(expression) => {
+    match &statement.kind {
+        ast::StatementKind::Expression(expression) | ast::StatementKind::Return(expression) => {
             declared_names_of_expression(expression, names);
         }
     }

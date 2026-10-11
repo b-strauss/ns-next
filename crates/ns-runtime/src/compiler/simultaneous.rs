@@ -22,10 +22,12 @@ pub(crate) fn future_block(declaration: &ast::SlotDeclaration) -> Option<ast::Ex
         body: ast::CodeBody {
             temporaries: Vec::new(),
             temporaries_delimiters: None,
-            statements: vec![ast::Statement::Expression(initializer.clone())],
+            statements: vec![ast::Statement::of_expression(initializer.clone())],
+            comments: Vec::new(),
             span: declaration.span,
         },
         delimiters: None,
+        comments: Vec::new(),
         span: declaration.span,
     }));
     Some(ast::Expression::bare(block, declaration.span))

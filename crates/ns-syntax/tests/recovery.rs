@@ -3,7 +3,7 @@
 //! the error survives, with its name and span.
 
 use indoc::{formatdoc, indoc};
-use ns_syntax::ast::{ClassBody, MessagePattern, Module};
+use ns_syntax::ast::{ClassBody, MessagePattern, Module, SlotDeclaration};
 
 fn recovered(source: &str) -> (Module, Vec<String>) {
     let parsed = ns_syntax::parse_for_editor(source);
@@ -28,15 +28,13 @@ fn selector(pattern: &MessagePattern) -> String {
 }
 
 fn method_names(body: &ClassBody) -> Vec<String> {
-    body.methods
-        .iter()
+    body.methods()
         .map(|method| selector(&method.pattern))
         .collect()
 }
 
 fn class_names(body: &ClassBody) -> Vec<String> {
-    body.nested_classes
-        .iter()
+    body.nested_classes()
         .map(|class| class.name.name.clone())
         .collect()
 }
@@ -108,7 +106,7 @@ fn an_empty_source_answers_a_module() {
     for source in ["", "   \n\t\n"] {
         let (module, messages) = recovered(source);
         assert!(!messages.is_empty());
-        assert!(module.root_class.instance_side.methods.is_empty());
+        assert!(module.root_class.instance_side.methods().next().is_none());
     }
 }
 
@@ -138,7 +136,7 @@ fn a_half_typed_method_keeps_the_members_after_it() {
     assert_eq!(class_names(&root.instance_side), ["Inner"]);
     let class_side = root.class_side.as_ref().expect("the class side survives");
     assert_eq!(method_names(class_side), ["make"]);
-    let broken = &root.instance_side.methods[0];
+    let broken = root.instance_side.methods().next().expect("a method");
     assert_eq!(
         broken
             .body_delimiters
@@ -168,8 +166,17 @@ fn an_empty_unclosed_method_keeps_the_members_after_it() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["broken", "second"], "{messages:?}");
-    assert!(body.methods[0].body.statements.is_empty());
-    assert_eq!(body.methods[0].span.text(source), "broken = (");
+    assert!(body
+        .methods()
+        .next()
+        .expect("a method")
+        .body
+        .statements
+        .is_empty());
+    assert_eq!(
+        body.methods().next().expect("a method").span.text(source),
+        "broken = ("
+    );
     assert_eq!(messages.len(), 1, "{messages:?}");
 }
 
@@ -195,7 +202,12 @@ fn an_unclosed_block_in_an_unclosed_method_keeps_the_members_after_it() {
         "{messages:?}"
     );
     assert_eq!(
-        root.instance_side.methods[1].span.text(source),
+        root.instance_side
+            .methods()
+            .nth(1)
+            .expect("a method")
+            .span
+            .text(source),
         "second = ( ^2 )"
     );
     assert_eq!(class_names(&root.instance_side), ["Inner"]);
@@ -267,7 +279,16 @@ fn a_comparison_that_fails_as_a_member_invents_none() {
         ["make"],
         "{messages:?}"
     );
-    assert_eq!(root.instance_side.methods[0].body.statements.len(), 2);
+    assert_eq!(
+        root.instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements
+            .len(),
+        2
+    );
     assert_eq!(messages.len(), 1, "{messages:?}");
 }
 
@@ -320,8 +341,19 @@ fn a_statement_after_a_return_is_skipped_to_the_end_of_the_body() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    assert_eq!(body.methods[0].body.statements.len(), 1);
-    assert!(body.methods[0]
+    assert_eq!(
+        body.methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements
+            .len(),
+        1
+    );
+    assert!(body
+        .methods()
+        .next()
+        .expect("a method")
         .body_delimiters
         .and_then(|delimiters| delimiters.close)
         .is_some());
@@ -339,7 +371,15 @@ fn junk_between_statements_is_skipped_to_the_next_statement() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    assert_eq!(body.methods[0].body.statements.len(), 2);
+    assert_eq!(
+        body.methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements
+            .len(),
+        2
+    );
     assert_eq!(messages.len(), 1, "{messages:?}");
 }
 
@@ -378,10 +418,21 @@ fn a_nested_class_missing_its_close_keeps_the_members_after_it() {
         ) : ()
     "};
     let (module, _) = recovered(source);
-    let inner = &module.root_class.instance_side.nested_classes[0];
+    let inner = module
+        .root_class
+        .instance_side
+        .nested_classes()
+        .next()
+        .expect("a nested class");
     assert_eq!(method_names(&inner.instance_side), ["inside", "outside"]);
     assert_eq!(
-        inner.instance_side.methods[1].span.text(source),
+        inner
+            .instance_side
+            .methods()
+            .nth(1)
+            .expect("a method")
+            .span
+            .text(source),
         "outside = ( ^2 )"
     );
 }
@@ -398,14 +449,17 @@ fn an_unclosed_block_ends_at_the_method_close() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    assert!(body.methods[0]
+    assert!(body
+        .methods()
+        .next()
+        .expect("a method")
         .body_delimiters
         .and_then(|delimiters| delimiters.close)
         .is_some());
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+    let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Block(block),
         ..
-    }) = &body.methods[0].body.statements[0]
+    }) = &body.methods().next().expect("a method").body.statements[0].kind
     else {
         panic!("a returned block");
     };
@@ -431,7 +485,15 @@ fn an_unclosed_parenthesis_stops_at_the_end_of_its_statement() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    assert_eq!(body.methods[0].body.statements.len(), 2);
+    assert_eq!(
+        body.methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements
+            .len(),
+        2
+    );
     assert_eq!(messages.len(), 1, "{messages:?}");
 }
 
@@ -446,10 +508,10 @@ fn a_tuple_with_junk_keeps_its_elements_and_its_close() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+    let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::DynamicArray { elements, span },
         ..
-    }) = &body.methods[0].body.statements[0]
+    }) = &body.methods().next().expect("a method").body.statements[0].kind
     else {
         panic!("a returned tuple");
     };
@@ -468,14 +530,13 @@ fn an_unclosed_slot_section_stops_at_the_header_close() {
     "};
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
-    let slot_names: Vec<&str> = body
-        .slots
-        .iter()
-        .map(|slot| slot.name.name.as_str())
-        .collect();
+    let slot_names: Vec<&str> = body.slots().map(|slot| slot.name.name.as_str()).collect();
     assert_eq!(slot_names, ["first", "second"], "{messages:?}");
     // The last slot ends at its own name, not at the header's `)`.
-    assert_eq!(body.slots[1].span.text(source), "second");
+    assert_eq!(
+        body.slots().nth(1).expect("a slot").span.text(source),
+        "second"
+    );
     assert_eq!(
         body.slot_delimiters.and_then(|delimiters| delimiters.close),
         None
@@ -496,7 +557,7 @@ fn a_half_typed_annotation_does_not_swallow_the_class() {
     "};
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
-    assert_eq!(body.slots.len(), 1, "{messages:?}");
+    assert_eq!(body.slots().count(), 1, "{messages:?}");
     assert_eq!(method_names(body), ["run"], "{messages:?}");
     // `|` is a type operator too (`<E | X>`), so the annotation takes the
     // bar and stops only at the header's `)`: the section is left unclosed,
@@ -510,7 +571,10 @@ fn a_half_typed_annotation_does_not_swallow_the_class() {
     );
     let delimiters = body.slot_delimiters.expect("the section's open bar");
     assert_eq!(delimiters.close, None);
-    assert_eq!(body.slots[0].span.text(source), "first <Foo |");
+    assert_eq!(
+        body.slots().next().expect("a slot").span.text(source),
+        "first <Foo |"
+    );
 }
 
 #[test]
@@ -540,7 +604,7 @@ fn a_slot_section_of_a_modifier_alone_keeps_its_close() {
     "};
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
-    assert!(body.slots.is_empty());
+    assert!(body.slots().next().is_none());
     assert!(
         body.slot_delimiters
             .and_then(|delimiters| delimiters.close)
@@ -564,20 +628,41 @@ fn a_missing_name_declares_nothing() {
     let (module, messages) = recovered(source);
     let root = &module.root_class;
     assert_eq!(root.factory, None, "{messages:?}");
-    assert_eq!(root.instance_side.nested_classes[0].superclass, None);
+    assert_eq!(
+        root.instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class")
+            .superclass,
+        None
+    );
     assert_eq!(method_names(&root.instance_side), ["first", "second"]);
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+    let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Block(block),
         ..
-    }) = &root.instance_side.methods[0].body.statements[0]
+    }) = &root
+        .instance_side
+        .methods()
+        .next()
+        .expect("a method")
+        .body
+        .statements[0]
+        .kind
     else {
         panic!("a returned block");
     };
     assert!(block.parameters.is_empty());
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+    let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Cascade(cascade),
         ..
-    }) = &root.instance_side.methods[1].body.statements[0]
+    }) = &root
+        .instance_side
+        .methods()
+        .nth(1)
+        .expect("a method")
+        .body
+        .statements[0]
+        .kind
     else {
         panic!("a returned cascade");
     };
@@ -619,7 +704,12 @@ fn a_member_inside_a_block_is_none() {
         "{messages:?}"
     );
     assert_eq!(
-        root.instance_side.methods[0].span.text(source),
+        root.instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .span
+            .text(source),
         "first = ( ^items detect: [:each | each = ( ^each ) ] )"
     );
     assert_eq!(
@@ -662,12 +752,12 @@ fn junk_in_a_parenthesis_is_skipped_to_its_close() {
         messages,
         ["expected `)` to close the parenthesis, found Number"]
     );
-    let statements = &body.methods[0].body.statements;
+    let statements = &body.methods().next().expect("a method").body.statements;
     assert_eq!(statements.len(), 1);
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+    let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Send(send),
         ..
-    }) = &statements[0]
+    }) = &statements[0].kind
     else {
         panic!("a returned send");
     };
@@ -694,7 +784,12 @@ fn a_mixin_clause_without_a_name_keeps_its_dot() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(class_names(body), ["Inner"], "{messages:?}");
-    assert!(body.nested_classes[0].mixin_applications.is_empty());
+    assert!(body
+        .nested_classes()
+        .next()
+        .expect("a nested class")
+        .mixin_applications
+        .is_empty());
     assert_eq!(method_names(body), ["second"]);
     assert_eq!(
         messages,
@@ -723,7 +818,12 @@ fn a_member_inside_a_parenthesis_inside_a_block_is_none() {
         "{messages:?}"
     );
     assert_eq!(
-        root.instance_side.methods[0].span.text(source),
+        root.instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .span
+            .text(source),
         "first = ( ^items detect: [:each | (each = ( ^each )) ] )"
     );
     assert_eq!(
@@ -753,7 +853,12 @@ fn a_member_after_an_open_block_is_one() {
         "{messages:?}"
     );
     assert_eq!(
-        root.instance_side.methods[1].span.text(source),
+        root.instance_side
+            .methods()
+            .nth(1)
+            .expect("a method")
+            .span
+            .text(source),
         "second = ( ^2 )"
     );
     assert_eq!(
@@ -772,7 +877,7 @@ fn a_lazy_slot_without_its_dot_ends_at_its_initializer() {
         ) : ()
     "};
     let (module, messages) = recovered(source);
-    let slots = &module.root_class.instance_side.slots;
+    let slots: Vec<&SlotDeclaration> = module.root_class.instance_side.slots().collect();
     assert_eq!(slots.len(), 1, "{messages:?}");
     assert_eq!(slots[0].span.text(source), "lazy x = 1");
 }
@@ -799,9 +904,14 @@ fn a_lazy_slot_after_an_unclosed_body_is_a_member_only_when_clean() {
         ["first", "second"],
         "{messages:?}"
     );
-    assert_eq!(instance_side.slots.len(), 1, "{messages:?}");
+    assert_eq!(instance_side.slots().count(), 1, "{messages:?}");
     assert_eq!(
-        instance_side.slots[0].span.text(clean),
+        instance_side
+            .slots()
+            .next()
+            .expect("a slot")
+            .span
+            .text(clean),
         "lazy cache = 1 + 2."
     );
 
@@ -819,7 +929,7 @@ fn a_lazy_slot_after_an_unclosed_body_is_a_member_only_when_clean() {
         ["first", "second"],
         "{messages:?}"
     );
-    assert!(instance_side.slots.is_empty(), "{messages:?}");
+    assert!(instance_side.slots().next().is_none(), "{messages:?}");
 }
 
 /// Half-typed members nested twenty deep, each in a block of the one
@@ -984,7 +1094,12 @@ fn a_run_of_unclosed_methods_through_a_class_side_keeps_its_members() {
         ) : ()
     "};
     let (module, messages) = recovered(source);
-    let context = &module.root_class.instance_side.nested_classes[0];
+    let context = module
+        .root_class
+        .instance_side
+        .nested_classes()
+        .next()
+        .expect("a nested class");
     assert_eq!(
         method_names(&context.instance_side),
         [
@@ -1006,7 +1121,7 @@ fn a_slot_initializer_without_its_dot_ends_at_the_initializer() {
         ) () : ()
     "};
     let (module, messages) = recovered(source);
-    let slots = &module.root_class.instance_side.slots;
+    let slots: Vec<&SlotDeclaration> = module.root_class.instance_side.slots().collect();
     assert_eq!(slots.len(), 1, "{messages:?}");
     assert_eq!(slots[0].span.text(source), "a = 1");
 }

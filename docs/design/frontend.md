@@ -331,6 +331,16 @@ is the same either way.
 `MessagePattern`, `CodeBody { temporaries, statements }`, `Statement`, `Expression` (`Identifier`,
 `Literal`, `Block`, `Send`, `Cascade`, `Assign`, `Array`), `Literal`.
 
+A `ClassBody` is one side of a class: `header_slots` and
+`initializer_expressions` (the instance side's header, empty on a class
+side), then `members`, each a nested class, a lazy slot or a method, in
+source order. `slots()` answers the header's slots, then the lazy slots in
+source order, the order slot indices and image rows use; `methods()`,
+`nested_classes()` and `lazy_slots()` answer theirs in source order. A
+`Statement` is its `kind`, an expression or a `^` return, and its span, from
+its first token (the `^` of a return) to its last, the separating `.`
+excluded.
+
 **Every node carries a `Span`** — byte offsets into the source, as
 `Span { start: u32, end: u32 }`. Spans are how the resolver attaches bindings,
 how errors point at source, and how provenance is recorded. The compiler looks

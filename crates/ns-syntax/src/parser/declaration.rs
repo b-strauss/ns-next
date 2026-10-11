@@ -34,7 +34,11 @@ impl<'a> Parser<'a> {
                             span: caret.span,
                         }))
                     });
-                    statements.push(Statement::Return(expression));
+                    statements.push(Statement {
+                        span: caret.span.merge(expression.span),
+                        kind: StatementKind::Return(expression),
+                        comments: Vec::new(),
+                    });
                     self.eat(TokenKind::Dot); // optional trailing dot
 
                     // Nothing follows a return (§7.2). What does is skipped to
@@ -62,7 +66,7 @@ impl<'a> Parser<'a> {
                     let Some(expression) = self.parse_statement() else {
                         break;
                     };
-                    statements.push(Statement::Expression(expression));
+                    statements.push(Statement::of_expression(expression));
                     if self.eat(TokenKind::Dot) || self.at_body_close() {
                         continue;
                     }
@@ -95,6 +99,7 @@ impl<'a> Parser<'a> {
             temporaries,
             temporaries_delimiters,
             statements,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -517,6 +522,7 @@ impl<'a> Parser<'a> {
                 open: open.span,
                 close: close.map(|token| token.span),
             }),
+            comments: Vec::new(),
             span: start.merge(end),
         })
     }
@@ -645,6 +651,7 @@ impl<'a> Parser<'a> {
                 initializer,
                 lazy: false,
                 simultaneous: close == TokenKind::DoubleBar,
+                comments: Vec::new(),
                 span: start.merge(end),
             });
         }
@@ -735,6 +742,7 @@ impl<'a> Parser<'a> {
             language_id,
             category,
             root_class,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -777,10 +785,10 @@ impl<'a> Parser<'a> {
     /// - **G2** (`sideDecl` body): nested classes, methods, and lazy slot declarations.
     /// - **G3** (`classSideDecl` body): methods only.
     ///
-    /// The AST keeps a single `instance_side: ClassBody`: G1's slots (plus any
-    /// G2 lazy slot declarations) land in `slots`, G1's initializer expressions in
-    /// `initializer_expressions`, and G2's methods / nested classes in
-    /// `methods` / `nested_classes`. `class_side` is G3.
+    /// The AST keeps a single `instance_side: ClassBody`: G1's slots land in
+    /// `header_slots`, G1's initializer expressions in
+    /// `initializer_expressions`, and G2's members, in source order, in
+    /// `members`. `class_side` is G3.
     pub(crate) fn parse_class_declaration(&mut self) -> ClassDeclaration {
         let start = self.current().span;
         let access = self.parse_access_modifier();
@@ -852,15 +860,16 @@ impl<'a> Parser<'a> {
                 mixin_applications,
                 class_comment: None,
                 instance_side: ClassBody {
-                    slots: Vec::new(),
+                    header_slots: Vec::new(),
                     initializer_expressions: Vec::new(),
-                    methods: Vec::new(),
-                    nested_classes: Vec::new(),
+                    members: Vec::new(),
                     delimiters: None,
                     slot_delimiters: None,
+                    comments: Vec::new(),
                     span,
                 },
                 class_side: None,
+                comments: Vec::new(),
                 span,
             };
         }
@@ -876,33 +885,30 @@ impl<'a> Parser<'a> {
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
         // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
         // instance side is not optional, however empty.
-        let (lazy_slots, methods, nested_classes, g2_end, instance_close) =
-            if self.at(TokenKind::LeftParenthesis) {
-                self.bump(); // `(`
-                let (lazy, methods, nested) = self.parse_side_body();
-                let end = self.end_of_group();
-                let close = self.expect(TokenKind::RightParenthesis);
-                (lazy, methods, nested, end, close)
-            } else {
-                self.push_error(
-                    self.current().span,
-                    "expected the instance side's `( ... )` after the class header (§6.3)",
-                );
-                (Vec::new(), Vec::new(), Vec::new(), g1_end, None)
-            };
+        let (members, g2_end, instance_close) = if self.at(TokenKind::LeftParenthesis) {
+            self.bump(); // `(`
+            let members = self.parse_side_body();
+            let end = self.end_of_group();
+            let close = self.expect(TokenKind::RightParenthesis);
+            (members, end, close)
+        } else {
+            self.push_error(
+                self.current().span,
+                "expected the instance side's `( ... )` after the class header (§6.3)",
+            );
+            (Vec::new(), g1_end, None)
+        };
 
-        let mut slots = header_slots;
-        slots.extend(lazy_slots);
         let instance_side = ClassBody {
-            slots,
+            header_slots,
             initializer_expressions,
-            methods,
-            nested_classes,
+            members,
             delimiters: instance_open.map(|open| Delimiters {
                 open: open.span,
                 close: instance_close.map(|token| token.span),
             }),
             slot_delimiters,
+            comments: Vec::new(),
             span: g1_span.merge(g2_end),
         };
 
@@ -932,6 +938,7 @@ impl<'a> Parser<'a> {
             class_comment,
             instance_side,
             class_side,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -1033,6 +1040,7 @@ impl<'a> Parser<'a> {
             prefix,
             receiver,
             messages,
+            comments: Vec::new(),
             span: start.merge(end),
         })
     }
@@ -1047,6 +1055,7 @@ impl<'a> Parser<'a> {
             out.push(MessageSend {
                 selector: Selector::Unary(self.text(selector_token).to_string()),
                 arguments: Vec::new(),
+                comments: Vec::new(),
                 span: selector_token.span,
             });
         } else if self.at_binary_operator() {
@@ -1057,6 +1066,7 @@ impl<'a> Parser<'a> {
             let argument = self.parse_unary_message();
             out.push(MessageSend {
                 selector: Selector::Binary(self.text(operator).to_string()),
+                comments: Vec::new(),
                 span: operator
                     .span
                     .merge(super::expression::expression_span(&argument)),
@@ -1078,6 +1088,7 @@ impl<'a> Parser<'a> {
             out.push(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                comments: Vec::new(),
                 span: start.merge(end),
             });
         }
@@ -1143,7 +1154,7 @@ impl<'a> Parser<'a> {
                         let token = self.bump();
                         self.push_error(token.span, "expected an init expression or `)`");
                     } else {
-                        initializer_expressions.push(Statement::Expression(expression));
+                        initializer_expressions.push(Statement::of_expression(expression));
                     }
                 }
             }
@@ -1158,20 +1169,11 @@ impl<'a> Parser<'a> {
     }
 
     /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
-    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the lazy slot
-    /// declarations (merged into `ClassBody::slots` by the caller), the methods, and
-    /// the nested classes. A `| .. |` slot section, a bare initializer expression or a
+    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the members in
+    /// source order. A `| .. |` slot section, a bare initializer expression or a
     /// class comment here is malformed (those belong to G1).
-    fn parse_side_body(
-        &mut self,
-    ) -> (
-        Vec<SlotDeclaration>,
-        Vec<MethodDeclaration>,
-        Vec<ClassDeclaration>,
-    ) {
-        let mut lazy_slots = Vec::new();
-        let mut methods = Vec::new();
-        let mut nested_classes = Vec::new();
+    fn parse_side_body(&mut self) -> Vec<Member> {
+        let mut members = Vec::new();
         loop {
             match self.peek() {
                 TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
@@ -1209,7 +1211,7 @@ impl<'a> Parser<'a> {
                         self.skip_to_structural();
                         break;
                     }
-                    nested_classes.push(self.parse_class_declaration());
+                    members.push(Member::Class(Box::new(self.parse_class_declaration())));
                     self.leave();
                 }
                 // `sideDecl`'s alternatives in their PEG order: a nested class
@@ -1217,15 +1219,15 @@ impl<'a> Parser<'a> {
                 // full before the next, so `private lazy = ( ^1 )`, which is
                 // no lazy slot, is a method named `lazy`.
                 _ if self.at_lazy_slot() => {
-                    lazy_slots.extend(self.parse_lazy_slot_declaration());
+                    members.extend(self.parse_lazy_slot_declaration().map(Member::LazySlot));
                 }
                 _ if self.looks_like_method() => {
-                    methods.extend(self.parse_method_declaration());
+                    members.extend(self.parse_method_declaration().map(Member::Method));
                 }
                 // Neither matched in full: a declaration that starts as a lazy
                 // slot is reported as one, so its error names what is missing.
                 _ if self.at_lazy_slot_prefix() => {
-                    lazy_slots.extend(self.parse_lazy_slot_declaration());
+                    members.extend(self.parse_lazy_slot_declaration().map(Member::LazySlot));
                 }
                 _ => {
                     let token = self.current();
@@ -1245,15 +1247,15 @@ impl<'a> Parser<'a> {
                 self.push_error(token.span, "unexpected token in class body");
             }
         }
-        (lazy_slots, methods, nested_classes)
+        members
     }
 
     /// **G3** — `classSideDecl` body (`NewspeakGrammar.ns:200`):
-    /// `methodDecl*`. Methods only; slots / initializer expressions / nested classes stay
-    /// empty.
+    /// `methodDecl*`. Methods only; the header's slots and initializer
+    /// expressions stay empty.
     fn parse_class_side_body(&mut self) -> ClassBody {
         let start = self.current().span;
-        let mut methods = Vec::new();
+        let mut members = Vec::new();
         loop {
             match self.peek() {
                 TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
@@ -1269,7 +1271,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 _ if self.looks_like_method() => {
-                    methods.extend(self.parse_method_declaration());
+                    members.extend(self.parse_method_declaration().map(Member::Method));
                 }
                 _ => {
                     let token = self.current();
@@ -1287,12 +1289,12 @@ impl<'a> Parser<'a> {
         }
         let end = self.end_of_group();
         ClassBody {
-            slots: Vec::new(),
+            header_slots: Vec::new(),
             initializer_expressions: Vec::new(),
-            methods,
-            nested_classes: Vec::new(),
+            members,
             delimiters: None,
             slot_delimiters: None,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -1430,6 +1432,7 @@ impl<'a> Parser<'a> {
             initializer,
             lazy: true,
             simultaneous: false,
+            comments: Vec::new(),
             span: start.merge(end),
         })
     }
@@ -1815,6 +1818,82 @@ mod class_tests {
         }
     }
 
+    /// The name of a unary method's selector.
+    fn method_selector(method: &MethodDeclaration) -> &str {
+        match &method.pattern {
+            MessagePattern::Unary { selector } => selector.name.as_str(),
+            other => panic!("expected a unary method, found {other:?}"),
+        }
+    }
+
+    #[test]
+    fn members_keep_their_source_order_across_kinds() {
+        let module = module(indoc! {"
+            class Outer = (
+            ) (
+                public b = ( ^2 )
+                class Inner = () ()
+                lazy cache = 3.
+                public a = ( ^1 )
+            )
+        "});
+        let kinds: Vec<&str> = module
+            .root_class
+            .instance_side
+            .members
+            .iter()
+            .map(|member| match member {
+                Member::Method(_) => "method",
+                Member::Class(_) => "class",
+                Member::LazySlot(_) => "lazy",
+            })
+            .collect();
+        assert_eq!(kinds, ["method", "class", "lazy", "method"]);
+        let methods: Vec<&str> = module
+            .root_class
+            .instance_side
+            .methods()
+            .map(method_selector)
+            .collect();
+        assert_eq!(methods, ["b", "a"]);
+    }
+
+    #[test]
+    fn slots_answers_header_slots_then_lazy_slots() {
+        let module = module(indoc! {"
+            class Outer = (
+                |
+                  first = 1.
+                |
+            ) (
+                lazy second = 2.
+                public m = ( ^first )
+                lazy third = 3.
+            )
+        "});
+        let names: Vec<&str> = module
+            .root_class
+            .instance_side
+            .slots()
+            .map(|slot| slot.name.name.as_str())
+            .collect();
+        assert_eq!(names, ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn a_statement_spans_its_caret() {
+        let source = indoc! {"
+            class Outer = () (
+                public m = ( ^3 )
+            )
+        "};
+        let module = module(source);
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        let statement = &method.body.statements[0];
+        assert!(matches!(statement.kind, StatementKind::Return(_)));
+        assert_eq!(statement.span.text(source), "^3");
+    }
+
     /// The editor folds from an opening token to its closing one, so the
     /// AST records both for every construct that folds.
     #[test]
@@ -1858,15 +1937,15 @@ mod class_tests {
             text_of(class_side.delimiters),
             "(\n    make = ( ^self new )\n)"
         );
-        let run = &root.instance_side.methods[0];
+        let run = root.instance_side.methods().next().expect("a method");
         let body = text_of(run.body_delimiters);
         assert!(body.starts_with("(\n        | temporary |"), "{body}");
         assert!(body.ends_with("each]\n    )"), "{body}");
         assert_eq!(text_of(run.body.temporaries_delimiters), "| temporary |");
-        let Statement::Return(Expression {
+        let StatementKind::Return(Expression {
             kind: ExpressionKind::Block(block),
             ..
-        }) = &run.body.statements[0]
+        }) = &run.body.statements[0].kind
         else {
             panic!("a returned block");
         };
@@ -1898,14 +1977,21 @@ mod class_tests {
         "};
         let (module, _clean) = module_with_diagnostics(source);
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1, "the slot survives");
-        assert_eq!(body.slots[0].name.name, "a");
+        assert_eq!(body.slots().count(), 1, "the slot survives");
+        assert_eq!(body.slots().next().expect("a slot").name.name, "a");
         assert_eq!(
-            body.nested_classes.len(),
+            body.nested_classes().count(),
             1,
             "the following nested class is not swallowed"
         );
-        assert_eq!(body.nested_classes[0].name.name, "Inner");
+        assert_eq!(
+            body.nested_classes()
+                .next()
+                .expect("a nested class")
+                .name
+                .name,
+            "Inner"
+        );
     }
 
     // The boolean-or case still works: `|` with a primary after it is a binary
@@ -1917,7 +2003,12 @@ mod class_tests {
              | flag = a | b. |
             ) ()
         "});
-        let initializer = module.root_class.instance_side.slots[0]
+        let initializer = module
+            .root_class
+            .instance_side
+            .slots()
+            .next()
+            .expect("a slot")
             .initializer
             .as_ref()
             .unwrap();
@@ -1946,8 +2037,8 @@ mod class_tests {
             panic!()
         };
         assert_eq!(parts[0].0.name, "usingPlatform");
-        assert!(module.root_class.instance_side.slots.is_empty());
-        assert!(module.root_class.instance_side.methods.is_empty());
+        assert!(module.root_class.instance_side.slots().next().is_none());
+        assert!(module.root_class.instance_side.methods().next().is_none());
     }
 
     #[test]
@@ -1988,8 +2079,8 @@ mod class_tests {
         "});
         let declaration = &module.root_class;
         assert_eq!(declaration.mixin_applications.len(), 1);
-        assert!(declaration.instance_side.methods.is_empty());
-        assert!(declaration.instance_side.slots.is_empty());
+        assert!(declaration.instance_side.methods().next().is_none());
+        assert!(declaration.instance_side.slots().next().is_none());
     }
 
     // A declaration without `<:` carries no mixin application at all, and the
@@ -2018,10 +2109,10 @@ mod class_tests {
         "};
         let module = module(source);
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
+        assert_eq!(body.slots().count(), 1);
         assert_eq!(body.initializer_expressions.len(), 1);
-        assert_eq!(body.methods.len(), 1);
-        assert_eq!(body.nested_classes.len(), 1);
+        assert_eq!(body.methods().count(), 1);
+        assert_eq!(body.nested_classes().count(), 1);
         let comment = module.root_class.class_comment.expect("a class comment");
         assert_eq!(comment.span.text(source), "(* a comment *)");
     }
@@ -2033,7 +2124,13 @@ mod class_tests {
         "};
         let module = module(source);
         assert_eq!(
-            module.root_class.class_side.as_ref().unwrap().methods.len(),
+            module
+                .root_class
+                .class_side
+                .as_ref()
+                .unwrap()
+                .methods()
+                .count(),
             1
         );
     }
@@ -2097,7 +2194,7 @@ mod class_tests {
             ) : ()
         "};
         let module = module(source);
-        assert_eq!(module.root_class.instance_side.methods.len(), 1);
+        assert_eq!(module.root_class.instance_side.methods().count(), 1);
         assert!(module.root_class.class_side.is_some());
     }
 
@@ -2107,12 +2204,17 @@ mod class_tests {
             class C = () ( class Inner = ( ) ( m = () ) : () ) : ()
         "};
         let module = module(source);
-        assert_eq!(module.root_class.instance_side.nested_classes.len(), 1);
+        assert_eq!(module.root_class.instance_side.nested_classes().count(), 1);
         assert_eq!(
-            module.root_class.instance_side.nested_classes[0]
+            module
+                .root_class
                 .instance_side
-                .methods
-                .len(),
+                .nested_classes()
+                .next()
+                .expect("a nested class")
+                .instance_side
+                .methods()
+                .count(),
             1
         );
     }
@@ -2124,7 +2226,7 @@ mod class_tests {
         "});
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 2);
-        assert!(body.methods.is_empty());
+        assert!(body.methods().next().is_none());
     }
 
     #[test]
@@ -2133,11 +2235,14 @@ mod class_tests {
             class C = () ( lazy foo = bar baz. ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
-        assert_eq!(body.slots[0].name.name, "foo");
-        assert_eq!(body.slots[0].mutability, SlotMutability::Immutable);
+        assert_eq!(body.slots().count(), 1);
+        assert_eq!(body.slots().next().expect("a slot").name.name, "foo");
+        assert_eq!(
+            body.slots().next().expect("a slot").mutability,
+            SlotMutability::Immutable
+        );
         assert!(
-            body.slots[0].lazy,
+            body.slots().next().expect("a slot").lazy,
             "a class body's `lazy` slot is lazy (§6.3.3)"
         );
     }
@@ -2148,10 +2253,16 @@ mod class_tests {
             class C = () ( public lazy foo ::= bar. ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
-        assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
-        assert_eq!(body.slots[0].mutability, SlotMutability::MutableInitialized);
-        assert!(body.slots[0].lazy);
+        assert_eq!(body.slots().count(), 1);
+        assert_eq!(
+            body.slots().next().expect("a slot").access,
+            Some(AccessModifier::Public)
+        );
+        assert_eq!(
+            body.slots().next().expect("a slot").mutability,
+            SlotMutability::MutableInitialized
+        );
+        assert!(body.slots().next().expect("a slot").lazy);
     }
 
     #[test]
@@ -2160,8 +2271,8 @@ mod class_tests {
             class C = ( | foo = 1. | ) ( ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
-        assert!(!body.slots[0].lazy);
+        assert_eq!(body.slots().count(), 1);
+        assert!(!body.slots().next().expect("a slot").lazy);
     }
 
     // A method literally named `lazy` must not be mistaken for a lazy slot.
@@ -2171,8 +2282,8 @@ mod class_tests {
             class C = () ( lazy = ( ^ 1 ) ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert!(body.slots.is_empty());
-        assert_eq!(body.methods.len(), 1);
+        assert!(body.slots().next().is_none());
+        assert_eq!(body.methods().count(), 1);
     }
 
     // --- I2: a leading string in the class header body is an initializer expression,
@@ -2185,10 +2296,10 @@ mod class_tests {
         assert_eq!(module.root_class.class_comment, None);
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 1);
-        let Statement::Expression(Expression {
+        let StatementKind::Expression(Expression {
             kind: ExpressionKind::Send(send),
             ..
-        }) = &body.initializer_expressions[0]
+        }) = &body.initializer_expressions[0].kind
         else {
             panic!("{:?}", body.initializer_expressions[0])
         };
@@ -2516,7 +2627,10 @@ mod method_tests {
         assert!(method.body.temporaries.is_empty());
         assert!(matches!(
             method.body.statements.as_slice(),
-            [Statement::Return(_)]
+            [Statement {
+                kind: StatementKind::Return(_),
+                ..
+            }]
         ));
     }
 
@@ -2543,7 +2657,10 @@ mod method_tests {
         );
         assert!(matches!(
             method.body.statements.as_slice(),
-            [Statement::Return(_)]
+            [Statement {
+                kind: StatementKind::Return(_),
+                ..
+            }]
         ));
     }
 
@@ -2577,7 +2694,10 @@ mod method_tests {
         );
         assert!(matches!(
             method.body.statements.as_slice(),
-            [Statement::Return(_)]
+            [Statement {
+                kind: StatementKind::Return(_),
+                ..
+            }]
         ));
     }
 
@@ -2900,27 +3020,49 @@ mod unreserved_word_tests {
     fn a_declaration_is_what_its_whole_production_matches() {
         // No lazy slot: a private method named `lazy`.
         let body = instance_side_of("private lazy = ( ^1 )");
-        assert!(body.slots.is_empty());
-        assert_eq!(body.methods[0].access, Some(AccessModifier::Private));
-        assert_eq!(unary_selector(&body.methods[0]), "lazy");
+        assert!(body.slots().next().is_none());
+        assert_eq!(
+            body.methods().next().expect("a method").access,
+            Some(AccessModifier::Private)
+        );
+        assert_eq!(
+            unary_selector(body.methods().next().expect("a method")),
+            "lazy"
+        );
 
         // A lazy slot named `lazy`.
         let body = instance_side_of("lazy lazy = 1.");
-        assert!(body.methods.is_empty());
-        assert_eq!(body.slots[0].name.name, "lazy");
-        assert!(body.slots[0].lazy);
+        assert!(body.methods().next().is_none());
+        assert_eq!(body.slots().next().expect("a slot").name.name, "lazy");
+        assert!(body.slots().next().expect("a slot").lazy);
 
         // A public lazy slot named `public`.
         let body = instance_side_of("lazy public public = 1.");
-        assert_eq!(body.slots[0].name.name, "public");
-        assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
-        assert!(body.slots[0].lazy);
+        assert_eq!(body.slots().next().expect("a slot").name.name, "public");
+        assert_eq!(
+            body.slots().next().expect("a slot").access,
+            Some(AccessModifier::Public)
+        );
+        assert!(body.slots().next().expect("a slot").lazy);
 
         // A nested class named `public`, and a public method named `class`.
         let body = instance_side_of("class public = Object new () () public class = ( ^1 )");
-        assert_eq!(body.nested_classes[0].name.name, "public");
-        assert_eq!(body.methods[0].access, Some(AccessModifier::Public));
-        assert_eq!(unary_selector(&body.methods[0]), "class");
+        assert_eq!(
+            body.nested_classes()
+                .next()
+                .expect("a nested class")
+                .name
+                .name,
+            "public"
+        );
+        assert_eq!(
+            body.methods().next().expect("a method").access,
+            Some(AccessModifier::Public)
+        );
+        assert_eq!(
+            unary_selector(body.methods().next().expect("a method")),
+            "class"
+        );
     }
 
     /// The one deviation (decided with the user on 2026-09-27): §6.3.4's
@@ -2997,9 +3139,14 @@ mod specification_tests {
     fn expression(source: &str) -> Expression {
         let module = parse_member(&format!("probe = ( ^{source} )"))
             .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
-        let method = &module.root_class.instance_side.methods[0];
-        match &method.body.statements[0] {
-            Statement::Return(expression) => expression.clone(),
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
+        match &method.body.statements[0].kind {
+            StatementKind::Return(expression) => expression.clone(),
             other => panic!("{other:?}"),
         }
     }
@@ -3283,7 +3430,12 @@ mod specification_tests {
         let module = parse_member("probe = ( || c = 3. d = 4. || ^c + d )")
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         assert_eq!(
-            module.root_class.instance_side.methods[0]
+            module
+                .root_class
+                .instance_side
+                .methods()
+                .next()
+                .expect("a method")
                 .body
                 .temporaries
                 .len(),
@@ -3307,20 +3459,17 @@ mod specification_tests {
         let module = crate::parse(source).expect("parse");
         let body = &module.root_class.instance_side;
         let header: Vec<bool> = body
-            .slots
-            .iter()
+            .slots()
             .filter(|slot| !slot.lazy)
             .map(|slot| slot.simultaneous)
             .collect();
         assert_eq!(header, vec![true, true]);
         assert!(body
-            .slots
-            .iter()
+            .slots()
             .filter(|slot| slot.lazy)
             .all(|slot| !slot.simultaneous));
         let temporaries = |selector_name: &str| -> Vec<bool> {
-            body.methods
-                .iter()
+            body.methods()
                 .find(|method| match &method.pattern {
                     MessagePattern::Unary { selector } => selector.name == selector_name,
                     _ => false,
@@ -3377,8 +3526,7 @@ mod recovery_work_tests {
         module
             .root_class
             .instance_side
-            .methods
-            .iter()
+            .methods()
             .map(|method| match &method.pattern {
                 MessagePattern::Unary { selector } => selector.name.clone(),
                 pattern => format!("{pattern:?}"),

@@ -11,7 +11,7 @@ pub(crate) use classes::{root_clause_defect, root_shape};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
@@ -172,11 +172,11 @@ impl Resolver {
             }
         }
 
-        for method in &declaration.instance_side.methods {
+        for method in declaration.instance_side.methods() {
             self.resolve_method(method, &class_chain);
         }
         if let Some(class_side) = &declaration.class_side {
-            for method in &class_side.methods {
+            for method in class_side.methods() {
                 self.resolve_method(method, &class_chain);
             }
         }
@@ -211,7 +211,7 @@ impl Resolver {
         }
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&factory_parameters, &[]));
-        for slot in &declaration.instance_side.slots {
+        for slot in declaration.instance_side.slots() {
             // A lazy slot (§6.3.3) is resolved below, after this scope is
             // popped: its initializer is not part of the instance
             // initializer's activation.
@@ -263,7 +263,7 @@ impl Resolver {
         // with no locals but its own, over the same `class_chain` -- since
         // the compiler (a later task) lowers it as a zero-argument method
         // body.
-        for slot in &declaration.instance_side.slots {
+        for slot in declaration.instance_side.slots() {
             if !slot.lazy {
                 continue;
             }
@@ -274,11 +274,11 @@ impl Resolver {
             }
         }
 
-        for nested in &declaration.instance_side.nested_classes {
+        for nested in declaration.instance_side.nested_classes() {
             self.resolve_class(nested, &class_chain);
         }
         if let Some(class_side) = &declaration.class_side {
-            for nested in &class_side.nested_classes {
+            for nested in class_side.nested_classes() {
                 self.resolve_class(nested, &class_chain);
             }
         }
@@ -376,8 +376,8 @@ impl Resolver {
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
-        match statement {
-            Statement::Expression(expression) | Statement::Return(expression) => {
+        match &statement.kind {
+            StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                 self.resolve_expression(expression, scope, chain)
             }
         }

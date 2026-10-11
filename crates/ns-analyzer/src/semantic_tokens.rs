@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend};
 use ns_runtime::Binding;
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::{Span, Token, TokenKind};
 
 use crate::documents::{utf16_length, LineIndex};
@@ -165,7 +165,7 @@ impl ClassMembers {
 impl SideMembers {
     fn of(body: &ast::ClassBody) -> SideMembers {
         let mut members = HashMap::new();
-        for slot in &body.slots {
+        for slot in body.slots() {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
             members
                 .entry(slot.name.name.clone())
@@ -176,12 +176,12 @@ impl SideMembers {
                     .or_insert(MemberKind::SlotSetter);
             }
         }
-        for method in &body.methods {
+        for method in body.methods() {
             members
                 .entry(selector_of(&method.pattern))
                 .or_insert(MemberKind::Method);
         }
-        for nested in &body.nested_classes {
+        for nested in body.nested_classes() {
             members
                 .entry(nested.name.name.clone())
                 .or_insert(MemberKind::NestedClass);
@@ -298,12 +298,7 @@ impl Classifier<'_> {
             .map(pattern_parameters)
             .unwrap_or_default();
         self.enter_scope(&factory_parameters, &[]);
-        for slot in declaration
-            .instance_side
-            .slots
-            .iter()
-            .filter(|slot| !slot.lazy)
-        {
+        for slot in declaration.instance_side.slots().filter(|slot| !slot.lazy) {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
             self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             if let Some(initializer) = &slot.initializer {
@@ -332,12 +327,7 @@ impl Classifier<'_> {
         // §6: the factory's parameters are not in scope in the class body,
         // where a lazy slot is declared; the resolver resolves its
         // initializer as a unary method's body, and so does this walk.
-        for slot in declaration
-            .instance_side
-            .slots
-            .iter()
-            .filter(|slot| slot.lazy)
-        {
+        for slot in declaration.instance_side.slots().filter(|slot| slot.lazy) {
             if let Some(modifier) = self.lazy_modifier(slot) {
                 self.emit(modifier, TokenCategory::Keyword, false, false);
             }
@@ -351,7 +341,7 @@ impl Classifier<'_> {
         }
 
         if let Some(class_side) = &declaration.class_side {
-            for slot in &class_side.slots {
+            for slot in class_side.slots() {
                 let readonly = slot.mutability == ast::SlotMutability::Immutable;
                 self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             }
@@ -361,12 +351,12 @@ impl Classifier<'_> {
             sides.push((class_side, &class_side_chain));
         }
         for &(body, side_chain) in &sides {
-            for method in &body.methods {
+            for method in body.methods() {
                 self.method(method, side_chain);
             }
         }
         for &(body, side_chain) in &sides {
-            for nested in &body.nested_classes {
+            for nested in body.nested_classes() {
                 self.class(nested, side_chain);
             }
         }
@@ -429,8 +419,8 @@ impl Classifier<'_> {
     }
 
     fn statement(&mut self, statement: &Statement, chain: &[&SideMembers]) {
-        match statement {
-            Statement::Expression(expression) | Statement::Return(expression) => {
+        match &statement.kind {
+            StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                 self.expression(expression, chain)
             }
         }

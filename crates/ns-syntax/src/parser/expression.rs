@@ -380,6 +380,7 @@ impl<'a> Parser<'a> {
                 open: left_bracket.span,
                 close: right_bracket.map(|token| token.span),
             }),
+            comments: Vec::new(),
             span,
         })))
     }
@@ -582,6 +583,7 @@ impl<'a> Parser<'a> {
                 message: MessageSend {
                     selector: Selector::Unary(selector_name),
                     arguments: Vec::new(),
+                    comments: Vec::new(),
                     span,
                 },
             })));
@@ -604,6 +606,7 @@ impl<'a> Parser<'a> {
                 message: MessageSend {
                     selector: Selector::Binary(operator),
                     arguments: vec![argument],
+                    comments: Vec::new(),
                     span,
                 },
             })));
@@ -632,6 +635,7 @@ impl<'a> Parser<'a> {
             message: MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                comments: Vec::new(),
                 span,
             },
         })))
@@ -685,6 +689,7 @@ impl<'a> Parser<'a> {
             return Some(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                comments: Vec::new(),
                 span: start.merge(end),
             });
         }
@@ -692,6 +697,7 @@ impl<'a> Parser<'a> {
             let (operator, argument) = self.parse_binary_operator_and_argument();
             return Some(MessageSend {
                 selector: Selector::Binary(operator),
+                comments: Vec::new(),
                 span: start.merge(expression_span(&argument)),
                 arguments: vec![argument],
             });
@@ -703,6 +709,7 @@ impl<'a> Parser<'a> {
             return Some(MessageSend {
                 selector: Selector::Unary(selector_name),
                 arguments: Vec::new(),
+                comments: Vec::new(),
                 span: selector_token.span,
             });
         }

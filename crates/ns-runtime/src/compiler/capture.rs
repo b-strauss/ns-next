@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use super::control_flow::{self, InlineForm};
@@ -379,8 +379,8 @@ impl<'a> Walker<'a> {
 
     fn statements(&mut self, statements: &[Statement]) {
         for statement in statements {
-            match statement {
-                Statement::Expression(expression) | Statement::Return(expression) => {
+            match &statement.kind {
+                StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                     self.expression(expression)
                 }
             }
@@ -593,7 +593,14 @@ mod tests {
             crate::SourceOrigin::File(PathBuf::from("t.ns")),
         )
         .expect("resolve");
-        let method = resolved.module.root_class.instance_side.methods[0].clone();
+        let method = resolved
+            .module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .clone();
         analyze(
             RootBody {
                 argument_count: 0,
@@ -758,9 +765,17 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        let method = &resolved.module.root_class.instance_side.nested_classes[0]
+        let method = resolved
+            .module
+            .root_class
             .instance_side
-            .methods[0];
+            .nested_classes()
+            .next()
+            .expect("a nested class")
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
         let captures = analyze(
             RootBody {
                 argument_count: 0,

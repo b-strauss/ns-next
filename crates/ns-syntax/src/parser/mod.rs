@@ -778,7 +778,10 @@ mod tests {
         let ExpressionKind::Block(block) = expression.kind else {
             panic!()
         };
-        assert!(matches!(block.body.statements[0], Statement::Return(_)));
+        assert!(matches!(
+            block.body.statements[0].kind,
+            StatementKind::Return(_)
+        ));
     }
 
     // --- Type annotations and other grammar corners ---

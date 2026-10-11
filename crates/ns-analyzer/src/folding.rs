@@ -113,8 +113,8 @@ impl Collector<'_> {
     fn class(&mut self, class: &ast::ClassDeclaration) {
         let instance = &class.instance_side;
         self.bracketed(instance.delimiters, instance.span.end, "(...)");
-        self.slot_section(instance.slot_delimiters, &instance.slots);
-        for slot in &instance.slots {
+        self.slot_section(instance.slot_delimiters, &instance.header_slots);
+        for slot in instance.slots() {
             self.slot(slot);
         }
         for statement in &instance.initializer_expressions {
@@ -128,15 +128,15 @@ impl Collector<'_> {
                     .for_each(|argument| self.expression(argument));
             }
         }
-        for method in &instance.methods {
+        for method in instance.methods() {
             self.method(method);
         }
-        for nested in &instance.nested_classes {
+        for nested in instance.nested_classes() {
             self.class(nested);
         }
         if let Some(class_side) = &class.class_side {
             self.bracketed(class_side.delimiters, class_side.span.end, "(...)");
-            for method in &class_side.methods {
+            for method in class_side.methods() {
                 self.method(method);
             }
         }
@@ -173,8 +173,8 @@ impl Collector<'_> {
     }
 
     fn statement(&mut self, statement: &ast::Statement) {
-        match statement {
-            ast::Statement::Expression(expression) | ast::Statement::Return(expression) => {
+        match &statement.kind {
+            ast::StatementKind::Expression(expression) | ast::StatementKind::Return(expression) => {
                 self.expression(expression);
             }
         }

@@ -75,7 +75,7 @@ fn recognize_quick_method(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(expression) = &body.statements[0] else {
+    let ast::StatementKind::Return(expression) = &body.statements[0].kind else {
         return None;
     };
     let parameters = parameter_names(&declaration.pattern);
@@ -161,10 +161,10 @@ fn recognize_builtin_class_accessor(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression {
+    let ast::StatementKind::Return(ast::Expression {
         kind: ast::ExpressionKind::Send(send),
         ..
-    }) = &body.statements[0]
+    }) = &body.statements[0].kind
     else {
         return None;
     };
@@ -204,10 +204,10 @@ pub(crate) fn recognize_class_accessor(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression {
+    let ast::StatementKind::Return(ast::Expression {
         kind: ast::ExpressionKind::Send(send),
         ..
-    }) = &body.statements[0]
+    }) = &body.statements[0].kind
     else {
         return None;
     };
@@ -221,8 +221,7 @@ pub(crate) fn recognize_class_accessor(
         return None;
     };
     root.instance_side
-        .nested_classes
-        .iter()
+        .nested_classes()
         .any(|nested| nested.name.name == *name)
         .then(|| crate::mixin::ClassAccessor {
             depth: *depth,
@@ -244,10 +243,10 @@ fn recognize_mirror_forwarder(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression {
+    let ast::StatementKind::Return(ast::Expression {
         kind: ast::ExpressionKind::Send(send),
         ..
-    }) = &body.statements[0]
+    }) = &body.statements[0].kind
     else {
         return None;
     };
@@ -358,12 +357,15 @@ mod tests {
             resolved.kernel,
             "resolve_kernel marks its module as the kernel"
         );
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        recognize(
-            &nested.instance_side.methods[0],
-            &resolved.bindings,
-            resolved.kernel,
-        )
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        recognize(method, &resolved.bindings, resolved.kernel)
     }
 
     /// `fast_path_in_the_kernel`, as a mirror row index.
@@ -387,12 +389,15 @@ mod tests {
         )
         .expect("resolve");
         assert!(!resolved.kernel, "a user module is not the kernel");
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        recognize(
-            &nested.instance_side.methods[0],
-            &resolved.bindings,
-            resolved.kernel,
-        )
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        recognize(method, &resolved.bindings, resolved.kernel)
     }
 
     fn row(selector: &str) -> Option<usize> {
@@ -613,8 +618,13 @@ mod tests {
             panic!("the shipped module resolves");
         };
         let root = &resolved.module.root_class;
-        let nested = &root.instance_side.nested_classes[0];
-        recognize_class_accessor(&nested.instance_side.methods[0], &resolved.bindings, root)
+        let nested = root
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        recognize_class_accessor(method, &resolved.bindings, root)
     }
 
     #[test]

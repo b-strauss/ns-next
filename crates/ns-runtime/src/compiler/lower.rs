@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use super::capture::{BodyKey, Captured, Captures, Place};
@@ -723,13 +723,13 @@ impl<'a> Lowerer<'a> {
     /// discarded initializer `^`), `None` when a return instruction was
     /// emitted.
     fn lower_statement_inner(&mut self, statement: &Statement, use_: ValueUse) -> Option<u16> {
-        match statement {
-            Statement::Expression(expression) => {
+        match &statement.kind {
+            StatementKind::Expression(expression) => {
                 let register = self.lower_expression_for(expression, use_);
                 self.last_expression_register = Some(register);
                 Some(register)
             }
-            Statement::Return(expression) => {
+            StatementKind::Return(expression) => {
                 let make_return = self.return_instruction();
                 let use_ = if make_return.is_some() {
                     ValueUse::Read
@@ -810,8 +810,10 @@ impl<'a> Lowerer<'a> {
     /// returns its last statement's value, `nil` if it has none; a superclass
     /// clause returns the value of the one expression it is.
     fn finish_body(&mut self, statements: &[Statement]) {
-        let ends_in_return = matches!(statements.last(), Some(Statement::Return(_)))
-            && self.kind != CodeKind::Initializer;
+        let ends_in_return = matches!(
+            statements.last().map(|statement| &statement.kind),
+            Some(StatementKind::Return(_))
+        ) && self.kind != CodeKind::Initializer;
         if ends_in_return {
             return;
         }
@@ -1166,8 +1168,8 @@ impl<'a> Lowerer<'a> {
         blocks
             .into_iter()
             .flat_map(|block| block.body.statements.iter())
-            .any(|statement| match statement {
-                Statement::Expression(expression) | Statement::Return(expression) => {
+            .any(|statement| match &statement.kind {
+                StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                     self.writes_register(expression, register, inlined_depth + 1)
                 }
             })
@@ -2106,7 +2108,14 @@ mod tests {
             crate::SourceOrigin::File(PathBuf::from("t.ns")),
         )
         .expect("resolve");
-        let method = resolved.module.root_class.instance_side.methods[index].clone();
+        let method = resolved
+            .module
+            .root_class
+            .instance_side
+            .methods()
+            .nth(index)
+            .expect("a method")
+            .clone();
         (method, resolved.bindings.clone())
     }
 
@@ -2130,7 +2139,7 @@ mod tests {
     }
 
     fn return_expression(method: &ast::MethodDeclaration) -> &Expression {
-        let Statement::Return(expression) = &method.body.statements[0] else {
+        let StatementKind::Return(expression) = &method.body.statements[0].kind else {
             panic!("expected a return statement");
         };
         expression
@@ -2711,8 +2720,8 @@ mod tests {
         ));
         let (foo, bindings) = resolve_method(source, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
-        lowerer.lower_expression(match &foo.body.statements[1] {
-            Statement::Return(expression) => expression,
+        lowerer.lower_expression(match &foo.body.statements[1].kind {
+            StatementKind::Return(expression) => expression,
             _ => panic!(),
         });
         let code = lowerer.finish(foo.span);
@@ -2849,8 +2858,10 @@ mod tests {
             .body
             .statements
             .iter()
-            .map(|statement| match statement {
-                Statement::Expression(expression) | Statement::Return(expression) => expression,
+            .map(|statement| match &statement.kind {
+                StatementKind::Expression(expression) | StatementKind::Return(expression) => {
+                    expression
+                }
             })
             .collect();
         let mut lowerer = lowerer_for(
@@ -3803,9 +3814,17 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        let method = &resolved.module.root_class.instance_side.nested_classes[0]
+        let method = resolved
+            .module
+            .root_class
             .instance_side
-            .methods[0];
+            .nested_classes()
+            .next()
+            .expect("a nested class")
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
         let mut lowerer = method_lowerer(method, &resolved.bindings);
         lowerer.lower_local_initializers(&method.body.temporaries);
         lowerer.lower_body(&method.body.statements);

@@ -674,16 +674,16 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
     fn class(declaration: &ast::ClassDeclaration, visit: &mut dyn FnMut(&ast::Send)) {
         let sides = std::iter::once(&declaration.instance_side).chain(&declaration.class_side);
         for side in sides {
-            for slot in &side.slots {
+            for slot in side.slots() {
                 if let Some(initializer) = &slot.initializer {
                     expression(initializer, visit);
                 }
             }
             statements(&side.initializer_expressions, visit);
-            for method in &side.methods {
+            for method in side.methods() {
                 body(&method.body, visit);
             }
-            for nested in &side.nested_classes {
+            for nested in side.nested_classes() {
                 class(nested, visit);
             }
         }
@@ -698,8 +698,8 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
     }
     fn statements(list: &[ast::Statement], visit: &mut dyn FnMut(&ast::Send)) {
         for statement in list {
-            match statement {
-                ast::Statement::Expression(inner) | ast::Statement::Return(inner) => {
+            match &statement.kind {
+                ast::StatementKind::Expression(inner) | ast::StatementKind::Return(inner) => {
                     expression(inner, visit)
                 }
             }

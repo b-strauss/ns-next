@@ -92,11 +92,16 @@ fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
     )
     .expect("resolve must succeed -- a bare builtin class name is not a resolve error");
 
-    let method = &module.root_class.instance_side.methods[0];
-    let ns_syntax::ast::Statement::Expression(ns_syntax::ast::Expression {
+    let method = module
+        .root_class
+        .instance_side
+        .methods()
+        .next()
+        .expect("a method");
+    let ns_syntax::ast::StatementKind::Expression(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Assign { value, .. },
         ..
-    }) = &method.body.statements[0]
+    }) = &method.body.statements[0].kind
     else {
         panic!("expected the method's first statement to be `c:: Array new.`");
     };
@@ -362,15 +367,26 @@ fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member
     let module = ns_syntax::parse(source).expect("parse");
     let resolved = resolve_source(source);
 
-    let inner = &module.root_class.instance_side.nested_classes[0];
+    let inner = module
+        .root_class
+        .instance_side
+        .nested_classes()
+        .next()
+        .expect("a nested class");
     let class_side = inner
         .class_side
         .as_ref()
         .expect("Inner declares a class side");
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+    let ns_syntax::ast::StatementKind::Return(ns_syntax::ast::Expression {
         kind: ns_syntax::ast::ExpressionKind::Identifier(factory_send),
         ..
-    }) = &class_side.methods[0].body.statements[0]
+    }) = &class_side
+        .methods()
+        .next()
+        .expect("a method")
+        .body
+        .statements[0]
+        .kind
     else {
         panic!("expected the class-side method's only statement to be `^new`");
     };
@@ -404,9 +420,16 @@ fn module_applying(inheritance: &str) -> String {
 
 /// The doubly nested `Applied` of [`module_applying`].
 fn applied_class(module: &ns_syntax::ast::Module) -> &ns_syntax::ast::ClassDeclaration {
-    &module.root_class.instance_side.nested_classes[0]
+    module
+        .root_class
         .instance_side
-        .nested_classes[0]
+        .nested_classes()
+        .next()
+        .expect("a nested class")
+        .instance_side
+        .nested_classes()
+        .next()
+        .expect("a nested class")
 }
 
 /// The binding recorded at the receiver of `Applied`'s superclass clause, when
@@ -752,9 +775,21 @@ fn a_parenthesised_outer_reference_resolves_as_the_bare_one() {
 /// two sources whose spans differ compare equal.
 fn receiver_binding_of_yourself(source: &str) -> String {
     let resolved = resolve_source(source);
-    let inner = &resolved.module.root_class.instance_side.nested_classes[0];
-    let ns_syntax::ast::Statement::Return(returned) =
-        &inner.instance_side.methods[0].body.statements[0]
+    let inner = resolved
+        .module
+        .root_class
+        .instance_side
+        .nested_classes()
+        .next()
+        .expect("a nested class");
+    let ns_syntax::ast::StatementKind::Return(returned) = &inner
+        .instance_side
+        .methods()
+        .next()
+        .expect("a method")
+        .body
+        .statements[0]
+        .kind
     else {
         panic!("expected `answer` to return the send of `yourself`");
     };

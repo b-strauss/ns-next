@@ -9,6 +9,8 @@ pub struct Module {
     pub language_id: String, // e.g. "Newspeak3"
     pub category: String,    // the quoted category string, contents only
     pub root_class: ClassDeclaration,
+    /// Comments attached to the module (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -37,6 +39,8 @@ pub struct ClassDeclaration {
     pub class_comment: Option<crate::comment::Comment>,
     pub instance_side: ClassBody,
     pub class_side: Option<ClassBody>, // the `: ( ... )` block
+    /// Comments attached to the declaration (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -50,12 +54,26 @@ pub struct Delimiters {
     pub close: Option<Span>,
 }
 
+/// A member of one side of a class, `sideDecl`'s `nestedClassDecl | lazySlotDecl |
+/// methodDecl` (§6.3); a class side's `classSideDecl` holds methods only.
+/// A nested class is boxed: it is several times the size of the other two.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Member {
+    Class(Box<ClassDeclaration>),
+    LazySlot(SlotDeclaration),
+    Method(MethodDeclaration),
+}
+
+/// One side of a class. The instance side is the header's group (its slots
+/// and initializer expressions) and the members' group; the class side,
+/// `: ( ... )`, has members only, every one a method.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassBody {
-    pub slots: Vec<SlotDeclaration>,
+    /// The header's slots (instance side only), in written order.
+    pub header_slots: Vec<SlotDeclaration>,
     pub initializer_expressions: Vec<Statement>, // instance side only; empty on class side
-    pub methods: Vec<MethodDeclaration>,
-    pub nested_classes: Vec<ClassDeclaration>,
+    /// The side's members in source order.
+    pub members: Vec<Member>,
     /// The instance side's first `(` (the header's) and last `)` (the
     /// members'), or the class side's `( )`; `None` for a mixin
     /// application ended by `.`.
@@ -63,7 +81,41 @@ pub struct ClassBody {
     /// The header's slot section, `| |` or `|| ||`; `None` without one and
     /// on a class side.
     pub slot_delimiters: Option<Delimiters>,
+    /// Comments attached to the side (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
+}
+
+impl ClassBody {
+    /// The header's slots, then the lazy slots in source order: the order
+    /// slot indices and image rows have always used.
+    pub fn slots(&self) -> impl Iterator<Item = &SlotDeclaration> {
+        self.header_slots.iter().chain(self.lazy_slots())
+    }
+
+    /// The methods, in source order.
+    pub fn methods(&self) -> impl Iterator<Item = &MethodDeclaration> {
+        self.members.iter().filter_map(|member| match member {
+            Member::Method(method) => Some(method),
+            _ => None,
+        })
+    }
+
+    /// The nested classes, in source order.
+    pub fn nested_classes(&self) -> impl Iterator<Item = &ClassDeclaration> {
+        self.members.iter().filter_map(|member| match member {
+            Member::Class(class) => Some(class.as_ref()),
+            _ => None,
+        })
+    }
+
+    /// The lazy slots, in source order.
+    pub fn lazy_slots(&self) -> impl Iterator<Item = &SlotDeclaration> {
+        self.members.iter().filter_map(|member| match member {
+            Member::LazySlot(slot) => Some(slot),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +123,8 @@ pub struct SuperclassClause {
     pub prefix: Option<SuperclassPrefix>,
     pub receiver: Identifier,       // the unaryMsg receiver identifier
     pub messages: Vec<MessageSend>, // trailing `message?` (0 or more sends)
+    /// Comments attached to the clause (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -96,6 +150,8 @@ pub struct SlotDeclaration {
     /// (`docs/design/object-model.md`, "Simultaneous slots"). Never set on a
     /// lazy slot, which stands in no clause.
     pub simultaneous: bool,
+    /// Comments attached to the slot (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -116,6 +172,8 @@ pub struct MethodDeclaration {
     pub body: CodeBody,
     /// The body's `( )`.
     pub body_delimiters: Option<Delimiters>,
+    /// Comments attached to the method (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -139,11 +197,44 @@ pub struct CodeBody {
     /// The temporaries' `| |`; `None` without any.
     pub temporaries_delimiters: Option<Delimiters>,
     pub statements: Vec<Statement>,
+    /// Comments attached to the body (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
+pub struct Statement {
+    pub kind: StatementKind,
+    /// Comments attached to the statement (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
+    /// From the statement's first token (`^` for a return) to its last,
+    /// the separating period excluded.
+    pub span: Span,
+}
+
+impl Statement {
+    /// A statement of `expression` alone, spanning it.
+    pub fn of_expression(expression: Expression) -> Statement {
+        Statement {
+            span: expression.span,
+            kind: StatementKind::Expression(expression),
+            comments: Vec::new(),
+        }
+    }
+
+    /// A statement returning `expression`, spanning the expression: one
+    /// the compiler builds, which has no `^` in the source.
+    pub fn of_return(expression: Expression) -> Statement {
+        Statement {
+            span: expression.span,
+            kind: StatementKind::Return(expression),
+            comments: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum StatementKind {
     Expression(Expression),
     Return(Expression), // `^ expression`
 }
@@ -321,6 +412,7 @@ impl Send {
         let message = MessageSend {
             selector: std::mem::replace(&mut self.message.selector, Selector::Unary(String::new())),
             arguments: std::mem::take(&mut self.message.arguments),
+            comments: std::mem::take(&mut self.message.comments),
             span: self.message.span,
         };
         (receiver, message)
@@ -351,6 +443,8 @@ fn placeholder(span: Span) -> Expression {
 pub struct MessageSend {
     pub selector: Selector,
     pub arguments: Vec<Expression>,
+    /// Comments attached to the message (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -375,6 +469,8 @@ pub struct BlockExpression {
     pub body: CodeBody,
     /// The block's `[ ]`; `None` for a block the compiler builds.
     pub delimiters: Option<Delimiters>,
+    /// Comments attached to the block (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
 
@@ -453,6 +549,7 @@ mod tests {
                         message: MessageSend {
                             selector: Selector::Unary("link".to_string()),
                             arguments: Vec::new(),
+                            comments: Vec::new(),
                             span,
                         },
                         span,

@@ -179,8 +179,14 @@ mod tests {
             ) : ()
         "};
         let module = ns_syntax::parse(&full).expect("parse");
-        match &module.root_class.instance_side.methods[0].body.statements[0] {
-            ast::Statement::Return(ast::Expression {
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
+        match &method.body.statements[0].kind {
+            ast::StatementKind::Return(ast::Expression {
                 kind: ast::ExpressionKind::Send(send),
                 ..
             }) => (**send).clone(),
@@ -208,9 +214,23 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        let send = match &nested.instance_side.methods[0].body.statements[0] {
-            ast::Statement::Return(ast::Expression {
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let send = match &nested
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements[0]
+            .kind
+        {
+            ast::StatementKind::Return(ast::Expression {
                 kind: ast::ExpressionKind::Send(send),
                 ..
             }) => (**send).clone(),

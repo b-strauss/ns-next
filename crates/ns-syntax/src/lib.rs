@@ -97,12 +97,12 @@ pub fn parse_for_editor(source: &str) -> EditorParse {
 fn empty_module() -> Module {
     let span = Span::new(0, 0);
     let body = ast::ClassBody {
-        slots: Vec::new(),
+        header_slots: Vec::new(),
         initializer_expressions: Vec::new(),
-        methods: Vec::new(),
-        nested_classes: Vec::new(),
+        members: Vec::new(),
         delimiters: None,
         slot_delimiters: None,
+        comments: Vec::new(),
         span,
     };
     Module {
@@ -120,8 +120,10 @@ fn empty_module() -> Module {
             class_comment: None,
             instance_side: body,
             class_side: None,
+            comments: Vec::new(),
             span,
         },
+        comments: Vec::new(),
         span,
     }
 }
