@@ -693,7 +693,7 @@ user on 2026-10-01). Release times of one run, measured while porting:
 about 0.9 s for DeltaBlue, 5 s each for Havlak and CD, and 15 ms for Json.
 CD's count does not depend on the last bits of `sin` and `cos`, whose leaves
 call Rust's, which call the C library's as Primordial Soup's do
-(`builtins/numbers.rs`): correctly rounded values, values one ulp up and
+(`builtins/numbers/float.rs`): correctly rounded values, values one ulp up and
 one ulp down, the Windows C library's values and a Taylor series off by up
 to 557 ulps all gave 10830 (checked on 2026-10-01, while planning stage 3).
 
@@ -886,7 +886,7 @@ to one fraction digit, are read from `bench` above):
 `vm::run::closure` and no `run_stretch` of its own (`dumpbin /disasm` of a
 pinned release build with `CARGO_PROFILE_RELEASE_DEBUG=limited`). The
 tagged operations (`Value::small_integer_sum` and its siblings) also exist
-as functions of their own, because `builtins/numbers.rs` passes them to its
+as functions of their own, because `builtins/numbers/integer.rs` passes them to its
 shared arithmetic as function values; `vm::run` calls none of them.
 
 What the measurement does not cover: one machine and one operating system;

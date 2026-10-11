@@ -28,12 +28,14 @@ collections and strings, which is built too (an abstract `Collection` in
 the kernel with `Array` under it, the whole protocol of `Array`, `List`,
 `Map` and `Set`, `IdentityMap`, `ConcurrentModification`, `String`'s
 protocol in code points, every member of the shipped modules documented);
-numbers, the symmetric tower with `Fraction` among them; `ByteArray` and
-`StringBuilder`, with typed arrays over a `ByteArray` as an API of our own
-beside them (decided with the user on 2026-10-11); weak references. Each has its own design and plan; the
-numbers sub-project is next -- `Float`'s mathematics, `Integer`'s and
-`Number`'s protocol, then `Fraction` and the tower -- and has no design or
-plan yet. The decisions and the scope are
+numbers, which is built too (`Float`'s mathematics and texts, `Integer`'s
+and `Number`'s protocol, `Fraction`, and the symmetric tower); `ByteArray`
+and `StringBuilder`, with typed arrays over a `ByteArray` as an API of our
+own beside them (decided with the user on 2026-10-11); weak references.
+Each has its own design and plan; the fifth sub-project is next --
+`ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
+arrays over a `ByteArray` -- and has no design or plan yet. The decisions
+and the scope are
 [core-library.md](design/core-library.md), "Planned: the kernel completed
 to Primordial Soup's core API".
 
@@ -126,7 +128,7 @@ and `prior-art/newspeak-benchmarks`.
 - **Step 2, second plan, the eight-byte value -- built**, on the arena:
   one tagged 64-bit word -- a `SmallInteger` of 61 bits, a `SmallFloat64`,
   the constants `nil`, `true` and `false`, and handles -- with every other
-  number a `LargeInteger` or a boxed `Float`.
+  number a `LargeInteger`, a boxed `Float` or a `Fraction`.
   [object-model.md](design/object-model.md), "Values and objects".
 - **After road step 2, the compact instruction encoding -- built**,
   designed against the one-word value from the dispatch findings of "Where
@@ -368,7 +370,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   [core-library.md](design/core-library.md), "Large integers".
 - **`LargeInteger` arithmetic copies its operands' digits out.** `=`, `hash`,
   the comparisons and the sign tests read a `LargeInteger`'s digits in place
-  (`Heap::with_large_integer`), in `builtins/numbers.rs` and the derived
+  (`Heap::with_large_integer`), in `builtins/numbers/` and the derived
   equality and hash of `builtins/value.rs`, since road step 3a keeps the
   digits inline in the object. Arithmetic, `printString` and the other leaves
   that compute still take each operand through `Heap::large_integer`
@@ -400,32 +402,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: language and library
 
-- **The numeric tower and `Integer>>/`.** `Integer` answers `//` but not `/`
-  (only `Float` has `/`, `Kernel.ns:578`); `1 = 1.0` and `1.0 = 1` both answer
-  false; `Number` (`Kernel.ns:464`) carries only `to:do:` and `to:by:do:`.
-  Settling it means
-  `Number`'s shared behaviour, `Fraction`, cross-type comparison and a
-  matching hash (`3 asFloat hash = 3 hash`). Decided on 2026-10-06 with the
-  user: Primordial Soup's tower, made symmetric, as the kernel completion's
-  fourth sub-project ("Next" above); `num-rational` is the reference for
-  `Fraction` and for converting a `Float` to a fraction exactly. [core-library.md](design/core-library.md),
-  "Gap: an integer has no `/`".
-- **`//` with a `Float` operand.** Primordial Soup answers `7 // 2.5` and
-  `7.5 // 2` as a floored `Float` (`vm/primitives.cc`, `Number_div`, whose
-  `IS_FLOAT_OP` branch answers `floor(left / right)`); ours raises a type
-  mismatch for the first and `doesNotUnderstand:` for the second, since
-  `Float` has no `//`. `\\` is not a gap: Primordial Soup's `Number_mod` has
-  no `Float` branch and its Newspeak fallback signals an `ArgumentError`
-  (`newspeak/KernelForPrimordialSoup.ns:1988`), as ours refuses a `Float`.
-  `Float>>//` comes with the kernel completion's fourth sub-project
-  ("Next" above). [core-library.md](design/core-library.md), "Gap: an integer has no
-  `/`".
-- **`isNaN`.** `Number>>isNaN` answering `false` and `Float>>isNaN` as a
-  leaf over `f64::is_nan`; Primordial Soup's `^(self = self) not` no longer
-  works, since a NaN equals a NaN here. A NaN stays an ordinary `Float`
-  (a class of its own was set aside). Noted with the user on 2026-10-01;
-  comes with the kernel completion's fourth sub-project ("Next" above). [core-library.md](design/core-library.md),
-  "A NaN equals a NaN".
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
   is silent. Primordial Soup exits through an explicit `exit:` primitive
@@ -660,9 +636,20 @@ activation.
   program meets the leaf only by sending `Object`'s `==` directly: a number
   reaches `==` through `Value>>==`, which is `^self = other` and compares
   by state. Whether a `LargeInteger` pair should compare by state in the
-  leaf too, as a value (§3.1.1) and as the boxed float does, is open.
+  leaf too, as a value (§3.1.1) and as the boxed float does, is open; two
+  allocations of one `Fraction` are not identical to the leaf either.
   Noted 2026-10-02. [core-library.md](design/core-library.md), "Large
   integers".
+- **Whether `platform kernel Fraction` must name a program that needs
+  it.** `PlatformFactory.ns`'s `KernelNamespace>>Fraction` names none: the
+  on-demand rule ("The on-demand rule" in
+  [core-library.md](design/core-library.md)) asks every `PlatformFactory.ns`
+  accessor to name the runnable module or benchmark that demanded it, while
+  the kernel facet only hands out classes of `Kernel.ns`, which the
+  kernel completion is not bound by. `KernelNamespace>>Collection` set the
+  precedent of an accessor without such a program. Whether the facet's
+  accessors fall under the rule, and the rule's wording with it, is the
+  user's question, raised by the numbers sub-project's review, 2026-10-11.
 - **How much history a tail call keeps**, and **data parallelism over
   immutable data** as a later exception to the actor model.
 - **Whether an image carries a lazy slot's value.** §6.3.3 intends that lazy
@@ -690,6 +677,19 @@ activation.
 
 ## Unexplained measurements and unmeasured decisions
 
+- **The numeric tower's slow paths are unmeasured on their own.** The Are
+  We Fast Yet benchmarks run as fast as without the tower, but none of
+  them stresses what still goes the long way: `Float>>hash` of a
+  non-integral double builds a `Rational` and computes a modular inverse
+  by Fermat's theorem, some 120 multiplications in `u128`, where it used
+  to hash the bits; a
+  value's derived hash (`builtins/value.rs`, `hash_node`) asks the tower
+  of every object it hashes whether it is a number; and an integer's leaf
+  with a `Float` argument (`3 * 2.5`, `3 < 2.5`) goes through the tower's
+  classification, where `Float`'s own leaf takes a `SmallInteger` on its
+  fast path. A program keying a `Map` by floats, or hashing large values,
+  would show what they cost. Noted by the numbers sub-project, 2026-10-11.
+  [core-library.md](design/core-library.md), "The numeric tower".
 - **Eden's first touch costs the short allocating programs 1.5% to 6.8%.**
   Measured with road step 4 against its base, Sieve is 6.8% slower
   (separated), Permute 4.5% and RichardsTon80 3.1% (separated in one
@@ -867,7 +867,7 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   meant never to abort the process. Neither leaf can tell an affordable size
   from one the system will accept and then kill for.
   `crates/ns-runtime/src/builtins/collections.rs`, `allocate`, and
-  `builtins/numbers.rs`, `shift_left`, which reaches
+  `builtins/numbers/mod.rs`, `shift_left`, which reaches
   `ArbitraryInteger::shift_left`
   (`crates/ns-runtime/src/arbitrary_integer/mod.rs`), where the digits are
   reserved;
@@ -1005,6 +1005,16 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   cost of a check on every probe. Found by the collections and strings
   sub-project's review, 2026-10-10. [core-library.md](design/core-library.md),
   "The collections module (plan 2)".
+- **Two corners of the tower's `Float` rounding divisions.** A `Float`'s
+  floored `\\` corrects C's `fmod` by adding the divisor, and that sum can
+  round to the divisor itself: `-1.0e-20 \\ 1.0` answers `1.0`, outside
+  the range `[0, 1)` a remainder by `1.0` should lie in (Python answers
+  the same). And `float_compute` (`builtins/numbers/tower.rs`) tests the
+  divisor for zero after rounding it to a double, so an exact divisor too
+  small for a double -- a `Fraction` below the smallest subnormal -- beside
+  a `Float` signals "division by zero" though it is not zero. Both were
+  kept by the plan; found by the numbers sub-project's review, 2026-10-11.
+  [core-library.md](design/core-library.md), "The numeric tower".
 - **A `.ns` root declaring `packageUsing:`** is refused with the message
   meant for a factory that takes the platform, rather than one pointing at a
   project file (`program::instantiate_application`); no test takes that
@@ -1126,6 +1136,16 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   before eden's; a stale canonical-symbol entry refused by the scavenge's
   check (`Heap::forward_weak_symbols`); and a disagreement of the
   remembered set and the remembered bits.
+- The numbers sub-project's (noted in its reviews, 2026-10-11): goldens
+  for a `LargeInteger` receiver of `/`, `quo:` and `rem:`, a negative
+  divisor of `quo:` and `rem:`, a `Fraction` with a `Float` under `//` and
+  `\\`, `(-1/2) rounded`, and `LargeInteger`'s `Integer parse:`; unit
+  tests for a negative `shift_right` at a 64-bit boundary, for
+  `float_text`'s precision text of zero and of 21 digits, and for
+  `Rational::to_f64`'s overflow tie 2^1024 - 2^970 (Infinity, and just
+  below it `f64::MAX`), its round-up from a subnormal to a normal and a
+  negative underflow to `-0.0`; and `numeric_hash`'s test of `1/P`, which
+  should assert the infinity's hash.
 
 ## Code quality follow-ups
 
@@ -1191,6 +1211,22 @@ Small, deliberately left, none affecting an outcome.
 - `crates/ns-analyzer/src/document_symbols.rs` (noted 2026-10-04): `effective`
   answers an `Option` that is always `Some`, so `detail`'s `(None, true)` arm
   is unreachable; and `SymbolCategory` has no doc comment of its own.
+- The numbers sub-project's leftovers (noted in its reviews, 2026-10-11):
+  `numeric/rational.rs` scales by `2f64.powi`, whose exactness Rust does
+  not guarantee, where a power of two built from its bits would be;
+  `execute_float`'s `FloatPrimitive::Parse` arm is unreachable after the
+  early return above it; `IntegerPrimitive` has no doc comment saying it
+  is the family of a `SmallInteger` receiver; `builtins/numbers/mod.rs`'s
+  helpers are `pub(super)`, visible to all of `builtins`, where private
+  would do; `fraction.rs`'s module doc omits the decoder among the makers
+  of a fraction, and `declines_for_another_class` reads backwards; the
+  `Kernel.ns` comments of `Fraction>>numerator` and `denominator` omit
+  `Fraction new`, and a few of `Number`'s run past the 72-column wrap;
+  `tower`'s fast-path agreement test repeats `arithmetic_double` and
+  `ordering_double` inline rather than calling them, and `float.rs`'s
+  `doubles_equal` says in its doc that it compares two Floats only; `tests/image.rs` repeats its `1e+300`
+  assertion inside the NaN and Infinity loop; and `float_text`'s
+  precondition lines lack a blank `///` before them.
 
 ## Goldens and documentation
 

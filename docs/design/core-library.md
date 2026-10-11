@@ -64,7 +64,8 @@ Top                     (private; no superclass, declares nothing)
     │   │               └── False
     │   ├── Number      ├── Integer
     │   │               │   └── LargeInteger
-    │   │               └── Float
+    │   │               ├── Float
+    │   │               └── Fraction
     │   ├── String
     │   ├── Symbol
     │   └── UndefinedObject
@@ -152,7 +153,7 @@ protected and a protected class is unreachable from any other module, which
 is where a program's `Integer` or `String` has to come from. §3.1.1 says a
 value object's "class inherits from class `Value`", so every class whose
 instances are values hangs below `Value`, and `Number` sits between it and
-`Integer` and `Float` because §3.1.1 names `Number` among them.
+`Integer`, `Float` and `Fraction` because §3.1.1 names `Number` among them.
 
 **This is not SOMns's shape, and the difference is the one rule SOMns does
 not keep.** `prior-art/somns/core-lib/Kernel.ns` has `Top` and `Value`, and
@@ -176,13 +177,24 @@ shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
 and `printString`, beside its thirteen
 accessors for the predefined classes, `Object` to `Closure` (§5.1.8), each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
-below); `Integer`'s `+ - * // \\ < >
-<= >= =`, `bitAnd:`, `bitOr:`, `bitXor:`, `<<`, `negated`, `abs`, `asFloat`,
-`printString` and `asString`, beside `bitInvert`, which is ordinary Newspeak,
-Primordial Soup's `^-1 - self`, and reaches no leaf; `LargeInteger`'s the same
-leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
-`hash`, `sqrt`, `sin`, `cos`, `asInteger`, `asStringFixed:`, `printString` and
-`asString`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
+below); `Number`'s `+ - * / // \\ quo: rem: < > <= >= =`, `hash` and
+`asFloat`, the tower's rows, which `Fraction` inherits ("The numeric tower"
+below); `Integer`'s `+ - * // \\ < > <= >= =`, `bitAnd:`, `bitOr:`,
+`bitXor:`, `<<`, `>>`, `gcd:`, `digitAt:`, `digitLength`, `asStringRadix:`,
+`negated`, `abs`, `asFloat`, `printString` and `asString`, and on its class
+side `parse:radix:`, beside `bitInvert`, which is ordinary Newspeak,
+Primordial Soup's `^-1 - self`, and reaches no leaf, as `&`, `|`,
+`parse:`, the rounding selectors, `numerator`, `denominator`,
+`raisedTo:modulo:` and `reciprocalModulo:` reach none; `LargeInteger`'s
+the same leaves and `hash`, but for the five it inherits from `Integer`,
+whose leaves take either integer -- `>>`, `gcd:`, `digitAt:`,
+`digitLength` and `asStringRadix:` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`, `hash`, the mathematics (`sqrt`,
+`sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan:`, `exp`, `ln`, `log`,
+`raisedTo:`), `floor`, `ceiling`, `rounded`, `truncated`, `negated`, `abs`,
+`asFloat`, `isNaN`, `isFinite`, `isInfinite`, `asInteger`, its four texts
+and `asString`, and on its class side `parse:` ("A Float's text" below);
+`Fraction`'s `numerator` and `denominator`, and on its class side
+`numerator:denominator:` and `reducedNumerator:denominator:`; `String`'s `size`, `at:`, `copyFrom:to:`, `,`, `=`, `hash`,
 `asSymbol`, `printString`, `indexOf:startingAt:` and
 `lastIndexOf:startingAt:`, and on its class side `with:` and `withAll:`;
 `Symbol`'s
@@ -190,9 +202,11 @@ leaves and `hash` ("Large integers" below); `Float`'s `+ - * / < > <= >= =`,
 `at:`, `copyFrom:to:` and `replaceFrom:to:with:startingAt:`; `Closure`'s
 `value` to `value:value:value:`, `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
-below). `Number` reaches no leaf of its own: its `to:do:` and `to:by:do:` are
+below). `Number`'s `to:do:` and `to:by:do:` are
 ordinary Newspeak (below), and so are `Number>>max:` and
-`Integer>>timesRepeat:`, Primordial Soup's bodies. `UndefinedObject` reaches
+`Integer>>timesRepeat:`, Primordial Soup's bodies, and `Number`'s `min:`,
+`between:and:`, `negated`, `abs`, `raisedTo:`, its mathematics through
+`asFloat` and its answers to `isNaN`, `isFinite` and `isInfinite`. `UndefinedObject` reaches
 no leaf either: its nil protocol is quick methods and its `printString` an
 ordinary one ("The nil protocol" below). `True` and `False` reach no leaf at
 all: their conditionals, `not`, `&`, `and:`, `|` and `or:` are quick methods
@@ -560,7 +574,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 118 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 164 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -952,8 +966,10 @@ magnitude, never from an identity hash, so a value whose slot holds one
 compares and hashes by state too
 (`goldens/library/value/a_value_with_a_large_integer_slot_compares_by_state.ns`).
 With one representation per integer, no `LargeInteger` is ever the same
-number as an `Integer`, so the two are never equal; a `LargeInteger` equals
-the `Float` of its exact value (`builtins/numbers/tower.rs`). An instance of a
+number as an `Integer`, so the two are never equal. Its `=` and its
+orderings go by exact value against every number, and its `hash` is the
+numeric hash of its value, so a `LargeInteger` equals the `Float` of its
+exact value and hashes like it ("The numeric tower" below). An instance of a
 subclass of it, or `LargeInteger new`, holds no digits; every leaf
 declines it on the missing payload, never on the class, and the send falls
 to `Object`'s methods
@@ -962,7 +978,7 @@ to `Object`'s methods
 **The leaves.** `LargeInteger` forwards `+ - * // \\ < > <= >= =`, `bitAnd:`,
 `bitOr:`, `bitXor:`, `<<`, `hash`, `negated`, `abs`, `asFloat`, `printString`
 and `asString` to twenty rows of its own, the `largeInteger:` rows of `MIRROR`
-(`builtins/numbers.rs`, `execute_large_integer`). `Integer`'s leaves keep their
+(`builtins/numbers/large_integer.rs`, `execute_large_integer`). `Integer`'s leaves keep their
 immediate path and promote where it has no answer: a sum, difference or product
 that does not fit 61 bits is recomputed in `i128`, where two `SmallInteger`s'
 always fits, and `SMALL_INTEGER_MIN // -1`, `SMALL_INTEGER_MIN negated` and
@@ -1010,16 +1026,17 @@ both `-4`: Primordial Soup's `Integer>>//`, commented "Integer division,
 rounded toward negative infinity. The remainder of this division is given by
 `\\`" (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns:1958`),
 and `num-integer`'s `div_floor`. `checked_floor_divide`
-(`builtins/numbers.rs`) is the one copy of the rule for two `i64`s, which
+(`builtins/numbers/mod.rs`) is the one copy of the rule for two `i64`s, which
 the leaf and `IntegerBinary` share, and `ArbitraryInteger::floor_divide` the
-one for everything else
+one for every other pair of integers; a pair with a `Fraction` or a `Float`
+in it rounds its quotient the same way ("The numeric tower" below)
 (`goldens/library/number/integer/floor_division_rounds_toward_negative_infinity.ns`).
 
 **`\\` is the remainder of that division**, so it takes the divisor's sign:
 `7 \\ -2` is `-1` and `-7 \\ 2` is `1`. For two `i64`s, `floor_modulo`
-(`builtins/numbers.rs`) corrects Rust's truncating remainder, taken with
+(`builtins/numbers/mod.rs`) corrects Rust's truncating remainder, taken with
 `wrapping_rem` so that `i64::MIN \\ -1` answers `0` where `%` would
-overflow. For everything else, `ArbitraryInteger::floor_modulo` derives it
+overflow. For every other pair of integers, `ArbitraryInteger::floor_modulo` derives it
 from `floor_divide`, as the dividend less the quotient times the divisor,
 rather than adapting `num-integer`'s `mod_floor`, so the quotient and the
 remainder can never disagree
@@ -1141,16 +1158,10 @@ holds adapted code opens with a header naming the upstream file, the
 commit, the copyright and what was changed for ns-next. `num-bigint`,
 `num-integer` and `num-rational` are submodules under `prior-art/`,
 recorded in `prior-art/PROVENANCE.md`, read and never built like the
-others. `num-rational` is there for the numeric tower ("Gap: an integer has
-no `/`" below): its `Ratio` is the model for `Fraction`, and its exact
-conversion of a float into a fraction is what a correct comparison between
-an `Integer` and a `Float` needs; nothing is taken from it yet.
-
-Measured on 2026-10-11: with the tower, the Are We Fast Yet benchmarks run
-as fast as before, the largest ratio against the tree without it Json's
-1.005, within the noise (three pinned builds a side, pooled, by the
-protocol of [execution.md](execution.md), "What removing the re-entries
-moved"); Mandelbrot and NBody run about 4% faster.
+others. `num-rational`'s `Ratio` was the model for `Fraction`'s arithmetic,
+its rounding to a double and its exact comparison with a float ("The
+numeric tower" below), but no code is taken from it, so it has no entry
+in `THIRD-PARTY-NOTICES.md`.
 
 ## Deviation: a non-integral literal is a binary float
 
@@ -1162,12 +1173,17 @@ exposed to floating point's "counterintuitive ways". `2.5` here is an `f64`
 arithmetic is binary floating point: `(0.1 + 0.2) = 0.3` answers `false` where
 an exact decimal type answers `true`.
 
+Exact arithmetic exists all the same, through `Fraction` ("The numeric
+tower" below): `(1/10) + (2/10) = (3/10)` answers `true`, since dividing
+integers is exact, while `0.1 + 0.2 = 0.3` still answers `false`, since a
+non-integral literal denotes a `Float` and there is no fraction literal.
+
 The specification records the same divergence in its own implementation
 ("non-integral numbers are currently represented as instances of the Squeak
 class `Fraction`. This is a bug"), and it names the open design question —
 whether a user chooses the numeric implementation — rather than settling it.
-A golden for the rule would have to be skipped behind a whole numeric tower,
-so the deviation is recorded here instead.
+A golden for the rule would have to be skipped behind a decimal type that
+does not exist, so the deviation is recorded here instead.
 
 ## A NaN equals a NaN
 
@@ -1191,11 +1207,12 @@ Primordial Soup's `isNaN` is `^(self = self) not`, which no longer answers
 as a `Map` key included, and `every_nan_equals_every_other_and_hashes_alike`
 in `builtins/numbers/float.rs` NaNs of different bit patterns.
 
-**Planned: `isNaN`** (noted with the user on 2026-10-01; added when a
-program sends it, by the on-demand rule): `Number>>isNaN` answers `false`,
-so every integer answers it without a method of its own, and `Float`
-overrides it with a leaf over `f64::is_nan`. A NaN stays an ordinary
-`Float`; a class of its own was considered and set aside:
+**`isNaN` is a leaf over `f64::is_nan`**, so a NaN is still found: `Float`
+overrides `Number>>isNaN`, which answers `false`, so every integer and
+every fraction answers it without a method of its own; `isFinite` and
+`isInfinite` are shaped the same way (noted with the user on 2026-10-01,
+built with the numbers sub-project, "The numeric tower" below). A NaN stays
+an ordinary `Float`; a class of its own was considered and set aside:
 - a `Float` is one class whether it is an immediate or boxed, and a NaN
   class would make the class of every float depend on its bits;
 - every send site that computes with floats would then see two classes, and
@@ -1243,71 +1260,216 @@ and `infinity` in any case; here they are an `ArgumentError`, as is any
 other text. The mirror row is `floatClass:parse:ifFail:`, the class as the
 subject like `stringClass:with:ifFail:`.
 
-## Gap: an integer has no `/`
+## The numeric tower
 
-`7 // 2` answers `3`; `7 / 2` ends in `doesNotUnderstand:`. `Kernel.ns`
-declares `/` only on `Float`, forwarding to the mirror row
-`float:divide:ifFail:`, while `Integer` declares `//` alone, over
-`integer:floorDivide:ifFail:`. So `7.0 / 2` works and `7 / 2` does not, which
-is asymmetric enough to surprise. `asFloat` does not close the gap: it lets a
-program ask for an inexact quotient explicitly, `7 asFloat / 2`, as the Are
-We Fast Yet harness computes its scores, but `7 / 2` still answers nothing.
+`Number` has four representations, and every number is exactly one of
+them: an `Integer`, the immediate `SmallInteger`; a `LargeInteger`, every
+integer beyond 61 bits ("Large integers" above); a `Float`, immediate or
+boxed ([object-model.md](object-model.md), "Values and objects"); and a
+`Fraction`, the exact quotient of two integers that do not divide. They
+compute with one another symmetrically: whichever is the receiver and
+whichever the argument, `=`, the orderings, `hash` and the arithmetic
+answer alike (decided with the user on 2026-10-06, the rules on
+2026-10-11; "Decisions" below).
 
-**This is not a specification violation.** The specification mentions `Number`
-exactly twice — §3.1.1, listing it among the value objects, and §5.1.1, on
-non-integral *literals* — and fixes no arithmetic protocol anywhere. Which
-selectors `Integer` answers is a library question, and §8.3 leaves the
-platform's modules to provide classes "some of which are standard and mentioned
-in this specification". `/` is not one of them. Formally this is the on-demand
-rule doing its job: nothing on `corpus/runnable.toml` or under `benchmarks/`
-asks for it.
+**This is a library question, which the specification leaves open.** The
+specification mentions `Number` exactly twice -- §3.1.1, listing it among
+the value objects, and §5.1.1, on non-integral *literals* -- and fixes no
+arithmetic protocol anywhere; §8.3 leaves the platform's modules to provide
+classes "some of which are standard and mentioned in this specification".
+So the protocol is Primordial Soup's, adopted as the kernel completion
+adopts the rest of its core API ("Planned: the kernel completed to
+Primordial Soup's core API" below), and the tower under it is made
+symmetric where Primordial Soup's is not: there `(1/2) = 0.5` is `false`;
+`Float>>hash` is `asInteger`, so `1.5 hash = 1 hash`; `Fraction>>hash` is
+`numerator bitXor: denominator`, so `1/2` and `0.5` hash apart; and a
+`LargeInteger` meets a `Float` through a lossy conversion. `Number`, the
+class §3.1.1 names, holds what the four share: the tower's rows, the
+counting loops, `max:`, `min:`, `between:and:`, `raisedTo:`, the
+mathematics through `asFloat`, and the answers to `isNaN`, `isFinite` and
+`isInfinite`.
 
-**Step 6's first plan left it open deliberately** (decided with the user on
-2026-09-21): moving the library into `Kernel.ns` kept every recorded outcome,
-and adding `Integer>>/` would have been a new one. The second plan's `Number`
-class did not settle it either: `Number` is the place between `Value` and
-`Integer`/`Float` that §3.1.1 names, and **it is where the numeric tower
-goes when there is one** — what `Integer` and `Float` share moves up to it,
-as `to:do:` and `to:by:do:` have ("What exists" above), and a `Fraction`
-would hang beside them. Declaring it before the tower is what makes that a
-later addition rather than a later restructuring. **The question still has to
-be settled**, and the choice is as
-it was. Primordial Soup declares both on
-`Integer` (`prior-art/primordialsoup/newspeak/KernelForPrimordialSoup.ns`):
-`/` as a primitive falling back to `^other divideFromNumber: self`, and `//`
-beside it, commented "Integer division, rounded toward negative infinity".
-That works there because Soup has a `Fraction` class, which its comparison
-methods test for. ns-next has no `Fraction` and no exact decimal type, so
-writing `Integer>>/` into `Kernel.ns` means choosing: answer a `Float`, which
-diverges from Smalltalk and from Soup and quietly makes an exact quotient
-inexact; build the numeric tower the deviation above already defers; or keep
-the selector absent and say so. What was decided is only that it has to be
-settled eventually, deliberately rather than in passing; when, and by which
-step, is not.
+**`Fraction` is a builtin with a representation of its own**, as
+`LargeInteger` is, not a Newspeak class with slots: a subclass of `Number`,
+builtin class tag 39, reached as `platform kernel Fraction`. Its object is
+of the fixed-pointer format with two fields, the numerator and the
+denominator, each an integer value -- a `SmallInteger` or a `LargeInteger`
+handle. They are no slots, since the class declares none; nothing writes
+them after creation; and the collector traces them as it traces any fixed
+pointer field, so neither the format table nor `pointer_ranges` needed an
+arm. A fraction is always in **normal form**: reduced by the gcd of its
+parts, the denominator above 1, the sign on the numerator, so equal
+fractions have equal parts and no fraction equals an integer. The runtime
+alone makes one, through `Mutator::new_fraction`, which
+`Mutator::new_rational` calls for an exact result whose denominator is not
+1, answering an integer otherwise. `Fraction numerator:denominator:` is the
+public factory over it: it reduces, and signals an `ArgumentError` for a
+zero denominator or an argument that is no integer. `Fraction
+reducedNumerator:denominator:` keeps Primordial Soup's contract -- the
+caller supplies the normal form -- but checks it, signalling an
+`ArgumentError` for a pair not in normal form rather than building a
+fraction that breaks `=` and `hash`
+(`goldens/library/number/fraction/a_fraction_is_made_in_normal_form.ns`).
+What makes an object a fraction is its class's builtin together with
+exactly two fields (`Heap::fraction_parts`), so `Fraction new`, which has
+no field, and an instance of a program's subclass, whose class is no
+builtin, hold no value and are no number: every leaf declines them, as it
+declines `LargeInteger new`
+(`goldens/library/number/tower/a_fraction_with_no_value_is_no_number_to_a_value.ns`).
+A fraction prints as `(3/4)`, and `Heap::describe` writes it so. An image
+carries one inline as a value, value tag 10; the decoder refuses anything
+not in normal form, and an object record of fields under `Fraction`'s
+header ([image-format.md](image-format.md), "A `Fraction` is a value on the
+wire too"). `Integer` answers `isKindOfFraction` with `true`, `numerator`
+with itself and `denominator` with `1`: an integer is a fraction whose
+denominator is 1.
 
-**The class-tight `=` of 2026-09-23 makes the tower needed, not merely
-deferred.** `1.0 = 1` and `1 = 1.0` both answer `false` now, which is
-symmetric and keeps the `=`/`hash` contract, but it is not what a program
-comparing numbers expects, and no rule inside the library can give a better
-answer while an `Integer`'s hash is the integer and a `Float`'s is a hash of
-its bits. What resolves it is one piece of work, not two: a numeric tower
-under `Number` — the class that now exists to hold it — with cross-type
-comparison and a hash that matches it, `/` answering an exact quotient, and
-the `Fraction` that needs. `LargeInteger` exists without it ("Large
-integers" above) and leaves `Integer>>/`, `Fraction` and the cross-type
-comparison to the tower. The contract such a tower
-has to meet is written down in Primordial Soup's `testFloatHash`
-(`prior-art/primordialsoup/newspeak/KernelTests.ns`): `3 asFloat hash` must
-equal `3 hash`, for `-3`, `0` and the extremes alike. Until then the
-class-tight `=` is the stopgap that keeps the contract by answering
-`false`, and only `=` is class-tight: in both directions, a `Float`'s
-arithmetic and ordering convert an integer argument of either class,
-`Integer` or `LargeInteger`, and an integer's `+ - * < > <= >=` convert
-themselves and a `Float` argument, to the nearest `double`, exact up to
-2^53, as Primordial Soup's primitives do (`vm/primitives.cc`,
-`IS_FLOAT_OP`). `//` and `\\` take integers only, since `Float` has
-neither selector (`builtins/numbers.rs`'s module note; "Large integers"
-above).
+Being a builtin puts the tower's rules -- exact comparison, the hash,
+promotion, normalization -- in one Rust module for all four
+representations, lets every arithmetic and comparison leaf accept every
+number and decline only what is none, makes a fraction normal by
+construction, and costs a mixed operation no Newspeak fallback send. It
+was chosen on those merits, not on its cost.
+
+**Comparison is exact.** `=` and `< <= > >=` compare any two numbers by
+their exact values, a finite double being the dyadic rational it is
+(`Rational::from_f64`; against a `SmallInteger` within 2^53, IEEE 754's
+own comparison, which is exact there). Through `double`, Primordial Soup's
+way, `=` would be no equivalence: `2^53 = 2^53 asFloat` and `(2^53 + 1) =
+2^53 asFloat` would both be true while `2^53 = (2^53 + 1)` is false, so `=`
+would not be transitive and no `hash` could agree with it. Here 2^53 + 1
+is greater than the double 2^53 it rounds to. The infinities lie beyond
+every rational; a NaN is ordered with nothing and equals only a NaN ("A
+NaN equals a NaN" above). `=` with anything that is no number answers
+`false`, never an error; an ordering with it signals an `ArgumentError`,
+"< requires a numeric argument, got nil"
+(`goldens/library/number/tower/numbers_compare_by_exact_value.ns`).
+
+**The hash is Python's numeric hash** (`numeric/numeric_hash.rs`): a
+number's exact value `n/d` modulo the Mersenne prime P = 2^61 - 1, as `n ·
+d⁻¹`, signed as `n` is, folded into the `SmallInteger` range by a function
+that is the identity on it. Each infinity and NaN hash as a constant of
+their own, as does a fraction whose denominator P divides, which has no
+inverse; `0.0` and `-0.0` hash as `0`. Reduction modulo a prime respects
+sums, products and cancellation, so equal numbers hash alike whatever
+their representations -- `3` and `3.0`, `(1/2)` and `0.5` -- which is the
+contract Primordial Soup's `testFloatHash` writes down (`3 asFloat hash =
+3 hash`) and its own hashes do not keep. Every `SmallInteger` lies inside
+(-P, P), so its residue is itself and the fold leaves it alone:
+`Integer>>hash` stays the quick method `^self`, and the integers, which
+most hashed keys are, pay nothing for the tower
+(`goldens/library/number/tower/numbers_hash_as_they_compare.ns`).
+
+**Arithmetic's result types.** `+ - * /` of two integers are exact, `/`
+answering an `Integer` when the divisor divides and a `Fraction`
+otherwise, so `7 / 2` is `(7/2)` and `6 / 3` is `2`; with a `Fraction`
+they are exact and normal, an integer when the denominator becomes 1; with
+a `Float` among the operands they answer a `Float`, the other operand
+rounded to the nearest double in one correctly rounded step
+(`Rational::to_f64`) and IEEE 754 computing. Primordial Soup's `numerator
+asFloat / denominator asFloat` rounds twice, and answers NaN once both
+parts pass `f64::MAX`; that is not followed.
+
+**Division by zero.** An exact division by zero -- neither operand a
+`Float` -- signals an `ArgumentError`, "division by zero", carrying the
+divisor; a `Float`'s division stays IEEE's, so `1.0 / 0` and `1 / 0.0`
+answer `Infinity`. Primordial Soup's `(1/2) / 0` answers a fraction with
+denominator 0; here it signals.
+
+**`//`, `\\`, `quo:` and `rem:` take every pair of numbers**, as
+Smalltalk-80's do, where Primordial Soup's primitives take integers (and,
+for `//`, floats) only: `a // b` is `(a / b) floor` and `a \\ b` is `a -
+(a // b * b)`, which takes the divisor's sign; `quo:` and `rem:` are their
+truncating counterparts, `rem:` taking the receiver's sign. With exact
+operands the quotients are integers and the remainders exact, and a
+`Float` among the operands makes both a `Float`. A zero divisor signals
+"division by zero", `0.0` included, as Primordial Soup's `//` does
+(`goldens/library/number/tower/arithmetic_is_exact_without_a_float.ns`).
+
+**`raisedTo:`** is `Number`'s, in Newspeak: an integer exponent computes
+exactly by repeated squaring, a negative one answering the reciprocal
+through `/` -- a `Fraction` for an integer base -- so `0 raisedTo: -1`
+signals `/`'s "division by zero"; any other exponent computes through
+`asFloat` and `Float>>raisedTo:`, a leaf over `f64::powf`. `Integer` adds
+`raisedTo:modulo:` and `reciprocalModulo:`.
+
+**No double-dispatch selectors.** Primordial Soup's sixteen
+`addFromNumber:`, `subtractFromNumber:`, `multiplyFromNumber:`,
+`divideFromNumber:` and `…FromFraction:` selectors are its mechanism for
+mixed operands, public only for being that; here the leaves compute every
+combination, so the selectors are left out. An argument that is no number
+signals the same kind of `ArgumentError` in arithmetic as in an ordering,
+"+ requires a numeric argument, got nil", where Primordial Soup's
+arithmetic ends in `doesNotUnderstand: #addFromNumber:`.
+
+**What the rest of the protocol answers.** `Float`'s `floor`, `ceiling`,
+`rounded` (half away from zero) and `truncated` answer a `Float`, as
+Primordial Soup's do, so `Infinity floor` and `1e300 floor` answer without
+an error or a huge `LargeInteger`, and `asInteger` asks for an integer;
+`Fraction`'s answer integers. Two additions beyond Primordial Soup's API
+let every number answer the same questions: `truncated` on `Integer`
+(`^self`) and `Float`, where Primordial Soup has it on `Fraction` alone
+while all three answer `floor`, `ceiling` and `rounded`; and `isNaN`,
+`isFinite` and `isInfinite` on `Number`, answering `false`, `true` and
+`false`, which `Float` overrides ("A NaN equals a NaN" above). A `Float`'s
+texts are "A Float's text" above.
+
+**A value's derived equality compares numbers by the tower.** `Value`'s
+derived `=` compares the classes of every pair it meets first, a rule of
+ns-next's that §3.1.1 does not state; a pair with a number on either side
+is decided by the tower instead, before the classes -- two numbers by
+exact value, a number and anything else, `Fraction new` included, as
+unequal in both directions -- and the derived hash hashes a number by the
+numeric hash. So a value whose slot holds `3` equals and hashes like one
+whose slot holds `3.0` (`builtins/value.rs`, `compare_node`;
+`goldens/library/value/value_hashes_follow_value_equality.ns`).
+
+**The rules live in one place.** `builtins/numbers/tower.rs` holds them
+once: `operand` reads a value as a number a single time -- a small
+integer, a large integer, a fraction or a float -- and `order`, `equal`,
+`hash` and `compute` take any two. The exact rationals and the hash are
+plain Rust with no heap, in `numeric/rational.rs` and
+`numeric/numeric_hash.rs`. `Number`'s arithmetic, comparisons, `=`, `hash`
+and `asFloat` are the `number:` rows of `MIRROR` (`number:add:ifFail:`,
+`numberHash:ifFail:`, …), which `Fraction` inherits; `Integer`,
+`LargeInteger` and `Float` keep rows of their own for their fast paths and
+send every other case to the same functions, so the answers and the error
+texts cannot diverge. `gcd:`, `>>`, `digitAt:`, `digitLength`,
+`asStringRadix:` and `Integer parse:radix:` take either integer
+representation as their receiver and are rows of a family of their own,
+`AnyIntegerPrimitive`, so that `IntegerPrimitive` keeps meaning a
+`SmallInteger` receiver, which a later JIT can emit inline. A class-side
+row takes the class as its subject -- `floatClass:parse:ifFail:`,
+`integerClass:parse:radix:ifFail:`,
+`fractionClass:numerator:denominator:ifFail:`,
+`fractionClass:reducedNumerator:denominator:ifFail:` -- and its leaf
+declines any other subject, so a subclass's class side falls to `super`.
+
+**The fast paths, and why they are there.** `Integer`'s leaves, and the
+inlined `IntegerBinary`, compute two `SmallInteger`s on the tagged words.
+`Float`'s compute a `Float` with a `Float`, and with a `SmallInteger` as
+the tower would: the arithmetic through `tower::arithmetic_double`, the
+integer as its nearest double, which is what `compute` does with it; the
+orderings and `=` through `tower::ordering_double`, for a `SmallInteger`
+within 2^53 only (`exact_double`), where IEEE 754's comparison is the
+exact one. Both are inlined generic functions, not closures over a
+function pointer. `tower::operand` is inlined too, so a value that is no
+object -- `nil`, a Boolean -- is refused without a call, and a value's
+derived equality reads the second side of a pair only when the first is a
+number. Every other case goes to the tower;
+`the_float_fast_path_agrees_with_the_tower` holds the fast path to it over
+every pair of its samples. The first build of the tower lacked these and
+was measurably slower: Richards by 7.5%, since its `NoWork == packet`, with
+`NoWork` nil, goes through a value's equality, which then asked the heap of
+both sides whether each was a number; Mandelbrot by 6.3% and CD by 2.8%,
+since `Float`'s comparison and arithmetic called their operation through a
+function pointer, with a store-forwarding stall after the call, and a
+`Float` with a `SmallInteger` went through the whole classification.
+Measured on 2026-10-11, with these paths: the Are We Fast Yet benchmarks
+run as fast as on the tree without the tower, the largest ratio against it
+Json's 1.005, within the noise (three pinned builds a side, pooled, by the
+protocol of [execution.md](execution.md), "What removing the re-entries
+moved"); Mandelbrot and NBody run about 4% faster.
 
 ## The core library as Newspeak source over a VM mirror
 
@@ -3166,14 +3328,13 @@ and `Kernel.ns` and `CollectionsFactory.ns` take the whole core API.
 **Where Primordial Soup's API met a decision taken here**, each was settled
 on its own (decided with the user on 2026-10-06):
 
-- **A numeric tower, symmetric.** `Fraction` exists; `Integer>>/` answers
-  an exact quotient, an `Integer` when it divides; `=` compares `Integer`,
-  `LargeInteger`, `Fraction` and `Float` by value in both directions, and
-  `hash` agrees with it -- `3 asFloat hash = 3 hash`, as Primordial Soup's
-  `testFloatHash` asks -- where Primordial Soup's `Fraction>>=` answers
-  `false` for a `Float` and the other order signals. `=`, the orderings
-  and `hash` are built so (`builtins/numbers/tower.rs`). A NaN still
-  equals a NaN.
+- **A numeric tower, symmetric** -- built ("The numeric tower" above).
+  `Fraction` exists; `Integer>>/` answers an exact quotient, an `Integer`
+  when it divides; `=` compares `Integer`, `LargeInteger`, `Fraction` and
+  `Float` by value in both directions, and `hash` agrees with it -- `3
+  asFloat hash = 3 hash`, as Primordial Soup's `testFloatHash` asks --
+  where Primordial Soup's `Fraction>>=` answers `false` for a `Float` and
+  the other order signals. A NaN still equals a NaN.
 - **Strings stay code points** ("Strings are code points in two widths"
   above). Primordial Soup's `String` selectors are adopted with code-point
   meaning -- `size`, `at:`, `do:`, `indexOf:`, `withAll:` count and take
@@ -3196,7 +3357,9 @@ on its own (decided with the user on 2026-10-06):
   (`prior-art/newspeak/KernelForJS.ns`) do, and every core class answers
   its own with `true`: `isKindOfArray`, `isKindOfBehavior`,
   `isKindOfBoolean`, `isKindOfClosure`, `isKindOfCollection`,
-  `isKindOfFloat`, `isKindOfInteger`, `isKindOfNumber`, `isKindOfString`,
+  `isKindOfFloat`, `isKindOfFraction` (`Integer`'s too, an integer being
+  a fraction whose denominator is 1), `isKindOfInteger`,
+  `isKindOfNumber`, `isKindOfString`,
   `isKindOfList`, `isKindOfMap`, `isKindOfIdentityMap` and
   `isKindOfSet`; a class a later sub-project adds brings
   its own answer, and its accessor on `platform kernel` or
@@ -3244,8 +3407,16 @@ a non-integral literal is a binary float" above), and there is no
    code points, with `stringAt:`; and every member of the three shipped
    modules documented ("Collections and strings" under "Decisions"
    below).
-4. **Numbers**: `Float`'s mathematics, `Integer`'s and `Number`'s
-   protocol, then `Fraction` and the tower.
+4. **Numbers** -- built (2026-10-11, [its
+   plan](../superpowers/plans/2026-10-11-1500-ns-next-kernel-numbers.md)):
+   `Float`'s mathematics, rounding, questions and texts, Primordial Soup's
+   shortest printing and `Float parse:`; `Integer`'s `gcd:`, shifts,
+   digits, radix texts, parsing and modular arithmetic; `Number`'s share
+   of the protocol; `Fraction`, a builtin made only in normal form; and
+   the symmetric tower -- exact comparison, the numeric hash, exact
+   arithmetic without a `Float`, `//`, `\\`, `quo:` and `rem:` over every
+   pair ("The numeric tower" above; "The kernel's numbers" under
+   "Decisions" below).
 5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions; and,
    beyond Primordial Soup's core, typed arrays as an API of their own
    (decided with the user on 2026-10-11): classes that wrap a
@@ -3340,6 +3511,48 @@ a non-integral literal is a binary float" above), and there is no
   protected and private, is documented to the standard of Javadoc
   (`CLAUDE.md`, "Conventions";
   `crates/ns-runtime/tests/core_library_documentation.rs`).
+
+- **The kernel's numbers** (decided with the user on 2026-10-11, built the
+  same day; "The numeric tower", "A Float's text" above;
+  [plan](../superpowers/plans/2026-10-11-1500-ns-next-kernel-numbers.md)):
+  ten decisions and two additions to Primordial Soup's API, each for the
+  reason given.
+  1. Mixed comparison is exact, since through `double` `=` is not
+     transitive at 2^53 and no hash could serve it.
+  2. The hash is Python's numeric hash modulo 2^61 - 1, since it hashes
+     equal numbers alike across every representation and leaves a
+     `SmallInteger`'s hash itself.
+  3. `Fraction` is a builtin with a Rust representation, as
+     `LargeInteger` is, since the tower's rules then live in one module, a
+     fraction is normal by construction and a mixed operation needs no
+     fallback send; chosen on its merits, not its cost.
+  4. `Integer>>isKindOfFraction` answers `true`, with `numerator` itself
+     and `denominator` 1, as in Primordial Soup, since an integer is a
+     fraction whose denominator is 1.
+  5. Arithmetic is exact without a `Float` and a `Float` with one, the
+     rational side rounded once, since Primordial Soup's two roundings lose
+     precision and answer NaN past `f64::MAX`.
+  6. An exact division by zero signals an `ArgumentError` while a
+     `Float`'s stays IEEE's, since a fraction with denominator 0, Primordial
+     Soup's answer, is no number.
+  7. `//`, `\\`, `quo:` and `rem:` take every pair of numbers, as
+     Smalltalk-80's do, since one definition over the exact quotient
+     serves all four representations.
+  8. `raisedTo:` with an integer exponent is exact, a negative one
+     answering the reciprocal, since repeated squaring over the tower
+     loses nothing.
+  9. No double-dispatch selectors, and an `ArgumentError` for a
+     non-number, since the leaves compute every combination and the
+     selectors were only Primordial Soup's mechanism.
+  10. A `Float` prints as Primordial Soup's does, the shortest text that
+      reads back, since a program written against that API expects its
+      texts.
+  The additions: `truncated` on every number, since all three classes
+  answer `floor`, `ceiling` and `rounded`; and `isNaN`, `isFinite` and
+  `isInfinite` on `Number`, so every number answers what `Float`
+  overrides. `num-rational`'s `Ratio` was the model for the arithmetic,
+  the rounding and the comparison, and no code of it was taken, so its
+  licence is not taken on.
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:
@@ -3460,8 +3673,9 @@ date given
 1. **A mirror primitive's failure path is an explicit `ifFail:` block,
    inlined by the compiler** (2026-09-21) — "The shape of a kernel method"
    above; [compiler.md](compiler.md), "Mirror sends".
-2. **`Integer>>/` stays absent**, and the gap stays recorded as something to
-   solve (2026-09-21) — "Gap: an integer has no `/`" above.
+2. **`Integer>>/` stayed absent through the move**, since adding it would
+   have changed a recorded outcome (2026-09-21); the numbers sub-project
+   added it, answering an exact quotient — "The numeric tower" above.
 3. **Every builtin family moves** (2026-09-21), `do:`, `whileTrue:` and
    `value` included.
 4. **The arithmetic fast path's `Jump` saving stays a separate step**

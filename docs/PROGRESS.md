@@ -2219,7 +2219,8 @@ path has to exist before the rewrite rather than after.
 - `07b8d92` — `recognize_integer_binary` (`compiler/control_flow.rs`), the
   arithmetic counterpart to `recognize`, answering an `IntegerOperation` for
   the nine binary integer selectors behind the same `is_ordinary_send` gate.
-  `/` is left out because an integer has no `/` primitive at all.
+  `/` was left out because an integer had no `/` primitive then; it stays
+  out, since an integer's `/` can answer a `Fraction`.
 - `dd15105`, `a0fa984` — `Instruction::IntegerBinary`, wire tag 33, and a
   round trip over every `IntegerOperation` through the image format.
 - `b0b9d6e`, `c87645e`, `2b52b7c` — the VM arm and the lowering. The arm
@@ -2463,8 +2464,9 @@ slots its classes *declare*").
 2026-09-23** (`0ccff43`, `95f2a07`, `cf1c5a0`, `0a5bb4e`, `3da730d`,
 `ed70803`). `Float>>=` is class-tight, so `1.0 = 1` and `1 = 1.0` both
 answer `false` and the leaf's class-first rule and `Float`'s own `=` are
-one rule again — the ruling that makes the numeric tower needed
-([OPEN-WORK.md](OPEN-WORK.md)). `Value`'s own application carries `inherits_value`, since §3.2's
+one rule again — the ruling that made the numeric tower needed, built
+by the kernel's numbers sub-project ("The kernel's numbers sub-project"
+below). `Value`'s own application carries `inherits_value`, since §3.2's
 "subclass of" is inclusive, so `Value new = Value new` and a slot holding
 a `Value new` no longer disagree. Both value walks charge their node
 budget when a node is *pushed*, which bounds the work vector by the budget
@@ -3698,7 +3700,7 @@ are built (below).
 Plan: [ns-next-are-we-fast-yet-stage-2](superpowers/plans/2026-09-30-2156-ns-next-are-we-fast-yet-stage-2.md);
 [execution.md](design/execution.md), "The Are We Fast Yet benchmarks";
 [core-library.md](design/core-library.md), "What exists", "Large integers"
-and "Gap: an integer has no `/`".
+and "The numeric tower".
 Commits: `5699ab0` (the plan's) to the commit of this entry.
 
 Mandelbrot, NBody and Richards join the seven benchmarks of stage 1 in
@@ -3732,7 +3734,8 @@ The decisions, each the user's (2026-09-30):
 Mixed arithmetic, a proposal the user had not confirmed when the plan was
 written, is built as proposed: `=` stays class-tight and `//` and `\\` take
 integers only. Cross-class `=` (with the numeric tower) and `//` with a
-`Float` operand are recorded as open in [OPEN-WORK.md](OPEN-WORK.md); `\\`
+`Float` operand were recorded as open, and the kernel's numbers
+sub-project built both (below); `\\`
 with a `Float` is a refusal Primordial Soup makes too.
 
 - `4f90ca5` — an integer's arithmetic and ordering meet a `Float` argument.
@@ -4656,8 +4659,96 @@ with the user.
 - This commit -- the review's deferred findings in `OPEN-WORK.md`.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
-numbers sub-project is next ("Next") and has no design or plan yet;
+numbers sub-project, which is built ("The kernel's numbers sub-project"
+below);
 `String`'s `ByteArray` forms wait for `ByteArray`; `ReadOnlyTuple` and
 value collections are not built; the collections' remaining cost on Havlak
 and DeltaBlue; and `Message>>sendTo:`, which answers nil for a
 native-backed method given too few arguments.
+
+## The kernel's numbers sub-project (2026-10-11)
+
+Plan: [ns-next-kernel-numbers](superpowers/plans/2026-10-11-1500-ns-next-kernel-numbers.md);
+[core-library.md](design/core-library.md), "The numeric tower", "A Float's
+text", "A NaN equals a NaN", "Large integers", "Planned: the kernel
+completed to Primordial Soup's core API", "Decisions".
+
+The fourth of the six sub-projects. `builtins/numbers.rs` is split into
+`builtins/numbers/`, one file per representation and `tower.rs` for the
+rules they share. A `Float` prints as its shortest text, as Primordial
+Soup's does (`3.0`, `1e+21`, `NaN`), writes exponential and precision
+texts, and is read back by `Float parse:`; it has the mathematics, the
+rounding selectors answering a `Float`, `isNaN`, `isFinite` and
+`isInfinite`. `Integer` gains `gcd:`, `>>`, `&`, `|`, `digitAt:`,
+`digitLength`, `asStringRadix:`, `Integer parse:` and `parse:radix:`,
+`raisedTo:modulo:` and `reciprocalModulo:`, the representation-agnostic
+leaves in a family of their own, `AnyIntegerPrimitive`. `Number` gains `/`,
+`quo:`, `rem:`, `raisedTo:`, `min:`, `between:and:` and the mathematics
+through `asFloat`. Exact rationals and the numeric hash are plain Rust in
+`numeric/`. `Fraction` is a builtin (tag 39, `platform kernel Fraction`), an
+object of two hidden fields made only by the runtime in normal form,
+carried inline in an image (value tag 10). And the tower is symmetric: any
+two numbers compare by exact value and hash by Python's numeric hash
+modulo 2^61 - 1, so `1 = 1.0` and `(1/2) = 0.5`; arithmetic without a
+`Float` is exact, so `7 / 2` is `(7/2)`; `//`, `\\`, `quo:` and `rem:`
+take every pair; and a value's derived equality compares numbers by the
+tower. The `MIRROR` table has 164 rows.
+
+The decisions, each the user's (2026-10-11): exact comparison; Python's
+numeric hash; `Fraction` a builtin with a Rust representation; an integer
+`isKindOfFraction`; arithmetic's result types, a rational rounded to a
+`Float` once; an exact division by zero signalling, a `Float`'s staying
+IEEE's; `//` and its kin over every pair; exact `raisedTo:`; no
+double-dispatch selectors; Primordial Soup's float texts; and the two
+additions, `truncated` on every number and `isNaN`, `isFinite` and
+`isInfinite` on `Number` ([core-library.md](design/core-library.md),
+"Decisions", "The kernel's numbers"). `num-rational` was the model and no
+code of it was taken.
+
+Recorded outcomes changed in three ways, each established as right first:
+a `Float` that looks integral prints with `.0` (`2.0`, `14.0`, `-0.0`,
+`9007199254740992.0`), as Primordial Soup's `printString` does, in the
+float, control-flow and radix-literal goldens; `1 = 1.0` answers `true`,
+in `an_integer_meets_a_float` and the two value goldens whose `Float` and
+`Integer` slots now compare and hash alike; and `3 isKindOfFraction`
+answers `true` in the `isKindOf…` golden. New goldens pin the rest under
+`goldens/library/number/` (`float/`, `integer/`, `fraction/`, `tower/`).
+
+**Measured** ([core-library.md](design/core-library.md), "The numeric
+tower"), the Are We Fast Yet benchmarks, release builds, three builds by
+three rounds a side against `2c68df59`: the first build of the tower was
+7.5% slower on Richards, 6.3% on Mandelbrot and 2.8% on CD. Profiling found
+`nil == anObject` asking the heap of both sides whether each was a
+number, and `Float`'s comparison and arithmetic calling their operation
+through a function pointer; with both fixed, and a `Float` taking a
+`SmallInteger` on its fast path, no benchmark is slower, the largest ratio
+Json's 1.005 within the noise, and Mandelbrot and NBody run about 4%
+faster.
+
+- `0c533c90`, `169b4f1b` -- the design and the plan.
+- `784b2d2c` -- `builtins/numbers` split into one file per
+  representation.
+- `494fe266`, `2a4cea90` -- a `Float`'s shortest text, its exponential and
+  precision texts, and `Float parse:`; the image inspector writes a
+  `Float` as `printString` does.
+- `e9a38c03` -- `Float`'s mathematics, rounding and questions, and
+  `Number`'s share of them.
+- `66173e2a`, `0f936fe2` -- `Integer`'s `gcd:`, shifts, digits, radix
+  texts, parsing and modular arithmetic; `AnyIntegerPrimitive`.
+- `8153f26a` -- exact rationals and the numeric hash.
+- `152d128a` -- `Fraction`, made in normal form and carried inline in an
+  image.
+- `a0d5c9bc`, `76a6d836` -- exact comparison and the numeric hash across
+  the four classes, and in a value's derived equality.
+- `31615ec7` -- exact arithmetic across the tower, `Integer>>/`, and
+  `Fraction`'s protocol.
+- `0eab9826`, `35d2a724` -- the tower's cost recovered, and measured.
+- This commit -- the documentation describes the built state.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the fifth
+sub-project, `ByteArray`, `StringBuilder` and the typed arrays, is next
+("Next") and has no design or plan yet; two corners of a `Float`'s
+rounding divisions; the tower's slow paths, unmeasured on their own; a
+subquadratic gcd for a huge decoded fraction; the review's missing tests
+and leftovers; and whether `platform kernel Fraction` must name a program
+that needs it.

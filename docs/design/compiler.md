@@ -510,7 +510,7 @@ anyway.
 
 **That is the point of the fallback, and the reason it is a real send rather
 than an error raised in the VM.** What the fast path declines is decided in
-`builtins/numbers.rs` and stays there: the promotion of a result that does
+`builtins/numbers/` and stays there: the promotion of a result that does
 not fit 61 bits to a `LargeInteger` (§5.1.1, [core-library.md](core-library.md),
 "Large integers"), and every error message an integer operation can produce
 — `doesNotUnderstand:`, division by zero, a type mismatch. The VM arm never

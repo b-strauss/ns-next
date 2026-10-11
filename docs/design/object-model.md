@@ -98,14 +98,19 @@ float, which costs an allocation per floating-point result; Spur's split
 keeps the common range immediate. Both are §5.1.1's binary float; the
 `FixedPointNumber` that section names for non-integral literals (the
 recorded deviation, [core-library.md](core-library.md)) would be a class of
-the numeric tower, not a tag. A boxed `Float`, like a `LargeInteger`, is a
-value object (§3.1.1), so its `=` and its hash come from its state, never
-from the identity hash, and a NaN equals a NaN either way.
+the numeric tower, not a tag. A `Fraction` is an object too, of the
+fixed-pointer format, its two fields the numerator and the denominator in
+normal form, each a `SmallInteger` or a `LargeInteger`
+([core-library.md](core-library.md), "The numeric tower"). A boxed
+`Float`, like a `LargeInteger` and a `Fraction`, is a value object
+(§3.1.1), so its `=` and its hash come from its value, never from the
+identity hash: every number compares and hashes by its exact value, across
+the four classes, and a NaN equals a NaN either way.
 
 **Small-integer arithmetic works on the tagged words**, as Cog's and Soup's
 does, and is what a JIT's tiers build on. The operations are methods on
 `Value` (`small_integer_sum` and its siblings), called by `vm.rs`'s
-`IntegerBinary` arm and by `builtins/numbers.rs` alike, so the rule has one
+`IntegerBinary` arm and by `builtins/numbers/integer.rs` alike, so the rule has one
 copy and `vm.rs` holds no logic of its own. One test, `left & right & 1`,
 checks both operands; addition and subtraction work on the words with one
 overflow test, since an `i64` overflow of the tagged word is exactly a
@@ -463,13 +468,13 @@ kernel's.
   classes: `Boolean` with `True` and `False` (decided with the user on
   2026-09-22, as both references declare them; the conditionals and logic
   are `True`'s and `False`'s own methods, [core-library.md](core-library.md),
-  "`True` and `False` are quick methods"), `Number` with `Integer` and
-  `Float`, `String` with `Symbol` below it, and `UndefinedObject` (§5.1.3 names
+  "`True` and `False` are quick methods"), `Number` with `Integer`,
+  `Float` and `Fraction`, `String` with `Symbol` below it, and `UndefinedObject` (§5.1.3 names
   `nil`'s class so); the platform and its members, `PlatformFactory.ns`'s classes
   but `Stopwatch`, are values too ([core-library.md](core-library.md), "The
-  platform"). `Number` holds only `to:do:` and `to:by:do:`; it is the
-  place §3.1.1 names, and where the numeric tower goes when there is one
-  ([core-library.md](core-library.md), "Gap: an integer has no `/`").
+  platform"). `Number` is the place §3.1.1 names, and holds what the four
+  numeric classes share, the numeric tower's rows among it
+  ([core-library.md](core-library.md), "The numeric tower").
   `Array` and `Closure` stay directly under `Object`,
   since their instances are not values, and so does `Behavior`, with `Class`
   and `Metaclass` below it ("Class sides and metaclasses" below), and so do
@@ -1750,7 +1755,7 @@ either layout open.
 
 | Code | Format | Objects |
 |---|---|---|
-| 0 | fixed pointer fields | ordinary instances |
+| 0 | fixed pointer fields | ordinary instances; a `Fraction`'s two parts |
 | 1 | indexable pointers | `Array` |
 | 2 | frame | a reified frame: ten fixed fields, then its registers |
 | 3 | closure | three fixed fields, then its copied values |
