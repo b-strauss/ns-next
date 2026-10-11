@@ -1218,7 +1218,10 @@ and resolves cleanly in a JetBrains IDE today.
   formatter itself: one module that an `ns-next-analyzer fmt` command shares,
   so the editor, the command line and any later formatting gate use one
   formatter.
-  It would not touch a file with a syntax error.
+  It would not touch a file with a syntax error. It is a full pretty
+  printer, not a re-indenter that keeps the author's line breaks, and has
+  fixed rules and no options, so every formatted module looks the same
+  (decided by the user); the rules themselves are not yet decided.
 - **Navigation.** Go to definition and find usages need an AST for a file
   that does not parse, while it is typed; the fault-tolerant parse exists
   ([frontend.md](frontend.md), "Recovery"). What remains is `definition` and

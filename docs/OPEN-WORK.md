@@ -509,10 +509,13 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: editor support and the analyzer
 
-- **Formatting**, through `textDocument/formatting`, which needs comments
-  attached to AST nodes -- their spans are kept, beside the AST
-  (`parse_for_editor`) -- and an `ns-next-analyzer fmt` command sharing the
-  formatter.
+- **Formatting**, through `textDocument/formatting`, and an
+  `ns-next-analyzer fmt` command sharing the formatter. Decided by the user
+  on 2026-10-11: a full pretty printer, not a re-indenter that keeps the
+  author's line breaks, with fixed rules and no options. The style rules
+  themselves are still to be decided. Its comments are kept beside the AST
+  (`parse_for_editor`) and still have to be placed in the output
+  ([editor-support.md](design/editor-support.md), "Planned later").
 - **Navigation** — go to definition, find usages —
   `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
