@@ -1567,6 +1567,30 @@ impl<'gc> Mutator<'gc> {
         }
     }
 
+    /// A `Fraction` holding `rational`, which must not be an integer:
+    /// each part through `new_integer`, so a part that fits is a
+    /// `SmallInteger`. The one way a fraction is made.
+    pub(crate) fn new_fraction(&mut self, rational: crate::numeric::Rational) -> Value<'gc> {
+        debug_assert!(!rational.is_integer());
+        let (numerator, denominator) = rational.into_parts();
+        // Allocation never collects -- a collection runs only at a
+        // safepoint -- so both parts stay valid across the third.
+        let numerator = self.new_integer(numerator);
+        let denominator = self.new_integer(denominator);
+        let class = self.builtin_class(BuiltinClass::Fraction);
+        Value::object(self.heap.allocate_fraction(class, numerator, denominator))
+    }
+
+    /// `rational` as the number it is: an integer when its denominator is
+    /// 1, a `Fraction` otherwise.
+    pub(crate) fn new_rational(&mut self, rational: crate::numeric::Rational) -> Value<'gc> {
+        if rational.is_integer() {
+            self.new_integer(rational.into_parts().0)
+        } else {
+            self.new_fraction(rational)
+        }
+    }
+
     /// The one object `symbol` is in this heap, allocated the first time
     /// anything asks for it.
     pub fn new_symbol(&mut self, symbol: Symbol) -> Value<'gc> {

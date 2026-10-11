@@ -155,6 +155,10 @@ pub enum BuiltinClass {
     /// `List`, `Map` and `Set`; a builtin because `Array`'s superclass
     /// clause names it.
     Collection,
+    /// An exact quotient of two integers in normal form, made only by
+    /// the runtime: a `Number` whose two hidden fields no slot names
+    /// (`numeric::Rational`).
+    Fraction,
 }
 
 impl BuiltinClass {
@@ -180,7 +184,7 @@ impl BuiltinClass {
     /// accessor lists, `OBJECT_CLASS_ACCESSORS` if `Object` declares an
     /// accessor for it and otherwise the absent-list of
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`.
-    pub const ALL: [BuiltinClass; 33] = [
+    pub const ALL: [BuiltinClass; 34] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -214,6 +218,7 @@ impl BuiltinClass {
         BuiltinClass::Proxy,
         BuiltinClass::Future,
         BuiltinClass::Collection,
+        BuiltinClass::Fraction,
     ];
 }
 

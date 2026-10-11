@@ -1051,9 +1051,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^vmMirror value: subject slotAt: index ifFail: [^nil]
         )
     )
-    (* The superclass of `Integer` and `Float`: counting loops, comparing, the
-       mathematical functions through `asFloat`, and the questions about NaN
-       and infinity. *)
+    (* The superclass of `Integer`, `Float` and `Fraction`: counting
+       loops, comparing, the mathematical functions through `asFloat`, and
+       the questions about NaN and infinity. *)
     (* §3.1.1 names `Number` among the classes whose instances are values,
        and §5.1.1's numeric literals are its instances. Iteration is here
        so that an `Integer`, a `LargeInteger` and a `Float` receiver share
@@ -1066,7 +1066,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers false: a Number is no Integer unless its class says
            so. *)
         public isKindOfInteger = ( ^false )
-        (* Answers false: no Number is a Fraction. *)
+        (* Answers false: a Number is no Fraction unless its class says
+           so. *)
         public isKindOfFraction = ( ^false )
         (* Evaluates `action` with the receiver, then with each number one
            greater, in increasing order, while it is at most `stop`;
@@ -1828,6 +1829,66 @@ class Kernel vmMirror: theMirror = Object <: Value (
            falls to `super`. *)
         public parse: text = (
             ^vmMirror floatClass: self parse: text ifFail: [^super parse: text]
+        )
+    )
+    (* The exact quotient of two integers, in normal form: its
+       denominator above 1, no factor common to both parts, its sign on
+       the numerator. `Fraction numerator:denominator:` makes one, and so
+       does dividing integers that do not divide; a fraction is never
+       equal to an integer, which a quotient that divides is instead. *)
+    (* Made only by the runtime, so a fraction is always in normal form
+       and `=` and `hash` can compare its parts. Its parts are two hidden
+       fields, not slots: no program writes them. *)
+    public class Fraction = Number new () (
+        (* Answers true: the receiver is a Fraction. *)
+        public isKindOfFraction = ( ^true )
+        (* Answers the numerator, an integer of either sign. *)
+        public numerator = ( ^vmMirror fractionNumerator: self ifFail: [^super numerator] )
+        (* Answers the denominator, an integer above 1. *)
+        public denominator = ( ^vmMirror fractionDenominator: self ifFail: [^super denominator] )
+        (* Answers a new String of the numerator and the denominator
+           between parentheses and separated by '/': '(3/4)', '(-1/2)'. *)
+        public printString = (
+            ^'(', self numerator printString, '/', self denominator printString, ')'
+        )
+        (* Answers what `printString` answers. *)
+        public asString = ( ^self printString )
+    ) : (
+        (* Answers `numerator` divided by `denominator`, exactly: an
+           Integer when `denominator` divides `numerator`, otherwise a
+           Fraction in normal form, its sign on the numerator.
+
+           numerator: an integer.
+           denominator: an integer other than 0.
+
+           Signals an ArgumentError: 'numerator:denominator: requires a
+           non-zero denominator' carrying `denominator` for 0, and
+           'numerator:denominator: requires integers, got …' carrying the
+           first argument that is no integer. *)
+        (* The leaf answers only for `Fraction` itself; any other receiver
+           falls to `super`. *)
+        public numerator: numerator denominator: denominator = (
+            ^vmMirror fractionClass: self numerator: numerator denominator: denominator
+                ifFail: [^super numerator: numerator denominator: denominator]
+        )
+        (* Answers the Fraction `numerator`/`denominator`, a pair the
+           caller has put in normal form already: no factor common to both,
+           `denominator` above 1. Nothing is reduced.
+
+           numerator: an integer.
+           denominator: an integer above 1 with no factor common to
+           `numerator`.
+
+           Signals an ArgumentError carrying `denominator`,
+           'reducedNumerator:denominator: requires a fraction in normal
+           form, got …/…', for a pair not in normal form, and one carrying
+           the argument, 'reducedNumerator:denominator: requires integers,
+           got …', for an argument that is no integer. *)
+        (* The leaf answers only for `Fraction` itself; any other receiver
+           falls to `super`. *)
+        public reducedNumerator: numerator denominator: denominator = (
+            ^vmMirror fractionClass: self reducedNumerator: numerator denominator: denominator
+                ifFail: [^super reducedNumerator: numerator denominator: denominator]
         )
     )
     (* An immutable sequence of Unicode code points: a literal such as

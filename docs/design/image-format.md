@@ -464,6 +464,20 @@ the same at any length
 (`inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal`,
 `crates/ns-runtime/tests/image.rs`).
 
+**A `Fraction` is a value on the wire too.** Value tag 10,
+`VALUE_FRACTION`, carries it inline as its numerator and then its
+denominator, each a `VALUE_SMALL_INTEGER` or a `VALUE_LARGE_INTEGER` in its
+canonical form; it has no identity (§3.1.1), so the graph walk gives it no
+object id and its parts are no objects of the graph. Only a fraction in
+normal form decodes -- a denominator above 1, no factor the two parts
+share -- since `=` and `hash` compare the parts; anything else is
+`DecodeError::NonNormalFraction`, and a part under any other tag is
+`InvalidTag`, both refused by the first pass before anything is allocated
+(`a_fraction_outside_its_normal_form_is_refused`,
+`crates/ns-runtime/tests/image.rs`). The decoder makes it through
+`Mutator::new_fraction`. `inspect` renders one as `fraction
+<numerator>/<denominator>`, each part as its integer tag renders.
+
 **Integers and floats on the wire** are independent of where a
 `SmallInteger` ends or which floats are immediate, so an artifact does not
 depend on the value representation. An integer that fits `i64` is written as
@@ -1232,6 +1246,17 @@ and a program's future is a `FutureImplementation`, under tag 30 as above.
 exists"). A program names it through `platform kernel Collection` and
 subclasses it, so an image may name it wherever it names a class; an
 instance of a program's subclass is an ordinary instance record.
+
+**`Fraction` takes tag 39** ([core-library.md](core-library.md), "The
+numeric tower"). A program names it through `platform kernel Fraction`, so
+an image may name it wherever it names a class; a fraction itself is never
+a record ("A `Fraction` is a value on the wire too" above), and the one
+record its header may carry is `Fraction new`'s, an instance of no field:
+any other is `DecodeError::FractionRecord`, since a record of fields would
+be a fraction whose normal form nothing checked
+(`a_fraction_record_with_fields_is_refused`). A header that names it by its
+platform path instead is held to its layout of no field as every class a
+path names is (`DecodeError::PlatformInstanceFieldCount`).
 
 **Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
 10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak

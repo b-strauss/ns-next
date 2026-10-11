@@ -1,5 +1,5 @@
-//! `Integer` (`i64`), `LargeInteger` (`ArbitraryInteger`) and `Float`
-//! (`f64`) native methods.
+//! `Integer` (`i64`), `LargeInteger` (`ArbitraryInteger`), `Float`
+//! (`f64`) and `Fraction` (`numeric::Rational`) native methods.
 //!
 //! # Integers are unbounded; the numeric tower is not there yet
 //!
@@ -30,15 +30,18 @@
 //!   `Integer` and `LargeInteger` class-tightness loses nothing: with one
 //!   representation per integer, no two of them are ever the same number.
 //!
-//! `Fraction`, `Integer>>/` and cross-class `=` are still to come, with the
-//! numeric tower (`docs/design/core-library.md`, "Gap: an integer has no
-//! `/`").
+//! A `Fraction` is made, in normal form, and answers its parts
+//! (`fraction`); its arithmetic, `Integer>>/` and cross-class `=` are still
+//! to come, with the numeric tower (`docs/design/core-library.md`, "Gap: an
+//! integer has no `/`").
 
 mod float;
+mod fraction;
 mod integer;
 mod large_integer;
 
 pub(crate) use float::{execute_float, float_equals, float_hash};
+pub(crate) use fraction::execute_fraction;
 pub(crate) use integer::{execute_any_integer, execute_integer, integer_equals};
 pub(crate) use large_integer::{execute_large_integer, large_integer_equals, large_integer_hash};
 

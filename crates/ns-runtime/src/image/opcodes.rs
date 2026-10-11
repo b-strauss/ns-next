@@ -187,7 +187,7 @@ pub const RETIRED_LITERALS: [u8; 3] = [6, 7, 8];
 // ---------------------------------------------------------------------------
 
 /// How a `Value` is encoded. Scalars carry their payload inline; 5 to 8
-/// name something outside the value itself. Next free number: 10.
+/// name something outside the value itself. Next free number: 11.
 pub const VALUE_NIL: u8 = 0;
 pub const VALUE_FALSE: u8 = 1;
 pub const VALUE_TRUE: u8 = 2;
@@ -210,6 +210,13 @@ pub const VALUE_PLATFORM_PATH: u8 = 8;
 /// and nothing that fits `i64`, which travels as `VALUE_SMALL_INTEGER` and
 /// loads as a `SmallInteger` in 61 bits, a `LargeInteger` beyond them.
 pub const VALUE_LARGE_INTEGER: u8 = 9;
+/// A `Fraction`, carried inline as a value rather than as an object
+/// record, since a value has no identity (§3.1.1): the numerator and then
+/// the denominator, each a `VALUE_SMALL_INTEGER` or a
+/// `VALUE_LARGE_INTEGER` in its canonical form. Only a fraction in normal
+/// form is accepted -- a denominator above 1, no common factor -- since
+/// anything else would break `=` and `hash`.
+pub const VALUE_FRACTION: u8 = 10;
 
 /// An object record's body, following its class tag and identity hash.
 /// Next free number: 11.
@@ -308,7 +315,7 @@ pub const RETIRED_CLASS_TAGS: [u8; 2] = [1, 3];
 /// 2026-09-26 when the four moved into a shipped module (now
 /// `PlatformFactory.ns`), whose objects an image names by their platform
 /// paths. A stale image's reference to one names no builtin rather than
-/// whichever class took the number. Next free number: 39.
+/// whichever class took the number. Next free number: 40.
 pub const RETIRED_BUILTIN_CLASS_TAGS: [u8; 6] = [8, 10, 13, 18, 19, 29];
 
 /// What a frame was activated for, numbered in the order `types::FrameKind`

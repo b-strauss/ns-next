@@ -1159,6 +1159,7 @@ derivation is `decode_value`'s doc comment, `image/decode.rs`):
 | A UTF-8 byte of a string packed in the 32-bit form | 4x | 4x |
 | An allocating value: an `i64` beyond 61 bits, or a float outside the immediate range, 9 bytes for a word and a 24-byte object (the `i64`'s one digit held in a boxed slice until its object is made, 4.4x while it lives) | 3.6x | 3.6x |
 | A one-digit `VALUE_LARGE_INTEGER`, 14 bytes for the same 32 (its digits read into a `Vec` first, 2.9x while it lives) | 2.3x | 2.3x |
+| A `VALUE_FRACTION` of two `i64` parts beyond 61 bits, 19 bytes for a word, a 32-byte fraction and two 24-byte `LargeInteger`s (its two digits held until each part's object is made, at most 5.5x while they live) | 4.6x | 4.6x |
 | The root list, read after every record into `Value`s, `reserve_for` capping its reservation at the bytes left | 8x | **16x** |
 | A symbol's text, allocated once per symbol-table entry | ≤ 4x of the symbol section | ≤ 4x of the symbol section |
 
@@ -1172,12 +1173,15 @@ so no record's fields are laid out beside it.
 **So the transient peak of a rejected load is about 10.7x of the graph
 section's bytes in a release build (a graph of metaclass records) and about
 16x in a debug one (a graph that is all root list), plus at most 4x of the
-symbol section's bytes.** An integer beyond 61 bits but within `i64` is the
-worst allocating value: it costs a `LargeInteger` for the 9 bytes of an `i64`
-([image-format.md](image-format.md), "Integers and floats on the wire"); a
-`VALUE_LARGE_INTEGER` that fits `i64` is refused before its object is made,
-and its digit count is bounded against the bytes left before its `Vec` is
-allocated (`read_large_integer_parts`).
+symbol section's bytes.** A fraction of two integers beyond 61 bits but
+within `i64` is the worst allocating value: it costs a fraction and two
+`LargeInteger`s for the 19 bytes of a tag and two `i64`s, as a lone such
+integer costs a `LargeInteger` for the 9 bytes of an `i64`
+([image-format.md](image-format.md), "Integers and floats on the wire", "A
+`Fraction` is a value on the wire too"); a `VALUE_LARGE_INTEGER` that fits
+`i64` and a fraction outside its normal form are refused before an object is
+made, and a digit count is bounded against the bytes left before its `Vec`
+is allocated (`read_large_integer_parts`).
 
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the

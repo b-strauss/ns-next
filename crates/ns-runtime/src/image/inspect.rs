@@ -445,6 +445,11 @@ fn read_value(
         opcodes::VALUE_PLATFORM => "<platform>".to_string(),
         opcodes::VALUE_PLATFORM_PATH => read_platform_path(reader, targets)?,
         opcodes::VALUE_LARGE_INTEGER => format!("large-int {}", read_large_integer_text(reader)?),
+        opcodes::VALUE_FRACTION => {
+            let numerator = read_fraction_part_text(reader)?;
+            let denominator = read_fraction_part_text(reader)?;
+            format!("fraction {numerator}/{denominator}")
+        }
         tag => return Err(decode::DecodeError::InvalidTag { what: "value", tag }),
     })
 }
@@ -457,6 +462,19 @@ fn read_value(
 fn read_large_integer_text(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
     let (negative, magnitude) = decode::read_large_integer_parts(reader)?;
     Ok(ArbitraryInteger::from_parts(negative, magnitude).to_bounded_text())
+}
+
+/// One part of a fraction, rendered as the two integer tags are; like
+/// them, not held to the normal form the loader checks.
+fn read_fraction_part_text(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    match reader.read_u8()? {
+        opcodes::VALUE_SMALL_INTEGER => Ok(reader.read_i64()?.to_string()),
+        opcodes::VALUE_LARGE_INTEGER => read_large_integer_text(reader),
+        tag => Err(decode::DecodeError::InvalidTag {
+            what: "fraction part",
+            tag,
+        }),
+    }
 }
 
 fn read_values(

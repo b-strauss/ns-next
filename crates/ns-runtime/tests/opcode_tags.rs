@@ -247,6 +247,7 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(VALUE_PLATFORM, 7);
     assert_eq!(VALUE_PLATFORM_PATH, 8);
     assert_eq!(VALUE_LARGE_INTEGER, 9);
+    assert_eq!(VALUE_FRACTION, 10);
 
     assert_eq!(OBJECT_INSTANCE, 0);
     assert_eq!(OBJECT_STRING, 1);
@@ -341,6 +342,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             VALUE_PLATFORM,
             VALUE_PLATFORM_PATH,
             VALUE_LARGE_INTEGER,
+            VALUE_FRACTION,
         ],
         &[
             OBJECT_INSTANCE,
@@ -414,6 +416,7 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_tag(BuiltinClass::Proxy), 36);
     assert_eq!(builtin_class_tag(BuiltinClass::Future), 37);
     assert_eq!(builtin_class_tag(BuiltinClass::Collection), 38);
+    assert_eq!(builtin_class_tag(BuiltinClass::Fraction), 39);
     // 8 was `Character`, retired 2026-09-25 with the class: a stale image's
     // tag-8 reference names no builtin rather than the next one assigned.
     assert_eq!(builtin_class_from_tag(8), None);

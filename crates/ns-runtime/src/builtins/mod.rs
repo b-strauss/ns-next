@@ -75,6 +75,9 @@ pub(crate) fn execute<'gc>(
         Primitive::Float(primitive) => {
             numbers::execute_float(mutator, primitive, receiver, arguments).map(wrap_error)
         }
+        Primitive::Fraction(primitive) => {
+            numbers::execute_fraction(mutator, primitive, receiver, arguments).map(wrap_error)
+        }
         Primitive::String(primitive) => {
             text::execute_string(mutator, primitive, receiver, selector, arguments).map(wrap_error)
         }

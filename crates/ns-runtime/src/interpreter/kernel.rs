@@ -99,6 +99,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Proxy => "Proxy",
         BuiltinClass::Future => "Future",
         BuiltinClass::Collection => "Collection",
+        BuiltinClass::Fraction => "Fraction",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -889,6 +890,9 @@ mod tests {
         (BuiltinClass::Collection, "select:"),
         (BuiltinClass::Collection, "reject:"),
         (BuiltinClass::Collection, "size"),
+        // A fraction's text is built from its parts' texts: sends, no leaf.
+        (BuiltinClass::Fraction, "printString"),
+        (BuiltinClass::Fraction, "asString"),
         // `Array`'s sequence protocol is Newspeak over its leaves --
         // `at:`, `at:put:`, `size`, `copyFrom:to:` and
         // `replaceFrom:to:with:startingAt:` -- and `new:` on its class side:
@@ -1132,6 +1136,11 @@ mod tests {
             MethodFastPath::Constant(QuickConstant::True),
         ),
         (
+            BuiltinClass::Fraction,
+            "isKindOfFraction",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
             BuiltinClass::Number,
             "isNaN",
             MethodFastPath::Constant(QuickConstant::False),
@@ -1278,8 +1287,8 @@ mod tests {
     /// mirror's class, `Behavior`, `Class`, `Metaclass`, `Activation`,
     /// `FutureImplementation`, `LargeInteger`, which a program meets only as
     /// an integer's class, and the exception classes, `Message`, `Proxy`,
-    /// `Future` and `Collection`, which a program reaches through
-    /// `platform kernel`.
+    /// `Future`, `Collection` and `Fraction`, which a program reaches
+    /// through `platform kernel`.
     const OBJECT_CLASS_ACCESSORS: &[BuiltinClass] = &[
         BuiltinClass::Object,
         BuiltinClass::Value,
@@ -1850,6 +1859,7 @@ mod tests {
                 "Stopwatch",
                 "LargeInteger",
                 "Collection",
+                "Fraction",
             ] {
                 assert!(
                     application
@@ -1920,6 +1930,7 @@ mod tests {
                 (BuiltinClass::Integer, Some(BuiltinClass::Number)),
                 (BuiltinClass::LargeInteger, Some(BuiltinClass::Integer)),
                 (BuiltinClass::Float, Some(BuiltinClass::Number)),
+                (BuiltinClass::Fraction, Some(BuiltinClass::Number)),
                 (BuiltinClass::String, Some(BuiltinClass::Value)),
                 (BuiltinClass::Symbol, Some(BuiltinClass::String)),
                 (BuiltinClass::UndefinedObject, Some(BuiltinClass::Value)),
@@ -1968,6 +1979,7 @@ mod tests {
                 (BuiltinClass::Integer, true),
                 (BuiltinClass::LargeInteger, true),
                 (BuiltinClass::Float, true),
+                (BuiltinClass::Fraction, true),
                 (BuiltinClass::True, true),
                 (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),

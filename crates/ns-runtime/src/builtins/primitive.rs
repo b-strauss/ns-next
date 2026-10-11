@@ -20,6 +20,9 @@ pub enum Primitive {
     LargeInteger(LargeIntegerPrimitive),
     AnyInteger(AnyIntegerPrimitive),
     Float(FloatPrimitive),
+    /// `Fraction`'s leaves: its two parts, and its making in normal form
+    /// (`builtins::numbers::fraction`).
+    Fraction(FractionPrimitive),
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
     Collection(CollectionPrimitive),
@@ -164,6 +167,12 @@ impl Primitive {
                 | FloatPrimitive::IsInfinite
                 | FloatPrimitive::AsInteger
                 | FloatPrimitive::PrintString,
+            ) => false,
+            Primitive::Fraction(
+                FractionPrimitive::Numerator
+                | FractionPrimitive::Denominator
+                | FractionPrimitive::Make
+                | FractionPrimitive::MakeReduced,
             ) => false,
             Primitive::String(StringPrimitive::Equal) => true,
             Primitive::String(
@@ -326,6 +335,20 @@ pub enum LargeIntegerPrimitive {
     Absolute,
     AsFloat,
     PrintString,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FractionPrimitive {
+    /// `numerator`: a `Fraction`'s numerator.
+    Numerator,
+    /// `denominator`: a `Fraction`'s denominator.
+    Denominator,
+    /// `Fraction class>>numerator:denominator:`: any two integers, the
+    /// denominator not zero, made normal.
+    Make,
+    /// `Fraction class>>reducedNumerator:denominator:`: a pair already in
+    /// normal form, checked.
+    MakeReduced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1281,6 +1304,26 @@ pub const MIRROR: &[MirrorEntry] = &[
         "floatAsInteger:ifFail:",
         "asInteger",
         Primitive::Float(FloatPrimitive::AsInteger),
+    ),
+    mirror(
+        "fractionNumerator:ifFail:",
+        "numerator",
+        Primitive::Fraction(FractionPrimitive::Numerator),
+    ),
+    mirror(
+        "fractionDenominator:ifFail:",
+        "denominator",
+        Primitive::Fraction(FractionPrimitive::Denominator),
+    ),
+    mirror(
+        "fractionClass:numerator:denominator:ifFail:",
+        "numerator:denominator:",
+        Primitive::Fraction(FractionPrimitive::Make),
+    ),
+    mirror(
+        "fractionClass:reducedNumerator:denominator:ifFail:",
+        "reducedNumerator:denominator:",
+        Primitive::Fraction(FractionPrimitive::MakeReduced),
     ),
     mirror(
         "futureMade:ifFail:",

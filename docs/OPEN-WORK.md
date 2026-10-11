@@ -350,6 +350,15 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   radix conversion, not taken, splits by a power of the radix and recurses.
   Parsing a literal is quadratic the same way (`from_radix_digits`).
   [core-library.md](design/core-library.md), "Large integers".
+- **A subquadratic gcd.** `ArbitraryInteger::gcd` is Euclid's algorithm
+  with a full division per step, quadratic or worse in the digit count, and
+  the image decoder runs it on every `VALUE_FRACTION` to check the normal
+  form (`decode::read_fraction`): an image carrying a fraction of millions
+  of digits keeps the loader busy for a long time, though its memory stays
+  inside the bound `decode_value` derives. Lehmer's gcd, or a binary one
+  on words, would bound it; not taken.
+  [image-format.md](design/image-format.md), "A `Fraction` is a value on
+  the wire too".
 - **Burnikel-Ziegler division copies the divisor at every block and level**
   (`arbitrary_integer/division.rs`: `divide_blocks` passes `divisor.to_vec()`
   per block, `divide_two_blocks_by_one` clones both divisor halves and

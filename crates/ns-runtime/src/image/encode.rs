@@ -266,6 +266,7 @@ pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
         BuiltinClass::Proxy => 36,
         BuiltinClass::Future => 37,
         BuiltinClass::Collection => 38,
+        BuiltinClass::Fraction => 39,
     }
 }
 
@@ -1096,10 +1097,14 @@ impl<'gc> GraphTable<'gc> {
         let Some(object) = value.as_object() else {
             return;
         };
-        // A value, not a record: `encode_value` writes its digits, or a
-        // boxed float's bits, wherever it is referenced, so it takes no
-        // object id (§3.1.1).
-        if heap.is_large_integer(object) || heap.is_boxed_float(object) {
+        // A value, not a record: `encode_value` writes its digits, a
+        // boxed float's bits or a fraction's two parts wherever it is
+        // referenced, so it takes no object id (§3.1.1), and a fraction's
+        // parts are no objects of the graph either.
+        if heap.is_large_integer(object)
+            || heap.is_boxed_float(object)
+            || heap.fraction_parts(object).is_some()
+        {
             return;
         }
         if is_same_object(value, platform) {
@@ -1438,8 +1443,8 @@ fn encode_optional_class<'gc>(
 /// The general `Value` encoder: scalar tags 0-4 (`encode_scalar_value`),
 /// 5 = object-table id, 6 = class tag, 7 = the `platform` singleton, 8 = an
 /// object a platform path names, a class object's included, 9 = a
-/// `LargeInteger`'s digits. A boxed float travels as tag 4, as every float
-/// does.
+/// `LargeInteger`'s digits, 10 = a `Fraction`'s two parts. A boxed float
+/// travels as tag 4, as every float does.
 ///
 /// A class object always goes through tag 6, even the ones tag 6 then
 /// resolves to an object-table id: one rule per kind of referent is what
@@ -1465,16 +1470,14 @@ fn encode_value<'gc>(
     // of where a `SmallInteger` ends, and the decoder decides by that range
     // which representation it loads as.
     if let Some(integer) = context.heap.large_integer(object) {
-        match integer.to_i64() {
-            Some(number) => {
-                writer.write_u8(VALUE_SMALL_INTEGER);
-                writer.write_i64(number);
-            }
-            None => {
-                writer.write_u8(VALUE_LARGE_INTEGER);
-                write_large_integer(writer, &integer)?;
-            }
-        }
+        return write_integer_value(writer, &integer);
+    }
+    // A `Fraction` likewise, by value: its two parts in the integers' own
+    // encoding, which `write_integer_value` shares with the branch above.
+    if let Some(fraction) = context.heap.fraction(object) {
+        writer.write_u8(VALUE_FRACTION);
+        write_integer_value(writer, fraction.numerator())?;
+        write_integer_value(writer, fraction.denominator())?;
         return Ok(());
     }
     // A boxed float likewise, under the one tag every float travels as: the
@@ -1501,6 +1504,23 @@ fn encode_value<'gc>(
     }
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(context.table.object_id(context.heap, object));
+    Ok(())
+}
+
+/// An integer as a value: `VALUE_SMALL_INTEGER` when it fits `i64`, else
+/// `VALUE_LARGE_INTEGER` and its digits -- the one canonical encoding the
+/// decoder holds every integer to, a fraction's parts included.
+fn write_integer_value(writer: &mut Writer, integer: &ArbitraryInteger) -> Result<(), String> {
+    match integer.to_i64() {
+        Some(number) => {
+            writer.write_u8(VALUE_SMALL_INTEGER);
+            writer.write_i64(number);
+        }
+        None => {
+            writer.write_u8(VALUE_LARGE_INTEGER);
+            write_large_integer(writer, integer)?;
+        }
+    }
     Ok(())
 }
 

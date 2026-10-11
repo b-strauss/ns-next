@@ -81,6 +81,12 @@ impl Rational {
         &self.denominator
     }
 
+    /// The numerator and the denominator, given up rather than copied, for
+    /// a caller that stores them (`Mutator::new_fraction`).
+    pub(crate) fn into_parts(self) -> (ArbitraryInteger, ArbitraryInteger) {
+        (self.numerator, self.denominator)
+    }
+
     pub(crate) fn is_integer(&self) -> bool {
         self.denominator.is_one()
     }

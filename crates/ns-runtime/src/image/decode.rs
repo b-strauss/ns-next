@@ -15,6 +15,7 @@ use crate::heap::{
     record_size, FrameRecord, Heap, NewClass, PlaceholderFormat, IDENTITY_HASH_LIMIT,
 };
 use crate::interpreter::instantiate;
+use crate::numeric::Rational;
 use crate::types::{
     fits_small_integer, BuiltinClass, ClassReference, FrameKind, FrameReference, ObjectReference,
     SourceOrigin, Value,
@@ -455,6 +456,18 @@ pub enum DecodeError {
     /// equal to a `SmallInteger`, which every arithmetic fast path would
     /// treat as a different value.
     NonCanonicalInteger,
+    /// A `VALUE_FRACTION` not in the normal form the encoder writes and the
+    /// runtime keeps every fraction in: a denominator of 1 or below, or a
+    /// factor its two parts share. `=` and `hash` compare a fraction's
+    /// parts, so a second form of one quotient would be a different value,
+    /// and a denominator of 1 an integer that answers as no integer does.
+    NonNormalFraction,
+    /// A record under the builtin `Fraction` header other than an instance
+    /// record of no field, `Fraction new`'s. A fraction travels only as a
+    /// `VALUE_FRACTION`, whose normal form the decoder checks; a record of
+    /// fields under that header would make an object every `Fraction` leaf
+    /// reads as a fraction, its fields unchecked.
+    FractionRecord,
 }
 
 impl std::fmt::Display for DecodeError {
@@ -738,6 +751,16 @@ impl std::fmt::Display for DecodeError {
             DecodeError::NonCanonicalInteger => {
                 write!(f, "an integer is not in its one canonical encoding")
             }
+            DecodeError::NonNormalFraction => write!(
+                f,
+                "a fraction is not in normal form: its denominator is not above 1, or its \
+                 parts share a factor"
+            ),
+            DecodeError::FractionRecord => write!(
+                f,
+                "an object in the image is a Fraction with fields, which only a fraction \
+                 value may be"
+            ),
         }
     }
 }
@@ -965,6 +988,7 @@ pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
         36 => BuiltinClass::Proxy,
         37 => BuiltinClass::Future,
         38 => BuiltinClass::Collection,
+        39 => BuiltinClass::Fraction,
         _ => return None,
     })
 }
@@ -2163,6 +2187,31 @@ fn read_large_integer(reader: &mut Reader) -> Result<ArbitraryInteger, DecodeErr
     Ok(integer)
 }
 
+/// One part of a `VALUE_FRACTION`: a `VALUE_SMALL_INTEGER` or a
+/// `VALUE_LARGE_INTEGER`, nothing else -- a fraction never nests.
+fn read_integer_part(reader: &mut Reader) -> Result<ArbitraryInteger, DecodeError> {
+    match reader.read_u8()? {
+        VALUE_SMALL_INTEGER => Ok(ArbitraryInteger::from_i64(reader.read_i64()?)),
+        VALUE_LARGE_INTEGER => read_large_integer(reader),
+        tag => Err(DecodeError::InvalidTag {
+            what: "fraction part",
+            tag,
+        }),
+    }
+}
+
+/// A `VALUE_FRACTION`'s two parts, its tag read: refused unless they are a
+/// fraction in normal form (`DecodeError::NonNormalFraction`), which both
+/// passes check before anything is allocated for it.
+fn read_fraction(reader: &mut Reader) -> Result<Rational, DecodeError> {
+    let numerator = read_integer_part(reader)?;
+    let denominator = read_integer_part(reader)?;
+    if denominator.is_one() || !Rational::is_normal(&numerator, &denominator) {
+        return Err(DecodeError::NonNormalFraction);
+    }
+    Ok(Rational::from_normal_parts(numerator, denominator))
+}
+
 /// A `LargeInteger`'s sign and digits as the wire has them, unchecked
 /// beyond their shape: what `read_large_integer` validates, and what
 /// `inspect`, a structural walk that refuses nothing canonical-encoding
@@ -2473,12 +2522,12 @@ fn decode_optional_class<'gc>(
     }
 }
 
-/// One value off the wire. Three kinds allocate an object of their own --
-/// an `i64` beyond 61 bits, a float outside the immediate range and a
-/// `LargeInteger` -- and that is the one thing the second pass allocates
-/// beyond the placeholders the first pass sized: every record is filled
-/// into its placeholder in place, each value stored as it is read, a string
-/// packed straight from the buffer (`Heap::shape_placeholder`,
+/// One value off the wire. Four kinds allocate objects of their own -- an
+/// `i64` beyond 61 bits, a float outside the immediate range, a
+/// `LargeInteger` and a `Fraction` -- and that is the one thing the second
+/// pass allocates beyond the placeholders the first pass sized: every
+/// record is filled into its placeholder in place, each value stored as it
+/// is read, a string packed straight from the buffer (`Heap::shape_placeholder`,
 /// `fill_placeholder_string`, `fill_placeholder_closure`,
 /// `fill_frame_fields`), so no record is ever built beside its placeholder.
 ///
@@ -2527,7 +2576,17 @@ fn decode_optional_class<'gc>(
 ///   each further digit 8 bytes for 8. Its digits are held in a `Vec` or a
 ///   boxed slice first, which lives until its object is made -- the
 ///   `i64`'s one digit too: one value at a time, 8 bytes a digit more, 4.4x
-///   for the `i64` and 2.9x for a one-digit `VALUE_LARGE_INTEGER`.
+///   for the `i64` and 2.9x for a one-digit `VALUE_LARGE_INTEGER`. A
+///   `VALUE_FRACTION` of two `i64` parts beyond 61 bits is 19 bytes (its
+///   tag and two `VALUE_SMALL_INTEGER`s) for the word that holds it, a
+///   fraction of 4 words and two one-digit `LargeInteger`s, 8 + 32 + 48 =
+///   88 bytes, 4.6x; counting its two transient digits too, each held
+///   until its part's object is made, at most 104 bytes, 5.5x. The
+///   normal-form check runs before anything is allocated, so its own copy
+///   of both parts' digits (`ArbitraryInteger::gcd`) never meets the
+///   objects: 16 bytes held and 16 copied, below either figure. Parts
+///   written as `VALUE_LARGE_INTEGER`s cost more bytes for the same
+///   objects, each further digit 8 bytes for at most 16.
 /// - The root list, read after every record into `Value`s (`reserve_for`
 ///   caps its reservation at the bytes left): 8 bytes a one-byte root in a
 ///   release build, 8x, and 16 in a debug one, **16x**.
@@ -2569,6 +2628,14 @@ fn decode_value<'gc>(
         VALUE_LARGE_INTEGER => {
             let integer = read_large_integer(reader)?;
             Ok(context.mutator.new_integer(integer))
+        }
+        // Its two parts allocate as `VALUE_SMALL_INTEGER` and
+        // `VALUE_LARGE_INTEGER` do, and the fraction four words more, once
+        // the normal form is checked; its ratio to its bytes stays below
+        // the bound above.
+        VALUE_FRACTION => {
+            let fraction = read_fraction(reader)?;
+            Ok(context.mutator.new_fraction(fraction))
         }
         tag => Err(DecodeError::InvalidTag { what: "value", tag }),
     }
@@ -3454,22 +3521,24 @@ impl Sizing<'_, '_, '_> {
         Ok(())
     }
 
-    /// `decode_object_header`'s reading; answers whether the header named
-    /// the builtin `FutureImplementation`.
-    fn header(&self, reader: &mut Reader) -> Result<bool, DecodeError> {
+    /// `decode_object_header`'s reading; answers the builtin the header
+    /// named, if it named one by tag.
+    fn header(&self, reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
         let tag = reader.read_u8()?;
         if tag != CLASS_BUILTIN {
-            return self.class_tag_after(tag, reader).map(|()| false);
+            return self.class_tag_after(tag, reader).map(|()| None);
         }
         match read_builtin_class(reader)? {
-            BuiltinClass::Activation => Ok(false),
-            BuiltinClass::FutureImplementation => Ok(true),
-            kind => referenced_builtin_class(kind).map(|_| false),
+            kind @ (BuiltinClass::Activation | BuiltinClass::FutureImplementation) => {
+                Ok(Some(kind))
+            }
+            kind => referenced_builtin_class(kind).map(Some),
         }
     }
 
-    /// `decode_value`'s reading. A `LargeInteger`'s digits are read into a
-    /// transient `Vec`, bounded by the bytes they occupy, and dropped.
+    /// `decode_value`'s reading. A `LargeInteger`'s digits, and a
+    /// fraction's parts, are read into a transient `Vec`, bounded by the
+    /// bytes they occupy, and dropped.
     fn value(&self, reader: &mut Reader) -> Result<(), DecodeError> {
         match reader.read_u8()? {
             VALUE_NIL | VALUE_FALSE | VALUE_TRUE | VALUE_PLATFORM => Ok(()),
@@ -3481,6 +3550,9 @@ impl Sizing<'_, '_, '_> {
                 read_platform_path(reader, self.context.platform_paths).map(drop)
             }
             VALUE_LARGE_INTEGER => read_large_integer(reader).map(drop),
+            // Its normal form checked here too, so an image that carries
+            // one outside it is refused before anything is allocated.
+            VALUE_FRACTION => read_fraction(reader).map(drop),
             tag => Err(DecodeError::InvalidTag { what: "value", tag }),
         }
     }
@@ -3572,9 +3644,20 @@ impl Sizing<'_, '_, '_> {
         reader: &mut Reader,
         symbols_named: &mut [bool],
     ) -> Result<(PlannedRecord, usize), DecodeError> {
-        let future = self.header(reader)?;
+        let header = self.header(reader)?;
+        let future = header == Some(BuiltinClass::FutureImplementation);
+        let fraction = header == Some(BuiltinClass::Fraction);
         reader.read_u32()?; // the identity hash, checked by the second pass
-        let (fields, frame) = match reader.read_u8()? {
+        let body = reader.read_u8()?;
+        // `Fraction new`'s record is the one a `Fraction` header may carry:
+        // a fraction is a `VALUE_FRACTION`, its normal form checked, and a
+        // record of fields under the header would make one unchecked. The
+        // first pass reads every record, so this refuses it before
+        // anything is allocated.
+        if fraction && body != OBJECT_INSTANCE {
+            return Err(DecodeError::FractionRecord);
+        }
+        let (fields, frame) = match body {
             // A future has exactly its two fields; a record under its header
             // claiming any other count is refused here, before it is
             // allocated, as the second pass would refuse it once read.
@@ -3582,6 +3665,13 @@ impl Sizing<'_, '_, '_> {
                 let count = self.values(reader)?;
                 if count != crate::interpreter::future::FIELD_COUNT {
                     return Err(DecodeError::FutureRecord);
+                }
+                (count, false)
+            }
+            OBJECT_INSTANCE if fraction => {
+                let count = self.values(reader)?;
+                if count != 0 {
+                    return Err(DecodeError::FractionRecord);
                 }
                 (count, false)
             }

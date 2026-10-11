@@ -1016,6 +1016,28 @@ impl<'gc> Heap<'gc> {
         object
     }
 
+    /// A `Fraction` object of `class` holding `numerator` and
+    /// `denominator`, two integers in normal form.
+    /// `Mutator::new_fraction` is the one caller, and has made them so.
+    pub(crate) fn allocate_fraction(
+        &mut self,
+        class: ClassReference<'gc>,
+        numerator: Value<'gc>,
+        denominator: Value<'gc>,
+    ) -> ObjectReference<'gc> {
+        // `store`'s check, as `allocate_array` makes it.
+        #[cfg(debug_assertions)]
+        for part in [numerator, denominator] {
+            self.store(part);
+        }
+        let (object, fields) = self.allocate_object(class, Format::FixedPointers, 0, false, 2);
+        write_words(
+            &mut self.space.words_mut()[fields],
+            [numerator.word(), denominator.word()],
+        );
+        object
+    }
+
     /// A boxed `Float` of `class` holding `value`. `Mutator::new_float` is
     /// the one caller, and decides that `value` lies outside the immediate
     /// range, so each float has one representation.
@@ -2302,6 +2324,42 @@ impl<'gc> Heap<'gc> {
         self.with_large_integer(object, crate::ArbitraryInteger::from_sign_and_digits)
     }
 
+    /// A `Fraction`'s numerator and denominator, each a `SmallInteger` or
+    /// a `LargeInteger`; `None` for any other object -- `Fraction new`,
+    /// which has no field, and an instance of a program's subclass, whose
+    /// class is no builtin.
+    pub(crate) fn fraction_parts(
+        &self,
+        object: ObjectReference<'gc>,
+    ) -> Option<(Value<'gc>, Value<'gc>)> {
+        if self.class_builtin(self.object_class(object)) != Some(BuiltinClass::Fraction)
+            || self.instance_field_count(object) != Some(2)
+        {
+            return None;
+        }
+        Some((
+            self.instance_field(object, 0)?,
+            self.instance_field(object, 1)?,
+        ))
+    }
+
+    /// A `Fraction`'s value; `None` for any other object. Copies out.
+    pub(crate) fn fraction(
+        &self,
+        object: ObjectReference<'gc>,
+    ) -> Option<crate::numeric::Rational> {
+        let (numerator, denominator) = self.fraction_parts(object)?;
+        let integer = |value: Value<'gc>| match value.kind() {
+            ValueKind::SmallInteger(integer) => Some(crate::ArbitraryInteger::from_i64(integer)),
+            ValueKind::Object(part) => self.large_integer(part),
+            _ => None,
+        };
+        Some(crate::numeric::Rational::from_normal_parts(
+            integer(numerator)?,
+            integer(denominator)?,
+        ))
+    }
+
     /// Whether `object` is a `LargeInteger`.
     pub fn is_large_integer(&self, object: ObjectReference<'gc>) -> bool {
         matches!(self.number_words(object), Some((false, ..)))
@@ -2556,6 +2614,15 @@ impl<'gc> Heap<'gc> {
             ValueKind::SmallInteger(integer) => integer.to_string(),
             ValueKind::SmallFloat(float) => crate::numeric::float_text::shortest(float),
             ValueKind::Object(object) => {
+                // The text `Fraction>>printString` answers, as every other
+                // number describes itself by its value.
+                if let Some((numerator, denominator)) = self.fraction_parts(object) {
+                    return format!(
+                        "({}/{})",
+                        self.describe(numerator),
+                        self.describe(denominator)
+                    );
+                }
                 match self.header(object).format() {
                     _ if self.is_string(object) => match self.symbol_value(object) {
                         Some(symbol) => format!("the Symbol #{symbol}"),

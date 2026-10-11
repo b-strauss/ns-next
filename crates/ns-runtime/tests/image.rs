@@ -1778,6 +1778,277 @@ fn a_large_integer_is_a_value_not_a_record() {
     );
 }
 
+/// A module whose `fill:` puts four fractions in an `Array` -- parts that
+/// are `SmallInteger`s, a `LargeInteger` denominator and a `LargeInteger`
+/// numerator -- and whose `text` writes each with its parts' classes.
+const FRACTIONS: &str = indoc! {"
+    class X = Object new (
+        | fractions |
+    ) (
+        public fill: platform = (
+            | Fraction = platform kernel Fraction. |
+            fractions:: {
+                Fraction numerator: 1 denominator: 3.
+                Fraction numerator: -7 denominator: 2.
+                Fraction numerator: 1 denominator: 1180591620717411303424.
+                Fraction numerator: 1180591620717411303424 denominator: 3
+            }
+        )
+        public text = (
+            | result ::= ''. |
+            fractions do: [:fraction |
+                result:: result, fraction printString, ' ', fraction numerator class printString,
+                    ' ', fraction denominator class printString, ' ', fraction class printString, ';'].
+            ^result
+        )
+    ) : ()
+"};
+
+/// The text `FRACTIONS`'s `text` answers once `fill:` has run.
+const FRACTIONS_TEXT: &str = "(1/3) Integer Integer Fraction;\
+    (-7/2) Integer Integer Fraction;\
+    (1/1180591620717411303424) Integer LargeInteger Fraction;\
+    (1180591620717411303424/3) LargeInteger Integer Fraction;";
+
+/// `FRACTIONS`'s instance, filled, snapshot.
+fn fractions_image() -> Vec<u8> {
+    let (mut interpreter, class) = load(FRACTIONS);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("fill:"),
+            std::slice::from_ref(&platform),
+        ),
+        "fill:",
+    );
+    interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let platform = mutator.fetch(&platform);
+        snapshot_one(
+            mutator,
+            Some(FRACTIONS),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            platform,
+            &[instance],
+        )
+        .expect("snapshot")
+    })
+}
+
+/// A `Fraction` survives a snapshot as a value: each loads with equal
+/// parts, each part the integer class it was.
+#[test]
+fn a_fraction_value_round_trips() {
+    let mut loaded = image::load(&fractions_image()).expect("load");
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("text"), &[]),
+        "text",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let Some(string) = mutator.fetch(&answer).as_object() else {
+            panic!("text: expected a string")
+        };
+        assert_eq!(
+            mutator.heap().str_value(string).as_deref(),
+            Some(FRACTIONS_TEXT)
+        );
+    });
+}
+
+/// A `Fraction` has no identity (§3.1.1), so the image carries it as a
+/// value, its two parts inline, and never gives it an object record.
+#[test]
+fn a_fraction_is_a_value_not_a_record() {
+    let report = image::inspect::inspect(&fractions_image()).expect("inspect");
+    assert!(
+        !report
+            .graph_objects
+            .iter()
+            .any(|object| object.starts_with("class Fraction")),
+        "no Fraction record: {:?}",
+        report.graph_objects
+    );
+    for expected in [
+        "fraction 1/3",
+        "fraction -7/2",
+        "fraction 1/1180591620717411303424",
+        "fraction 1180591620717411303424/3",
+    ] {
+        assert!(
+            report
+                .graph_objects
+                .iter()
+                .any(|object| object.contains(expected)),
+            "{expected}: {:?}",
+            report.graph_objects
+        );
+    }
+}
+
+/// A `VALUE_FRACTION` the decoder must refuse, each with the error it
+/// answers: a pair outside the normal form -- a denominator of 0, of 1 or
+/// below 0, or a factor both parts share -- and a part that is no integer.
+#[test]
+fn a_fraction_outside_its_normal_form_is_refused() {
+    let small = |writer: &mut encode::Writer, integer: i64| {
+        writer.write_u8(VALUE_SMALL_INTEGER);
+        writer.write_i64(integer);
+    };
+    let pair = |numerator: i64, denominator: i64| {
+        one_array_object(move |writer| {
+            writer.write_u8(VALUE_FRACTION);
+            small(writer, numerator);
+            small(writer, denominator);
+        })
+    };
+    let float_part = one_array_object(|writer| {
+        writer.write_u8(VALUE_FRACTION);
+        small(writer, 1);
+        writer.write_u8(VALUE_FLOAT);
+        writer.write_f64(2.0);
+    });
+    let nested = one_array_object(|writer| {
+        writer.write_u8(VALUE_FRACTION);
+        writer.write_u8(VALUE_FRACTION);
+        small(writer, 1);
+        small(writer, 2);
+        small(writer, 3);
+    });
+    let non_canonical_part = one_array_object(|writer| {
+        writer.write_u8(VALUE_FRACTION);
+        small(writer, 1);
+        writer.write_u8(VALUE_LARGE_INTEGER);
+        writer.write_u8(0); // positive
+        writer.write_u32(1); // one digit
+        writer.write_u64(5); // which fits `i64`
+    });
+    for (bytes, described, expected) in [
+        (
+            pair(1, 0),
+            "a denominator of 0",
+            decode::DecodeError::NonNormalFraction,
+        ),
+        (
+            pair(3, 1),
+            "a denominator of 1",
+            decode::DecodeError::NonNormalFraction,
+        ),
+        (
+            pair(3, -4),
+            "a negative denominator",
+            decode::DecodeError::NonNormalFraction,
+        ),
+        (
+            pair(2, 4),
+            "a shared factor",
+            decode::DecodeError::NonNormalFraction,
+        ),
+        (
+            pair(0, 5),
+            "a zero numerator",
+            decode::DecodeError::NonNormalFraction,
+        ),
+        (
+            float_part,
+            "a Float part",
+            decode::DecodeError::InvalidTag {
+                what: "fraction part",
+                tag: VALUE_FLOAT,
+            },
+        ),
+        (
+            nested,
+            "a fraction part",
+            decode::DecodeError::InvalidTag {
+                what: "fraction part",
+                tag: VALUE_FRACTION,
+            },
+        ),
+        (
+            non_canonical_part,
+            "a part not in its canonical encoding",
+            decode::DecodeError::NonCanonicalInteger,
+        ),
+    ] {
+        let mut fixture = GraphFixture::new();
+        let before = fixture.interpreter.heap_statistics().live_objects;
+        assert_eq!(fixture.decode_error(&bytes), expected, "{described}");
+        assert_eq!(
+            fixture.interpreter.heap_statistics().live_objects,
+            before,
+            "{described}: nothing was allocated"
+        );
+    }
+    assert_eq!(
+        decode::DecodeError::NonNormalFraction.to_string(),
+        "a fraction is not in normal form: its denominator is not above 1, or its parts share \
+         a factor"
+    );
+}
+
+/// One record under the `Fraction` header, its body written by `body`, and
+/// no roots.
+fn fraction_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    class_records(1, |writer| {
+        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
+        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Fraction));
+        writer.write_u32(5); // identity hash
+        body(writer);
+    })
+}
+
+/// A fraction travels only as a `VALUE_FRACTION`, so the one record a
+/// `Fraction` header may carry is `Fraction new`'s, an instance of no
+/// field: a record of fields under it would be a fraction whose normal
+/// form nothing checked, and the first pass refuses it before anything is
+/// allocated.
+#[test]
+fn a_fraction_record_with_fields_is_refused() {
+    let two_fields = fraction_record(|writer| {
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(2);
+        for part in [2, 4] {
+            writer.write_u8(VALUE_SMALL_INTEGER);
+            writer.write_i64(part);
+        }
+    });
+    let array = fraction_record(|writer| {
+        writer.write_u8(OBJECT_ARRAY);
+        writer.write_u32(0); // no elements
+    });
+    for (bytes, described) in [(two_fields, "two fields"), (array, "an array body")] {
+        let mut fixture = GraphFixture::new();
+        let before = fixture.interpreter.heap_statistics().live_objects;
+        assert_eq!(
+            fixture.decode_error(&bytes),
+            decode::DecodeError::FractionRecord,
+            "{described}"
+        );
+        assert_eq!(
+            fixture.interpreter.heap_statistics().live_objects,
+            before,
+            "{described}: nothing was allocated"
+        );
+    }
+    assert_eq!(
+        decode::DecodeError::FractionRecord.to_string(),
+        "an object in the image is a Fraction with fields, which only a fraction value may be"
+    );
+    let no_field = fraction_record(|writer| {
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0);
+    });
+    GraphFixture::new().decoded(&no_field, "`Fraction new`", |heap, graph| {
+        assert_eq!(heap.instance_field_count(graph.objects[0]), Some(0));
+    });
+}
+
 /// A `LargeInteger` that fits `i64` travels as `VALUE_SMALL_INTEGER`, the
 /// wire's one encoding for every integer in `i64`, wherever a `SmallInteger`
 /// ends; the decoder makes it a `LargeInteger` again because it lies beyond
