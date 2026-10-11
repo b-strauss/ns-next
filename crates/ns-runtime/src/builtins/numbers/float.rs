@@ -242,6 +242,8 @@ fn parse<'gc>(
     Some(parse_text(mutator, receiver, first_argument(arguments)))
 }
 
+/// The work of `parse`: reads `argument` as a String that is not a Symbol and
+/// answers the Float its text names, or the `ArgumentError` `parse:` signals.
 fn parse_text<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,

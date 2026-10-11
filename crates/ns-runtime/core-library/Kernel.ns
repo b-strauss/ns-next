@@ -1533,9 +1533,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
            text of a Float, got …' for a String that is no such text, a
            lower-case 'nan' or 'inf', a space or an empty String included,
            and 'parse: requires a String, got …' for anything else. *)
-        (* The leaf declines only a subject that is not `Float` itself,
-           which a flat class side cannot be sent from; answers nil then. *)
-        public parse: text = ( ^vmMirror floatClass: self parse: text ifFail: [nil] )
+        (* The leaf answers only for `Float` itself; any other receiver
+           falls to `super`. *)
+        public parse: text = (
+            ^vmMirror floatClass: self parse: text ifFail: [^super parse: text]
+        )
     )
     (* An immutable sequence of Unicode code points: a literal such as
        `'abc'` is one. *)

@@ -1469,7 +1469,6 @@ fn a_boxed_float_value_round_trips_without_a_record() {
         )
         .expect("snapshot")
     });
-    let huge = 1.0e300_f64.to_string();
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         !report
@@ -1479,12 +1478,20 @@ fn a_boxed_float_value_round_trips_without_a_record() {
         "no Float record: {:?}",
         report.graph_objects
     );
-    for value in ["NaN", "inf", huge.as_str()] {
+    for value in ["NaN", "Infinity"] {
         assert!(
             report.graph_objects.iter().any(|object| object
                 .split(|character: char| !character.is_ascii_alphanumeric())
                 .any(|word| word == value)),
             "{value} is carried as a value: {:?}",
+            report.graph_objects
+        );
+        assert!(
+            report
+                .graph_objects
+                .iter()
+                .any(|object| object.contains("1e+300")),
+            "1e+300 is carried as a value: {:?}",
             report.graph_objects
         );
     }

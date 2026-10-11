@@ -214,6 +214,8 @@ pub(crate) fn fixed(value: f64, fraction_digits: usize) -> String {
 
 /// `Float>>asStringExponential:`: one digit before the point and
 /// `fraction_digits` after it, rounded half up, then the exponent.
+/// `fraction_digits` is at most 20, which the leaf guarantees: the exact
+/// expansion `rounded_decimal` reads has more digits than that.
 pub(crate) fn exponential(value: f64, fraction_digits: usize) -> String {
     if let Some(name) = named(value) {
         return name;
@@ -228,6 +230,7 @@ pub(crate) fn exponential(value: f64, fraction_digits: usize) -> String {
 /// rounded half up; in exponent form when the value needs more than
 /// `PRECISION_LEADING_ZEROS` zeros after the point or its digits end
 /// before the point.
+/// `significant_digits` is 1 to 21, which the leaf guarantees.
 pub(crate) fn precision(value: f64, significant_digits: usize) -> String {
     if let Some(name) = named(value) {
         return name;

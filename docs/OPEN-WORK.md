@@ -417,12 +417,6 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   (a class of its own was set aside). Noted with the user on 2026-10-01;
   comes with the kernel completion's fourth sub-project ("Next" above). [core-library.md](design/core-library.md),
   "A NaN equals a NaN".
-- **`Float>>printString` of a large or small magnitude.** A `Float` prints
-  as Rust's `Display` writes it, the shortest digits that read back as the
-  same double and never an exponent, so `1.0e303 printString` is 304
-  digits. Whether it should print an exponent past some magnitude is to be
-  checked against Primordial Soup's float printing. Noted 2026-10-02.
-  [core-library.md](design/core-library.md), "Large integers" (`asFloat`).
 - **A program's exit status.** A program cannot set its exit status: a run
   exits 0 unless an error is uncaught, whatever `main:args:` answers. §8.4
   is silent. Primordial Soup exits through an explicit `exit:` primitive

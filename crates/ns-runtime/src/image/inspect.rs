@@ -439,7 +439,7 @@ fn read_value(
         opcodes::VALUE_FALSE => "false".to_string(),
         opcodes::VALUE_TRUE => "true".to_string(),
         opcodes::VALUE_SMALL_INTEGER => reader.read_i64()?.to_string(),
-        opcodes::VALUE_FLOAT => reader.read_f64()?.to_string(),
+        opcodes::VALUE_FLOAT => crate::numeric::float_text::shortest(reader.read_f64()?),
         opcodes::VALUE_OBJECT_ID => format!("object {}", reader.read_u32()?),
         opcodes::VALUE_CLASS_TAG => format!("class {}", read_class_tag(reader, targets)?),
         opcodes::VALUE_PLATFORM => "<platform>".to_string(),
