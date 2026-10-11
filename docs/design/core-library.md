@@ -3205,7 +3205,22 @@ a non-integral literal is a binary float" above), and there is no
    below).
 4. **Numbers**: `Float`'s mathematics, `Integer`'s and `Number`'s
    protocol, then `Fraction` and the tower.
-5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions.
+5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions; and,
+   beyond Primordial Soup's core, typed arrays as an API of their own
+   (decided with the user on 2026-10-11): classes that wrap a
+   `ByteArray` and answer its elements at one width -- `float32`,
+   `float64`, the signed and unsigned integers -- indexed by element
+   rather than by byte offset, as JavaScript's `Float32Array` and its
+   siblings, so that a program keeps a large homogeneous run of numbers
+   packed at the width it needs. Their names, the set of widths and
+   whether they share an abstract class are left to the sub-project's
+   design. Their elements lie contiguous and aligned to 16 or 32 bytes,
+   so that a later leaf operating on a whole array -- `a add: b into: c`,
+   `a dot: b` -- can use SIMD directly, paying a send once per array
+   rather than once per element; such bulk operations, and a GPU API
+   among the platform's capabilities that uploads from these arrays, are
+   possible later APIs and not part of the sub-project (noted with the
+   user on 2026-10-11).
 6. **Weak references**: `WeakArray`, `WeakMap` and `Ephemeron`, in the
    scavenger and the compaction, the image and the stress modes.
 

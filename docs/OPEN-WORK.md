@@ -29,7 +29,8 @@ the kernel with `Array` under it, the whole protocol of `Array`, `List`,
 `Map` and `Set`, `IdentityMap`, `ConcurrentModification`, `String`'s
 protocol in code points, every member of the shipped modules documented);
 numbers, the symmetric tower with `Fraction` among them; `ByteArray` and
-`StringBuilder`; weak references. Each has its own design and plan; the
+`StringBuilder`, with typed arrays over a `ByteArray` as an API of our own
+beside them (decided with the user on 2026-10-11); weak references. Each has its own design and plan; the
 numbers sub-project is next -- `Float`'s mathematics, `Integer`'s and
 `Number`'s protocol, then `Fraction` and the tower -- and has no design or
 plan yet. The decisions and the scope are
@@ -225,6 +226,19 @@ and `prior-art/newspeak-benchmarks`.
 - **Step 8, a baseline JIT**, Cog's class, for x64 and arm64.
 - **Step 9, an optimizing JIT** with type feedback, inlining and
   deoptimization, Strongtalk's and HotSpot's class.
+- **Last, after step 9: whether pointer compression pays, measured** (noted
+  with the user on 2026-10-11). A value as a 32-bit word -- an object
+  space offset divided by 8, addressing 32 GB, which handles that are
+  already space-relative make possible -- would halve every slot and
+  `Array` element, as V8's pointer compression and HotSpot's compressed
+  oops do. It would cost the immediate `Float` (every float boxed, as
+  V8's `HeapNumber`), shrink `SmallInteger` from 61 to 31 bits, add a
+  base to every pointer access, bound the heap, and rework the word
+  layout, the collector, the write barrier, the caches and the leaves.
+  Only the optimizing JIT, which keeps floats unboxed in registers, makes
+  the comparison fair, so it is decided then, from the heap composition
+  of real programs, not before; a large homogeneous run of numbers is
+  served meanwhile by the typed arrays of the kernel's fifth sub-project.
 
 Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
