@@ -1,8 +1,8 @@
-(* isNil, notNil and the four ifNil:/ifNotNil: forms, on nil and on any
-   other object. A block for the not-nil case is culled with the receiver,
-   as Squeak's and the canonical Newspeak corpus's are: handed it when it
-   takes an argument and nothing when it takes none. `nil ifNotNil:`
-   answers nil, `3 ifNil:` answers 3. *)
+/// isNil, notNil and the four ifNil:/ifNotNil: forms, on nil and on any
+/// other object. A block for the not-nil case is culled with the receiver,
+/// as Squeak's and the canonical Newspeak corpus's are: handed it when it
+/// takes an argument and nothing when it takes none. `nil ifNotNil:`
+/// answers nil, `3 ifNil:` answers 3.
 class NilProtocol = Object new () (
     public main: p args: a = (
         | t |

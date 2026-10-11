@@ -1,15 +1,15 @@
-(* newspeak-spec.pdf 5.7: the receiver of an implicit send is "the
-   innermost lexically enclosing construct in which a method, slot or class
-   named s is declared". Alpha's Dup declares marker itself, so the marker
-   in reach is Dup's own, whatever any enclosing class declares.
-
-   A member set keyed by the class's simple name would have Beta's Dup --
-   collected later, declaring nothing -- overwrite Alpha's Dup's set, so
-   reach would walk out to Alpha's marker instead. Renaming the unrelated
-   Beta.Dup would then make this answer correctly, which is the shape of
-   that defect: a program's meaning depending on the name of a class it
-   never mentions. A member set belongs to its declaration instead
-   (docs/design/dispatch.md, "Resolution"), so the two Dups never meet. *)
+/// newspeak-spec.pdf 5.7: the receiver of an implicit send is "the
+/// innermost lexically enclosing construct in which a method, slot or class
+/// named s is declared". Alpha's Dup declares marker itself, so the marker
+/// in reach is Dup's own, whatever any enclosing class declares.
+///
+/// A member set keyed by the class's simple name would have Beta's Dup --
+/// collected later, declaring nothing -- overwrite Alpha's Dup's set, so
+/// reach would walk out to Alpha's marker instead. Renaming the unrelated
+/// Beta.Dup would then make this answer correctly, which is the shape of
+/// that defect: a program's meaning depending on the name of a class it
+/// never mentions. A member set belongs to its declaration instead
+/// (docs/design/dispatch.md, "Resolution"), so the two Dups never meet.
 class Spec57MemberSetPerDeclaration = Object new () (
     class Alpha = Object new () (
         marker = ( ^'an enclosing marker' )

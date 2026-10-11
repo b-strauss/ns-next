@@ -1,9 +1,9 @@
-(* `newspeak-spec.pdf` §5.5: `Object`'s `doesNotUnderstand:` must be
-   protected, and lookupPublic is "Undefined, if the mixin of C defines a
-   method m with selector n and protected access". So an explicit-receiver
-   send of `doesNotUnderstand:` finds nothing, and `Object`'s
-   `doesNotUnderstand:` -- found by the access-blind "defined for" walk --
-   is invoked for that send, whose selector is `doesNotUnderstand:`. *)
+/// `newspeak-spec.pdf` §5.5: `Object`'s `doesNotUnderstand:` must be
+/// protected, and lookupPublic is "Undefined, if the mixin of C defines a
+/// method m with selector n and protected access". So an explicit-receiver
+/// send of `doesNotUnderstand:` finds nothing, and `Object`'s
+/// `doesNotUnderstand:` -- found by the access-blind "defined for" walk --
+/// is invoked for that send, whose selector is `doesNotUnderstand:`.
 class Dnu = Object new (
 ) (
     public main: p args: a = (

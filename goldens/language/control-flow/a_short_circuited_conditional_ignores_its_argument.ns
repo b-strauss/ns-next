@@ -1,5 +1,5 @@
-(* A side that decides alone answers without looking at its argument, so a
-   non-block there is never sent value, as in Primordial Soup's kernel. *)
+/// A side that decides alone answers without looking at its argument, so a
+/// non-block there is never sent value, as in Primordial Soup's kernel.
 class ShortCircuit = Object new (
 ) (
     public main: p args: a = (

@@ -1,11 +1,11 @@
 //! The fold ranges of one document: what an editor can collapse. They come
 //! from the AST, so they name what they fold -- a class body, a class
-//! side, a method body, a closure, a slot section -- and from the comment
-//! spans beside it. See `docs/design/editor-support.md`, "Folding".
+//! side, a method body, a closure, a slot section -- and from the comments
+//! beside it. See `docs/design/editor-support.md`, "Folding".
 
 use lsp_types::{FoldingRange, FoldingRangeKind};
 use ns_syntax::ast::{self, Delimiters};
-use ns_syntax::Span;
+use ns_syntax::{Comment, CommentKind, Span};
 
 use crate::documents::LineIndex;
 
@@ -22,14 +22,14 @@ const COMMENT_PREVIEW_CHARACTERS: usize = 60;
 
 /// Every fold of `module` and `comments` that spans more than one line,
 /// ordered by start, an enclosing fold before those inside it.
-pub fn folds(module: &ast::Module, comments: &[Span], text: &str) -> Vec<Fold> {
+pub fn folds(module: &ast::Module, comments: &[Comment], text: &str) -> Vec<Fold> {
     let mut collector = Collector {
         text,
         folds: Vec::new(),
     };
     collector.class(&module.root_class);
     for comment in comments {
-        collector.push(*comment, comment_preview(comment.text(text)), true);
+        collector.push(comment.span, comment_preview(*comment, text), true);
     }
     collector
         .folds
@@ -57,19 +57,26 @@ pub fn encode(folds: &[Fold], text: &str, line_index: &LineIndex) -> Vec<Folding
         .collect()
 }
 
-/// `(* ` and a comment's first non-blank line, cut to
-/// `COMMENT_PREVIEW_CHARACTERS`, then ` ...*)`. Every placeholder writes
-/// three ASCII dots rather than `…`, which the editor would draw in a
-/// fallback font beside its own.
-fn comment_preview(comment: &str) -> String {
-    let inner = comment.strip_prefix("(*").unwrap_or(comment);
-    let inner = inner.strip_suffix("*)").unwrap_or(inner);
-    match inner.lines().map(str::trim).find(|line| !line.is_empty()) {
-        Some(line) => {
-            let preview: String = line.chars().take(COMMENT_PREVIEW_CHARACTERS).collect();
-            format!("(* {preview} ...*)")
-        }
-        None => "(*...*)".to_string(),
+/// The comment's marker and its text's first non-blank line, cut to
+/// `COMMENT_PREVIEW_CHARACTERS`, then ` ...`: `(* first ...*)` or
+/// `/// first ...`. Every placeholder writes three ASCII dots rather than
+/// `…`, which the editor would draw in a fallback font beside its own.
+fn comment_preview(comment: Comment, text: &str) -> String {
+    let content = comment.text(text);
+    let first = content
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| {
+            line.chars()
+                .take(COMMENT_PREVIEW_CHARACTERS)
+                .collect::<String>()
+        });
+    match (comment.kind, first) {
+        (CommentKind::Block, Some(line)) => format!("(* {line} ...*)"),
+        (CommentKind::Block, None) => "(*...*)".to_string(),
+        (CommentKind::Line, Some(line)) => format!("/// {line} ..."),
+        (CommentKind::Line, None) => "///...".to_string(),
     }
 }
 
@@ -382,6 +389,25 @@ mod tests {
             lines_of(text),
             [
                 (0, 1, "(* A module ...*)".to_string(), true),
+                fold(2, 5, "(...)"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_comment_block_folds_as_one_comment() {
+        let text = indoc! {"
+            /// A module
+            /// with a header.
+            class Module = () (
+                /// one line
+                run = ( ^1 )
+            )
+        "};
+        assert_eq!(
+            lines_of(text),
+            [
+                (0, 1, "/// A module ...".to_string(), true),
                 fold(2, 5, "(...)"),
             ]
         );

@@ -40,6 +40,18 @@ class NewspeakEditorTest : BasePlatformTestCase() {
         myFixture.checkResult("x (*y*) z")
     }
 
+    /** The comment-line action writes ns-next's `///`. */
+    fun testLineCommentPrefixesTheLine() {
+        myFixture.configureByText("Module.ns", "<caret>x\ny")
+        myFixture.performEditorAction(IdeActions.ACTION_COMMENT_LINE)
+        myFixture.checkResult("///x\ny")
+    }
+
+    fun testTodoInALineCommentIsFound() {
+        myFixture.configureByText("Module.ns", "/// TODO: finish\nx")
+        assertEquals(1, PsiTodoSearchHelper.getInstance(project).findTodoItems(myFixture.file).size)
+    }
+
     fun testTodoInACommentIsFound() {
         myFixture.configureByText("Module.ns", "(* TODO: finish *) x")
         assertEquals(1, PsiTodoSearchHelper.getInstance(project).findTodoItems(myFixture.file).size)

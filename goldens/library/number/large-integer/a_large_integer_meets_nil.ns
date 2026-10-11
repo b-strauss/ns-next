@@ -1,6 +1,6 @@
-(* A `LargeInteger` receiver meets an argument that is no number with its
-   leaf's type mismatch, which names what arithmetic takes: neither an
-   overflow nor a fall through to `doesNotUnderstand:`. *)
+/// A `LargeInteger` receiver meets an argument that is no number with its
+/// leaf's type mismatch, which names what arithmetic takes: neither an
+/// overflow nor a fall through to `doesNotUnderstand:`.
 class LargeIntegerMeetsNil = () (
     public main: platform args: arguments = (
         platform transcript show: (9223372036854775807 + 1 + nil) printString; newLine

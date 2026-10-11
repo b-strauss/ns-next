@@ -1,5 +1,5 @@
-(* A native loop whose condition goes non-Boolean after two rounds
-   signals a `NonBooleanReceiver`, after exactly two bodies. *)
+/// A native loop whose condition goes non-Boolean after two rounds
+/// signals a `NonBooleanReceiver`, after exactly two bodies.
 class AVariableLoopConditionThatGoesNonBooleanSignalsNonBooleanReceiver = Object new (
     | n ::= 0. |
 ) (

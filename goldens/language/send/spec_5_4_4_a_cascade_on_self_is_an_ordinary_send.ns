@@ -1,10 +1,10 @@
-(* newspeak-spec.pdf §5.4.4: a cascade `e μ0; … μn` "is equivalent to
-   `[:p | p μ0. … p μn] value: (e)`", so each of its messages is an
-   ordinary send to the cascade's receiver, even when that receiver is
-   `self`, and §5.5's `lookupPublic` answers "Undefined" for a protected
-   method: `self secret; yourself` is not understood where `self secret`
-   (§5.8) is a self send. Primordial Soup's compiler likewise emits an
-   ordinary send for every message of a cascade. *)
+/// newspeak-spec.pdf §5.4.4: a cascade `e μ0; … μn` "is equivalent to
+/// `[:p | p μ0. … p μn] value: (e)`", so each of its messages is an
+/// ordinary send to the cascade's receiver, even when that receiver is
+/// `self`, and §5.5's `lookupPublic` answers "Undefined" for a protected
+/// method: `self secret; yourself` is not understood where `self secret`
+/// (§5.8) is a self send. Primordial Soup's compiler likewise emits an
+/// ordinary send for every message of a cascade.
 class Spec544ACascadeOnSelfIsAnOrdinarySend = Object new () (
     class Holder = Object new () (
         protected secret = ( ^5 )

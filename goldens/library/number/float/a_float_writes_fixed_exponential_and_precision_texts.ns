@@ -1,9 +1,9 @@
-(* `asStringExponential:` writes one digit before the point and the
-   given number after it; `asStringPrecision:` the given number of
-   significant digits, in exponent form once the exponent is below -6 or
-   the digits do not reach the point. Both round half up on the exact
-   binary value; the non-finite values are written by name, as
-   `asStringFixed:` writes them and every value at or beyond 1e21. *)
+/// `asStringExponential:` writes one digit before the point and the
+/// given number after it; `asStringPrecision:` the given number of
+/// significant digits, in exponent form once the exponent is below -6 or
+/// the digits do not reach the point. Both round half up on the exact
+/// binary value; the non-finite values are written by name, as
+/// `asStringFixed:` writes them and every value at or beyond 1e21.
 class AFloatWritesFixedExponentialAndPrecisionTexts = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |

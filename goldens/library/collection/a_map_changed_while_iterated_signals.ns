@@ -1,7 +1,7 @@
-(* A Map changed while it is iterated -- a key added or removed inside the
-   block of `do:`, `keysAndValuesDo:`, `collect:`, `select:` or `reject:`
-   -- signals a ConcurrentModification; storing a new value under an
-   existing key does not. *)
+/// A Map changed while it is iterated -- a key added or removed inside the
+/// block of `do:`, `keysAndValuesDo:`, `collect:`, `select:` or `reject:`
+/// -- signals a ConcurrentModification; storing a new value under an
+/// existing key does not.
 class AMapChangedWhileIteratedSignals = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. Modified = collections ConcurrentModification. map |

@@ -1,6 +1,6 @@
-(* A class prints as its name and a metaclass as its class's name followed
-   by ` class`, as Primordial Soup's `Class>>printString` and
-   `Metaclass>>printString` do. `Metaclass` itself is a class. *)
+/// A class prints as its name and a metaclass as its class's name followed
+/// by ` class`, as Primordial Soup's `Class>>printString` and
+/// `Metaclass>>printString` do. `Metaclass` itself is a class.
 class AClassAndItsMetaclassPrint = Object new () (
     class Foo = Object new () ()
     public main: platform args: args = (

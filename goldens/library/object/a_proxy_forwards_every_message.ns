@@ -1,7 +1,7 @@
-(* A `Proxy` overrides every public member of `Object` as protected, so a
-   subclass that implements only `doesNotUnderstand:` forwards every
-   message a program sends it, `Object`'s included. A bare `Proxy`
-   understands none of them. *)
+/// A `Proxy` overrides every public member of `Object` as protected, so a
+/// subclass that implements only `doesNotUnderstand:` forwards every
+/// message a program sends it, `Object`'s included. A bare `Proxy`
+/// understands none of them.
 class AProxyForwardsEveryMessage = Object new (
     | Proxy ::= nil. |
 ) (

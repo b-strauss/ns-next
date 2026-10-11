@@ -1,7 +1,7 @@
-(* A `^` in a handler block is a non-local return from the method that
-   wrote it, through `signal`, the handler's activation and the protected
-   block, by the same unwinder: the `ensure:` block on the way runs, and
-   the statement after the `on:do:` does not. *)
+/// A `^` in a handler block is a non-local return from the method that
+/// wrote it, through `signal`, the handler's activation and the protected
+/// block, by the same unwinder: the `ensure:` block on the way runs, and
+/// the statement after the `on:do:` does not.
 class AReturnFromAHandlerBlock = Object new (
     | transcript ::= nil. |
 ) (

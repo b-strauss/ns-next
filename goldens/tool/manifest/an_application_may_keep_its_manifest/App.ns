@@ -1,5 +1,5 @@
-(* The manifest is an ordinary object, so an application may keep it in a
-   slot and reach its modules later, from main:args:. *)
+/// The manifest is an ordinary object, so an application may keep it in a
+/// slot and reach its modules later, from main:args:.
 class App packageUsing: manifest = Object new (
     | private modules = manifest. |
 ) (

@@ -1,8 +1,8 @@
-(* A class of the program may inherit from List, which the collections
-   facet hands out although it is a private class of its module: it keeps
-   the whole protocol and reaches the protected `size_` by a self send.
-   Its superclass clause sends `new:`, List's primary factory, as Primordial
-   Soup's is. *)
+/// A class of the program may inherit from List, which the collections
+/// facet hands out although it is a private class of its module: it keeps
+/// the whole protocol and reaches the protected `size_` by a self send.
+/// Its superclass clause sends `new:`, List's primary factory, as Primordial
+/// Soup's is.
 class AUserSubclassOfListInheritsItsProtocol = Object new (
     |
       private List ::= nil. |

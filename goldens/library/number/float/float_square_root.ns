@@ -1,6 +1,6 @@
-(* `sqrt` is Primordial Soup's `Float>>sqrt`: the IEEE square root,
-   correctly rounded, NaN for a negative receiver and `-0.0` for `-0.0`.
-   NBody sends it. *)
+/// `sqrt` is Primordial Soup's `Float>>sqrt`: the IEEE square root,
+/// correctly rounded, NaN for a negative receiver and `-0.0` for `-0.0`.
+/// NBody sends it.
 class FloatSquareRoot = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |

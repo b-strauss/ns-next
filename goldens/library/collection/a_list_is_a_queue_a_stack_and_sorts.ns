@@ -1,13 +1,13 @@
-(* Primordial Soup's List protocol, as the Are We Fast Yet benchmarks of
-   stage 3 send it (docs/design/core-library.md, "The collections
-   module"): a queue of `add:` and `removeFirst` that runs past many
-   growths and moves keeps its order, `removeLast` makes it a stack,
-   `remove:ifAbsent:` removes the first element `=` to its argument,
-   `sort:` takes a block answering whether its first argument may precede
-   its second and keeps equal elements in order -- so a strict comparison
-   puts them in reverse order, as in Primordial Soup -- and `new: capacity` is
-   the primary factory, so a class of the program may name `List new: 15`
-   in its superclass clause. *)
+/// Primordial Soup's List protocol, as the Are We Fast Yet benchmarks of
+/// stage 3 send it (docs/design/core-library.md, "The collections
+/// module"): a queue of `add:` and `removeFirst` that runs past many
+/// growths and moves keeps its order, `removeLast` makes it a stack,
+/// `remove:ifAbsent:` removes the first element `=` to its argument,
+/// `sort:` takes a block answering whether its first argument may precede
+/// its second and keeps equal elements in order -- so a strict comparison
+/// puts them in reverse order, as in Primordial Soup -- and `new: capacity` is
+/// the primary factory, so a class of the program may name `List new: 15`
+/// in its superclass clause.
 class AListIsAQueueAStackAndSorts = Object new (
     | private List ::= nil. |
 ) (

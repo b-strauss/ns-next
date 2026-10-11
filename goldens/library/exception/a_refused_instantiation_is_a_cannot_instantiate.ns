@@ -1,5 +1,5 @@
-(* `Symbol new` and a value class that defines `==` refuse to instantiate:
-   each signals a `CannotInstantiate` carrying the class. *)
+/// `Symbol new` and a value class that defines `==` refuse to instantiate:
+/// each signals a `CannotInstantiate` carrying the class.
 class ARefusedInstantiationIsACannotInstantiate = Object new () (
     class Odd = Value new () (
         public == other = ( ^true )

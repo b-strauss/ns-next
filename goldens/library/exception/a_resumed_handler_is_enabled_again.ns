@@ -1,9 +1,9 @@
-(* An `on:do:` is disabled only while its handler runs, however the handler
-   is left: `resume:` unwinds out of it back to the signal, and the handler
-   is enabled again for the next exception the protected block signals --
-   here both resumed signals are handled, and answer 1 + 1. After a `pass`
-   whose outer handler resumes, both handlers are enabled again: the inner
-   one sees the second exception too, and passes it on as well. *)
+/// An `on:do:` is disabled only while its handler runs, however the handler
+/// is left: `resume:` unwinds out of it back to the signal, and the handler
+/// is enabled again for the next exception the protected block signals --
+/// here both resumed signals are handled, and answer 1 + 1. After a `pass`
+/// whose outer handler resumes, both handlers are enabled again: the inner
+/// one sees the second exception too, and passes it on as well.
 class AResumedHandlerIsEnabledAgain = Object new (
     
 ) (

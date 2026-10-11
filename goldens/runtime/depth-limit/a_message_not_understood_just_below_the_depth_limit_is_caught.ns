@@ -1,9 +1,9 @@
-(* §5.5 makes a message nothing understood the VM's error, so a
-   `doesNotUnderstand:` raised just below the depth limit, or at it, takes
-   the reserve above the limit as any VM error does and is caught as
-   itself, three levels below the last, one below it and at it; one level
-   further it is the limit. A program's own `signal` takes no reserve: its
-   search meets the limit, which is what is caught. *)
+/// §5.5 makes a message nothing understood the VM's error, so a
+/// `doesNotUnderstand:` raised just below the depth limit, or at it, takes
+/// the reserve above the limit as any VM error does and is caught as
+/// itself, three levels below the last, one below it and at it; one level
+/// further it is the limit. A program's own `signal` takes no reserve: its
+/// search meets the limit, which is what is caught.
 class AMessageNotUnderstoodJustBelowTheDepthLimitIsCaught = Object new (
     | deepest ::= 0. |
 ) (

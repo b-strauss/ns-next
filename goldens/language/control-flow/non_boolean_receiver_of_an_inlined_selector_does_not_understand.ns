@@ -1,5 +1,5 @@
-(* An inlined selector's guard fails on a non-Boolean receiver, and the
-   fallback is a real send: `3` does not understand `ifTrue:ifFalse:`. *)
+/// An inlined selector's guard fails on a non-Boolean receiver, and the
+/// fallback is a real send: `3` does not understand `ifTrue:ifFalse:`.
 class IfDnu = Object new (
 ) (
     public main: p args: a = (

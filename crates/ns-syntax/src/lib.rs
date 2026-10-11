@@ -3,6 +3,7 @@
 //! Lexer, AST, and parser for the Newspeak3 textual syntax.
 
 pub mod ast;
+pub mod comment;
 pub mod diagnostic;
 pub mod lexer;
 mod parser;
@@ -10,6 +11,7 @@ pub mod span;
 pub mod token;
 
 pub use ast::Module;
+pub use comment::{Comment, CommentKind};
 pub use diagnostic::{Diagnostic, Severity};
 pub use span::Span;
 pub use token::{Token, TokenKind};
@@ -58,8 +60,8 @@ pub struct EditorParse {
     /// The lexer's tokens, before the parser splits any.
     pub tokens: Vec<Token>,
     pub module: Module,
-    /// Every comment, in source order.
-    pub comments: Vec<Span>,
+    /// Every comment, in source order, consecutive `///` lines as one.
+    pub comments: Vec<Comment>,
     /// The lexer's diagnostics, then the parser's.
     pub diagnostics: Vec<Diagnostic>,
 }

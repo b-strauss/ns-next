@@ -1,8 +1,8 @@
-(* `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares
-   `p` -- `Base2` is `Child2`'s superclass, not an enclosing class -- so `^p`
-   is `self p`, that is `outer Child2 p` (§5.8). §5.9: `Child2` declares no
-   private `p`, and `lookupProtected` passes `Base2`'s private `p` over, so
-   the send falls to `doesNotUnderstand:`. *)
+/// `newspeak-spec.pdf` §5.7: no lexically enclosing declaration declares
+/// `p` -- `Base2` is `Child2`'s superclass, not an enclosing class -- so `^p`
+/// is `self p`, that is `outer Child2 p` (§5.8). §5.9: `Child2` declares no
+/// private `p`, and `lookupProtected` passes `Base2`'s private `p` over, so
+/// the send falls to `doesNotUnderstand:`.
 class InheritedPrivate = Object new (
 ) (
     class Base2 = Object new () (

@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
-   nil, so class, public, protected, private and lazy name a nested class
-   (6's classDeclaration takes an identifier after the class token) and are
-   sent as a superclass clause's receiver like any other name (6.1's
-   inheritanceClause); outer public names the enclosing class public (6.1's
-   outerReceiver, an outer token and an identifier). public class = ( ... )
-   stays a method named class, since no identifier follows the class
-   token. *)
+/// newspeak-spec.pdf 4.1 reserves only self, super, outer, true, false and
+/// nil, so class, public, protected, private and lazy name a nested class
+/// (6's classDeclaration takes an identifier after the class token) and are
+/// sent as a superclass clause's receiver like any other name (6.1's
+/// inheritanceClause); outer public names the enclosing class public (6.1's
+/// outerReceiver, an outer token and an identifier). public class = ( ... )
+/// stays a method named class, since no identifier follows the class
+/// token.
 class Spec41TheUnreservedWordsNameClasses = Object new () (
     class Names = Object new () (
         class public = Object new () (

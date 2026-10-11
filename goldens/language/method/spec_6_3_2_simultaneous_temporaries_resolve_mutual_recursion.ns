@@ -1,7 +1,7 @@
-(* newspeak-spec.pdf 6.3.2: a code body's temporaries are slot declarations
-   (5.1.8), so a simultaneous clause of them initializes through futures as
-   a class's does: `first` reads `second`, declared after it, and after the
-   clause both hold their values. *)
+/// newspeak-spec.pdf 6.3.2: a code body's temporaries are slot declarations
+/// (5.1.8), so a simultaneous clause of them initializes through futures as
+/// a class's does: `first` reads `second`, declared after it, and after the
+/// clause both hold their values.
 class Spec632SimultaneousTemporaries = Object new () (
     public main: platform args: arguments = (
         || t = platform transcript. first = second + 1. second = 2. ||

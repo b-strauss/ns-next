@@ -349,8 +349,10 @@ decision, made so far only for `num-bigint` and `num-integer`
   are in English.
 - Classic terminology: `blacklist`, `whitelist`, `sane`.
 - Newspeak sources (`.ns`) outside `corpus/` are indented with four spaces,
-  never tabs; `crates/ns-cli/tests/source_formatting.rs` holds it, and
-  `corpus/` stays upstream's verbatim copy.
+  never tabs, and commented with `///` lines, never `(* … *)` (but in
+  `goldens/language/syntax/line_comment.ns`, which pins both forms);
+  `crates/ns-cli/tests/source_formatting.rs` holds both, and `corpus/` stays
+  upstream's verbatim copy.
 - **Names are written out.** No identifier of one or two characters and no
   truncated word, in every kind of name and every segment of a compound:
   `mutator`, `index`, `error`, `interpreter` (not `interp`), `program_counter`
@@ -377,7 +379,7 @@ decision, made so far only for `num-bigint` and `num-integer`
 - **Every member of a shipped core-library module is documented** to the
   standard of Javadoc. Every method, slot and class of `Kernel.ns`,
   `PlatformFactory.ns` and `CollectionsFactory.ns` -- public, protected and
-  private -- has a `(* … *)` comment directly above it that says what it
+  private -- has a `///` comment directly above it that says what it
   does and what it answers, each argument and what it must be, every Error
   it signals and when, and what it guarantees about order, identity,
   copying and mutation, as long as that takes; a section that would say

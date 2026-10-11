@@ -1,49 +1,49 @@
-(* Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
-   e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-   core-lib/Benchmarks/Json.ns), one of the Are We Fast Yet benchmarks,
-   which says of itself: "This is a rough port of minijson from Java."
-   Changed for ns-next: a module in Primordial Soup's shape, whose bench
-   parses the input once and checks what upstream's verifyResult: checks;
-   only Primordial Soup's protocol is sent, so String at: answers a
-   character's code, every character is compared as its code, and an
-   escape appends String with: the code it answers; a parse error signals
-   an Error naming its line and column instead of printing and answering a
-   ParseException; the unsupported-operation errors describe the receiver
-   with printString, since upstream's JsonValue>>asString sends itself
-   without end; code the benchmark never runs and that cannot run as
-   upstream wrote it is left out: JsonValue's class-side string: and
-   boolean:, which send JsonLiteral NULL, TRUE and FALSE, and every method
-   sending them or the absent JsonValue number:; JsonValue>>writeTo:,
-   which sends the absent writeTo:with:, and writeOn:, whose
-   subclassResponsibility Primordial Soup does not define;
-   JsonObject>>updateHashIndex, which sends the absent add:put:;
-   JsonObject>>=, which reads another object's private values; JsonObject>>remove: and
-   HashIndexTable>>remove:, which pass a name for an index and add 1 to a
-   Boolean; JsonArray>>removeAt:, which Primordial Soup's List lacks;
-   the unused number API, which needs endsWith: or Integer and Float
-   parse:, is left out too (JsonValue's class-side integer:, double: and
-   cutOffPointZero:, asInteger and asDouble, and the JsonArray and
-   JsonObject methods sending them); names are written out.
-
-   Copyright (c) 2001-2015 see AUTHORS file
-
-   Permission is hereby granted, free of charge, to any person obtaining a copy
-   of this software and associated documentation files (the 'Software'), to deal
-   in the Software without restriction, including without limitation the rights
-   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-   copies of the Software, and to permit persons to whom the Software is
-   furnished to do so, subject to the following conditions:
-
-   The above copyright notice and this permission notice shall be included in
-   all copies or substantial portions of the Software.
-
-   THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-   THE SOFTWARE. *)
+/// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
+/// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
+/// core-lib/Benchmarks/Json.ns), one of the Are We Fast Yet benchmarks,
+/// which says of itself: "This is a rough port of minijson from Java."
+/// Changed for ns-next: a module in Primordial Soup's shape, whose bench
+/// parses the input once and checks what upstream's verifyResult: checks;
+/// only Primordial Soup's protocol is sent, so String at: answers a
+/// character's code, every character is compared as its code, and an
+/// escape appends String with: the code it answers; a parse error signals
+/// an Error naming its line and column instead of printing and answering a
+/// ParseException; the unsupported-operation errors describe the receiver
+/// with printString, since upstream's JsonValue>>asString sends itself
+/// without end; code the benchmark never runs and that cannot run as
+/// upstream wrote it is left out: JsonValue's class-side string: and
+/// boolean:, which send JsonLiteral NULL, TRUE and FALSE, and every method
+/// sending them or the absent JsonValue number:; JsonValue>>writeTo:,
+/// which sends the absent writeTo:with:, and writeOn:, whose
+/// subclassResponsibility Primordial Soup does not define;
+/// JsonObject>>updateHashIndex, which sends the absent add:put:;
+/// JsonObject>>=, which reads another object's private values; JsonObject>>remove: and
+/// HashIndexTable>>remove:, which pass a name for an index and add 1 to a
+/// Boolean; JsonArray>>removeAt:, which Primordial Soup's List lacks;
+/// the unused number API, which needs endsWith: or Integer and Float
+/// parse:, is left out too (JsonValue's class-side integer:, double: and
+/// cutOffPointZero:, asInteger and asDouble, and the JsonArray and
+/// JsonObject methods sending them); names are written out.
+///
+/// Copyright (c) 2001-2015 see AUTHORS file
+///
+/// Permission is hereby granted, free of charge, to any person obtaining a copy
+/// of this software and associated documentation files (the 'Software'), to deal
+/// in the Software without restriction, including without limitation the rights
+/// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+/// copies of the Software, and to permit persons to whom the Software is
+/// furnished to do so, subject to the following conditions:
+///
+/// The above copyright notice and this permission notice shall be included in
+/// all copies or substantial portions of the Software.
+///
+/// THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+/// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+/// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+/// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+/// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+/// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+/// THE SOFTWARE.
 class Json usingPlatform: platform = (
     | private List = platform collections List.
 
@@ -88,26 +88,26 @@ class Json usingPlatform: platform = (
             ^result
         )
         readValue = (
-            current = 16r6E ifTrue: [^readNull]. (* n *)
-            current = 16r74 ifTrue: [^readTrue]. (* t *)
-            current = 16r66 ifTrue: [^readFalse]. (* f *)
-            current = 16r22 ifTrue: [^readString]. (* " *)
-            current = 16r5B ifTrue: [^readArray]. (* [ *)
-            current = 16r7B ifTrue: [^readObject]. (* { *)
+            current = 16r6E ifTrue: [^readNull]. /// n
+            current = 16r74 ifTrue: [^readTrue]. /// t
+            current = 16r66 ifTrue: [^readFalse]. /// f
+            current = 16r22 ifTrue: [^readString]. /// "
+            current = 16r5B ifTrue: [^readArray]. /// [
+            current = 16r7B ifTrue: [^readObject]. /// {
 
-            (* Each digit is a comparison of its own, as upstream has it: the
-               workload is the benchmark's, not a range check's. *)
-            current = 16r2D ifTrue: [^readNumber]. (* - *)
-            current = 16r30 ifTrue: [^readNumber]. (* 0 *)
-            current = 16r31 ifTrue: [^readNumber]. (* 1 *)
-            current = 16r32 ifTrue: [^readNumber]. (* 2 *)
-            current = 16r33 ifTrue: [^readNumber]. (* 3 *)
-            current = 16r34 ifTrue: [^readNumber]. (* 4 *)
-            current = 16r35 ifTrue: [^readNumber]. (* 5 *)
-            current = 16r36 ifTrue: [^readNumber]. (* 6 *)
-            current = 16r37 ifTrue: [^readNumber]. (* 7 *)
-            current = 16r38 ifTrue: [^readNumber]. (* 8 *)
-            current = 16r39 ifTrue: [^readNumber]. (* 9 *)
+            /// Each digit is a comparison of its own, as upstream has it: the
+            /// workload is the benchmark's, not a range check's.
+            current = 16r2D ifTrue: [^readNumber]. /// -
+            current = 16r30 ifTrue: [^readNumber]. /// 0
+            current = 16r31 ifTrue: [^readNumber]. /// 1
+            current = 16r32 ifTrue: [^readNumber]. /// 2
+            current = 16r33 ifTrue: [^readNumber]. /// 3
+            current = 16r34 ifTrue: [^readNumber]. /// 4
+            current = 16r35 ifTrue: [^readNumber]. /// 5
+            current = 16r36 ifTrue: [^readNumber]. /// 6
+            current = 16r37 ifTrue: [^readNumber]. /// 7
+            current = 16r38 ifTrue: [^readNumber]. /// 8
+            current = 16r39 ifTrue: [^readNumber]. /// 9
 
             expected: 'value'
         )
@@ -121,14 +121,14 @@ class Json usingPlatform: platform = (
             read.
             array:: JsonArray new.
 
-            (* Array might be empty *)
+            /// Array might be empty
             skipWhiteSpace.
-            (readCharacter: 16r5D) ifTrue: [^array]. (* ] *)
+            (readCharacter: 16r5D) ifTrue: [^array]. /// ]
 
             readArrayElement: array.
-            [readCharacter: 16r2C] whileTrue: [readArrayElement: array]. (* , *)
+            [readCharacter: 16r2C] whileTrue: [readArrayElement: array]. /// ,
 
-            (readCharacter: 16r5D) ifFalse: [expected: '"," or "]"']. (* ] *)
+            (readCharacter: 16r5D) ifFalse: [expected: '"," or "]"']. /// ]
             ^array
         )
         readObjectKeyValuePair: object = (
@@ -137,7 +137,7 @@ class Json usingPlatform: platform = (
             name:: readName.
             skipWhiteSpace.
 
-            (readCharacter: 16r3A) ifFalse: [expected: ':']. (* : *)
+            (readCharacter: 16r3A) ifFalse: [expected: ':']. /// :
 
             skipWhiteSpace.
 
@@ -151,39 +151,39 @@ class Json usingPlatform: platform = (
             object:: JsonObject new.
             skipWhiteSpace.
 
-            (readCharacter: 16r7D) ifTrue: [^object]. (* } *)
+            (readCharacter: 16r7D) ifTrue: [^object]. /// }
 
             readObjectKeyValuePair: object.
-            [readCharacter: 16r2C] whileTrue: [readObjectKeyValuePair: object]. (* , *)
+            [readCharacter: 16r2C] whileTrue: [readObjectKeyValuePair: object]. /// ,
 
-            (readCharacter: 16r7D) ifFalse: [expected: '"," or "}"']. (* } *)
+            (readCharacter: 16r7D) ifFalse: [expected: '"," or "}"']. /// }
 
             ^object
         )
         readName = (
-            current = 16r22 ifFalse: [expected: 'name']. (* " *)
+            current = 16r22 ifFalse: [expected: 'name']. /// "
             ^readStringInternal
         )
         readNull = (
             read.
-            readRequiredCharacter: 16r75. (* u *)
-            readRequiredCharacter: 16r6C. (* l *)
-            readRequiredCharacter: 16r6C. (* l *)
+            readRequiredCharacter: 16r75. /// u
+            readRequiredCharacter: 16r6C. /// l
+            readRequiredCharacter: 16r6C. /// l
             ^NULL
         )
         readTrue = (
             read.
-            readRequiredCharacter: 16r72. (* r *)
-            readRequiredCharacter: 16r75. (* u *)
-            readRequiredCharacter: 16r65. (* e *)
+            readRequiredCharacter: 16r72. /// r
+            readRequiredCharacter: 16r75. /// u
+            readRequiredCharacter: 16r65. /// e
             ^TRUE
         )
         readFalse = (
             read.
-            readRequiredCharacter: 16r61. (* a *)
-            readRequiredCharacter: 16r6C. (* l *)
-            readRequiredCharacter: 16r73. (* s *)
-            readRequiredCharacter: 16r65. (* e *)
+            readRequiredCharacter: 16r61. /// a
+            readRequiredCharacter: 16r6C. /// l
+            readRequiredCharacter: 16r73. /// s
+            readRequiredCharacter: 16r65. /// e
             ^FALSE
         )
         readRequiredCharacter: character = (
@@ -198,33 +198,33 @@ class Json usingPlatform: platform = (
             read.
             startCapture.
 
-            [current = 16r22] whileFalse: [ (* " *)
-                current = 16r5C (* \ *)
+            [current = 16r22] whileFalse: [ /// "
+                current = 16r5C /// \
                     ifTrue: [
                         pauseCapture.
                         readEscape.
                         startCapture]
                     ifFalse: [
-                        (* The Java original rejects a control character
-                           here; upstream does not, and neither does this
-                           port, so the workload stays upstream's. *)
+                        /// The Java original rejects a control character
+                        /// here; upstream does not, and neither does this
+                        /// port, so the workload stays upstream's.
                         read]].
             string:: endCapture.
             read.
             ^string
         )
         readEscapeCharacter = (
-            current = 16r22 ifTrue: [^16r22]. (* \" *)
-            current = 16r2F ifTrue: [^16r2F]. (* \/ *)
-            current = 16r5C ifTrue: [^16r5C]. (* \\ *)
+            current = 16r22 ifTrue: [^16r22]. /// \"
+            current = 16r2F ifTrue: [^16r2F]. /// \/
+            current = 16r5C ifTrue: [^16r5C]. /// \\
 
-            current = 16r62 ifTrue: [^16r08]. (* \b *)
-            current = 16r66 ifTrue: [^16r0C]. (* \f *)
-            current = 16r6E ifTrue: [^16r0A]. (* \n *)
-            current = 16r72 ifTrue: [^16r0D]. (* \r *)
-            current = 16r74 ifTrue: [^16r09]. (* \t *)
+            current = 16r62 ifTrue: [^16r08]. /// \b
+            current = 16r66 ifTrue: [^16r0C]. /// \f
+            current = 16r6E ifTrue: [^16r0A]. /// \n
+            current = 16r72 ifTrue: [^16r0D]. /// \r
+            current = 16r74 ifTrue: [^16r09]. /// \t
 
-            (* \u is not supported, as upstream does not support it. *)
+            /// \u is not supported, as upstream does not support it.
             expected: 'valid escape sequence. note, some are not supported'
         )
         readEscape = (
@@ -235,18 +235,18 @@ class Json usingPlatform: platform = (
         readNumber = (
             | firstDigit |
             startCapture.
-            readCharacter: 16r2D. (* - *)
+            readCharacter: 16r2D. /// -
             firstDigit:: current.
 
             readDigit ifFalse: [expected: 'digit'].
-            (firstDigit = 16r30) not ifTrue: [[readDigit] whileTrue: []]. (* 0 *)
+            (firstDigit = 16r30) not ifTrue: [[readDigit] whileTrue: []]. /// 0
 
             readFraction.
             readExponent.
             ^JsonNumber new: endCapture
         )
         readFraction = (
-            (readCharacter: 16r2E) ifFalse: [^false]. (* . *)
+            (readCharacter: 16r2E) ifFalse: [^false]. /// .
 
             readDigit ifFalse: [expected: 'digit'].
 
@@ -255,10 +255,10 @@ class Json usingPlatform: platform = (
             ^true
         )
         readExponent = (
-            ((readCharacter: 16r65) not and: [ (* e *)
-                (readCharacter: 16r45) not]) ifTrue: [^false]. (* E *)
+            ((readCharacter: 16r65) not and: [ /// e
+                (readCharacter: 16r45) not]) ifTrue: [^false]. /// E
 
-            (readCharacter: 16r2B) ifFalse: [readCharacter: 16r2D]. (* + - *)
+            (readCharacter: 16r2B) ifFalse: [readCharacter: 16r2D]. /// + -
 
             readDigit ifFalse: [expected: 'digit'].
 
@@ -280,7 +280,7 @@ class Json usingPlatform: platform = (
             [isWhiteSpace] whileTrue: [read]
         )
         read = (
-            current = 16r0A ifTrue: [ (* LF *)
+            current = 16r0A ifTrue: [ /// LF
                 line:: line + 1.
                 column:: 0].
 
@@ -321,23 +321,23 @@ class Json usingPlatform: platform = (
                 ', column ', column printString
         )
         isWhiteSpace = (
-            current = 16r20 ifTrue: [^true]. (* space *)
-            current = 16r09 ifTrue: [^true]. (* tab *)
-            current = 16r0A ifTrue: [^true]. (* LF *)
-            current = 16r0D ifTrue: [^true]. (* CR *)
+            current = 16r20 ifTrue: [^true]. /// space
+            current = 16r09 ifTrue: [^true]. /// tab
+            current = 16r0A ifTrue: [^true]. /// LF
+            current = 16r0D ifTrue: [^true]. /// CR
             ^false
         )
         isDigit = (
-            current = 16r30 ifTrue: [^true]. (* 0 *)
-            current = 16r31 ifTrue: [^true]. (* 1 *)
-            current = 16r32 ifTrue: [^true]. (* 2 *)
-            current = 16r33 ifTrue: [^true]. (* 3 *)
-            current = 16r34 ifTrue: [^true]. (* 4 *)
-            current = 16r35 ifTrue: [^true]. (* 5 *)
-            current = 16r36 ifTrue: [^true]. (* 6 *)
-            current = 16r37 ifTrue: [^true]. (* 7 *)
-            current = 16r38 ifTrue: [^true]. (* 8 *)
-            current = 16r39 ifTrue: [^true]. (* 9 *)
+            current = 16r30 ifTrue: [^true]. /// 0
+            current = 16r31 ifTrue: [^true]. /// 1
+            current = 16r32 ifTrue: [^true]. /// 2
+            current = 16r33 ifTrue: [^true]. /// 3
+            current = 16r34 ifTrue: [^true]. /// 4
+            current = 16r35 ifTrue: [^true]. /// 5
+            current = 16r36 ifTrue: [^true]. /// 6
+            current = 16r37 ifTrue: [^true]. /// 7
+            current = 16r38 ifTrue: [^true]. /// 8
+            current = 16r39 ifTrue: [^true]. /// 9
             ^false
         )
         isEndOfText = (
@@ -346,8 +346,8 @@ class Json usingPlatform: platform = (
     )
     class HashIndexTable = (
         | private hashTable = Array new: 32. |
-        (* SOMns's `Array new: 32 withAll: 0`; Primordial Soup's `Array` has
-           no `new:withAll:`. *)
+        /// SOMns's `Array new: 32 withAll: 0`; Primordial Soup's `Array` has
+        /// no `new:withAll:`.
         1 to: 32 do: [:slot | hashTable at: slot put: 0].
     ) (
         public at: name put: index = (
@@ -362,7 +362,7 @@ class Json usingPlatform: platform = (
             | slot |
             slot:: hashSlotFor: name.
 
-            (* subtract 1, 0 stands for empty *)
+            /// subtract 1, 0 stands for empty
             ^((hashTable at: slot) bitAnd: 255) - 1
         )
         hashSlotFor: element = (
@@ -547,8 +547,8 @@ class Json usingPlatform: platform = (
             ((position = -1) not and: [name = (names at: position)]) ifTrue: [^position].
             ^lastIndexOf: name
         )
-        (* SOMns's Vector>>lastIndexOf:; Primordial Soup's List has
-           indexOf: but no lastIndexOf:. *)
+        /// SOMns's Vector>>lastIndexOf:; Primordial Soup's List has
+        /// indexOf: but no lastIndexOf:.
         lastIndexOf: name = (
             names size to: 1 by: -1 do: [:position |
                 (names at: position) = name ifTrue: [^position]].

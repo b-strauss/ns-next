@@ -1,8 +1,8 @@
-(* While a handler runs, its own `on:do:` is disabled: an exception the
-   handler signals is not caught by it again but searches further out. The
-   outer handler's value answers from the outer `on:do:`; resumed, the
-   second exception's value comes back into the inner handler, whose own
-   value then answers from the inner `on:do:`. *)
+/// While a handler runs, its own `on:do:` is disabled: an exception the
+/// handler signals is not caught by it again but searches further out. The
+/// outer handler's value answers from the outer `on:do:`; resumed, the
+/// second exception's value comes back into the inner handler, whose own
+/// value then answers from the inner `on:do:`.
 class AnExceptionInAHandlerSearchesFurtherOut = Object new (
     
 ) (

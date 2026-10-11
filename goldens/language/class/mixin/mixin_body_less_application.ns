@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 6.2: "The result of a mixin application expression is
-   a class I with mixin M and superclass S." A class declared as a mixin
-   application with no body of its own, class Applied = Object <: Marker.,
-   is that class I: it answers Marker's method. Tagged applies the same
-   mixin to Base, so it answers Marker's method and inherits Base's. Neither
-   declares a factory, and "Class I has a primary factory method with the
-   same selector as m", where m defaults to new (6.1), so new instantiates
-   each. *)
+/// newspeak-spec.pdf 6.2: "The result of a mixin application expression is
+/// a class I with mixin M and superclass S." A class declared as a mixin
+/// application with no body of its own, class Applied = Object <: Marker.,
+/// is that class I: it answers Marker's method. Tagged applies the same
+/// mixin to Base, so it answers Marker's method and inherits Base's. Neither
+/// declares a factory, and "Class I has a primary factory method with the
+/// same selector as m", where m defaults to new (6.1), so new instantiates
+/// each.
 class MixinBodyLessApplication = Object new () (
     class Base = Object new () (
         public fromBase = ( ^'Base answers fromBase' )

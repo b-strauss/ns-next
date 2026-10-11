@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf 3.1.1: a value object's "enclosing objects (3.3) are
-   all value objects". A class declared in a module lives inside the
-   module's instance, so a value class in an ordinary module -- one declared
-   `= Object new`, not `= Object <: Value` -- could never have a value for an
-   instance. Decided where the class is created, refused where an instance
-   is made -- both here in the one send, `Point x: 1 y: 2`. *)
+/// newspeak-spec.pdf 3.1.1: a value object's "enclosing objects (3.3) are
+/// all value objects". A class declared in a module lives inside the
+/// module's instance, so a value class in an ordinary module -- one declared
+/// `= Object new`, not `= Object <: Value` -- could never have a value for an
+/// instance. Decided where the class is created, refused where an instance
+/// is made -- both here in the one send, `Point x: 1 y: 2`.
 class ValueInAnOrdinaryModule = Object new () (
     public class Point x: anX y: aY = Value new (
         | public x = anX. public y = aY. |

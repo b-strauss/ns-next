@@ -1,16 +1,16 @@
-(* newspeak-spec.pdf 3.6: an activation has "zero or more parameter slots,
-   one for each formal parameter of p. Parameter slots are immutable
-   (6.3.2)", and 6.3.2 gives an immutable slot a getter alone -- "There is
-   no setter method associated with the slot". So no construct lexically
-   enclosing the write declares `value:`, and 5.7 makes the setter send
-   `value:: 9` -- "equivalent to the expression `[:p | id:p. p] value:(e)`"
-   (5.4.3) -- the self send `value: 9`, which nothing answers. The same
-   rule spec_6_3_2_immutable_slot_has_no_setter pins for a declared
-   immutable slot, and this records its stderr.
-
-   The resolver binds a parameter to a writable register like any local, so
-   the write lands and the method answers 9 at exit status 0. Skipped until
-   a parameter refuses its setter. *)
+/// newspeak-spec.pdf 3.6: an activation has "zero or more parameter slots,
+/// one for each formal parameter of p. Parameter slots are immutable
+/// (6.3.2)", and 6.3.2 gives an immutable slot a getter alone -- "There is
+/// no setter method associated with the slot". So no construct lexically
+/// enclosing the write declares `value:`, and 5.7 makes the setter send
+/// `value:: 9` -- "equivalent to the expression `[:p | id:p. p] value:(e)`"
+/// (5.4.3) -- the self send `value: 9`, which nothing answers. The same
+/// rule spec_6_3_2_immutable_slot_has_no_setter pins for a declared
+/// immutable slot, and this records its stderr.
+///
+/// The resolver binds a parameter to a writable register like any local, so
+/// the write lands and the method answers 9 at exit status 0. Skipped until
+/// a parameter refuses its setter.
 class Spec36ParameterIsImmutable = Object new () (
     replace: value = ( value:: 9. ^value )
     public main: platform args: arguments = (

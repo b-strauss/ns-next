@@ -1,6 +1,6 @@
-(* `whileTrue:` and `whileFalse:` send `value` to a body that is no block,
-   once per iteration, as they would evaluate a block; a body that is never
-   reached is sent nothing. *)
+/// `whileTrue:` and `whileFalse:` send `value` to a body that is no block,
+/// once per iteration, as they would evaluate a block; a body that is never
+/// reached is sent nothing.
 class ALoopSendsValueToABodyThatIsNoBlock = Object new (
 ) (
     class Counter = Object new (

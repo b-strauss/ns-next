@@ -1,6 +1,6 @@
-(* `identityHash` is an object's identity hash, which `hash` answers for
-   an object without an `=` of its own; for a value, whose identity is its
-   equality, it is its `hash`. *)
+/// `identityHash` is an object's identity hash, which `hash` answers for
+/// an object without an `=` of its own; for a value, whose identity is its
+/// equality, it is its `hash`.
 class IdentityHashIsAValuesHash = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. object = Object new. |

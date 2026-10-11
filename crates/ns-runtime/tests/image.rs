@@ -9185,7 +9185,7 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
 /// test checks is unlike any other byte sequence the image has a reason to
 /// contain, so a partial leak has somewhere to show up.
 const LEAK_PROBE_MODULE: &str = indoc! {"
-    (* commentaryAboutTheFrobulator explains nothing at all *)
+    /// commentaryAboutTheFrobulator explains nothing at all
     class Probe usingPlatform: aPlatformSlotName = Object new (
         | mnemosyneSlot ::= 3 + 4 * 5. |
         mnemosyneSlot:: mnemosyneSlot + 111.

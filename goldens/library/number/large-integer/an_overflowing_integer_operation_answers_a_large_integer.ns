@@ -1,11 +1,11 @@
-(* §5.1.1: "integers are not limited in size". An `Integer` operation whose
-   result does not fit becomes a `LargeInteger`, and one whose result fits
-   again is an `Integer`, so each integer has one representation. Where a
-   `SmallInteger` ends is the representation's choice: the `i64` edges are
-   `LargeInteger`s already, and the last lines cross the 61-bit edges. Their
-   operands are literal small integers, so the inlined `IntegerBinary` runs,
-   declines a result beyond 61 bits, and the ordinary send promotes: inlining
-   must not take the promotion away from the primitive. *)
+/// §5.1.1: "integers are not limited in size". An `Integer` operation whose
+/// result does not fit becomes a `LargeInteger`, and one whose result fits
+/// again is an `Integer`, so each integer has one representation. Where a
+/// `SmallInteger` ends is the representation's choice: the `i64` edges are
+/// `LargeInteger`s already, and the last lines cross the 61-bit edges. Their
+/// operands are literal small integers, so the inlined `IntegerBinary` runs,
+/// declines a result beyond 61 bits, and the ordinary send promotes: inlining
+/// must not take the promotion away from the primitive.
 class Overflow = Object new (
 ) (
     public main: p args: a = (

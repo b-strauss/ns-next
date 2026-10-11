@@ -1,12 +1,12 @@
-(* Equal numbers hash alike whatever their classes, so `1`, `1.0` and
-   `2/2` are one key of a Map and one element of a Set, a NaN key is
-   found again, and a value whose slot holds `3` equals and hashes like
-   one whose slot holds `3.0`. An integer's hash is the integer, and an
-   integral Float's too.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript lives in `Script`,
-   which is no value. *)
+/// Equal numbers hash alike whatever their classes, so `1`, `1.0` and
+/// `2/2` are one key of a Map and one element of a Set, a NaN key is
+/// found again, and a value whose slot holds `3` equals and hashes like
+/// one whose slot holds `3.0`. An integer's hash is the integer, and an
+/// integral Float's too.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript lives in `Script`,
+/// which is no value.
 class NumbersHashAsTheyCompare = Object <: Value () (
     class Box of: initialContents = Value new (
         | public contents = initialContents. |

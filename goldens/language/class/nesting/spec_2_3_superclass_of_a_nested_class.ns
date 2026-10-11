@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf 2.3, verbatim apart from the module around it: "It is
-   also possible to override a superclass of a nested class; consider this
-   variation", then "Here are a few more illustrative examples. If g is an
-   instance of GrandChildOfOuter, then" -- each example's comment is kept
-   beside the line that checks it. (g Inner: Array) sends the slot's
-   setter to g, which 6.3.2 has answer "the receiver of the message". *)
+/// newspeak-spec.pdf 2.3, verbatim apart from the module around it: "It is
+/// also possible to override a superclass of a nested class; consider this
+/// variation", then "Here are a few more illustrative examples. If g is an
+/// instance of GrandChildOfOuter, then" -- each example's comment is kept
+/// beside the line that checks it. (g Inner: Array) sends the slot's
+/// setter to g, which 6.3.2 has answer "the receiver of the message".
 class Spec23SuperclassOfANestedClass = Object new () (
     class Outer = () (
        public class Inner = ()()
@@ -17,13 +17,13 @@ class Spec23SuperclassOfANestedClass = Object new () (
     public main: platform args: args = (
         | t = platform transcript. g first |
         g:: GrandChildOfOuter new.
-        (* g Inner. (* returns String *) *)
+        /// g Inner. (* returns String *)
         t show: (g Inner == String) printString; newLine.
-        (* g Nested. (* returns a subclass of String *) *)
+        /// g Nested. (* returns a subclass of String *)
         first:: g Nested.
-        (* (g Inner: Array) Nested. (* returns the same subclass of String, even though Inner has changed *) *)
+        /// (g Inner: Array) Nested. (* returns the same subclass of String, even though Inner has changed *)
         t show: ((g Inner: Array) Nested == first) printString; newLine.
-        (* g Inner (* returns Array *) *)
+        /// g Inner (* returns Array *)
         t show: (g Inner == Array) printString; newLine.
     )
 ) : ()

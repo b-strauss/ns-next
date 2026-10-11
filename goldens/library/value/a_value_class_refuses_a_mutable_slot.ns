@@ -1,17 +1,17 @@
-(* newspeak-spec.pdf 3.1.1: "An object is a value object if it is deeply
-   immutable ... and its class inherits from class Value." A mutable slot
-   is state something can write after the fact, so a class below `Value`
-   that declares one could never have a value object for an instance --
-   and a value that could change would stop being equal to the copy an
-   actor boundary made of it.
-
-   The refusal is an ordinary Newspeak error raised where the instance
-   would come into being, so the line before it still prints: nothing about
-   the class is wrong until something asks for an instance of it.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript is therefore read
-   from `platform` where it is used, never held in a slot. *)
+/// newspeak-spec.pdf 3.1.1: "An object is a value object if it is deeply
+/// immutable ... and its class inherits from class Value." A mutable slot
+/// is state something can write after the fact, so a class below `Value`
+/// that declares one could never have a value object for an instance --
+/// and a value that could change would stop being equal to the copy an
+/// actor boundary made of it.
+///
+/// The refusal is an ordinary Newspeak error raised where the instance
+/// would come into being, so the line before it still prints: nothing about
+/// the class is wrong until something asks for an instance of it.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript is therefore read
+/// from `platform` where it is used, never held in a slot.
 class ValueMutableSlot = Object <: Value () (
     public class Counter = Value new (
         | public count ::= 1. |

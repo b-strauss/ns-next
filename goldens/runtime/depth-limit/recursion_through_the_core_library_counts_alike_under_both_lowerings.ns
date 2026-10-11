@@ -1,11 +1,11 @@
-(* Every level of this recursion sends ifTrue:ifFalse: with literal blocks
-   -- inlined by the optimized lowering, a SendInlinable under the reference
-   lowering -- and reaches printString, show: and + through the core library.
-   The reference lowering is held to the same count of activations as the
-   optimized one (`docs/design/compiler.md`, "How the limit counts"), so both
-   print the same progress before the same overflow. That holds with the
-   core library in Newspeak only because a primitive method runs its leaf
-   without an activation of its own. *)
+/// Every level of this recursion sends ifTrue:ifFalse: with literal blocks
+/// -- inlined by the optimized lowering, a SendInlinable under the reference
+/// lowering -- and reaches printString, show: and + through the core library.
+/// The reference lowering is held to the same count of activations as the
+/// optimized one (`docs/design/compiler.md`, "How the limit counts"), so both
+/// print the same progress before the same overflow. That holds with the
+/// core library in Newspeak only because a primitive method runs its leaf
+/// without an activation of its own.
 class DeepThroughTheKernel = Object new (
     | transcript ::= nil. |
 ) (

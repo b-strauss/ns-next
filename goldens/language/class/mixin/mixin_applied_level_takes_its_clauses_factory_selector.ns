@@ -1,17 +1,17 @@
-(* newspeak-spec.pdf 6.2: "Class I has a primary factory method (6) with the
-   same selector as m", and "The instance initializer of M is then evaluated
-   on o with the arguments of mu_m." Marker's primary factory is withTag:,
-   so a <: clause naming Marker sends withTag: and its argument reaches
-   Marker's initializer as aTag.
-
-   The applying class's own factory is its own message pattern, not the
-   clause's: Applied declares none, so it is new and Applied is instantiated
-   with Applied new, while its level still receives withTag: 'x'. Tagged
-   declares label:, and its clause passes that factory parameter on (6.3:
-   "the bindings of the formal parameters of the factory method are
-   available in the message clause"), so Tagged label: 'y' has tag 'y'. Each
-   instance prints its own tag; an implementation that sent the level new
-   instead would fail 6.1's primary factory check, or leave the tag nil. *)
+/// newspeak-spec.pdf 6.2: "Class I has a primary factory method (6) with the
+/// same selector as m", and "The instance initializer of M is then evaluated
+/// on o with the arguments of mu_m." Marker's primary factory is withTag:,
+/// so a <: clause naming Marker sends withTag: and its argument reaches
+/// Marker's initializer as aTag.
+///
+/// The applying class's own factory is its own message pattern, not the
+/// clause's: Applied declares none, so it is new and Applied is instantiated
+/// with Applied new, while its level still receives withTag: 'x'. Tagged
+/// declares label:, and its clause passes that factory parameter on (6.3:
+/// "the bindings of the formal parameters of the factory method are
+/// available in the message clause"), so Tagged label: 'y' has tag 'y'. Each
+/// instance prints its own tag; an implementation that sent the level new
+/// instead would fail 6.1's primary factory check, or leave the tag nil.
 class MixinAppliedLevelTakesItsClausesFactorySelector = Object new () (
     class Marker withTag: aTag = Object new (| public tag = aTag. |) (
         public describe = ( ^'tagged ', tag )

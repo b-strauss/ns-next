@@ -1,7 +1,7 @@
-(* `Future computing:` answers a future of its block: the block runs on the
-   future's first message, once, and the future then behaves as its value,
-   `==` both ways included. A computation that is no block is sent `value`.
-   A future forced while it is being computed is an error. *)
+/// `Future computing:` answers a future of its block: the block runs on the
+/// future's first message, once, and the future then behaves as its value,
+/// `==` both ways included. A computation that is no block is sent `value`.
+/// A future forced while it is being computed is an error.
 class FutureComputingDefersItsBlock = Object new (
     | count ::= 0. looping ::= nil. |
 ) (

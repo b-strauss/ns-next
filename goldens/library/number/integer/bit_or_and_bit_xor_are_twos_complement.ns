@@ -1,8 +1,8 @@
-(* `bitOr:` and `bitXor:` are Primordial Soup's: operations over two's
-   complement, where a negative number's sign bits extend without end, for
-   either representation in either position. `bitInvert` is Primordial
-   Soup's `-1 - self`. Each line is a pair's `bitOr:`, then its `bitXor:`;
-   the last six are `bitInvert`s. Richards and Mandelbrot send them. *)
+/// `bitOr:` and `bitXor:` are Primordial Soup's: operations over two's
+/// complement, where a negative number's sign bits extend without end, for
+/// either representation in either position. `bitInvert` is Primordial
+/// Soup's `-1 - self`. Each line is a pair's `bitOr:`, then its `bitXor:`;
+/// the last six are `bitInvert`s. Richards and Mandelbrot send them.
 class BitOrAndXor = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

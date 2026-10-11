@@ -17,6 +17,7 @@ import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.IDENTIFIER
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.KEYWORD
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.LEFT_PARENTHESIS
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.LESS_THAN
+import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.LINE_COMMENT
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.MIXIN_OPERATOR
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.NUMBER
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes.PRIVATE
@@ -45,6 +46,10 @@ fun lexAll(text: String): List<Pair<IElementType, String>> {
 /** The significant token types of [text]: no whitespace. */
 fun kinds(text: String): List<IElementType> =
     lexAll(text).map { (type, _) -> type }.filter { type -> type != TokenType.WHITE_SPACE }
+
+/** The tokens of [text] the Rust lexer also emits, as (type, text). */
+fun significant(text: String): List<Pair<IElementType, String>> =
+    lexAll(text).filter { (type, _) -> type != TokenType.WHITE_SPACE && type != COMMENT && type != LINE_COMMENT }
 
 class NewspeakLexerTest {
     @Test fun identifiersAndKeywords() =
@@ -152,6 +157,28 @@ class NewspeakLexerTest {
 
     @Test fun anUnterminatedCommentRunsToTheEnd() =
         assertEquals(COMMENT to "(* oops", lexAll("a (* oops")[2])
+
+    @Test fun aLineCommentRunsToTheEndOfItsLine() {
+        assertEquals(listOf(IDENTIFIER, LINE_COMMENT, IDENTIFIER), kinds("a /// comment (* opens nothing\nb"))
+        assertEquals(LINE_COMMENT to "/// comment", lexAll("a /// comment\nb")[2])
+        assertEquals(listOf(IDENTIFIER, LINE_COMMENT), kinds("x///y"))
+        assertEquals(listOf(IDENTIFIER, LINE_COMMENT, LINE_COMMENT, IDENTIFIER), kinds("a /// one\n/// two\nb"))
+        assertEquals(listOf(IDENTIFIER, COMMENT, IDENTIFIER), kinds("a (* x /// y *) b"))
+        assertEquals(listOf(STRING, STRING), kinds("'///' \"///\""))
+    }
+
+    /** `a_line_comment_ends_every_selector_before_it` in `lexer.rs`. */
+    @Test fun aLineCommentEndsEverySelectorBeforeIt() {
+        assertEquals(listOf(IDENTIFIER to "a", BINARY_SELECTOR to "+"), significant("a +/// x"))
+        assertEquals(listOf(IDENTIFIER to "a", BINARY_SELECTOR to "-"), significant("a -/// x"))
+        assertEquals(listOf(IDENTIFIER to "a", BINARY_SELECTOR to "//", IDENTIFIER to "b"), significant("a // b"))
+        assertEquals(listOf(SYMBOL to "#+"), significant("#+/// x"))
+        assertEquals(listOf(SYMBOL to "#"), significant("#/// x"))
+        assertEquals(listOf(BAR to "|", IDENTIFIER to "a", BAR to "|"), significant("| a |/// x"))
+        assertEquals(listOf(IDENTIFIER to "a", EQUALS to "="), significant("a =/// x"))
+        assertEquals(listOf(IDENTIFIER to "a", LESS_THAN to "<"), significant("a </// x"))
+        assertEquals(listOf(IDENTIFIER to "a", GREATER_THAN to ">"), significant("a >/// x"))
+    }
 
     @Test fun aStrayNonAsciiCharacterIsOneBadCharacter() {
         assertEquals(listOf(TokenType.BAD_CHARACTER to "é"), lexAll("é"))

@@ -7,13 +7,16 @@ import com.intellij.psi.tree.IElementType
 import com.intellij.psi.tree.TokenSet
 import io.github.bstrauss.newspeak.NewspeakFile
 import io.github.bstrauss.newspeak.lexer.NewspeakLexer
+import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes
 import io.github.bstrauss.newspeak.parser.NewspeakParserDefinition
 
-/** Where TODO markers are searched: inside `(* ... *)`, not counting the delimiters. */
+/** Where TODO markers are searched: inside a comment, not counting its markers. */
 class NewspeakIndexPatternBuilder : IndexPatternBuilder {
     override fun getIndexingLexer(file: PsiFile): Lexer? = if (file is NewspeakFile) NewspeakLexer() else null
     override fun getCommentTokenSet(file: PsiFile): TokenSet? =
         if (file is NewspeakFile) NewspeakParserDefinition.COMMENTS else null
-    override fun getCommentStartDelta(tokenType: IElementType?): Int = 2
-    override fun getCommentEndDelta(tokenType: IElementType?): Int = 2
+    override fun getCommentStartDelta(tokenType: IElementType?): Int =
+        if (tokenType == NewspeakTokenTypes.LINE_COMMENT) 3 else 2
+    override fun getCommentEndDelta(tokenType: IElementType?): Int =
+        if (tokenType == NewspeakTokenTypes.LINE_COMMENT) 0 else 2
 }

@@ -529,6 +529,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   enclosing object and a module can be instantiated with different
   arguments, so only running the instantiation knows, and the analyzer
   never runs a program.
+- **A hover with the comment above a declaration.** `textDocument/hover` on
+  a class, slot or method shows the `Comment::text` of the `///` block (or
+  `(* ... *)`) directly above its declaration, rendered as Markdown.
+  `ns_syntax::Comment` answers the text; nothing yet maps a declaration to
+  its comment ([frontend.md](design/frontend.md), "Comments";
+  [editor-support.md](design/editor-support.md)).
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
 - Publication on the JetBrains Marketplace stays possible and is not done.
@@ -565,7 +571,9 @@ The others: no character literals and no
 `Character` (§5.1.4); a tuple literal is a mutable `Array`, not a
 `ReadOnlyTuple` (§5.1.7; "`ReadOnlyTuple` and value collections" above);
 a modifier needs no whitespace after it (§6.3.3,
-§6.3.4); `outer N` without a message answers the enclosing object (§5.9);
+§6.3.4); `///` starts a line comment wherever it stands, so a binary
+selector ends before it (§4.2); `outer N` without a message answers the
+enclosing object (§5.9);
 value objects are never copied across an actor boundary (§3.1.1); there is
 no mirror-based reflection (§8.2), which road step 5 closes but for
 changing the class of an individual object and access to the current

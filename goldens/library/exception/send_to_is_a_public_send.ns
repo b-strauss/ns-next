@@ -1,9 +1,9 @@
-(* `Message>>sendTo:` sends the message as an ordinary public send (§5.5):
-   a program can build a message, so a send through one reaches a public
-   method and never a private or a protected one, which end in
-   `doesNotUnderstand:`. A message built without `arguments:` is sent with
-   none; one whose selector is no Symbol cannot be sent, and `sendTo:`
-   raises an `Error` rather than answering nil. *)
+/// `Message>>sendTo:` sends the message as an ordinary public send (§5.5):
+/// a program can build a message, so a send through one reaches a public
+/// method and never a private or a protected one, which end in
+/// `doesNotUnderstand:`. A message built without `arguments:` is sent with
+/// none; one whose selector is no Symbol cannot be sent, and `sendTo:`
+/// raises an `Error` rather than answering nil.
 class SendToIsAPublicSend = Object new (
     
 ) (

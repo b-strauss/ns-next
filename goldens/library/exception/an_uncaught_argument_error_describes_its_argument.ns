@@ -1,5 +1,5 @@
-(* An uncaught `ArgumentError` signalled without a text ends the run with
-   its description, its class's name and its argument. *)
+/// An uncaught `ArgumentError` signalled without a text ends the run with
+/// its description, its class's name and its argument.
 class AnUncaughtArgumentErrorDescribesItsArgument = Object new () (
     public main: platform args: arguments = (
         platform transcript show: 'before'; newLine.

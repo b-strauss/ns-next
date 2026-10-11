@@ -1,4 +1,4 @@
-(* An unhandled List index error ends the run like any other Error. *)
+/// An unhandled List index error ends the run like any other Error.
 class AnUncaughtListIndexErrorEndsTheRun = Object new (
     
 ) (

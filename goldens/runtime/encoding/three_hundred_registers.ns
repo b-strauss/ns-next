@@ -1,5 +1,5 @@
-(* A method of more than 255 registers runs: every instruction that
-   names a register above 255 takes the wide form. *)
+/// A method of more than 255 registers runs: every instruction that
+/// names a register above 255 takes the wide form.
 class ThreeHundredRegisters = Object new (
 ) (
     public main: platform args: arguments = (

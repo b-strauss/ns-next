@@ -1,8 +1,8 @@
-(* A List starts over an Array of three and moves, whenever it is full,
-   into one half as large again plus four -- to eight and then sixteen --
-   so ten elements take two moves; `add:` answers the element and
-   `at:put:` the value (docs/design/core-library.md, "The collections
-   module"). *)
+/// A List starts over an Array of three and moves, whenever it is full,
+/// into one half as large again plus four -- to eight and then sixteen --
+/// so ten elements take two moves; `add:` answers the element and
+/// `at:put:` the value (docs/design/core-library.md, "The collections
+/// module").
 class AListGrowsPastItsFirstArray = Object new (
     
 ) (

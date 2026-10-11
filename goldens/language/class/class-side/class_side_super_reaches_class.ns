@@ -1,10 +1,10 @@
-(* §5.10 makes S the superclass of the running activation's current class,
-   which §3.2 makes `Class` for a metaclass: the metaclass hierarchy is "kept
-   very flat" -- every metaclass is the class side applied directly to
-   `Class`, not to its class's superclass's metaclass -- so a class-side
-   `build`'s current class, `Simple class`, has `Class` itself as its
-   superclass. `super printString` inside `build` therefore reaches
-   `Class>>printString`, which answers `self`'s (`Simple`'s) name. *)
+/// §5.10 makes S the superclass of the running activation's current class,
+/// which §3.2 makes `Class` for a metaclass: the metaclass hierarchy is "kept
+/// very flat" -- every metaclass is the class side applied directly to
+/// `Class`, not to its class's superclass's metaclass -- so a class-side
+/// `build`'s current class, `Simple class`, has `Class` itself as its
+/// superclass. `super printString` inside `build` therefore reaches
+/// `Class>>printString`, which answers `self`'s (`Simple`'s) name.
 class ClassSideSuperReachesClass = Object new () (
     class Base = Object new () (
     ) : (

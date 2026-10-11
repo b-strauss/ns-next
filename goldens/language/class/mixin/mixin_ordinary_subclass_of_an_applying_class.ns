@@ -1,33 +1,33 @@
-(* newspeak-spec.pdf 6.3: an instance initializer first evaluates the message
-   of its class's superclass clause, "the bindings of the formal parameters of
-   the factory method are available in the message clause of the superclass
-   clause", then invokes the superclass's initializer with its arguments, and
-   only then runs its own slot clauses.
-
-   newspeak-spec.pdf 6.2: for a mixin application, "The instance initializer
-   for I evaluates m_s to mu_s, the message determined by the superclass
-   clause. Next, the instance initializer of I invokes the instance
-   initializer of S on o with the arguments of mu_s. Then, m is evaluated to
-   mu_m, the message determined by the inheritance clause. The instance
-   initializer of M is then evaluated on o with the arguments of mu_m."
-
-   Sub is an ordinary subclass of Applied, which applies First and Second to
-   Base. Every clause message is evaluated with the factory arguments of the
-   declaration it is written in, and each one wraps what it receives in its
-   own name, so a message evaluated with another declaration's arguments
-   shows as a different line:
-
-   - sm is Sub's, so it sees Sub's argument, z;
-   - ms, m1 and m2 are Applied's, so they see Applied's argument, which is
-     what sm answered, sm(z) -- never Sub's z;
-   - bm is Base's own, so it sees Base's argument, ms(sm(z)).
-
-   The order is 6.3's for Sub around 6.2's for Applied: sm, then Applied's
-   whole initializer (ms, Base's whole initializer beginning with bm, m1 and
-   First, m2 and Second, then Applied's own slot), then Sub's own slot.
-
-   Applied and Plain are instantiated first, so that Sub's instantiation
-   follows both an application's and an ordinary class's. *)
+/// newspeak-spec.pdf 6.3: an instance initializer first evaluates the message
+/// of its class's superclass clause, "the bindings of the formal parameters of
+/// the factory method are available in the message clause of the superclass
+/// clause", then invokes the superclass's initializer with its arguments, and
+/// only then runs its own slot clauses.
+///
+/// newspeak-spec.pdf 6.2: for a mixin application, "The instance initializer
+/// for I evaluates m_s to mu_s, the message determined by the superclass
+/// clause. Next, the instance initializer of I invokes the instance
+/// initializer of S on o with the arguments of mu_s. Then, m is evaluated to
+/// mu_m, the message determined by the inheritance clause. The instance
+/// initializer of M is then evaluated on o with the arguments of mu_m."
+///
+/// Sub is an ordinary subclass of Applied, which applies First and Second to
+/// Base. Every clause message is evaluated with the factory arguments of the
+/// declaration it is written in, and each one wraps what it receives in its
+/// own name, so a message evaluated with another declaration's arguments
+/// shows as a different line:
+///
+/// - sm is Sub's, so it sees Sub's argument, z;
+/// - ms, m1 and m2 are Applied's, so they see Applied's argument, which is
+///   what sm answered, sm(z) -- never Sub's z;
+/// - bm is Base's own, so it sees Base's argument, ms(sm(z)).
+///
+/// The order is 6.3's for Sub around 6.2's for Applied: sm, then Applied's
+/// whole initializer (ms, Base's whole initializer beginning with bm, m1 and
+/// First, m2 and Second, then Applied's own slot), then Sub's own slot.
+///
+/// Applied and Plain are instantiated first, so that Sub's instantiation
+/// follows both an application's and an ordinary class's.
 class MixinOrdinarySubclassOfAnApplyingClass = Object new (| t ::= nil. |) (
     class Root withRoot: value = Object new (
         | rootSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Root initializer receives ', value. |

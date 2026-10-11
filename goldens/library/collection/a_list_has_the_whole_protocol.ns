@@ -1,8 +1,8 @@
-(* A List adds at both ends and in bulk, removes by element, by predicate
-   and from both ends, searches, copies and converts; `collect:`,
-   `select:`, `reject:`, `,` and `copyFrom:to:` answer Lists, and the
-   rest of Collection's protocol is inherited. A list given itself as
-   argument is read before it changes. *)
+/// A List adds at both ends and in bulk, removes by element, by predicate
+/// and from both ends, searches, copies and converts; `collect:`,
+/// `select:`, `reject:`, `,` and `copyFrom:to:` answer Lists, and the
+/// rest of Collection's protocol is inherited. A list given itself as
+/// argument is read before it changes.
 class AListHasTheWholeProtocol = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. collections = platform collections. List = collections List. list show |

@@ -1,5 +1,5 @@
-(* Primordial Soup's `asStringFixed:` takes 0 to 20 fraction digits and
-   raises for any other count. *)
+/// Primordial Soup's `asStringFixed:` takes 0 to 20 fraction digits and
+/// raises for any other count.
 class AsStringFixedRefuses = () (
     public main: platform args: arguments = (
         platform transcript show: (1.5 asStringFixed: 21); newLine

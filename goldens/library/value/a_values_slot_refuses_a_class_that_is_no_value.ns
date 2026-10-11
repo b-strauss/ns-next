@@ -1,14 +1,14 @@
-(* newspeak-spec.pdf 3.1.1: a slot of a value may hold only another value,
-   and a class object is one exactly when its enclosing object is -- its
-   only state (6.1). `Plain` is nested in a `Wrapper`, an ordinary object,
-   so `Wrapper new Plain` is no value and `Holder` refuses it, naming the
-   class and the slot, as it refuses an `Array`. A class nested in the
-   value module itself is accepted, which the line before the refusal
-   records.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript is therefore read
-   from `platform` where it is used, never held in a slot. *)
+/// newspeak-spec.pdf 3.1.1: a slot of a value may hold only another value,
+/// and a class object is one exactly when its enclosing object is -- its
+/// only state (6.1). `Plain` is nested in a `Wrapper`, an ordinary object,
+/// so `Wrapper new Plain` is no value and `Holder` refuses it, naming the
+/// class and the slot, as it refuses an `Array`. A class nested in the
+/// value module itself is accepted, which the line before the refusal
+/// records.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript is therefore read
+/// from `platform` where it is used, never held in a slot.
 class ValueSlotRefusesAPlainClass = Object <: Value () (
     public class Wrapper = Object new () (
         public class Plain = Object new () ()

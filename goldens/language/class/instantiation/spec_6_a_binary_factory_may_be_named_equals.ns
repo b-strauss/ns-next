@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 6: classDeclaration tries classToken identifier
-   messagePattern equalSign ... before classToken identifier empty equalSign
-   ..., a PEG, so in class Pair = other = Object new the first "=" and
-   "other" are a binary factory pattern, and the second "=" ends the
-   header. *)
+/// newspeak-spec.pdf 6: classDeclaration tries classToken identifier
+/// messagePattern equalSign ... before classToken identifier empty equalSign
+/// ..., a PEG, so in class Pair = other = Object new the first "=" and
+/// "other" are a binary factory pattern, and the second "=" ends the
+/// header.
 class Spec6ABinaryFactoryMayBeNamedEquals = Object new () (
     class Pair = other = Object new (| public held = other. |) () : ()
     public main: platform args: arguments = (

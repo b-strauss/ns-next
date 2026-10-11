@@ -1,7 +1,7 @@
-(* `newspeak-spec.pdf` §5.10: "If a public or protected method f named s is
-   defined for (3.5) S, the value of the send is the result of invoking f" --
-   a private method of the superclass is not one, so `super p` falls to "the
-   #doesNotUnderstand: method defined for S", which is `Object`'s. *)
+/// `newspeak-spec.pdf` §5.10: "If a public or protected method f named s is
+/// defined for (3.5) S, the value of the send is the result of invoking f" --
+/// a private method of the superclass is not one, so `super p` falls to "the
+/// #doesNotUnderstand: method defined for S", which is `Object`'s.
 class SuperPrivate = Object new (
 ) (
     class SuperBase = Object new () (

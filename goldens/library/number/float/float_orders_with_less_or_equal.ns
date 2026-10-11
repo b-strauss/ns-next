@@ -1,7 +1,7 @@
-(* `Float`'s `<=` and `>=`, which Primordial Soup's `Float` has and
-   `Number`'s `to:do:` sends: an `Integer` or `LargeInteger` argument is
-   widened to the nearest double as for `<`, and a NaN is ordered with
-   nothing. *)
+/// `Float`'s `<=` and `>=`, which Primordial Soup's `Float` has and
+/// `Number`'s `to:do:` sends: an `Integer` or `LargeInteger` argument is
+/// widened to the nearest double as for `<`, and a NaN is ordered with
+/// nothing.
 class FloatOrders = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. nan = 0.0 / 0.0. |

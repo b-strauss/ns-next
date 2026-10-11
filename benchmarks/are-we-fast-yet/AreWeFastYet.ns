@@ -1,24 +1,24 @@
-(* Adapted for ns-next from Primordial Soup's BenchmarkRunner.ns
-   (https://github.com/rmacnak/primordialsoup, commit
-   338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/BenchmarkRunner.ns).
-   Changed for ns-next: the benchmarks are the Are We Fast Yet programs;
-   a run without --timed verifies each benchmark once instead of
-   measuring it, so its output can be pinned; the command line selects a
-   benchmark by name; output goes through the platform's transcript
-   rather than Object>>out; names are written out.
-
-   Copyright 2012 Google Inc.
-   Copyright 2013 Ryan Macnak
-
-   Licensed under the Apache License, Version 2.0 (the ''License''); you
-   may not use this file except in compliance with the License. You may
-   obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
-   and in THIRD-PARTY-NOTICES.md at the repository root.
-
-   ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]: without
-   --timed, runs each benchmark (or the one named) once and prints
-   '<Name>: ok'; with it, measures each for at least 20 ms after 3 ms of
-   warm-up and prints its runs per second, as Primordial Soup does. *)
+/// Adapted for ns-next from Primordial Soup's BenchmarkRunner.ns
+/// (https://github.com/rmacnak/primordialsoup, commit
+/// 338f0bb342a618f5608ab72ab1b1fae9b226e472, newspeak/BenchmarkRunner.ns).
+/// Changed for ns-next: the benchmarks are the Are We Fast Yet programs;
+/// a run without --timed verifies each benchmark once instead of
+/// measuring it, so its output can be pinned; the command line selects a
+/// benchmark by name; output goes through the platform's transcript
+/// rather than Object>>out; names are written out.
+///
+/// Copyright 2012 Google Inc.
+/// Copyright 2013 Ryan Macnak
+///
+/// Licensed under the Apache License, Version 2.0 (the ''License''); you
+/// may not use this file except in compliance with the License. You may
+/// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
+/// and in THIRD-PARTY-NOTICES.md at the repository root.
+///
+/// ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]: without
+/// --timed, runs each benchmark (or the one named) once and prints
+/// '<Name>: ok'; with it, measures each for at least 20 ms after 3 ms of
+/// warm-up and prints its runs per second, as Primordial Soup does.
 class AreWeFastYet packageUsing: manifest = (
     | private benchmarks = {
         manifest Bounce. manifest CD. manifest DeltaBlue.
@@ -33,8 +33,8 @@ class AreWeFastYet packageUsing: manifest = (
           private transcript = platform transcript.
           private benchmarkPlatform = platform. |
     ) (
-        (* Primordial Soup's measure: runs the block until the time is
-           spent and answers runs per second. *)
+        /// Primordial Soup's measure: runs the block until the time is
+        /// spent and answers runs per second.
         measure: block forAtLeast: nanoseconds = (
             | runs stopwatch elapsed |
             runs:: 0.
@@ -45,8 +45,8 @@ class AreWeFastYet packageUsing: manifest = (
              elapsed < nanoseconds] whileTrue: [].
             ^(runs * 1000000000) asFloat / elapsed asFloat
         )
-        (* The line is written only once the benchmark has run, so a
-           benchmark that raises leaves no half-written line on stdout. *)
+        /// The line is written only once the benchmark has run, so a
+        /// benchmark that raises leaves no half-written line on stdout.
         report: benchmark timed: timed = (
             | instance result |
             instance:: benchmark usingPlatform: benchmarkPlatform.

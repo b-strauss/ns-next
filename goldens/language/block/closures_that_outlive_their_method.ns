@@ -1,9 +1,9 @@
-(* What a block may still do once its method has returned: read a copy,
-   share a written variable with a second block, and return non-locally
-   -- which is refused, because the home activation is gone (3.6, 7.2).
-   A writer and a reader handed back together must go on seeing each
-   other's value. findFirstAbove: returns out of a block whose home
-   activation is still running and whose home has captured variables. *)
+/// What a block may still do once its method has returned: read a copy,
+/// share a written variable with a second block, and return non-locally
+/// -- which is refused, because the home activation is gone (3.6, 7.2).
+/// A writer and a reader handed back together must go on seeing each
+/// other's value. findFirstAbove: returns out of a block whose home
+/// activation is still running and whose home has captured variables.
 class ClosuresThatOutliveTheirMethod = Object new (
     | private List ::= nil. |
 ) (

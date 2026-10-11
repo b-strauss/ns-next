@@ -1,14 +1,14 @@
-(* newspeak-spec.pdf 3.1.1: `Counter` inherits `Value` directly (`Value
-   new`) but is enclosed by a fresh `Holder` instance each time
-   `MutableCounter` builds one, so every `Counter` class object is itself a
-   refused value class -- created, not raised, per
-   `docs/design/object-model.md`'s "The two new conditions...". `Stamped`
-   inherits `Value` only through `Counter`, with no `<:` clause of its own.
-   The walk that checks `Stamped`'s chain reaches `Counter`, which inherits
-   `Value` and was created as a class of its own -- exactly where the walk
-   would otherwise stop and trust it by induction. It must not: `Counter`
-   carries a recorded refusal of its own, and `Stamped` inherits that
-   fault rather than the walk trusting `Counter` blindly. *)
+/// newspeak-spec.pdf 3.1.1: `Counter` inherits `Value` directly (`Value
+/// new`) but is enclosed by a fresh `Holder` instance each time
+/// `MutableCounter` builds one, so every `Counter` class object is itself a
+/// refused value class -- created, not raised, per
+/// `docs/design/object-model.md`'s "The two new conditions...". `Stamped`
+/// inherits `Value` only through `Counter`, with no `<:` clause of its own.
+/// The walk that checks `Stamped`'s chain reaches `Counter`, which inherits
+/// `Value` and was created as a class of its own -- exactly where the walk
+/// would otherwise stop and trust it by induction. It must not: `Counter`
+/// carries a recorded refusal of its own, and `Stamped` inherits that
+/// fault rather than the walk trusting `Counter` blindly.
 class ValueSubclassOfARefusedValueClass = Object <: Value () (
     public class Holder = Object new (
         | public count ::= 0. |

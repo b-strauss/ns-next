@@ -1,12 +1,12 @@
-(* newspeak-spec.pdf 3.6: an activation has "zero or more local slots, one
-   for each slot declaration in the body of p", and those slots "are
-   initialized in the context of a, according to their declarations".
-
-   The parser keeps a code body's temporary names and drops their
-   initializers (docs/design/frontend.md, "Deviation: a local slot's
-   initializer is dropped"), so the slot keeps the nil every slot starts
-   with and this answers nothing instead of the recorded line. Skipped
-   until the initializer runs. *)
+/// newspeak-spec.pdf 3.6: an activation has "zero or more local slots, one
+/// for each slot declaration in the body of p", and those slots "are
+/// initialized in the context of a, according to their declarations".
+///
+/// The parser keeps a code body's temporary names and drops their
+/// initializers (docs/design/frontend.md, "Deviation: a local slot's
+/// initializer is dropped"), so the slot keeps the nil every slot starts
+/// with and this answers nothing instead of the recorded line. Skipped
+/// until the initializer runs.
 class Spec36LocalSlotInitializer = Object new () (
     public probe = (
         | value = 'the initializer ran'. |

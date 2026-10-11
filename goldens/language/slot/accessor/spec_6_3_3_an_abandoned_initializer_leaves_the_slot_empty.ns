@@ -1,7 +1,7 @@
-(* newspeak-spec.pdf 6.3.3 sets the slot to the object e evaluated to. An
-   initializer that signals, and whose exception a handler returns from,
-   evaluated to nothing: the slot stays nil and the next read evaluates it
-   again. The second read's attempt succeeds and is kept. *)
+/// newspeak-spec.pdf 6.3.3 sets the slot to the object e evaluated to. An
+/// initializer that signals, and whose exception a handler returns from,
+/// evaluated to nothing: the slot stays nil and the next read evaluates it
+/// again. The second read's attempt succeeds and is kept.
 class Spec633LazyAbandoned = Object new () (
     class Holder failing: errorClass = Object new (|
         public attempts ::= 0.

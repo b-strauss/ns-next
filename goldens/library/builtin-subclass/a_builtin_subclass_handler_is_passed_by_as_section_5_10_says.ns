@@ -1,13 +1,13 @@
-(* A user subclass of Array that answers doesNotUnderstand: itself. Its
-   instances carry no array, so Array>>at:'s leaf declines, and the failure
-   block's `super at:` finds no at: in Collection or Object. It sends `at:`
-   rather than `size`, which Collection defines over `do:`. §5.10: "the
-   #doesNotUnderstand: method defined for S is invoked" -- S being
-   Collection, the superclass of the class declaring the super send, which
-   inherits Object's -- so Object's handler runs, not the one declared
-   here, and the run ends in Object's error. Before the core library moved into Kernel.ns a declining primitive
-   continued the receiver's own lookup and reached this handler instead
-   (`docs/design/core-library.md`, "The one observable difference"). *)
+/// A user subclass of Array that answers doesNotUnderstand: itself. Its
+/// instances carry no array, so Array>>at:'s leaf declines, and the failure
+/// block's `super at:` finds no at: in Collection or Object. It sends `at:`
+/// rather than `size`, which Collection defines over `do:`. §5.10: "the
+/// #doesNotUnderstand: method defined for S is invoked" -- S being
+/// Collection, the superclass of the class declaring the super send, which
+/// inherits Object's -- so Object's handler runs, not the one declared
+/// here, and the run ends in Object's error. Before the core library moved into Kernel.ns a declining primitive
+/// continued the receiver's own lookup and reached this handler instead
+/// (`docs/design/core-library.md`, "The one observable difference").
 class HandlerPassedBy = Object new (
     
 ) (

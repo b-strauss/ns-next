@@ -1,10 +1,10 @@
-(* True and False each declare the hash their own `=` demands, and Boolean
-   declares none, so an instance of a user subclass of Boolean hashes as the
-   value it is: by its state, through Value's hash, like any other slotless
-   value -- equal instances hash alike.
-
-   The module is a value because §3.1.1 asks a value class's enclosing
-   object to be one; the transcript lives in `Script`, which is no value. *)
+/// True and False each declare the hash their own `=` demands, and Boolean
+/// declares none, so an instance of a user subclass of Boolean hashes as the
+/// value it is: by its state, through Value's hash, like any other slotless
+/// value -- equal instances hash alike.
+///
+/// The module is a value because §3.1.1 asks a value class's enclosing
+/// object to be one; the transcript lives in `Script`, which is no value.
 class BooleanHash = Object <: Value () (
     class MyBoolean = Boolean new () ()
     class Script on: aTranscript = Object new (

@@ -1,10 +1,10 @@
-(* newspeak-spec.pdf 6.3.3's lazySlotDecl is ((lazyModifier [accessModifier]) |
-   (accessModifier lazyModifier)) slotDecl ..., a PEG (4.2), and 4.1 reserves
-   none of these words: the modifiers come first and the name after them,
-   so lazy lazy = e. is a lazy slot named lazy, lazy public public = e. a
-   public one named public, and an access modifier's word names a lazy slot
-   only behind a modifier. Each starts nil and runs its initializer on its
-   first read only. *)
+/// newspeak-spec.pdf 6.3.3's lazySlotDecl is ((lazyModifier [accessModifier]) |
+/// (accessModifier lazyModifier)) slotDecl ..., a PEG (4.2), and 4.1 reserves
+/// none of these words: the modifiers come first and the name after them,
+/// so lazy lazy = e. is a lazy slot named lazy, lazy public public = e. a
+/// public one named public, and an access modifier's word names a lazy slot
+/// only behind a modifier. Each starts nil and runs its initializer on its
+/// first read only.
 class Spec633TheUnreservedWordsNameLazySlots = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public public = mark: 'a'.

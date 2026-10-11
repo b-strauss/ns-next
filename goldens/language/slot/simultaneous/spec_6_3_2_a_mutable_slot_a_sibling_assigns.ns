@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf 6.3.2: after the clause no slot of it holds a future
-   (docs/design/object-model.md, "Simultaneous slots", rule 1). `second`'s
-   initializer assigns `first` with a setter send, which answers its
-   argument (5.4.3); the clause's end forces `first`'s future first -- 1 --
-   and then `second`'s, which writes 5 into `first`. Each slot ends with
-   what was last written to it. *)
+/// newspeak-spec.pdf 6.3.2: after the clause no slot of it holds a future
+/// (docs/design/object-model.md, "Simultaneous slots", rule 1). `second`'s
+/// initializer assigns `first` with a setter send, which answers its
+/// argument (5.4.3); the clause's end forces `first`'s future first -- 1 --
+/// and then `second`'s, which writes 5 into `first`. Each slot ends with
+/// what was last written to it.
 class Spec632AMutableSlotASiblingAssigns = Object new () (
     class Probe = Object new (|| public first ::= 1. public second = first:: 5. ||) () : ()
     public main: platform args: arguments = (

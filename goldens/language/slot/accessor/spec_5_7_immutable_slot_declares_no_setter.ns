@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 6.3.2: an immutable slot "may be accessed exclusively
-   by invoking a getter method ... There is no setter method associated
-   with the slot". So Inner declares no method y:, and 5.7's innermost
-   lexically enclosing construct declaring y: is Outer: the send y: 7 in
-   run is outer Outer y: 7. Inner's y stays 3, and Outer's log is 7. *)
+/// newspeak-spec.pdf 6.3.2: an immutable slot "may be accessed exclusively
+/// by invoking a getter method ... There is no setter method associated
+/// with the slot". So Inner declares no method y:, and 5.7's innermost
+/// lexically enclosing construct declaring y: is Outer: the send y: 7 in
+/// run is outer Outer y: 7. Inner's y stays 3, and Outer's log is 7.
 class Spec57ImmutableSlotDeclaresNoSetter = Object new () (
     class Outer = Object new (| log ::= 0. |) (
         public y: value = ( log:: value )

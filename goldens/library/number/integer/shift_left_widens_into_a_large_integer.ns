@@ -1,7 +1,7 @@
-(* `<<` is Primordial Soup's: the receiver times two to the count, for
-   either representation in either position, widening into a
-   `LargeInteger` when the result does not fit and back when it does. A
-   zero receiver answers zero for any count. Mandelbrot shifts with it. *)
+/// `<<` is Primordial Soup's: the receiver times two to the count, for
+/// either representation in either position, widening into a
+/// `LargeInteger` when the result does not fit and back when it does. A
+/// zero receiver answers zero for any count. Mandelbrot shifts with it.
 class ShiftLeft = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

@@ -77,7 +77,7 @@ guarantee it gives up or the complexity it adds.
 
 | Aspect | Document | Status | Planned next |
 |---|---|---|---|
-| Lexer, parser, AST | [frontend.md](frontend.md) | Built: the syntax is the specification's grammar (§4.2 to §8.1), strictly, read as a PEG over tokens, every rule pinned by a parser test and every accepted form by a golden; where the specification contradicts itself its prose decides, and one deviation is recorded (a modifier needs no whitespace after it); for an editor, a recovered module and the comments' spans for every source | A pattern literal lowered to the `Pattern` send §5.1.9 defines, not to **nil** ([frontend.md](frontend.md), "What is parsed and dropped"); chains (`:\|`) and object literals, both marked *Unimplemented* in the specification |
+| Lexer, parser, AST | [frontend.md](frontend.md) | Built: the syntax is the specification's grammar (§4.2 to §8.1), strictly, read as a PEG over tokens, every rule pinned by a parser test and every accepted form by a golden; where the specification contradicts itself its prose decides, and two deviations are recorded (a modifier needs no whitespace after it; `///` starts a line comment wherever it stands); for an editor, a recovered module and its comments, each with its text, for every source | A pattern literal lowered to the `Pattern` send §5.1.9 defines, not to **nil** ([frontend.md](frontend.md), "What is parsed and dropped"); chains (`:\|`) and object literals, both marked *Unimplemented* in the specification |
 | Values, objects, mixins, classes, instantiation | [object-model.md](object-model.md) | Built, §6.2's mixin application included: each `<:` clause adds an ordinary class level, so lookup, `super`, `outer` and the caches need nothing new. §3.2's class hierarchy is reified: every class object's class is its metaclass, over `Class`, and every metaclass's class is `Metaclass`. All four of §3.1.1's value conditions are enforced, refused where an instance is made, and a module's root may name only `Object` or `Value`, or write `Object <: Value`. §6.3.2's simultaneous slots, through pull futures: a clause's slots initialize simultaneously, so well-founded mutual recursion between them resolves ("Simultaneous slots"). A value is one tagged word, Spur's: a handle, a 61-bit `SmallInteger`, a `SmallFloat64` or `nil`, `true` and `false`, every other number a `LargeInteger`, a boxed `Float` or a `Fraction`; a heap object stores bare eight-byte words, and a store checks the value it stores ("Values and objects"). Every object is a header word, a class word and its fields, its kind a format -- class objects, closures and reified frames included (road step 3a, "The object layout") -- in one VM-owned object space, a handle the object's 64-bit byte offset (road step 3b, "Handles into the object space"); `Symbol` is a subclass of `String` | `become:` as an eager bulk forward, reached only through mirrors (road step 5, "Planned: `become:` as an eager bulk forward") |
 | Name resolution, lookup, access control, sends | [dispatch.md](dispatch.md) | Built, the inline caches included: primitives as method-table entries (3a) — since M4's step 6 on the VM mirror's class alone, with kernel primitive methods run in `act` without an activation — per-heap caches with a global cache behind them (3b), the five refinements decided before 3c — flat metaclasses, the primary factory as a metaclass entry, the lexical global-cache key, unserialized call-site numbers and the cache's least-recently-used groups — and the dispatch id in the object header (3c), read from the header word's low 22 bits since road step 3a ("The guard in the header word"); M4's step 3 is complete; a §5.7 member set is now keyed by a real class identity, and a setter send skips every local that declares no setter (a parameter or an immutable local) | Open: whether the class side gets a scope of its own ("Open: the class side's scope"); guarding a private lexical site on the mixin rather than its application, once a program has one to measure |
 | AST to bytecode: instructions, lowering, inlining | [compiler.md](compiler.md) | Built; call sites numbered per code family, the capture analysis and converted register layout closure conversion needs, an inlined fast path for the nine binary integer leaves, and a kernel mirror send's failure block lowered inline (`SendMirror`) | dropping `IntegerBinary`'s `Jump` |
@@ -103,7 +103,7 @@ plugs into, and the JetBrains plugin beside them:
 ```
 crates/
   ns-syntax/    lexer, tokens, AST, spans, diagnostics; for an editor,
-                parse_for_editor: a recovered module and its comments' spans
+                parse_for_editor: a recovered module and its comments
   ns-runtime/   resolver, object model, dispatch, compiler, VM, the leaves, image;
                 core-library/Kernel.ns, the core library in Newspeak
   ns-cli/       the `ns-next` binary, which runs programs: run, run-corpus,
@@ -327,7 +327,7 @@ renamed, moved or re-extended. Deleting both halves together is not caught,
 and shows up in a diff as two deletions.
 
 A golden's rationale — why that outcome is the right one, and which
-specification section it comes from — is a `(* ... *)` comment at the top of
+specification section it comes from — is a `///` comment at the top of
 the `.ns`, so that it sits with the program it
 explains rather than beside it; for a project golden, the `.ns` is its root
 module. The `awfy/` goldens share one root, the harness, so theirs is the
@@ -402,6 +402,7 @@ trusting a program's output.
 | Deviation | Spec | Where it is explained |
 |---|---|---|
 | Value objects exist and §3.1.1's second bullet is enforced, but nothing copies one across an actor boundary | §3.1.1 | [liveness-and-reflection.md](liveness-and-reflection.md) |
+| `///` starts a line comment wherever it stands outside a string or a comment, so a binary selector ends before it: §4.2's `binSel` admits any run of special characters, `///`, `+///` and `<///>` among them, and no such selector can be declared or sent | §4.2 | [frontend.md](frontend.md), "Comments" |
 | A non-integral literal is a binary `f64`, not the exact-decimal `FixedPointNumber` the section names | §5.1.1 | [core-library.md](core-library.md) |
 | There are no character literals and no `Character` class: `"c"` is a one-character string, as the section itself announces and §5.1.5's `"σ"` form states; a double-quoted string has no escape, and a quote in one is written `"""`, not the section's `""""` | §5.1.4 | [frontend.md](frontend.md) |
 | A string literal holds the code points its source text holds, not their Unicode normal form C: a literal written with a decomposed `é` (`e` and a combining accent) has two elements and is not equal to one written precomposed, where the section makes both the same NFC string | §5.1.5 | [frontend.md](frontend.md) |

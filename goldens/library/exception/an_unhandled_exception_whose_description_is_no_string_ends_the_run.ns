@@ -1,7 +1,7 @@
-(* A subclass may answer anything from `description` and from the
-   selector it reports: an unhandled one still ends the run, its
-   description rendered as a value is in an error message, and nothing
-   after the signal runs. *)
+/// A subclass may answer anything from `description` and from the
+/// selector it reports: an unhandled one still ends the run, its
+/// description rendered as a value is in an error message, and nothing
+/// after the signal runs.
 class AnUnhandledExceptionWhoseDescriptionIsNoStringEndsTheRun = Object new () (
     public class Odd = Error new () (
         public description = ( ^42 )

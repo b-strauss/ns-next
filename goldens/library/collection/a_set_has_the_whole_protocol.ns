@@ -1,7 +1,7 @@
-(* A Set holds each element once, `=` and `hash` deciding, in the order
-   elements were first added; adding an equal element replaces it in
-   place. It removes by element, in bulk and by predicate, and `collect:`,
-   `select:` and `reject:` answer Sets, so equal results merge. *)
+/// A Set holds each element once, `=` and `hash` deciding, in the order
+/// elements were first added; adding an equal element replaces it in
+/// place. It removes by element, in bulk and by predicate, and `collect:`,
+/// `select:` and `reject:` answer Sets, so equal results merge.
 class ASetHasTheWholeProtocol = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. Set = collections Set. set show |

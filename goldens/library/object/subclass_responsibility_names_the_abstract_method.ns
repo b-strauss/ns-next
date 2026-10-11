@@ -1,7 +1,7 @@
-(* `self subclassResponsibility` signals an Error naming the abstract
-   method -- the class that declares it and its selector -- and the class
-   of the receiver that should have implemented it, on a class side too.
-   It is protected: a send from outside is not understood. *)
+/// `self subclassResponsibility` signals an Error naming the abstract
+/// method -- the class that declares it and its selector -- and the class
+/// of the receiver that should have implemented it, on a class side too.
+/// It is protected: a send from outside is not understood.
 class SubclassResponsibilityNamesTheAbstractMethod = Object new () (
     class Shape = Object new () (
         public area = ( ^self subclassResponsibility )

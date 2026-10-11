@@ -1,14 +1,14 @@
-(* Every level sends ifTrue: with a literal block to an instance of a user
-   subclass of True. The optimized lowering's guard sees no Boolean and
-   makes the real send; the reference lowering sends it as a
-   SendInlinable. Both reach True>>ifTrue:, a quick method, and the block it
-   answers is exempt from the depth count only for a Boolean receiver --
-   where the optimized lowering would have inlined it -- so both count the
-   method and the block alike and overflow at the same level
-   (`docs/design/compiler.md`, "How the limit counts").
-
-   The module is a value because §3.1.1 asks a value class's enclosing
-   object to be one; the recursion lives in `Script`, which is no value. *)
+/// Every level sends ifTrue: with a literal block to an instance of a user
+/// subclass of True. The optimized lowering's guard sees no Boolean and
+/// makes the real send; the reference lowering sends it as a
+/// SendInlinable. Both reach True>>ifTrue:, a quick method, and the block it
+/// answers is exempt from the depth count only for a Boolean receiver --
+/// where the optimized lowering would have inlined it -- so both count the
+/// method and the block alike and overflow at the same level
+/// (`docs/design/compiler.md`, "How the limit counts").
+///
+/// The module is a value because §3.1.1 asks a value class's enclosing
+/// object to be one; the recursion lives in `Script`, which is no value.
 class DeepThroughASubclass = Object <: Value () (
     class MyTrue = True new () ()
     class Script on: aTranscript = Object new (

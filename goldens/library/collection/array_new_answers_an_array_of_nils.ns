@@ -1,6 +1,6 @@
-(* `Array new: size` answers an array of `size` nils, which `at:put:`
-   fills (docs/design/core-library.md, "The collections module"). `Array
-   new` is `Array new: 0`. *)
+/// `Array new: size` answers an array of `size` nils, which `at:put:`
+/// fills (docs/design/core-library.md, "The collections module"). `Array
+/// new` is `Array new: 0`.
 class ArrayNewAnswersAnArrayOfNils = Object new (
     
 ) (

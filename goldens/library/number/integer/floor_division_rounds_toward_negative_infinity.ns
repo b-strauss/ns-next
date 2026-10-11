@@ -1,9 +1,9 @@
-(* `//` rounds toward negative infinity, as Primordial Soup's `Integer>>//`
-   does (`KernelForPrimordialSoup.ns`, "Integer division, rounded toward
-   negative infinity"); the specification does not define it. The first
-   four have literal operands, which the inlined `IntegerBinary` computes
-   itself; the last four go through a local, so the fast path and the send
-   are both pinned under both lowerings. *)
+/// `//` rounds toward negative infinity, as Primordial Soup's `Integer>>//`
+/// does (`KernelForPrimordialSoup.ns`, "Integer division, rounded toward
+/// negative infinity"); the specification does not define it. The first
+/// four have literal operands, which the inlined `IntegerBinary` computes
+/// itself; the last four go through a local, so the fast path and the send
+/// are both pinned under both lowerings.
 class FloorDivision = Object new (
 ) (
     public main: p args: a = (

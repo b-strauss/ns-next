@@ -1,7 +1,7 @@
-(* A program's own Collection defines `do:` and inherits the rest of the
-   read protocol; `collect:`, `select:` and `reject:` also need the hook
-   `newForCollectUsingAdd:`, and without it signal an Error. An Array is a
-   Collection and inherits what it does not define itself. *)
+/// A program's own Collection defines `do:` and inherits the rest of the
+/// read protocol; `collect:`, `select:` and `reject:` also need the hook
+/// `newForCollectUsingAdd:`, and without it signal an Error. An Array is a
+/// Collection and inherits what it does not define itself.
 class ACollectionIsBuiltOnDo = Object new (
     | Collection ::= nil. |
 ) (

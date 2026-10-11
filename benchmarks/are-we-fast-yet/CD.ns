@@ -1,44 +1,44 @@
-(* Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
-   e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
-   core-lib/Benchmarks/CD.ns and core-lib/Benchmarks/RedBlackTree.ns), one
-   of the Are We Fast Yet benchmarks.
-   Changed for ns-next: a module in Primordial Soup's shape, whose bench
-   runs once at 250 aircraft and checks its own result; the module
-   RedBlackTree.ns, which SOMns loads beside CD.ns, became the nested class
-   RedBlackTree, its helper classes and treeMinimum: members of CD beside
-   it; only Primordial Soup's protocol is sent, so SOMns's Vector is List,
-   its float division // is /, so an Integer receiver's i // 10.0 is
-   frame asFloat / 10.0, there being no Integer>>/; ~= and <> are
-   (a == b) not and (a = b) not; names are written out.
-
-   SOMns's own header of both files:
-
-     Ported from the adapted JavaScript and Java versions.
-
-   Copyright (c) 2001-2010, Purdue University. All rights reserved.
-   Copyright (C) 2015 Apple Inc. All rights reserved.
-
-   Redistribution and use in source and binary forms, with or without
-   modification, are permitted provided that the following conditions are met:
-    * Redistributions of source code must retain the above copyright
-      notice, this list of conditions and the following disclaimer.
-    * Redistributions in binary form must reproduce the above copyright
-      notice, this list of conditions and the following disclaimer in the
-      documentation and/or other materials provided with the distribution.
-    * Neither the name of the Purdue University nor the
-      names of its contributors may be used to endorse or promote products
-      derived from this software without specific prior written permission.
-
-   THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
-   ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
-   WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-   DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
-   DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
-   (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-   LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
-   ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
-   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. *)
+/// Adapted for ns-next from SOMns (https://github.com/smarr/SOMns, commit
+/// e56f4c2815cef4cae2045a9b05dc1fd190315ba6,
+/// core-lib/Benchmarks/CD.ns and core-lib/Benchmarks/RedBlackTree.ns), one
+/// of the Are We Fast Yet benchmarks.
+/// Changed for ns-next: a module in Primordial Soup's shape, whose bench
+/// runs once at 250 aircraft and checks its own result; the module
+/// RedBlackTree.ns, which SOMns loads beside CD.ns, became the nested class
+/// RedBlackTree, its helper classes and treeMinimum: members of CD beside
+/// it; only Primordial Soup's protocol is sent, so SOMns's Vector is List,
+/// its float division // is /, so an Integer receiver's i // 10.0 is
+/// frame asFloat / 10.0, there being no Integer>>/; ~= and <> are
+/// (a == b) not and (a = b) not; names are written out.
+///
+/// SOMns's own header of both files:
+///
+///   Ported from the adapted JavaScript and Java versions.
+///
+/// Copyright (c) 2001-2010, Purdue University. All rights reserved.
+/// Copyright (C) 2015 Apple Inc. All rights reserved.
+///
+/// Redistribution and use in source and binary forms, with or without
+/// modification, are permitted provided that the following conditions are met:
+///  * Redistributions of source code must retain the above copyright
+///    notice, this list of conditions and the following disclaimer.
+///  * Redistributions in binary form must reproduce the above copyright
+///    notice, this list of conditions and the following disclaimer in the
+///    documentation and/or other materials provided with the distribution.
+///  * Neither the name of the Purdue University nor the
+///    names of its contributors may be used to endorse or promote products
+///    derived from this software without specific prior written permission.
+///
+/// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+/// ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+/// WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+/// DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY
+/// DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+/// (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+/// LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+/// ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+/// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+/// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 class CD usingPlatform: platform = (
     | private List = platform collections List.
 
@@ -107,7 +107,7 @@ class CD usingPlatform: platform = (
             left < right ifTrue: [^-1].
             left > right ifTrue: [^1].
 
-            (* We say that NaN is smaller than non-NaN. *)
+            /// We say that NaN is smaller than non-NaN.
             left = left ifTrue: [^1].
             ^-1
         )
@@ -185,12 +185,12 @@ class CD usingPlatform: platform = (
                 seen at: aircraft callsign put: true.
 
                 oldPosition isNil ifTrue: [
-                    (* Treat newly introduced aircraft as if they were stationary *)
+                    /// Treat newly introduced aircraft as if they were stationary
                     oldPosition:: newPosition].
 
                 motions add: (Motion new: aircraft callsign old: oldPosition new: newPosition)].
 
-            (* Remove aircraft that are no longer present *)
+            /// Remove aircraft that are no longer present
             toRemove:: List new.
             state do: [:entry |
                 (seen at: entry key) ifFalse: [toRemove add: entry key]].
@@ -255,18 +255,18 @@ class CD usingPlatform: platform = (
                 lowY:: highY.
                 highY:: temp].
 
-            ^(((deltaX = 0.0 and: [voxelX <= (startX + radius) and: [(startX - radius) <= (voxelX + voxelSize)]]) or: [ (* no motion in x *)
+            ^(((deltaX = 0.0 and: [voxelX <= (startX + radius) and: [(startX - radius) <= (voxelX + voxelSize)]]) or: [ /// no motion in x
                 (lowX <= 1.0 and: [1.0 <= highX]) or: [
                 (lowX <= 0.0 and: [0.0 <= highX]) or: [
                 (0.0 <= lowX and: [highX <= 1.0])]]]) and: [
 
-                (deltaY = 0.0 and: [voxelY <= (startY + radius) and: [(startY - radius) <= (voxelY + voxelSize)]]) or: [ (* no motion in y *)
+                (deltaY = 0.0 and: [voxelY <= (startY + radius) and: [(startY - radius) <= (voxelY + voxelSize)]]) or: [ /// no motion in y
                   (lowY <= 1.0 and: [1.0 <= highY]) or: [
                   (lowY <= 0.0 and: [0.0 <= highY]) or: [
                   (0.0 <= lowY and: [highY <= 1.0])]]]]) and: [
 
                  deltaX = 0.0 or: [
-                 deltaY = 0.0 or: [ (* no motion in x or y or both *)
+                 deltaY = 0.0 or: [ /// no motion in x or y or both
                  (lowY <= highX and: [highX <= highY]) or: [
                  (lowY <= lowX and: [lowX <= highY]) or: [
                  (lowX <= lowY and: [highY <= highX])]]]]]
@@ -346,45 +346,45 @@ class CD usingPlatform: platform = (
             vectorTwo:: other delta.
             radius:: ProximityRadius.
 
-            (* this test is not geometrical 3-d intersection test, it takes the fact that the aircraft move
-               into account ; so it is more like a 4d test
-               (it assumes that both of the aircraft have a constant speed over the tested interval)
-
-               we thus have two points, each of them moving on its line segment at constant speed ; we are looking
-               for times when the distance between these two points is smaller than r
-
-               vectorOne is vector of aircraft 1
-               vectorTwo is vector of aircraft 2
-
-               a = (V2 - V1)^T * (V2 - V1) *)
+            /// this test is not geometrical 3-d intersection test, it takes the fact that the aircraft move
+            /// into account ; so it is more like a 4d test
+            /// (it assumes that both of the aircraft have a constant speed over the tested interval)
+            ///
+            /// we thus have two points, each of them moving on its line segment at constant speed ; we are looking
+            /// for times when the distance between these two points is smaller than r
+            ///
+            /// vectorOne is vector of aircraft 1
+            /// vectorTwo is vector of aircraft 2
+            ///
+            /// a = (V2 - V1)^T * (V2 - V1)
             squaredSpeed:: (vectorTwo minus: vectorOne) squaredMagnitude.
 
             (squaredSpeed = 0.0) not ifTrue: [
                 | linear constant discriminant timeOne timeTwo |
-                (* we are first looking for instances of time when the planes are exactly r from each other
-                   at least one plane is moving ; if the planes are moving in parallel, they do not have constant speed
-
-                   if the planes are moving in parallel, then
-                     if the faster starts behind the slower, we can have 2, 1, or 0 solutions
-                     if the faster plane starts in front of the slower, we can have 0 or 1 solutions
-
-                   if the planes are not moving in parallel, then
-
-                   point P1 = I1 + vV1
-                   point P2 = I2 + vV2
-                     - looking for v, such that dist(P1,P2) = || P1 - P2 || = r
-
-                   it follows that || P1 - P2 || = sqrt( < P1-P2, P1-P2 > )
-                     0 = -r^2 + < P1 - P2, P1 - P2 >
-                    from properties of dot product
-                     0 = -r^2 + <I1-I2,I1-I2> + v * 2<I1-I2, V1-V2> + v^2 *<V1-V2,V1-V2>
-                     so we calculate a, b, c - and solve the quadratic equation
-                     0 = c + bv + av^2
-
-                 b = 2 * <I1-I2, V1-V2> *)
+                /// we are first looking for instances of time when the planes are exactly r from each other
+                ///   at least one plane is moving ; if the planes are moving in parallel, they do not have constant speed
+                ///
+                ///   if the planes are moving in parallel, then
+                ///     if the faster starts behind the slower, we can have 2, 1, or 0 solutions
+                ///     if the faster plane starts in front of the slower, we can have 0 or 1 solutions
+                ///
+                ///   if the planes are not moving in parallel, then
+                ///
+                ///   point P1 = I1 + vV1
+                ///   point P2 = I2 + vV2
+                ///     - looking for v, such that dist(P1,P2) = || P1 - P2 || = r
+                ///
+                ///   it follows that || P1 - P2 || = sqrt( < P1-P2, P1-P2 > )
+                ///     0 = -r^2 + < P1 - P2, P1 - P2 >
+                ///    from properties of dot product
+                ///     0 = -r^2 + <I1-I2,I1-I2> + v * 2<I1-I2, V1-V2> + v^2 *<V1-V2,V1-V2>
+                ///     so we calculate a, b, c - and solve the quadratic equation
+                ///     0 = c + bv + av^2
+                ///
+                /// b = 2 * <I1-I2, V1-V2>
                 linear:: 2.0 * ((initialOne minus: initialTwo) dot: (vectorOne minus: vectorTwo)).
 
-                (* c = -r^2 + (I2 - I1)^T * (I2 - I1) *)
+                /// c = -r^2 + (I2 - I1)^T * (I2 - I1)
                 constant:: ((0.0 - radius) * radius) + ((initialTwo minus: initialOne) squaredMagnitude).
 
                 discriminant:: (linear * linear) - (4.0 * squaredSpeed * constant).
@@ -396,14 +396,14 @@ class CD usingPlatform: platform = (
                 (timeOne <= timeTwo and: [((timeOne <= 1.0 and: [1.0 <= timeTwo]) or: [
                                        (timeOne <= 0.0 and: [0.0 <= timeTwo]) or: [
                                        (0.0 <= timeOne and: [timeTwo <= 1.0])]])]) ifTrue: [
-                    (* Pick a good "time" at which to report the collision *)
+                    /// Pick a good "time" at which to report the collision
                     | time resultOne resultTwo result |
                     timeOne <= 0.0
                         ifTrue: [
-                            (* The collision started before this frame. Report it at the start of the frame *)
+                            /// The collision started before this frame. Report it at the start of the frame
                             time:: 0.0]
                         ifFalse: [
-                            (* The collision started during this frame. Report it at that moment *)
+                            /// The collision started during this frame. Report it at that moment
                             time:: timeOne].
 
                     resultOne:: initialOne plus: (vectorOne times: time).
@@ -420,10 +420,10 @@ class CD usingPlatform: platform = (
 
                 ^nil].
 
-            (* the planes have the same speeds and are moving in parallel (or they are not moving at all)
-               they  thus have the same distance all the time ; we calculate it from the initial point
-
-               dist = || i2 - i1 || = sqrt(  ( i2 - i1 )^T * ( i2 - i1 ) ) *)
+            /// the planes have the same speeds and are moving in parallel (or they are not moving at all)
+            /// they  thus have the same distance all the time ; we calculate it from the initial point
+            ///
+            /// dist = || i2 - i1 || = sqrt(  ( i2 - i1 )^T * ( i2 - i1 ) )
             distance:: (initialTwo minus: initialOne) magnitude.
             distance <= radius ifTrue: [
                 ^(initialOne plus: initialTwo) times: 0.5].
@@ -462,8 +462,8 @@ class CD usingPlatform: platform = (
         )
     )
 
-    (* SOMns's RedBlackTree.ns: a red-black tree keyed by objects that
-       answer compareTo:. *)
+    /// SOMns's RedBlackTree.ns: a red-black tree keyed by objects that
+    /// answer compareTo:.
     private class Node key: key value: value = (
         | public key = key.
           public value ::= value.
@@ -500,8 +500,8 @@ class CD usingPlatform: platform = (
     private class RedBlackTree = (
         | private root ::= nil. |
     ) (
-        (* Answers the value the key held before, or nil when it is new;
-           CollisionDetector relies on it. *)
+        /// Answers the value the key held before, or nil when it is new;
+        /// CollisionDetector relies on it.
         public at: key put: value = (
             | insertionResult node |
             insertionResult:: treeAt: key insert: value.
@@ -517,39 +517,39 @@ class CD usingPlatform: platform = (
                         uncle:: node parent parent right.
                         (uncle notNil and: [uncle color = #red])
                             ifTrue: [
-                                (* Case 1 *)
+                                /// Case 1
                                 node parent color: #black.
                                 uncle color: #black.
                                 node parent parent color: #red.
                                 node:: node parent parent]
                             ifFalse: [
                                 node == node parent right ifTrue: [
-                                    (* Case 2 *)
+                                    /// Case 2
                                     node:: node parent.
                                     leftRotate: node].
 
-                                (* Case 3 *)
+                                /// Case 3
                                 node parent color: #black.
                                 node parent parent color: #red.
                                 rightRotate: node parent parent]]
                     ifFalse: [
-                        (* Same as "then" clause with "right" and "left" exchanged *)
+                        /// Same as "then" clause with "right" and "left" exchanged
                         | uncle |
                         uncle:: node parent parent left.
                         (uncle notNil and: [uncle color = #red])
                             ifTrue: [
-                                (* Case 1 *)
+                                /// Case 1
                                 node parent color: #black.
                                 uncle color: #black.
                                 node parent parent color: #red.
                                 node:: node parent parent]
                             ifFalse: [
                                 node == node parent left ifTrue: [
-                                    (* Case 2 *)
+                                    /// Case 2
                                     node:: node parent.
                                     rightRotate: node].
 
-                                (* Case 3 *)
+                                /// Case 3
                                 node parent color: #black.
                                 node parent parent color: #red.
                                 leftRotate: node parent parent]]].
@@ -563,18 +563,18 @@ class CD usingPlatform: platform = (
             target:: findNode: key.
             target isNil ifTrue: [^nil].
 
-            (* Spliced is the node to be unlinked from the tree. *)
+            /// Spliced is the node to be unlinked from the tree.
             (target left isNil or: [target right isNil])
                 ifTrue: [spliced:: target]
                 ifFalse: [spliced:: target successor].
 
-            (* Spliced is guaranteed to be non-null at this point. *)
+            /// Spliced is guaranteed to be non-null at this point.
             spliced left notNil
                 ifTrue: [child:: spliced left]
                 ifFalse: [child:: spliced right].
 
-            (* Child is the child of spliced which might potentially replace
-               spliced in the tree. Child might be null at this point. *)
+            /// Child is the child of spliced which might potentially replace
+            /// spliced in the tree. Child might be null at this point.
             child notNil
                 ifTrue: [
                     child parent: spliced parent.
@@ -686,12 +686,12 @@ class CD usingPlatform: platform = (
             | pivot |
             pivot:: node right.
 
-            (* Turn pivot's left subtree into node's right subtree *)
+            /// Turn pivot's left subtree into node's right subtree
             node right: pivot left.
             pivot left notNil ifTrue: [
                 pivot left parent: node].
 
-            (* Link node's parent to pivot *)
+            /// Link node's parent to pivot
             pivot parent: node parent.
             node parent isNil
                 ifTrue: [root:: pivot]
@@ -700,7 +700,7 @@ class CD usingPlatform: platform = (
                         ifTrue: [node parent left: pivot]
                         ifFalse: [node parent right: pivot]].
 
-            (* Put node on pivot's left *)
+            /// Put node on pivot's left
             pivot left: node.
             node parent: pivot.
             ^pivot
@@ -710,11 +710,11 @@ class CD usingPlatform: platform = (
             | pivot |
             pivot:: node left.
 
-            (* Turn pivot's right subtree into node's left subtree *)
+            /// Turn pivot's right subtree into node's left subtree
             node left: pivot right.
             pivot right notNil ifTrue: [pivot right parent: node].
 
-            (* Link node's parent to pivot *)
+            /// Link node's parent to pivot
             pivot parent: node parent.
             node parent isNil
                 ifTrue: [root:: pivot]
@@ -737,12 +737,12 @@ class CD usingPlatform: platform = (
                 child == childParent left
                     ifTrue: [
                         | sibling |
-                        (* Note: the text points out that sibling cannot be null. The reason is not obvious from
-                           simply looking at the code; it comes about from the properties of the red-black
-                           tree. *)
+                        /// Note: the text points out that sibling cannot be null. The reason is not obvious from
+                        /// simply looking at the code; it comes about from the properties of the red-black
+                        /// tree.
                         sibling:: childParent right.
                         sibling color = #red ifTrue: [
-                            (* Case 1 *)
+                            /// Case 1
                             sibling color: #black.
                             childParent color: #red.
                             leftRotate: childParent.
@@ -751,19 +751,19 @@ class CD usingPlatform: platform = (
                         ((sibling left isNil or: [sibling left color = #black]) and: [
                           sibling right isNil or: [sibling right color = #black]])
                             ifTrue: [
-                                (* Case 2 *)
+                                /// Case 2
                                 sibling color: #red.
                                 child:: childParent.
                                 childParent:: child parent]
                             ifFalse: [
                                 (sibling right isNil or: [sibling right color = #black]) ifTrue: [
-                                    (* Case 3 *)
+                                    /// Case 3
                                     sibling left color: #black.
                                     sibling color: #red.
                                     rightRotate: sibling.
                                     sibling:: childParent right].
 
-                                (* Case 4 *)
+                                /// Case 4
                                 sibling color: childParent color.
                                 childParent color: #black.
                                 sibling right notNil ifTrue: [
@@ -774,10 +774,10 @@ class CD usingPlatform: platform = (
                                 childParent:: child parent]]
                     ifFalse: [
                         | sibling |
-                        (* Same as "then" clause with "right" and "left" exchanged *)
+                        /// Same as "then" clause with "right" and "left" exchanged
                         sibling:: childParent left.
                         sibling color = #red ifTrue: [
-                            (* Case 1 *)
+                            /// Case 1
                             sibling color: #black.
                             childParent color: #red.
                             rightRotate: childParent.
@@ -786,19 +786,19 @@ class CD usingPlatform: platform = (
                         ((sibling right isNil or: [sibling right color = #black]) and: [
                          (sibling left isNil or: [sibling left color = #black])])
                             ifTrue: [
-                                (* Case 2 *)
+                                /// Case 2
                                 sibling color: #red.
                                 child:: childParent.
                                 childParent:: child parent]
                             ifFalse: [
                                 (sibling left isNil or: [sibling left color = #black]) ifTrue: [
-                                    (* Case 3 *)
+                                    /// Case 3
                                     sibling right color: #black.
                                     sibling color: #red.
                                     leftRotate: sibling.
                                     sibling:: childParent left].
 
-                                (* Case 4 *)
+                                /// Case 4
                                 sibling color: childParent color.
                                 childParent color: #black.
                                 sibling left notNil ifTrue: [

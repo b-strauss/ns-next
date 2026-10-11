@@ -1,7 +1,7 @@
-(* A Set changed while it is iterated -- an element added or removed
-   inside the block of `do:`, `removeAllSuchThat:` or anything built on
-   `do:` -- signals a ConcurrentModification; adding an element
-   equal to one it holds replaces it and does not. *)
+/// A Set changed while it is iterated -- an element added or removed
+/// inside the block of `do:`, `removeAllSuchThat:` or anything built on
+/// `do:` -- signals a ConcurrentModification; adding an element
+/// equal to one it holds replaces it and does not.
 class ASetChangedWhileIteratedSignals = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. collections = platform collections. Modified = collections ConcurrentModification. set |

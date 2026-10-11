@@ -7,7 +7,7 @@
     <p>Support for <a href="https://newspeaklanguage.org/">Newspeak</a> <code>.ns</code> modules,
     from the <a href="https://github.com/b-strauss/ns-next">ns-next</a> runtime.</p>
     <ul>
-      <li>Syntax highlighting as you type, with brace matching, block comments, TODO markers
+      <li>Syntax highlighting as you type, with brace matching, line and block comments, TODO markers
           and spell checking in comments and strings.</li>
       <li>Errors as you type: every lexer, parser and resolver error ns-next reports before
           running a module, with ns-next's own message.</li>

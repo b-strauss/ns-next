@@ -1,7 +1,7 @@
-(* `Future` is a class only for its `computing:`: `Future new`, and an
-   instance of a subclass, signal a `CannotInstantiate` carrying the class
-   that was instantiated. A subclass does not inherit `computing:`, since a
-   class side is not inherited. *)
+/// `Future` is a class only for its `computing:`: `Future new`, and an
+/// instance of a subclass, signal a `CannotInstantiate` carrying the class
+/// that was instantiated. A subclass does not inherit `computing:`, since a
+/// class side is not inherited.
 class AFutureIsMadeOnlyByComputing = Object new (
     | Future ::= nil. |
 ) (

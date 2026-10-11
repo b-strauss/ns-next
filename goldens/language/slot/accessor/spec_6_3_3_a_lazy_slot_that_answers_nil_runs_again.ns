@@ -1,6 +1,6 @@
-(* newspeak-spec.pdf 6.3.3: "if the slot contains nil, e is evaluated". An
-   initializer that answers nil leaves the slot containing nil, so every
-   read evaluates it again: three reads, three marks. *)
+/// newspeak-spec.pdf 6.3.3: "if the slot contains nil, e is evaluated". An
+/// initializer that answers nil leaves the slot containing nil, so every
+/// read evaluates it again: three reads, three marks.
 class Spec633LazyNil = Object new () (
     class Holder = Object new (| public trace ::= ''. |) (
         lazy public computed = mark.

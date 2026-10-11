@@ -1,8 +1,8 @@
-(* `newspeak-spec.pdf` §3.2: metaclasses are flat, so a class side is not
-   inherited down the subclass chain. `SpecialWidget` declares no class
-   side of its own; its superclass `Widget` does, but `SpecialWidget
-   describe` must not reach it -- an ordinary `doesNotUnderstand:`, at a
-   non-zero exit status, which this golden records as such. *)
+/// `newspeak-spec.pdf` §3.2: metaclasses are flat, so a class side is not
+/// inherited down the subclass chain. `SpecialWidget` declares no class
+/// side of its own; its superclass `Widget` does, but `SpecialWidget
+/// describe` must not reach it -- an ordinary `doesNotUnderstand:`, at a
+/// non-zero exit status, which this golden records as such.
 class ClassSideNotInherited = Object new () (
     public class Widget new = Object new () (
     ) : (

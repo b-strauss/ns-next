@@ -1,7 +1,7 @@
-(* `platform time Stopwatch` is Primordial Soup's: it reads a monotonic
-   clock in nanoseconds, so an unstarted stopwatch reads 0, and a started
-   one reads an integer that never decreases. Nothing here prints a time,
-   which would differ between runs. *)
+/// `platform time Stopwatch` is Primordial Soup's: it reads a monotonic
+/// clock in nanoseconds, so an unstarted stopwatch reads 0, and a started
+/// one reads an integer that never decreases. Nothing here prints a time,
+/// which would differ between runs.
 class StopwatchReads = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.

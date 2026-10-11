@@ -1,7 +1,7 @@
-(* A future handed to `Future computing:` is not forced at the call, but
-   when the new future is: the factory stores it as it is, and forcing the
-   new future sends it `value`, which forces it then. Its value here is a
-   block, so the new future answers that block's value. *)
+/// A future handed to `Future computing:` is not forced at the call, but
+/// when the new future is: the factory stores it as it is, and forcing the
+/// new future sends it `value`, which forces it then. Its value here is a
+/// block, so the new future answers that block's value.
 class AFutureHandedToFutureComputingIsForcedWithTheNewOne = Object new (
     | ran ::= false. |
 ) (

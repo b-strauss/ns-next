@@ -1,5 +1,5 @@
-(* `Array>>at:put:` answers the value it stored, as `List>>at:put:` does,
-   so a store can be the last expression of a method that answers it. *)
+/// `Array>>at:put:` answers the value it stored, as `List>>at:put:` does,
+/// so a store can be the last expression of a method that answers it.
 class ArrayAtPutAnswersTheValue = Object new (
 ) (
     public main: platform args: arguments = (

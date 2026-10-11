@@ -1,12 +1,12 @@
-(* A removed key or element stays in its probe chain as a tombstone that
-   every lookup passes without comparing it: a key whose `=` would fail on
-   anything but a key is never handed the mark, and a key whose `=`
-   answers true for anything finds no removed entry in its bucket. Keys
-   that collide on their `hash` are found past the tombstone, and one
-   stored again after its removal comes last. An IdentityMap keeps two
-   equal keys that are distinct objects apart through removal and storing
-   again, and sends no key `=`; a key whose `==` answers true for anything
-   finds no removed entry in its bucket. *)
+/// A removed key or element stays in its probe chain as a tombstone that
+/// every lookup passes without comparing it: a key whose `=` would fail on
+/// anything but a key is never handed the mark, and a key whose `=`
+/// answers true for anything finds no removed entry in its bucket. Keys
+/// that collide on their `hash` are found past the tombstone, and one
+/// stored again after its removal comes last. An IdentityMap keeps two
+/// equal keys that are distinct objects apart through removal and storing
+/// again, and sends no key `=`; a key whose `==` answers true for anything
+/// finds no removed entry in its bucket.
 class ARemovedEntryIsPassedByEveryProbe = Object new (
     | comparisons ::= 0. |
 ) (

@@ -1,8 +1,8 @@
-(* The depth limit is an `Error` like every VM error, caught by
-   `on: Error do:`: its `signal` runs in a reserve above the limit
-   (docs/design/execution.md, "The depth limit"). The second recursion is
-   caught the same way, because the reserve is given back once the first
-   signal is over: were it not, the second would overrun it. *)
+/// The depth limit is an `Error` like every VM error, caught by
+/// `on: Error do:`: its `signal` runs in a reserve above the limit
+/// (docs/design/execution.md, "The depth limit"). The second recursion is
+/// caught the same way, because the reserve is given back once the first
+/// signal is over: were it not, the second would overrun it.
 class TheDepthLimitIsCaught = Object new (
     
 ) (

@@ -1,9 +1,9 @@
-(* ANSI's ways out of a handler: `return:` answers its value from
-   `on:do:`; `retry` runs the protected block again, here until a counter
-   lets it through; `resume:` makes its value the value of `signal` and
-   carries on after it; `pass` hands the exception to the next handler out.
-   `resume:` on an `Error`, which is not resumable, signals an `Error` of its
-   own, which nothing handles, so it ends the run -- last. *)
+/// ANSI's ways out of a handler: `return:` answers its value from
+/// `on:do:`; `retry` runs the protected block again, here until a counter
+/// lets it through; `resume:` makes its value the value of `signal` and
+/// carries on after it; `pass` hands the exception to the next handler out.
+/// `resume:` on an `Error`, which is not resumable, signals an `Error` of its
+/// own, which nothing handles, so it ends the run -- last.
 class ReturnRetryResumePass = Object new (
     |
       attempts ::= 0. |

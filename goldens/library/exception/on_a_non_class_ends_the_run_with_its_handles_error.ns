@@ -1,14 +1,14 @@
-(* `on: nil do:` names no class: the search sends `nil handles:`, which
-   `nil` does not understand. The `on:do:` whose test raised that is
-   disabled while the test runs, so the `MessageNotUnderstood` is looked
-   for outside it and is not offered to it again -- else each nested search
-   would test it anew and walk the whole stack once more, which took
-   minutes before the run reported anything. An `on:do:` inside the
-   protected block may catch that exception and return, which leaves the
-   candidate on the stack: it is enabled again, so the next `Error` the
-   block signals is offered to it once more, and with nothing further out
-   the run ends with the `#handles:` error rather than the `Error`'s own
-   text. *)
+/// `on: nil do:` names no class: the search sends `nil handles:`, which
+/// `nil` does not understand. The `on:do:` whose test raised that is
+/// disabled while the test runs, so the `MessageNotUnderstood` is looked
+/// for outside it and is not offered to it again -- else each nested search
+/// would test it anew and walk the whole stack once more, which took
+/// minutes before the run reported anything. An `on:do:` inside the
+/// protected block may catch that exception and return, which leaves the
+/// candidate on the stack: it is enabled again, so the next `Error` the
+/// block signals is offered to it once more, and with nothing further out
+/// the run ends with the `#handles:` error rather than the `Error`'s own
+/// text.
 class OnANonClassEndsTheRunWithItsHandlesError = Object new (
     
 ) (

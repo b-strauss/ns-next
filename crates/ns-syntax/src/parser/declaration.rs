@@ -2,6 +2,8 @@
 
 use super::Parser;
 use crate::ast::*;
+use crate::comment::{Comment, CommentKind};
+use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
 impl<'a> Parser<'a> {
@@ -944,12 +946,47 @@ impl<'a> Parser<'a> {
     /// grammar line 165 it is the first `initExprs` expression (e.g. its
     /// receiver in `'hello' printLine.`). Consuming it here silently dropped a
     /// valid initializer expression, so that branch was removed.
-    fn take_class_comment(&mut self) -> Option<String> {
+    ///
+    /// The comment is kept as its form and the source it spans, markers and
+    /// layout included, so that a formatter can write it back as it was;
+    /// `Comment::text` answers its text for a reader. A block of ns-next's
+    /// `///` lines in the same place is the class comment too: the block
+    /// the whole source's lexer forms, so a remark after the `(` on its
+    /// line is no part of it.
+    fn take_class_comment(&mut self) -> Option<Comment> {
         let previous_end = self.tokens.get(self.position.checked_sub(1)?)?.span.end as usize;
         let current_start = self.current().span.start as usize;
-        let gap = self.source.get(previous_end..current_start)?.trim();
-        let inner = gap.strip_prefix("(*")?.strip_suffix("*)")?;
-        Some(inner.to_string())
+        let gap = self.source.get(previous_end..current_start)?;
+        let trimmed = gap.trim();
+        if trimmed.starts_with("(*") && trimmed.ends_with("*)") {
+            let start = previous_end + (gap.len() - gap.trim_start().len());
+            return Some(Comment {
+                kind: CommentKind::Block,
+                span: Span::new(start as u32, (start + trimmed.len()) as u32),
+            });
+        }
+        // Lexed alone, the gap starts a line, so a `///` after the `(` would
+        // seem to start its line and take the lines below into its block,
+        // where the whole source's lexer (and with it the editor's folds)
+        // keeps it a remark on the `(`'s line. That line is cut off first;
+        // the class comment is the block the rest holds, as the whole
+        // source forms it.
+        let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
+        let mut rest_start = 0;
+        if let Some(first) = lexed.comments.first() {
+            let first_start = first.span.start as usize;
+            if first.kind == CommentKind::Line
+                && !crate::comment::starts_its_line(self.source, previous_end + first_start)
+            {
+                rest_start = gap[first_start..].find(['\n', '\r'])? + first_start;
+            }
+        }
+        let comment = lone_line_block(&gap[rest_start..])?;
+        let offset = (previous_end + rest_start) as u32;
+        Some(Comment {
+            kind: comment.kind,
+            span: Span::new(comment.span.start + offset, comment.span.end + offset),
+        })
     }
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
@@ -1665,6 +1702,21 @@ fn string_lexeme_body(raw: &str) -> String {
     super::lexeme_body(raw).replace("''", "'")
 }
 
+/// The one `///` block `gap` holds when it holds nothing else: no token
+/// but the end of input and no other comment. Two blocks, or a `(* ... *)`
+/// beside one, make no class comment.
+fn lone_line_block(gap: &str) -> Option<crate::comment::Comment> {
+    let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
+    match lexed.comments.as_slice() {
+        [comment]
+            if comment.kind == crate::comment::CommentKind::Line && lexed.tokens.len() == 1 =>
+        {
+            Some(*comment)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 impl<'a> Parser<'a> {
     pub(crate) fn parse_method_declaration_for_test(&mut self) -> Option<MethodDeclaration> {
@@ -1750,6 +1802,7 @@ mod slot_tests {
 #[cfg(test)]
 mod class_tests {
     use super::*;
+    use crate::comment::CommentKind;
     use crate::span::Span;
     use indoc::indoc;
 
@@ -1963,10 +2016,8 @@ mod class_tests {
         assert_eq!(body.initializer_expressions.len(), 1);
         assert_eq!(body.methods.len(), 1);
         assert_eq!(body.nested_classes.len(), 1);
-        assert_eq!(
-            module.root_class.class_comment.as_deref(),
-            Some(" a comment ")
-        );
+        let comment = module.root_class.class_comment.expect("a class comment");
+        assert_eq!(comment.span.text(source), "(* a comment *)");
     }
 
     #[test]
@@ -2139,16 +2190,104 @@ mod class_tests {
         );
     }
 
-    // The block-comment path is untouched: `(* ... *)` in G1 still becomes the
-    // class comment.
+    /// The class comment of `source`'s root class as a formatter reads it,
+    /// its form and the exact source it spans, and as a reader shows it,
+    /// its text.
+    fn class_comment_of(source: &str) -> Option<(CommentKind, &str, String)> {
+        let comment = module(source).root_class.class_comment?;
+        Some((
+            comment.kind,
+            comment.span.text(source),
+            comment.text(source),
+        ))
+    }
+
+    // `(* ... *)` in G1 is the class comment. The AST keeps where it stands,
+    // markers and layout included, so a formatter can write it back as it
+    // was; its text is the reader's.
     #[test]
     fn block_comment_in_header_is_still_the_class_comment() {
-        let module = module(indoc! {"
-            class C = ( (* a comment *) ) ()
-        "});
         assert_eq!(
-            module.root_class.class_comment.as_deref(),
-            Some(" a comment ")
+            class_comment_of(indoc! {"
+                class C = ( (* a comment *) ) ()
+            "}),
+            Some((
+                CommentKind::Block,
+                "(* a comment *)",
+                "a comment".to_string()
+            ))
+        );
+        assert_eq!(
+            class_comment_of(indoc! {"
+                class C = (
+                    (* a comment
+                       on two lines *)
+                ) ()
+            "}),
+            Some((
+                CommentKind::Block,
+                "(* a comment\n       on two lines *)",
+                "a comment\non two lines".to_string()
+            ))
+        );
+    }
+
+    // A `///` block standing first in the header is the class comment too,
+    // spanning its lines from the first `///` on.
+    #[test]
+    fn line_comment_block_in_header_is_the_class_comment() {
+        assert_eq!(
+            class_comment_of(indoc! {"
+                class C = (
+                    /// a comment
+                    /// on two lines
+                ) ()
+            "}),
+            Some((
+                CommentKind::Line,
+                "/// a comment\n    /// on two lines",
+                "a comment\non two lines".to_string()
+            ))
+        );
+    }
+
+    // A `///` after the header's `(` is a remark on that line and joins no
+    // block, so the parser and the whole-source lexer (the editor's folds)
+    // must both see the block below it as a comment of its own: the class
+    // comment is that block, never the remark merged into it.
+    #[test]
+    fn a_remark_after_the_open_parenthesis_is_not_part_of_the_class_comment() {
+        let source = indoc! {"
+            class C = ( /// a
+                /// b
+            ) ()
+        "};
+        let lexed = crate::lexer::Lexer::new(source).run_keeping_comments();
+        let texts: Vec<String> = lexed
+            .comments
+            .iter()
+            .map(|comment| comment.text(source))
+            .collect();
+        assert_eq!(texts, ["a", "b"]);
+        assert_eq!(
+            class_comment_of(source),
+            Some((CommentKind::Line, "/// b", "b".to_string()))
+        );
+    }
+
+    // A blank line between the remark and the block changes nothing: the
+    // remark is still the `(`'s, and the block is all that remains.
+    #[test]
+    fn a_remark_and_a_blank_line_before_the_class_comment_leave_it_intact() {
+        let source = indoc! {"
+            class C = ( /// a
+
+                /// b
+            ) ()
+        "};
+        assert_eq!(
+            class_comment_of(source),
+            Some((CommentKind::Line, "/// b", "b".to_string()))
         );
     }
 

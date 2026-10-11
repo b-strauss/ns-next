@@ -1,9 +1,9 @@
-(* newspeak-spec.pdf 6: "An optional type parameter declaration may appear
-   between the class name and the primary factory method pattern", written
-   typeParameterDecl, <[K, V]>, as in class Map <[K, V]> new: capacity
-   <Integer>. No typechecker exists (4.3), so type parameters and annotations
-   are parsed and dropped, and the class runs as it would without them; the
-   canonical grammar's class List[E] is accepted the same way. *)
+/// newspeak-spec.pdf 6: "An optional type parameter declaration may appear
+/// between the class name and the primary factory method pattern", written
+/// typeParameterDecl, <[K, V]>, as in class Map <[K, V]> new: capacity
+/// <Integer>. No typechecker exists (4.3), so type parameters and annotations
+/// are parsed and dropped, and the class runs as it would without them; the
+/// canonical grammar's class List[E] is accepted the same way.
 class Spec6AGenericClassDeclaresItsTypeParameters = Object new () (
     class Map <[K, V]> new: capacity <Integer> = Object new (| public size <Integer> = capacity. |) () : ()
     class List[E] = Object new () ( public first ^<E> = ( ^1 ) ) : ()

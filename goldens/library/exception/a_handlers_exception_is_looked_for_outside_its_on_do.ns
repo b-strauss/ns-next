@@ -1,10 +1,10 @@
-(* ANSI's handler environment, as Squeak implements it: an exception
-   signalled in a handler is looked for in the handler's own nested
-   `on:do:`s and then outside the `on:do:` that caught the first one --
-   never in an `on:do:` of the protected block, between the first signal
-   and its handler, although those are still on the stack. So the inner
-   `on: Halt` below is passed by, the outermost one catches the halt, and
-   without one the halt is unhandled and ends the run -- last. *)
+/// ANSI's handler environment, as Squeak implements it: an exception
+/// signalled in a handler is looked for in the handler's own nested
+/// `on:do:`s and then outside the `on:do:` that caught the first one --
+/// never in an `on:do:` of the protected block, between the first signal
+/// and its handler, although those are still on the stack. So the inner
+/// `on: Halt` below is passed by, the outermost one catches the halt, and
+/// without one the halt is unhandled and ends the run -- last.
 class AHandlersExceptionIsLookedForOutsideItsOnDo = Object new (
     
 ) (

@@ -1,15 +1,15 @@
-(* `x:: e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
-   sends"), even when the setter it sends writes the local `e` read, through a
-   closure built earlier. One case per position that reads an assignment's
-   value after its setter send has run: a `^`, a `^` inside a block, a block's
-   last statement, the last statement of an inlined branch, of an inlined
-   `and:` block and of an inlined loop condition. A slot initializer no
-   longer has a case: the only named locals of an initializer's activation
-   are its factory parameters, which no assignment can write
-   (`newspeak-spec.pdf` 3.6; `spec_3_6_a_factory_parameter_is_immutable`
-   pins the refusal). Each line is the value `e` had before the setter ran:
-   `1`, `true` for the `and:`, and one loop iteration, since the second test
-   finds `false`. *)
+/// `x:: e` answers the value of `e` (`docs/design/dispatch.md`, "Setter
+/// sends"), even when the setter it sends writes the local `e` read, through a
+/// closure built earlier. One case per position that reads an assignment's
+/// value after its setter send has run: a `^`, a `^` inside a block, a block's
+/// last statement, the last statement of an inlined branch, of an inlined
+/// `and:` block and of an inlined loop condition. A slot initializer no
+/// longer has a case: the only named locals of an initializer's activation
+/// are its factory parameters, which no assignment can write
+/// (`newspeak-spec.pdf` 3.6; `spec_3_6_a_factory_parameter_is_immutable`
+/// pins the refusal). Each line is the value `e` had before the setter ran:
+/// `1`, `true` for the `and:`, and one loop iteration, since the second test
+/// finds `false`.
 class SetterValue = Object new (
     | blk ::= nil. |
 ) (

@@ -1,6 +1,6 @@
-(* `Exception` and `Error` are accessors of `Object`, so any method names
-   them bare and gets the classes `platform kernel` answers. A nearer
-   declaration of the name still wins. *)
+/// `Exception` and `Error` are accessors of `Object`, so any method names
+/// them bare and gets the classes `platform kernel` answers. A nearer
+/// declaration of the name still wins.
 class ExceptionAndErrorAreNamedBare = () (
     class Shadowing = () (
         public Error = ( ^'a nearer Error' )

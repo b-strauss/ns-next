@@ -1,12 +1,12 @@
-(* newspeak-spec.pdf 5.1.3: nil "responds to almost all messages with a
-   messageNotUnderstood error. The exceptions are isNil, which answers true
-   and methods inherited from class Value." So isNil is the one selector
-   5.1.3 obliges nil to answer, and the answer it fixes is true.
-
-   Only nil is probed here. 5.1.3 lists isNil as an exception to nil's own
-   messageNotUnderstood behaviour rather than as a method of Object, and
-   isNil appears nowhere else in the specification, so what a non-nil
-   receiver answers is not a rule this file may record. *)
+/// newspeak-spec.pdf 5.1.3: nil "responds to almost all messages with a
+/// messageNotUnderstood error. The exceptions are isNil, which answers true
+/// and methods inherited from class Value." So isNil is the one selector
+/// 5.1.3 obliges nil to answer, and the answer it fixes is true.
+///
+/// Only nil is probed here. 5.1.3 lists isNil as an exception to nil's own
+/// messageNotUnderstood behaviour rather than as a method of Object, and
+/// isNil appears nowhere else in the specification, so what a non-nil
+/// receiver answers is not a rule this file may record.
 class Spec513NilIsNil = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. |

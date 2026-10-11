@@ -1,8 +1,8 @@
-(* Instantiation runs each initializer level as a trampoline step, so a class
-   whose slot initializer instantiates it again is a chain of counted
-   initializer activations and ends at the activation limit. It used to end at
-   the limit on re-entries of the run loop from Rust, which no longer exists
-   (`docs/design/execution.md`, "No re-entry from Rust"). *)
+/// Instantiation runs each initializer level as a trampoline step, so a class
+/// whose slot initializer instantiates it again is a chain of counted
+/// initializer activations and ends at the activation limit. It used to end at
+/// the limit on re-entries of the run loop from Rust, which no longer exists
+/// (`docs/design/execution.md`, "No re-entry from Rust").
 class Tower = Object new (
 ) (
     public class Floor = Object new (

@@ -1,12 +1,12 @@
-(* newspeak-spec.pdf 3.1.1: the root rule (6.1) is no exemption from the
-   value conditions -- a module's root class inherits Value like any other
-   class does, so an identity method it defines is refused exactly as a
-   nested class's would be. The refusal is decided once per application, by
-   `Mutator::apply_mixin`, which runs for the root's application just as it
-   does for a nested class's -- unlike the enclosing-object condition, which
-   is decided where a class object is created and so needs `after_clause`,
-   which the root never reaches. `run` instantiates the root before sending
-   `main:args:`, so the method never runs. *)
+/// newspeak-spec.pdf 3.1.1: the root rule (6.1) is no exemption from the
+/// value conditions -- a module's root class inherits Value like any other
+/// class does, so an identity method it defines is refused exactly as a
+/// nested class's would be. The refusal is decided once per application, by
+/// `Mutator::apply_mixin`, which runs for the root's application just as it
+/// does for a nested class's -- unlike the enclosing-object condition, which
+/// is decided where a class object is created and so needs `after_clause`,
+/// which the root never reaches. `run` instantiates the root before sending
+/// `main:args:`, so the method never runs.
 class ValueModuleDefiningIdentity = Object <: Value () (
     public == other = ( ^false )
     public main: platform args: arguments = (

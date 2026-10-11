@@ -1,20 +1,20 @@
-(* newspeak-spec.pdf 5.1.6: "Symbols are value objects that are instances
-   of class Symbol", and 3.1.1: "A value object is globally unique, in the
-   sense that no other object is equal to it" -- so two equal symbols are
-   one object, whichever of 5.1.6's four literal forms wrote them
-   (`sym = str | kws | binSel | id`) and however either was derived. 3.1.1
-   also settles == for a value: a value's class "does not define an
-   identity method (==)", and where Value declares one "that method must
-   return the same results as Value's equality method (=)".
-
-   This is what makes a symbol usable as a key by identity, which the
-   dispatch machinery already assumes of its own interned selectors.
-
-   ObjectData::Symbol wraps an interned id, but every evaluation of a
-   symbol literal allocates a fresh wrapper object, so = answers true and
-   == answers false. Nothing canonicalizes the wrapper: a silent wrong
-   answer at exit status 0. Skipped until a symbol literal answers one
-   object per interned id. *)
+/// newspeak-spec.pdf 5.1.6: "Symbols are value objects that are instances
+/// of class Symbol", and 3.1.1: "A value object is globally unique, in the
+/// sense that no other object is equal to it" -- so two equal symbols are
+/// one object, whichever of 5.1.6's four literal forms wrote them
+/// (`sym = str | kws | binSel | id`) and however either was derived. 3.1.1
+/// also settles == for a value: a value's class "does not define an
+/// identity method (==)", and where Value declares one "that method must
+/// return the same results as Value's equality method (=)".
+///
+/// This is what makes a symbol usable as a key by identity, which the
+/// dispatch machinery already assumes of its own interned selectors.
+///
+/// ObjectData::Symbol wraps an interned id, but every evaluation of a
+/// symbol literal allocates a fresh wrapper object, so = answers true and
+/// == answers false. Nothing canonicalizes the wrapper: a silent wrong
+/// answer at exit status 0. Skipped until a symbol literal answers one
+/// object per interned id.
 class Spec516SymbolIdentity = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. |

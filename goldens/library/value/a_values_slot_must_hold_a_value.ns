@@ -1,17 +1,17 @@
-(* newspeak-spec.pdf 3.1.1: a value object is *deeply* immutable -- "all
-   objects reachable from it are also deeply immutable" -- so a slot of a
-   value may only hold another value. An `Array` is mutable (`at:put:`),
-   so storing one would make the whole value mutable through it, and two
-   copies of the value would stop being equal the moment one array was
-   written.
-
-   The refusal is raised as the slot is initialized, naming the class and
-   the slot, so the line before it still prints. `nil` counts as a value
-   (`UndefinedObject` inherits `Value`), which the second slot records.
-
-   The module is a value (`Object <: Value`) because §3.1.1 asks a value
-   class's enclosing object to be one; the transcript is therefore read
-   from `platform` where it is used, never held in a slot. *)
+/// newspeak-spec.pdf 3.1.1: a value object is *deeply* immutable -- "all
+/// objects reachable from it are also deeply immutable" -- so a slot of a
+/// value may only hold another value. An `Array` is mutable (`at:put:`),
+/// so storing one would make the whole value mutable through it, and two
+/// copies of the value would stop being equal the moment one array was
+/// written.
+///
+/// The refusal is raised as the slot is initialized, naming the class and
+/// the slot, so the line before it still prints. `nil` counts as a value
+/// (`UndefinedObject` inherits `Value`), which the second slot records.
+///
+/// The module is a value (`Object <: Value`) because §3.1.1 asks a value
+/// class's enclosing object to be one; the transcript is therefore read
+/// from `platform` where it is used, never held in a slot.
 class ValueSlotHoldsAValue = Object <: Value () (
     public class Holder on: elements = Value new (
         | public elements = elements. public missing = nil. |

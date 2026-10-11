@@ -1,6 +1,6 @@
-(* A block created while its class initializes, whose `^` runs after the
-   initializer has returned: its home is dead, so this is §7.2's
-   `cannotReturn`. *)
+/// A block created while its class initializes, whose `^` runs after the
+/// initializer has returned: its home is dead, so this is §7.2's
+/// `cannotReturn`.
 class InitBlockReturn = Object new (
     | blk = [ ^2 ]. |
 ) (

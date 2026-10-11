@@ -1,10 +1,10 @@
-(* The transcript's `print:` writes any object's `printString`, as canonical
-   Newspeak's transcript does (`prior-art/newspeak/RuntimeForJS.ns`), while
-   `show:` writes a string as it is: a `String`'s `printString` quotes it,
-   so `print:` of a string shows the quotes and `show:` of the same string
-   does not (decided with the user on 2026-09-27;
-   `docs/design/core-library.md`, "The platform"). `print:` answers the
-   transcript, so it cascades like `show:`. *)
+/// The transcript's `print:` writes any object's `printString`, as canonical
+/// Newspeak's transcript does (`prior-art/newspeak/RuntimeForJS.ns`), while
+/// `show:` writes a string as it is: a `String`'s `printString` quotes it,
+/// so `print:` of a string shows the quotes and `show:` of the same string
+/// does not (decided with the user on 2026-09-27;
+/// `docs/design/core-library.md`, "The platform"). `print:` answers the
+/// transcript, so it cascades like `show:`.
 class TranscriptPrint = Object new () (
     public main: platform args: arguments = (
         | t |

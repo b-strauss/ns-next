@@ -1,6 +1,6 @@
-(* An index, size or count that is a LargeInteger is refused in the words
-   an out-of-range SmallInteger is: no index, size or count reaches one,
-   and a LargeInteger is still an Integer. *)
+/// An index, size or count that is a LargeInteger is refused in the words
+/// an out-of-range SmallInteger is: no index, size or count reaches one,
+/// and a LargeInteger is still an Integer.
 class AnIndexOrSizePastEverySmallIntegerIsOutOfRange = Object new (
 ) (
     public main: platform args: arguments = (

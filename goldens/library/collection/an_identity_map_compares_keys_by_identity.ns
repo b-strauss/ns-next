@@ -1,8 +1,8 @@
-(* An IdentityMap compares keys with `==` and hashes them with
-   `identityHash`: two equal keys that are distinct objects are two keys,
-   where a Map holds one. A value as key is found by an equal value, since
-   a value's `==` is `=`. It answers Map's protocol and its own
-   `at:putReplace:`, `at:ifAbsentPutVal:` and `atOrItself:`. *)
+/// An IdentityMap compares keys with `==` and hashes them with
+/// `identityHash`: two equal keys that are distinct objects are two keys,
+/// where a Map holds one. A value as key is found by an equal value, since
+/// a value's `==` is `=`. It answers Map's protocol and its own
+/// `at:putReplace:`, `at:ifAbsentPutVal:` and `atOrItself:`.
 class AnIdentityMapComparesKeysByIdentity = Object new () (
     class Key named: theName = Object new (
         | public name = theName. |

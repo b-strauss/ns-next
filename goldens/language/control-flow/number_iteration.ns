@@ -1,8 +1,8 @@
-(* `to:do:` and `to:by:do:` are `Number`'s, after Primordial Soup's: the
-   bound is inclusive, a negative step counts down, an empty range runs
-   nothing, and both answer nil. A `Float` receiver counts in `Float`s, and
-   a range that crosses the 61-bit edge of an `Integer` into `LargeInteger`
-   keeps counting. *)
+/// `to:do:` and `to:by:do:` are `Number`'s, after Primordial Soup's: the
+/// bound is inclusive, a negative step counts down, an empty range runs
+/// nothing, and both answer nil. A `Float` receiver counts in `Float`s, and
+/// a range that crosses the 61-bit edge of an `Integer` into `LargeInteger`
+/// keeps counting.
 class NumberIteration = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |

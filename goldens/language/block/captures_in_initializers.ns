@@ -1,8 +1,8 @@
-(* An instance initializer's activation has the factory's parameters as
-   its locals (6.2), and a slot initializer is one of its statements. A
-   block built there captures those parameters, which no assignment can
-   write (3.6), so they are copied. The block outlives the initializer:
-   every send of add: runs it after the initializer has returned. *)
+/// An instance initializer's activation has the factory's parameters as
+/// its locals (6.2), and a slot initializer is one of its statements. A
+/// block built there captures those parameters, which no assignment can
+/// write (3.6), so they are copied. The block outlives the initializer:
+/// every send of add: runs it after the initializer has returned.
 class CapturesInInitializers = Object new (
     
 ) (

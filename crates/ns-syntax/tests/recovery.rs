@@ -56,6 +56,25 @@ fn a_clean_source_parses_as_parse_parses_it() {
     assert_eq!(parsed.comments.len(), 1);
 }
 
+/// A block of `///` lines reaches the editor as one comment with its text.
+#[test]
+fn a_line_comment_block_is_one_comment_with_its_text() {
+    let source = indoc! {"
+        /// A module,
+        /// documented.
+        class Module = () (
+            run = ( ^1 )
+        ) : ()
+    "};
+    let parsed = ns_syntax::parse_for_editor(source);
+    assert!(parsed.diagnostics.is_empty());
+    let [comment] = parsed.comments.as_slice() else {
+        panic!("one comment, not {}", parsed.comments.len());
+    };
+    assert_eq!(comment.kind, ns_syntax::CommentKind::Line);
+    assert_eq!(comment.text(source), "A module,\ndocumented.");
+}
+
 /// A lexer error does not stop the parse: the editor still gets the
 /// members around it.
 #[test]

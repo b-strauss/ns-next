@@ -1,6 +1,6 @@
-(* A block in a variable takes the send, not the inlined form: `and:` and
-   `or:` answer the block's value as it is, and `&` and `|` answer their
-   argument itself on the side that does not decide alone. *)
+/// A block in a variable takes the send, not the inlined form: `and:` and
+/// `or:` answer the block's value as it is, and `&` and `|` answer their
+/// argument itself on the side that does not decide alone.
 class AndVar = Object new (
 ) (
     public main: p args: a = (

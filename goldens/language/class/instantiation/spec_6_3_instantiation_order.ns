@@ -1,19 +1,19 @@
-(* newspeak-spec.pdf 6.3: "Execution of the instance initializer begins
-   with evaluation of the message clause given in the class' superclass
-   clause in the context of i. The superclass' instance initializer is then
-   invoked on o with the resulting message. ... Then, all the slot clauses
-   (6.3.2) given in the class' initializer are executed in the context of
-   i, in the order they were declared. Afterwards, the (possibly empty)
-   statement given in the class' initializer is executed. Finally, i
-   returns o to the primary factory method, which returns it to its
-   caller."
-
-   One line per step, in the order 6.3 gives them: the superclass clause's
-   message before anything of Base runs, the whole of Base's initializer --
-   its slot clause and then its statement -- before Derived's first slot
-   clause, Derived's statement after its slot clause, and the factory's
-   answer last. Each of the five orderings is a separate rule, and a
-   reordering of any pair is silent wrong output at exit status 0. *)
+/// newspeak-spec.pdf 6.3: "Execution of the instance initializer begins
+/// with evaluation of the message clause given in the class' superclass
+/// clause in the context of i. The superclass' instance initializer is then
+/// invoked on o with the resulting message. ... Then, all the slot clauses
+/// (6.3.2) given in the class' initializer are executed in the context of
+/// i, in the order they were declared. Afterwards, the (possibly empty)
+/// statement given in the class' initializer is executed. Finally, i
+/// returns o to the primary factory method, which returns it to its
+/// caller."
+///
+/// One line per step, in the order 6.3 gives them: the superclass clause's
+/// message before anything of Base runs, the whole of Base's initializer --
+/// its slot clause and then its statement -- before Derived's first slot
+/// clause, Derived's statement after its slot clause, and the factory's
+/// answer last. Each of the five orderings is a separate rule, and a
+/// reordering of any pair is silent wrong output at exit status 0.
 class Spec63InstantiationOrder = Object new (| t ::= nil. |) (
     class Base withArgument: value = Object new (
         | baseSlot = outer Spec63InstantiationOrder log: 'base slot sees the ', value. |

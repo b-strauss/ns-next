@@ -1,7 +1,7 @@
-(* newspeak-spec.pdf 6.3.2's pipelined promise: `first` holds an array
-   whose element is `second`'s future, and `second` one whose element is
-   `first`'s -- a cycle through data, which only futures can build. After
-   the clause the elements are the arrays themselves, to any program. *)
+/// newspeak-spec.pdf 6.3.2's pipelined promise: `first` holds an array
+/// whose element is `second`'s future, and `second` one whose element is
+/// `first`'s -- a cycle through data, which only futures can build. After
+/// the clause the elements are the arrays themselves, to any program.
 class Spec632ADataCycle = Object new () (
     class Probe = Object new (|| public first = {second}. public second = {first}. ||) () : ()
     public main: platform args: arguments = (

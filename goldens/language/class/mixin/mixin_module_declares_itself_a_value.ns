@@ -1,28 +1,28 @@
-(* newspeak-spec.pdf 6.2: "The result of a mixin application expression is a
-   class I with mixin M and superclass S". 3.1.1: an object is a value object
-   when "Its class inherits from class `Value`" and its slots "are immutable,
-   have been initialized and contain value objects".
-
-   The rule this pins: at a module's root, `<: Value` is explicitly allowed,
-   and it is how a module declares itself a value -- the form 3.1.1's value
-   conditions need for a value class's enclosing object, and the one SOMns's
-   Kernel.ns writes. The root's class is Object <: Value, so the module's own
-   instances inherit Value's `=`, `==` and `hash`.
-
-   The module stays a value under 3.1.1's strict reading: its one slot is
-   immutable and holds a String, and the platform is never kept in a slot --
-   it arrives only as `main:args:`'s argument, and the transcript is read
-   from it where it is used.
-
-   1. A second instance of the module's class, made from the same class with
-      `new`, is `=` to this one: Value's equality is derived from
-      state -- the same class and equal slots -- not from identity.
-   2. It is `==` too: Value's `==` answers what its `=` does (3.1.1: "that
-      method must return the same results as `Value`'s equality method"),
-      where Object's would answer identity, false for two instances.
-   3. The two hash alike, as equal values must.
-   4. The module otherwise runs as any other: a nested class that is no value
-      reads the module's slot through `outer` and answers a String. *)
+/// newspeak-spec.pdf 6.2: "The result of a mixin application expression is a
+/// class I with mixin M and superclass S". 3.1.1: an object is a value object
+/// when "Its class inherits from class `Value`" and its slots "are immutable,
+/// have been initialized and contain value objects".
+///
+/// The rule this pins: at a module's root, `<: Value` is explicitly allowed,
+/// and it is how a module declares itself a value -- the form 3.1.1's value
+/// conditions need for a value class's enclosing object, and the one SOMns's
+/// Kernel.ns writes. The root's class is Object <: Value, so the module's own
+/// instances inherit Value's `=`, `==` and `hash`.
+///
+/// The module stays a value under 3.1.1's strict reading: its one slot is
+/// immutable and holds a String, and the platform is never kept in a slot --
+/// it arrives only as `main:args:`'s argument, and the transcript is read
+/// from it where it is used.
+///
+/// 1. A second instance of the module's class, made from the same class with
+///    `new`, is `=` to this one: Value's equality is derived from
+///    state -- the same class and equal slots -- not from identity.
+/// 2. It is `==` too: Value's `==` answers what its `=` does (3.1.1: "that
+///    method must return the same results as `Value`'s equality method"),
+///    where Object's would answer identity, false for two instances.
+/// 3. The two hash alike, as equal values must.
+/// 4. The module otherwise runs as any other: a nested class that is no value
+///    reads the module's slot through `outer` and answers a String.
 class MixinModuleDeclaresItselfAValue = Object <: Value (
     | public greeting = 'hello'. |
 ) (

@@ -1,11 +1,11 @@
-(* newspeak-spec.pdf 3.1.1 and 6.2: an inherited method reaches its own
-   level's enclosing objects through `outer`, so they are part of what a
-   value can reach. `Stamped` is declared in a value module and inherits
-   `Value` through `<:`, but its superclass `Counter` is enclosed by a
-   `Holder`, whose `count` is mutable -- `bump` would change it through any
-   `Stamped`. Every level's enclosing object is asked, not only the class's
-   own. Decided where `Stamped` is created, refused where an instance is
-   made -- both here in the one send, `Stamped new`. *)
+/// newspeak-spec.pdf 3.1.1 and 6.2: an inherited method reaches its own
+/// level's enclosing objects through `outer`, so they are part of what a
+/// value can reach. `Stamped` is declared in a value module and inherits
+/// `Value` through `<:`, but its superclass `Counter` is enclosed by a
+/// `Holder`, whose `count` is mutable -- `bump` would change it through any
+/// `Stamped`. Every level's enclosing object is asked, not only the class's
+/// own. Decided where `Stamped` is created, refused where an instance is
+/// made -- both here in the one send, `Stamped new`.
 class ValueOverAMutableLevel = Object <: Value () (
     public class Holder = Object new (
         | public count ::= 0. |

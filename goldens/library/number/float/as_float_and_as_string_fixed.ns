@@ -1,7 +1,7 @@
-(* `asFloat` answers the nearest double, and `asStringFixed:` prints a
-   fixed number of fraction digits as Primordial Soup's double-conversion
-   does: a tie rounds up on the exact binary value, and the sign is the
-   value's. The harness's score is printed with it. *)
+/// `asFloat` answers the nearest double, and `asStringFixed:` prints a
+/// fixed number of fraction digits as Primordial Soup's double-conversion
+/// does: a tie rounds up on the exact binary value, and the sign is the
+/// value's. The harness's score is printed with it.
 class AsFloatAndFixed = () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |

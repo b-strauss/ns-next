@@ -1,9 +1,9 @@
-(* `ensure:` runs its block once, before the method's value is printed:
-   on a normal end, where `ensure:` itself runs it, and on a `^` that
-   leaves the protected block, where the unwinder runs it before popping
-   the `ensure:` activation. The inner probe's block sends `printString`
-   and `show:` while the unwind is in progress, pushing activations above
-   the stack the unwind has already popped. *)
+/// `ensure:` runs its block once, before the method's value is printed:
+/// on a normal end, where `ensure:` itself runs it, and on a `^` that
+/// leaves the protected block, where the unwinder runs it before popping
+/// the `ensure:` activation. The inner probe's block sends `printString`
+/// and `show:` while the unwind is in progress, pushing activations above
+/// the stack the unwind has already popped.
 class EnsureRuns = Object new (
     | private transcript ::= nil. |
 ) (

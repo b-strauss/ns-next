@@ -1,6 +1,6 @@
-(* `Array>>do:` reads each element when it reaches it, so a store the
-   block makes to a later index is seen, and one to an index already
-   visited is not; the size is read once, when the walk starts. *)
+/// `Array>>do:` reads each element when it reaches it, so a store the
+/// block makes to a later index is seen, and one to an index already
+/// visited is not; the size is read once, when the walk starts.
 class DoSeesAStoreMadeInsideItsBlock = Object new (
 ) (
     public main: platform args: arguments = (

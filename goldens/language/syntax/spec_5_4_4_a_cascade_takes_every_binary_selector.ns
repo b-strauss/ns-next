@@ -1,8 +1,8 @@
-(* newspeak-spec.pdf 5.4.4: cascadeMsg is semicolon (keywordMsg | binaryMsg |
-   unarySelector), and binaryMsg takes any binarySelector -- "=", "<" and
-   ">", which have tokens of their own for the declaration syntax, among
-   them. Each part goes to the last message's receiver, and the cascade
-   answers what its last part answers. *)
+/// newspeak-spec.pdf 5.4.4: cascadeMsg is semicolon (keywordMsg | binaryMsg |
+/// unarySelector), and binaryMsg takes any binarySelector -- "=", "<" and
+/// ">", which have tokens of their own for the declaration syntax, among
+/// them. Each part goes to the last message's receiver, and the cascade
+/// answers what its last part answers.
 class Spec544ACascadeTakesEveryBinarySelector = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. |

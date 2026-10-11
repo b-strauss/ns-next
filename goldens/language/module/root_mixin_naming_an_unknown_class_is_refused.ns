@@ -1,15 +1,15 @@
-(* newspeak-spec.pdf 6.1: an inheritance clause that does not appear within
-   an enclosing class "is evaluated as if it was a top level expression.
-   Consequently, it will almost certainly fail since no interesting classes
-   are available at top level" -- a top level expression (3.8) has no
-   enclosing object to send to. So a module's root class may inherit only
-   Object or Value, or write Object <: Value; every other root clause is a
-   defect (`docs/design/object-model.md`, "The root rule").
-
-   The rule is checked by the resolver, before anything runs: a module
-   whose artifact `build` could never write must not run under `run`
-   either, so this is a resolve error and `main:args:` never runs
-   (`docs/design/README.md`, "Deviations from the language specification"). *)
+/// newspeak-spec.pdf 6.1: an inheritance clause that does not appear within
+/// an enclosing class "is evaluated as if it was a top level expression.
+/// Consequently, it will almost certainly fail since no interesting classes
+/// are available at top level" -- a top level expression (3.8) has no
+/// enclosing object to send to. So a module's root class may inherit only
+/// Object or Value, or write Object <: Value; every other root clause is a
+/// defect (`docs/design/object-model.md`, "The root rule").
+///
+/// The rule is checked by the resolver, before anything runs: a module
+/// whose artifact `build` could never write must not run under `run`
+/// either, so this is a resolve error and `main:args:` never runs
+/// (`docs/design/README.md`, "Deviations from the language specification").
 class RootMixinNamesAnUnknownClass = Object <: Missing () (
     public main: platform args: arguments = (
         platform transcript show: 'unreachable'; newLine

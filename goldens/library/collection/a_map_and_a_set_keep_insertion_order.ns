@@ -1,10 +1,10 @@
-(* Primordial Soup's Map and Set, as the Are We Fast Yet benchmarks of
-   stage 3 send them (docs/design/core-library.md, "The collections
-   module"): keys are found by `hash` and compared with `=`, so an equal
-   String is the same key and two plain objects are two keys; `keys` and
-   `do:` answer in insertion order, which overwriting a key does not
-   change; growth past many rehashes and `removeAll` keep every key
-   findable; `at:` signals when the key is absent. *)
+/// Primordial Soup's Map and Set, as the Are We Fast Yet benchmarks of
+/// stage 3 send them (docs/design/core-library.md, "The collections
+/// module"): keys are found by `hash` and compared with `=`, so an equal
+/// String is the same key and two plain objects are two keys; `keys` and
+/// `do:` answer in insertion order, which overwriting a key does not
+/// change; growth past many rehashes and `removeAll` keep every key
+/// findable; `at:` signals when the key is absent.
 class AMapAndASetKeepInsertionOrder = Object new (
 ) (
     public main: platform args: arguments = (

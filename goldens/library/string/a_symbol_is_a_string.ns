@@ -1,8 +1,8 @@
-(* A Symbol is a String (§5.1.6, as in every reference kernel), which
-   `String handles:` reads as inheritance: it answers
-   `size`, `at:`, `copyFrom:to:` and `,` as a String of its text does, and
-   those two answer a String. `=` stays class-tight, since a Symbol is one
-   object per text, and `Transcript show:` writes its text. *)
+/// A Symbol is a String (§5.1.6, as in every reference kernel), which
+/// `String handles:` reads as inheritance: it answers
+/// `size`, `at:`, `copyFrom:to:` and `,` as a String of its text does, and
+/// those two answer a String. `=` stays class-tight, since a Symbol is one
+/// object per text, and `Transcript show:` writes its text.
 class ASymbolIsAString = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. |
