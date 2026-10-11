@@ -181,11 +181,11 @@ impl Collector<'_> {
     }
 
     fn expression(&mut self, expression: &ast::Expression) {
-        match expression {
-            ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
+        match &expression.kind {
+            ast::ExpressionKind::Identifier(_) | ast::ExpressionKind::Literal(_) => {}
             // A chain of messages is walked link by link: it nests as deep
             // as the source is long.
-            ast::Expression::Send(send) => {
+            ast::ExpressionKind::Send(send) => {
                 let (links, receiver) = send.receiver_chain();
                 self.expression(receiver);
                 for link in links.iter().rev() {
@@ -195,7 +195,7 @@ impl Collector<'_> {
                         .for_each(|argument| self.expression(argument));
                 }
             }
-            ast::Expression::Cascade(cascade) => {
+            ast::ExpressionKind::Cascade(cascade) => {
                 self.expression(&cascade.receiver);
                 for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                     message
@@ -204,8 +204,8 @@ impl Collector<'_> {
                         .for_each(|argument| self.expression(argument));
                 }
             }
-            ast::Expression::Assign { value, .. } => self.expression(value),
-            ast::Expression::Block(block) => {
+            ast::ExpressionKind::Assign { value, .. } => self.expression(value),
+            ast::ExpressionKind::Block(block) => {
                 let collapsed = if block.parameters.is_empty() {
                     "[...]".to_string()
                 } else {
@@ -219,7 +219,7 @@ impl Collector<'_> {
                 self.bracketed(block.delimiters, block.span.end, &collapsed);
                 self.body(&block.body);
             }
-            ast::Expression::DynamicArray { elements, .. } => {
+            ast::ExpressionKind::DynamicArray { elements, .. } => {
                 elements.iter().for_each(|element| self.expression(element));
             }
         }

@@ -2,7 +2,7 @@
 //! spec's "AST recognition" note) and runs the §5.7 depth search for
 //! implicit and bare-name sends.
 
-use ns_syntax::ast::{Expression, Selector};
+use ns_syntax::ast::{Expression, ExpressionKind, Selector};
 
 use crate::Symbol;
 
@@ -63,17 +63,17 @@ pub(super) fn depth_of_named_outer(chain: &[EnclosingClass], name: Symbol) -> Op
 /// `self` is a genuine explicit self send (§5.8, always depth 0, no search).
 pub(super) fn is_synthesized_implicit_receiver(receiver: &Expression) -> bool {
     matches!(
-        receiver,
-        Expression::Identifier(id) if id.name == "self" && id.span.start == id.span.end
+        &receiver.kind,
+        ExpressionKind::Identifier(id) if id.name == "self" && id.span.start == id.span.end
     )
 }
 
 pub(super) fn is_explicit_self(receiver: &Expression) -> bool {
-    matches!(receiver, Expression::Identifier(id) if id.name == "self" && id.span.start != id.span.end)
+    matches!(&receiver.kind, ExpressionKind::Identifier(id) if id.name == "self" && id.span.start != id.span.end)
 }
 
 pub(super) fn is_explicit_super(receiver: &Expression) -> bool {
-    matches!(receiver, Expression::Identifier(id) if id.name == "super")
+    matches!(&receiver.kind, ExpressionKind::Identifier(id) if id.name == "super")
 }
 
 /// Recognizes `outer N` itself -- a `Send` of the unary `N` to
@@ -82,7 +82,7 @@ pub(super) fn is_explicit_super(receiver: &Expression) -> bool {
 /// takes the whole `outer N m`, so a `send` of this shape that reaches the
 /// resolver on its own is the enclosing object as a value.
 pub(crate) fn bare_outer_class_name(send: &ns_syntax::ast::Send) -> Option<&str> {
-    let Expression::Identifier(outer_identifier) = &send.receiver else {
+    let ExpressionKind::Identifier(outer_identifier) = &send.receiver.kind else {
         return None;
     };
     if outer_identifier.name != "outer" {
@@ -105,10 +105,10 @@ pub(crate) fn bare_outer_class_name(send: &ns_syntax::ast::Send) -> Option<&str>
 /// `depth_of_named_outer` and use the *outer* `Send`'s own message/selector
 /// (`send.message`) as the actual send, discarding the inner shape.
 pub(crate) fn outer_class_name(receiver: &Expression) -> Option<&str> {
-    let Expression::Send(inner) = receiver else {
+    let ExpressionKind::Send(inner) = &receiver.kind else {
         return None;
     };
-    let Expression::Identifier(outer_identifier) = &inner.receiver else {
+    let ExpressionKind::Identifier(outer_identifier) = &inner.receiver.kind else {
         return None;
     };
     if outer_identifier.name != "outer" {

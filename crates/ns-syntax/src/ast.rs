@@ -1,6 +1,8 @@
 //! Abstract syntax tree for a Newspeak3 compilation unit.
 
+use crate::comment::CommentKind;
 use crate::span::Span;
+use crate::token::TokenKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
@@ -146,8 +148,103 @@ pub enum Statement {
     Return(Expression), // `^ expression`
 }
 
+/// An expression: its shape, and what surrounds the shape in the source
+/// without changing what it means.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Expression {
+pub struct Expression {
+    pub kind: ExpressionKind,
+    /// The parentheses around the shape, innermost first.
+    pub parentheses: Vec<Parenthesis>,
+    /// Value-site type arguments written right after the shape, `Box[Integer]`
+    /// (Task 4 fills it; `None` until then).
+    pub type_arguments: Option<TypeAnnotation>,
+    /// The parser made this node up; nothing in the source spells it (the
+    /// implicit receiver of a send).
+    pub synthesized: bool,
+    /// Comments attached to this expression (Task 5 fills it).
+    pub comments: Vec<AttachedComment>,
+    /// The shape's span, widened over the parentheses.
+    pub span: Span,
+}
+
+impl Expression {
+    /// An expression of `kind` with nothing around it, spanning `span`.
+    pub fn bare(kind: ExpressionKind, span: Span) -> Expression {
+        Expression {
+            kind,
+            parentheses: Vec::new(),
+            type_arguments: None,
+            synthesized: false,
+            comments: Vec::new(),
+            span,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parenthesis {
+    pub delimiters: Delimiters,
+    /// Type arguments written right after this `)` (Task 4 fills it).
+    pub type_arguments: Option<TypeAnnotation>,
+}
+
+/// A type annotation, kept as the tokens written: the specification gives
+/// no type grammar and the annotations document only.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeAnnotation {
+    /// Every token from the opening `<`, `[` or `where` through the
+    /// matching closer, in order.
+    pub tokens: Vec<TypeToken>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeToken {
+    pub kind: TokenKind,
+    pub text: String,
+}
+
+/// A comment, kept in the AST at the node it belongs to.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttachedComment {
+    pub kind: CommentKind,
+    /// `Line`: the text after `///` on each line of the block, trailing
+    /// whitespace removed. `Block`: the comment's lines from `(*` through
+    /// `*)`, trailing whitespace removed; continuation lines keep their own
+    /// leading whitespace.
+    pub lines: Vec<String>,
+    /// `Block`: the column, in `char`s from the start of its line, at which
+    /// `(*` stood; the printer shifts the continuation lines by the
+    /// difference to where it prints `(*`. `Line`: 0.
+    pub column: u32,
+    pub anchor: Anchor,
+    pub placement: Placement,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// Before the node, after whatever precedes it.
+    Before,
+    /// After the node, before whatever follows it.
+    After,
+    /// Inside the node, after its `n`-th own token.
+    Inner(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// Nothing but whitespace before it on its line.
+    OwnLine,
+    /// Code before it on its line, a line break (or the end) after it.
+    EndOfLine,
+    /// Code, or a delimiter, on both sides on the same line.
+    Inline,
+}
+
+/// What an expression is, apart from what surrounds it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExpressionKind {
     Identifier(Identifier),
     Literal(Literal),
     /// `receiver selector: argument ...`, `receiver + argument`, `receiver
@@ -169,6 +266,31 @@ pub enum Expression {
     },
 }
 
+impl ExpressionKind {
+    /// The span of the shape alone, without the parentheses around it: the
+    /// key of every side table, so a parenthesised name finds the binding
+    /// the bare one would.
+    pub fn span(&self) -> Span {
+        match self {
+            ExpressionKind::Identifier(identifier) => identifier.span,
+            ExpressionKind::Literal(
+                Literal::Integer { span, .. }
+                | Literal::Float { span, .. }
+                | Literal::String { span, .. }
+                | Literal::Symbol { span, .. }
+                | Literal::Boolean { span, .. }
+                | Literal::Nil { span }
+                | Literal::Pattern { span, .. },
+            ) => *span,
+            ExpressionKind::Send(send) => send.span,
+            ExpressionKind::Cascade(cascade) => cascade.span,
+            ExpressionKind::Assign { span, .. } => *span,
+            ExpressionKind::Block(block) => block.span,
+            ExpressionKind::DynamicArray { span, .. } => *span,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Send {
     pub receiver: Expression,
@@ -185,7 +307,7 @@ pub struct Send {
 impl Drop for Send {
     fn drop(&mut self) {
         let mut receiver = std::mem::replace(&mut self.receiver, placeholder(self.span));
-        while let Expression::Send(mut link) = receiver {
+        while let ExpressionKind::Send(mut link) = receiver.kind {
             receiver = std::mem::replace(&mut link.receiver, placeholder(link.span));
         }
     }
@@ -212,7 +334,7 @@ impl Send {
     pub fn receiver_chain(&self) -> (Vec<&Send>, &Expression) {
         let mut links = vec![self];
         let mut receiver = &self.receiver;
-        while let Expression::Send(link) = receiver {
+        while let ExpressionKind::Send(link) = &receiver.kind {
             links.push(link);
             receiver = &link.receiver;
         }
@@ -222,7 +344,7 @@ impl Send {
 
 /// What stands in a send's receiver while the chain is taken apart.
 fn placeholder(span: Span) -> Expression {
-    Expression::Literal(Literal::Nil { span })
+    Expression::bare(ExpressionKind::Literal(Literal::Nil { span }), span)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,12 +440,15 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(STACK_BYTES)
             .spawn(|| {
-                let mut chain = Expression::Literal(Literal::Nil {
-                    span: Span::new(0, 0),
-                });
+                let mut chain = Expression::bare(
+                    ExpressionKind::Literal(Literal::Nil {
+                        span: Span::new(0, 0),
+                    }),
+                    Span::new(0, 0),
+                );
                 for link in 0..LINKS {
                     let span = Span::new(0, link);
-                    chain = Expression::Send(Box::new(Send {
+                    let send = ExpressionKind::Send(Box::new(Send {
                         receiver: chain,
                         message: MessageSend {
                             selector: Selector::Unary("link".to_string()),
@@ -332,6 +457,7 @@ mod tests {
                         },
                         span,
                     }));
+                    chain = Expression::bare(send, span);
                 }
                 drop(chain);
             })

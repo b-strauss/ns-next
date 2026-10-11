@@ -11,7 +11,7 @@ pub(crate) use classes::{root_clause_defect, root_shape};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
 use ns_syntax::Span;
 
 use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
@@ -389,22 +389,22 @@ impl Resolver {
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
-        match expression {
-            Expression::Identifier(id) => self.resolve_identifier(id, scope, chain),
-            Expression::Literal(_) => {}
-            Expression::Send(send) => self.resolve_send(send, scope, chain),
-            Expression::Cascade(cascade) => {
+        match &expression.kind {
+            ExpressionKind::Identifier(id) => self.resolve_identifier(id, scope, chain),
+            ExpressionKind::Literal(_) => {}
+            ExpressionKind::Send(send) => self.resolve_send(send, scope, chain),
+            ExpressionKind::Cascade(cascade) => {
                 self.resolve_expression(&cascade.receiver, scope, chain);
                 self.resolve_message_send(&cascade.first, scope, chain);
                 for message in &cascade.rest {
                     self.resolve_message_send(message, scope, chain);
                 }
             }
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Assign { target, value, .. } => {
                 self.resolve_setter_target(target, scope, chain);
                 self.resolve_expression(value, scope, chain);
             }
-            Expression::Block(block) => {
+            ExpressionKind::Block(block) => {
                 let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
                 self.check_activation_names(&parameters, &block.body.temporaries, "a block");
                 let parameter_names: Vec<Symbol> = block
@@ -419,7 +419,7 @@ impl Resolver {
                 }
                 scope.pop();
             }
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     self.resolve_expression(element, scope, chain);
                 }
@@ -438,7 +438,7 @@ impl Resolver {
         }
     }
 
-    /// A bare `Expression::Identifier` standing alone (not the receiver of an
+    /// A bare `ExpressionKind::Identifier` standing alone (not the receiver of an
     /// enclosing `Send`, since that case is handled in `resolve_send`
     /// below): try locals first, then the §5.7 depth search treating the
     /// name itself as a zero-argument implicit send. `self`/`super` alone (no
@@ -491,10 +491,10 @@ impl Resolver {
                 self.bindings.insert(link.span, Binding::MirrorSend);
             }
             explicit_receivers.push(link);
-            match &link.receiver {
-                Expression::Send(receiver) => link = receiver,
-                receiver => {
-                    self.resolve_expression(receiver, scope, chain);
+            match &link.receiver.kind {
+                ExpressionKind::Send(receiver) => link = receiver,
+                _ => {
+                    self.resolve_expression(&link.receiver, scope, chain);
                     break;
                 }
             }
@@ -568,7 +568,7 @@ impl Resolver {
         false
     }
 
-    /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
+    /// The `id` in `id:: e` (`ExpressionKind::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
     /// `docs/design/dispatch.md`, "Setter sends", and `newspeak-spec.pdf`
     /// §5.4.3, which makes `id:: e` the send of `id:`. Only a local that
@@ -664,7 +664,7 @@ impl Resolver {
 /// `interpreter::core_library`'s `check_factory_holds_the_mirror`), since
 /// the resolver cannot know what a slot holds.
 fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[EnclosingClass]) -> bool {
-    let Expression::Identifier(identifier) = receiver else {
+    let ExpressionKind::Identifier(identifier) = &receiver.kind else {
         return false;
     };
     if identifier.name != "vmMirror" {

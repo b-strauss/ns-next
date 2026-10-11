@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
 use ns_syntax::Span;
 
 use super::control_flow::{self, InlineForm};
@@ -388,15 +388,15 @@ impl<'a> Walker<'a> {
     }
 
     fn expression(&mut self, expression: &Expression) {
-        match expression {
-            Expression::Identifier(identifier) => self.reference(identifier),
-            Expression::Literal(_) => {}
-            Expression::Assign { target, value, .. } => {
+        match &expression.kind {
+            ExpressionKind::Identifier(identifier) => self.reference(identifier),
+            ExpressionKind::Literal(_) => {}
+            ExpressionKind::Assign { target, value, .. } => {
                 self.expression(value);
                 self.assign(target);
             }
-            Expression::Send(send) => self.send(send),
-            Expression::Cascade(cascade) => {
+            ExpressionKind::Send(send) => self.send(send),
+            ExpressionKind::Cascade(cascade) => {
                 self.expression(&cascade.receiver);
                 for message in std::iter::once(&cascade.first).chain(cascade.rest.iter()) {
                     for argument in &message.arguments {
@@ -404,8 +404,8 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            Expression::Block(block) => self.real_block(block),
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::Block(block) => self.real_block(block),
+            ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     self.expression(element);
                 }

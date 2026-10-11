@@ -17,7 +17,7 @@ pub(crate) fn future_block(declaration: &ast::SlotDeclaration) -> Option<ast::Ex
         return None;
     }
     let initializer = declaration.initializer.as_ref()?;
-    Some(ast::Expression::Block(Box::new(ast::BlockExpression {
+    let block = ast::ExpressionKind::Block(Box::new(ast::BlockExpression {
         parameters: Vec::new(),
         body: ast::CodeBody {
             temporaries: Vec::new(),
@@ -27,5 +27,6 @@ pub(crate) fn future_block(declaration: &ast::SlotDeclaration) -> Option<ast::Ex
         },
         delimiters: None,
         span: declaration.span,
-    })))
+    }));
+    Some(ast::Expression::bare(block, declaration.span))
 }

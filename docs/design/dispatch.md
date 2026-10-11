@@ -271,16 +271,23 @@ while `v` in the block still reads the parameter.
 The parser normalizes several forms, and the resolver keys off those shapes:
 
 - **A bare unary implicit send** (`foo` with no message following) parses as a
-  plain `Expression::Identifier`, not wrapped in a `Send`. Per §5.4.3 a bare identifier used
+  plain `ExpressionKind::Identifier`, not wrapped in a `Send`. Per §5.4.3 a bare identifier used
   as a primary *is* an implicit-receiver unary send, so every standalone `Identifier`
   gets the full Local → OuterLocal → §5.7 resolution, unless it is literally
   `self` or `super`.
 - **An implicit-receiver keyword send** has its receiver synthesized by the
-  parser as `Identifier{"self"}` with a **zero-width span** at the selector's start.
+  parser as `Identifier{"self"}` with a **zero-width span** at the selector's start,
+  its envelope marked `synthesized`.
   That is the discriminator: a zero-width span means a true implicit send and the
   depth search runs; a real span means a genuine explicit `self` send, where §5.8
   fixes the depth at 0 with no search. Binary sends are never implicit, so no
   equivalent synthesis exists for them.
+- **Parentheses** change no shape. They are kept on the expression's envelope
+  (`Expression::parentheses`), and the resolver and both lowerings match
+  `expression.kind` and key every side table by the shape's own span (an
+  identifier's, a send's, a block's; `ExpressionKind::span`), never by the
+  envelope's `Expression::span`, which the parentheses widen: `(outer N) m`
+  resolves as `outer N m`, and `true ifTrue: ([1])` inlines its literal block.
 - **`outer N m`** parses as an ordinary two-hop unary chain with no dedicated AST
   shape. The resolver matches the whole shape as one `outer N s` send — a
   compile-time error if `N` does not name a lexically enclosing class — and never

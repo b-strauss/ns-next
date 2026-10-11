@@ -61,18 +61,26 @@ pub(crate) fn superclass_clause_expression(
     clause: &ast::SuperclassClause,
     mixin_applications: &[ast::SuperclassClause],
 ) -> ast::Expression {
-    let receiver =
-        |clause: &ast::SuperclassClause| ast::Expression::Identifier(clause.receiver.clone());
+    let receiver = |clause: &ast::SuperclassClause| {
+        ast::Expression::bare(
+            ast::ExpressionKind::Identifier(clause.receiver.clone()),
+            clause.receiver.span,
+        )
+    };
     if mixin_applications.is_empty() {
         return receiver(clause);
     }
-    ast::Expression::DynamicArray {
-        elements: std::iter::once(clause)
-            .chain(mixin_applications)
-            .map(receiver)
-            .collect(),
-        span: clause.span,
-    }
+    let elements = std::iter::once(clause)
+        .chain(mixin_applications)
+        .map(receiver)
+        .collect();
+    ast::Expression::bare(
+        ast::ExpressionKind::DynamicArray {
+            elements,
+            span: clause.span,
+        },
+        clause.span,
+    )
 }
 
 /// The clause's deferred factory message -- `newspeak-spec.pdf` §6.1's
@@ -109,10 +117,11 @@ pub(crate) fn superclass_clause_message_arguments_expression(
     if message.arguments.is_empty() {
         return None;
     }
-    Some(ast::Expression::DynamicArray {
+    let arguments = ast::ExpressionKind::DynamicArray {
         elements: message.arguments.clone(),
         span: message.span,
-    })
+    };
+    Some(ast::Expression::bare(arguments, message.span))
 }
 
 /// The implicit accessor for `nested` on `receiver`. `receiver` is the

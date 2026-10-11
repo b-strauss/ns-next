@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
 use ns_syntax::Span;
 
 use super::control_flow;
@@ -427,14 +427,14 @@ impl<'a> Body<'a> {
     /// Lowers `expression` and answers the register holding its value -- always
     /// a register this lowering wrote for it and will never write again.
     fn value(&mut self, expression: &Expression) -> u16 {
-        match expression {
-            Expression::Literal(literal) => self.literal(lower_literal(literal)),
-            Expression::Identifier(id) => self.read(id),
-            Expression::Assign { target, value, .. } => self.assign(target, value),
-            Expression::Send(send) => self.send(send),
-            Expression::Cascade(cascade) => self.cascade(cascade),
-            Expression::Block(block) => self.block(block),
-            Expression::DynamicArray { elements, .. } => {
+        match &expression.kind {
+            ExpressionKind::Literal(literal) => self.literal(lower_literal(literal)),
+            ExpressionKind::Identifier(id) => self.read(id),
+            ExpressionKind::Assign { target, value, .. } => self.assign(target, value),
+            ExpressionKind::Send(send) => self.send(send),
+            ExpressionKind::Cascade(cascade) => self.cascade(cascade),
+            ExpressionKind::Block(block) => self.block(block),
+            ExpressionKind::DynamicArray { elements, .. } => {
                 let element_registers = self.values(elements);
                 let destination = self.fresh();
                 self.emit(Instruction::MakeArray {

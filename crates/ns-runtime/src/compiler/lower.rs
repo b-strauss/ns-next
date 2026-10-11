@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
 use ns_syntax::Span;
 
 use super::capture::{BodyKey, Captured, Captures, Place};
@@ -960,11 +960,11 @@ impl<'a> Lowerer<'a> {
     /// use on to their blocks. None of them infers it, so a new position
     /// cannot silently be given the cheap form without the property holding.
     fn lower_expression_for(&mut self, expression: &Expression, use_: ValueUse) -> u16 {
-        match (use_, expression) {
-            (ValueUse::Discarded, Expression::Assign { target, value, .. }) => {
+        match (use_, &expression.kind) {
+            (ValueUse::Discarded, ExpressionKind::Assign { target, value, .. }) => {
                 self.lower_assign(target, value, ValueUse::Discarded)
             }
-            (ValueUse::Discarded, Expression::Send(send)) => {
+            (ValueUse::Discarded, ExpressionKind::Send(send)) => {
                 self.lower_send(send, ValueUse::Discarded)
             }
             _ => self.lower_expression(expression),
@@ -1047,22 +1047,22 @@ impl<'a> Lowerer<'a> {
     /// that value when its consumer executes") -- silent wrong output, not a
     /// crash.
     fn writes_register(&self, expression: &Expression, register: u16, inlined_depth: u16) -> bool {
-        match expression {
+        match &expression.kind {
             // `LoadLiteral` and `MakeClosure` write only their own scratch
             // destination. A block literal that is not inlined runs nothing
             // here, and the body it compiles to writes its own registers.
-            Expression::Literal(_) | Expression::Block(_) => false,
-            Expression::Identifier(identifier) => {
+            ExpressionKind::Literal(_) | ExpressionKind::Block(_) => false,
+            ExpressionKind::Identifier(identifier) => {
                 self.identifier_sends(identifier) && self.a_send_can_write(register)
             }
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Assign { target, value, .. } => {
                 self.writes_register(value, register, inlined_depth)
                     || self.assignment_target_register(target, inlined_depth) == Some(register)
                     // A setter send runs user code like any other send.
                     || (self.identifier_sends(target) && self.a_send_can_write(register))
             }
-            Expression::Send(send) => self.send_writes_register(send, register, inlined_depth),
-            Expression::Cascade(cascade) => {
+            ExpressionKind::Send(send) => self.send_writes_register(send, register, inlined_depth),
+            ExpressionKind::Cascade(cascade) => {
                 self.a_send_can_write(register)
                     || self.writes_register(&cascade.receiver, register, inlined_depth)
                     || std::iter::once(&cascade.first)
@@ -1072,7 +1072,7 @@ impl<'a> Lowerer<'a> {
             }
             // `MakeArray` itself writes nothing but its destination; its
             // elements can.
-            Expression::DynamicArray { elements, .. } => elements
+            ExpressionKind::DynamicArray { elements, .. } => elements
                 .iter()
                 .any(|element| self.writes_register(element, register, inlined_depth)),
         }
@@ -1175,8 +1175,8 @@ impl<'a> Lowerer<'a> {
 
     /// Returns the register holding `expression`'s value.
     pub(crate) fn lower_expression(&mut self, expression: &Expression) -> u16 {
-        match expression {
-            Expression::Literal(literal) => {
+        match &expression.kind {
+            ExpressionKind::Literal(literal) => {
                 let destination = self.allocate_scratch();
                 self.emit(Instruction::LoadLiteral {
                     destination,
@@ -1184,14 +1184,14 @@ impl<'a> Lowerer<'a> {
                 });
                 destination
             }
-            Expression::Identifier(id) => self.lower_identifier_read(id),
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Identifier(id) => self.lower_identifier_read(id),
+            ExpressionKind::Assign { target, value, .. } => {
                 self.lower_assign(target, value, ValueUse::Read)
             }
-            Expression::Send(send) => self.lower_send(send, ValueUse::Read),
-            Expression::Cascade(cascade) => self.lower_cascade(cascade),
-            Expression::Block(block) => self.lower_block_literal(block),
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::Send(send) => self.lower_send(send, ValueUse::Read),
+            ExpressionKind::Cascade(cascade) => self.lower_cascade(cascade),
+            ExpressionKind::Block(block) => self.lower_block_literal(block),
+            ExpressionKind::DynamicArray { elements, .. } => {
                 let element_registers: Vec<u16> = (0..elements.len())
                     .map(|index| self.lower_operand(&elements[index], &elements[index + 1..]))
                     .collect();

@@ -79,22 +79,22 @@ fn recognize_quick_method(
         return None;
     };
     let parameters = parameter_names(&declaration.pattern);
-    match expression {
-        ast::Expression::Literal(ast::Literal::Boolean { value: true, .. }) => {
+    match &expression.kind {
+        ast::ExpressionKind::Literal(ast::Literal::Boolean { value: true, .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::True))
         }
-        ast::Expression::Literal(ast::Literal::Boolean { value: false, .. }) => {
+        ast::ExpressionKind::Literal(ast::Literal::Boolean { value: false, .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::False))
         }
-        ast::Expression::Literal(ast::Literal::Nil { .. }) => {
+        ast::ExpressionKind::Literal(ast::Literal::Nil { .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::Nil))
         }
-        ast::Expression::Identifier(_) if is_self(expression) => Some(MethodFastPath::Receiver),
-        ast::Expression::Identifier(identifier) => {
+        ast::ExpressionKind::Identifier(_) if is_self(expression) => Some(MethodFastPath::Receiver),
+        ast::ExpressionKind::Identifier(identifier) => {
             parameter_position(identifier, &parameters, bindings).map(MethodFastPath::Parameter)
         }
-        ast::Expression::Send(send) => {
-            let ast::Expression::Identifier(identifier) = &send.receiver else {
+        ast::ExpressionKind::Send(send) => {
+            let ast::ExpressionKind::Identifier(identifier) = &send.receiver.kind else {
                 return None;
             };
             let shape: fn(u8) -> MethodFastPath =
@@ -161,7 +161,11 @@ fn recognize_builtin_class_accessor(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+    let ast::Statement::Return(ast::Expression {
+        kind: ast::ExpressionKind::Send(send),
+        ..
+    }) = &body.statements[0]
+    else {
         return None;
     };
     if crate::resolver::sends::outer_class_name(&send.receiver) != Some("Kernel") {
@@ -200,7 +204,11 @@ pub(crate) fn recognize_class_accessor(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+    let ast::Statement::Return(ast::Expression {
+        kind: ast::ExpressionKind::Send(send),
+        ..
+    }) = &body.statements[0]
+    else {
         return None;
     };
     if crate::resolver::sends::outer_class_name(&send.receiver) != Some(root.name.name.as_str()) {
@@ -236,7 +244,11 @@ fn recognize_mirror_forwarder(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+    let ast::Statement::Return(ast::Expression {
+        kind: ast::ExpressionKind::Send(send),
+        ..
+    }) = &body.statements[0]
+    else {
         return None;
     };
     let (row, _) = control_flow::recognize_mirror_send(bindings, send)?;
@@ -266,7 +278,7 @@ fn recognize_mirror_forwarder(
         .zip(&parameters)
         .enumerate()
         .all(|(position, (argument, name))| {
-            let ast::Expression::Identifier(identifier) = argument else {
+            let ast::ExpressionKind::Identifier(identifier) = &argument.kind else {
                 return false;
             };
             identifier.name == *name
@@ -295,7 +307,7 @@ pub(crate) fn disabled() -> bool {
 /// An explicit `self`. The resolver's implicit-receiver marker is a `self`
 /// too, but only ever in a receiver position, never as an argument.
 fn is_self(expression: &ast::Expression) -> bool {
-    matches!(expression, ast::Expression::Identifier(identifier) if identifier.name == "self")
+    matches!(&expression.kind, ast::ExpressionKind::Identifier(identifier) if identifier.name == "self")
 }
 
 /// The method's parameters in declaration order -- the order the resolver

@@ -93,15 +93,17 @@ fn bare_builtin_class_name_resolves_to_a_self_send_at_its_span() {
     .expect("resolve must succeed -- a bare builtin class name is not a resolve error");
 
     let method = &module.root_class.instance_side.methods[0];
-    let ns_syntax::ast::Statement::Expression(ns_syntax::ast::Expression::Assign { value, .. }) =
-        &method.body.statements[0]
+    let ns_syntax::ast::Statement::Expression(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::Assign { value, .. },
+        ..
+    }) = &method.body.statements[0]
     else {
         panic!("expected the method's first statement to be `c:: Array new.`");
     };
-    let ns_syntax::ast::Expression::Send(send) = value.as_ref() else {
+    let ns_syntax::ast::ExpressionKind::Send(send) = &value.kind else {
         panic!("expected the assignment's value to be a `Send` (`Array new`)");
     };
-    let ns_syntax::ast::Expression::Identifier(receiver_id) = &send.receiver else {
+    let ns_syntax::ast::ExpressionKind::Identifier(receiver_id) = &send.receiver.kind else {
         panic!("expected the send's receiver to be a bare `Identifier` (`Array`)");
     };
     assert_eq!(receiver_id.name, "Array");
@@ -365,8 +367,10 @@ fn an_implicit_factory_send_binds_to_the_declaring_class_not_an_enclosing_member
         .class_side
         .as_ref()
         .expect("Inner declares a class side");
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Identifier(factory_send)) =
-        &class_side.methods[0].body.statements[0]
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::Identifier(factory_send),
+        ..
+    }) = &class_side.methods[0].body.statements[0]
     else {
         panic!("expected the class-side method's only statement to be `^new`");
     };
@@ -717,4 +721,53 @@ fn every_other_root_clause_is_one_resolve_error_at_that_clause() {
             &source[span.start as usize..span.end as usize]
         );
     }
+}
+
+/// Parentheses change no resolution: `(outer Outer) yourself` is the
+/// `outer N m` send `outer Outer yourself` is.
+#[test]
+fn a_parenthesised_outer_reference_resolves_as_the_bare_one() {
+    let parenthesised = indoc! {"
+        class Outer = (
+        ) (
+            class Inner = (
+            ) (
+                public answer = ( ^(outer Outer) yourself )
+            )
+        )
+    "};
+    let bare = parenthesised.replace("(outer Outer)", "outer Outer");
+    let parenthesised_binding = receiver_binding_of_yourself(parenthesised);
+    assert!(
+        parenthesised_binding.contains("LexicalSend { depth: 1 }"),
+        "{parenthesised_binding}"
+    );
+    assert_eq!(parenthesised_binding, receiver_binding_of_yourself(&bare));
+}
+
+/// What the resolution of `source` records for the `yourself` send in
+/// `Inner>>answer` and for its receiver, each looked up by its shape's span.
+/// The resolver binds the two-hop `outer N m` on the send itself and nothing
+/// on its receiver, so both are answered; the `Debug` text holds no span, so
+/// two sources whose spans differ compare equal.
+fn receiver_binding_of_yourself(source: &str) -> String {
+    let resolved = resolve_source(source);
+    let inner = &resolved.module.root_class.instance_side.nested_classes[0];
+    let ns_syntax::ast::Statement::Return(returned) =
+        &inner.instance_side.methods[0].body.statements[0]
+    else {
+        panic!("expected `answer` to return the send of `yourself`");
+    };
+    let ns_syntax::ast::ExpressionKind::Send(send) = &returned.kind else {
+        panic!("expected `answer` to return a send");
+    };
+    assert_eq!(
+        send.message.selector,
+        ns_syntax::ast::Selector::Unary("yourself".to_string())
+    );
+    format!(
+        "send: {:?}, receiver: {:?}",
+        resolved.bindings.get(&returned.kind.span()),
+        resolved.bindings.get(&send.receiver.kind.span())
+    )
 }

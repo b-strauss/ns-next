@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend};
 use ns_runtime::Binding;
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement};
 use ns_syntax::{Span, Token, TokenKind};
 
 use crate::documents::{utf16_length, LineIndex};
@@ -437,12 +437,12 @@ impl Classifier<'_> {
     }
 
     fn expression(&mut self, expression: &Expression, chain: &[&SideMembers]) {
-        match expression {
-            Expression::Identifier(identifier) => self.identifier(identifier, chain),
-            Expression::Literal(_) => {}
-            Expression::Send(send) => self.send(send, chain),
-            Expression::Cascade(cascade) => {
-                let receiver = expression_span(&cascade.receiver);
+        match &expression.kind {
+            ExpressionKind::Identifier(identifier) => self.identifier(identifier, chain),
+            ExpressionKind::Literal(_) => {}
+            ExpressionKind::Send(send) => self.send(send, chain),
+            ExpressionKind::Cascade(cascade) => {
+                let receiver = cascade.receiver.span;
                 for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                     self.explicit_receiver_selector(&cascade.receiver, receiver, message);
                 }
@@ -453,15 +453,15 @@ impl Classifier<'_> {
                     }
                 }
             }
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Assign { target, value, .. } => {
                 self.setter_target(target, chain);
                 self.expression(value, chain);
             }
-            Expression::Block(block) => {
+            ExpressionKind::Block(block) => {
                 let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
                 self.body(&parameters, &block.body, chain);
             }
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     self.expression(element, chain);
                 }
@@ -568,24 +568,15 @@ impl Classifier<'_> {
             Some(Binding::LexicalSend { depth }) => {
                 let (category, readonly) =
                     member_category(chain, depth, selector_name(&send.message.selector));
-                self.selector(
-                    expression_span(&send.receiver),
-                    &send.message,
-                    category,
-                    readonly,
-                );
+                self.selector(send.receiver.span, &send.message, category, readonly);
             }
             Some(Binding::SuperSend) => self.selector(
-                expression_span(&send.receiver),
+                send.receiver.span,
                 &send.message,
                 TokenCategory::Method,
                 false,
             ),
-            _ => self.explicit_receiver_selector(
-                &send.receiver,
-                expression_span(&send.receiver),
-                &send.message,
-            ),
+            _ => self.explicit_receiver_selector(&send.receiver, send.receiver.span, &send.message),
         }
     }
 
@@ -600,7 +591,8 @@ impl Classifier<'_> {
         receiver_span: Span,
         message: &ast::MessageSend,
     ) {
-        if matches!(receiver, Expression::Identifier(identifier) if identifier.name == "outer") {
+        if matches!(&receiver.kind, ExpressionKind::Identifier(identifier) if identifier.name == "outer")
+        {
             return;
         }
         self.selector(receiver_span, message, TokenCategory::Method, false);
@@ -617,7 +609,7 @@ impl Classifier<'_> {
         readonly: bool,
     ) {
         let excluded: Vec<Span> = std::iter::once(receiver)
-            .chain(message.arguments.iter().map(expression_span))
+            .chain(message.arguments.iter().map(|argument| argument.span))
             .collect();
         let message = message.span;
         // The selector follows the receiver, so the search starts past it:
@@ -711,29 +703,6 @@ fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
 
 fn contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end && outer.start < outer.end
-}
-
-fn expression_span(expression: &Expression) -> Span {
-    match expression {
-        Expression::Identifier(identifier) => identifier.span,
-        Expression::Literal(literal) => literal_span(literal),
-        Expression::Send(send) => send.span,
-        Expression::Cascade(cascade) => cascade.span,
-        Expression::Assign { span, .. } | Expression::DynamicArray { span, .. } => *span,
-        Expression::Block(block) => block.span,
-    }
-}
-
-fn literal_span(literal: &ast::Literal) -> Span {
-    match literal {
-        ast::Literal::Integer { span, .. }
-        | ast::Literal::Float { span, .. }
-        | ast::Literal::String { span, .. }
-        | ast::Literal::Symbol { span, .. }
-        | ast::Literal::Boolean { span, .. }
-        | ast::Literal::Nil { span }
-        | ast::Literal::Pattern { span, .. } => *span,
-    }
 }
 
 #[cfg(test)]

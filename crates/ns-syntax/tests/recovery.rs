@@ -402,8 +402,10 @@ fn an_unclosed_block_ends_at_the_method_close() {
         .body_delimiters
         .and_then(|delimiters| delimiters.close)
         .is_some());
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Block(block)) =
-        &body.methods[0].body.statements[0]
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::Block(block),
+        ..
+    }) = &body.methods[0].body.statements[0]
     else {
         panic!("a returned block");
     };
@@ -444,9 +446,9 @@ fn a_tuple_with_junk_keeps_its_elements_and_its_close() {
     let (module, messages) = recovered(source);
     let body = &module.root_class.instance_side;
     assert_eq!(method_names(body), ["first", "second"], "{messages:?}");
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::DynamicArray {
-        elements,
-        span,
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::DynamicArray { elements, span },
+        ..
     }) = &body.methods[0].body.statements[0]
     else {
         panic!("a returned tuple");
@@ -564,14 +566,18 @@ fn a_missing_name_declares_nothing() {
     assert_eq!(root.factory, None, "{messages:?}");
     assert_eq!(root.instance_side.nested_classes[0].superclass, None);
     assert_eq!(method_names(&root.instance_side), ["first", "second"]);
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Block(block)) =
-        &root.instance_side.methods[0].body.statements[0]
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::Block(block),
+        ..
+    }) = &root.instance_side.methods[0].body.statements[0]
     else {
         panic!("a returned block");
     };
     assert!(block.parameters.is_empty());
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Cascade(cascade)) =
-        &root.instance_side.methods[1].body.statements[0]
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::Cascade(cascade),
+        ..
+    }) = &root.instance_side.methods[1].body.statements[0]
     else {
         panic!("a returned cascade");
     };
@@ -658,7 +664,10 @@ fn junk_in_a_parenthesis_is_skipped_to_its_close() {
     );
     let statements = &body.methods[0].body.statements;
     assert_eq!(statements.len(), 1);
-    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression::Send(send)) = &statements[0]
+    let ns_syntax::ast::Statement::Return(ns_syntax::ast::Expression {
+        kind: ns_syntax::ast::ExpressionKind::Send(send),
+        ..
+    }) = &statements[0]
     else {
         panic!("a returned send");
     };
@@ -667,8 +676,8 @@ fn junk_in_a_parenthesis_is_skipped_to_its_close() {
         ns_syntax::ast::Selector::Binary("+".to_string())
     );
     assert!(matches!(
-        send.receiver,
-        ns_syntax::ast::Expression::Literal(ns_syntax::ast::Literal::Integer { .. })
+        send.receiver.kind,
+        ns_syntax::ast::ExpressionKind::Literal(ns_syntax::ast::Literal::Integer { .. })
     ));
 }
 

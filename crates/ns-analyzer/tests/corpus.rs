@@ -281,16 +281,16 @@ fn declared_names_of_statement(statement: &ast::Statement, names: &mut Vec<Strin
 }
 
 fn declared_names_of_expression(expression: &ast::Expression, names: &mut Vec<String>) {
-    match expression {
-        ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
-        ast::Expression::Send(send) => {
+    match &expression.kind {
+        ast::ExpressionKind::Identifier(_) | ast::ExpressionKind::Literal(_) => {}
+        ast::ExpressionKind::Send(send) => {
             declared_names_of_expression(&send.receiver, names);
             send.message
                 .arguments
                 .iter()
                 .for_each(|argument| declared_names_of_expression(argument, names));
         }
-        ast::Expression::Cascade(cascade) => {
+        ast::ExpressionKind::Cascade(cascade) => {
             declared_names_of_expression(&cascade.receiver, names);
             for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                 message
@@ -299,8 +299,8 @@ fn declared_names_of_expression(expression: &ast::Expression, names: &mut Vec<St
                     .for_each(|argument| declared_names_of_expression(argument, names));
             }
         }
-        ast::Expression::Assign { value, .. } => declared_names_of_expression(value, names),
-        ast::Expression::Block(block) => {
+        ast::ExpressionKind::Assign { value, .. } => declared_names_of_expression(value, names),
+        ast::ExpressionKind::Block(block) => {
             names.extend(
                 block
                     .parameters
@@ -309,7 +309,7 @@ fn declared_names_of_expression(expression: &ast::Expression, names: &mut Vec<St
             );
             declared_names_of_body(&block.body, names);
         }
-        ast::Expression::DynamicArray { elements, .. } => {
+        ast::ExpressionKind::DynamicArray { elements, .. } => {
             elements
                 .iter()
                 .for_each(|element| declared_names_of_expression(element, names));

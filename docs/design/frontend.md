@@ -493,7 +493,7 @@ a design of its own rather than a conformance fix:
 
 §5.4.3 gives Newspeak exactly one assignment form, the setter send `id:: e`
 (desugaring to `id: e`, "Setter Sends"), which `parse_expression` reads at an
-expression's head as an `Expression::Assign` ([dispatch.md](dispatch.md),
+expression's head as an `ExpressionKind::Assign` ([dispatch.md](dispatch.md),
 "Setter sends"). Nothing in the specification grammar, the canonical grammar
 (`corpus/reference/NewspeakGrammar.ns`), Primordial Soup or SOMns accepts
 `:=`, Smalltalk's assignment. The lexer refuses it by name — one diagnostic,

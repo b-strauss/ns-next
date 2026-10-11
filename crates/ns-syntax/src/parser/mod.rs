@@ -523,8 +523,8 @@ mod tests {
 
     #[test]
     fn bare_identifier() {
-        match parse_expression("foo") {
-            Expression::Identifier(id) => assert_eq!(id.name, "foo"),
+        match parse_expression("foo").kind {
+            ExpressionKind::Identifier(id) => assert_eq!(id.name, "foo"),
             other => panic!("{other:?}"),
         }
     }
@@ -532,36 +532,36 @@ mod tests {
     #[test]
     fn integer_versus_float_literal() {
         assert!(matches!(
-            parse_expression("42"),
-            Expression::Literal(Literal::Integer { .. })
+            parse_expression("42").kind,
+            ExpressionKind::Literal(Literal::Integer { .. })
         ));
         assert!(matches!(
-            parse_expression("3.5"),
-            Expression::Literal(Literal::Float { .. })
+            parse_expression("3.5").kind,
+            ExpressionKind::Literal(Literal::Float { .. })
         ));
         assert!(matches!(
-            parse_expression("16rFF"),
-            Expression::Literal(Literal::Integer { .. })
+            parse_expression("16rFF").kind,
+            ExpressionKind::Literal(Literal::Integer { .. })
         ));
     }
 
     #[test]
     fn nil_true_false_are_literals() {
         assert!(matches!(
-            parse_expression("nil"),
-            Expression::Literal(Literal::Nil { .. })
+            parse_expression("nil").kind,
+            ExpressionKind::Literal(Literal::Nil { .. })
         ));
         assert!(matches!(
-            parse_expression("true"),
-            Expression::Literal(Literal::Boolean { value: true, .. })
+            parse_expression("true").kind,
+            ExpressionKind::Literal(Literal::Boolean { value: true, .. })
         ));
     }
 
     #[test]
     fn parenthesized() {
         assert!(matches!(
-            parse_expression("(foo)"),
-            Expression::Identifier(_)
+            parse_expression("(foo)").kind,
+            ExpressionKind::Identifier(_)
         ));
     }
 
@@ -569,29 +569,32 @@ mod tests {
     fn unary_chain() {
         // foo bar baz  ==  ((foo bar) baz)
         let expression = parse_expression("foo bar baz");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Unary("baz".into()));
-        assert!(matches!(send.receiver, Expression::Send(_)));
+        assert!(matches!(send.receiver.kind, ExpressionKind::Send(_)));
     }
 
     #[test]
     fn binary_left_associative_and_below_unary() {
         // a + b foo  ==  a + (b foo)
         let expression = parse_expression("a + b foo");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Binary("+".into()));
-        assert!(matches!(send.message.arguments[0], Expression::Send(_)));
+        assert!(matches!(
+            send.message.arguments[0].kind,
+            ExpressionKind::Send(_)
+        ));
     }
 
     #[test]
     fn keyword_below_binary() {
         // d at: i + 1 put: x  ==  d at:(i+1) put:x  (one keyword send, selector at:put:)
         let expression = parse_expression("d at: i + 1 put: x");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Keyword("at:put:".into()));
@@ -619,7 +622,7 @@ mod tests {
     #[test]
     fn cascade() {
         let expression = parse_expression("s add: 1; add: 2; yourself");
-        let Expression::Cascade(cascade) = expression else {
+        let ExpressionKind::Cascade(cascade) = expression.kind else {
             panic!()
         };
         assert_eq!(cascade.rest.len(), 2);
@@ -629,13 +632,13 @@ mod tests {
     #[test]
     fn setter_keyword_at_head_is_assign() {
         let expression = parse_expression("x:: 42");
-        let Expression::Assign { target, value, .. } = expression else {
+        let ExpressionKind::Assign { target, value, .. } = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(target.name, "x");
         assert!(matches!(
-            *value,
-            Expression::Literal(Literal::Integer { .. })
+            value.kind,
+            ExpressionKind::Literal(Literal::Integer { .. })
         ));
     }
 
@@ -643,19 +646,21 @@ mod tests {
     fn recovers_from_bad_token() {
         let (expression, diagnostics) = parse_with_diagnostics(")");
         assert!(matches!(
-            expression,
-            Expression::Literal(Literal::Nil { .. })
+            expression.kind,
+            ExpressionKind::Literal(Literal::Nil { .. })
         ));
         assert_eq!(diagnostics.len(), 1);
     }
 
     #[test]
     fn string_and_symbol_literals() {
-        let Expression::Literal(Literal::String { value, .. }) = parse_expression("'hi'") else {
+        let ExpressionKind::Literal(Literal::String { value, .. }) = parse_expression("'hi'").kind
+        else {
             panic!()
         };
         assert_eq!(value, "hi");
-        let Expression::Literal(Literal::Symbol { value, .. }) = parse_expression("#foo") else {
+        let ExpressionKind::Literal(Literal::Symbol { value, .. }) = parse_expression("#foo").kind
+        else {
             panic!()
         };
         assert_eq!(value, "foo");
@@ -677,11 +682,11 @@ mod tests {
     #[test]
     fn nested_setter_keyword_at_head_is_nested_assign() {
         let expression = parse_expression("x:: y:: 1");
-        let Expression::Assign { target, value, .. } = expression else {
+        let ExpressionKind::Assign { target, value, .. } = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(target.name, "x");
-        let Expression::Assign { target: inner, .. } = *value else {
+        let ExpressionKind::Assign { target: inner, .. } = value.kind else {
             panic!()
         };
         assert_eq!(inner.name, "y");
@@ -690,7 +695,7 @@ mod tests {
     #[test]
     fn block_with_parameters_and_temporaries() {
         let expression = parse_expression("[:x :y | | t | t:: x. t + y ]");
-        let Expression::Block(block) = expression else {
+        let ExpressionKind::Block(block) = expression.kind else {
             panic!()
         };
         assert_eq!(
@@ -708,7 +713,7 @@ mod tests {
     #[test]
     fn empty_block() {
         let expression = parse_expression("[]");
-        let Expression::Block(block) = expression else {
+        let ExpressionKind::Block(block) = expression.kind else {
             panic!()
         };
         assert!(block.parameters.is_empty() && block.body.statements.is_empty());
@@ -717,7 +722,7 @@ mod tests {
     #[test]
     fn dynamic_array() {
         let expression = parse_expression("{ 1. 2 + 3. foo }");
-        let Expression::DynamicArray { elements, .. } = expression else {
+        let ExpressionKind::DynamicArray { elements, .. } = expression.kind else {
             panic!()
         };
         assert_eq!(elements.len(), 3);
@@ -728,24 +733,24 @@ mod tests {
         // The lexer emits lone `=` / `<` / `>` as punctuation tokens; in
         // operand position they are binary selectors (grammar `binaryMsg`).
         let expression = parse_expression("a = b");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(send.message.selector, Selector::Binary("=".into()));
 
         let expression = parse_expression("count < limit");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(send.message.selector, Selector::Binary("<".into()));
 
         // `a = b ifTrue: [...]` == `(a = b) ifTrue: [...]`
         let expression = parse_expression("a = b ifTrue: [ c ]");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(send.message.selector, Selector::Keyword("ifTrue:".into()));
-        assert!(matches!(send.receiver, Expression::Send(_)));
+        assert!(matches!(send.receiver.kind, ExpressionKind::Send(_)));
     }
 
     #[test]
@@ -753,14 +758,14 @@ mod tests {
         // `selector: argument` with no explicit receiver — grammar
         // `keywordHereSend`.
         let expression = parse_expression("should: [ x ] description: 'oops'");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(
             send.message.selector,
             Selector::Keyword("should:description:".into())
         );
-        let Expression::Identifier(receiver) = &send.receiver else {
+        let ExpressionKind::Identifier(receiver) = &send.receiver.kind else {
             panic!("{:?}", send.receiver)
         };
         assert_eq!(receiver.name, "self");
@@ -770,7 +775,7 @@ mod tests {
     fn return_statement_in_body() {
         // exercised via block body
         let expression = parse_expression("[ ^ 42 ]");
-        let Expression::Block(block) = expression else {
+        let ExpressionKind::Block(block) = expression.kind else {
             panic!()
         };
         assert!(matches!(block.body.statements[0], Statement::Return(_)));
@@ -781,7 +786,7 @@ mod tests {
     #[test]
     fn typed_block_parameters() {
         let expression = parse_expression("[:x <Integer> :y <{A. B}> | x + y ]");
-        let Expression::Block(block) = expression else {
+        let ExpressionKind::Block(block) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(
@@ -797,15 +802,15 @@ mod tests {
     #[test]
     fn class_is_a_pseudo_variable_and_a_unary_selector() {
         // `self class` — `class` as unary send.
-        let Expression::Send(send) = parse_expression("self class") else {
+        let ExpressionKind::Send(send) = parse_expression("self class").kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Unary("class".into()));
         // `class onContext: it` — `class` as the receiver.
-        let Expression::Send(send) = parse_expression("class onContext: it") else {
+        let ExpressionKind::Send(send) = parse_expression("class onContext: it").kind else {
             panic!()
         };
-        let Expression::Identifier(receiver) = &send.receiver else {
+        let ExpressionKind::Identifier(receiver) = &send.receiver.kind else {
             panic!()
         };
         assert_eq!(receiver.name, "class");
@@ -815,11 +820,11 @@ mod tests {
     fn bar_is_a_binary_operator_in_operand_position() {
         // `a | b` and `a || b` are ordinary binary sends once a left operand
         // exists (the lexer emits `Bar` / `DoubleBar`).
-        let Expression::Send(send) = parse_expression("a | b") else {
+        let ExpressionKind::Send(send) = parse_expression("a | b").kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Binary("|".into()));
-        let Expression::Send(send) = parse_expression("a || b") else {
+        let ExpressionKind::Send(send) = parse_expression("a || b").kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Binary("||".into()));
@@ -828,13 +833,13 @@ mod tests {
     #[test]
     fn eventual_send_operator_is_dropped() {
         // `x <-: new` — async unary send; Milestone 1 parses it as `x new`.
-        let Expression::Send(send) = parse_expression("x <-: new") else {
+        let ExpressionKind::Send(send) = parse_expression("x <-: new").kind else {
             panic!("{:?}", parse_expression("x <-: new"))
         };
         assert_eq!(send.message.selector, Selector::Unary("new".into()));
         // `[ b ] <-: value fulfilled: [ r ]` — eventual send inside a keyword argument.
         let expression = parse_expression("Promise when: [ b ] <-: value fulfilled: [ r ]");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(
@@ -857,13 +862,13 @@ mod tests {
     #[test]
     fn pattern_literal_produces_a_pattern_node() {
         // `parse_pattern_literal` fires for a `<...>` in expression position.
-        let Expression::Send(send) = parse_expression("bar: <at: 1>") else {
+        let ExpressionKind::Send(send) = parse_expression("bar: <at: 1>").kind else {
             panic!()
         };
         assert!(
             matches!(
-                send.message.arguments[0],
-                Expression::Literal(Literal::Pattern { .. })
+                send.message.arguments[0].kind,
+                ExpressionKind::Literal(Literal::Pattern { .. })
             ),
             "{:?}",
             send.message.arguments[0]
@@ -884,7 +889,8 @@ mod tests {
             ("\"it''s\"", "it''s"),
             ("'it''s'", "it's"),
         ] {
-            let Expression::Literal(Literal::String { value, .. }) = parse_expression(source)
+            let ExpressionKind::Literal(Literal::String { value, .. }) =
+                parse_expression(source).kind
             else {
                 panic!("{source} is not a string literal")
             };
@@ -910,13 +916,40 @@ mod tests {
     fn generic_instantiation_drops_type_arguments() {
         // `Array[E] new: n` — `[E]` type arguments on a primary.
         let expression = parse_expression("Array[E] new: 3");
-        let Expression::Send(send) = expression else {
+        let ExpressionKind::Send(send) = expression.kind else {
             panic!("{expression:?}")
         };
         assert_eq!(send.message.selector, Selector::Keyword("new:".into()));
-        let Expression::Identifier(receiver) = &send.receiver else {
+        let ExpressionKind::Identifier(receiver) = &send.receiver.kind else {
             panic!("{:?}", send.receiver)
         };
         assert_eq!(receiver.name, "Array");
+    }
+
+    #[test]
+    fn parentheses_are_recorded_innermost_first() {
+        let expression = parse_expression("((a foo)) bar");
+        let ExpressionKind::Send(send) = &expression.kind else {
+            panic!("a send");
+        };
+        assert!(expression.parentheses.is_empty());
+        let receiver = &send.receiver;
+        assert_eq!(receiver.parentheses.len(), 2);
+        let source = "((a foo)) bar";
+        assert_eq!(receiver.parentheses[0].delimiters.open.text(source), "(");
+        assert_eq!(receiver.parentheses[0].delimiters.open.start, 1);
+        assert_eq!(receiver.parentheses[1].delimiters.open.start, 0);
+        assert_eq!(receiver.span.text(source), "((a foo))");
+        assert!(matches!(receiver.kind, ExpressionKind::Send(_)));
+    }
+
+    #[test]
+    fn the_implicit_receiver_is_marked_synthesized() {
+        let expression = parse_expression("foo: 3");
+        let ExpressionKind::Send(send) = &expression.kind else {
+            panic!("a send");
+        };
+        assert!(send.receiver.synthesized);
+        assert!(!expression.synthesized);
     }
 }

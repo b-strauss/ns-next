@@ -30,7 +30,9 @@ impl<'a> Parser<'a> {
                             token.span,
                             &format!("expected an expression, found {}", self.found(token)),
                         );
-                        Expression::Literal(Literal::Nil { span: caret.span })
+                        super::expression::bare(ExpressionKind::Literal(Literal::Nil {
+                            span: caret.span,
+                        }))
                     });
                     statements.push(Statement::Return(expression));
                     self.eat(TokenKind::Dot); // optional trailing dot
@@ -1861,7 +1863,11 @@ mod class_tests {
         assert!(body.starts_with("(\n        | temporary |"), "{body}");
         assert!(body.ends_with("each]\n    )"), "{body}");
         assert_eq!(text_of(run.body.temporaries_delimiters), "| temporary |");
-        let Statement::Return(Expression::Block(block)) = &run.body.statements[0] else {
+        let Statement::Return(Expression {
+            kind: ExpressionKind::Block(block),
+            ..
+        }) = &run.body.statements[0]
+        else {
             panic!("a returned block");
         };
         assert_eq!(text_of(block.delimiters), "[:each | each]");
@@ -1915,11 +1921,11 @@ mod class_tests {
             .initializer
             .as_ref()
             .unwrap();
-        let Expression::Send(send) = initializer else {
+        let ExpressionKind::Send(send) = &initializer.kind else {
             panic!("{initializer:?}")
         };
         assert_eq!(send.message.selector, Selector::Binary("|".into()));
-        let Expression::Identifier(argument) = &send.message.arguments[0] else {
+        let ExpressionKind::Identifier(argument) = &send.message.arguments[0].kind else {
             panic!()
         };
         assert_eq!(argument.name, "b");
@@ -2179,12 +2185,19 @@ mod class_tests {
         assert_eq!(module.root_class.class_comment, None);
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 1);
-        let Statement::Expression(Expression::Send(send)) = &body.initializer_expressions[0] else {
+        let Statement::Expression(Expression {
+            kind: ExpressionKind::Send(send),
+            ..
+        }) = &body.initializer_expressions[0]
+        else {
             panic!("{:?}", body.initializer_expressions[0])
         };
         assert_eq!(send.message.selector, Selector::Unary("printLine".into()));
         assert!(
-            matches!(send.receiver, Expression::Literal(Literal::String { .. })),
+            matches!(
+                send.receiver.kind,
+                ExpressionKind::Literal(Literal::String { .. })
+            ),
             "{:?}",
             send.receiver
         );
@@ -2997,7 +3010,7 @@ mod specification_tests {
     #[test]
     fn a_negative_number_is_one_only_where_a_literal_stands() {
         for source in ["3 -4", "3-4", "3 - 4"] {
-            let Expression::Send(send) = expression(source) else {
+            let ExpressionKind::Send(send) = expression(source).kind else {
                 panic!("{source}")
             };
             assert_eq!(
@@ -3006,18 +3019,18 @@ mod specification_tests {
                 "{source}"
             );
             assert!(
-                matches!(&send.message.arguments[0], Expression::Literal(Literal::Integer { text, .. }) if text == "4"),
+                matches!(&send.message.arguments[0].kind, ExpressionKind::Literal(Literal::Integer { text, .. }) if text == "4"),
                 "{source}"
             );
         }
-        let Expression::Send(send) = expression("3 at: -4") else {
+        let ExpressionKind::Send(send) = expression("3 at: -4").kind else {
             panic!()
         };
         assert!(matches!(
-            &send.message.arguments[0],
-            Expression::Literal(Literal::Integer { text, .. }) if text == "-4"
+            &send.message.arguments[0].kind,
+            ExpressionKind::Literal(Literal::Integer { text, .. }) if text == "-4"
         ));
-        let Expression::Send(send) = expression("3 +-4") else {
+        let ExpressionKind::Send(send) = expression("3 +-4").kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Binary("+".into()));
@@ -3225,8 +3238,8 @@ mod specification_tests {
             ("1e3", true),
         ] {
             let integral = matches!(
-                expression(number),
-                Expression::Literal(Literal::Integer { .. })
+                expression(number).kind,
+                ExpressionKind::Literal(Literal::Integer { .. })
             );
             assert_eq!(integral, !non_integral, "{number}");
         }

@@ -286,6 +286,7 @@ summary; `cargo nextest list -p ns-cli --run-ignored only` names them.
 | `language/block/` | blocks and closures: what a block captures -- copied variables, indirection vectors, the fallback closures of an inlined conditional --, a closure outliving its method, non-local return and its `cannotReturn:`, an immutable block parameter |
 | `language/control-flow/` | conditionals, `and:`/`or:`, loops and `Number`'s iteration, inlined and through their fallback, and a non-Boolean receiver or condition |
 | `language/evaluation-order/` | an operand or an assignment's value that keeps what it evaluated to while a later send writes its variable |
+| `language/expression/` | what surrounds an expression without changing what it means: parentheses around an inlinable conditional's receiver and blocks |
 | `library/` | the core library: `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns` |
 | `library/object/` | `nil`, `isNil`, the identity hash and `identityHash`, `yourself`, the `isKindOf…` answers, a `Proxy` subclass forwarding every message, and `Future computing:` |
 | `library/number/` | numbers |
