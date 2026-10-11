@@ -834,8 +834,8 @@ mod tests {
     }
 
     #[test]
-    fn eventual_send_operator_is_dropped() {
-        // `x <-: new` — async unary send; Milestone 1 parses it as `x new`.
+    fn an_eventual_send_runs_as_an_ordinary_one() {
+        // `x <-: new` — async unary send, built as the ordinary send `x new`.
         let ExpressionKind::Send(send) = parse_expression("x <-: new").kind else {
             panic!("{:?}", parse_expression("x <-: new"))
         };
@@ -849,6 +849,41 @@ mod tests {
             send.message.selector,
             Selector::Keyword("when:fulfilled:".into())
         );
+    }
+
+    #[test]
+    fn literals_keep_their_spelling() {
+        let source = "{'it''s'. \"a\". #foo. #'foo'. #at:put:. 16r1F}";
+        let expression = parse_expression(source);
+        let ExpressionKind::DynamicArray { elements, .. } = &expression.kind else {
+            panic!("a tuple");
+        };
+        let texts: Vec<String> = elements
+            .iter()
+            .map(|element| match &element.kind {
+                ExpressionKind::Literal(Literal::String { text, .. })
+                | ExpressionKind::Literal(Literal::Symbol { text, .. })
+                | ExpressionKind::Literal(Literal::Integer { text, .. }) => text.clone(),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            texts,
+            ["'it''s'", "\"a\"", "#foo", "#'foo'", "#at:put:", "16r1F"]
+        );
+    }
+
+    #[test]
+    fn an_eventual_send_is_marked() {
+        let expression = parse_expression("a <-: foo: 3");
+        let ExpressionKind::Send(send) = &expression.kind else {
+            panic!("a send");
+        };
+        assert!(send.message.eventual);
+        let ExpressionKind::Send(ordinary) = &parse_expression("a foo: 3").kind else {
+            panic!("a send");
+        };
+        assert!(!ordinary.message.eventual);
     }
 
     #[test]

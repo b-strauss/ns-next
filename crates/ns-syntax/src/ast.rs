@@ -6,11 +6,25 @@ use crate::token::TokenKind;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Module {
-    pub language_id: String, // e.g. "Newspeak3"
-    pub category: String,    // the quoted category string, contents only
+    /// The language id that opens the module, e.g. `Newspeak3`; `None` when
+    /// the source leaves it out.
+    pub language_id: Option<Identifier>,
+    /// The category string before the root class; `None` when the source
+    /// leaves it out.
+    pub category: Option<Category>,
     pub root_class: ClassDeclaration,
     /// Comments attached to the module (Task 5 fills it).
     pub comments: Vec<AttachedComment>,
+    pub span: Span,
+}
+
+/// The module's category string (§8.1's `classCategory`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Category {
+    /// The string unescaped, quotes left off.
+    pub value: String,
+    /// The string as written, quotes included.
+    pub text: String,
     pub span: Span,
 }
 
@@ -412,6 +426,8 @@ impl Send {
         let message = MessageSend {
             selector: std::mem::replace(&mut self.message.selector, Selector::Unary(String::new())),
             arguments: std::mem::take(&mut self.message.arguments),
+            eventual: self.message.eventual,
+            type_arguments: self.message.type_arguments.take(),
             comments: std::mem::take(&mut self.message.comments),
             span: self.message.span,
         };
@@ -443,6 +459,10 @@ fn placeholder(span: Span) -> Expression {
 pub struct MessageSend {
     pub selector: Selector,
     pub arguments: Vec<Expression>,
+    /// Sent with `<-:` (§5.6). The runtime runs it as an ordinary send.
+    pub eventual: bool,
+    /// Type arguments written after a unary selector, `foo bar[E]`.
+    pub type_arguments: Option<TypeAnnotation>,
     /// Comments attached to the message (Task 5 fills it).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
@@ -484,14 +504,20 @@ pub enum Literal {
         text: String,
         span: Span,
     },
+    /// `value` is unescaped; `text` is as written, quotes included
+    /// (`'it''s'`, `"a"`).
     String {
         value: String,
+        text: String,
         span: Span,
-    }, // unescaped contents
+    },
+    /// `value` is without the `#` and the quotes; `text` is as written
+    /// (`#foo`, `#'a b'`, `#at:put:`).
     Symbol {
         value: String,
+        text: String,
         span: Span,
-    }, // without the leading '#'
+    },
     Boolean {
         value: bool,
         span: Span,
@@ -549,6 +575,8 @@ mod tests {
                         message: MessageSend {
                             selector: Selector::Unary("link".to_string()),
                             arguments: Vec::new(),
+                            eventual: false,
+                            type_arguments: None,
                             comments: Vec::new(),
                             span,
                         },

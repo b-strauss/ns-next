@@ -371,7 +371,8 @@ a grammar, so the canonical grammar's is followed, and §6's own
 `typeParameterDecl`, `class Map <[K, V]> new: capacity <Integer>`, is
 accepted beside the canonical `class List[E]` (decided with the user on
 2026-09-27). The eventual-send operator `<-:` is likewise
-accepted and dropped, which makes an asynchronous send (§5.6) run as an
+accepted and recorded in the syntax tree (`MessageSend::eventual`), but the
+runtime ignores it, which makes an asynchronous send (§5.6) run as an
 ordinary synchronous one and answer the value where the specification gives a
 promise. Nothing in the runtime implements actors, so there is no promise to
 answer with; the alternative would be to refuse the operator outright.

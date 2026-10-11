@@ -180,10 +180,12 @@ impl<'a> Parser<'a> {
             }
             TokenKind::String => Literal::String {
                 value: unescape_string(&raw),
+                text: raw,
                 span: token.span,
             },
             TokenKind::Symbol => Literal::Symbol {
                 value: symbol_body(&raw),
+                text: raw,
                 span: token.span,
             },
             _ => unreachable!("parse_literal called on {:?}", token.kind),
@@ -569,7 +571,7 @@ impl<'a> Parser<'a> {
 
     fn parse_unary_messages(&mut self, mut receiver: Expression) -> Expression {
         loop {
-            self.eat_eventual_send_operator(|parser| parser.at_name());
+            let eventual = self.eat_eventual_send_operator(|parser| parser.at_name());
             if !self.at_name() {
                 return receiver;
             }
@@ -583,6 +585,8 @@ impl<'a> Parser<'a> {
                 message: MessageSend {
                     selector: Selector::Unary(selector_name),
                     arguments: Vec::new(),
+                    eventual,
+                    type_arguments: None,
                     comments: Vec::new(),
                     span,
                 },
@@ -594,7 +598,7 @@ impl<'a> Parser<'a> {
 
     fn parse_binary_messages(&mut self, mut receiver: Expression) -> Expression {
         loop {
-            self.eat_eventual_send_operator(|parser| parser.at_binary_operator());
+            let eventual = self.eat_eventual_send_operator(|parser| parser.at_binary_operator());
             if !self.at_binary_operator() {
                 return receiver;
             }
@@ -606,6 +610,8 @@ impl<'a> Parser<'a> {
                 message: MessageSend {
                     selector: Selector::Binary(operator),
                     arguments: vec![argument],
+                    eventual,
+                    type_arguments: None,
                     comments: Vec::new(),
                     span,
                 },
@@ -625,7 +631,7 @@ impl<'a> Parser<'a> {
 
     /// `keywordMsg → (keyword binaryExpression)+` sent to `receiver`.
     fn parse_keyword_messages(&mut self, receiver: Expression) -> Expression {
-        self.eat_eventual_send_operator(|parser| parser.at(TokenKind::Keyword));
+        let eventual = self.eat_eventual_send_operator(|parser| parser.at(TokenKind::Keyword));
         let start = expression_span(&receiver);
         let (selector, arguments, end) = self.parse_keyword_parts(start);
         let span = start.merge(end);
@@ -635,6 +641,8 @@ impl<'a> Parser<'a> {
             message: MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                eventual,
+                type_arguments: None,
                 comments: Vec::new(),
                 span,
             },
@@ -681,7 +689,7 @@ impl<'a> Parser<'a> {
     /// message the source does not have is left out.
     fn parse_cascade_message(&mut self) -> Option<MessageSend> {
         let start = self.current().span;
-        self.eat_eventual_send_operator(|parser| {
+        let eventual = self.eat_eventual_send_operator(|parser| {
             parser.at(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
         });
         if self.at(TokenKind::Keyword) {
@@ -689,6 +697,8 @@ impl<'a> Parser<'a> {
             return Some(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                eventual,
+                type_arguments: None,
                 comments: Vec::new(),
                 span: start.merge(end),
             });
@@ -697,6 +707,8 @@ impl<'a> Parser<'a> {
             let (operator, argument) = self.parse_binary_operator_and_argument();
             return Some(MessageSend {
                 selector: Selector::Binary(operator),
+                eventual,
+                type_arguments: None,
                 comments: Vec::new(),
                 span: start.merge(expression_span(&argument)),
                 arguments: vec![argument],
@@ -709,6 +721,8 @@ impl<'a> Parser<'a> {
             return Some(MessageSend {
                 selector: Selector::Unary(selector_name),
                 arguments: Vec::new(),
+                eventual,
+                type_arguments: None,
                 comments: Vec::new(),
                 span: selector_token.span,
             });
@@ -780,20 +794,22 @@ impl<'a> Parser<'a> {
     /// the caller that parses its kind when it is another, and reported when
     /// no message follows at all. The send is parsed as an ordinary one: there
     /// are no actors to send it to (`docs/design/frontend.md`, "What is
-    /// parsed and dropped").
-    fn eat_eventual_send_operator(&mut self, message_follows: impl Fn(&Self) -> bool) {
+    /// parsed and dropped"). Answers whether the operator was consumed for a
+    /// message of this kind, which then records `eventual`.
+    fn eat_eventual_send_operator(&mut self, message_follows: impl Fn(&Self) -> bool) -> bool {
         if !self.at(TokenKind::EventualSendOperator) {
-            return;
+            return false;
         }
         let operator = self.bump();
         if message_follows(self) {
-            return;
+            return true;
         }
         if self.at(TokenKind::Keyword) || self.at_binary_operator() || self.at_name() {
             self.position -= 1;
-            return;
+            return false;
         }
         self.push_error(operator.span, "expected a message after `<-:` (§5.6)");
+        false
     }
 
     pub(super) fn is_reserved_identifier(&self, token: crate::token::Token) -> bool {

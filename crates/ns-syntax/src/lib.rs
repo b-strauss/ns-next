@@ -106,8 +106,8 @@ fn empty_module() -> Module {
         span,
     };
     Module {
-        language_id: String::new(),
-        category: String::new(),
+        language_id: None,
+        category: None,
         root_class: ast::ClassDeclaration {
             access: None,
             name: ast::Identifier {

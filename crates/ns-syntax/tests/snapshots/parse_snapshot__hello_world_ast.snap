@@ -3,8 +3,8 @@ source: crates/ns-syntax/tests/parse_snapshot.rs
 expression: module
 ---
 Module {
-    language_id: "",
-    category: "",
+    language_id: None,
+    category: None,
     root_class: ClassDeclaration {
         access: None,
         name: Identifier {
@@ -81,6 +81,8 @@ Module {
                                             "Transcript",
                                         ),
                                         arguments: [],
+                                        eventual: false,
+                                        type_arguments: None,
                                         comments: [],
                                         span: Span {
                                             start: 67,
@@ -176,6 +178,7 @@ Module {
                                                                 kind: Literal(
                                                                     String {
                                                                         value: "Hello, World!",
+                                                                        text: "'Hello, World!'",
                                                                         span: Span {
                                                                             start: 137,
                                                                             end: 152,
@@ -192,6 +195,8 @@ Module {
                                                                 },
                                                             },
                                                         ],
+                                                        eventual: false,
+                                                        type_arguments: None,
                                                         comments: [],
                                                         span: Span {
                                                             start: 120,

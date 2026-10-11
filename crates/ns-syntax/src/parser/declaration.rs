@@ -708,18 +708,25 @@ impl<'a> Parser<'a> {
         };
         let language_id = if is_language_id {
             let token = self.bump();
-            self.text(token).to_string()
+            Some(Identifier {
+                name: self.text(token).to_string(),
+                span: token.span,
+            })
         } else {
-            String::new()
+            None
         };
         // §8.1's `toplevelClass → classCategory classDeclaration`, with
         // `classCategory → [string]`: the category is optional, and a module's
         // class, which nothing encloses, takes no access modifier.
         let category = if self.at(TokenKind::String) {
             let token = self.bump();
-            string_lexeme_body(self.text(token))
+            Some(Category {
+                value: string_lexeme_body(self.text(token)),
+                text: self.text(token).to_string(),
+                span: token.span,
+            })
         } else {
-            String::new()
+            None
         };
         if matches!(
             self.peek(),
@@ -1055,6 +1062,8 @@ impl<'a> Parser<'a> {
             out.push(MessageSend {
                 selector: Selector::Unary(self.text(selector_token).to_string()),
                 arguments: Vec::new(),
+                eventual: false,
+                type_arguments: None,
                 comments: Vec::new(),
                 span: selector_token.span,
             });
@@ -1066,6 +1075,8 @@ impl<'a> Parser<'a> {
             let argument = self.parse_unary_message();
             out.push(MessageSend {
                 selector: Selector::Binary(self.text(operator).to_string()),
+                eventual: false,
+                type_arguments: None,
                 comments: Vec::new(),
                 span: operator
                     .span
@@ -1088,6 +1099,8 @@ impl<'a> Parser<'a> {
             out.push(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                eventual: false,
+                type_arguments: None,
                 comments: Vec::new(),
                 span: start.merge(end),
             });
@@ -2030,8 +2043,8 @@ mod class_tests {
             'App'
             class Empty usingPlatform: p = () ()
         "});
-        assert_eq!(module.language_id, "Newspeak3");
-        assert_eq!(module.category, "App");
+        assert_eq!(module.language_id.expect("an id").name, "Newspeak3");
+        assert_eq!(module.category.expect("a category").value, "App");
         assert_eq!(module.root_class.name.name, "Empty");
         let MessagePattern::Keyword { parts } = &module.root_class.factory.as_ref().unwrap() else {
             panic!()
@@ -3331,6 +3344,7 @@ mod specification_tests {
             parse_module_source(source)
                 .unwrap_or_else(|errors| panic!("{source}: {errors:?}"))
                 .language_id
+                .map_or_else(String::new, |identifier| identifier.name)
         };
         assert_eq!(language_id_of("class Root = () ()\n"), "");
         assert_eq!(language_id_of("'T'\nclass Root = () ()\n"), "");
@@ -3346,6 +3360,16 @@ mod specification_tests {
             language_id_of("Newspeak3\n'T'\nclass Root = () ()\n"),
             "Newspeak3"
         );
+    }
+
+    #[test]
+    fn the_prologue_is_kept_when_present_and_absent_otherwise() {
+        let with = parse_module_source("Newspeak3\n'Root'\nclass A = () ()").expect("a module");
+        assert_eq!(with.language_id.expect("an id").name, "Newspeak3");
+        assert_eq!(with.category.expect("a category").text, "'Root'");
+        let without = parse_module_source("class A = () ()").expect("a module");
+        assert!(without.language_id.is_none());
+        assert!(without.category.is_none());
     }
 
     /// A name is expected where the grammar has an `identifier`.
