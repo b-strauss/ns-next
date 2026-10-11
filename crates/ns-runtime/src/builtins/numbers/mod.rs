@@ -28,8 +28,10 @@
 //!   `=` with anything that is no number is plain `false`, never an error;
 //!   an ordering or an arithmetic operation with it is the type mismatch.
 //! * `Integer`'s, `LargeInteger`'s and `Float`'s own leaves keep only their
-//!   fast paths -- two `SmallInteger`s, two `Float`s -- and send every
-//!   other case to the tower, as `Number`'s rows, which `Fraction`
+//!   fast paths -- two `SmallInteger`s; a `Float` with a `Float`, or with
+//!   a `SmallInteger` computed and compared as the tower does it
+//!   (`tower::arithmetic_double`, `tower::ordering_double`) -- and send
+//!   every other case to the tower, as `Number`'s rows, which `Fraction`
 //!   inherits, send all of theirs. The bit operations, `gcd:` and `>>`
 //!   take integers only (`integer_operand`).
 

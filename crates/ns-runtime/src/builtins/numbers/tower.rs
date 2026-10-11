@@ -69,21 +69,65 @@ impl Operand {
 
 /// `value` as a number; `None` for anything that is no number, `Fraction
 /// new` and a `LargeInteger new` among them.
+///
+/// Inlined, so that a value that is no object -- `nil`, a Boolean, a
+/// Character -- is refused without a call: value equality asks this of
+/// both sides of every `nil == anObject`.
+#[inline(always)]
 pub(crate) fn operand<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<Operand> {
     match value.kind() {
         ValueKind::SmallInteger(integer) => Some(Operand::Small(integer)),
         ValueKind::SmallFloat(float) => Some(Operand::Float(float)),
-        ValueKind::Object(object) => {
-            if let Some(float) = heap.float_value(value) {
-                return Some(Operand::Float(float));
-            }
-            if let Some(integer) = heap.large_integer(object) {
-                return Some(Operand::Large(integer));
-            }
-            heap.fraction(object).map(Operand::Fraction)
-        }
+        ValueKind::Object(object) => object_operand(heap, object),
         _ => None,
     }
+}
+
+/// `operand` for an object: a boxed `Float`, a `LargeInteger` or a
+/// `Fraction`.
+fn object_operand<'gc>(heap: &Heap<'gc>, object: ObjectReference<'gc>) -> Option<Operand> {
+    if let Some(float) = heap.float_value(Value::object(object)) {
+        return Some(Operand::Float(float));
+    }
+    if let Some(integer) = heap.large_integer(object) {
+        return Some(Operand::Large(integer));
+    }
+    heap.fraction(object).map(Operand::Fraction)
+}
+
+/// The double a leaf's fast path computes with against a `Float`: the
+/// `Float` itself, or a `SmallInteger` rounded to the nearest double, which
+/// is what `compute` does with a `SmallInteger` beside a `Float`. `None`
+/// for anything else, which the leaf leaves to `arithmetic`.
+#[inline(always)]
+pub(crate) fn arithmetic_double<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<f64> {
+    match value.kind() {
+        // `as` rounds to the nearest double, ties to even, as `to_f64` does.
+        ValueKind::SmallInteger(integer) => Some(integer as f64),
+        _ => heap.float_value(value),
+    }
+}
+
+/// The double a leaf's fast path orders against a `Float` by IEEE 754's
+/// comparison and `=`, agreeing with `order` and `equal`: the `Float`
+/// itself, or a `SmallInteger` within 2^53, which converts exactly (as
+/// `float_order` decides). `None` for anything else -- a `SmallInteger`
+/// beyond 2^53 among them, which only the exact comparison orders right --
+/// which the leaf leaves to `compare` or `values_equal`.
+#[inline(always)]
+pub(crate) fn ordering_double<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> Option<f64> {
+    match value.kind() {
+        ValueKind::SmallInteger(integer) => exact_double(integer),
+        _ => heap.float_value(value),
+    }
+}
+
+/// `integer` as a double when the conversion is exact for every integer of
+/// its magnitude, so that IEEE 754's comparison of it with any double is
+/// the exact comparison; `None` beyond 2^53.
+#[inline(always)]
+pub(crate) fn exact_double(integer: i64) -> Option<f64> {
+    (integer.unsigned_abs() <= EXACT_DOUBLE_INTEGER).then_some(integer as f64)
 }
 
 /// The order of two numbers by their exact values; `None` when either is
@@ -119,10 +163,11 @@ fn float_order(float: f64, other: &Operand) -> Option<Ordering> {
         });
     }
     // Within 2^53 an integer converts exactly, so the doubles decide.
-    if let Operand::Small(integer) = other {
-        if integer.unsigned_abs() <= EXACT_DOUBLE_INTEGER {
-            return float.partial_cmp(&(*integer as f64));
-        }
+    if let Some(double) = match other {
+        Operand::Small(integer) => exact_double(*integer),
+        _ => None,
+    } {
+        return float.partial_cmp(&double);
     }
     Some(Rational::from_f64(float)?.cmp(&other.exact()?))
 }
@@ -545,6 +590,64 @@ mod tests {
                     {
                         assert_eq!(order(left, third), Some(Ordering::Less));
                     }
+                }
+            }
+        }
+    }
+
+    /// The `Float` leaf's fast path computes and compares a `Float` with a
+    /// `SmallInteger` as doubles (`arithmetic_double`, `ordering_double`):
+    /// it must answer what the tower answers for every pair it takes.
+    #[test]
+    fn the_float_fast_path_agrees_with_the_tower() {
+        use super::{compute, exact_double, Arithmetic, Outcome};
+        let samples = samples();
+        let floats = samples.iter().filter_map(|sample| match sample {
+            Operand::Float(float) => Some(*float),
+            _ => None,
+        });
+        let two_to_the_53 = 1i64 << 53;
+        let mut integers: Vec<i64> = samples
+            .iter()
+            .filter_map(|sample| match sample {
+                Operand::Small(integer) => Some(*integer),
+                _ => None,
+            })
+            .collect();
+        integers.extend([two_to_the_53 - 1, -two_to_the_53 - 1, 7, -7]);
+        for float in floats {
+            for &integer in &integers {
+                let left = Operand::Float(float);
+                let right = Operand::Small(integer);
+                for (operation, fast) in [
+                    (Arithmetic::Add, float + integer as f64),
+                    (Arithmetic::Subtract, float - integer as f64),
+                    (Arithmetic::Multiply, float * integer as f64),
+                    (Arithmetic::Divide, float / integer as f64),
+                ] {
+                    match compute(operation, &left, &right) {
+                        Ok(Outcome::Float(tower)) => assert_eq!(
+                            tower.to_bits(),
+                            fast.to_bits(),
+                            "{float} {operation:?} {integer}"
+                        ),
+                        _ => panic!("{float} {operation:?} {integer} answers a Float"),
+                    }
+                }
+                match exact_double(integer) {
+                    Some(double) => {
+                        assert_eq!(
+                            float.partial_cmp(&double),
+                            order(&left, &right),
+                            "{float} against {integer}"
+                        );
+                        assert_eq!(
+                            float == double || (float.is_nan() && double.is_nan()),
+                            equal(&left, &right),
+                            "{float} = {integer}"
+                        );
+                    }
+                    None => assert!(integer.unsigned_abs() > two_to_the_53.unsigned_abs()),
                 }
             }
         }

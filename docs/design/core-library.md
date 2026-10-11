@@ -1167,7 +1167,7 @@ so the deviation is recorded here instead.
 
 `Float>>=` is IEEE 754's equality except that every NaN equals every other,
 and every NaN hashes alike (`tower::equal` and `tower::hash` in
-`builtins/numbers/tower.rs`, the two-`Float` fast path in
+`builtins/numbers/tower.rs`, the fast path of a `Float` argument in
 `builtins/numbers/float.rs`). A `Float` is a value, so its `=` must be an
 equivalence, and its `==` answers what `=` does (§3.1.1); IEEE's equality is
 not one, since a NaN equals nothing, itself included, so a NaN would not even

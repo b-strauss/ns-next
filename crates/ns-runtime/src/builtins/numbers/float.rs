@@ -48,55 +48,78 @@ pub(crate) fn execute_float<'gc>(
             )),
         }
     };
-    // `+ - * /`: a `Float` argument is the fast path; every other argument
-    // -- a number of another class, or the type mismatch of one that is
-    // none -- is the tower's.
-    let arithmetic = |mutator: &mut Mutator<'gc>,
-                      operation: Arithmetic,
-                      fast: fn(f64, f64) -> f64| match arguments
-        .first()
-        .and_then(|argument| mutator.heap.float_value(*argument))
-    {
-        Some(argument) => Some(Ok(mutator.new_float(fast(receiver_float, argument)))),
-        None => tower::arithmetic(mutator, operation, receiver, arguments),
-    };
-    // A `Float` argument compares here as IEEE 754 doubles; every other
-    // argument -- a number of another class, or the type mismatch of one
-    // that is none -- is the tower's.
-    let compare = |comparison: Comparison, operation: fn(f64, f64) -> bool| match arguments
-        .first()
-        .and_then(|argument| mutator.heap.float_value(*argument))
-    {
-        Some(argument) => Ok(Value::boolean(operation(receiver_float, argument))),
-        None => tower::compare(&mutator.heap, comparison, receiver, arguments)
-            .expect("a Float receiver is a number"),
-    };
     match primitive {
-        FloatPrimitive::Add => arithmetic(mutator, Arithmetic::Add, |left, right| left + right),
-        FloatPrimitive::Subtract => {
-            arithmetic(mutator, Arithmetic::Subtract, |left, right| left - right)
-        }
-        FloatPrimitive::Multiply => {
-            arithmetic(mutator, Arithmetic::Multiply, |left, right| left * right)
-        }
-        FloatPrimitive::Divide => {
-            arithmetic(mutator, Arithmetic::Divide, |left, right| left / right)
-        }
-        FloatPrimitive::Less => Some(compare(Comparison::Less, |left, right| left < right)),
-        FloatPrimitive::Greater => Some(compare(Comparison::Greater, |left, right| left > right)),
-        FloatPrimitive::LessOrEqual => Some(compare(Comparison::LessOrEqual, |left, right| {
-            left <= right
-        })),
-        FloatPrimitive::GreaterOrEqual => {
-            Some(compare(Comparison::GreaterOrEqual, |left, right| {
-                left >= right
-            }))
-        }
-        // Never an error: anything that is no number is unequal.
+        FloatPrimitive::Add => arithmetic(
+            mutator,
+            Arithmetic::Add,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left + right,
+        ),
+        FloatPrimitive::Subtract => arithmetic(
+            mutator,
+            Arithmetic::Subtract,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left - right,
+        ),
+        FloatPrimitive::Multiply => arithmetic(
+            mutator,
+            Arithmetic::Multiply,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left * right,
+        ),
+        FloatPrimitive::Divide => arithmetic(
+            mutator,
+            Arithmetic::Divide,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left / right,
+        ),
+        FloatPrimitive::Less => Some(compare(
+            &mutator.heap,
+            Comparison::Less,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left < right,
+        )),
+        FloatPrimitive::Greater => Some(compare(
+            &mutator.heap,
+            Comparison::Greater,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left > right,
+        )),
+        FloatPrimitive::LessOrEqual => Some(compare(
+            &mutator.heap,
+            Comparison::LessOrEqual,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left <= right,
+        )),
+        FloatPrimitive::GreaterOrEqual => Some(compare(
+            &mutator.heap,
+            Comparison::GreaterOrEqual,
+            receiver,
+            receiver_float,
+            arguments,
+            |left, right| left >= right,
+        )),
+        // Never an error: anything that is no number is unequal. A `Float`
+        // or a `SmallInteger` within 2^53 compares here as a double, every
+        // other argument the tower's way.
         FloatPrimitive::Equal => {
             let equal = match arguments
                 .first()
-                .and_then(|argument| mutator.heap.float_value(*argument))
+                .and_then(|argument| tower::ordering_double(&mutator.heap, *argument))
             {
                 Some(argument) => doubles_equal(receiver_float, argument),
                 None => tower::values_equal(&mutator.heap, receiver, arguments.first().copied()),
@@ -205,6 +228,54 @@ pub(crate) fn execute_float<'gc>(
             }),
         ),
         FloatPrimitive::Parse => unreachable!("execute_float answers Parse before this match"),
+    }
+}
+
+/// `+ - * /`: a `Float` or a `SmallInteger` argument is the fast path,
+/// computed as the tower computes it (`tower::arithmetic_double`); every
+/// other argument -- a number of another class, or the type mismatch of
+/// one that is none -- is the tower's. The operation is a closure, not a
+/// function pointer, so that it is inlined: called through a pointer, a
+/// Float's every `+` paid an indirect call.
+#[inline(always)]
+fn arithmetic<'gc>(
+    mutator: &mut Mutator<'gc>,
+    operation: Arithmetic,
+    receiver: Value<'gc>,
+    receiver_float: f64,
+    arguments: &[Value<'gc>],
+    fast: impl FnOnce(f64, f64) -> f64,
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    match arguments
+        .first()
+        .and_then(|argument| tower::arithmetic_double(&mutator.heap, *argument))
+    {
+        Some(argument) => Some(Ok(mutator.new_float(fast(receiver_float, argument)))),
+        None => tower::arithmetic(mutator, operation, receiver, arguments),
+    }
+}
+
+/// The four orderings: a `Float` or a `SmallInteger` within 2^53 compares
+/// here as IEEE 754 doubles (`tower::ordering_double`); every other
+/// argument -- a number of another class, or the type mismatch of one that
+/// is none -- is the tower's. A closure for the reason `arithmetic` takes
+/// one.
+#[inline(always)]
+fn compare<'gc>(
+    heap: &Heap<'gc>,
+    comparison: Comparison,
+    receiver: Value<'gc>,
+    receiver_float: f64,
+    arguments: &[Value<'gc>],
+    fast: impl FnOnce(f64, f64) -> bool,
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    match arguments
+        .first()
+        .and_then(|argument| tower::ordering_double(heap, *argument))
+    {
+        Some(argument) => Ok(Value::boolean(fast(receiver_float, argument))),
+        None => tower::compare(heap, comparison, receiver, arguments)
+            .expect("a Float receiver is a number"),
     }
 }
 

@@ -413,10 +413,12 @@ fn derived_equality<'gc>(
         // Two numbers are equal by value across their classes -- `3` and
         // `3.0` -- so the tower decides them before the classes are
         // compared (`docs/design/core-library.md`, "The numeric tower").
-        if let (Some(left), Some(right)) = (
-            tower::operand(mutator.heap(), first),
-            tower::operand(mutator.heap(), second),
-        ) {
+        // The second side is read only when the first is a number: `nil ==
+        // anObject`, the common pair, then never asks the heap whether
+        // `anObject` is one.
+        if let Some((left, right)) = tower::operand(mutator.heap(), first)
+            .and_then(|left| Some((left, tower::operand(mutator.heap(), second)?)))
+        {
             if !tower::equal(&left, &right) {
                 return Some(false);
             }
