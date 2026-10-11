@@ -3426,7 +3426,10 @@ a non-integral literal is a binary float" above), and there is no
    arithmetic without a `Float`, `//`, `\\`, `quo:` and `rem:` over every
    pair ("The numeric tower" above; "The kernel's numbers" under
    "Decisions" below).
-5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions; and,
+5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions, with
+   `Object>>ByteArray` beside `Object>>Array`, the accessor §3.2 names
+   ("the methods `Array` and `ByteArray` provide predefined factory
+   objects for arrays"); and,
    beyond Primordial Soup's core, typed arrays as an API of their own
    (decided with the user on 2026-10-11): classes that wrap a
    `ByteArray` and answer its elements at one width -- `float32`,
