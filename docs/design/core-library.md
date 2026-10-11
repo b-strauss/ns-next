@@ -1146,6 +1146,12 @@ no `/`" below): its `Ratio` is the model for `Fraction`, and its exact
 conversion of a float into a fraction is what a correct comparison between
 an `Integer` and a `Float` needs; nothing is taken from it yet.
 
+Measured on 2026-10-11: with the tower, the Are We Fast Yet benchmarks run
+as fast as before, the largest ratio against the tree without it Json's
+1.005, within the noise (three pinned builds a side, pooled, by the
+protocol of [execution.md](execution.md), "What removing the re-entries
+moved"); Mandelbrot and NBody run about 4% faster.
+
 ## Deviation: a non-integral literal is a binary float
 
 §5.1.1: "Non-integral numbers denote an object that obeys the protocol of class
