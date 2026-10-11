@@ -920,6 +920,10 @@ An accessor exists because a module on `corpus/runnable.toml` or
 a program under `benchmarks/` needs it, and the whitelist entry or the
 program that demanded it is named in a comment beside it: the comments of
 `Time` and `Stopwatch` name `benchmarks/are-we-fast-yet/AreWeFastYet.ns`.
+The kernel facet, `platform kernel`, is outside the rule (decided with the
+user on 2026-10-11): it only hands out classes of `Kernel.ns`, which the
+kernel completion governs, and reaches no host, so `KernelNamespace>>Collection`
+names no program.
 
 This is not minimalism for its own sake. A platform member reaches the host
 -- a file, a clock, the network -- and one nothing on that list or under
