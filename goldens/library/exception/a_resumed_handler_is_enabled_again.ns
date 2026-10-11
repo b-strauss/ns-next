@@ -8,7 +8,7 @@ class AResumedHandlerIsEnabledAgain = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Exception = platform kernel Exception. |
+        | transcript = platform transcript. |
         transcript show: ([(Exception signal: 'one') + (Exception signal: 'two')]
                               on: Exception do: [:e | e resume: 1]) printString; newLine.
         transcript show: ([[(Exception signal: 'a') + (Exception signal: 'b')]

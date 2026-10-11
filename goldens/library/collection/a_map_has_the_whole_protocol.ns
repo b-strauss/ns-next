@@ -5,7 +5,7 @@
    given itself to `addAll:` stays as it is. *)
 class AMapHasTheWholeProtocol = Object new () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. collections = platform collections. Map = collections Map. map other show showMap |
+        | transcript = platform transcript. collections = platform collections. Map = collections Map. map other show showMap |
         show:: [:collection |
             collection do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
             transcript newLine].
@@ -23,7 +23,7 @@ class AMapHasTheWholeProtocol = Object new () (
         transcript show: (map removeKey: #b) printString; newLine.
         transcript show: (map removeKey: #b ifAbsent: [#gone]) printString; newLine.
         transcript show: ([map removeKey: #b] on: collections NotFound do: [:error | error element]) printString; newLine.
-        transcript show: ([map removeKey: #b] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([map removeKey: #b] on: Error do: [:error | error messageText]); newLine.
         showMap value: map.
         map do: [:value | transcript show: value printString; show: ' '].
         transcript newLine.

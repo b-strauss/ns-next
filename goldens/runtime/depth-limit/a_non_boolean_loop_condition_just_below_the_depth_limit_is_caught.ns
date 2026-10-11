@@ -15,7 +15,7 @@ class ANonBooleanLoopConditionJustBelowTheDepthLimitIsCaught = Object new (
         ^self descend: n + 1 to: bottom
     )
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: ([self probe: 1] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([self descend: 1 to: deepest - 3] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([self descend: 1 to: deepest - 1] on: Error do: [:e | e messageText]); newLine.

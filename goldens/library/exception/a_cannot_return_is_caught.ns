@@ -11,7 +11,7 @@ class ACannotReturnIsCaught = Object new (
         ^'stashed'
     )
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: self stash; newLine.
         transcript show: ([stored value] on: Error do: [:e | e messageText]); newLine.
         transcript show: 'after'; newLine.

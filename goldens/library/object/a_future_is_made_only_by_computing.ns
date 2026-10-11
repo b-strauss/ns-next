@@ -11,8 +11,8 @@ class AFutureIsMadeOnlyByComputing = Object new (
         Future:: kernel Future.
         transcript show: Future printString; newLine.
         transcript show: ([Future new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
-        transcript show: ([Future new] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Future new] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([Later new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
-        transcript show: ([Later computing: [1]] on: kernel Error do: [:error | error class name]); newLine.
+        transcript show: ([Later computing: [1]] on: Error do: [:error | error class name]); newLine.
     )
 ) : ()

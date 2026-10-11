@@ -4,7 +4,7 @@
    that is no integer, and an inverse that does not exist. *)
 class IntegerProtocolErrors = () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. ArgumentError = platform kernel ArgumentError. |
+        | transcript = platform transcript. ArgumentError = platform kernel ArgumentError. |
         transcript show: ([256 digitAt: 3] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([256 digitAt: 0] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([255 asStringRadix: 37] on: Error do: [:error | error messageText]); newLine.

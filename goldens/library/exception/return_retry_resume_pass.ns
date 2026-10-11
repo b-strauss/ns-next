@@ -9,7 +9,7 @@ class ReturnRetryResumePass = Object new (
       attempts ::= 0. |
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Exception = platform kernel Exception. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: ([Error signal. 1] on: Error do: [:e | e return: 5]) printString; newLine.
         transcript show: ([Error signal. 1] on: Error do: [:e | e return]) printString; newLine.
         transcript show: ([attempts:: attempts + 1.

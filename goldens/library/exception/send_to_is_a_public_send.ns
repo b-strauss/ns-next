@@ -13,7 +13,7 @@ class SendToIsAPublicSend = Object new (
         public open = ( ^'the public one' )
     )
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. Message = platform kernel Message. holder |
+        | transcript = platform transcript. Message = platform kernel Message. holder |
         holder:: Holder new.
         transcript show: ((Message new selector: #open; arguments: {}) sendTo: holder); newLine.
         transcript show: ([(Message new selector: #secret; arguments: {}) sendTo: holder] on: Error do: [:e | e messageText]); newLine.

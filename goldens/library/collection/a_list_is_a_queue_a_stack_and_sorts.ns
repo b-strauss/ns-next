@@ -21,7 +21,6 @@ class AListIsAQueueAStackAndSorts = Object new (
     )
     public main: platform args: arguments = (
         | transcript = platform transcript.
-          Error = platform kernel Error.
           queue last stack list pairs line plan sum |
         List:: platform collections List.
         queue:: List new.

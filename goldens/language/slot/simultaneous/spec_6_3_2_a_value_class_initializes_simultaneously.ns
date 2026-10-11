@@ -7,7 +7,7 @@ class Spec632AValueClassInitializesSimultaneously = Object <: Value (
     class Pair = Value new (|| public first = second - 1. public second = 3. ||) () : ()
     class Holder = Value new (|| public list = {1}. ||) () : ()
     public main: platform args: arguments = (
-        | t = platform transcript. Error = platform kernel Error. |
+        | t = platform transcript. |
         t show: Pair new first printString; newLine.
         t show: (Pair new = Pair new) printString; newLine.
         t show: ([Holder new. 'accepted'] on: Error do: [:error | 'refused']); newLine

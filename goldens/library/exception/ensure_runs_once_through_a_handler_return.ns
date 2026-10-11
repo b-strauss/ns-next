@@ -6,7 +6,7 @@ class EnsureRunsOnceThroughAHandlerReturn = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: ([[Error signal] ensure: [transcript show: 'ensured'; newLine]]
                               on: Error do: [:e | e return: 1]) printString; newLine.
         transcript show: ([[Error signal] ifCurtailed: [transcript show: 'curtailed'; newLine]]

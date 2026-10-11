@@ -6,13 +6,13 @@ class TheErrorClassesCarryWhatTheyWereSignalledFor = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. |
         transcript show: ([(kernel ArgumentError value: 3) signal] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([(kernel CannotReturn result: 4) signal] on: kernel Error do: [:error | error result]) printString; newLine.
-        transcript show: ([(kernel CannotInstantiate behavior: kernel Error) signal] on: kernel Error do: [:error | error behavior]) printString; newLine.
-        transcript show: ([(kernel ArgumentError value: 3) signal] on: kernel Error do: [:error | error description]); newLine.
-        transcript show: ([(kernel CannotReturn result: 4) signal] on: kernel Error do: [:error | error description]); newLine.
-        transcript show: ([(kernel CannotInstantiate behavior: kernel Error) signal] on: kernel Error do: [:error | error description]); newLine.
-        transcript show: ([kernel ArgumentError new signal: 'bad'] on: kernel Error do: [:error | error messageText]); newLine.
-        transcript show: ([kernel ArgumentError new signal] on: kernel Error do: [:error | error argument]) printString; newLine.
+        transcript show: ([(kernel CannotReturn result: 4) signal] on: Error do: [:error | error result]) printString; newLine.
+        transcript show: ([(kernel CannotInstantiate behavior: Error) signal] on: Error do: [:error | error behavior]) printString; newLine.
+        transcript show: ([(kernel ArgumentError value: 3) signal] on: Error do: [:error | error description]); newLine.
+        transcript show: ([(kernel CannotReturn result: 4) signal] on: Error do: [:error | error description]); newLine.
+        transcript show: ([(kernel CannotInstantiate behavior: Error) signal] on: Error do: [:error | error description]); newLine.
+        transcript show: ([kernel ArgumentError new signal: 'bad'] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([kernel ArgumentError new signal] on: Error do: [:error | error argument]) printString; newLine.
         transcript show: (kernel ArgumentError value: 3) isResumable printString; newLine.
     )
 ) : ()

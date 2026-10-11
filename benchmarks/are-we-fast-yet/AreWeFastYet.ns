@@ -30,7 +30,6 @@ class AreWeFastYet packageUsing: manifest = (
 ) (
     class Benchmarking usingPlatform: platform = (
         | private Stopwatch = platform time Stopwatch.
-          private Error = platform kernel Error.
           private transcript = platform transcript.
           private benchmarkPlatform = platform. |
     ) (

@@ -7,7 +7,7 @@
 class FloatSineCosineAndTruncation = Object new (
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. sine cosine |
+        | transcript = platform transcript. sine cosine |
         transcript print: 0.0 sin; show: ' '; print: -0.0 sin; show: ' '; print: 0.0 cos; newLine.
         sine:: 0.5 sin.
         cosine:: 0.5 cos.

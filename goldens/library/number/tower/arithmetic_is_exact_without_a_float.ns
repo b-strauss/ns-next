@@ -10,7 +10,6 @@ class ArithmeticIsExactWithoutAFloat = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.
           kernel = platform kernel.
-          Error = kernel Error.
           ArgumentError = kernel ArgumentError.
           half = 1 / 2.
           third = 1 / 3.

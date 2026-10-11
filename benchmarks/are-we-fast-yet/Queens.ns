@@ -25,8 +25,7 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
    THE SOFTWARE. *)
 class Queens usingPlatform: platform = (
-    | private Error = platform kernel Error.
-      freeMaxs freeRows freeMins queenRows |
+    | freeMaxs freeRows freeMins queenRows |
 ) (
     public bench = (
         | result |

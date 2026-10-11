@@ -28,15 +28,15 @@ class ACollectionIsBuiltOnDo = Object new (
         transcript show: (digits reduce: [:left :right | left * 10 + right]) printString; newLine.
         transcript show: (digits detect: [:each | each < 3]) printString; newLine.
         transcript show: (digits detect: [:each | each > 9] ifNone: [0]) printString; newLine.
-        transcript show: ([digits detect: [:each | each > 9]] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([digits detect: [:each | each > 9]] on: Error do: [:error | error messageText]); newLine.
         transcript show: (digits allSatisfy: [:each | each > 0]) printString; newLine.
         transcript show: (digits anySatisfy: [:each | each > 3]) printString; newLine.
         transcript show: (digits noneSatisfy: [:each | each > 3]) printString; newLine.
         digits do: [:each | transcript show: each printString] separatedBy: [transcript show: ', '].
         transcript newLine.
-        transcript show: ([digits collect: [:each | each]] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([digits collect: [:each | each]] on: Error do: [:error | error messageText]); newLine.
         transcript show: nothing isEmpty printString; newLine.
-        transcript show: ([nothing reduce: [:left :right | left]] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([nothing reduce: [:left :right | left]] on: Error do: [:error | error messageText]); newLine.
         transcript show: (nothing reduce: [:left :right | left] ifEmpty: [#none]) printString; newLine.
         transcript show: (nothing allSatisfy: [:each | false]) printString; newLine.
         transcript show: (nothing anySatisfy: [:each | true]) printString; newLine.

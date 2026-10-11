@@ -45,8 +45,7 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
    THE SOFTWARE. *)
 class Json usingPlatform: platform = (
-    | private Error = platform kernel Error.
-      private List = platform collections List.
+    | private List = platform collections List.
 
       private NULL = JsonLiteral new: 'null'.
       private TRUE = JsonLiteral new: 'true'.

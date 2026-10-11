@@ -11,7 +11,7 @@ class AProxyForwardsEveryMessage = Object new (
         protected doesNotUnderstand: message = ( ^message sendTo: target )
     )
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. forwarder |
+        | transcript = platform transcript. forwarder |
         Proxy:: platform kernel Proxy.
         forwarder:: Forwarder on: 3.
         transcript show: (forwarder + 4) printString; newLine.

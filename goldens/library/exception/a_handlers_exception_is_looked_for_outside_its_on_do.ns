@@ -9,7 +9,7 @@ class AHandlersExceptionIsLookedForOutsideItsOnDo = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Halt = platform kernel Halt. Error = platform kernel Error. |
+        | transcript = platform transcript. Halt = platform kernel Halt. |
         transcript show: ([Error signal: 'one'] on: Error do: [:e |
                               [self halt. 'not reached'] on: Halt do: [:h | 'the handler''s own']]); newLine.
         transcript show: ([[[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']]

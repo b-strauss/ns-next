@@ -19,8 +19,7 @@
    obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
    and in THIRD-PARTY-NOTICES.md at the repository root. *)
 class Havlak usingPlatform: platform = (
-    | private Error = platform kernel Error.
-      private List = platform collections List.
+    | private List = platform collections List.
       private Map = platform collections Map.
       private Set = platform collections Set. |
 ) (

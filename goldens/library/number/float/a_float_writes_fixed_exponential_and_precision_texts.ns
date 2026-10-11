@@ -6,7 +6,7 @@
    `asStringFixed:` writes them and every value at or beyond 1e21. *)
 class AFloatWritesFixedExponentialAndPrecisionTexts = () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: (3.0 asStringExponential: 0); newLine.
         transcript show: (3.0 asStringExponential: 1); newLine.
         transcript show: (1.5 asStringExponential: 0); newLine.

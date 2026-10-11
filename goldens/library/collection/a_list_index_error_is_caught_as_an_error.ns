@@ -6,7 +6,7 @@ class AListIndexErrorIsCaughtAsAnError = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. List = platform collections List. Error = platform kernel Error. list |
+        | transcript = platform transcript. List = platform collections List. list |
         list:: List new.
         list add: 1; add: 2.
         transcript show: ([list at: 3] on: Error do: [:e | e messageText]); newLine.

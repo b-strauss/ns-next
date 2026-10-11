@@ -20,7 +20,7 @@ class AListHasTheWholeProtocol = Object new () (
         transcript show: (list remove: 7) printString; newLine.
         show value: list.
         transcript show: ([list remove: 5] on: collections NotFound do: [:error | error element]) printString; newLine.
-        transcript show: ([list remove: 5] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([list remove: 5] on: Error do: [:error | error messageText]); newLine.
         list removeAllSuchThat: [:each | each > 2].
         show value: list.
         show value: (list collect: [:each | each * 10]).

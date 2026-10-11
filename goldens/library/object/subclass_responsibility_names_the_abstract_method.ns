@@ -19,9 +19,9 @@ class SubclassResponsibilityNamesTheAbstractMethod = Object new () (
     public main: platform args: arguments = (
         | transcript = platform transcript. kernel = platform kernel. |
         transcript show: (Square side: 3) describe; newLine.
-        transcript show: ([Circle new describe] on: kernel Error do: [:error | error messageText]); newLine.
-        transcript show: ([Shape new area] on: kernel Error do: [:error | error messageText]); newLine.
-        transcript show: ([Shape make] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Circle new describe] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Shape new area] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([Shape make] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([Circle new subclassResponsibility] on: kernel MessageNotUnderstood do: [:error | #protected]) printString; newLine.
     )
 ) : ()

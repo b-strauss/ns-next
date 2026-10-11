@@ -17,8 +17,7 @@
    obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
    and in THIRD-PARTY-NOTICES.md at the repository root. *)
 class RichardsTon80 usingPlatform: platform = (
-    | private Error = platform kernel Error.
-      dataSize = 4.
+    | dataSize = 4.
       idleCount = 1000.
 
       idleIdentity = 1.

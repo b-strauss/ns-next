@@ -4,7 +4,7 @@
 class AClosureIsAnInstanceOfClosure = Object new (
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: [] class printString; newLine.
         transcript show: ([:each | each] class == Closure) printString; newLine.
         transcript show: ([3 + []] on: Error do: [:error | error messageText]); newLine

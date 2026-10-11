@@ -5,7 +5,7 @@ class PassReachesTheOuterHandler = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. Halt = platform kernel Halt. |
+        | transcript = platform transcript. Halt = platform kernel Halt. |
         transcript show: ([[Error signal] on: Error do: [:e | e pass]] on: Error do: [:e | 'outer']); newLine.
         transcript show: ([[Error signal] on: Error do: [:e | transcript show: 'inner '. e pass. 'not reached']]
                               on: Error do: [:e | 'outer']); newLine.

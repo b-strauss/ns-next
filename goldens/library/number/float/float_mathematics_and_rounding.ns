@@ -7,7 +7,7 @@
    receiver). *)
 class FloatMathematicsAndRounding = () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. quarter natural common |
+        | transcript = platform transcript. quarter natural common |
         transcript print: 0.0 tan; show: ' '; print: 0.0 asin; show: ' '; print: 1.0 acos; show: ' '; print: 0.0 atan; newLine.
         transcript print: (0.0 atan: 1.0); show: ' '; print: 0.0 exp; show: ' '; print: 1.0 ln; show: ' '; print: 1.0 log; newLine.
         quarter:: 1.0 atan: 1.0.

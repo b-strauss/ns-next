@@ -7,7 +7,7 @@ class AnExceptionInAHandlerSearchesFurtherOut = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Exception = platform kernel Exception. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: ([[Error signal: 'first'] on: Error do: [:e | Error signal: 'second']]
                               on: Error do: [:e | 'outer caught ' , e messageText]); newLine.
         transcript show: ([[Exception signal: 'first'] on: Exception do: [:e | (Exception signal: 'second') , ' resumed']]

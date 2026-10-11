@@ -8,6 +8,6 @@ class ARefusedInstantiationIsACannotInstantiate = Object new () (
         | transcript = platform transcript. kernel = platform kernel. |
         transcript show: ([Symbol new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
         transcript show: ([Odd new] on: kernel CannotInstantiate do: [:error | error behavior name]); newLine.
-        transcript show: ([Symbol new] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([Symbol new] on: Error do: [:error | error messageText]); newLine.
     )
 ) : ()

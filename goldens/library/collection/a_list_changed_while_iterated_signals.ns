@@ -23,7 +23,7 @@ class AListChangedWhileIteratedSignals = Object new () (
         list do: [:each | list sort: [:left :right | left <= right]].
         list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
         transcript newLine.
-        transcript show: ([list keysAndValuesDo: [:index :each | list removeLast]] on: platform kernel Error do: [:error | error class printString]); newLine.
+        transcript show: ([list keysAndValuesDo: [:index :each | list removeLast]] on: Error do: [:error | error class printString]); newLine.
         list:: List withAll: {1. 2. 3}.
         transcript show: ([list collect: [:each | list add: 0]] on: Modified do: [:error | #collect]) printString; newLine.
         transcript show: ([list anySatisfy: [:each | list add: 0. false]] on: Modified do: [:error | #anySatisfy]) printString; newLine.

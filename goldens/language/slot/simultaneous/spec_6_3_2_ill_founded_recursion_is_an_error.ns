@@ -8,7 +8,7 @@ class Spec632IllFoundedRecursion = Object new (
 ) (
     class Probe = Object new (|| public first = second + 1. public second = first + 1. ||) () : ()
     public main: platform args: arguments = (
-        | t = platform transcript. Error = platform kernel Error. |
+        | t = platform transcript. |
         t show: ([Probe new. 'no error'] on: Error do: [:error | error messageText]); newLine
     )
 ) : ()

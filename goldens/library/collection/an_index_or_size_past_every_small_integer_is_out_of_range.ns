@@ -4,7 +4,7 @@
 class AnIndexOrSizePastEverySmallIntegerIsOutOfRange = Object new (
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. huge = 18446744073709551616. |
+        | transcript = platform transcript. huge = 18446744073709551616. |
         transcript show: ([(Array new: 3) at: huge] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([(Array new: 3) at: huge negated put: 1] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([Array new: huge] on: Error do: [:error | error messageText]); newLine.

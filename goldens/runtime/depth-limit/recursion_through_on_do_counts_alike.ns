@@ -7,9 +7,7 @@
    the limit it reached. Their difference, not the level itself, is
    printed, so that the limit's value is in no recorded answer. *)
 class RecursionThroughOnDoCountsAlike = Object new (
-    |
-      private Error ::= nil.
-      plainLevel ::= 0.
+    | plainLevel ::= 0.
       handlerLevel ::= 0. |
 ) (
     a: n = ( plainLevel:: n. ^self b: n )
@@ -21,7 +19,6 @@ class RecursionThroughOnDoCountsAlike = Object new (
     )
     public main: platform args: arguments = (
         | transcript = platform transcript. |
-        Error:: platform kernel Error.
         transcript show: ([self a: 1] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([self down: 1] on: Error do: [:e | 'not the innermost']); newLine.
         transcript show: (plainLevel - handlerLevel) printString; newLine.

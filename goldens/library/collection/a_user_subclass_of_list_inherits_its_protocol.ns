@@ -18,6 +18,6 @@ class AUserSubclassOfListInheritsItsProtocol = Object new (
         stack:: Stack new.
         stack push: 1; push: 2; push: 3.
         transcript show: stack top printString; show: ' '; show: stack size printString; show: ' '; show: stack depth printString; newLine.
-        transcript show: ([stack at: 4] on: platform kernel Error do: [:e | e messageText]); newLine
+        transcript show: ([stack at: 4] on: Error do: [:e | e messageText]); newLine
     )
 ) : ()

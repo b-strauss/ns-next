@@ -8,7 +8,7 @@ class IsKindOfAnswersWhatAReceiverDeclares = Object new () (
         public isKindOfShape = ( ^true )
     )
     public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. Error = platform kernel Error. |
+        | transcript = platform transcript. collections = platform collections. |
         transcript show: (Array new: 2) isKindOfArray printString; newLine.
         transcript show: 3 isKindOfInteger printString; newLine.
         transcript show: 100000000000000000000000 isKindOfInteger printString; newLine.

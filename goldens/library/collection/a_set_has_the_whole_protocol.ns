@@ -4,7 +4,7 @@
    `select:` and `reject:` answer Sets, so equal results merge. *)
 class ASetHasTheWholeProtocol = Object new () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. collections = platform collections. Set = collections Set. set show |
+        | transcript = platform transcript. collections = platform collections. Set = collections Set. set show |
         show:: [:collection |
             collection do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
             transcript newLine].
@@ -15,7 +15,7 @@ class ASetHasTheWholeProtocol = Object new () (
         transcript show: (set remove: 1) printString; newLine.
         show value: set.
         transcript show: ([set remove: 1] on: collections NotFound do: [:error | error element]) printString; newLine.
-        transcript show: ([set remove: 1] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([set remove: 1] on: Error do: [:error | error messageText]); newLine.
         transcript show: (set remove: 1 ifAbsent: [#absent]) printString; newLine.
         set add: 1.
         show value: set.

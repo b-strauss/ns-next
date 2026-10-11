@@ -10,7 +10,7 @@
 class AStringIndexErrorIsCaught = Object new (
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. ArgumentError = platform kernel ArgumentError. largest smallest |
+        | transcript = platform transcript. ArgumentError = platform kernel ArgumentError. largest smallest |
         largest:: 9223372036854775807.
         smallest:: 0 - largest - 1.
         transcript show: (['abc' at: 4] on: Error do: [:error | error messageText]); newLine.

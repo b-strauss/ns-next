@@ -12,7 +12,7 @@ class Spec632AnAbandonedClause = Object new (
         || public first = {holder escaped: second. nil zork}. public second = 2 + 1. ||
     ) () : ()
     public main: platform args: arguments = (
-        | t = platform transcript. Error = platform kernel Error. |
+        | t = platform transcript. |
         t show: ([Probe keep: self. 'no error'] on: Error do: [:error | error class name]); newLine.
         t show: (escaped + 1) printString; newLine
     )

@@ -25,8 +25,7 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
    THE SOFTWARE. *)
 class Storage usingPlatform: platform = (
-    | private Error = platform kernel Error.
-      count |
+    | count |
 ) (
     public bench = (
         count:: 0.

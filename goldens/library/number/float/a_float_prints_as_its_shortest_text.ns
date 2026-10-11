@@ -6,7 +6,7 @@
    message gives. *)
 class AFloatPrintsAsItsShortestText = () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript print: 3.0; newLine.
         transcript print: -0.0; newLine.
         transcript print: 1.5; newLine.

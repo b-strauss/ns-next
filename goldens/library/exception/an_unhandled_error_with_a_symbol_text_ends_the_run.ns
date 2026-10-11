@@ -4,7 +4,7 @@ class AnUnhandledErrorWithASymbolTextEndsTheRun = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: 'before'; newLine.
         Error signal: #sym.
         transcript show: 'not reached'; newLine.

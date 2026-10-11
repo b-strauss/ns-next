@@ -4,7 +4,7 @@ class ADoesNotUnderstandIsCaughtAsAnError = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: ([nil zork] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([nil zork] on: Error do: [:e | e class name]); newLine.
         transcript show: ([nil zork] on: Error do: [:e | e receiver]) printString; newLine.

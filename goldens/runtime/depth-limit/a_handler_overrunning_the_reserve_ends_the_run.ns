@@ -7,7 +7,7 @@ class AHandlerOverrunningTheReserveEndsTheRun = Object new (
 ) (
     recurse = ( ^self recurse )
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: 'start'; newLine.
         [[[self recurse]
             on: Error do: [:e | transcript show: e messageText; newLine. self recurse]]

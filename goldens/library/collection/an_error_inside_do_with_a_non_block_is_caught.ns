@@ -13,7 +13,7 @@ class AnErrorInsideDoWithANonBlockIsCaught = Object new (
         )
     )
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. failing |
+        | transcript = platform transcript. failing |
         failing:: Failing new.
         transcript show: ([{1. 2. 3} do: failing. 'finished'] on: Error do: [:error | 'caught']); newLine.
         transcript show: failing seen printString; newLine

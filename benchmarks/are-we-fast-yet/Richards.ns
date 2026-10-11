@@ -26,8 +26,7 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
    THE SOFTWARE. *)
 class Richards usingPlatform: platform = (
-    | private Error = platform kernel Error.
-      private NoTask = nil.
+    | private NoTask = nil.
       private Idler = 1.
       private NoWork = nil.
       private Worker = 2.

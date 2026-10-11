@@ -5,7 +5,7 @@ class OnDoAnswersTheHandlersValue = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: ([Error signal: 'x'] on: Error do: [:e | e messageText]); newLine.
         transcript show: ([Error signal] on: Error do: [:e | e description]); newLine.
         transcript show: ([3] on: Error do: [:e | 4]) printString; newLine.

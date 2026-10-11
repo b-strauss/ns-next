@@ -6,7 +6,7 @@ class AnUncaughtErrorRunsPendingEnsures = Object new (
     
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. |
+        | transcript = platform transcript. |
         transcript show: 'before'; newLine.
         [[Error signal: 'boom'] ensure: [transcript show: 'cleanup'; newLine]]
             ensure: [transcript show: 'outer cleanup'; newLine].

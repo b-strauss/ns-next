@@ -3,8 +3,7 @@
    block, by the same unwinder: the `ensure:` block on the way runs, and
    the statement after the `on:do:` does not. *)
 class AReturnFromAHandlerBlock = Object new (
-    | transcript ::= nil.
-      private Error ::= nil. |
+    | transcript ::= nil. |
 ) (
     tryIt = (
         [[Error signal: 'r'] ensure: [transcript show: 'ensured'; newLine]] on: Error do: [:e | ^'returned'].
@@ -12,7 +11,6 @@ class AReturnFromAHandlerBlock = Object new (
     )
     public main: platform args: arguments = (
         transcript:: platform transcript.
-        Error:: platform kernel Error.
         transcript show: self tryIt; newLine.
     )
 ) : ()

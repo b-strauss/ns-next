@@ -6,7 +6,7 @@ class FutureComputingDefersItsBlock = Object new (
     | count ::= 0. looping ::= nil. |
 ) (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Future = platform kernel Future. Error = platform kernel Error. future |
+        | transcript = platform transcript. Future = platform kernel Future. future |
         future:: Future computing: [count:: count + 1. 6 * 7].
         transcript show: count printString; newLine.
         transcript show: (future + 0) printString; newLine.

@@ -11,6 +11,6 @@ class ACannotReturnCarriesTheReturnedValue = Object new (
         | transcript = platform transcript. kernel = platform kernel. |
         self stash.
         transcript show: ([stored value] on: kernel CannotReturn do: [:error | error result]); newLine.
-        transcript show: ([stored value] on: kernel Error do: [:error | error class name]); newLine.
+        transcript show: ([stored value] on: Error do: [:error | error class name]); newLine.
     )
 ) : ()

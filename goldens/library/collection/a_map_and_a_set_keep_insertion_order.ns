@@ -9,7 +9,6 @@ class AMapAndASetKeepInsertionOrder = Object new (
 ) (
     public main: platform args: arguments = (
         | transcript = platform transcript.
-          Error = platform kernel Error.
           Map = platform collections Map.
           Set = platform collections Set.
           map first second big set line |

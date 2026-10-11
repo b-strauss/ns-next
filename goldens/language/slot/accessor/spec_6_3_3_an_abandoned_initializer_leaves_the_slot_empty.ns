@@ -15,7 +15,7 @@ class Spec633LazyAbandoned = Object new () (
         )
     ) : ()
     public main: platform args: arguments = (
-        | t = platform transcript. Error = platform kernel Error. holder |
+        | t = platform transcript. holder |
         holder:: Holder failing: Error.
         t show: ([holder computed] on: Error do: [:error | error return: 0]) printString; newLine.
         t show: holder computed printString; newLine.

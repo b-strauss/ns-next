@@ -25,7 +25,6 @@
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
    THE SOFTWARE. *)
 class Sieve usingPlatform: platform = (
-    | private Error = platform kernel Error. |
 ) (
     public bench = (
         | result |

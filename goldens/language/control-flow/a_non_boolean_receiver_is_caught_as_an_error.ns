@@ -2,7 +2,7 @@
    `whileFalse:` signals it as `whileTrue:` does, inlined and native. *)
 class ANonBooleanReceiverIsCaughtAsAnError = Object new () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. condition |
+        | transcript = platform transcript. condition |
         transcript show: ([[4] whileFalse: [nil]] on: Error do: [:error | error class name]); newLine.
         transcript show: ([[4] whileFalse: [nil]] on: Error do: [:error | error receiver]) printString; newLine.
         condition:: [5].

@@ -5,7 +5,7 @@
    carrying it, the lower-case names and stray characters included. *)
 class AFloatIsParsedFromItsText = () (
     public main: platform args: arguments = (
-        | transcript = platform transcript. Error = platform kernel Error. third = 1.0 / 3.0. |
+        | transcript = platform transcript. third = 1.0 / 3.0. |
         transcript print: (Float parse: '3'); newLine.
         transcript print: (Float parse: '3.'); newLine.
         transcript print: (Float parse: '-3'); newLine.

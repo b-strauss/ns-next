@@ -5,13 +5,13 @@ class AStringSearchErrorIsAnArgumentError = Object new () (
         | transcript = platform transcript. kernel = platform kernel. text |
         text:: 'hello world'.
         transcript show: ([text indexOf: 'o' startingAt: 13] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([text indexOf: 'o' startingAt: 0] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([text indexOf: 'o' startingAt: 0] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([text lastIndexOf: 'o' startingAt: 13] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([text indexOf: 3] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([text indexOf: 3] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([text startsWith: 3] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([text endsWith: 3] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([text endsWith: 3] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([String withAll: {104. 55296}] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([String withAll: {104. 55296}] on: kernel Error do: [:error | error messageText]); newLine.
+        transcript show: ([String withAll: {104. 55296}] on: Error do: [:error | error messageText]); newLine.
         transcript show: ([text stringAt: 12] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
     )
 ) : ()
