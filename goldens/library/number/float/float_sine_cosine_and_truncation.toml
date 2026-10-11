@@ -1,10 +1,10 @@
 stdout = '''
-0 -0 1
+0.0 -0.0 1.0
 true true
 NaN NaN
 3 -3 0 0
 100000000000000000000 LargeInteger
 9223372036854775808 -9223372036854775808 LargeInteger
 asInteger requires a finite Float, got NaN
-asInteger requires a finite Float, got -inf
+asInteger requires a finite Float, got -Infinity
 '''

@@ -2554,7 +2554,7 @@ impl<'gc> Heap<'gc> {
             ValueKind::Nil => "nil".to_string(),
             ValueKind::Boolean(boolean) => boolean.to_string(),
             ValueKind::SmallInteger(integer) => integer.to_string(),
-            ValueKind::SmallFloat(float) => float.to_string(),
+            ValueKind::SmallFloat(float) => crate::numeric::float_text::shortest(float),
             ValueKind::Object(object) => {
                 match self.header(object).format() {
                     _ if self.is_string(object) => match self.symbol_value(object) {
@@ -2572,7 +2572,7 @@ impl<'gc> Heap<'gc> {
                             // As an immediate float describes: which of the
                             // two a float is, is no business of an error
                             // message.
-                            Some(float) => float.to_string(),
+                            Some(float) => crate::numeric::float_text::shortest(float),
                             // Bare digits, as a `SmallInteger` describes, for
                             // the same reason.
                             None => self

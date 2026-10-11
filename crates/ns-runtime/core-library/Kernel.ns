@@ -1461,7 +1461,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers a new String of the receiver with `fractionDigits`
            digits after the point, rounded half away from zero on its exact
            binary value, keeping its sign even when every digit is zero;
-           its `printString` when it is not within ±1e21, a NaN or an
+           `printString`'s text when it is not within ±1e21, a NaN or an
            infinity included.
 
            fractionDigits: an Integer from 0 to 20.
@@ -1475,12 +1475,67 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^vmMirror float: self asStringFixed: fractionDigits
                 ifFail: [^super asStringFixed: fractionDigits]
         )
+        (* Answers a new String of the receiver in exponent form: one digit,
+           a point and `fractionDigits` digits when there are any, rounded
+           half away from zero on its exact binary value, then 'e', the
+           exponent's sign and the exponent -- '3.0e+0', '6.67e+1',
+           '-0e+0'; 'NaN', 'Infinity' or '-Infinity' for those values.
+
+           fractionDigits: an Integer from 0 to 20.
+
+           Signals an ArgumentError carrying `fractionDigits`:
+           'asStringExponential: takes 0 to 20 fraction digits, got …' for
+           an Integer outside 0 to 20, a LargeInteger included, and
+           'asStringExponential: requires an integer argument, got …' for
+           one that is no Integer. *)
+        public asStringExponential: fractionDigits = (
+            ^vmMirror float: self asStringExponential: fractionDigits
+                ifFail: [^super asStringExponential: fractionDigits]
+        )
+        (* Answers a new String of the receiver with `digits` significant
+           digits, rounded half away from zero on its exact binary value:
+           in decimal ('66.7', '0.0000010'), or in `asStringExponential:`'s
+           form ('7e+1', '1.0e-7') when the value needs more than six zeros
+           after the point or its digits end before the point; 'NaN',
+           'Infinity' or '-Infinity' for those values.
+
+           digits: an Integer from 1 to 21.
+
+           Signals an ArgumentError carrying `digits`: 'asStringPrecision:
+           takes 1 to 21 digits, got …' for an Integer outside 1 to 21, a
+           LargeInteger included, and 'asStringPrecision: requires an
+           integer argument, got …' for one that is no Integer. *)
+        public asStringPrecision: digits = (
+            ^vmMirror float: self asStringPrecision: digits
+                ifFail: [^super asStringPrecision: digits]
+        )
         (* Answers a new String of the shortest decimal text that reads
-           back as the receiver, with no exponent and no point for an
-           integral value: '1.5', '1', 'NaN', 'inf', '-inf'. *)
+           back as the receiver: in decimal when its first digit's power of
+           ten lies from -6 to 20, with '.0' after an integral value
+           ('3.0', '0.000001', '100000000000000000000.0'), and in exponent
+           form beyond ('1e+21', '1e-7'); 'NaN', 'Infinity' and
+           '-Infinity' for those values. A negative value, -0.0 included,
+           begins with '-'. *)
         public printString = ( ^vmMirror floatPrintString: self ifFail: [^super printString] )
         (* Answers what `printString` answers. *)
         public asString = ( ^vmMirror floatAsString: self ifFail: [^super asString] )
+    ) : (
+        (* Answers the Float `text` names: an optional '-' or '+', then
+           'Infinity', 'NaN', or decimal digits with an optional point and
+           an optional exponent ('e' or 'E', an optional sign, digits),
+           with at least one digit before the exponent -- every text
+           `printString` writes. The nearest Float to the decimal value;
+           an infinity beyond the largest.
+
+           text: a String.
+
+           Signals an ArgumentError carrying `text`: 'parse: requires the
+           text of a Float, got …' for a String that is no such text, a
+           lower-case 'nan' or 'inf', a space or an empty String included,
+           and 'parse: requires a String, got …' for anything else. *)
+        (* The leaf declines only a subject that is not `Float` itself,
+           which a flat class side cannot be sent from; answers nil then. *)
+        public parse: text = ( ^vmMirror floatClass: self parse: text ifFail: [nil] )
     )
     (* An immutable sequence of Unicode code points: a literal such as
        `'abc'` is one. *)

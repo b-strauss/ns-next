@@ -1,0 +1,26 @@
+stdout = '''
+3e+0
+3.0e+0
+2e+0
+6.67e+1
+0.0e+0
+-0e+0
+3.3e-1
+Infinity
+3
+3.0
+7e+1
+67
+66.7
+0.3
+-0.0
+0.0000010
+1.0e-7
+NaN
+1e+21
+-Infinity
+asStringExponential: takes 0 to 20 fraction digits, got 21
+asStringPrecision: takes 1 to 21 digits, got 0
+asStringPrecision: takes 1 to 21 digits, got 22
+asStringPrecision: requires an integer argument, got nil
+'''

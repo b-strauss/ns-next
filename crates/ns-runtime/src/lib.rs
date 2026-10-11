@@ -19,6 +19,7 @@ pub mod heap;
 pub mod image;
 pub mod interpreter;
 pub mod mixin;
+pub(crate) mod numeric;
 pub mod platform;
 pub mod resolver;
 pub mod symbol;

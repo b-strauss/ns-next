@@ -1,7 +1,7 @@
 stdout = '''
 4.5
 2.5
-14
+14.0
 true
 false
 true
@@ -9,8 +9,8 @@ false
 false
 false
 false
-9007199254740992
-9223372036854776000
+9007199254740992.0
+9223372036854776000.0
 false
 true
 false

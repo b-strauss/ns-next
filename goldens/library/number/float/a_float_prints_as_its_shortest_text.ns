@@ -1,0 +1,28 @@
+(* A Float prints as the shortest text that reads back as the same
+   double: in decimal while the exponent of its first digit lies from -6
+   to 20, with `.0` when the text would look integral, and in exponent
+   form beyond; the infinities and NaN by name. `printString` and
+   `asString` answer the same, and so does the description an error
+   message gives. *)
+class AFloatPrintsAsItsShortestText = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript. Error = platform kernel Error. |
+        transcript print: 3.0; newLine.
+        transcript print: -0.0; newLine.
+        transcript print: 1.5; newLine.
+        transcript print: 0.1; newLine.
+        transcript print: 1.0 / 3.0; newLine.
+        transcript print: 100000000000000000000 asFloat; newLine.
+        transcript print: 1000000000000000000000 asFloat; newLine.
+        transcript print: 123456789012345678901234567890 asFloat; newLine.
+        transcript print: 0.000001; newLine.
+        transcript print: 0.0000001; newLine.
+        transcript print: 1.0 / 0.0; newLine.
+        transcript print: -1.0 / 0.0; newLine.
+        transcript print: 0.0 / 0.0; newLine.
+        transcript show: 2.5 asString; newLine.
+        transcript print: 4 * 3.5; newLine.
+        transcript show: ([(-1.0 / 0.0) asInteger] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([3 bitAnd: 2.0] on: Error do: [:error | error messageText]); newLine
+    )
+)

@@ -1,0 +1,20 @@
+stdout = '''
+3.0
+3.0
+-3.0
+3.0
+1.5
+0.0025
+1e+21
+NaN
+Infinity
+-Infinity
+true
+-0.0
+parse: requires the text of a Float, got the String ""
+parse: requires the text of a Float, got the String "nan"
+parse: requires the text of a Float, got the String "inf"
+parse: requires the text of a Float, got the String "--9"
+parse: requires the text of a Float, got the String "3 "
+parse: requires a String, got 3
+'''

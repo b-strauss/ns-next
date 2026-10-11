@@ -252,7 +252,7 @@ it to even, so `0.125 asStringFixed: 2` is `'0.13'` and
 `1.005 asStringFixed: 2`, just below the tie in binary, is `'1.00'`; the sign
 is the value's even when the digits round to zero (`-0.04 asStringFixed: 1` is
 `'-0.0'`); and outside ±1e21, and for a NaN or an infinity, it answers the
-text `printString` does (`fixed_text` in `builtins/numbers.rs`;
+text `printString` does (`fixed` in `numeric/float_text.rs`;
 `goldens/library/number/float/as_float_and_as_string_fixed.ns`). The Are We
 Fast Yet harness prints its scores with it.
 
@@ -1053,9 +1053,9 @@ allocating. The selector and its meaning are Primordial Soup's
 **`asFloat` answers the nearest double**, ties to even: an `Integer`'s by
 Rust's `as`, exact up to 2^53, and a `LargeInteger`'s by
 `ArbitraryInteger::to_f64`, the conversion a `Float`'s leaves already apply
-to an integer argument. A `Float` prints as Rust's `Display` writes it, the
-shortest digits that read back as the same double, so `9223372036854775808
-asFloat` prints `9223372036854776000`
+to an integer argument. A `Float` prints as its shortest text ("A Float's text"), the
+digits that read back as the same double, so `9223372036854775808
+asFloat` prints `9223372036854776000.0`
 (`goldens/library/number/float/as_float_and_as_string_fixed.ns`).
 
 **The representation.** A `LargeInteger` is an object of the 64-bit-indexed
@@ -1201,6 +1201,35 @@ by representation, not by meaning. ns-next boxes the same floats and keeps
 one class, `Float`, for both representations
 ([object-model.md](object-model.md), "Values and objects"), so one `isNaN`
 test serves both.
+
+## A Float's text
+
+`Float>>printString`, `asString`, `asStringFixed:`,
+`asStringExponential:`, `asStringPrecision:` and `Float class>>parse:` are
+leaves over `numeric/float_text.rs`, which is plain Rust with no heap, so
+that it is tested as such and so that `Heap::describe` writes a float in an
+error message as `printString` does.
+
+The layout is Primordial Soup's, which is what a program written against
+that API expects: the shortest digits that read back as the same double
+(Rust's `{:e}` finds them), written in decimal when the exponent of the first
+digit lies from -6 to 20 and in exponent form (`1e+21`, `1e-7`) outside it;
+`.0` after a decimal text that would otherwise look integral (`3.0`,
+`100000000000000000000.0`); `NaN`, `Infinity` and `-Infinity` by name; a `-`
+for every negative value, `-0.0` included. `asStringFixed:`,
+`asStringExponential:` and `asStringPrecision:` round half up on the value's
+exact binary expansion (800 digits of Rust's `{:e}` are the value itself, not
+a rounding), so `0.125 asStringPrecision: 2` is `'0.13'`. A digit count
+outside the range of its selector (0 to 20, 0 to 20, 1 to 21), a
+`LargeInteger` included, is an `ArgumentError` carrying it.
+
+`Float parse:` reads an optional sign, then `Infinity`, `NaN`, or digits with
+an optional point and an optional exponent, and so every text `printString`
+writes: a Float read back from its text is the same Float. The grammar is
+checked before Rust's parser runs, because that one also takes `inf`, `nan`
+and `infinity` in any case; here they are an `ArgumentError`, as is any
+other text. The mirror row is `floatClass:parse:ifFail:`, the class as the
+subject like `stringClass:with:ifFail:`.
 
 ## Gap: an integer has no `/`
 

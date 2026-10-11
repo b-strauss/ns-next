@@ -4,7 +4,7 @@
    fraction's too -- times ten to its exponent, as the canonical parser
    computes it (NewspeakParsing.ns, radixNum), since the section gives the
    exponent no base. Non-integral numbers are binary floats here (a recorded
-   deviation), which print without a fractional part when they have none. *)
+   deviation), which print with `.0` when they have no fractional part. *)
 class Spec511ARadixNumberMayHaveAFractionAndAnExponent = Object new () (
     public main: platform args: arguments = (
         | t = platform transcript. |

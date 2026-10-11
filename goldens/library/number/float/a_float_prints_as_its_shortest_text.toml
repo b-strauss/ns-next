@@ -1,0 +1,19 @@
+stdout = '''
+3.0
+-0.0
+1.5
+0.1
+0.3333333333333333
+100000000000000000000.0
+1e+21
+1.2345678901234568e+29
+0.000001
+1e-7
+Infinity
+-Infinity
+NaN
+2.5
+14.0
+asInteger requires a finite Float, got -Infinity
+bitAnd: requires an integer argument, got 2.0
+'''

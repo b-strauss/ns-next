@@ -5,6 +5,7 @@ use super::{float_operand, type_mismatch, Accepted};
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{FloatPrimitive, Primitive};
+use crate::numeric::float_text;
 use crate::types::*;
 use crate::{Heap, Mutator, Symbol};
 
@@ -42,60 +43,15 @@ pub(crate) fn float_hash(value: f64) -> i64 {
     crate::hash::content_hash(normalized.to_bits())
 }
 
-/// `Float>>asStringFixed:`'s text, as Primordial Soup's double-conversion
-/// writes it: `fraction_digits` digits after the point, a tie rounded up on
-/// the exact binary value (Rust's formatter would round it to even), and
-/// the value's own sign even when the digits round to zero. Outside ±1e21,
-/// and for a NaN or an infinity, the text `printString` answers.
-pub(crate) fn fixed_text(value: f64, fraction_digits: usize) -> String {
-    if !(value > -1e21 && value < 1e21) {
-        return value.to_string();
-    }
-    // Every finite double has an exact decimal expansion of at most 1074
-    // fraction digits, so this text is the value itself, not a rounding.
-    let exact = format!("{:.1074}", value.abs());
-    let (integer_text, fraction_text) = exact
-        .split_once('.')
-        .expect("a fixed-precision format has a point");
-    let mut digits: Vec<u8> = integer_text
-        .bytes()
-        .chain(fraction_text.bytes().take(fraction_digits))
-        .collect();
-    if fraction_text.as_bytes()[fraction_digits] >= b'5' {
-        let mut position = digits.len();
-        loop {
-            if position == 0 {
-                digits.insert(0, b'1');
-                break;
-            }
-            position -= 1;
-            if digits[position] == b'9' {
-                digits[position] = b'0';
-            } else {
-                digits[position] += 1;
-                break;
-            }
-        }
-    }
-    let integer_length = digits.len() - fraction_digits;
-    let mut text = String::with_capacity(digits.len() + 2);
-    if value.is_sign_negative() {
-        text.push('-');
-    }
-    text.push_str(std::str::from_utf8(&digits[..integer_length]).expect("ASCII digits"));
-    if fraction_digits > 0 {
-        text.push('.');
-        text.push_str(std::str::from_utf8(&digits[integer_length..]).expect("ASCII digits"));
-    }
-    text
-}
-
 pub(crate) fn execute_float<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: FloatPrimitive,
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    if let FloatPrimitive::Parse = primitive {
+        return parse(mutator, receiver, arguments);
+    }
     let receiver_float = mutator.heap.float_value(receiver)?;
     // An `Integer` or `LargeInteger` argument becomes the nearest `double`;
     // anything else is a type mismatch, never a silent `NaN` result for
@@ -173,41 +129,151 @@ pub(crate) fn execute_float<'gc>(
                     Symbol::intern("asInteger"),
                     receiver,
                     receiver,
-                    format!("asInteger requires a finite Float, got {receiver_float}"),
+                    format!(
+                        "asInteger requires a finite Float, got {}",
+                        float_text::shortest(receiver_float)
+                    ),
                 )),
             },
         ),
         FloatPrimitive::PrintString => Some(Ok(Value::object(
-            mutator.new_string(receiver_float.to_string()),
+            mutator.new_string(float_text::shortest(receiver_float)),
         ))),
         FloatPrimitive::AsStringFixed => Some(
-            match collections::integer_argument(&mutator.heap, arguments.first().copied()) {
-                Some(IntegerArgument::Small(count)) if (0..=20).contains(&count) => Ok(
-                    Value::object(mutator.new_string(fixed_text(receiver_float, count as usize))),
-                ),
-                // The 20 is Primordial Soup's own wrapper, not double-conversion's
-                // (which allows 100): its `DoubleToCStringAsFixed` fixes 20 digits
-                // either side of the point to size its buffer, so its primitive
-                // fails outside 0 to 20 and its method raises.
-                Some(IntegerArgument::Small(count)) => Err(NewspeakError::argument_error(
-                    Symbol::intern("asStringFixed:"),
-                    receiver,
-                    Value::small_integer(count),
-                    format!("asStringFixed: takes 0 to 20 fraction digits, got {count}"),
-                )),
-                // A `LargeInteger` is past 20 as surely as a `SmallInteger` is.
-                Some(IntegerArgument::Large { .. }) => Err(NewspeakError::argument_error(
-                    Symbol::intern("asStringFixed:"),
-                    receiver,
-                    first_argument(arguments),
-                    format!(
-                        "asStringFixed: takes 0 to 20 fraction digits, got {}",
-                        mutator.heap.describe_argument(arguments.first().copied())
-                    ),
-                )),
-                None => Err(mismatch("asStringFixed:")),
-            },
+            digit_count(
+                &mutator.heap,
+                receiver,
+                "asStringFixed:",
+                0..=20,
+                "takes 0 to 20 fraction digits",
+                Accepted::Number,
+                arguments,
+            )
+            .map(|count| {
+                Value::object(mutator.new_string(float_text::fixed(receiver_float, count)))
+            }),
         ),
+        FloatPrimitive::AsStringExponential => Some(
+            digit_count(
+                &mutator.heap,
+                receiver,
+                "asStringExponential:",
+                0..=20,
+                "takes 0 to 20 fraction digits",
+                Accepted::Integer,
+                arguments,
+            )
+            .map(|count| {
+                Value::object(mutator.new_string(float_text::exponential(receiver_float, count)))
+            }),
+        ),
+        FloatPrimitive::AsStringPrecision => Some(
+            digit_count(
+                &mutator.heap,
+                receiver,
+                "asStringPrecision:",
+                1..=21,
+                "takes 1 to 21 digits",
+                Accepted::Integer,
+                arguments,
+            )
+            .map(|count| {
+                Value::object(mutator.new_string(float_text::precision(receiver_float, count)))
+            }),
+        ),
+        FloatPrimitive::Parse => unreachable!("execute_float answers Parse before this match"),
+    }
+}
+
+/// A digit count for `asStringFixed:`, `asStringExponential:` or
+/// `asStringPrecision:` within `range`, or the `ArgumentError` its
+/// selector signals: `out_of_range` names the range in words. The bound is
+/// the algorithm's own: a `LargeInteger` is past it as surely as a
+/// `SmallInteger` is.
+fn digit_count<'gc>(
+    heap: &Heap<'gc>,
+    receiver: Value<'gc>,
+    selector: &str,
+    range: std::ops::RangeInclusive<i64>,
+    out_of_range: &str,
+    accepted: Accepted,
+    arguments: &[Value<'gc>],
+) -> Result<usize, NewspeakError<'gc>> {
+    match collections::integer_argument(heap, arguments.first().copied()) {
+        Some(IntegerArgument::Small(count)) if range.contains(&count) => Ok(count as usize),
+        Some(IntegerArgument::Small(count)) => Err(NewspeakError::argument_error(
+            Symbol::intern(selector),
+            receiver,
+            Value::small_integer(count),
+            format!("{selector} {out_of_range}, got {count}"),
+        )),
+        Some(IntegerArgument::Large { .. }) => Err(NewspeakError::argument_error(
+            Symbol::intern(selector),
+            receiver,
+            first_argument(arguments),
+            format!(
+                "{selector} {out_of_range}, got {}",
+                heap.describe_argument(arguments.first().copied())
+            ),
+        )),
+        None => Err(type_mismatch(
+            heap,
+            receiver,
+            Symbol::intern(selector),
+            accepted,
+            arguments.first().copied(),
+        )),
+    }
+}
+
+/// `Float class>>parse:`: the Float a text names (`numeric::float_text::parse`
+/// says which texts), or an `ArgumentError` carrying the argument. Declines
+/// for a subject that is not `Float` itself, which a flat class side cannot
+/// be sent from.
+fn parse<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let class = receiver.as_object()?;
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::Float) {
+        return None;
+    }
+    Some(parse_text(mutator, receiver, first_argument(arguments)))
+}
+
+fn parse_text<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    argument: Value<'gc>,
+) -> Result<Value<'gc>, NewspeakError<'gc>> {
+    let selector = Symbol::intern("parse:");
+    let text = argument
+        .as_object()
+        .filter(|object| !mutator.heap.is_symbol(*object))
+        .and_then(|object| mutator.heap.str_value(object));
+    let Some(text) = text else {
+        return Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            argument,
+            format!(
+                "parse: requires a String, got {}",
+                mutator.heap.describe(argument)
+            ),
+        ));
+    };
+    match float_text::parse(&text) {
+        Some(value) => Ok(mutator.new_float(value)),
+        None => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            argument,
+            format!(
+                "parse: requires the text of a Float, got {}",
+                mutator.heap.describe(argument)
+            ),
+        )),
     }
 }
 
@@ -239,27 +305,5 @@ mod tests {
             let one = mutator.new_float(1.0);
             assert!(!float_equals(&mutator.heap, f64::NAN, Some(one)));
         });
-    }
-
-    #[test]
-    fn fixed_text_rounds_a_tie_up_on_the_exact_binary_value() {
-        assert_eq!(super::fixed_text(0.125, 2), "0.13");
-        assert_eq!(super::fixed_text(-0.125, 2), "-0.13");
-        assert_eq!(super::fixed_text(2.5, 0), "3");
-        assert_eq!(super::fixed_text(0.5, 0), "1");
-        assert_eq!(super::fixed_text(1.005, 2), "1.00");
-        assert_eq!(super::fixed_text(9.995, 2), "9.99");
-        assert_eq!(super::fixed_text(99.95, 1), "100.0");
-        assert_eq!(super::fixed_text(123.456, 1), "123.5");
-        assert_eq!(super::fixed_text(1.0, 3), "1.000");
-        assert_eq!(super::fixed_text(-0.0, 1), "-0.0");
-        assert_eq!(super::fixed_text(-0.04, 1), "-0.0");
-        assert_eq!(super::fixed_text(0.1, 20), "0.10000000000000000555");
-        assert_eq!(super::fixed_text(1e21, 2), (1e21f64).to_string());
-        assert_eq!(super::fixed_text(f64::NAN, 2), "NaN");
-        assert_eq!(
-            super::fixed_text(f64::NEG_INFINITY, 2),
-            f64::NEG_INFINITY.to_string()
-        );
     }
 }

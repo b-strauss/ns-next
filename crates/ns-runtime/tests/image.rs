@@ -1491,8 +1491,8 @@ fn a_boxed_float_value_round_trips_without_a_record() {
     let mut loaded = image::load(&bytes).expect("load");
     for (selector, expected) in [
         ("notANumberText", "NaN"),
-        ("infinityText", "inf"),
-        ("hugeText", huge.as_str()),
+        ("infinityText", "Infinity"),
+        ("hugeText", "1e+300"),
         ("hugeClass", "Float"),
     ] {
         let answer = expect_ok(

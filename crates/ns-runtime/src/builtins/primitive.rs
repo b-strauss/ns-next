@@ -129,6 +129,9 @@ impl Primitive {
                 | FloatPrimitive::GreaterOrEqual
                 | FloatPrimitive::Hash
                 | FloatPrimitive::AsStringFixed
+                | FloatPrimitive::AsStringExponential
+                | FloatPrimitive::AsStringPrecision
+                | FloatPrimitive::Parse
                 | FloatPrimitive::SquareRoot
                 | FloatPrimitive::Sine
                 | FloatPrimitive::Cosine
@@ -296,6 +299,9 @@ pub enum FloatPrimitive {
     Equal,
     Hash,
     AsStringFixed,
+    AsStringExponential,
+    AsStringPrecision,
+    Parse,
     SquareRoot,
     Sine,
     Cosine,
@@ -995,6 +1001,21 @@ pub const MIRROR: &[MirrorEntry] = &[
         "float:asStringFixed:ifFail:",
         "asStringFixed:",
         Primitive::Float(FloatPrimitive::AsStringFixed),
+    ),
+    mirror(
+        "float:asStringExponential:ifFail:",
+        "asStringExponential:",
+        Primitive::Float(FloatPrimitive::AsStringExponential),
+    ),
+    mirror(
+        "float:asStringPrecision:ifFail:",
+        "asStringPrecision:",
+        Primitive::Float(FloatPrimitive::AsStringPrecision),
+    ),
+    mirror(
+        "floatClass:parse:ifFail:",
+        "parse:",
+        Primitive::Float(FloatPrimitive::Parse),
     ),
     mirror(
         "clockMonotonicNanoseconds:ifFail:",
