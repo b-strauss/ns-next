@@ -122,6 +122,32 @@ pub(crate) fn execute_float<'gc>(
         // last bit (CD was checked against correctly rounded values).
         FloatPrimitive::Sine => Some(Ok(mutator.new_float(receiver_float.sin()))),
         FloatPrimitive::Cosine => Some(Ok(mutator.new_float(receiver_float.cos()))),
+        FloatPrimitive::Tangent => Some(Ok(mutator.new_float(receiver_float.tan()))),
+        FloatPrimitive::ArcSine => Some(Ok(mutator.new_float(receiver_float.asin()))),
+        FloatPrimitive::ArcCosine => Some(Ok(mutator.new_float(receiver_float.acos()))),
+        FloatPrimitive::ArcTangent => Some(Ok(mutator.new_float(receiver_float.atan()))),
+        // `y atan: x`, the angle of the point (x, y).
+        FloatPrimitive::ArcTangentOf => {
+            Some(arithmetic("atan:", f64::atan2).map(|float| mutator.new_float(float)))
+        }
+        FloatPrimitive::Exponential => Some(Ok(mutator.new_float(receiver_float.exp()))),
+        FloatPrimitive::NaturalLogarithm => Some(Ok(mutator.new_float(receiver_float.ln()))),
+        FloatPrimitive::Logarithm => Some(Ok(mutator.new_float(receiver_float.log10()))),
+        FloatPrimitive::RaisedTo => {
+            Some(arithmetic("raisedTo:", f64::powf).map(|float| mutator.new_float(float)))
+        }
+        FloatPrimitive::Floor => Some(Ok(mutator.new_float(receiver_float.floor()))),
+        FloatPrimitive::Ceiling => Some(Ok(mutator.new_float(receiver_float.ceil()))),
+        // Half away from zero, as C's `round`.
+        FloatPrimitive::Rounded => Some(Ok(mutator.new_float(receiver_float.round()))),
+        FloatPrimitive::Truncated => Some(Ok(mutator.new_float(receiver_float.trunc()))),
+        // The sign bit flipped, so `0.0 negated` is `-0.0`, which `0 - self`
+        // would not answer.
+        FloatPrimitive::Negated => Some(Ok(mutator.new_float(-receiver_float))),
+        FloatPrimitive::Absolute => Some(Ok(mutator.new_float(receiver_float.abs()))),
+        FloatPrimitive::IsNaN => Some(Ok(Value::boolean(receiver_float.is_nan()))),
+        FloatPrimitive::IsFinite => Some(Ok(Value::boolean(receiver_float.is_finite()))),
+        FloatPrimitive::IsInfinite => Some(Ok(Value::boolean(receiver_float.is_infinite()))),
         FloatPrimitive::AsInteger => Some(
             match crate::ArbitraryInteger::from_f64_truncated(receiver_float) {
                 Some(integer) => Ok(mutator.new_integer(integer)),

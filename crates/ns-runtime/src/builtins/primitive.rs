@@ -135,6 +135,24 @@ impl Primitive {
                 | FloatPrimitive::SquareRoot
                 | FloatPrimitive::Sine
                 | FloatPrimitive::Cosine
+                | FloatPrimitive::Tangent
+                | FloatPrimitive::ArcSine
+                | FloatPrimitive::ArcCosine
+                | FloatPrimitive::ArcTangent
+                | FloatPrimitive::ArcTangentOf
+                | FloatPrimitive::Exponential
+                | FloatPrimitive::NaturalLogarithm
+                | FloatPrimitive::Logarithm
+                | FloatPrimitive::RaisedTo
+                | FloatPrimitive::Floor
+                | FloatPrimitive::Ceiling
+                | FloatPrimitive::Rounded
+                | FloatPrimitive::Truncated
+                | FloatPrimitive::Negated
+                | FloatPrimitive::Absolute
+                | FloatPrimitive::IsNaN
+                | FloatPrimitive::IsFinite
+                | FloatPrimitive::IsInfinite
                 | FloatPrimitive::AsInteger
                 | FloatPrimitive::PrintString,
             ) => false,
@@ -305,6 +323,24 @@ pub enum FloatPrimitive {
     SquareRoot,
     Sine,
     Cosine,
+    Tangent,
+    ArcSine,
+    ArcCosine,
+    ArcTangent,
+    ArcTangentOf,
+    Exponential,
+    NaturalLogarithm,
+    Logarithm,
+    RaisedTo,
+    Floor,
+    Ceiling,
+    Rounded,
+    Truncated,
+    Negated,
+    Absolute,
+    IsNaN,
+    IsFinite,
+    IsInfinite,
     AsInteger,
     PrintString,
 }
@@ -1096,6 +1132,96 @@ pub const MIRROR: &[MirrorEntry] = &[
         "floatCosine:ifFail:",
         "cos",
         Primitive::Float(FloatPrimitive::Cosine),
+    ),
+    mirror(
+        "floatTangent:ifFail:",
+        "tan",
+        Primitive::Float(FloatPrimitive::Tangent),
+    ),
+    mirror(
+        "floatArcSine:ifFail:",
+        "asin",
+        Primitive::Float(FloatPrimitive::ArcSine),
+    ),
+    mirror(
+        "floatArcCosine:ifFail:",
+        "acos",
+        Primitive::Float(FloatPrimitive::ArcCosine),
+    ),
+    mirror(
+        "floatArcTangent:ifFail:",
+        "atan",
+        Primitive::Float(FloatPrimitive::ArcTangent),
+    ),
+    mirror(
+        "float:arcTangent:ifFail:",
+        "atan:",
+        Primitive::Float(FloatPrimitive::ArcTangentOf),
+    ),
+    mirror(
+        "floatExponential:ifFail:",
+        "exp",
+        Primitive::Float(FloatPrimitive::Exponential),
+    ),
+    mirror(
+        "floatNaturalLogarithm:ifFail:",
+        "ln",
+        Primitive::Float(FloatPrimitive::NaturalLogarithm),
+    ),
+    mirror(
+        "floatLogarithm:ifFail:",
+        "log",
+        Primitive::Float(FloatPrimitive::Logarithm),
+    ),
+    mirror(
+        "float:raisedTo:ifFail:",
+        "raisedTo:",
+        Primitive::Float(FloatPrimitive::RaisedTo),
+    ),
+    mirror(
+        "floatFloor:ifFail:",
+        "floor",
+        Primitive::Float(FloatPrimitive::Floor),
+    ),
+    mirror(
+        "floatCeiling:ifFail:",
+        "ceiling",
+        Primitive::Float(FloatPrimitive::Ceiling),
+    ),
+    mirror(
+        "floatRounded:ifFail:",
+        "rounded",
+        Primitive::Float(FloatPrimitive::Rounded),
+    ),
+    mirror(
+        "floatTruncated:ifFail:",
+        "truncated",
+        Primitive::Float(FloatPrimitive::Truncated),
+    ),
+    mirror(
+        "floatNegated:ifFail:",
+        "negated",
+        Primitive::Float(FloatPrimitive::Negated),
+    ),
+    mirror(
+        "floatAbsolute:ifFail:",
+        "abs",
+        Primitive::Float(FloatPrimitive::Absolute),
+    ),
+    mirror(
+        "floatIsNaN:ifFail:",
+        "isNaN",
+        Primitive::Float(FloatPrimitive::IsNaN),
+    ),
+    mirror(
+        "floatIsFinite:ifFail:",
+        "isFinite",
+        Primitive::Float(FloatPrimitive::IsFinite),
+    ),
+    mirror(
+        "floatIsInfinite:ifFail:",
+        "isInfinite",
+        Primitive::Float(FloatPrimitive::IsInfinite),
     ),
     mirror(
         "floatAsInteger:ifFail:",

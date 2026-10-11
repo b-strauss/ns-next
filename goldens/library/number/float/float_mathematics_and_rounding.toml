@@ -1,0 +1,17 @@
+stdout = '''
+0.0 0.0 0.0 0.0
+0.0 1.0 0.0 0.0
+true true true
+1024.0 2.0 0.5 8.0
+3.0 -4.0 4.0 -3.0
+3.0 -3.0 2.0 3.0 -3.0
+Infinity NaN -0.0
+-1.5 -0.0 2.5 0.0 1.5
+true false true false true
+false true false true
+2.0 0.0 0.0 1.0 10000000000.0
+true false true
+3 3 2.5 3
+atan: requires a numeric argument, got nil
+raisedTo: requires a numeric argument, got the String "x"
+'''

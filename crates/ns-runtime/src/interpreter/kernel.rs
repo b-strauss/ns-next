@@ -815,6 +815,19 @@ mod tests {
         // do.
         (BuiltinClass::Integer, "timesRepeat:"),
         (BuiltinClass::Number, "max:"),
+        (BuiltinClass::Number, "min:"),
+        (BuiltinClass::Number, "between:and:"),
+        (BuiltinClass::Number, "sqrt"),
+        (BuiltinClass::Number, "sin"),
+        (BuiltinClass::Number, "cos"),
+        (BuiltinClass::Number, "tan"),
+        (BuiltinClass::Number, "asin"),
+        (BuiltinClass::Number, "acos"),
+        (BuiltinClass::Number, "atan"),
+        (BuiltinClass::Number, "atan:"),
+        (BuiltinClass::Number, "exp"),
+        (BuiltinClass::Number, "ln"),
+        (BuiltinClass::Number, "log"),
         // A send to `self` is no leaf: `printString` reads the class's own
         // `name`, and a metaclass's `name` reads its own `thisClass` first.
         (BuiltinClass::Class, "printString"),
@@ -1095,6 +1108,22 @@ mod tests {
             MethodFastPath::CullParameter(0),
         ),
         (BuiltinClass::Object, "yourself", MethodFastPath::Receiver),
+        (BuiltinClass::Float, "asFloat", MethodFastPath::Receiver),
+        (
+            BuiltinClass::Number,
+            "isNaN",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
+        (
+            BuiltinClass::Number,
+            "isFinite",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::Number,
+            "isInfinite",
+            MethodFastPath::Constant(QuickConstant::False),
+        ),
         (
             BuiltinClass::Array,
             "isKindOfArray",

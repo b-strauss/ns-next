@@ -1051,7 +1051,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^vmMirror value: subject slotAt: index ifFail: [^nil]
         )
     )
-    (* The superclass of `Integer` and `Float`: counting loops and `max:`. *)
+    (* The superclass of `Integer` and `Float`: counting loops, comparing, the
+       mathematical functions through `asFloat`, and the questions about NaN
+       and infinity. *)
     (* §3.1.1 names `Number` among the classes whose instances are values,
        and §5.1.1's numeric literals are its instances. Iteration is here
        so that an `Integer`, a `LargeInteger` and a `Float` receiver share
@@ -1121,6 +1123,65 @@ class Kernel vmMirror: theMirror = Object <: Value (
            Signals the ArgumentError the receiver's `>` signals for an
            `other` that is no number. *)
         public max: other = ( ^self > other ifTrue: [self] ifFalse: [other] )
+        (* Answers the lesser of the receiver and `other`: the receiver
+           when it is `<` `other`, `other` otherwise.
+
+           other: a number.
+
+           Signals the ArgumentError the receiver's `<` signals for an
+           `other` that is no number. *)
+        public min: other = ( ^self < other ifTrue: [self] ifFalse: [other] )
+        (* Answers whether the receiver is at least `min` and at most
+           `max`, a Boolean.
+
+           min: a number.
+           max: a number.
+
+           Signals the ArgumentError the receiver's `>=` or `<=` signals for
+           a bound that is no number. *)
+        public between: min and: max = ( ^self >= min and: [self <= max] )
+        (* Answers false: only a Float can be a NaN. *)
+        public isNaN = ( ^false )
+        (* Answers true: only a Float can be infinite or a NaN. *)
+        public isFinite = ( ^true )
+        (* Answers false: only a Float can be infinite. *)
+        public isInfinite = ( ^false )
+        (* Answers the square root of the receiver as a Float, computed on
+           `asFloat`. *)
+        public sqrt = ( ^self asFloat sqrt )
+        (* Answers the sine of the receiver in radians as a Float, computed on
+           `asFloat`. *)
+        public sin = ( ^self asFloat sin )
+        (* Answers the cosine of the receiver in radians as a Float, computed on
+           `asFloat`. *)
+        public cos = ( ^self asFloat cos )
+        (* Answers the tangent of the receiver in radians as a Float, computed on
+           `asFloat`. *)
+        public tan = ( ^self asFloat tan )
+        (* Answers the arc sine of the receiver as a Float, computed on
+           `asFloat`. *)
+        public asin = ( ^self asFloat asin )
+        (* Answers the arc cosine of the receiver as a Float, computed on
+           `asFloat`. *)
+        public acos = ( ^self asFloat acos )
+        (* Answers the arc tangent of the receiver as a Float, computed on
+           `asFloat`. *)
+        public atan = ( ^self asFloat atan )
+        (* Answers `Float>>atan:` of the receiver's `asFloat`.
+
+           x: a number.
+
+           Signals `Float>>atan:`'s ArgumentError for any other argument. *)
+        public atan: x = ( ^self asFloat atan: x )
+        (* Answers e raised to the receiver as a Float, computed on
+           `asFloat`. *)
+        public exp = ( ^self asFloat exp )
+        (* Answers the natural logarithm of the receiver as a Float, computed on
+           `asFloat`. *)
+        public ln = ( ^self asFloat ln )
+        (* Answers the logarithm to base 10 of the receiver as a Float, computed on
+           `asFloat`. *)
+        public log = ( ^self asFloat log )
     )
     (* The superclass of `True` and `False`. *)
     public class Boolean = Value new () (
@@ -1452,6 +1513,71 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public sin = ( ^vmMirror floatSine: self ifFail: [^super sin] )
         (* Answers the cosine of the receiver, in radians, a Float. *)
         public cos = ( ^vmMirror floatCosine: self ifFail: [^super cos] )
+        (* Answers the tangent of the receiver, in radians, a Float. *)
+        public tan = ( ^vmMirror floatTangent: self ifFail: [^super tan] )
+        (* Answers the arc sine of the receiver, in radians from -π/2 to
+           π/2, a Float; a NaN outside -1 to 1. *)
+        public asin = ( ^vmMirror floatArcSine: self ifFail: [^super asin] )
+        (* Answers the arc cosine of the receiver, in radians from 0 to π, a
+           Float; a NaN outside -1 to 1. *)
+        public acos = ( ^vmMirror floatArcCosine: self ifFail: [^super acos] )
+        (* Answers the arc tangent of the receiver, in radians from -π/2 to
+           π/2, a Float. *)
+        public atan = ( ^vmMirror floatArcTangent: self ifFail: [^super atan] )
+        (* Answers the angle, in radians from -π to π, of the point whose
+           abscissa is `x` and whose ordinate is the receiver, a Float.
+
+           x: a number, converted to the nearest Float first.
+
+           Signals an ArgumentError carrying `x`, 'atan: requires a numeric
+           argument, got …', for any other argument. *)
+        public atan: x = ( ^vmMirror float: self arcTangent: x ifFail: [^super atan: x] )
+        (* Answers e raised to the receiver, a Float. *)
+        public exp = ( ^vmMirror floatExponential: self ifFail: [^super exp] )
+        (* Answers the natural logarithm of the receiver, a Float: minus
+           infinity for zero, a NaN below zero. *)
+        public ln = ( ^vmMirror floatNaturalLogarithm: self ifFail: [^super ln] )
+        (* Answers the logarithm of the receiver to base 10, a Float: minus
+           infinity for zero, a NaN below zero. *)
+        public log = ( ^vmMirror floatLogarithm: self ifFail: [^super log] )
+        (* Answers the receiver raised to `exponent` as IEEE 754's `pow`
+           computes it, a Float.
+
+           exponent: a number, converted to the nearest Float first.
+
+           Signals an ArgumentError carrying `exponent`, 'raisedTo:
+           requires a numeric argument, got …', for any other argument. *)
+        public raisedTo: exponent = (
+            ^vmMirror float: self raisedTo: exponent ifFail: [^super raisedTo: exponent]
+        )
+        (* Answers the greatest integral value not above the receiver, a
+           Float; an infinity or a NaN is answered as it is. *)
+        public floor = ( ^vmMirror floatFloor: self ifFail: [^super floor] )
+        (* Answers the least integral value not below the receiver, a
+           Float; an infinity or a NaN is answered as it is. *)
+        public ceiling = ( ^vmMirror floatCeiling: self ifFail: [^super ceiling] )
+        (* Answers the integral value nearest the receiver, a half rounded
+           away from zero, a Float that keeps the receiver's sign; an
+           infinity or a NaN is answered as it is. *)
+        public rounded = ( ^vmMirror floatRounded: self ifFail: [^super rounded] )
+        (* Answers the receiver without its fraction, toward zero, a Float
+           that keeps the receiver's sign; an infinity or a NaN is answered
+           as it is. *)
+        public truncated = ( ^vmMirror floatTruncated: self ifFail: [^super truncated] )
+        (* Answers the receiver with its sign changed, a Float: `0.0
+           negated` is -0.0. *)
+        public negated = ( ^vmMirror floatNegated: self ifFail: [^super negated] )
+        (* Answers the receiver without its sign, a Float: -0.0 answers
+           0.0. *)
+        public abs = ( ^vmMirror floatAbsolute: self ifFail: [^super abs] )
+        (* Answers the receiver itself. *)
+        public asFloat = ( ^self )
+        (* Answers whether the receiver is a NaN. *)
+        public isNaN = ( ^vmMirror floatIsNaN: self ifFail: [^super isNaN] )
+        (* Answers whether the receiver is neither an infinity nor a NaN. *)
+        public isFinite = ( ^vmMirror floatIsFinite: self ifFail: [^super isFinite] )
+        (* Answers whether the receiver is an infinity, of either sign. *)
+        public isInfinite = ( ^vmMirror floatIsInfinite: self ifFail: [^super isInfinite] )
         (* Answers the receiver truncated toward zero, an integer of any
            size.
 
