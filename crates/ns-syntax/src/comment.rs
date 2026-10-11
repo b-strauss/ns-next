@@ -16,8 +16,10 @@ pub enum CommentKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Comment {
     pub kind: CommentKind,
-    /// From the first comment character to the last: `(*` to `*)`, or the
-    /// first line's `///` to the end of the last line's text.
+    /// `(*` to `*)`, or the first line's `///` up to, not including, the
+    /// last line's line break (or the end of the source): a `Line` block's
+    /// span takes in its last line's trailing whitespace, which `text`
+    /// drops.
     pub span: Span,
 }
 
@@ -85,9 +87,8 @@ fn block_text(raw: &str) -> String {
             text.push(line[shared_indentation..].trim_end().to_string());
         }
     }
-    while text.first().is_some_and(String::is_empty) {
-        text.remove(0);
-    }
+    let leading_blanks = text.iter().take_while(|line| line.is_empty()).count();
+    text.drain(..leading_blanks);
     while text.last().is_some_and(String::is_empty) {
         text.pop();
     }
@@ -109,7 +110,7 @@ pub(crate) fn continues_line_block(source: &str, previous: Span, start: usize) -
 
 /// Whether only whitespace stands between the start of `offset`'s line and
 /// `offset`.
-fn starts_its_line(source: &str, offset: usize) -> bool {
+pub(crate) fn starts_its_line(source: &str, offset: usize) -> bool {
     source[..offset]
         .bytes()
         .rev()

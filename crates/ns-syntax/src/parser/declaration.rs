@@ -946,7 +946,9 @@ impl<'a> Parser<'a> {
     /// valid initializer expression, so that branch was removed.
     ///
     /// A block of ns-next's `///` lines in the same place is the class
-    /// comment too, as `Comment::text` answers it.
+    /// comment too, as `Comment::text` answers it: the block the whole
+    /// source's lexer forms, so a remark after the `(` on its line is no
+    /// part of it.
     fn take_class_comment(&mut self) -> Option<String> {
         let previous_end = self.tokens.get(self.position.checked_sub(1)?)?.span.end as usize;
         let current_start = self.current().span.start as usize;
@@ -958,17 +960,20 @@ impl<'a> Parser<'a> {
         {
             return Some(inner.to_string());
         }
-        let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
-        match lexed.comments.as_slice() {
-            // The gap holds no token but the end of input: the block is all
-            // that stands there.
-            [comment]
-                if comment.kind == crate::comment::CommentKind::Line && lexed.tokens.len() == 1 =>
-            {
-                Some(comment.text(gap))
-            }
-            _ => None,
+        let comment = lone_line_block(gap)?;
+        let comment_start = comment.span.start as usize;
+        if crate::comment::starts_its_line(self.source, previous_end + comment_start) {
+            return Some(comment.text(gap));
         }
+        // Lexed alone, the gap starts a line, so a `///` after the `(` would
+        // seem to start its line and take the lines below into its block,
+        // where the whole source's lexer (and with it the editor's folds)
+        // keeps it a remark on the `(`'s line. The class comment is the
+        // block below the remark, as the whole source forms it.
+        let line_end = gap[comment_start..].find(['\n', '\r'])? + comment_start;
+        let rest = &gap[line_end..];
+        let comment = lone_line_block(rest)?;
+        Some(comment.text(rest))
     }
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
@@ -1684,6 +1689,21 @@ fn string_lexeme_body(raw: &str) -> String {
     super::lexeme_body(raw).replace("''", "'")
 }
 
+/// The one `///` block `gap` holds when it holds nothing else: no token
+/// but the end of input and no other comment. Two blocks, or a `(* ... *)`
+/// beside one, make no class comment.
+fn lone_line_block(gap: &str) -> Option<crate::comment::Comment> {
+    let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
+    match lexed.comments.as_slice() {
+        [comment]
+            if comment.kind == crate::comment::CommentKind::Line && lexed.tokens.len() == 1 =>
+        {
+            Some(*comment)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 impl<'a> Parser<'a> {
     pub(crate) fn parse_method_declaration_for_test(&mut self) -> Option<MethodDeclaration> {
@@ -2184,6 +2204,30 @@ mod class_tests {
         assert_eq!(
             module.root_class.class_comment.as_deref(),
             Some("a comment\non two lines")
+        );
+    }
+
+    // A `///` after the header's `(` is a remark on that line and joins no
+    // block, so the parser and the whole-source lexer (the editor's folds)
+    // must both see the block below it as a comment of its own: the class
+    // comment is that block, never the remark merged into it.
+    #[test]
+    fn a_remark_after_the_open_parenthesis_is_not_part_of_the_class_comment() {
+        let source = indoc! {"
+            class C = ( /// a
+                /// b
+            ) ()
+        "};
+        let lexed = crate::lexer::Lexer::new(source).run_keeping_comments();
+        let texts: Vec<String> = lexed
+            .comments
+            .iter()
+            .map(|comment| comment.text(source))
+            .collect();
+        assert_eq!(texts, ["a", "b"]);
+        assert_eq!(
+            module(source).root_class.class_comment.as_deref(),
+            Some("b")
         );
     }
 

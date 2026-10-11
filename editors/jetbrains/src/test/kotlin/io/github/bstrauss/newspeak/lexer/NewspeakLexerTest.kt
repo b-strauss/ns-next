@@ -170,6 +170,7 @@ class NewspeakLexerTest {
     /** `a_line_comment_ends_every_selector_before_it` in `lexer.rs`. */
     @Test fun aLineCommentEndsEverySelectorBeforeIt() {
         assertEquals(listOf(IDENTIFIER to "a", BINARY_SELECTOR to "+"), significant("a +/// x"))
+        assertEquals(listOf(IDENTIFIER to "a", BINARY_SELECTOR to "-"), significant("a -/// x"))
         assertEquals(listOf(IDENTIFIER to "a", BINARY_SELECTOR to "//", IDENTIFIER to "b"), significant("a // b"))
         assertEquals(listOf(SYMBOL to "#+"), significant("#+/// x"))
         assertEquals(listOf(SYMBOL to "#"), significant("#/// x"))

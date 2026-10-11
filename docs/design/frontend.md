@@ -290,8 +290,8 @@ whitespace, so no token stands for one and the parser never sees one.
 (`CommentKind::Block` or `CommentKind::Line`) and its `span`. A `(* ... *)`
 is one comment from its outer `(*` to its outer `*)`, so a nested comment is
 inside its enclosing one's span. Consecutive `///` lines are one comment, a
-block, from the first line's `///` to the end of the last line's text
-(`skip_line_comment`, `continues_line_block`): two `///` comments are one
+block, from the first line's `///` up to the last line's line break, its
+trailing whitespace included (`skip_line_comment`, `continues_line_block`): two `///` comments are one
 block when each is the first thing on its line and only whitespace with
 exactly one line break lies between them. A blank line or code starts a new
 block, and so does a `///` after code on its line: that one is a remark on
@@ -312,7 +312,11 @@ that is the reader's business.
 The class comment (`ClassDeclaration::class_comment`), the comment standing
 first in a class header, is taken from either form: a `(* ... *)` as the
 text between its markers, a `///` block as `Comment::text` answers it
-(`take_class_comment`).
+(`take_class_comment`). The block is the one the whole source's lexer forms,
+so the parser and an editor agree on it: a `///` after the header's `(` on
+its line is a remark there, no part of the class comment, and the block
+below it, if it is all that stands before the header's first token, is the
+class comment.
 
 `run`, and with it `lex` and `parse`, drops the list, and the token stream
 is the same either way.
