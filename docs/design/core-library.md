@@ -1292,7 +1292,8 @@ mathematics through `asFloat`, and the answers to `isNaN`, `isFinite` and
 
 **`Fraction` is a builtin with a representation of its own**, as
 `LargeInteger` is, not a Newspeak class with slots: a subclass of `Number`,
-builtin class tag 39, reached as `platform kernel Fraction`. Its object is
+builtin class tag 39, reached as `Fraction`, `Object`'s accessor ("The
+predefined classes are accessors on `Object`"). Its object is
 of the fixed-pointer format with two fields, the numerator and the
 denominator, each an integer value -- a `SmallInteger` or a `LargeInteger`
 handle. They are no slots, since the class declares none; nothing writes
@@ -3131,9 +3132,12 @@ such as the classes of the built-in literals (5.1) e.g., `String`", and the
 methods `Array` and `ByteArray`. A bare builtin name is therefore a send.
 Each decision below was taken with the user.
 
-**The accessors are exactly the names a program could reach before**:
-`Object`, `Value`, `Boolean`, `True`, `False`, `Number`, `Integer`,
-`Float`, `String`, `Symbol`, `UndefinedObject`, `Array` and `Closure`.
+**The accessors are exactly the names a program could reach before, and
+`Fraction`**: `Object`, `Value`, `Boolean`, `True`, `False`, `Number`,
+`Integer`, `Float`, `Fraction`, `String`, `Symbol`, `UndefinedObject`,
+`Array` and `Closure`. `Fraction` joined them with the numeric tower
+(decided with the user on 2026-10-11): it is one of the numbers, and a
+program that names `Float` bare names `Fraction` the same way.
 `OrderedCollection` was among them until it was removed (2026-09-28), when
 `platform collections List` replaced it. `Top` and the VM mirror's class get none:
 §3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a

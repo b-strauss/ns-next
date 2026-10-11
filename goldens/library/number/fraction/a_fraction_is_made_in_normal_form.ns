@@ -8,7 +8,6 @@ class AFractionIsMadeInNormalForm = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.
           kernel = platform kernel.
-          Fraction = kernel Fraction.
           Error = kernel Error.
           threeQuarters = Fraction numerator: 6 denominator: 8. |
         transcript print: threeQuarters; show: ' '; print: threeQuarters numerator; show: ' '; print: threeQuarters denominator; show: ' '; print: threeQuarters class; newLine.

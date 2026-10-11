@@ -109,6 +109,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Integer = ( ^outer Kernel Integer )
         (* Answers the kernel's class `Float`. *)
         public Float = ( ^outer Kernel Float )
+        (* Answers the kernel's class `Fraction`, whose class side makes an
+           exact quotient of two integers. *)
+        public Fraction = ( ^outer Kernel Fraction )
         (* Answers the kernel's class `String`. *)
         public String = ( ^outer Kernel String )
         (* Answers the kernel's class `Symbol`. *)
@@ -865,6 +868,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         protected Integer = ( ^super Integer )
         (* As `Object>>Float`, for a send from inside the proxy only. *)
         protected Float = ( ^super Float )
+        (* As `Object>>Fraction`, for a send from inside the proxy only. *)
+        protected Fraction = ( ^super Fraction )
         (* As `Object>>String`, for a send from inside the proxy only. *)
         protected String = ( ^super String )
         (* As `Object>>Symbol`, for a send from inside the proxy only. *)

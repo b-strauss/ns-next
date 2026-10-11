@@ -1786,7 +1786,6 @@ const FRACTIONS: &str = indoc! {"
         | fractions |
     ) (
         public fill: platform = (
-            | Fraction = platform kernel Fraction. |
             fractions:: {
                 Fraction numerator: 1 denominator: 3.
                 Fraction numerator: -7 denominator: 2.

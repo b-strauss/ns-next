@@ -15,8 +15,7 @@ class NumbersHashAsTheyCompare = Object <: Value () (
         | platform = aPlatform. transcript = aPlatform transcript. |
     ) (
         public run = (
-            | Fraction = platform kernel Fraction.
-              half = Fraction numerator: 1 denominator: 2.
+            | half = Fraction numerator: 1 denominator: 2.
               nan = 0.0 / 0.0.
               twoToThe70 = 1180591620717411303424.
               map set |

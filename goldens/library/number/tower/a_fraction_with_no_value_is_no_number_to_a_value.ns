@@ -14,8 +14,7 @@ class AFractionWithNoValueIsNoNumberToAValue = Object <: Value () (
         | platform = aPlatform. transcript = aPlatform transcript. |
     ) (
         public run = (
-            | Fraction = platform kernel Fraction.
-              half = Fraction numerator: 1 denominator: 2.
+            | half = Fraction numerator: 1 denominator: 2.
               empty = Fraction new. |
             transcript print: (Box of: half) = (Box of: empty); show: ' '; print: (Box of: empty) = (Box of: half); newLine.
             transcript print: (Box of: 3) = (Box of: empty); show: ' '; print: (Box of: empty) = (Box of: 3); newLine

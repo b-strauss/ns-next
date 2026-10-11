@@ -153,9 +153,6 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         (* Answers the kernel's `Collection` class, the abstract superclass
            of `Array`, `List`, `Map` and `Set`, for a program to subclass. *)
         public Collection = ( ^kernelModule Collection )
-        (* Answers the kernel's class `Fraction`, whose class side makes an
-           exact quotient of two integers. *)
-        public Fraction = ( ^kernelModule Fraction )
     )
     (* `platform time`: the namespace of the clock's classes, today only
        `Stopwatch`. *)

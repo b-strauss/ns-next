@@ -1306,6 +1306,7 @@ mod tests {
         BuiltinClass::Number,
         BuiltinClass::Integer,
         BuiltinClass::Float,
+        BuiltinClass::Fraction,
         BuiltinClass::String,
         BuiltinClass::Symbol,
         BuiltinClass::UndefinedObject,
@@ -1867,7 +1868,6 @@ mod tests {
                 "Stopwatch",
                 "LargeInteger",
                 "Collection",
-                "Fraction",
             ] {
                 assert!(
                     application

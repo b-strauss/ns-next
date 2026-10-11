@@ -640,16 +640,15 @@ activation.
   allocations of one `Fraction` are not identical to the leaf either.
   Noted 2026-10-02. [core-library.md](design/core-library.md), "Large
   integers".
-- **Whether `platform kernel Fraction` must name a program that needs
-  it.** `PlatformFactory.ns`'s `KernelNamespace>>Fraction` names none: the
-  on-demand rule ("The on-demand rule" in
+- **Whether `platform kernel Collection` must name a program that needs
+  it.** `PlatformFactory.ns`'s `KernelNamespace>>Collection` names none:
+  the on-demand rule ("The on-demand rule" in
   [core-library.md](design/core-library.md)) asks every `PlatformFactory.ns`
   accessor to name the runnable module or benchmark that demanded it, while
   the kernel facet only hands out classes of `Kernel.ns`, which the
-  kernel completion is not bound by. `KernelNamespace>>Collection` set the
-  precedent of an accessor without such a program. Whether the facet's
-  accessors fall under the rule, and the rule's wording with it, is the
-  user's question, raised by the numbers sub-project's review, 2026-10-11.
+  kernel completion is not bound by. Whether the facet's accessors fall
+  under the rule, and the rule's wording with it, is the user's question,
+  raised by the numbers sub-project's review, 2026-10-11.
 - **How much history a tail call keeps**, and **data parallelism over
   immutable data** as a later exception to the actor model.
 - **Whether an image carries a lazy slot's value.** §6.3.3 intends that lazy

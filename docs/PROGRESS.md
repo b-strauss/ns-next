@@ -4685,7 +4685,7 @@ rounding selectors answering a `Float`, `isNaN`, `isFinite` and
 leaves in a family of their own, `AnyIntegerPrimitive`. `Number` gains `/`,
 `quo:`, `rem:`, `raisedTo:`, `min:`, `between:and:` and the mathematics
 through `asFloat`. Exact rationals and the numeric hash are plain Rust in
-`numeric/`. `Fraction` is a builtin (tag 39, `platform kernel Fraction`), an
+`numeric/`. `Fraction` is a builtin (tag 39, an accessor on `Object`), an
 object of two hidden fields made only by the runtime in normal form,
 carried inline in an image (value tag 10). And the tower is symmetric: any
 two numbers compare by exact value and hash by Python's numeric hash
@@ -4750,5 +4750,5 @@ sub-project, `ByteArray`, `StringBuilder` and the typed arrays, is next
 ("Next") and has no design or plan yet; two corners of a `Float`'s
 rounding divisions; the tower's slow paths, unmeasured on their own; a
 subquadratic gcd for a huge decoded fraction; the review's missing tests
-and leftovers; and whether `platform kernel Fraction` must name a program
-that needs it.
+and leftovers; and whether `platform kernel Collection` must name a
+program that needs it.

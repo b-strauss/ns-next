@@ -1248,7 +1248,7 @@ subclasses it, so an image may name it wherever it names a class; an
 instance of a program's subclass is an ordinary instance record.
 
 **`Fraction` takes tag 39** ([core-library.md](core-library.md), "The
-numeric tower"). A program names it through `platform kernel Fraction`, so
+numeric tower"). A program names it through `Object`'s accessor `Fraction`, so
 an image may name it wherever it names a class; a fraction itself is never
 a record ("A `Fraction` is a value on the wire too" above), and the one
 record its header may carry is `Fraction new`'s, an instance of no field:

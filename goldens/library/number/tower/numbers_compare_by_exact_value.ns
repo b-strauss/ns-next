@@ -7,9 +7,7 @@
 class NumbersCompareByExactValue = () (
     public main: platform args: arguments = (
         | transcript = platform transcript.
-          kernel = platform kernel.
-          Fraction = kernel Fraction.
-          Error = kernel Error.
+          Error = platform kernel Error.
           half = Fraction numerator: 1 denominator: 2.
           third = Fraction numerator: 1 denominator: 3.
           nan = 0.0 / 0.0.
