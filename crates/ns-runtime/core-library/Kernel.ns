@@ -1338,9 +1338,23 @@ class Kernel vmMirror: theMirror = Object <: Value (
            '>> takes a non-negative shift count, got …' for a negative
            one. *)
         public >> count = ( ^vmMirror integer: self shiftRight: count ifFail: [^super >> count] )
-        (* As `bitAnd:`, whose ArgumentError's text names 'bitAnd:'. *)
+        (* Answers the bitwise and of the receiver and `other` over their
+           two's complements, as `bitAnd:` does.
+
+           other: an Integer or a LargeInteger.
+
+           Signals an ArgumentError carrying `other`, 'bitAnd: requires an
+           integer argument, got …', for any other argument; the text names
+           'bitAnd:', not '&'. *)
         public & other = ( ^self bitAnd: other )
-        (* As `bitOr:`, whose ArgumentError's text names 'bitOr:'. *)
+        (* Answers the bitwise inclusive or of the receiver and `other` over
+           their two's complements, as `bitOr:` does.
+
+           other: an Integer or a LargeInteger.
+
+           Signals an ArgumentError carrying `other`, 'bitOr: requires an
+           integer argument, got …', for any other argument; the text names
+           'bitOr:', not '|'. *)
         public | other = ( ^self bitOr: other )
         (* Answers the greatest common divisor of the receiver and `other`,
            an integer never negative; 0 when both are 0.

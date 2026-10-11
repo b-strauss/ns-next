@@ -126,10 +126,12 @@ impl ArbitraryInteger {
         }
     }
 
+    /// The integer 1.
     pub fn one() -> ArbitraryInteger {
         ArbitraryInteger::from_u64(1)
     }
 
+    /// The non-negative integer with the value of `value`.
     pub fn from_u64(value: u64) -> ArbitraryInteger {
         ArbitraryInteger::from_parts(false, vec![value])
     }
@@ -143,6 +145,7 @@ impl ArbitraryInteger {
         }
     }
 
+    /// Whether the value is exactly 1.
     pub fn is_one(&self) -> bool {
         !self.negative && *self.magnitude == [1]
     }

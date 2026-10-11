@@ -39,7 +39,7 @@ mod integer;
 mod large_integer;
 
 pub(crate) use float::{execute_float, float_equals, float_hash};
-pub(crate) use integer::{execute_integer, integer_equals};
+pub(crate) use integer::{execute_any_integer, execute_integer, integer_equals};
 pub(crate) use large_integer::{execute_large_integer, large_integer_equals, large_integer_hash};
 
 use std::cmp::Ordering;

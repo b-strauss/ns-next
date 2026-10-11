@@ -7,7 +7,7 @@ use super::{
     Answer,
 };
 use crate::builtins::first_argument;
-use crate::builtins::primitive::{IntegerPrimitive, Primitive};
+use crate::builtins::primitive::{AnyIntegerPrimitive, IntegerPrimitive, Primitive};
 use crate::types::*;
 use crate::{ArbitraryInteger, Mutator, Symbol};
 use std::cmp::Ordering;
@@ -26,9 +26,6 @@ pub(crate) fn execute_integer<'gc>(
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
-    if let Some(answer) = integer_protocol(mutator, primitive, receiver, arguments) {
-        return answer;
-    }
     let receiver_integer = receiver.as_small_integer()?;
     let argument_integer = || arguments.first().and_then(|value| value.as_small_integer());
     let mismatch = |operator: &str, accepted: Accepted| {
@@ -259,50 +256,33 @@ pub(crate) fn execute_integer<'gc>(
         ))),
         // `as` rounds to the nearest double, ties to even.
         IntegerPrimitive::AsFloat => Some(Ok(mutator.new_float(receiver_integer as f64))),
-        IntegerPrimitive::Gcd
-        | IntegerPrimitive::ShiftRight
-        | IntegerPrimitive::DigitAt
-        | IntegerPrimitive::DigitLength
-        | IntegerPrimitive::AsStringRadix
-        | IntegerPrimitive::Parse => {
-            unreachable!("integer_protocol answers these before this match")
-        }
     }
 }
 
 /// The leaves that take an integer receiver of either representation, so
-/// that `LargeInteger` inherits `Integer`'s methods for them. `None` for
-/// every other primitive, which `execute_integer` goes on to; `Some(None)`
-/// declines a receiver that is no integer.
-fn integer_protocol<'gc>(
+/// that `LargeInteger` inherits `Integer`'s methods for them, and `parse:`,
+/// whose subject is the `Integer` class. `None` declines a receiver that is
+/// neither.
+pub(crate) fn execute_any_integer<'gc>(
     mutator: &mut Mutator<'gc>,
-    primitive: IntegerPrimitive,
+    primitive: AnyIntegerPrimitive,
     receiver: Value<'gc>,
     arguments: &[Value<'gc>],
-) -> Option<Option<Result<Value<'gc>, NewspeakError<'gc>>>> {
-    let answer = match primitive {
-        IntegerPrimitive::Parse => return Some(parse(mutator, receiver, arguments)),
-        IntegerPrimitive::Gcd
-        | IntegerPrimitive::ShiftRight
-        | IntegerPrimitive::DigitAt
-        | IntegerPrimitive::DigitLength
-        | IntegerPrimitive::AsStringRadix => {
-            let Some(integer) = integer_operand(&mutator.heap, Some(receiver)) else {
-                return Some(None);
-            };
-            match primitive {
-                IntegerPrimitive::Gcd => gcd(mutator, receiver, &integer, arguments),
-                IntegerPrimitive::ShiftRight => shift_right(mutator, receiver, &integer, arguments),
-                IntegerPrimitive::DigitAt => digit_at(mutator, receiver, &integer, arguments),
-                IntegerPrimitive::DigitLength => {
-                    Ok(Value::small_integer(integer.base_256_length() as i64))
-                }
-                _ => radix_text(mutator, receiver, &integer, arguments),
-            }
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    if let AnyIntegerPrimitive::Parse = primitive {
+        return parse(mutator, receiver, arguments);
+    }
+    let integer = integer_operand(&mutator.heap, Some(receiver))?;
+    Some(match primitive {
+        AnyIntegerPrimitive::Gcd => gcd(mutator, receiver, &integer, arguments),
+        AnyIntegerPrimitive::ShiftRight => shift_right(mutator, receiver, &integer, arguments),
+        AnyIntegerPrimitive::DigitAt => digit_at(mutator, receiver, &integer, arguments),
+        AnyIntegerPrimitive::DigitLength => {
+            Ok(Value::small_integer(integer.base_256_length() as i64))
         }
-        _ => return None,
-    };
-    Some(Some(answer))
+        AnyIntegerPrimitive::AsStringRadix => radix_text(mutator, receiver, &integer, arguments),
+        AnyIntegerPrimitive::Parse => unreachable!("answered above"),
+    })
 }
 
 /// The argument of `selector` as an integer of either representation, or

@@ -18,6 +18,7 @@ pub enum Primitive {
     Behavior(BehaviorPrimitive),
     Integer(IntegerPrimitive),
     LargeInteger(LargeIntegerPrimitive),
+    AnyInteger(AnyIntegerPrimitive),
     Float(FloatPrimitive),
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
@@ -94,13 +95,15 @@ impl Primitive {
                 | IntegerPrimitive::Negated
                 | IntegerPrimitive::Absolute
                 | IntegerPrimitive::AsFloat
-                | IntegerPrimitive::PrintString
-                | IntegerPrimitive::Gcd
-                | IntegerPrimitive::ShiftRight
-                | IntegerPrimitive::DigitAt
-                | IntegerPrimitive::DigitLength
-                | IntegerPrimitive::AsStringRadix
-                | IntegerPrimitive::Parse,
+                | IntegerPrimitive::PrintString,
+            ) => false,
+            Primitive::AnyInteger(
+                AnyIntegerPrimitive::Gcd
+                | AnyIntegerPrimitive::ShiftRight
+                | AnyIntegerPrimitive::DigitAt
+                | AnyIntegerPrimitive::DigitLength
+                | AnyIntegerPrimitive::AsStringRadix
+                | AnyIntegerPrimitive::Parse,
             ) => false,
             Primitive::LargeInteger(LargeIntegerPrimitive::Equal) => true,
             Primitive::LargeInteger(
@@ -281,6 +284,15 @@ pub enum IntegerPrimitive {
     Absolute,
     AsFloat,
     PrintString,
+}
+
+/// The leaves that take an integer of either representation (`Gcd`,
+/// `ShiftRight`, `DigitAt`, `DigitLength`, `AsStringRadix`), or the `Integer`
+/// class itself (`Parse`). A family of its own so that `IntegerPrimitive`
+/// keeps meaning "the receiver is a `SmallInteger`", which a JIT tier emits
+/// inline, and `LargeInteger` inherits these methods from `Integer`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnyIntegerPrimitive {
     Gcd,
     ShiftRight,
     DigitAt,
@@ -1103,32 +1115,32 @@ pub const MIRROR: &[MirrorEntry] = &[
     mirror(
         "integer:gcd:ifFail:",
         "gcd:",
-        Primitive::Integer(IntegerPrimitive::Gcd),
+        Primitive::AnyInteger(AnyIntegerPrimitive::Gcd),
     ),
     mirror(
         "integer:shiftRight:ifFail:",
         ">>",
-        Primitive::Integer(IntegerPrimitive::ShiftRight),
+        Primitive::AnyInteger(AnyIntegerPrimitive::ShiftRight),
     ),
     mirror(
         "integer:digitAt:ifFail:",
         "digitAt:",
-        Primitive::Integer(IntegerPrimitive::DigitAt),
+        Primitive::AnyInteger(AnyIntegerPrimitive::DigitAt),
     ),
     mirror(
         "integerDigitLength:ifFail:",
         "digitLength",
-        Primitive::Integer(IntegerPrimitive::DigitLength),
+        Primitive::AnyInteger(AnyIntegerPrimitive::DigitLength),
     ),
     mirror(
         "integer:asStringRadix:ifFail:",
         "asStringRadix:",
-        Primitive::Integer(IntegerPrimitive::AsStringRadix),
+        Primitive::AnyInteger(AnyIntegerPrimitive::AsStringRadix),
     ),
     mirror(
         "integerClass:parse:radix:ifFail:",
         "parse:radix:",
-        Primitive::Integer(IntegerPrimitive::Parse),
+        Primitive::AnyInteger(AnyIntegerPrimitive::Parse),
     ),
     mirror(
         "floatSquareRoot:ifFail:",
