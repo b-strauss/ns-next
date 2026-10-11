@@ -5,6 +5,7 @@
 ///
 /// theMirror: the VM mirror, which the host alone holds; every native
 /// operation of these classes is a send to it.
+///
 /// The core library (`docs/design/core-library.md`, "The core library as
 /// Newspeak source over a VM mirror"). One nested class per builtin class;
 /// the bootstrap fills the builtin class objects from them before it
@@ -32,6 +33,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 ) (
     /// The empty class, `Object`'s superclass: it declares nothing, and no
     /// program can name it.
+    ///
     /// §3.2: "A class is either the empty class `Top` or the application of
     /// a mixin to another class known as its superclass", and "Only the
     /// class `Object` may have `Top` as its superclass" -- which is why it
@@ -63,6 +65,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Answers the String 'an Object', a new String on every send.
         public printString = ( ^vmMirror objectPrintString: self ifFail: [^super printString] )
         /// Answers the receiver.
+        ///
         /// For a cascade: `(Array new: 2) at: 1 put: x; yourself` answers
         /// the array, not the last message's answer.
         public yourself = ( ^self )
@@ -77,6 +80,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// sends, `^self subclassResponsibility`. It never answers: an
         /// Error is not resumable, so a handler can only end the `on:do:`
         /// that caught it.
+        ///
         /// The name is read off the sending activation, which only the
         /// kernel reaches: a program sees the Error, never the activation.
         protected subclassResponsibility = (
@@ -88,6 +92,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
                     self class name, ' must implement it'
         )
         /// Answers the kernel's class `Object`.
+        ///
         /// §3.2: Object "provides ... accessors for predefined classes and
         /// objects, such as the classes of the built-in literals", so a bare
         /// `String` anywhere is the implicit send `self String` and lands
@@ -125,6 +130,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Closure = ( ^outer Kernel Closure )
         /// Answers the kernel's class `Exception`, the root of every
         /// exception: `Exception signal: 'text'` signals a new one.
+        ///
         /// `Exception` and `Error` are the two roots a program signals or
         /// catches most; they reach no host, so every object may name them.
         /// The other exception classes stay with `platform kernel`.
@@ -143,6 +149,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// carries on, the message is sent again and its answer answered.
         ///
         /// message: the `Message` nothing understood.
+        ///
         /// §5.5: protected, so an explicit-receiver send of it finds nothing
         /// through lookupPublic and falls to the access-blind "defined for"
         /// walk that invokes it for the failing send itself.
@@ -170,6 +177,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
             ^value
         )
         /// Answers false: the receiver is not nil.
+        ///
         /// Every object but nil is not nil, and `UndefinedObject` answers the
         /// other way. A block for the not-nil case is culled with the
         /// receiver, as the Newspeak corpus relies on, passing `[:x | ...]`
@@ -198,11 +206,13 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public ifNotNil: notNilBlock ifNil: nilBlock = ( ^notNilBlock cull: self )
         /// Signals a new `Halt` and answers the value a handler resumes it
         /// with; unhandled, it ends the run.
+        ///
         /// Its `defaultAction` is the hook the debugger will replace.
         public halt = ( ^outer Kernel Halt new signal )
     )
     /// The superclass of `Class` and `Metaclass`: the equality and hash of
     /// every class object and every metaclass.
+    ///
     /// §3.2: "Each class is an instance of a unique metaclass. All
     /// metaclasses are instances of class Metaclass, and are direct
     /// subclasses of Class." The specification names neither `Behavior`
@@ -218,6 +228,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ///
         /// other: any object; never signals itself, though an enclosing
         /// object's own `=` may.
+        ///
         /// A class object that is a value has no identity: two are equal
         /// when they apply one mixin application to equal enclosing objects
         /// over equal superclasses (docs/design/object-model.md, "Class
@@ -260,6 +271,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// and nil for a `subject` that is no class object.
         ///
         /// subject: the receiver or the object it is compared with.
+        ///
         /// Both name their subject, as `Value`'s slot readers do: the other
         /// side's state has to be read through the same leaf as this
         /// side's.
@@ -284,6 +296,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// exception class.
         ///
         /// exception: any object; never signals.
+        ///
         /// ANSI's `handles:`, by default "an instance of me or of a
         /// subclass", compared by mixin so that a nested exception class
         /// catches its instances under any enclosing instance. Here rather
@@ -308,6 +321,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ///
         /// other: any object; never signals itself, though the class's `=`
         /// may.
+        ///
         /// A metaclass's enclosing object is its class's and its superclass
         /// is always `Class`, so its class is all its state: two metaclasses
         /// are equal exactly when their classes are. `==` is the same
@@ -323,6 +337,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
                 ifFail: [^(self thisClassOf: self) = (self thisClassOf: other)]
         )
         /// Answers the class the receiver is the metaclass of.
+        ///
         /// The class is the runtime's state, read through a leaf, not a
         /// slot.
         private thisClass = ( ^vmMirror metaclassThisClass: self ifFail: [^nil] )
@@ -335,6 +350,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// The root of the exceptions: signalled with `signal` or `signal:`,
     /// caught by `Closure>>on:do:`, whose handler block receives it and may
     /// send it `resume:`, `return:`, `retry` or `pass`. Resumable.
+    ///
     /// §8.6: exception handling is a library issue, built here over the
     /// activation (docs/design/core-library.md, "Exceptions"). The slots are
     /// the exception's own state; `originSelector` and `originReceiver` are
@@ -393,6 +409,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// value the handler resumes it with; a handler that returns
         /// instead makes its `on:do:` answer. With no handler,
         /// `defaultAction` runs, which ends the run.
+        ///
         /// ANSI's signal: the handler runs on top of the stack, above this
         /// activation, and nothing is unwound until it decides.
         public signal = (
@@ -488,6 +505,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// have run, reporting the `description` and, for an error the VM
         /// raised, the selector and receiver of the send that raised it.
         /// Never answers.
+        ///
         /// No handler: the run ends through the leaf, once the pending
         /// `ensure:` blocks have run. The one place the debugger will
         /// replace. The leaf takes any selector, receiver and description
@@ -508,6 +526,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Answers the selector `defaultAction` reports: the one the VM
         /// raised the exception for, else #signal. A subclass overrides it
         /// to report another.
+        ///
         /// The VM sets the origin as a pair, and its receiver may be nil,
         /// so whether there is one is read off the selector.
         protected hostSelector = (
@@ -523,6 +542,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// exception, disabling every enabled `on:do:` passed on the way,
         /// the handler's included; with none, marks the default reached and
         /// answers what `defaultAction` answers.
+        ///
         /// The search walks the senders from where the last one stopped,
         /// counting every enabled `on:do:` it passes. When one handles this
         /// exception, it walks the same range again and collects the
@@ -564,6 +584,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// test is left.
         ///
         /// activation: an enabled `on:do:` activation on the stack.
+        ///
         /// The candidate is disabled while `handles:` runs, so that an
         /// exception `handles:` raises -- a `nil handles:`'s
         /// `doesNotUnderstand:` for `on: nil do:` -- is not offered to the
@@ -589,6 +610,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// activation: the `on:do:` whose class handles the exception.
         /// handlers: an Array of the `on:do:` activations the search
         /// passed, `activation` last.
+        ///
         /// ANSI's handler environment: an exception signalled while a handler
         /// runs is looked for outside the `on:do:` that caught this one --
         /// not in it, and not in any `on:do:` between it and the signal, the
@@ -621,6 +643,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     ) : (
         /// Signals a new instance of the receiver, as `Exception>>signal`
         /// does, and answers the value a handler resumes it with.
+        ///
         /// §3.2's metaclasses are flat, so each kernel exception class
         /// declares these on its own class side; `handles:` is `Class`'s.
         public signal = ( ^self new signal )
@@ -642,6 +665,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// understood, with the text 'an object does not understand #…' naming
     /// the selector. A handler's `resume:` makes the failed send answer the
     /// value it resumes with.
+    ///
     /// §5.5's exception. Resumable although an `Error`, so that the
     /// debugger can create the missing method and carry on:
     /// `Object>>doesNotUnderstand:` then sends the message again. A host
@@ -660,6 +684,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public isResumable = ( ^true )
         /// Answers the selector of `message`, or `Exception`'s when there is
         /// no message.
+        ///
         /// One a program signals itself may carry no message: it then ends
         /// the run as any other exception does.
         protected hostSelector = (
@@ -691,6 +716,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         |
           /// The argument that was refused, any object; `argument:` sets it
           /// and answers the receiver.
+          ///
           /// Named `argument`, not `value`: an exception answering `value`
           /// would pass for a block wherever the kernel sends `value` to an
           /// argument.
@@ -743,6 +769,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     )
     /// What a `whileTrue:` or `whileFalse:` signals when its condition
     /// answers an object that is no Boolean. Carries that object.
+    ///
     /// Private, so a program catches it as an `Error`: no program needs to
     /// name the one mistake it reports.
     private class NonBooleanReceiver = Error new (
@@ -777,6 +804,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         |
           /// The class that refused, or nil; `behavior:` sets it and
           /// answers the receiver.
+          ///
           /// Named `behavior`, not `class`, which would override
           /// `Object>>class`.
           public behavior ::= nil. |
@@ -803,6 +831,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     )
     /// A message: a selector and its arguments. `doesNotUnderstand:`
     /// receives one, and a program may build one and send it.
+    ///
     /// What a `doesNotUnderstand:` handler receives. `sendTo:` sends it as
     /// an ordinary public send (§5.5): a program can build a message, so a
     /// send through one must reach no protected or private method.
@@ -829,6 +858,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// written in Newspeak and takes another number of arguments than
         /// `arguments` holds. For a slot's accessor or a method backed by
         /// a native operation the number is not checked.
+        ///
         /// A message built without `arguments:` holds nil there, and is
         /// sent with none.
         public sendTo: receiver = (
@@ -846,6 +876,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// each is overridden as protected, so a message from outside reaches
     /// `doesNotUnderstand:`. A subclass that implements only
     /// `doesNotUnderstand:` forwards every message it is sent.
+    ///
     /// §5.5's proxy, "Otherwise it would be possible to distinguish
     /// between an object and a proxy": lookupPublic stops at a protected
     /// method, and the failing send falls to `doesNotUnderstand:`. Inside
@@ -929,6 +960,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// program sends it forces it -- runs its computation once, the first
     /// time -- and is then sent on to the value. No program can name the
     /// class.
+    ///
     /// §6.3.2's pull future: what a simultaneous slot clause stores in a slot
     /// until the clause's end resolves it (docs/design/object-model.md,
     /// "Simultaneous slots"), and what `Future computing:` answers. Private,
@@ -969,6 +1001,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// The class whose `computing:` answers a future of a block: an object
     /// that runs the block on its first message and behaves as the block's
     /// value from then on. `Future new` signals a `CannotInstantiate`.
+    ///
     /// A class only for its class side: the future it answers is a
     /// `FutureImplementation`, the one class the runtime forces and sees
     /// through, which no program can name or subclass, so every future
@@ -993,6 +1026,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// The superclass of every value class: its instances are deeply
     /// immutable, and two are equal when their classes are equal and their
     /// slots are equal.
+    ///
     /// §3.1.1: an object is a value object -- deeply immutable and globally
     /// unique -- only if "its class inherits from class `Value`", so every
     /// class whose instances are values hangs below this one.
@@ -1010,6 +1044,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ///
         /// other: any object; never signals itself, though a slot's own
         /// `=` may.
+        ///
         /// §3.1.1: a value object is globally unique, in the sense that no
         /// other object is equal to it -- so equality is derived from state,
         /// and a value has no observable identity. The leaf declines when a
@@ -1017,6 +1052,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// `valueEquals:` then sends it.
         public = other = ( ^vmMirror value: self sameAs: other ifFail: [^self valueEquals: other] )
         /// Answers what `=` answers: a value has no identity of its own.
+        ///
         /// §3.1.1: where `Value` declares an identity method, "that method
         /// must return the same results as `Value`'s equality method". A send
         /// of `=` makes that true by construction, for every subclass.
@@ -1058,6 +1094,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// `subject` whose state is no slots.
         ///
         /// subject: the receiver or the object it is compared with.
+        ///
         /// Both name their subject rather than forwarding `self`: §5.9
         /// reaches a private member only through a lexical send, so
         /// `other valueSlotCount` would find nothing, and the other side's
@@ -1082,6 +1119,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// The superclass of `Integer`, `Float` and `Fraction`: counting
     /// loops, comparing, the mathematical functions through `asFloat`, and
     /// the questions about NaN and infinity.
+    ///
     /// §3.1.1 names `Number` among the classes whose instances are values,
     /// and §5.1.1's numeric literals are its instances. Iteration is here
     /// so that an `Integer`, a `LargeInteger` and a `Float` receiver share
@@ -1336,6 +1374,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public isKindOfBoolean = ( ^true )
     )
     /// The class of `true`.
+    ///
     /// §5.1.2: `true` is the unique instance of `True` and `false` of
     /// `False`. Each branch is a method of its own, so no method tests the
     /// receiver and none reaches the mirror. Every body is `^true`,
@@ -1632,6 +1671,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Signals an ArgumentError carrying the block, 'wrong number of
         /// block arguments: block takes …, got 0', for a block that
         /// declares any parameter, when the receiver is at least 1.
+        ///
         /// The compiler does not inline it; it is sent.
         public timesRepeat: action = (
             1 to: self do: [:ignored | action value].
@@ -1696,6 +1736,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// String, and 'parse:radix: requires the digits of an Integer in
         /// radix …, got …' carrying `text` for a String that writes no
         /// integer, an empty one or a lone '-' included.
+        ///
         /// The leaf answers only for `Integer` itself; any other receiver
         /// falls to `super`.
         public parse: text radix: radix = (
@@ -1707,6 +1748,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// range again is an `Integer`. It inherits `Integer`'s `gcd:`, `>>`,
     /// `digitAt:`, `digitLength`, `asStringRadix:` and the methods written
     /// in Newspeak, which take either representation.
+    ///
     /// §5.1.1: "integers are not limited in size". An `Integer` whose value
     /// does not fit a `SmallInteger`; every leaf answers an `Integer` when
     /// the result fits again, so each integer has one representation.
@@ -1991,6 +2033,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// text of a Float, got …' for a String that is no such text, a
         /// lower-case 'nan' or 'inf', a space or an empty String included,
         /// and 'parse: requires a String, got …' for anything else.
+        ///
         /// The leaf answers only for `Float` itself; any other receiver
         /// falls to `super`.
         public parse: text = (
@@ -2002,6 +2045,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
     /// the numerator. `Fraction numerator:denominator:` makes one, and so
     /// does dividing integers that do not divide; a fraction is never
     /// equal to an integer, which a quotient that divides is instead.
+    ///
     /// Made only by the runtime, so a fraction is always in normal form
     /// and `=` and `hash` can compare its parts. Its parts are two hidden
     /// fields, not slots: no program writes them.
@@ -2051,6 +2095,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// non-zero denominator' carrying `denominator` for 0, and
         /// 'numerator:denominator: requires integers, got …' carrying the
         /// first argument that is no integer.
+        ///
         /// The leaf answers only for `Fraction` itself; any other receiver
         /// falls to `super`.
         public numerator: numerator denominator: denominator = (
@@ -2070,6 +2115,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// form, got …/…', for a pair not in normal form, and one carrying
         /// the argument, 'reducedNumerator:denominator: requires integers,
         /// got …', for an argument that is no integer.
+        ///
         /// The leaf answers only for `Fraction` itself; any other receiver
         /// falls to `super`.
         public reducedNumerator: numerator denominator: denominator = (
@@ -2092,6 +2138,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// range: valid indices are 1..size (size …)' for an Integer outside
         /// 1 to `size`, a LargeInteger included, and 'at: requires an
         /// Integer index, got …' for an index that is no Integer.
+        ///
         /// Over code points, not UTF-8 bytes: `at:` answers the code point,
         /// which is the byte only for ASCII.
         public at: index = ( ^vmMirror string: self at: index ifFail: [^super at: index] )
@@ -2213,6 +2260,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Signals an ArgumentError carrying `prefix`, 'startsWith:
         /// requires a String argument, got …' and its `printString`, for a
         /// `prefix` that is no String.
+        ///
         /// Looks for an occurrence starting at 1 at the latest, so only the
         /// first position is compared, whatever the receiver's length; the
         /// search leaf still reads the whole receiver before it compares.
@@ -2230,6 +2278,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Signals an ArgumentError carrying `suffix`, 'endsWith: requires
         /// a String argument, got …' and its `printString`, for a `suffix`
         /// that is no String.
+        ///
         /// The last occurrence is the one at the end when there is one
         /// there.
         public endsWith: suffix = (
@@ -2248,6 +2297,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Signals an ArgumentError carrying `code`, 'with: requires a
         /// Unicode code point, an Integer from 0 to 1114111 outside 55296 to
         /// 57343, got …', for any other argument.
+        ///
         /// It takes a code point, not a byte. The leaf declines only a
         /// subject that is not `String` itself, which a flat class side
         /// cannot be sent from.
@@ -2318,6 +2368,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// Here, signals the Error of `subclassResponsibility`,
         /// 'Collection>>newForCollectUsingAdd: is abstract: … must
         /// implement it'.
+        ///
         /// The kernel cannot name the collections module's `List`, so a
         /// collection says itself what its `collect:` answers.
         protected newForCollectUsingAdd: capacity = ( ^self subclassResponsibility )
@@ -2679,6 +2730,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ///
         /// Signals the ArgumentError of `copyFrom:to:` for a range the
         /// receiver does not hold.
+        ///
         /// A bottom-up merge sort over a copy of the range and a buffer of
         /// the same size, trading the two each pass: no recursion, so its
         /// depth does not grow with the range, and two Arrays the size of
@@ -2737,6 +2789,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// requires a size of at least 0, got …' for a negative one, and
         /// 'new: cannot allocate an Array of … elements' for one too large
         /// to allocate.
+        ///
         /// A sized array of nils, which `List` grows into and the handler
         /// search fills. The leaf declines only a subject that is not `Array`
         /// itself, which a flat class side cannot be sent from.
@@ -2757,6 +2810,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         )
     )
     /// The class of `nil`.
+    ///
     /// §5.1.3: `nil` is the unique instance of `UndefinedObject`, which
     /// answers `isNil` with true. It answers the rest of the nil protocol
     /// `Object` declares the other way round, each a quick method, and
@@ -2813,6 +2867,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ///
         /// Signals what `value:` signals for a block of two parameters or
         /// more.
+        ///
         /// `Object`'s `ifNotNil:` family means exactly this, and its quick
         /// methods do it without sending it.
         public cull: argument = (
@@ -2847,6 +2902,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// while this `on:do:` is disabled.
         /// handler: a block of no argument or one, or anything
         /// understanding `cull:`; sent `cull:` with the exception.
+        ///
         /// ANSI's handler: the marker on this method's code tells `signal`
         /// this activation handles `exceptionClass` with `handler`, while
         /// `handlerActive` is true (docs/design/core-library.md,
@@ -2864,6 +2920,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ///
         /// onUnwind: a block of no argument, or anything understanding
         /// `value`; sent `value`.
+        ///
         /// On a normal end the block runs here; on an unwind the unwinder
         /// runs it, having set `complete` first, so it runs exactly once.
         public ensure: onUnwind = (
@@ -2886,6 +2943,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
         /// this activation's return.
         ///
         /// onUnwind: any object; sent `value`.
+        ///
         /// An ordinary send of `value`, as the normal path's, whatever that
         /// send decides -- a method, an instantiation -- and this
         /// activation's return is where the unwind carries on

@@ -8,6 +8,7 @@
 ///
 /// theKernel: the kernel module instance; its `Collection` and `Error` are
 ///     the superclasses of the classes here.
+///
 /// The factory pattern `PlatformFactory.ns` is written in. This root holds
 /// what is privileged -- the kernel instance -- and nothing hands its
 /// instance to a program: the platform's root builds it once, through the
@@ -23,6 +24,7 @@
 /// so: no code whose receiver is this root's instance may send it anything
 /// it does not understand, since a `MessageNotUnderstood` hands its
 /// receiver to whoever catches it.
+///
 /// A value (§3.1.1), so that every platform shares the one module and its
 /// classes -- `platform collections List` is one class however many
 /// platforms a program makes -- and so that the platform, a value, may hold
@@ -34,6 +36,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
       private kernelModule = theKernel.
       /// The kernel's `Error`, the superclass of `NotFound` and
       /// `ConcurrentModification`.
+      ///
       /// An inheritance clause is one name, optionally after `outer`,
       /// `self` or `super`, and at most one message (§6.1), so a clause
       /// cannot reach the kernel's classes through `kernelModule` and
@@ -46,6 +49,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     /// The namespace `platform collections` answers: it hands out the
     /// module's classes, one accessor each, and the kernel's `Collection`;
     /// nothing else.
+    ///
     /// It names its own class as `Platform` does, so that the class has a
     /// path too.
     private class Collections = Value new () (
@@ -113,6 +117,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     ///
     /// The primary factory takes the capacity, so a program may write
     /// `List new: 15` as a superclass clause.
+    ///
     /// The elements lie in `data` from `firstIndex` on, so that removing at
     /// either end moves nothing; the representation is private, so that it
     /// can change without a subclass noticing, and `size_` alone is
@@ -138,6 +143,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// Answers the number of elements.
         public size = ( ^size_ )
         /// Answers whether the list holds no element.
+        ///
         /// The size is at hand; `Collection`'s would send `size`.
         public isEmpty = ( ^0 = size_ )
         /// Answers the element at `index`.
@@ -147,6 +153,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// Signals an ArgumentError carrying `index`, 'index … out of
         /// range: valid indices are 1..size (size …)', for any other
         /// index, an index that is no Integer included.
+        ///
         /// The check is written out, since every `at:` pays for it; an
         /// index that is no Integer is out of range too.
         public at: index = (
@@ -252,6 +259,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// predicate: a one-argument block answering a Boolean.
         ///
         /// Signals a ConcurrentModification as `do:` does.
+        ///
         /// Written out rather than inherited: `Collection`'s returns from a
         /// block, and the benchmarks ask it of their work lists.
         public anySatisfy: predicate = (
@@ -333,6 +341,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         )
         /// Removes every element and answers the receiver; the capacity
         /// stays.
+        ///
         /// A list emptied is usually filled again to about its old size:
         /// `benchmarks/are-we-fast-yet/Havlak.ns` empties and refills its
         /// lists for every loop search.
@@ -392,6 +401,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// block left it. A store the block makes at an existing index
         /// changes no count, so it is overwritten when the copy is written
         /// back: `lessOrEqual` compares, and changes nothing.
+        ///
         /// The copy holds the elements the sort started with, so writing it
         /// back over a list whose block changed it would bring back a
         /// removed element or drop an added one, silently.
@@ -425,6 +435,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public copyFrom: start to: stop = ( ^List withAll: (self asArray copyFrom: start to: stop) )
         /// Answers a new, empty List with room for `capacity` elements:
         /// what `collect:`, `select:` and `reject:` fill.
+        ///
         /// `List`, not `self class`: a subclass's primary factory may take
         /// no capacity, as DeltaBlue's `Plan` takes none.
         protected newForCollectUsingAdd: capacity = ( ^List new: capacity )
@@ -517,6 +528,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     /// `detect:` does, leaves before the check -- and a List's `sort:`,
     /// checked once its sort is done. Storing at an existing index or key,
     /// and sorting, are no change.
+    ///
     /// Without it a change inside `do:` would visit an element twice, skip
     /// one or end early, silently.
     private class ConcurrentModification = kernelError new (
@@ -570,6 +582,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     /// built on them runs over the map signals a ConcurrentModification
     /// after the block that did it; storing a value under an existing key
     /// does not.
+    ///
     /// The keys and values lie side by side in `data_`, in the order they
     /// were stored, and `hashtable_` is an open-addressing table of their
     /// indices in `data_`, 0 marking an empty bucket. A removal overwrites
@@ -679,6 +692,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
             ^value
         )
         /// Removes every key and answers the receiver; the capacity stays.
+        ///
         /// `benchmarks/are-we-fast-yet/Havlak.ns` empties its map for every
         /// loop search and fills it again with as many nodes.
         public removeAll = (
@@ -808,6 +822,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// Signals an ArgumentError carrying `count`, 'new: requires a
         /// capacity of at least 0, got …', for a negative `count`, and what
         /// `Array new:` signals for a size that is no Integer or too large.
+        ///
         /// The table has at least as many buckets as `data_` has entries,
         /// and `insert:` rebuilds the map the moment `data_` is full, so no
         /// probe runs on a full table: every one meets an empty bucket,
@@ -883,6 +898,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// no Integer is sent `\\` with the table's size, and signals what
         /// that signals: a MessageNotUnderstood of `\\` for an object that
         /// does not define it, a Float among them.
+        ///
         /// The probe is written out here and again, with `identityHash` and
         /// `==`, in IdentityMap, rather than sending a protected hook for
         /// the hash and the comparison: a self-send per probe step is a
@@ -910,6 +926,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         ///
         /// Signals what `key`'s `hash` signals, and for a `hash` answering
         /// no Integer what `scanFor:in:` signals for one.
+        ///
         /// Written out again in IdentityMap, as `scanFor:in:` is.
         protected emptyBucketFor: key in: table = (
             | tableSize bucketIndex |
@@ -952,6 +969,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         ///     `scanFor:in:` takes it.
         ///
         /// Signals what `key`'s `identityHash` and `==` signal.
+        ///
         /// Map's probe written out with `identityHash` and `==`, for the
         /// reason Map's gives. The removed-mark test has the mark as its
         /// receiver, so `key`'s own `==` is never sent the data array.
@@ -976,6 +994,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         ///
         /// table: a table of indices in the data array with an empty
         ///     bucket.
+        ///
         /// Map's written out with `identityHash`, for the reason Map's
         /// `scanFor:in:` gives.
         protected emptyBucketFor: key in: table = (
@@ -1014,6 +1033,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public atOrItself: key = ( ^self at: key ifAbsent: [key] )
     ) : (
         /// Answers an empty identity map with room for 3 keys, `new: 3`.
+        ///
         /// A class side is not inherited, so the factories `Map` declares
         /// are declared here again.
         public new = ( ^self new: 3 )
@@ -1036,6 +1056,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
     /// Adding or removing an element while `do:` or anything built on it
     /// runs over the set signals a ConcurrentModification after the block
     /// that did it; replacing an equal element does not.
+    ///
     /// Map's representation with elements instead of key-value pairs: the
     /// elements in `data_` in adding order, `hashtable_` of their indices,
     /// `data_` itself overwriting a removed element as the removed mark, for
@@ -1195,6 +1216,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// Signals an ArgumentError carrying `count`, 'new: requires a
         /// capacity of at least 0, got …', for a negative `count`, and what
         /// `Array new:` signals for a size that is no Integer or too large.
+        ///
         /// As in Map: the table has at least as many buckets as `data_` has
         /// slots, and `insert:` rebuilds the set the moment `data_` is
         /// full, so no probe runs on a full table. Filled by `whileTrue:`
@@ -1233,6 +1255,7 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         /// the live elements of `data_` in their order, dropping the
         /// removed ones, and answers it. Runs when `data_` is full, and when
         /// the table slot is nil.
+        ///
         /// A `whileTrue:` loop rather than `to:do:`, for the reason Map's
         /// `createTable:` gives: it runs once per element on every growth.
         private rehash = (

@@ -5,6 +5,7 @@
 ///
 /// theMirror: the VM mirror, which the host alone holds.
 /// theKernel: the kernel module's instance.
+///
 /// The module behind the platform a module is handed (§8.3): a shipped
 /// core-library module, booted by the host with the VM mirror and the
 /// kernel instance (`docs/design/core-library.md`, "The module table and
@@ -54,6 +55,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
 ) (
     /// The instance of the collections module, built over the kernel on
     /// first use and the same object from then on.
+    ///
     /// The collections module, built on first use and kept here, so that
     /// every platform's facet comes from one factory and hands out one
     /// `List` class. Its instance is as private as this one: only its
@@ -61,6 +63,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [nil]) usingKernel: kernelModule.
     /// The platform a program is handed: the namespace of what it may use
     /// beyond the kernel, each member built on first use.
+    ///
     /// §8.3 describes the platform as an object that "provides accessors to
     /// various modules"; each is a lazy slot (§6.3.3), built on first use,
     /// so a program pays only for what it asks for. This module's classes
@@ -100,6 +103,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     )
     /// The program's standard output: writes text, line breaks and the
     /// printed form of any object, as UTF-8, in the order they are sent.
+    ///
     /// `show:` writes a string as it is and refuses anything else, as an
     /// ordinary error; `print:` writes any object's `printString`, as
     /// canonical Newspeak's transcript does. The leaf never declines, so
@@ -126,6 +130,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     /// `platform kernel`: the kernel classes a program may name that
     /// `Object`'s class accessors do not answer, and `Closure`, which they
     /// answer too.
+    ///
     /// The facet over the kernel module that Primordial Soup's `Kernel
     /// wrapping:` answers.
     private class KernelNamespace = Value new () (
@@ -157,6 +162,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     )
     /// `platform time`: the namespace of the clock's classes, today only
     /// `Stopwatch`.
+    ///
     /// Primordial Soup's `Time` facet, holding only what
     /// `benchmarks/are-we-fast-yet/AreWeFastYet.ns` measures with.
     private class Time = Value new () (
@@ -167,6 +173,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     /// A stopwatch over a monotonic clock in nanoseconds: made stopped,
     /// reading 0, it runs from `start` on. An object, not a value: its
     /// reading changes.
+    ///
     /// Primordial Soup's `Stopwatch` (`Time.ns`), narrowed to what
     /// `benchmarks/are-we-fast-yet/AreWeFastYet.ns` sends. It keeps its reading in slots, so it is
     /// an object, not a value. Its readings are nanoseconds since an
