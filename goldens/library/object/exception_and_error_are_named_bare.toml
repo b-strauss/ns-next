@@ -1,0 +1,6 @@
+stdout = '''
+true true
+failed
+MessageNotUnderstood
+a nearer Error
+'''

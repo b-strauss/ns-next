@@ -1312,6 +1312,8 @@ mod tests {
         BuiltinClass::UndefinedObject,
         BuiltinClass::Array,
         BuiltinClass::Closure,
+        BuiltinClass::Exception,
+        BuiltinClass::Error,
     ];
 
     /// Every kernel method is a forwarder the compiler recognized, and is
@@ -1850,8 +1852,6 @@ mod tests {
                 "OrderedCollection",
                 "List",
                 "VmMirror",
-                "Exception",
-                "Error",
                 "MessageNotUnderstood",
                 "Halt",
                 "Message",

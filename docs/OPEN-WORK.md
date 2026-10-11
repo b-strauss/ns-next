@@ -591,7 +591,10 @@ activation.
   `KernelForPrimordialSoup.ns`, "to separate the authority of an instance
   from the authority of its class", its class accessors on `Object` too.
   SOMns's root classes declare no `class`. `self class` stays a self send
-  either way; what would change is `other class`: two sends in
+  either way, and so does a bare name: an implicit-receiver send reaches a
+  protected member, which is how Primordial Soup's protected accessors
+  still let any method write `Integer`; what would change is `other class`
+  and `other Integer`: two sends in
   `CollectionsFactory.ns` (`index class == Integer`, which
   `isKindOfInteger` replaces) and about 166 goldens that print a class to
   check a result's type, which need a mirror instead. Recommended, to be

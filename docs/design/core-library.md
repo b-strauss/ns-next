@@ -2138,7 +2138,9 @@ platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 kernel instance the platform was handed. `NotFound` is answered by
 `platform collections`, as Primordial Soup keeps it in its collections
 module, and `NonBooleanReceiver` by nothing.
-`Object` gains no accessor, so its set stays what §3.2 names.
+`Exception` and `Error`, the two roots, are `Object`'s accessors as well
+(decided with the user on 2026-10-11), so a method may name them bare;
+`platform kernel` keeps answering them, as the corpus asks.
 
 `Closure` has `on: exceptionClass do: handler`, `ensure: aBlock` and
 `ifCurtailed: aBlock`, three marked methods (below): `on:do:`'s body sets
@@ -3136,21 +3138,26 @@ such as the classes of the built-in literals (5.1) e.g., `String`", and the
 methods `Array` and `ByteArray`. A bare builtin name is therefore a send.
 Each decision below was taken with the user.
 
-**The accessors are exactly the names a program could reach before, and
-`Fraction`**: `Object`, `Value`, `Boolean`, `True`, `False`, `Number`,
-`Integer`, `Float`, `Fraction`, `String`, `Symbol`, `UndefinedObject`,
-`Array` and `Closure`. `Fraction` joined them with the numeric tower
-(decided with the user on 2026-10-11): it is one of the numbers, and a
-program that names `Float` bare names `Fraction` the same way.
+**The accessors are the names a program could reach before, `Fraction`,
+`Exception` and `Error`**: `Object`, `Value`, `Boolean`, `True`, `False`,
+`Number`, `Integer`, `Float`, `Fraction`, `String`, `Symbol`,
+`UndefinedObject`, `Array`, `Closure`, `Exception` and `Error`. `Fraction`
+joined them with the numeric tower (decided with the user on 2026-10-11):
+it is one of the numbers, and a program that names `Float` bare names
+`Fraction` the same way. `Exception` and `Error` joined them the same day,
+also decided with the user: they are the roots a program signals and
+catches most, they reach no host, and both Newspeak kernels put a root
+there (Primordial Soup's `Object` has `Exception`, the Squeak kernel's
+`Error`).
 `OrderedCollection` was among them until it was removed (2026-09-28), when
 `platform collections List` replaced it. `Top` and the VM mirror's class get none:
 §3.2 lets only `Object` name `Top`, as its superclass, and the mirror is a
 capability; `Platform` and its members' classes are no kernel classes at
 all, and a program is handed the platform through its factory.
-Nor do the classes the exceptions and the futures added: a program names
-`Exception`, `Error`, `MessageNotUnderstood`, `Halt`, `Message`,
-`ArgumentError`, `CannotReturn`, `CannotInstantiate`, `Future`, `Proxy` and
-`Collection` through `platform kernel`, and `Activation`, `NonBooleanReceiver` and
+Nor do the other classes the exceptions and the futures added: a program
+names `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`,
+`CannotReturn`, `CannotInstantiate`, `Future`, `Proxy` and `Collection`
+through `platform kernel`, which answers `Exception` and `Error` too, and `Activation`, `NonBooleanReceiver` and
 `FutureImplementation` not at all ("Exceptions" above, "The pull future"
 below).
 Each is an ordinary public method of `Kernel.ns`'s `Object`,

@@ -122,6 +122,16 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public Array = ( ^outer Kernel Array )
         (* Answers the kernel's class `Closure`. *)
         public Closure = ( ^outer Kernel Closure )
+        (* Answers the kernel's class `Exception`, the root of every
+           exception: `Exception signal: 'text'` signals a new one. *)
+        (* `Exception` and `Error` are the two roots a program signals or
+           catches most; they reach no host, so every object may name them.
+           The other exception classes stay with `platform kernel`. *)
+        public Exception = ( ^outer Kernel Exception )
+        (* Answers the kernel's class `Error`, the exception a handler can
+           only end, never resume: `Error signal: 'text'` signals a new
+           one. *)
+        public Error = ( ^outer Kernel Error )
         (* What a send the receiver does not understand runs instead. A
            unary selector of eight characters or more that begins with
            `isKindOf` answers false. Any other message signals a
@@ -881,6 +891,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
         protected Array = ( ^super Array )
         (* As `Object>>Closure`, for a send from inside the proxy only. *)
         protected Closure = ( ^super Closure )
+        (* As `Object>>Exception`, for a send from inside the proxy only. *)
+        protected Exception = ( ^super Exception )
+        (* As `Object>>Error`, for a send from inside the proxy only. *)
+        protected Error = ( ^super Error )
         (* As `Object>>isNil`, for a send from inside the proxy only. *)
         protected isNil = ( ^super isNil )
         (* As `Object>>notNil`, for a send from inside the proxy only. *)
