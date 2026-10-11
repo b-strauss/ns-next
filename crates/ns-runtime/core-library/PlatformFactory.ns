@@ -1,205 +1,207 @@
-(* The platform's module: answers, to `newPlatform`, the platform the
-   host hands every program, whose members are the program's standard
-   output, the collections, the kernel classes a program may name and a
-   stopwatch. The host instantiates it once, at boot.
-
-   theMirror: the VM mirror, which the host alone holds.
-   theKernel: the kernel module's instance. *)
-(* The module behind the platform a module is handed (§8.3): a shipped
-   core-library module, booted by the host with the VM mirror and the
-   kernel instance (`docs/design/core-library.md`, "The module table and
-   the boot").
-
-   The factory pattern: this root holds what is privileged -- the mirror
-   and the kernel -- and the host never hands its instance to anyone. It
-   instantiates the root once, sends it `newPlatform`, its one public
-   member, and hands every program that platform, an instance of the
-   nested class `Platform`, whose factory is a harmless `new`. What a
-   program may instantiate are the nested classes, the facets, which it
-   reaches only through the platform's class accessors and members; each
-   reaches the mirror and the kernel lexically, as a member of this root,
-   never through a slot of its own, so a program can make as many
-   platforms, transcripts and namespaces as it likes and every one of them
-   writes through the one mirror. The nested classes are private, so even
-   a holder of this root's instance could send it nothing but
-   `newPlatform`: a second line of defence behind the instance being
-   unreachable. The collections module is another such root
-   (`CollectionsFactory.ns`), built once through the mirror's
-   `moduleNamed:` and kept in a private lazy slot here; the platform hands
-   out only the facet it answers. Nothing a program can name answers this
-   root's instance or its class, so no program can build a second one over
-   something that is not the mirror. Keep it so: no code whose receiver is
-   this root's instance may send it anything it does not understand, since
-   a `MessageNotUnderstood` hands its receiver to whoever catches it
-   (`docs/design/core-library.md`, "No program reaches a shipped module's
-   root").
-
-   The factory's parameters are copied into slots because neither a lazy
-   slot nor a method may name them (§6). A send to `vmMirror` here is a
-   mirror send, as in `Kernel.ns`: this module is resolved with
-   `resolve_kernel`, which only shipped source is.
-
-   Everything here but `Stopwatch` is a value (§3.1.1), as SOMns's
-   `Platform` is: stateless but for what the host hands the root and the
-   collections module it builds once. A `Stopwatch` keeps its reading in
-   slots, so it is an object, as `CollectionsFactory.ns`'s `List` is. *)
+/// The platform's module: answers, to `newPlatform`, the platform the
+/// host hands every program, whose members are the program's standard
+/// output, the collections, the kernel classes a program may name and a
+/// stopwatch. The host instantiates it once, at boot.
+///
+/// theMirror: the VM mirror, which the host alone holds.
+/// theKernel: the kernel module's instance.
+/// The module behind the platform a module is handed (§8.3): a shipped
+/// core-library module, booted by the host with the VM mirror and the
+/// kernel instance (`docs/design/core-library.md`, "The module table and
+/// the boot").
+///
+/// The factory pattern: this root holds what is privileged -- the mirror
+/// and the kernel -- and the host never hands its instance to anyone. It
+/// instantiates the root once, sends it `newPlatform`, its one public
+/// member, and hands every program that platform, an instance of the
+/// nested class `Platform`, whose factory is a harmless `new`. What a
+/// program may instantiate are the nested classes, the facets, which it
+/// reaches only through the platform's class accessors and members; each
+/// reaches the mirror and the kernel lexically, as a member of this root,
+/// never through a slot of its own, so a program can make as many
+/// platforms, transcripts and namespaces as it likes and every one of them
+/// writes through the one mirror. The nested classes are private, so even
+/// a holder of this root's instance could send it nothing but
+/// `newPlatform`: a second line of defence behind the instance being
+/// unreachable. The collections module is another such root
+/// (`CollectionsFactory.ns`), built once through the mirror's
+/// `moduleNamed:` and kept in a private lazy slot here; the platform hands
+/// out only the facet it answers. Nothing a program can name answers this
+/// root's instance or its class, so no program can build a second one over
+/// something that is not the mirror. Keep it so: no code whose receiver is
+/// this root's instance may send it anything it does not understand, since
+/// a `MessageNotUnderstood` hands its receiver to whoever catches it
+/// (`docs/design/core-library.md`, "No program reaches a shipped module's
+/// root").
+///
+/// The factory's parameters are copied into slots because neither a lazy
+/// slot nor a method may name them (§6). A send to `vmMirror` here is a
+/// mirror send, as in `Kernel.ns`: this module is resolved with
+/// `resolve_kernel`, which only shipped source is.
+///
+/// Everything here but `Stopwatch` is a value (§3.1.1), as SOMns's
+/// `Platform` is: stateless but for what the host hands the root and the
+/// collections module it builds once. A `Stopwatch` keeps its reading in
+/// slots, so it is an object, as `CollectionsFactory.ns`'s `List` is.
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
-    | (* The VM mirror the factory was given: the one object through which
-         a member here reaches a native operation. Never handed out. *)
+    |
+      /// The VM mirror the factory was given: the one object through which
+      /// a member here reaches a native operation. Never handed out.
       private vmMirror = theMirror.
-      (* The kernel module's instance, whose classes `KernelNamespace`
-         hands out and over which the collections module is built. *)
+      /// The kernel module's instance, whose classes `KernelNamespace`
+      /// hands out and over which the collections module is built.
       private kernelModule = theKernel. |
 ) (
-    (* The instance of the collections module, built over the kernel on
-       first use and the same object from then on. *)
-    (* The collections module, built on first use and kept here, so that
-       every platform's facet comes from one factory and hands out one
-       `List` class. Its instance is as private as this one: only its
-       `newCollections` facet leaves this module. *)
+    /// The instance of the collections module, built over the kernel on
+    /// first use and the same object from then on.
+    /// The collections module, built on first use and kept here, so that
+    /// every platform's facet comes from one factory and hands out one
+    /// `List` class. Its instance is as private as this one: only its
+    /// `newCollections` facet leaves this module.
     lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [nil]) usingKernel: kernelModule.
-    (* The platform a program is handed: the namespace of what it may use
-       beyond the kernel, each member built on first use. *)
-    (* §8.3 describes the platform as an object that "provides accessors to
-       various modules"; each is a lazy slot (§6.3.3), built on first use,
-       so a program pays only for what it asks for. This module's classes
-       -- `Platform`, `Transcript`, `KernelNamespace`, `Time` and
-       `Stopwatch` -- are handed out by class accessors, each exactly
-       `^outer PlatformFactory <Name>`, which an image names by its path
-       from the platform rather than carrying the class
-       (`docs/design/image-format.md`, "The platform path section"). Each is a lexical send, which reaches the root's
-       private classes (§5.9). The collections module's classes are its
-       facet's, handed out the same way. *)
+    /// The platform a program is handed: the namespace of what it may use
+    /// beyond the kernel, each member built on first use.
+    /// §8.3 describes the platform as an object that "provides accessors to
+    /// various modules"; each is a lazy slot (§6.3.3), built on first use,
+    /// so a program pays only for what it asks for. This module's classes
+    /// -- `Platform`, `Transcript`, `KernelNamespace`, `Time` and
+    /// `Stopwatch` -- are handed out by class accessors, each exactly
+    /// `^outer PlatformFactory <Name>`, which an image names by its path
+    /// from the platform rather than carrying the class
+    /// (`docs/design/image-format.md`, "The platform path section"). Each is a lexical send, which reaches the root's
+    /// private classes (§5.9). The collections module's classes are its
+    /// facet's, handed out the same way.
     private class Platform = Value new () (
-        (* The program's standard output, a `Transcript`, written as UTF-8.
-           Built on first use; every later send answers the same one. *)
+        /// The program's standard output, a `Transcript`, written as UTF-8.
+        /// Built on first use; every later send answers the same one.
         lazy public transcript = Transcript new.
-        (* The namespace of the collections module's classes -- `List`,
-           `Map`, `IdentityMap`, `Set` and the Errors `NotFound` and
-           `ConcurrentModification` -- and of the kernel's `Collection`.
-           Built on first use; every later send answers the same one. *)
+        /// The namespace of the collections module's classes -- `List`,
+        /// `Map`, `IdentityMap`, `Set` and the Errors `NotFound` and
+        /// `ConcurrentModification` -- and of the kernel's `Collection`.
+        /// Built on first use; every later send answers the same one.
         lazy public collections = collectionsModule newCollections.
-        (* The namespace of the kernel classes a program may name, a
-           `KernelNamespace`. Built on first use; every later send answers
-           the same one. *)
+        /// The namespace of the kernel classes a program may name, a
+        /// `KernelNamespace`. Built on first use; every later send answers
+        /// the same one.
         lazy public kernel = KernelNamespace new.
-        (* The namespace of `Stopwatch`, a `Time`. Built on first use;
-           every later send answers the same one. *)
+        /// The namespace of `Stopwatch`, a `Time`. Built on first use;
+        /// every later send answers the same one.
         lazy public time = Time new.
-        (* Answers this module's class `Platform`. *)
+        /// Answers this module's class `Platform`.
         public Platform = ( ^outer PlatformFactory Platform )
-        (* Answers this module's class `Transcript`. *)
+        /// Answers this module's class `Transcript`.
         public Transcript = ( ^outer PlatformFactory Transcript )
-        (* Answers this module's class `KernelNamespace`. *)
+        /// Answers this module's class `KernelNamespace`.
         public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
-        (* Answers this module's class `Time`. *)
+        /// Answers this module's class `Time`.
         public Time = ( ^outer PlatformFactory Time )
-        (* Answers this module's class `Stopwatch`. *)
+        /// Answers this module's class `Stopwatch`.
         public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
-    (* The program's standard output: writes text, line breaks and the
-       printed form of any object, as UTF-8, in the order they are sent. *)
-    (* `show:` writes a string as it is and refuses anything else, as an
-       ordinary error; `print:` writes any object's `printString`, as
-       canonical Newspeak's transcript does. The leaf never declines, so
-       the failure blocks never run. *)
+    /// The program's standard output: writes text, line breaks and the
+    /// printed form of any object, as UTF-8, in the order they are sent.
+    /// `show:` writes a string as it is and refuses anything else, as an
+    /// ordinary error; `print:` writes any object's `printString`, as
+    /// canonical Newspeak's transcript does. The leaf never declines, so
+    /// the failure blocks never run.
     private class Transcript = Value new () (
-        (* Writes `text` to standard output as it is, flushed at once, and
-           answers the receiver.
-
-           text: a String or a Symbol.
-
-           Signals an ArgumentError carrying `text`, 'show: requires a
-           String, got …', for any other argument; nothing is written. *)
+        /// Writes `text` to standard output as it is, flushed at once, and
+        /// answers the receiver.
+        ///
+        /// text: a String or a Symbol.
+        ///
+        /// Signals an ArgumentError carrying `text`, 'show: requires a
+        /// String, got …', for any other argument; nothing is written.
         public show: text = ( ^vmMirror transcript: self show: text ifFail: [nil] )
-        (* Writes a line break to standard output and answers the
-           receiver. *)
+        /// Writes a line break to standard output and answers the
+        /// receiver.
         public newLine = ( ^vmMirror transcriptNewLine: self ifFail: [nil] )
-        (* Writes the `printString` of `object` to standard output, as
-           `show:` does, and answers the receiver.
-
-           object: any object; sent `printString`, whose answer must be a
-           String or a Symbol, or `show:` signals its ArgumentError. *)
+        /// Writes the `printString` of `object` to standard output, as
+        /// `show:` does, and answers the receiver.
+        ///
+        /// object: any object; sent `printString`, whose answer must be a
+        /// String or a Symbol, or `show:` signals its ArgumentError.
         public print: object = ( ^self show: object printString )
     )
-    (* `platform kernel`: the kernel classes a program may name that
-       `Object`'s class accessors do not answer, and `Closure`, which they
-       answer too. *)
-    (* The facet over the kernel module that Primordial Soup's `Kernel
-       wrapping:` answers. *)
+    /// `platform kernel`: the kernel classes a program may name that
+    /// `Object`'s class accessors do not answer, and `Closure`, which they
+    /// answer too.
+    /// The facet over the kernel module that Primordial Soup's `Kernel
+    /// wrapping:` answers.
     private class KernelNamespace = Value new () (
-        (* Answers the kernel's class `Exception`. *)
+        /// Answers the kernel's class `Exception`.
         public Exception = ( ^kernelModule Exception )
-        (* Answers the kernel's class `Error`. *)
+        /// Answers the kernel's class `Error`.
         public Error = ( ^kernelModule Error )
-        (* Answers the kernel's class `MessageNotUnderstood`. *)
+        /// Answers the kernel's class `MessageNotUnderstood`.
         public MessageNotUnderstood = ( ^kernelModule MessageNotUnderstood )
-        (* Answers the kernel's class `Halt`. *)
+        /// Answers the kernel's class `Halt`.
         public Halt = ( ^kernelModule Halt )
-        (* Answers the kernel's class `Message`. *)
+        /// Answers the kernel's class `Message`.
         public Message = ( ^kernelModule Message )
-        (* Answers the kernel's class `ArgumentError`. *)
+        /// Answers the kernel's class `ArgumentError`.
         public ArgumentError = ( ^kernelModule ArgumentError )
-        (* Answers the kernel's class `CannotReturn`. *)
+        /// Answers the kernel's class `CannotReturn`.
         public CannotReturn = ( ^kernelModule CannotReturn )
-        (* Answers the kernel's class `CannotInstantiate`. *)
+        /// Answers the kernel's class `CannotInstantiate`.
         public CannotInstantiate = ( ^kernelModule CannotInstantiate )
-        (* Answers the kernel's class `Closure`. *)
+        /// Answers the kernel's class `Closure`.
         public Closure = ( ^kernelModule Closure )
-        (* Answers the kernel's class `Future`. *)
+        /// Answers the kernel's class `Future`.
         public Future = ( ^kernelModule Future )
-        (* Answers the kernel's class `Proxy`. *)
+        /// Answers the kernel's class `Proxy`.
         public Proxy = ( ^kernelModule Proxy )
-        (* Answers the kernel's `Collection` class, the abstract superclass
-           of `Array`, `List`, `Map` and `Set`, for a program to subclass. *)
+        /// Answers the kernel's `Collection` class, the abstract superclass
+        /// of `Array`, `List`, `Map` and `Set`, for a program to subclass.
         public Collection = ( ^kernelModule Collection )
     )
-    (* `platform time`: the namespace of the clock's classes, today only
-       `Stopwatch`. *)
-    (* Primordial Soup's `Time` facet, holding only what
-       `benchmarks/are-we-fast-yet/AreWeFastYet.ns` measures with. *)
+    /// `platform time`: the namespace of the clock's classes, today only
+    /// `Stopwatch`.
+    /// Primordial Soup's `Time` facet, holding only what
+    /// `benchmarks/are-we-fast-yet/AreWeFastYet.ns` measures with.
     private class Time = Value new () (
-        (* Answers this module's class `Stopwatch`: `Stopwatch new`
-           answers a stopped one reading 0. *)
+        /// Answers this module's class `Stopwatch`: `Stopwatch new`
+        /// answers a stopped one reading 0.
         public Stopwatch = ( ^outer PlatformFactory Stopwatch )
     )
-    (* A stopwatch over a monotonic clock in nanoseconds: made stopped,
-       reading 0, it runs from `start` on. An object, not a value: its
-       reading changes. *)
-    (* Primordial Soup's `Stopwatch` (`Time.ns`), narrowed to what
-       `benchmarks/are-we-fast-yet/AreWeFastYet.ns` sends. It keeps its reading in slots, so it is
-       an object, not a value. Its readings are nanoseconds since an
-       origin taken once per process, not the operating system's per-boot
-       monotonic clock Primordial Soup's primitive reads, so a started
-       stopwatch loaded into a fresh process reads a start taken against
-       another origin: its elapsed time there is wrong, and negative
-       whenever the loading process is younger than the start was. *)
+    /// A stopwatch over a monotonic clock in nanoseconds: made stopped,
+    /// reading 0, it runs from `start` on. An object, not a value: its
+    /// reading changes.
+    /// Primordial Soup's `Stopwatch` (`Time.ns`), narrowed to what
+    /// `benchmarks/are-we-fast-yet/AreWeFastYet.ns` sends. It keeps its reading in slots, so it is
+    /// an object, not a value. Its readings are nanoseconds since an
+    /// origin taken once per process, not the operating system's per-boot
+    /// monotonic clock Primordial Soup's primitive reads, so a started
+    /// stopwatch loaded into a fresh process reads a start taken against
+    /// another origin: its elapsed time there is wrong, and negative
+    /// whenever the loading process is younger than the start was.
     private class Stopwatch = Object new (
-        | (* The nanoseconds of the stopwatch's earlier runs: 0, since
-             nothing here stops a stopwatch. *)
+        |
+          /// The nanoseconds of the stopwatch's earlier runs: 0, since
+          /// nothing here stops a stopwatch.
           private cumulativeNanoseconds ::= 0.
-          (* The clock's reading at `start`, an Integer; nil until
-             `start`. *)
+          /// The clock's reading at `start`, an Integer; nil until
+          /// `start`.
           private startNanoseconds ::= nil. |
     ) (
-        (* Answers the nanoseconds that have passed since `start`, an
-           Integer, read anew on every send; 0 before `start`. *)
+        /// Answers the nanoseconds that have passed since `start`, an
+        /// Integer, read anew on every send; 0 before `start`.
         public elapsedNanoseconds = (
             startNanoseconds isNil ifTrue: [^cumulativeNanoseconds].
             ^cumulativeNanoseconds + (currentMonotonicNanoseconds - startNanoseconds)
         )
-        (* Starts the stopwatch and answers it; a running stopwatch keeps
-           its start. *)
+        /// Starts the stopwatch and answers it; a running stopwatch keeps
+        /// its start.
         public start = (
             startNanoseconds isNil ifFalse: [^self].
             startNanoseconds:: currentMonotonicNanoseconds
         )
-        (* Answers the clock's reading, an Integer: the nanoseconds since
-           an origin taken once per process, never less than an earlier
-           reading in the same process. *)
+        /// Answers the clock's reading, an Integer: the nanoseconds since
+        /// an origin taken once per process, never less than an earlier
+        /// reading in the same process.
         private currentMonotonicNanoseconds = ( ^vmMirror clockMonotonicNanoseconds: self ifFail: [nil] )
     )
-    (* Answers a new `Platform`: what the host hands every program. The
-       one public member of the module. *)
+    /// Answers a new `Platform`: what the host hands every program. The
+    /// one public member of the module.
     public newPlatform = ( ^Platform new )
 ) : ()

@@ -1,6 +1,6 @@
 //! Every member of a shipped core-library module is documented
-//! (CLAUDE.md, "Conventions"): a comment directly above every class, slot
-//! and method, whatever its access.
+//! (CLAUDE.md, "Conventions"): a `///` comment directly above every class,
+//! slot and method, whatever its access.
 
 use std::path::Path;
 
@@ -31,17 +31,20 @@ fn every_member_of_a_documented_module_has_a_comment() {
     }
     assert!(
         undocumented.is_empty(),
-        "members without a comment directly above them:\n{}",
+        "members without a `///` comment directly above them:\n{}",
         undocumented.join("\n")
     );
 }
 
-/// Every comment of `source`, as a byte range.
+/// Every `///` block of `source`, as a byte range. A `(* … *)` is no
+/// member's documentation: the house style is the line comment, whose
+/// text a reader such as a hover takes.
 fn comment_spans(source: &str) -> Vec<(usize, usize)> {
     ns_syntax::lexer::Lexer::new(source)
         .run_keeping_comments()
         .comments
         .iter()
+        .filter(|comment| comment.kind == ns_syntax::CommentKind::Line)
         .map(|comment| (comment.span.start as usize, comment.span.end as usize))
         .collect()
 }
