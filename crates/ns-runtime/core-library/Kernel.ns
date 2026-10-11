@@ -1543,10 +1543,12 @@ class Kernel vmMirror: theMirror = Object <: Value (
            exponent: an integer.
            modulus: an integer other than 0.
 
-           Signals the ArgumentError `reciprocalModulo:` signals for a
-           negative `exponent` when the receiver has no inverse, and the
-           ArgumentErrors of `\\` and `bitAnd:` for arguments that are no
-           integers or a zero `modulus`. *)
+           Signals the ArgumentError of `\\` for a `modulus` that is no
+           number or is 0, and the ArgumentError `reciprocalModulo:`
+           signals for a negative `exponent` when the receiver has no
+           inverse. An `exponent` that is no integer is not refused by an
+           Error of its own: the first send to fail is `<` (for `nil`) or
+           `bitAnd:` (for `2.5`), each a MessageNotUnderstood. *)
         public raisedTo: exponent modulo: modulus = (
             | result base remaining |
             exponent < 0 ifTrue: [
@@ -1568,8 +1570,9 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
            Signals an ArgumentError carrying `modulus`, 'reciprocalModulo:
            … has no inverse modulo …', when the receiver and `modulus` have
-           a common divisor other than 1, and the ArgumentErrors of `\\`
-           and `//` for a `modulus` that is no integer or is 0. *)
+           a common divisor other than 1, and the ArgumentError of `\\`
+           for a `modulus` that is no number or is 0 (the first send to
+           fail, so `//` never sees it). *)
         public reciprocalModulo: modulus = (
             | remainder nextRemainder coefficient nextCoefficient |
             remainder:: modulus.
@@ -1977,9 +1980,13 @@ class Kernel vmMirror: theMirror = Object <: Value (
     public class Fraction = Number new () (
         (* Answers true: the receiver is a Fraction. *)
         public isKindOfFraction = ( ^true )
-        (* Answers the numerator, an integer of either sign. *)
+        (* Answers the numerator, an integer of either sign. A receiver
+           holding no value (`Fraction new`) makes the leaf decline, and
+           the send ends in doesNotUnderstand: (MessageNotUnderstood). *)
         public numerator = ( ^vmMirror fractionNumerator: self ifFail: [^super numerator] )
-        (* Answers the denominator, an integer above 1. *)
+        (* Answers the denominator, an integer above 1. A receiver holding
+           no value (`Fraction new`) makes the leaf decline, and the send
+           ends in doesNotUnderstand: (MessageNotUnderstood). *)
         public denominator = ( ^vmMirror fractionDenominator: self ifFail: [^super denominator] )
         (* Answers the greatest integer not above the receiver. *)
         public floor = ( ^self numerator // self denominator )

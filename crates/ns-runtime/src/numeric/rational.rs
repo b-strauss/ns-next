@@ -297,10 +297,18 @@ fn round_to_double(
     let power = exponent + 1 - precision;
     let value = significand as f64;
     if power < -1000 {
-        value * 2f64.powi(-1000) * 2f64.powi((power + 1000) as i32)
+        value * power_of_two(-1000) * power_of_two(power + 1000)
     } else {
-        value * 2f64.powi(power as i32)
+        value * power_of_two(power)
     }
+}
+
+/// `2^exponent` for an exponent of a normal double, -1022 to 1023, built
+/// from its bits: `f64::powi` is not guaranteed exact by Rust, and a
+/// rounding error here would corrupt a correctly rounded conversion.
+fn power_of_two(exponent: i64) -> f64 {
+    debug_assert!((-1022..=1023).contains(&exponent));
+    f64::from_bits(((exponent + 1023) as u64) << 52)
 }
 
 impl Ord for Rational {
@@ -445,5 +453,35 @@ mod tests {
             .expect("non-zero"),
         );
         assert_eq!(above_half.to_f64(), f64::from_bits(1));
+    }
+
+    #[test]
+    fn to_f64_rounds_at_the_overflow_tie() {
+        let power = |exponent: u64| ArbitraryInteger::one().shift_left(exponent).expect("small");
+        // 2^1024 - 2^970 lies halfway between f64::MAX and 2^1024, and the
+        // even neighbour is 2^1024, which overflows.
+        let tie = power(1024).subtract(&power(970));
+        assert_eq!(Rational::from_integer(tie.clone()).to_f64(), f64::INFINITY);
+        let below = tie.subtract(&ArbitraryInteger::one());
+        assert_eq!(Rational::from_integer(below).to_f64(), f64::MAX);
+    }
+
+    #[test]
+    fn to_f64_rounds_up_from_a_subnormal_to_a_normal() {
+        // The largest subnormal, (2^52 - 1) · 2^-1074, plus a little more
+        // than half of its last place, 2^-1075.
+        let numerator = ArbitraryInteger::from_i128((((1i128 << 52) - 1) << 26) + (1 << 25) + 1);
+        let denominator = ArbitraryInteger::one().shift_left(1100).expect("small");
+        let value = Rational::new(numerator, denominator).expect("non-zero");
+        assert_eq!(value.to_f64(), f64::MIN_POSITIVE);
+    }
+
+    #[test]
+    fn to_f64_underflows_a_negative_value_to_negative_zero() {
+        let denominator = ArbitraryInteger::one().shift_left(1076).expect("small");
+        let value = Rational::new(ArbitraryInteger::from_i64(-1), denominator).expect("non-zero");
+        let result = value.to_f64();
+        assert_eq!(result, 0.0);
+        assert!(result.is_sign_negative());
     }
 }

@@ -1274,7 +1274,7 @@ fn large_integer_text(interpreter: &mut Interpreter, root: &Root) -> String {
 
 /// A non-integer operand is the guard's other failure, and the primitive
 /// decides it too: `+` is a type mismatch, while `=` deliberately answers
-/// `false` rather than raising (`builtins/numbers.rs`'s module note). The
+/// `false` rather than raising (`builtins/numbers/mod.rs`'s module note). The
 /// fast path must reproduce neither decision itself.
 #[test]
 fn an_inlined_integer_operation_with_a_non_integer_operand_falls_back_to_the_send() {

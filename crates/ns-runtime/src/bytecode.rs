@@ -76,7 +76,7 @@ impl CallSite {
 /// that have no `SmallInteger` result -- one that does not fit 61 bits, a
 /// zero divisor -- answer `None` and take the fallback, leaving the
 /// `LargeInteger` promotion and every error and its text to
-/// `builtins/numbers.rs`.
+/// `builtins/numbers/integer.rs` and `builtins/numbers/tower.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegerOperation {
     Add,
@@ -1086,7 +1086,7 @@ fn format_literal(literal: &Literal) -> String {
         Literal::Nil => "nil".to_string(),
         Literal::Boolean(boolean) => boolean.to_string(),
         Literal::SmallInteger(integer) => integer.to_string(),
-        Literal::Float(float) => format!("{float:?}"),
+        Literal::Float(float) => crate::numeric::float_text::shortest(*float),
         Literal::String(string) => format!("'{string}'"),
         Literal::Symbol(symbol) => format!("#{symbol}"),
         Literal::LargeInteger(integer) => format!("large-int {}", integer.to_bounded_text()),

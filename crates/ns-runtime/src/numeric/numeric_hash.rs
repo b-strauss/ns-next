@@ -84,6 +84,11 @@ pub(crate) fn rational_hash(rational: &Rational) -> i64 {
         };
     }
     let numerator = residue(rational.numerator().magnitude());
+    // An integer (an integral double included) has the residue 1 as its
+    // denominator: skipping the inverse spares its ~61 modular squarings.
+    if denominator == 1 {
+        return folded(numerator, negative);
+    }
     folded(multiply(numerator, inverse(denominator)), negative)
 }
 

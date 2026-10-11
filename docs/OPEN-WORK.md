@@ -682,7 +682,7 @@ activation.
   them stresses what still goes the long way: `Float>>hash` of a
   non-integral double builds a `Rational` and computes a modular inverse
   by Fermat's theorem, some 120 multiplications in `u128`, where it used
-  to hash the bits; a
+  to hash the bits (an integer and an integral double skip the inverse); a
   value's derived hash (`builtins/value.rs`, `hash_node`) asks the tower
   of every object it hashes whether it is a number; and an integer's leaf
   with a `Float` argument (`3 * 2.5`, `3 < 2.5`) goes through the tower's
@@ -1139,12 +1139,10 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 - The numbers sub-project's (noted in its reviews, 2026-10-11): goldens
   for a `LargeInteger` receiver of `/`, `quo:` and `rem:`, a negative
   divisor of `quo:` and `rem:`, a `Fraction` with a `Float` under `//` and
-  `\\`, `(-1/2) rounded`, and `LargeInteger`'s `Integer parse:`; unit
+  `\\`, `(-1/2) rounded`, and the class-side `LargeInteger parse: …` (a send to the subclass, which
+  declines and ends in doesNotUnderstand:); unit
   tests for a negative `shift_right` at a 64-bit boundary, for
-  `float_text`'s precision text of zero and of 21 digits, and for
-  `Rational::to_f64`'s overflow tie 2^1024 - 2^970 (Infinity, and just
-  below it `f64::MAX`), its round-up from a subnormal to a normal and a
-  negative underflow to `-0.0`; and `numeric_hash`'s test of `1/P`, which
+  `float_text`'s precision text of zero and of 21 digits; and `numeric_hash`'s test of `1/P`, which
   should assert the infinity's hash.
 
 ## Code quality follow-ups

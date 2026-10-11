@@ -224,7 +224,7 @@ fn and_or_short_circuit_never_invokes_the_untaken_block() {
 }
 
 /// An integer meets a `Float` argument as a `Float` meets an integer one:
-/// `1 + 1.5` is the double `2.5` (`builtins/numbers.rs`'s module note).
+/// `1 + 1.5` is the double `2.5` (`builtins/numbers/mod.rs`'s module note).
 #[test]
 fn integer_arithmetic_widens_a_float_argument() {
     let mut interpreter = Interpreter::bootstrap();

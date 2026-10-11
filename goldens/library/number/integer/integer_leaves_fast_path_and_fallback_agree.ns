@@ -16,7 +16,7 @@ class IntegerLeaves = Object new (
         p transcript show: (3.5 + 2) printString; newLine.
         (* The argument is a String, not a SmallInteger: the guard declines
            and Integer's `=` answers `false` rather than raising -- the
-           deliberate exception documented in `builtins/numbers.rs`. *)
+           deliberate exception documented in `builtins/numbers/mod.rs`. *)
         p transcript show: (2 = 'two') printString; newLine.
         (* Floor division of two literal integers: the fast path again. *)
         p transcript show: (7 // 2) printString; newLine
