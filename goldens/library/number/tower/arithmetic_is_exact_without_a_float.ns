@@ -1,0 +1,35 @@
+(* With no Float among the operands, arithmetic is exact: dividing
+   integers that do not divide answers a Fraction, and a Fraction whose
+   denominator becomes 1 answers an Integer. A Float among them makes
+   the answer a Float, the other operand rounded once to the nearest
+   double. `//` and `\\` round toward negative infinity, `quo:` and
+   `rem:` toward zero, over every pair of numbers; any of them by zero,
+   and an exact `/` by zero, is "division by zero", while a Float's `/`
+   by zero is an infinity. *)
+class ArithmeticIsExactWithoutAFloat = () (
+    public main: platform args: arguments = (
+        | transcript = platform transcript.
+          kernel = platform kernel.
+          Error = kernel Error.
+          ArgumentError = kernel ArgumentError.
+          half = 1 / 2.
+          third = 1 / 3.
+          twoToThe70 = 1180591620717411303424. |
+        transcript print: 7 / 2; show: ' '; print: 6 / 3; show: ' '; print: (6 / 3) class; show: ' '; print: -6 / 4; show: ' '; print: (7 / 2) class; newLine.
+        transcript print: half + third; show: ' '; print: half - third; show: ' '; print: half * third; show: ' '; print: half / third; show: ' '; print: half + half; show: ' '; print: (half + half) class; newLine.
+        transcript print: 3 + half; show: ' '; print: half * 4; show: ' '; print: twoToThe70 / 3; show: ' '; print: twoToThe70 / 4; newLine.
+        transcript print: half + 0.25; show: ' '; print: 0.25 + half; show: ' '; print: third * 3.0; show: ' '; print: 1 / 2.0; newLine.
+        transcript print: 7 // 2; show: ' '; print: -7 // 2; show: ' '; print: -7 \\ 2; show: ' '; print: (-7 quo: 2); show: ' '; print: (-7 rem: 2); newLine.
+        transcript print: (7 / 2) // 1; show: ' '; print: (-7 / 2) \\ 1; show: ' '; print: ((-7 / 2) quo: 1); show: ' '; print: ((-7 / 2) rem: 1); show: ' '; print: 7 // 2.0; show: ' '; print: 7.5 \\ 2; show: ' '; print: -7.5 \\ 2; show: ' '; print: (-7.5 rem: 2); show: ' '; print: (7.5 quo: 2); newLine.
+        transcript print: (2 raisedTo: 10); show: ' '; print: (2 raisedTo: -2); show: ' '; print: (half raisedTo: 3); show: ' '; print: (2 raisedTo: 0.5) > 1.414; show: ' '; print: (2 raisedTo: 100); newLine.
+        transcript print: 1.0 / 0; show: ' '; print: 1 / 0.0; show: ' '; print: -1 / 0.0; newLine.
+        transcript show: ([1 / 0] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([half / 0] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([1.5 // 0] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([7 \\ 0.0] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([0 raisedTo: -1] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([half + nil] on: Error do: [:error | error messageText]); newLine.
+        transcript show: ([7 // nil] on: Error do: [:error | error messageText]); newLine.
+        transcript print: ([1.5 // 0.0] on: ArgumentError do: [:error | error argument]); newLine
+    )
+)

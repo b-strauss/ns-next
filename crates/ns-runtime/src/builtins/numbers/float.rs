@@ -1,7 +1,7 @@
 //! `Float`'s leaves: IEEE 754 doubles, immediate or boxed. The rules across
 //! the numeric classes are the module note's.
 
-use super::tower::{self, Comparison};
+use super::tower::{self, Arithmetic, Comparison};
 use super::{type_mismatch, Accepted};
 use crate::builtins::collections::{self, IntegerArgument};
 use crate::builtins::first_argument;
@@ -30,37 +30,35 @@ pub(crate) fn execute_float<'gc>(
         return parse(mutator, receiver, arguments);
     }
     let receiver_float = mutator.heap.float_value(receiver)?;
-    // An `Integer` or `LargeInteger` argument becomes the nearest `double`;
-    // anything else is a type mismatch, never a silent `NaN` result for
-    // arithmetic or a silent `false` for comparisons.
-    let argument_float = || {
-        let argument = *arguments.first()?;
-        if let Some(float) = mutator.heap.float_value(argument) {
-            return Some(float);
-        }
-        match argument.kind() {
-            ValueKind::SmallInteger(integer) => Some(integer as f64),
-            ValueKind::Object(object) => mutator
-                .heap
-                .large_integer(object)
-                .map(|integer| integer.to_f64()),
-            _ => None,
+    // `atan:` and `raisedTo:` take any number, converted to the nearest
+    // double in one rounding; anything else is a type mismatch, never a
+    // silent `NaN`. A double is handed back for the caller to make a
+    // `Value` of: the closure holds `mutator` shared, and
+    // `Mutator::new_float` needs it.
+    let float_function = |operator: &str, operation: fn(f64, f64) -> f64| {
+        let argument = arguments.first().copied();
+        match argument.and_then(|value| tower::operand(&mutator.heap, value)) {
+            Some(number) => Ok(operation(receiver_float, number.to_f64())),
+            None => Err(type_mismatch(
+                &mutator.heap,
+                receiver,
+                Symbol::intern(operator),
+                Accepted::Number,
+                argument,
+            )),
         }
     };
-    let mismatch = |operator: &str| {
-        type_mismatch(
-            &mutator.heap,
-            receiver,
-            Symbol::intern(operator),
-            Accepted::Number,
-            arguments.first().copied(),
-        )
-    };
-    // A double, for the caller to make a `Value` of: the closure holds
-    // `mutator` shared, and `Mutator::new_float` needs it.
-    let arithmetic = |operator: &str, operation: fn(f64, f64) -> f64| match argument_float() {
-        None => Err(mismatch(operator)),
-        Some(argument) => Ok(operation(receiver_float, argument)),
+    // `+ - * /`: a `Float` argument is the fast path; every other argument
+    // -- a number of another class, or the type mismatch of one that is
+    // none -- is the tower's.
+    let arithmetic = |mutator: &mut Mutator<'gc>,
+                      operation: Arithmetic,
+                      fast: fn(f64, f64) -> f64| match arguments
+        .first()
+        .and_then(|argument| mutator.heap.float_value(*argument))
+    {
+        Some(argument) => Some(Ok(mutator.new_float(fast(receiver_float, argument)))),
+        None => tower::arithmetic(mutator, operation, receiver, arguments),
     };
     // A `Float` argument compares here as IEEE 754 doubles; every other
     // argument -- a number of another class, or the type mismatch of one
@@ -74,17 +72,15 @@ pub(crate) fn execute_float<'gc>(
             .expect("a Float receiver is a number"),
     };
     match primitive {
-        FloatPrimitive::Add => {
-            Some(arithmetic("+", |left, right| left + right).map(|float| mutator.new_float(float)))
-        }
+        FloatPrimitive::Add => arithmetic(mutator, Arithmetic::Add, |left, right| left + right),
         FloatPrimitive::Subtract => {
-            Some(arithmetic("-", |left, right| left - right).map(|float| mutator.new_float(float)))
+            arithmetic(mutator, Arithmetic::Subtract, |left, right| left - right)
         }
         FloatPrimitive::Multiply => {
-            Some(arithmetic("*", |left, right| left * right).map(|float| mutator.new_float(float)))
+            arithmetic(mutator, Arithmetic::Multiply, |left, right| left * right)
         }
         FloatPrimitive::Divide => {
-            Some(arithmetic("/", |left, right| left / right).map(|float| mutator.new_float(float)))
+            arithmetic(mutator, Arithmetic::Divide, |left, right| left / right)
         }
         FloatPrimitive::Less => Some(compare(Comparison::Less, |left, right| left < right)),
         FloatPrimitive::Greater => Some(compare(Comparison::Greater, |left, right| left > right)),
@@ -129,13 +125,13 @@ pub(crate) fn execute_float<'gc>(
         FloatPrimitive::ArcTangent => Some(Ok(mutator.new_float(receiver_float.atan()))),
         // `y atan: x`, the angle of the point (x, y).
         FloatPrimitive::ArcTangentOf => {
-            Some(arithmetic("atan:", f64::atan2).map(|float| mutator.new_float(float)))
+            Some(float_function("atan:", f64::atan2).map(|float| mutator.new_float(float)))
         }
         FloatPrimitive::Exponential => Some(Ok(mutator.new_float(receiver_float.exp()))),
         FloatPrimitive::NaturalLogarithm => Some(Ok(mutator.new_float(receiver_float.ln()))),
         FloatPrimitive::Logarithm => Some(Ok(mutator.new_float(receiver_float.log10()))),
         FloatPrimitive::RaisedTo => {
-            Some(arithmetic("raisedTo:", f64::powf).map(|float| mutator.new_float(float)))
+            Some(float_function("raisedTo:", f64::powf).map(|float| mutator.new_float(float)))
         }
         FloatPrimitive::Floor => Some(Ok(mutator.new_float(receiver_float.floor()))),
         FloatPrimitive::Ceiling => Some(Ok(mutator.new_float(receiver_float.ceil()))),

@@ -1,10 +1,10 @@
 //! `Integer`'s leaves: the `i64` that fits a `SmallInteger`. The rules across
 //! the numeric classes are the module note's.
 
-use super::tower::{self, Comparison};
+use super::tower::{self, Arithmetic, Comparison};
 use super::{
-    checked_floor_divide, division_by_zero, float_operand, floor_modulo, integer_operand, promote,
-    shift_left, type_mismatch, Accepted, Answer,
+    checked_floor_divide, division_by_zero, floor_modulo, integer_operand, promote, shift_left,
+    type_mismatch, Accepted,
 };
 use crate::builtins::first_argument;
 use crate::builtins::primitive::{AnyIntegerPrimitive, IntegerPrimitive, Primitive};
@@ -32,42 +32,6 @@ pub(crate) fn execute_integer<'gc>(
     // A `LargeInteger` argument, read only once the argument is known to be
     // no `SmallInteger`, so the common case never touches the heap.
     let large_argument = || integer_operand(&mutator.heap, arguments.first().copied());
-    // `+`/`-`/`*`: an argument of neither integer class nor `Float` is a type
-    // mismatch.
-    // A result that fits a `SmallInteger` is answered without allocating.
-    // One that does not is recomputed in `i128`, where two `i64`s' sum,
-    // difference or product always fits, and one with a `LargeInteger`
-    // argument as an `ArbitraryInteger`; either is handed back as an
-    // `Answer::Integer` for the caller to make a `Value` of -- the closure
-    // holds `mutator` shared, so it cannot allocate the `LargeInteger`
-    // itself. A `Float` argument makes it a double operation on the
-    // converted receiver, handed back as an `Answer::Float` for the same
-    // reason.
-    let arithmetic = |operator: &str,
-                      tagged: fn(Value<'gc>, Value<'gc>) -> Option<Value<'gc>>,
-                      wide: fn(i128, i128) -> i128,
-                      large: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger,
-                      float: fn(f64, f64) -> f64| {
-        match argument_integer() {
-            Some(argument) => Ok(match tagged(receiver, arguments[0]) {
-                Some(result) => Answer::Value(result),
-                None => Answer::Integer(ArbitraryInteger::from_i128(wide(
-                    i128::from(receiver_integer),
-                    i128::from(argument),
-                ))),
-            }),
-            None => match large_argument() {
-                Some(argument) => Ok(Answer::Integer(large(
-                    &ArbitraryInteger::from_i64(receiver_integer),
-                    &argument,
-                ))),
-                None => match float_operand(&mutator.heap, arguments.first().copied()) {
-                    Some(argument) => Ok(Answer::Float(float(receiver_integer as f64, argument))),
-                    None => Err(mismatch(operator, Accepted::Number)),
-                },
-            },
-        }
-    };
     // Ordering comparisons: two `SmallInteger`s compare here; every other
     // argument -- a number of another class, or the type mismatch of one
     // that is none -- is the tower's.
@@ -80,78 +44,56 @@ pub(crate) fn execute_integer<'gc>(
             .expect("an Integer receiver is a number"),
     };
     match primitive {
-        IntegerPrimitive::Add => Some(
-            arithmetic(
-                "+",
-                Value::small_integer_sum,
-                |left, right| left + right,
-                ArbitraryInteger::add,
-                |left, right| left + right,
-            )
-            .map(|answer| answer.into_value(mutator)),
+        IntegerPrimitive::Add => small_arithmetic(
+            mutator,
+            Arithmetic::Add,
+            receiver,
+            arguments,
+            Value::small_integer_sum,
+            |left, right| left + right,
         ),
-        IntegerPrimitive::Subtract => Some(
-            arithmetic(
-                "-",
-                Value::small_integer_difference,
-                |left, right| left - right,
-                ArbitraryInteger::subtract,
-                |left, right| left - right,
-            )
-            .map(|answer| answer.into_value(mutator)),
+        IntegerPrimitive::Subtract => small_arithmetic(
+            mutator,
+            Arithmetic::Subtract,
+            receiver,
+            arguments,
+            Value::small_integer_difference,
+            |left, right| left - right,
         ),
-        IntegerPrimitive::Multiply => Some(
-            arithmetic(
-                "*",
-                Value::small_integer_product,
-                |left, right| left * right,
-                ArbitraryInteger::multiply,
-                |left, right| left * right,
-            )
-            .map(|answer| answer.into_value(mutator)),
+        IntegerPrimitive::Multiply => small_arithmetic(
+            mutator,
+            Arithmetic::Multiply,
+            receiver,
+            arguments,
+            Value::small_integer_product,
+            |left, right| left * right,
         ),
-        IntegerPrimitive::FloorDivide => Some(match argument_integer() {
-            Some(0) => Err(division_by_zero(receiver, "//")),
+        // Two `SmallInteger`s divide here; every other divisor -- a number
+        // of another class, or the type mismatch of one that is none -- is
+        // the tower's.
+        IntegerPrimitive::FloorDivide => match argument_integer() {
+            Some(0) => Some(Err(division_by_zero(receiver, "//", arguments[0]))),
             // With the zero divisor refused above, the one quotient that
             // does not fit is `SMALL_INTEGER_MIN // -1`'s, which is
             // `-SMALL_INTEGER_MIN`.
-            Some(divisor) => Ok(
+            Some(divisor) => Some(Ok(
                 match checked_floor_divide(receiver_integer, divisor)
                     .filter(|number| fits_small_integer(*number))
                 {
                     Some(quotient) => Value::small_integer(quotient),
                     None => promote(mutator, -i128::from(receiver_integer)),
                 },
-            ),
-            // A `LargeInteger` divisor is never zero, since zero fits
-            // `i64`; `floor_divide`'s `None` is still answered as the zero
-            // divisor it would mean rather than assumed away.
-            None => match large_argument() {
-                Some(divisor) => {
-                    match ArbitraryInteger::from_i64(receiver_integer).floor_divide(&divisor) {
-                        Some(quotient) => Ok(mutator.new_integer(quotient)),
-                        None => Err(division_by_zero(receiver, "//")),
-                    }
-                }
-                None => Err(mismatch("//", Accepted::Integer)),
-            },
-        }),
-        IntegerPrimitive::Modulo => Some(match argument_integer() {
-            Some(0) => Err(division_by_zero(receiver, "\\\\")),
-            Some(divisor) => Ok(Value::small_integer(floor_modulo(
+            )),
+            None => tower::arithmetic(mutator, Arithmetic::FloorDivide, receiver, arguments),
+        },
+        IntegerPrimitive::Modulo => match argument_integer() {
+            Some(0) => Some(Err(division_by_zero(receiver, "\\\\", arguments[0]))),
+            Some(divisor) => Some(Ok(Value::small_integer(floor_modulo(
                 receiver_integer,
                 divisor,
-            ))),
-            None => match large_argument() {
-                Some(divisor) => {
-                    match ArbitraryInteger::from_i64(receiver_integer).floor_modulo(&divisor) {
-                        Some(remainder) => Ok(mutator.new_integer(remainder)),
-                        None => Err(division_by_zero(receiver, "\\\\")),
-                    }
-                }
-                None => Err(mismatch("\\\\", Accepted::Integer)),
-            },
-        }),
+            )))),
+            None => tower::arithmetic(mutator, Arithmetic::Modulo, receiver, arguments),
+        },
         IntegerPrimitive::BitAnd => Some(match argument_integer() {
             Some(argument) => Ok(Value::small_integer(receiver_integer & argument)),
             None => match large_argument() {
@@ -246,6 +188,36 @@ pub(crate) fn execute_integer<'gc>(
         // `as` rounds to the nearest double, ties to even.
         IntegerPrimitive::AsFloat => Some(Ok(mutator.new_float(receiver_integer as f64))),
     }
+}
+
+/// `+`, `-` or `*` on a `SmallInteger` receiver. A `SmallInteger` argument
+/// is the fast path: a result that fits is answered without allocating,
+/// and one that does not is recomputed in `i128`, where two `i64`s' sum,
+/// difference or product always fits. Every other argument -- a number of
+/// another class, or the type mismatch of one that is none -- is the
+/// tower's.
+fn small_arithmetic<'gc>(
+    mutator: &mut Mutator<'gc>,
+    operation: Arithmetic,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+    tagged: fn(Value<'gc>, Value<'gc>) -> Option<Value<'gc>>,
+    wide: fn(i128, i128) -> i128,
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let receiver_integer = receiver.as_small_integer()?;
+    let small_argument = arguments
+        .first()
+        .and_then(|argument| Some((*argument, argument.as_small_integer()?)));
+    let Some((argument, argument_integer)) = small_argument else {
+        return tower::arithmetic(mutator, operation, receiver, arguments);
+    };
+    Some(Ok(match tagged(receiver, argument) {
+        Some(result) => result,
+        None => promote(
+            mutator,
+            wide(i128::from(receiver_integer), i128::from(argument_integer)),
+        ),
+    }))
 }
 
 /// The leaves that take an integer receiver of either representation, so

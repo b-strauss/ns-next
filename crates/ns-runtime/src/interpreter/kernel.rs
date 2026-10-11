@@ -840,6 +840,9 @@ mod tests {
         (BuiltinClass::Number, "exp"),
         (BuiltinClass::Number, "ln"),
         (BuiltinClass::Number, "log"),
+        (BuiltinClass::Number, "negated"),
+        (BuiltinClass::Number, "abs"),
+        (BuiltinClass::Number, "raisedTo:"),
         // A send to `self` is no leaf: `printString` reads the class's own
         // `name`, and a metaclass's `name` reads its own `thisClass` first.
         (BuiltinClass::Class, "printString"),
@@ -893,6 +896,11 @@ mod tests {
         // A fraction's text is built from its parts' texts: sends, no leaf.
         (BuiltinClass::Fraction, "printString"),
         (BuiltinClass::Fraction, "asString"),
+        (BuiltinClass::Fraction, "floor"),
+        (BuiltinClass::Fraction, "ceiling"),
+        (BuiltinClass::Fraction, "truncated"),
+        (BuiltinClass::Fraction, "asInteger"),
+        (BuiltinClass::Fraction, "rounded"),
         // `Array`'s sequence protocol is Newspeak over its leaves --
         // `at:`, `at:put:`, `size`, `copyFrom:to:` and
         // `replaceFrom:to:with:startingAt:` -- and `new:` on its class side:

@@ -183,7 +183,16 @@ impl Primitive {
                 | NumberPrimitive::Greater
                 | NumberPrimitive::LessOrEqual
                 | NumberPrimitive::GreaterOrEqual
-                | NumberPrimitive::Hash,
+                | NumberPrimitive::Hash
+                | NumberPrimitive::Add
+                | NumberPrimitive::Subtract
+                | NumberPrimitive::Multiply
+                | NumberPrimitive::Divide
+                | NumberPrimitive::FloorDivide
+                | NumberPrimitive::Modulo
+                | NumberPrimitive::Quotient
+                | NumberPrimitive::Remainder
+                | NumberPrimitive::AsFloat,
             ) => false,
             Primitive::String(StringPrimitive::Equal) => true,
             Primitive::String(
@@ -363,7 +372,8 @@ pub enum FractionPrimitive {
 }
 
 /// `Number`'s comparisons, `=` and `hash`, by exact value across every
-/// representation; `Fraction` inherits them.
+/// representation, its arithmetic -- exact unless a `Float` takes part --
+/// and `asFloat`; `Fraction` inherits them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumberPrimitive {
     Less,
@@ -372,6 +382,15 @@ pub enum NumberPrimitive {
     GreaterOrEqual,
     Equal,
     Hash,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Quotient,
+    Remainder,
+    AsFloat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1377,6 +1396,51 @@ pub const MIRROR: &[MirrorEntry] = &[
         "numberHash:ifFail:",
         "hash",
         Primitive::Number(NumberPrimitive::Hash),
+    ),
+    mirror(
+        "number:add:ifFail:",
+        "+",
+        Primitive::Number(NumberPrimitive::Add),
+    ),
+    mirror(
+        "number:subtract:ifFail:",
+        "-",
+        Primitive::Number(NumberPrimitive::Subtract),
+    ),
+    mirror(
+        "number:multiply:ifFail:",
+        "*",
+        Primitive::Number(NumberPrimitive::Multiply),
+    ),
+    mirror(
+        "number:divide:ifFail:",
+        "/",
+        Primitive::Number(NumberPrimitive::Divide),
+    ),
+    mirror(
+        "number:floorDivide:ifFail:",
+        "//",
+        Primitive::Number(NumberPrimitive::FloorDivide),
+    ),
+    mirror(
+        "number:modulo:ifFail:",
+        "\\\\",
+        Primitive::Number(NumberPrimitive::Modulo),
+    ),
+    mirror(
+        "number:quotient:ifFail:",
+        "quo:",
+        Primitive::Number(NumberPrimitive::Quotient),
+    ),
+    mirror(
+        "number:remainder:ifFail:",
+        "rem:",
+        Primitive::Number(NumberPrimitive::Remainder),
+    ),
+    mirror(
+        "numberAsFloat:ifFail:",
+        "asFloat",
+        Primitive::Number(NumberPrimitive::AsFloat),
     ),
     mirror(
         "futureMade:ifFail:",

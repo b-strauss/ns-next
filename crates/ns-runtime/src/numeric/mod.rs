@@ -6,8 +6,6 @@
 
 pub(crate) mod float_text;
 pub(crate) mod numeric_hash;
-// Its arithmetic and `to_f64` are used from Task 8 of the numbers plan on.
-#[allow(dead_code)]
 mod rational;
 
 pub(crate) use rational::Rational;

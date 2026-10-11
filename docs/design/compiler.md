@@ -483,7 +483,8 @@ or lexical send is never inlined — their lookups do not start where an
 explicit-receiver send's does. Nothing about the operands is inspected:
 whether they are integers is a run-time question, and asking it at compile
 time would be a type inference this compiler does not do. `/` is not in the
-list because an integer has no `/` primitive at all.
+list: an integer's `/` answers a `Fraction` unless the divisor divides, so it
+has no `SmallInteger` answer to inline; it is `Number`'s send.
 
 **The emission is a guarded fast path with the ordinary send as its
 fallback**, the shape `lower_integer_binary` emits:

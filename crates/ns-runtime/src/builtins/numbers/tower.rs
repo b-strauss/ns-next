@@ -42,9 +42,6 @@ impl Operand {
     }
 
     /// The nearest double, a tie to even.
-    // `to_f64`, `is_float` and `integer` serve the tower's arithmetic,
-    // from Task 8 of the numbers plan on.
-    #[allow(dead_code)]
     pub(crate) fn to_f64(&self) -> f64 {
         match self {
             // `as` rounds to the nearest double, ties to even.
@@ -55,14 +52,12 @@ impl Operand {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn is_float(&self) -> bool {
         matches!(self, Operand::Float(_))
     }
 
     /// The integer an `Integer` or a `LargeInteger` is; `None` for a
     /// `Fraction` or a `Float`.
-    #[allow(dead_code)]
     pub(crate) fn integer(&self) -> Option<ArbitraryInteger> {
         match self {
             Operand::Small(integer) => Some(ArbitraryInteger::from_i64(*integer)),
@@ -151,6 +146,181 @@ pub(crate) fn hash(operand: &Operand) -> i64 {
         Operand::Fraction(rational) => numeric_hash::rational_hash(rational),
         Operand::Float(float) => numeric_hash::float_hash(*float),
     }
+}
+
+/// The tower's arithmetic operations.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Arithmetic {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    FloorDivide,
+    Modulo,
+    Quotient,
+    Remainder,
+}
+
+impl Arithmetic {
+    fn selector(self) -> &'static str {
+        match self {
+            Arithmetic::Add => "+",
+            Arithmetic::Subtract => "-",
+            Arithmetic::Multiply => "*",
+            Arithmetic::Divide => "/",
+            Arithmetic::FloorDivide => "//",
+            Arithmetic::Modulo => "\\\\",
+            Arithmetic::Quotient => "quo:",
+            Arithmetic::Remainder => "rem:",
+        }
+    }
+}
+
+/// An arithmetic answer before it is a `Value`.
+#[derive(Debug)]
+enum Outcome {
+    Integer(ArbitraryInteger),
+    Rational(Rational),
+    Float(f64),
+}
+
+/// The one refusal arithmetic has.
+#[derive(Debug)]
+struct DivisionByZero;
+
+/// `operation` over two numbers: over doubles when either is a `Float`,
+/// exactly otherwise.
+fn compute(
+    operation: Arithmetic,
+    left: &Operand,
+    right: &Operand,
+) -> Result<Outcome, DivisionByZero> {
+    if left.is_float() || right.is_float() {
+        return float_compute(operation, left.to_f64(), right.to_f64());
+    }
+    if let (Some(dividend), Some(divisor)) = (left.integer(), right.integer()) {
+        return integer_compute(operation, &dividend, &divisor);
+    }
+    let first = left.exact().expect("no Float, so finite");
+    let second = right.exact().expect("no Float, so finite");
+    let floor = |quotient: Rational| quotient.floor();
+    let truncate = |quotient: Rational| quotient.truncated();
+    let rounded_quotient = |round: fn(Rational) -> ArbitraryInteger| {
+        first.divide(&second).map(round).ok_or(DivisionByZero)
+    };
+    let remainder_after = |quotient: ArbitraryInteger| {
+        first.subtract(&Rational::from_integer(quotient).multiply(&second))
+    };
+    Ok(match operation {
+        Arithmetic::Add => Outcome::Rational(first.add(&second)),
+        Arithmetic::Subtract => Outcome::Rational(first.subtract(&second)),
+        Arithmetic::Multiply => Outcome::Rational(first.multiply(&second)),
+        Arithmetic::Divide => Outcome::Rational(first.divide(&second).ok_or(DivisionByZero)?),
+        Arithmetic::FloorDivide => Outcome::Integer(rounded_quotient(floor)?),
+        Arithmetic::Quotient => Outcome::Integer(rounded_quotient(truncate)?),
+        Arithmetic::Modulo => Outcome::Rational(remainder_after(rounded_quotient(floor)?)),
+        Arithmetic::Remainder => Outcome::Rational(remainder_after(rounded_quotient(truncate)?)),
+    })
+}
+
+/// Two integers: `ArbitraryInteger`'s own operations, a quotient that
+/// does not divide made a `Rational`.
+fn integer_compute(
+    operation: Arithmetic,
+    dividend: &ArbitraryInteger,
+    divisor: &ArbitraryInteger,
+) -> Result<Outcome, DivisionByZero> {
+    Ok(Outcome::Integer(match operation {
+        Arithmetic::Add => dividend.add(divisor),
+        Arithmetic::Subtract => dividend.subtract(divisor),
+        Arithmetic::Multiply => dividend.multiply(divisor),
+        Arithmetic::Divide => {
+            return Rational::new(dividend.clone(), divisor.clone())
+                .map(Outcome::Rational)
+                .ok_or(DivisionByZero)
+        }
+        Arithmetic::FloorDivide => dividend.floor_divide(divisor).ok_or(DivisionByZero)?,
+        Arithmetic::Modulo => dividend.floor_modulo(divisor).ok_or(DivisionByZero)?,
+        Arithmetic::Quotient => dividend.truncated_divide(divisor).ok_or(DivisionByZero)?.0,
+        Arithmetic::Remainder => dividend.truncated_divide(divisor).ok_or(DivisionByZero)?.1,
+    }))
+}
+
+/// Two doubles: IEEE 754's arithmetic; `//` and its kin refuse a zero
+/// divisor where `/` answers an infinity or a NaN.
+fn float_compute(operation: Arithmetic, left: f64, right: f64) -> Result<Outcome, DivisionByZero> {
+    let rounding = matches!(
+        operation,
+        Arithmetic::FloorDivide | Arithmetic::Modulo | Arithmetic::Quotient | Arithmetic::Remainder
+    );
+    if rounding && right == 0.0 {
+        return Err(DivisionByZero);
+    }
+    Ok(Outcome::Float(match operation {
+        Arithmetic::Add => left + right,
+        Arithmetic::Subtract => left - right,
+        Arithmetic::Multiply => left * right,
+        Arithmetic::Divide => left / right,
+        Arithmetic::FloorDivide => (left / right).floor(),
+        Arithmetic::Quotient => (left / right).trunc(),
+        // `%` is C's `fmod`: exact, with the dividend's sign.
+        Arithmetic::Remainder => left % right,
+        Arithmetic::Modulo => {
+            let remainder = left % right;
+            if remainder != 0.0 && (remainder < 0.0) != (right < 0.0) {
+                remainder + right
+            } else {
+                remainder
+            }
+        }
+    }))
+}
+
+fn answer<'gc>(mutator: &mut Mutator<'gc>, outcome: Outcome) -> Value<'gc> {
+    match outcome {
+        Outcome::Integer(integer) => mutator.new_integer(integer),
+        Outcome::Rational(rational) => mutator.new_rational(rational),
+        Outcome::Float(float) => mutator.new_float(float),
+    }
+}
+
+/// An arithmetic leaf: the answer, the type mismatch for an argument that
+/// is no number, or "division by zero" carrying the divisor. `None`
+/// declines a receiver that is no number.
+pub(crate) fn arithmetic<'gc>(
+    mutator: &mut Mutator<'gc>,
+    operation: Arithmetic,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let left = operand(&mutator.heap, receiver)?;
+    let argument = arguments.first().copied();
+    let Some(right) = argument.and_then(|value| operand(&mutator.heap, value)) else {
+        return Some(Err(type_mismatch(
+            &mutator.heap,
+            receiver,
+            Symbol::intern(operation.selector()),
+            Accepted::Number,
+            argument,
+        )));
+    };
+    Some(match compute(operation, &left, &right) {
+        Ok(outcome) => Ok(answer(mutator, outcome)),
+        Err(DivisionByZero) => Err(super::division_by_zero(
+            receiver,
+            operation.selector(),
+            argument.unwrap_or(Value::nil()),
+        )),
+    })
+}
+
+/// `Number>>asFloat`: the nearest Float, in one rounding.
+pub(crate) fn as_float<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+) -> Option<Value<'gc>> {
+    let number = operand(&mutator.heap, receiver)?;
+    Some(mutator.new_float(number.to_f64()))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,6 +424,19 @@ pub(crate) fn execute_number<'gc>(
         NumberPrimitive::Hash => {
             value_hash(&mutator.heap, receiver).map(|hash| Ok(Value::small_integer(hash)))
         }
+        NumberPrimitive::Add => arithmetic(mutator, Arithmetic::Add, receiver, arguments),
+        NumberPrimitive::Subtract => arithmetic(mutator, Arithmetic::Subtract, receiver, arguments),
+        NumberPrimitive::Multiply => arithmetic(mutator, Arithmetic::Multiply, receiver, arguments),
+        NumberPrimitive::Divide => arithmetic(mutator, Arithmetic::Divide, receiver, arguments),
+        NumberPrimitive::FloorDivide => {
+            arithmetic(mutator, Arithmetic::FloorDivide, receiver, arguments)
+        }
+        NumberPrimitive::Modulo => arithmetic(mutator, Arithmetic::Modulo, receiver, arguments),
+        NumberPrimitive::Quotient => arithmetic(mutator, Arithmetic::Quotient, receiver, arguments),
+        NumberPrimitive::Remainder => {
+            arithmetic(mutator, Arithmetic::Remainder, receiver, arguments)
+        }
+        NumberPrimitive::AsFloat => as_float(mutator, receiver).map(Ok),
     }
 }
 
@@ -377,5 +560,74 @@ mod tests {
         );
         assert!(equal(&Operand::Small(two_to_the_53), &rounded));
         assert!(!equal(&Operand::Small(two_to_the_53 + 1), &rounded));
+    }
+
+    #[test]
+    fn the_rounding_divisions_agree_with_their_definitions() {
+        use super::{compute, Arithmetic};
+        let integer = |value: i64| Operand::Small(value);
+        let fraction = |numerator: i128, denominator: i128| {
+            Operand::Fraction(
+                Rational::new(
+                    ArbitraryInteger::from_i128(numerator),
+                    ArbitraryInteger::from_i128(denominator),
+                )
+                .expect("non-zero"),
+            )
+        };
+        let exact = |outcome: Result<super::Outcome, super::DivisionByZero>| match outcome {
+            Ok(super::Outcome::Integer(value)) => Rational::from_integer(value),
+            Ok(super::Outcome::Rational(value)) => value,
+            _ => panic!("an exact outcome"),
+        };
+        let minus_seven_halves = fraction(-7, 2);
+        assert_eq!(
+            exact(compute(
+                Arithmetic::FloorDivide,
+                &minus_seven_halves,
+                &integer(1)
+            )),
+            Rational::from_integer(ArbitraryInteger::from_i64(-4))
+        );
+        assert_eq!(
+            exact(compute(
+                Arithmetic::Modulo,
+                &minus_seven_halves,
+                &integer(1)
+            )),
+            Rational::new(ArbitraryInteger::from_i64(1), ArbitraryInteger::from_i64(2))
+                .expect("non-zero")
+        );
+        assert_eq!(
+            exact(compute(
+                Arithmetic::Quotient,
+                &minus_seven_halves,
+                &integer(1)
+            )),
+            Rational::from_integer(ArbitraryInteger::from_i64(-3))
+        );
+        assert_eq!(
+            exact(compute(
+                Arithmetic::Remainder,
+                &minus_seven_halves,
+                &integer(1)
+            )),
+            Rational::new(
+                ArbitraryInteger::from_i64(-1),
+                ArbitraryInteger::from_i64(2)
+            )
+            .expect("non-zero")
+        );
+        assert!(compute(Arithmetic::Divide, &integer(1), &integer(0)).is_err());
+        assert!(compute(
+            Arithmetic::Modulo,
+            &Operand::Float(1.5),
+            &Operand::Float(0.0)
+        )
+        .is_err());
+        assert!(matches!(
+            compute(Arithmetic::Divide, &Operand::Float(1.0), &integer(0)),
+            Ok(super::Outcome::Float(value)) if value == f64::INFINITY
+        ));
     }
 }

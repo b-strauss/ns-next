@@ -1099,6 +1099,94 @@ class Kernel vmMirror: theMirror = Object <: Value (
            `=` makes equal, whatever their classes; an integer's is the
            integer itself. *)
         public hash = ( ^vmMirror numberHash: self ifFail: [^super hash] )
+        (* Answers the sum of the receiver and `other`: exact when neither
+           is a Float -- an integer when it is integral, a Fraction
+           otherwise -- and a Float computed by IEEE 754 when either is,
+           the other rounded to the nearest Float first.
+
+           other: a number.
+
+           Signals an ArgumentError carrying `other`, '+ requires a numeric
+           argument, got …', for any other argument. *)
+        public + other = ( ^vmMirror number: self add: other ifFail: [^super + other] )
+        (* As `+`, the difference; its error text names '-'. *)
+        public - other = ( ^vmMirror number: self subtract: other ifFail: [^super - other] )
+        (* As `+`, the product; its error text names '*'. *)
+        public * other = ( ^vmMirror number: self multiply: other ifFail: [^super * other] )
+        (* As `+`, the quotient: exact when neither is a Float, so `7 / 2`
+           is the Fraction (7/2) and `6 / 3` the Integer 2; a Float when
+           either is, an infinity or a NaN for a zero divisor.
+
+           other: a number; not an exact zero when neither is a Float.
+
+           Signals an ArgumentError: 'division by zero', carrying `other`,
+           for an exact zero `other` when neither is a Float, and '/
+           requires a numeric argument, got …', carrying `other`, for any
+           other argument. *)
+        public / other = ( ^vmMirror number: self divide: other ifFail: [^super / other] )
+        (* Answers the quotient of the receiver by `other` rounded toward
+           negative infinity: an integer when neither is a Float, a Float
+           when either is.
+
+           other: a number other than zero, 0.0 included.
+
+           Signals an ArgumentError: 'division by zero', carrying `other`,
+           for a zero `other`, and '// requires a numeric argument, got …',
+           carrying `other`, for any other argument. *)
+        public // other = ( ^vmMirror number: self floorDivide: other ifFail: [^super // other] )
+        (* Answers the remainder of `//`, `self - (self // other * other)`,
+           which takes the sign of `other`: exact when neither is a Float,
+           a Float when either is.
+
+           other: as `//`'s, with the same errors; the type error's text
+           names '\\'. *)
+        public \\ other = ( ^vmMirror number: self modulo: other ifFail: [^super \\ other] )
+        (* Answers the quotient of the receiver by `other` rounded toward
+           zero: an integer when neither is a Float, a Float when either
+           is.
+
+           other: as `//`'s, with the same errors; the type error's text
+           names 'quo:'. *)
+        public quo: other = ( ^vmMirror number: self quotient: other ifFail: [^super quo: other] )
+        (* Answers the remainder of `quo:`, `self - ((self quo: other) *
+           other)`, which takes the sign of the receiver: exact when
+           neither is a Float, a Float when either is.
+
+           other: as `//`'s, with the same errors; the type error's text
+           names 'rem:'. *)
+        public rem: other = ( ^vmMirror number: self remainder: other ifFail: [^super rem: other] )
+        (* Answers the nearest Float to the receiver's exact value, a tie
+           rounded to the even one: an infinity beyond the largest Float,
+           a zero below half the smallest. *)
+        public asFloat = ( ^vmMirror numberAsFloat: self ifFail: [^super asFloat] )
+        (* Answers `0 - self`, exactly. *)
+        public negated = ( ^0 - self )
+        (* Answers the receiver without its sign: `negated` when it is
+           below 0, the receiver otherwise. *)
+        public abs = ( ^self < 0 ifTrue: [self negated] ifFalse: [self] )
+        (* Answers the receiver raised to `exponent`: exactly by repeated
+           squaring for an integer `exponent` -- a negative one answering
+           the reciprocal, a Fraction for an integer receiver -- and
+           through `asFloat` and `Float>>raisedTo:` for any other.
+
+           exponent: a number.
+
+           Signals the ArgumentError of `/`, 'division by zero', for a
+           zero receiver and a negative integer `exponent`, and
+           `Float>>raisedTo:`'s for an `exponent` that is no number. *)
+        public raisedTo: exponent = (
+            | result base remaining |
+            exponent isKindOfInteger ifFalse: [^self asFloat raisedTo: exponent].
+            exponent < 0 ifTrue: [^1 / (self raisedTo: exponent negated)].
+            result:: 1.
+            base:: self.
+            remaining:: exponent.
+            [remaining > 0] whileTrue: [
+                (remaining bitAnd: 1) = 1 ifTrue: [result:: result * base].
+                remaining:: remaining >> 1.
+                remaining > 0 ifTrue: [base:: base * base]].
+            ^result
+        )
         (* Evaluates `action` with the receiver, then with each number one
            greater, in increasing order, while it is at most `stop`;
            answers nil. Nothing is evaluated for a receiver above `stop`.
@@ -1304,10 +1392,11 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public isKindOfInteger = ( ^true )
         (* Answers the sum of the receiver and `other`: an integer for an
            integer `other`, a LargeInteger only when it lies outside -2^60
-           to 2^60 - 1, and a Float for a Float `other`, the receiver converted to
-           the nearest Float first.
+           to 2^60 - 1; exactly, a Fraction or an integer, for a Fraction
+           `other`; and a Float for a Float `other`, the receiver converted
+           to the nearest Float first.
 
-           other: an Integer, a LargeInteger or a Float.
+           other: a number.
 
            Signals an ArgumentError carrying `other`, '+ requires a numeric
            argument, got …', for any other argument. *)
@@ -1317,15 +1406,18 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* As `+`, the product; its error text names '*'. *)
         public * other = ( ^vmMirror integer: self multiply: other ifFail: [^super * other] )
         (* Answers the quotient of the receiver by `other`, rounded toward
-           negative infinity.
+           negative infinity: an integer for an integer or a Fraction
+           `other`, a Float for a Float `other`.
 
-           other: an Integer or a LargeInteger, not zero.
+           other: a number other than zero, 0.0 included.
 
-           Signals an ArgumentError: 'division by zero', carrying 0, for a
-           zero `other`, and '// requires an integer argument, got …',
-           carrying `other`, for any argument that is no integer. *)
+           Signals an ArgumentError: 'division by zero', carrying `other`,
+           for a zero `other`, and '// requires a numeric argument, got …',
+           carrying `other`, for any other argument. *)
         public // other = ( ^vmMirror integer: self floorDivide: other ifFail: [^super // other] )
-        (* Answers the remainder of `//`, which takes the sign of `other`.
+        (* Answers the remainder of `//`, `self - (self // other * other)`,
+           which takes the sign of `other`: exact for an integer or a
+           Fraction `other`, a Float for a Float `other`.
 
            other: as `//`'s, with the same errors; the type error's text
            names '\\'. *)
@@ -1589,15 +1681,17 @@ class Kernel vmMirror: theMirror = Object <: Value (
        the result fits again, so each integer has one representation.
        `3 class` stays `Integer` -- the section asks only for its protocol. *)
     public class LargeInteger = Integer new () (
-        (* As `Integer>>+`: the sum, an integer for an integer `other` and
-           a Float for a Float one, with the same ArgumentError. *)
+        (* As `Integer>>+`: the sum, an integer for an integer `other`,
+           exact for a Fraction one and a Float for a Float one, with the
+           same ArgumentError. *)
         public + other = ( ^vmMirror largeInteger: self add: other ifFail: [^super + other] )
         (* As `Integer>>-`, with the same ArgumentError. *)
         public - other = ( ^vmMirror largeInteger: self subtract: other ifFail: [^super - other] )
         (* As `Integer>>*`, with the same ArgumentError. *)
         public * other = ( ^vmMirror largeInteger: self multiply: other ifFail: [^super * other] )
         (* As `Integer>>//`: the quotient rounded toward negative infinity,
-           with the same ArgumentErrors. *)
+           an integer for an integer or a Fraction `other` and a Float for
+           a Float one, with the same ArgumentErrors. *)
         public // other = (
             ^vmMirror largeInteger: self floorDivide: other ifFail: [^super // other]
         )
@@ -1670,8 +1764,8 @@ class Kernel vmMirror: theMirror = Object <: Value (
         (* Answers the sum of the receiver and `other` as IEEE 754 computes
            it, a Float.
 
-           other: a Float, or an Integer or a LargeInteger, converted to
-           the nearest Float first.
+           other: a number: a Float, or an Integer, a LargeInteger or a
+           Fraction, converted to the nearest Float first in one rounding.
 
            Signals an ArgumentError carrying `other`, '+ requires a numeric
            argument, got …', for any other argument. *)
@@ -1887,6 +1981,22 @@ class Kernel vmMirror: theMirror = Object <: Value (
         public numerator = ( ^vmMirror fractionNumerator: self ifFail: [^super numerator] )
         (* Answers the denominator, an integer above 1. *)
         public denominator = ( ^vmMirror fractionDenominator: self ifFail: [^super denominator] )
+        (* Answers the greatest integer not above the receiver. *)
+        public floor = ( ^self numerator // self denominator )
+        (* Answers the least integer not below the receiver. *)
+        public ceiling = ( ^(self numerator negated // self denominator) negated )
+        (* Answers the receiver without its fraction, an integer toward
+           zero. *)
+        public truncated = ( ^self numerator quo: self denominator )
+        (* Answers `truncated`. *)
+        public asInteger = ( ^self truncated )
+        (* Answers the integer nearest the receiver, a half rounded away
+           from zero. *)
+        public rounded = (
+            | nearest |
+            nearest:: (self numerator abs * 2 + self denominator) // (self denominator * 2).
+            ^self numerator < 0 ifTrue: [nearest negated] ifFalse: [nearest]
+        )
         (* Answers a new String of the numerator and the denominator
            between parentheses and separated by '/': '(3/4)', '(-1/2)'. *)
         public printString = (

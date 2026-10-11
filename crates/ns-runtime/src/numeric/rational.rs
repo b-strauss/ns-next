@@ -91,17 +91,6 @@ impl Rational {
         self.denominator.is_one()
     }
 
-    pub(crate) fn is_zero(&self) -> bool {
-        self.numerator.is_zero()
-    }
-
-    pub(crate) fn negated(&self) -> Rational {
-        Rational {
-            numerator: self.numerator.negated(),
-            denominator: self.denominator.clone(),
-        }
-    }
-
     pub(crate) fn add(&self, other: &Rational) -> Rational {
         self.combine(other, ArbitraryInteger::add)
     }
@@ -434,7 +423,10 @@ mod tests {
         assert_eq!(third.to_f64(), 1.0 / 3.0);
         let enormous = Rational::from_integer(huge.clone());
         assert_eq!(enormous.to_f64(), f64::INFINITY);
-        assert_eq!(enormous.negated().to_f64(), f64::NEG_INFINITY);
+        assert_eq!(
+            Rational::from_integer(huge.negated()).to_f64(),
+            f64::NEG_INFINITY
+        );
         let tiny = Rational::new(ArbitraryInteger::one(), huge).expect("non-zero");
         assert_eq!(tiny.to_f64(), 0.0);
         // Just above half the smallest subnormal rounds up to it; exactly

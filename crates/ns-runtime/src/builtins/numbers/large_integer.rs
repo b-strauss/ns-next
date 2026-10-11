@@ -2,13 +2,11 @@
 //! `ArbitraryInteger`. The rules across the numeric classes are the module
 //! note's.
 
-use super::tower::{self, Comparison};
-use super::{
-    division_by_zero, float_operand, integer_operand, shift_left, type_mismatch, Accepted, Answer,
-};
+use super::tower::{self, Arithmetic, Comparison};
+use super::{integer_operand, shift_left, type_mismatch, Accepted};
 use crate::builtins::primitive::{LargeIntegerPrimitive, Primitive};
 use crate::types::*;
-use crate::{ArbitraryInteger, Mutator, Symbol};
+use crate::{Mutator, Symbol};
 
 pub(crate) fn execute_large_integer<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -20,6 +18,19 @@ pub(crate) fn execute_large_integer<'gc>(
     // `LargeInteger new`, is no number and declines to `Object`'s methods
     // -- `tower::operand` answers `None` for either.
     let comparison = |comparison| tower::compare(&mutator.heap, comparison, receiver, arguments);
+    // The arithmetic is the tower's: it has no faster case for a
+    // `LargeInteger` receiver.
+    let operation = match primitive {
+        LargeIntegerPrimitive::Add => Some(Arithmetic::Add),
+        LargeIntegerPrimitive::Subtract => Some(Arithmetic::Subtract),
+        LargeIntegerPrimitive::Multiply => Some(Arithmetic::Multiply),
+        LargeIntegerPrimitive::FloorDivide => Some(Arithmetic::FloorDivide),
+        LargeIntegerPrimitive::Modulo => Some(Arithmetic::Modulo),
+        _ => None,
+    };
+    if let Some(operation) = operation {
+        return tower::arithmetic(mutator, operation, receiver, arguments);
+    }
     match primitive {
         LargeIntegerPrimitive::Less => return comparison(Comparison::Less),
         LargeIntegerPrimitive::Greater => return comparison(Comparison::Greater),
@@ -46,10 +57,8 @@ pub(crate) fn execute_large_integer<'gc>(
     }
     let object = receiver.as_object()?;
     let receiver_integer = mutator.heap.large_integer(object)?;
-    // Either integer class as the argument, or a `Float` for arithmetic;
-    // anything else is the leaf's type mismatch. As in
-    // `execute_integer`, these closures hold `mutator` shared, so each answers
-    // an `ArbitraryInteger` or a double for the caller to make a `Value` of.
+    // Either integer class as the argument; anything else is the leaf's
+    // type mismatch.
     let argument = || integer_operand(&mutator.heap, arguments.first().copied());
     let mismatch = |operator: &str, accepted: Accepted| {
         type_mismatch(
@@ -60,44 +69,7 @@ pub(crate) fn execute_large_integer<'gc>(
             arguments.first().copied(),
         )
     };
-    let arithmetic = |operator: &str,
-                      operation: fn(&ArbitraryInteger, &ArbitraryInteger) -> ArbitraryInteger,
-                      float: fn(f64, f64) -> f64| {
-        match argument() {
-            Some(argument) => Ok(Answer::Integer(operation(&receiver_integer, &argument))),
-            None => match float_operand(&mutator.heap, arguments.first().copied()) {
-                Some(argument) => Ok(Answer::Float(float(receiver_integer.to_f64(), argument))),
-                None => Err(mismatch(operator, Accepted::Number)),
-            },
-        }
-    };
     match primitive {
-        LargeIntegerPrimitive::Add => Some(
-            arithmetic("+", ArbitraryInteger::add, |left, right| left + right)
-                .map(|answer| answer.into_value(mutator)),
-        ),
-        LargeIntegerPrimitive::Subtract => Some(
-            arithmetic("-", ArbitraryInteger::subtract, |left, right| left - right)
-                .map(|answer| answer.into_value(mutator)),
-        ),
-        LargeIntegerPrimitive::Multiply => Some(
-            arithmetic("*", ArbitraryInteger::multiply, |left, right| left * right)
-                .map(|answer| answer.into_value(mutator)),
-        ),
-        LargeIntegerPrimitive::FloorDivide => Some(match argument() {
-            Some(divisor) => match receiver_integer.floor_divide(&divisor) {
-                Some(quotient) => Ok(mutator.new_integer(quotient)),
-                None => Err(division_by_zero(receiver, "//")),
-            },
-            None => Err(mismatch("//", Accepted::Integer)),
-        }),
-        LargeIntegerPrimitive::Modulo => Some(match argument() {
-            Some(divisor) => match receiver_integer.floor_modulo(&divisor) {
-                Some(remainder) => Ok(mutator.new_integer(remainder)),
-                None => Err(division_by_zero(receiver, "\\\\")),
-            },
-            None => Err(mismatch("\\\\", Accepted::Integer)),
-        }),
         LargeIntegerPrimitive::BitAnd => Some(match argument() {
             Some(argument) => Ok(mutator.new_integer(receiver_integer.bit_and(&argument))),
             None => Err(mismatch("bitAnd:", Accepted::Integer)),
@@ -115,14 +87,19 @@ pub(crate) fn execute_large_integer<'gc>(
         }
         // Answered above, before the copy: a fall-through here would
         // decline the leaf silently to `Object`'s methods.
-        LargeIntegerPrimitive::Less
+        LargeIntegerPrimitive::Add
+        | LargeIntegerPrimitive::Subtract
+        | LargeIntegerPrimitive::Multiply
+        | LargeIntegerPrimitive::FloorDivide
+        | LargeIntegerPrimitive::Modulo
+        | LargeIntegerPrimitive::Less
         | LargeIntegerPrimitive::Greater
         | LargeIntegerPrimitive::LessOrEqual
         | LargeIntegerPrimitive::GreaterOrEqual
         | LargeIntegerPrimitive::Equal
         | LargeIntegerPrimitive::Hash => unreachable!(
-            "the comparisons, `=` and `hash` on a LargeInteger are answered by the \
-             early returns before its digits are copied"
+            "the arithmetic, the comparisons, `=` and `hash` on a LargeInteger are \
+             answered by the early returns before its digits are copied"
         ),
         LargeIntegerPrimitive::PrintString => Some(Ok(Value::object(
             mutator.new_string(receiver_integer.to_decimal_string()),

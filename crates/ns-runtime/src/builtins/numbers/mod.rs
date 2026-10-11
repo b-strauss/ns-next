@@ -1,7 +1,7 @@
 //! `Integer` (`i64`), `LargeInteger` (`ArbitraryInteger`), `Float`
 //! (`f64`) and `Fraction` (`numeric::Rational`) native methods.
 //!
-//! # One representation per number; the tower compares and hashes them
+//! # One representation per number; the tower computes across them
 //!
 //! §5.1.1's integers are not limited in size. Each integer has exactly one
 //! representation: a `SmallInteger` (class `Integer`) when it fits 61 bits
@@ -9,29 +9,29 @@
 //! object, and every leaf answers an integer through `Mutator::new_integer`,
 //! which picks the one that fits. A `Fraction` is made only in normal form
 //! (`fraction`), so it is never an integer and equal fractions have equal
-//! parts. Across the numeric classes:
+//! parts; an exact answer is made through `Mutator::new_rational`, which
+//! answers an integer when the denominator is 1. Across the numeric
+//! classes:
 //!
-//! * The tower (`tower`) compares any two numbers by their exact values,
-//!   a finite double being the dyadic rational it is, and hashes them so
-//!   that equal numbers hash alike: `1 = 1.0`, `(1/2) = 0.5`, and 2^53 + 1
-//!   is greater than the double 2^53. A NaN is ordered with nothing and
-//!   equals a NaN. `=` with anything that is no number is plain `false`,
-//!   never an error; an ordering with it is the type mismatch.
-//!   `Integer`'s, `LargeInteger`'s and `Float`'s own leaves keep only their
+//! * The tower (`tower`) computes every pair's arithmetic: with no `Float`
+//!   among the operands exactly (`7 / 2` is `(7/2)`, `(1/2) + (1/2)` is
+//!   `1`), with one the other rounded once to the nearest double and IEEE
+//!   754 computing (`1.5 + 1` is `2.5`, `4 * 3.5` is `14.0`). `//` and
+//!   `\\` round toward negative infinity, `quo:` and `rem:` toward zero,
+//!   over every pair; the four, and an exact `/`, refuse a zero divisor --
+//!   `0.0` included for the four -- with "division by zero", where a
+//!   `Float`'s `/` answers an infinity or a NaN.
+//! * The tower compares any two numbers by their exact values, a finite
+//!   double being the dyadic rational it is, and hashes them so that equal
+//!   numbers hash alike: `1 = 1.0`, `(1/2) = 0.5`, and 2^53 + 1 is greater
+//!   than the double 2^53. A NaN is ordered with nothing and equals a NaN.
+//!   `=` with anything that is no number is plain `false`, never an error;
+//!   an ordering or an arithmetic operation with it is the type mismatch.
+//! * `Integer`'s, `LargeInteger`'s and `Float`'s own leaves keep only their
 //!   fast paths -- two `SmallInteger`s, two `Float`s -- and send every
 //!   other case to the tower, as `Number`'s rows, which `Fraction`
-//!   inherits, send all of theirs.
-//! * `Integer`'s and `LargeInteger`'s arithmetic accept an argument of
-//!   either integer class (`integer_operand`): `5 + big` and `big + 5` both
-//!   answer.
-//! * A `Float`'s arithmetic converts an `Integer` or a `LargeInteger`
-//!   argument to the nearest `double` (`1.5 + 1` is `2.5`), and an
-//!   integer's arithmetic meets a `Float` argument the same way, converting
-//!   the receiver (`4 * 3.5` is `14.0`). `//`, `\\` and the bit operations
-//!   take integers only; `Float` has none of them. These, and the
-//!   arithmetic across a `Fraction`, are still the leaves' own until Task 8
-//!   of the numbers plan (`docs/design/core-library.md`, "Gap: an integer
-//!   has no `/`").
+//!   inherits, send all of theirs. The bit operations, `gcd:` and `>>`
+//!   take integers only (`integer_operand`).
 
 mod float;
 mod fraction;
@@ -52,7 +52,7 @@ use crate::{ArbitraryInteger, Heap, Mutator, Symbol};
 /// What a numeric leaf takes as its argument, which its type mismatch names.
 #[derive(Clone, Copy)]
 pub(super) enum Accepted {
-    /// `//`, `\\` and the bit operations: an `Integer` or a `LargeInteger`.
+    /// The bit operations, `gcd:` and `>>`: an `Integer` or a `LargeInteger`.
     Integer,
     /// Arithmetic and ordering: any number.
     Number,
@@ -60,8 +60,8 @@ pub(super) enum Accepted {
 
 /// A numeric operation on an argument it does not accept (this module's
 /// note says which those are). The message names what the operation takes,
-/// not what the receiver is: an integer's `+` takes any number, its `//`
-/// only an integer.
+/// not what the receiver is: an integer's `+` takes any number, its
+/// `bitAnd:` only an integer.
 pub(super) fn type_mismatch<'gc>(
     heap: &Heap<'gc>,
     receiver: Value<'gc>,
@@ -121,14 +121,19 @@ pub(super) fn promote<'gc>(mutator: &mut Mutator<'gc>, wide: i128) -> Value<'gc>
     mutator.new_integer(ArbitraryInteger::from_i128(wide))
 }
 
-/// Division by zero, raised in the same words by `Integer`'s and
-/// `LargeInteger`'s `//` and `\\`, naming the selector sent.
-pub(super) fn division_by_zero<'gc>(receiver: Value<'gc>, selector: &str) -> NewspeakError<'gc> {
-    // The refused argument is the divisor, which is always the integer zero.
+/// Division by zero, raised in the same words by every number's `/`, `//`,
+/// `\\`, `quo:` and `rem:` that refuses its zero divisor, naming the
+/// selector sent and carrying the divisor -- `0`, a `LargeInteger` never,
+/// or `0.0` -- as the refused argument.
+pub(super) fn division_by_zero<'gc>(
+    receiver: Value<'gc>,
+    selector: &str,
+    divisor: Value<'gc>,
+) -> NewspeakError<'gc> {
     NewspeakError::argument_error(
         Symbol::intern(selector),
         receiver,
-        Value::small_integer(0),
+        divisor,
         "division by zero",
     )
 }
@@ -192,32 +197,6 @@ pub(super) fn integer_operand<'gc>(
         ValueKind::SmallInteger(integer) => Some(ArbitraryInteger::from_i64(integer)),
         ValueKind::Object(object) => heap.large_integer(object),
         _ => None,
-    }
-}
-
-/// A `Float` argument, which an integer's arithmetic takes by
-/// converting the receiver to a double (this module's note).
-pub(super) fn float_operand<'gc>(heap: &Heap<'gc>, value: Option<Value<'gc>>) -> Option<f64> {
-    heap.float_value(value?)
-}
-
-/// What an arithmetic closure answers. The closures hold `mutator` shared,
-/// so a result that needs it -- a `LargeInteger`, or a float, which
-/// `Mutator::new_float` makes -- is handed back for the caller to make a
-/// `Value` of.
-pub(super) enum Answer<'gc> {
-    Value(Value<'gc>),
-    Integer(ArbitraryInteger),
-    Float(f64),
-}
-
-impl<'gc> Answer<'gc> {
-    fn into_value(self, mutator: &mut Mutator<'gc>) -> Value<'gc> {
-        match self {
-            Answer::Value(value) => value,
-            Answer::Integer(integer) => mutator.new_integer(integer),
-            Answer::Float(float) => mutator.new_float(float),
-        }
     }
 }
 

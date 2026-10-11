@@ -548,11 +548,11 @@ module a value.
   numbers is decided by the tower, so a value whose slot holds `3` equals
   and hashes like one whose slot holds `3.0`
   (`goldens/library/number/tower/numbers_hash_as_they_compare.ns`). The
-  arithmetic still converts: a `Float` receiver's `+`, `-`, `*` and `/`
-  take an integer argument of either class and convert it to the nearest
-  `double`, and an integer receiver's `+`, `-` and `*` convert themselves
-  the same way for a `Float` argument ("Gap: an integer has no `/`"
-  below).
+  arithmetic is the tower's too: with no `Float` among the operands it is
+  exact -- `7 / 2` is the `Fraction` `(7/2)`, `6 / 3` the `Integer` `2`
+  -- and with one the other operand is rounded once to the nearest
+  `double` and IEEE 754 computes
+  (`goldens/library/number/tower/arithmetic_is_exact_without_a_float.ns`).
 The builtin value classes' own immutability rests on there being no mutating
 leaf for a `String` or a `Symbol` — their state is a Rust
 payload, not slots, so neither check above is about them. And the actor
@@ -972,8 +972,8 @@ comparisons work on the tagged words ([object-model.md](object-model.md),
 a result that does not fit and falls back to the send, whose leaf promotes
 ([compiler.md](compiler.md), "Arithmetic inlining";
 `goldens/library/number/large-integer/an_overflowing_integer_operation_answers_a_large_integer.ns`).
-Both classes' arithmetic and ordering accept an argument of either integer class
-(`integer_operand`), so `5 + big` and `big + 5` both answer
+Both classes' arithmetic and ordering accept any number (`tower::operand`), so
+`5 + big` and `big + 5` both answer
 (`goldens/library/number/large-integer/large_integer_arithmetic.ns`). A
 `Float`'s arithmetic converts a `LargeInteger` argument to the nearest `double`
 (`ArbitraryInteger::to_f64`, rounded to nearest with ties to even, infinite
@@ -987,13 +987,12 @@ orderings and `=` convert nothing: they compare exact values, a finite
 double being the dyadic rational it is, so 2^53 + 1 is greater than the
 double 2^53 it rounds to
 (`goldens/library/number/tower/numbers_compare_by_exact_value.ns`). An argument
-that is neither an integer nor a `Float` is a type mismatch naming "a numeric
-argument" (`goldens/library/number/large-integer/a_large_integer_meets_nil.ns`).
-That is a derived choice, pinned by goldens, which the numeric tower may revisit
-("Gap: an integer has no `/`" below). `//` and `\\` by zero raise "division by
-zero" from either class's leaf
+that is no number is a type mismatch naming "a numeric argument" (`goldens/library/number/large-integer/a_large_integer_meets_nil.ns`).
+`//` and `\\` take any number, a `Float` or a `Fraction` included, and by any
+zero, `0.0` included, raise "division by zero" carrying the divisor
 (`goldens/library/number/large-integer/large_integer_floor_division_by_zero_is_uncaught.ns`,
-`goldens/library/number/integer/floor_modulo_by_zero_is_uncaught.ns`).
+`goldens/library/number/integer/floor_modulo_by_zero_is_uncaught.ns`,
+`goldens/library/number/tower/arithmetic_is_exact_without_a_float.ns`).
 
 **An index, size or count that is a `LargeInteger` is out of range, not of
 the wrong class.** It is still an `Integer`, and no index, size or count
