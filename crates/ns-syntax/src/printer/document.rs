@@ -32,9 +32,16 @@ pub(crate) enum Document {
     /// Line breaks inside start `columns` further in.
     Indent(u32, Box<Document>),
     /// Flat if it fits on the line and holds nothing that forces a break,
-    /// else broken, as a whole.
+    /// else broken, as a whole. Inside a flat group it is flat too, unless
+    /// it holds something that forces a break, or a line break has been
+    /// written since a group or `Choice` was last decided: then it is
+    /// measured again from where it starts.
     Group(Box<Document>),
-    /// The first alternative whose first line fits, else the last one.
+    /// The first alternative whose first line fits, laid out flat (its
+    /// groups that hold a forced break still break), else the last one,
+    /// broken. Inside a flat group it is the first alternative, unless a
+    /// line break has been written since a group or `Choice` was last
+    /// decided: then its alternatives are measured again.
     Choice(Vec<Document>),
     Concat(Vec<Document>),
 }
@@ -124,7 +131,12 @@ struct Command<'document> {
 type BrokenGroups = HashSet<*const Document>;
 
 /// Lays `document` out within `width` columns, each line break written as
-/// `line_ending`, trailing spaces removed from every line.
+/// `line_ending`, trailing spaces removed from every line (never a
+/// `Verbatim`'s own). A group is measured only up to its first line break;
+/// after a line break inside flat content, the next `Group` or `Choice` is
+/// measured again rather than taken flat, so what follows a hugged block's
+/// `]` is held to the width when it is grouped. A `Line` of a group already
+/// taken flat stays a space.
 pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> String {
     let broken_groups = broken_groups(document);
     let width = usize::try_from(width).unwrap_or(usize::MAX);
@@ -132,6 +144,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
         output: String::new(),
         column: 0,
         protected_end: 0,
+        remeasure: false,
         line_suffixes: Vec::new(),
         line_ending,
     };
@@ -177,19 +190,27 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                     mode: Mode::Flat,
                     document: content,
                 };
-                let group_mode = if broken_groups.contains(&std::ptr::from_ref(document)) {
-                    Mode::Break
-                } else if mode == Mode::Flat
-                    || fits(
-                        flat,
-                        &commands,
-                        width.saturating_sub(writer.column),
-                        &broken_groups,
-                    )
-                {
-                    Mode::Flat
+                let marked = broken_groups.contains(&std::ptr::from_ref(document));
+                let group_mode = if mode == Mode::Flat && !writer.remeasure {
+                    if marked {
+                        Mode::Break
+                    } else {
+                        Mode::Flat
+                    }
                 } else {
-                    Mode::Break
+                    writer.remeasure = false;
+                    if !marked
+                        && fits(
+                            flat,
+                            &commands,
+                            width.saturating_sub(writer.column),
+                            &broken_groups,
+                        )
+                    {
+                        Mode::Flat
+                    } else {
+                        Mode::Break
+                    }
                 };
                 commands.push(Command {
                     mode: group_mode,
@@ -200,13 +221,15 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                 let Some((last, others)) = alternatives.split_last() else {
                     continue;
                 };
-                let chosen = match mode {
-                    Mode::Flat => Command {
+                let chosen = if mode == Mode::Flat && !writer.remeasure {
+                    Command {
                         indentation,
                         mode: Mode::Flat,
                         document: alternatives.first().unwrap_or(last),
-                    },
-                    Mode::Break => others
+                    }
+                } else {
+                    writer.remeasure = false;
+                    others
                         .iter()
                         .map(|alternative| Command {
                             indentation,
@@ -225,7 +248,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                             indentation,
                             mode: Mode::Break,
                             document: last,
-                        }),
+                        })
                 };
                 commands.push(chosen);
             }
@@ -248,9 +271,15 @@ struct Writer<'text> {
     output: String,
     /// In `char`s, the unit the width is counted in.
     column: usize,
-    /// Where the last `Verbatim` ended: trimming stops there, since the
-    /// spaces before it are a string literal's own.
+    /// Where the last non-empty `Verbatim` ended: trimming stops there, since
+    /// spaces at its end are a string literal's own. An empty one holds
+    /// nothing to protect and leaves the spaces before it trimmable.
     protected_end: usize,
+    /// Set by every line break written. A group or `Choice` was taken flat
+    /// on a measurement that ended at the first line break; once one is
+    /// written, what follows on the new line was never measured, so the next
+    /// group or `Choice` met in flat content is decided as in broken content.
+    remeasure: bool,
     line_suffixes: Vec<&'text str>,
     line_ending: &'text str,
 }
@@ -263,14 +292,20 @@ impl Writer<'_> {
 
     fn write_verbatim(&mut self, content: &str) {
         self.output.push_str(content);
-        self.protected_end = self.output.len();
+        if !content.is_empty() {
+            self.protected_end = self.output.len();
+        }
         self.column = match content.rfind('\n') {
-            Some(last_break) => content[last_break + 1..].chars().count(),
+            Some(last_break) => {
+                self.remeasure = true;
+                content[last_break + 1..].chars().count()
+            }
             None => self.column + content.chars().count(),
         };
     }
 
     fn break_line(&mut self, indentation: u32) {
+        self.remeasure = true;
         self.flush_line_suffixes();
         self.trim_trailing_spaces();
         self.output.push_str(self.line_ending);
@@ -693,6 +728,92 @@ mod tests {
             text("last"),
         ]);
         assert_eq!(layout(&document, 8, "\n"), "head\ntail");
+    }
+
+    /// `[`, a body on its own lines, `]`: a block laid out multi-line.
+    fn multi_line_block() -> Document {
+        group(concat(vec![
+            text("["),
+            indent(2, concat(vec![hard_line(), text("a.")])),
+            hard_line(),
+            text("]"),
+        ]))
+    }
+
+    /// The group around the `Choice` was measured only up to the `[`; the
+    /// group after the `]` is measured again rather than taken flat.
+    #[test]
+    fn a_group_after_a_line_break_in_flat_content_is_measured_again() {
+        let tail = group(indent(4, concat(vec![line(), text("y".repeat(30))])));
+        let document = group(concat(vec![
+            text("x"),
+            line(),
+            Document::Choice(vec![concat(vec![text("foo: "), multi_line_block()])]),
+            tail,
+        ]));
+        assert_eq!(
+            layout(&document, 20, "\n"),
+            format!("x foo: [\n  a.\n]\n    {}", "y".repeat(30))
+        );
+    }
+
+    #[test]
+    fn an_argument_after_a_hugged_block_is_measured_again() {
+        let argument = group(indent(
+            4,
+            concat(vec![
+                text("aaaaaa"),
+                line(),
+                text("+ bbbbbb"),
+                line(),
+                text("+ cccccc"),
+            ]),
+        ));
+        let hugged = concat(vec![
+            text("x at: "),
+            multi_line_block(),
+            text(" put: "),
+            argument,
+        ]);
+        let document = Document::Choice(vec![hugged, text("fallback")]);
+        assert_eq!(
+            layout(&document, 20, "\n"),
+            "x at: [\n  a.\n] put: aaaaaa\n    + bbbbbb\n    + cccccc"
+        );
+    }
+
+    #[test]
+    fn a_choice_after_a_line_break_in_flat_content_is_decided_again() {
+        let document = group(concat(vec![
+            text("x"),
+            line(),
+            Document::Choice(vec![concat(vec![text("foo: "), multi_line_block()])]),
+            Document::Choice(vec![text(format!(" {}", "y".repeat(30))), text(" short")]),
+        ]));
+        assert_eq!(layout(&document, 20, "\n"), "x foo: [\n  a.\n] short");
+    }
+
+    #[test]
+    fn trimming_never_cuts_into_a_verbatim() {
+        let document = concat(vec![
+            Document::Verbatim("'a\nb  ".into()),
+            hard_line(),
+            Document::Verbatim("'c  ".into()),
+            hard_line(),
+            text("d"),
+        ]);
+        assert_eq!(layout(&document, 100, "\n"), "'a\nb  \n'c  \nd");
+    }
+
+    #[test]
+    fn an_empty_verbatim_does_not_keep_the_spaces_before_it() {
+        let document = concat(vec![
+            text("a "),
+            Document::Verbatim(String::new()),
+            hard_line(),
+            text("b"),
+        ]);
+        assert_eq!(layout(&document, 100, "\n"), "a\nb");
     }
 
     #[test]

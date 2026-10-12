@@ -9,8 +9,11 @@ pub mod diagnostic;
 pub mod lexer;
 mod parser;
 mod positions;
-// Only its tests lay documents out until the printer lowers modules to them.
-#[allow(dead_code, unused_imports)]
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "only its tests lay documents out so far"
+)]
 mod printer;
 pub mod span;
 pub mod token;
