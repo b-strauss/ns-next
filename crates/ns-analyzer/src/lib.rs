@@ -3,7 +3,7 @@
 
 //! Everything that looks at Newspeak without running it. The binary
 //! `ns-next-analyzer` offers the language server (diagnostics, semantic
-//! tokens, fold ranges and document symbols for `.ns` files), the token dump
+//! tokens, fold ranges, document symbols and formatting for `.ns` files), the token dump
 //! the JetBrains plugin's lexer is checked against, `parse` and
 //! `parse-corpus`, `disasm`, which compiles a module or decodes an image and
 //! prints a body's bytecode, and `inspect`, which prints an image's

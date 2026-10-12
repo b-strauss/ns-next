@@ -13,14 +13,15 @@ use lsp_types::notification::{
     Notification as NotificationKind, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, FoldingRangeRequest, Request as RequestKind, SemanticTokensFullRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, Formatting, Request as RequestKind,
+    SemanticTokensFullRequest,
 };
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DocumentSymbolParams, DocumentSymbolResponse,
-    FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams, MessageType, OneOf,
-    PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
+    Diagnostic, DiagnosticSeverity, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams,
+    MessageType, OneOf, PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use ns_syntax::Severity;
 
@@ -65,6 +66,7 @@ fn capabilities() -> ServerCapabilities {
         )),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -111,6 +113,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
         SemanticTokensFullRequest::METHOD => semantic_tokens_of(documents, request),
         FoldingRangeRequest::METHOD => folding_ranges_of(documents, request),
         DocumentSymbolRequest::METHOD => document_symbols_of(documents, request),
+        Formatting::METHOD => formatting_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -145,6 +148,42 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
         })
         .unwrap_or_default();
     Response::new_ok(request.id, ranges)
+}
+
+/// The edit that formats an open document: one replacement of its whole text,
+/// or none when it is formatted already or does not parse (a document with a
+/// syntax error is left as the user wrote it). Like folds and tokens, only an
+/// open editor buffer is formatted, never a file read from disk. The request's
+/// options are ignored: the formatter has one style.
+fn formatting_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: DocumentFormattingParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let edits: Vec<TextEdit> = documents
+        .get(params.text_document.uri.as_str())
+        .and_then(|document| {
+            let formatted = ns_syntax::format(&document.text).ok()?;
+            if formatted == document.text {
+                return None;
+            }
+            let end = document
+                .line_index
+                .position(&document.text, u32::try_from(document.text.len()).ok()?);
+            Some(TextEdit {
+                range: Range::new(lsp_types::Position::new(0, 0), end),
+                new_text: formatted,
+            })
+        })
+        .into_iter()
+        .collect();
+    Response::new_ok(request.id, edits)
 }
 
 /// A document's symbol tree. An open document is answered from its cache: it
