@@ -19,7 +19,7 @@ use crate::Symbol;
 
 /// What a shipped name names, given its module and its declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum ShippedKind {
+pub enum ShippedKind {
     /// The module's one instance; its declaration is the module's root.
     ModuleInstance,
     /// The class object the declaration evaluates to.
@@ -36,17 +36,17 @@ pub(crate) enum ShippedKind {
 /// root -- for the root itself, the module's own name -- and what of that
 /// declaration is named.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct ShippedName {
-    pub(crate) module: Symbol,
-    pub(crate) declaration: Symbol,
-    pub(crate) kind: ShippedKind,
+pub struct ShippedName {
+    pub module: Symbol,
+    pub declaration: Symbol,
+    pub kind: ShippedKind,
 }
 
 impl ShippedName {
     /// The name as a refusal or a test shows it: `Kernel Array`,
     /// `Kernel Array class`, `Kernel Kernel level 0`,
     /// `Kernel Kernel level 0 class`, `CollectionsFactory instance`.
-    pub(crate) fn describe(&self) -> String {
+    pub fn describe(&self) -> String {
         let module = self.module.as_str();
         let declaration = self.declaration.as_str();
         match self.kind {
@@ -69,12 +69,12 @@ impl ShippedName {
 /// `current_class` or a class record's declaring class; `frame_register`
 /// as a frame record's receiver or register.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct Positions {
-    pub(crate) value: bool,
-    pub(crate) superclass: bool,
-    pub(crate) header: bool,
-    pub(crate) frame_class: bool,
-    pub(crate) frame_register: bool,
+pub struct Positions {
+    pub value: bool,
+    pub superclass: bool,
+    pub header: bool,
+    pub frame_class: bool,
+    pub frame_register: bool,
 }
 
 impl Positions {
@@ -93,9 +93,6 @@ impl Positions {
 pub(crate) struct ShippedEntry<'gc> {
     pub(crate) name: ShippedName,
     pub(crate) object: ObjectReference<'gc>,
-    // Read only by the tests until the image format names the shipped
-    // world by it (`image-format.md`, "Planned: shipped names in the image").
-    #[allow(dead_code)]
     pub(crate) positions: Positions,
 }
 
@@ -144,18 +141,12 @@ impl<'gc> ShippedWorld<'gc> {
     /// Every shipped object under its name, in the order the boot recorded
     /// them (`ShippedWorld::entries`' field comment); empty only before
     /// `complete_shipped_world` has run.
-    // Read only by the tests until the image format names the shipped
-    // world by it (`image-format.md`, "Planned: shipped names in the image").
-    #[allow(dead_code)]
     pub(crate) fn entries(&self) -> &[ShippedEntry<'gc>] {
         &self.entries
     }
 
     /// The position in `entries` of the object `name` names, or `None` when
     /// the shipped world has no such object.
-    // Read only by the tests until the image format names the shipped
-    // world by it (`image-format.md`, "Planned: shipped names in the image").
-    #[allow(dead_code)]
     pub(crate) fn index_of_name(&self, name: &ShippedName) -> Option<usize> {
         self.by_name.get(name).copied()
     }
@@ -165,9 +156,6 @@ impl<'gc> ShippedWorld<'gc> {
     /// `entries`. The key is an offset, which a collection changes, so the
     /// map is built for each encoding and never kept past the entry that
     /// built it.
-    // Read only by the tests until the image format names the shipped
-    // world by it (`image-format.md`, "Planned: shipped names in the image").
-    #[allow(dead_code)]
     pub(crate) fn index_by_object(&self, heap: &Heap<'gc>) -> HashMap<usize, usize> {
         self.entries
             .iter()
@@ -179,9 +167,6 @@ impl<'gc> ShippedWorld<'gc> {
     /// The mixin of each `Class` entry, by `mixin_key`, to the entry's
     /// position in `entries`: which shipped declaration a mixin is. A
     /// level applies the mixin of some class, so only classes are keyed.
-    // Read only by the tests until the image format names the shipped
-    // world by it (`image-format.md`, "Planned: shipped names in the image").
-    #[allow(dead_code)]
     pub(crate) fn index_by_mixin(&self, heap: &Heap<'gc>) -> HashMap<usize, usize> {
         self.entries
             .iter()
@@ -545,6 +530,73 @@ mod tests {
             let object = mutator.new_string(String::new());
             assert_eq!(mutator.heap_mut().object_ensure_identity_hash(object), 1);
         });
+    }
+
+    /// The class accessor `Other` of a module's class `Inner`, two levels
+    /// below the root, as the module compiled it -- resolved with
+    /// `resolve_kernel` when `shipped`, so that the accessor is recognized,
+    /// and with plain `resolve` otherwise.
+    fn inner_class_accessor(shipped: bool) -> Option<crate::mixin::ClassAccessor> {
+        let source = indoc::indoc! {"
+            class Shipped = Object new () (
+              public class Middle = Object new () (
+                public class Inner = Object new () (
+                  public Other = ( ^outer Shipped Other )
+                )
+              )
+              public class Other = Object new () ()
+            ) : ()
+        "};
+        let module = ns_syntax::parse(source).expect("parse");
+        let origin = crate::SourceOrigin::File(std::path::PathBuf::from("t.ns"));
+        let resolved = if shipped {
+            crate::resolver::resolve_kernel(module, Rc::from(source), origin)
+        } else {
+            crate::resolve(module, Rc::from(source), origin)
+        };
+        let Ok(resolved) = resolved else {
+            panic!("the module resolves");
+        };
+        let mut interpreter = crate::Interpreter::bootstrap();
+        let class = interpreter.load_module(&resolved);
+        interpreter.enter(|mutator| {
+            let Some(class) = mutator.fetch(&class).as_object() else {
+                panic!("the root is a class object");
+            };
+            let root = mutator
+                .heap()
+                .class_application(class)
+                .expect("the root has an application")
+                .mixin
+                .clone();
+            let middle = &root.nested[0];
+            let inner = &middle.nested[0];
+            inner
+                .compiled_method(Symbol::intern("Other"))
+                .expect("Inner declares Other")
+                .class_accessor
+        })
+    }
+
+    /// A class accessor two levels below its root is recognized at the
+    /// depth `outer Shipped` resolved to, which is what lets the class it
+    /// answers be a value (`accessed_classes`).
+    #[test]
+    fn a_class_accessor_two_levels_down_is_recognized() {
+        assert_eq!(
+            inner_class_accessor(true),
+            Some(crate::mixin::ClassAccessor {
+                depth: 2,
+                class_name: Symbol::intern("Other"),
+            })
+        );
+    }
+
+    /// The same text in a module plain `resolve` resolved is an ordinary
+    /// method: only shipped source is recognized.
+    #[test]
+    fn a_user_modules_class_accessor_is_unmarked() {
+        assert_eq!(inner_class_accessor(false), None);
     }
 
     /// An object and a class's mixin each lead back to the one entry that

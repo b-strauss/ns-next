@@ -891,15 +891,6 @@ impl<'gc> Heap<'gc> {
         }
     }
 
-    /// The number the next identity hash will be, for a caller that must
-    /// show nothing drew one meanwhile: `image::load` resolves platform
-    /// paths, which runs shipped code, before it restores the hashes an
-    /// image recorded, and debug-asserts that the counter stood still.
-    #[cfg(debug_assertions)]
-    pub(crate) fn next_identity_hash(&self) -> u32 {
-        self.next_identity_hash
-    }
-
     /// Moves the counter past everything an image brought with it, so that
     /// a fresh hash does not repeat a decoded object's until the counter
     /// wraps -- after which hashes are not unique, which a hash need not be
@@ -1992,9 +1983,10 @@ impl<'gc> Heap<'gc> {
 
     /// Overwrites `object`'s identity hash. Two legitimate callers:
     /// `image::decode::decode_tag_named_hashes`, which puts a recorded hash
-    /// back onto a builtin class, the root class, `platform` or an object a
-    /// platform path names -- none of them a record, so nothing else could
-    /// restore what the image remembered for one -- and `tests/image.rs`'s
+    /// back onto a module's root class, one of its levels or their
+    /// metaclasses, or an object of the shipped world -- none of them a
+    /// record, so nothing else could restore what the image remembered for
+    /// one -- and `tests/image.rs`'s
     /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating`,
     /// which forces a live object's hash to the widest the header holds by
     /// hand, the only way to reach `advance_identity_hash_past`'s wrap

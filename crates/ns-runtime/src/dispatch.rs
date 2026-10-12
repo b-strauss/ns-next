@@ -208,11 +208,10 @@ pub fn private_member<'gc>(
 /// chain is shorter than the send's depth), then lookupProtected on
 /// `enclosing_class`, the class of `o`. `NotFound` means the send is an
 /// ordinary one to `o`. The one statement of the order for a reader that
-/// only needs what the lookup finds -- `image::platform_paths`, deciding a
-/// class accessor's step without running it. `Mutator::resolve_lexical`
-/// takes the same two steps inline, because it also tells a private find
-/// from a protected one, and is documented against this function; the two
-/// change together.
+/// only needs what the lookup finds. `Mutator::resolve_lexical` takes the
+/// same two steps inline, because it also tells a private find from a
+/// protected one, and is documented and tested against this function; the
+/// two change together.
 pub fn lexical_member<'gc>(
     heap: &Heap<'gc>,
     lexical_class: Option<ClassReference<'gc>>,

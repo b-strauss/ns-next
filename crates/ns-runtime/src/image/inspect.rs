@@ -6,7 +6,7 @@
 //! prefix-equality check between two images of the same source
 //! reports a differing byte offset, which says nothing on its own and
 //! everything once the offset is attributed to a section. And the claim that
-//! the platform is cut out of an artifact -- the reason an image is kilobytes
+//! the shipped world is cut out of an artifact -- the reason an image is kilobytes
 //! rather than megabytes -- is otherwise checkable only by reading the encoder.
 //!
 //! Nothing here bootstraps an interpreter, allocates a class object, or runs
@@ -18,8 +18,9 @@ use std::fmt::Write as _;
 use crate::bytecode::{CodeKind, CompiledCode};
 use std::rc::Rc;
 
-use crate::image::{decode, mixins, modules, opcodes, platform_paths, symbols};
-use crate::{ArbitraryInteger, SourceOrigin, Symbol};
+use crate::image::shipped_names::{self, ShippedName};
+use crate::image::{decode, mixins, modules, opcodes, symbols};
+use crate::{ArbitraryInteger, SourceOrigin};
 
 /// One named span of the file. `end` is exclusive.
 pub struct Section {
@@ -62,9 +63,9 @@ pub struct Report {
     /// Every body disassembled, in code-id order. Rendered only by
     /// `render_full`.
     pub bodies: Vec<String>,
-    /// The platform paths the graph names objects by, in section order, each
-    /// its members separated by spaces.
-    pub platform_paths: Vec<String>,
+    /// The shipped names the graph names the binary's own objects by, in
+    /// section order, each as `ShippedName::describe` writes it.
+    pub shipped_names: Vec<String>,
     /// The object graph, read record by record rather than rebuilt; a
     /// frame is an object record like any other.
     pub graph_objects: Vec<String>,
@@ -215,29 +216,28 @@ struct GraphView {
     tag_named: Vec<String>,
 }
 
-/// What the graph's tags name by index: the platform paths, and how many
+/// What the graph's tags name by index: the shipped names, and how many
 /// levels each module's root section rebuilds, in module order. A reference
 /// past them is shown as such rather than refused: `inspect` reports on the
 /// files that fail to load too.
 struct TagTargets<'a> {
-    paths: &'a [Vec<Symbol>],
+    names: &'a [ShippedName],
     module_levels: Vec<usize>,
 }
 
-/// A platform path reference, after its tag, as `<platform path N: member
-/// member ...>`. An index past the section is shown as such rather than
-/// refused: `inspect` reports on the files that fail to load too.
-fn read_platform_path(
+/// A shipped name reference, after its tag, as the name describes itself:
+/// `Kernel Array`, `Kernel Array class`, `Kernel Kernel level 0`,
+/// `CollectionsFactory instance`. An index past the section is shown as
+/// such rather than refused: `inspect` reports on the files that fail to
+/// load too.
+fn read_shipped_name(
     reader: &mut decode::Reader,
     targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     let index = reader.read_u32()?;
-    Ok(match targets.paths.get(index as usize) {
-        Some(path) => format!(
-            "<platform path {index}: {}>",
-            platform_paths::describe(path)
-        ),
-        None => format!("<platform path {index}: out of range>"),
+    Ok(match targets.names.get(index as usize) {
+        Some(name) => name.describe(),
+        None => format!("<shipped name {index}: out of range>"),
     })
 }
 
@@ -246,13 +246,15 @@ fn read_class_tag(
     targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
-        opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
+        opcodes::CLASS_SHIPPED => read_shipped_name(reader, targets)?,
         opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
         opcodes::CLASS_MODULE => read_module_class_tag(reader, targets)?,
         opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
-        opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, targets)?,
         opcodes::CLASS_METACLASS => {
-            format!("metaclass of {}", read_prebuilt_class_tag(reader, targets)?)
+            format!(
+                "metaclass of {}",
+                read_module_reference_tag(reader, targets)?
+            )
         }
         tag => {
             return Err(decode::DecodeError::InvalidTag {
@@ -263,21 +265,20 @@ fn read_class_tag(
     })
 }
 
-/// The class a metaclass reference names the metaclass of: one of the four
-/// prebuilt kinds, never a record or a second metaclass, as the loader reads
-/// it -- which is also what keeps this walk's recursion one level deep.
-fn read_prebuilt_class_tag(
+/// The class a metaclass reference names the metaclass of: a module's root
+/// class or one of its levels, never a record, a shipped name or a second
+/// metaclass, as the loader reads it -- which is also what keeps this walk's
+/// recursion one level deep.
+fn read_module_reference_tag(
     reader: &mut decode::Reader,
     targets: &TagTargets<'_>,
 ) -> Result<String, decode::DecodeError> {
     Ok(match reader.read_u8()? {
-        opcodes::CLASS_BUILTIN => format!("{:?}", decode::read_builtin_class(reader)?),
         opcodes::CLASS_MODULE => read_module_class_tag(reader, targets)?,
         opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
-        opcodes::CLASS_PLATFORM_PATH => read_platform_path(reader, targets)?,
         tag => {
             return Err(decode::DecodeError::InvalidTag {
-                what: "prebuilt class",
+                what: "module class",
                 tag,
             })
         }
@@ -285,8 +286,8 @@ fn read_prebuilt_class_tag(
 }
 
 /// A module's root class, after its `CLASS_MODULE` or `HASHED_MODULE_CLASS`
-/// tag. A module past the module section is shown as such, as a platform
-/// path past its section is.
+/// tag. A module past the module section is shown as such, as a shipped
+/// name past its section is.
 fn read_module_class_tag(
     reader: &mut decode::Reader,
     targets: &TagTargets<'_>,
@@ -319,8 +320,8 @@ fn read_module_level_tag(
 }
 
 /// A class record's body, after its tag: a class applying a row of the mixin
-/// table, or a level applying a builtin's mixin, whose enclosing object and
-/// declaring class are the builtin's and so are not in the record.
+/// table, or a level applying a shipped class's mixin, whose enclosing
+/// object and declaring class are that class's and so are not in the record.
 fn read_class_record(
     reader: &mut decode::Reader,
     targets: &TagTargets<'_>,
@@ -350,13 +351,11 @@ fn read_class_record(
                  declaring {declaring}, applied by {applied}"
             )
         }
-        opcodes::MIXIN_BUILTIN => {
-            let builtin = decode::read_builtin_class(reader)?;
+        opcodes::MIXIN_SHIPPED => {
+            let shipped = read_shipped_name(reader, targets)?;
             let superclass = read_optional_class(reader, targets)?;
             let applied = applied_by(reader)?;
-            format!(
-                "class mixin builtin {builtin:?}, superclass {superclass}, applied by {applied}"
-            )
+            format!("class mixin shipped {shipped}, superclass {superclass}, applied by {applied}")
         }
         tag => {
             return Err(decode::DecodeError::InvalidTag {
@@ -443,8 +442,7 @@ fn read_value(
         opcodes::VALUE_FLOAT => crate::numeric::float_text::shortest(reader.read_f64()?),
         opcodes::VALUE_OBJECT_ID => format!("object {}", reader.read_u32()?),
         opcodes::VALUE_CLASS_TAG => format!("class {}", read_class_tag(reader, targets)?),
-        opcodes::VALUE_PLATFORM => "<platform>".to_string(),
-        opcodes::VALUE_PLATFORM_PATH => read_platform_path(reader, targets)?,
+        opcodes::VALUE_SHIPPED_MODULE => read_shipped_name(reader, targets)?,
         opcodes::VALUE_LARGE_INTEGER => format!("large-int {}", read_large_integer_text(reader)?),
         opcodes::VALUE_FRACTION => {
             let numerator = read_fraction_part_text(reader)?;
@@ -553,14 +551,15 @@ fn walk_graph(
     let mut tag_named = Vec::with_capacity(count);
     for _ in 0..count {
         let who = match reader.read_u8()? {
-            opcodes::HASHED_BUILTIN_CLASS => format!("{:?}", decode::read_builtin_class(reader)?),
             opcodes::HASHED_MODULE_CLASS => read_module_class_tag(reader, targets)?,
             opcodes::HASHED_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
-            opcodes::HASHED_PLATFORM => "<platform>".to_string(),
-            opcodes::HASHED_PLATFORM_PATH => read_platform_path(reader, targets)?,
             opcodes::HASHED_METACLASS => {
-                format!("metaclass of {}", read_prebuilt_class_tag(reader, targets)?)
+                format!(
+                    "metaclass of {}",
+                    read_module_reference_tag(reader, targets)?
+                )
             }
+            opcodes::HASHED_SHIPPED => read_shipped_name(reader, targets)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
                     what: "tag-named hash",
@@ -734,17 +733,17 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
     });
     offset = reader.position();
 
-    let paths = platform_paths::decode_section(&mut reader, &symbol_table)
+    let names = shipped_names::decode_section(&mut reader, &symbol_table)
         .map_err(|error| error.to_string())?;
     sections.push(Section {
-        name: "platform paths",
+        name: "shipped names",
         start: offset,
         end: reader.position(),
-        detail: format!("{} paths", paths.len()),
+        detail: format!("{} names", names.len()),
     });
     offset = reader.position();
     let targets = TagTargets {
-        paths: &paths,
+        names: &names,
         module_levels: decoded_modules
             .iter()
             .map(|module| module.section.levels.len())
@@ -778,10 +777,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         mixins: mixin_lines,
         mixin_detail,
         bodies,
-        platform_paths: paths
-            .iter()
-            .map(|path| platform_paths::describe(path))
-            .collect(),
+        shipped_names: names.iter().map(ShippedName::describe).collect(),
         graph_objects: graph.objects,
         graph_roots: graph.roots,
         graph_tag_named_hashes: graph.tag_named,
@@ -872,10 +868,11 @@ pub fn render_full(report: &Report) -> String {
     // An image with no graph records prints no empty heading that would
     // invite the reader to look for state that is not there.
     if !report.graph_objects.is_empty() || !report.graph_tag_named_hashes.is_empty() {
-        let _ = writeln!(out, "\nplatform paths ({})", report.platform_paths.len());
-        for (index, path) in report.platform_paths.iter().enumerate() {
-            let _ = writeln!(out, "  {index:>4} {path}");
+        let _ = writeln!(out, "\nshipped names ({})", report.shipped_names.len());
+        for (index, name) in report.shipped_names.iter().enumerate() {
+            let _ = writeln!(out, "  {index:>4} {name}");
         }
+
         let _ = writeln!(out, "\ngraph");
         let _ = writeln!(out, "  objects ({})", report.graph_objects.len());
         for (index, object) in report.graph_objects.iter().enumerate() {

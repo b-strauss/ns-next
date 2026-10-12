@@ -6,6 +6,7 @@
 //! process-level test can't easily observe.
 
 use indoc::indoc;
+use ns_runtime::image::shipped_names::{self, ShippedKind, ShippedName};
 use ns_runtime::{
     BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind,
 };
@@ -612,7 +613,8 @@ fn the_collections_factory_answers_only_new_collections() {
 
 /// The platform's class accessors reach the module's private classes by a
 /// lexical send (§5.9), so each still answers a class a program can use,
-/// and each is still a platform path step.
+/// and each such class may stand as a value in an image: a public class
+/// accessor answers it.
 #[test]
 fn the_platforms_class_accessors_reach_the_private_classes() {
     let mut interpreter = Interpreter::bootstrap();
@@ -627,16 +629,29 @@ fn the_platforms_class_accessors_reach_the_private_classes() {
             &format!("platform {name} new"),
         );
         interpreter.enter(|mutator| {
-            let Some(platform) = mutator.fetch(&platform).as_object() else {
-                panic!("the platform is an object");
+            let name = ShippedName {
+                module: Symbol::intern("PlatformFactory"),
+                declaration: Symbol::intern(name),
+                kind: ShippedKind::Class,
+            };
+            let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
+                Ok(resolved) => resolved,
+                Err(error) => panic!("{} is a shipped name: {error}", name.describe()),
             };
             assert!(
-                ns_runtime::image::platform_paths::is_path_step(
-                    mutator.heap(),
-                    platform,
-                    Symbol::intern(name)
+                resolved[0].positions.value,
+                "{} may stand as a value",
+                name.describe()
+            );
+            assert!(
+                resolved[0].object.same(
+                    mutator
+                        .fetch(&class)
+                        .as_object()
+                        .expect("the accessor answers a class")
                 ),
-                "{name} is a platform path step"
+                "{} is the class the accessor answers",
+                name.describe()
             );
         });
     }

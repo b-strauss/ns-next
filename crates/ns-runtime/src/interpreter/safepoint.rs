@@ -238,8 +238,8 @@ impl StressSchedule {
 
 impl Interpreter {
     /// Tenures everything now, between entries, where only roots hold
-    /// values: `image::load` makes the builtins, the module classes and what
-    /// the platform paths answered old before the graph pass allocates old.
+    /// values: `image::load` makes the shipped world and the module classes
+    /// old before the graph pass allocates old.
     pub(crate) fn tenure_now(&mut self) {
         assert!(!self.running, "tenure_now is for between runs");
         self.world.scavenge(true);

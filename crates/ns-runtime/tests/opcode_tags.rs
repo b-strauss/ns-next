@@ -244,10 +244,10 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(VALUE_FLOAT, 4);
     assert_eq!(VALUE_OBJECT_ID, 5);
     assert_eq!(VALUE_CLASS_TAG, 6);
-    assert_eq!(VALUE_PLATFORM, 7);
-    assert_eq!(VALUE_PLATFORM_PATH, 8);
     assert_eq!(VALUE_LARGE_INTEGER, 9);
     assert_eq!(VALUE_FRACTION, 10);
+    assert_eq!(VALUE_SHIPPED_MODULE, 11);
+    assert_eq!(RETIRED_VALUE_TAGS, [7, 8]);
 
     assert_eq!(OBJECT_INSTANCE, 0);
     assert_eq!(OBJECT_STRING, 1);
@@ -259,15 +259,15 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(OBJECT_FRAME, 10);
 
     assert_eq!(MIXIN_ROW, 0);
-    assert_eq!(MIXIN_BUILTIN, 1);
+    assert_eq!(MIXIN_SHIPPED, 2);
+    assert_eq!(RETIRED_MIXIN_TAGS, [1]);
 
-    assert_eq!(CLASS_BUILTIN, 0);
     assert_eq!(CLASS_RECORD, 2);
     assert_eq!(CLASS_METACLASS, 4);
-    assert_eq!(CLASS_PLATFORM_PATH, 5);
     assert_eq!(CLASS_MODULE, 6);
     assert_eq!(CLASS_MODULE_LEVEL, 7);
-    assert_eq!(RETIRED_CLASS_TAGS, [1, 3]);
+    assert_eq!(CLASS_SHIPPED, 8);
+    assert_eq!(RETIRED_CLASS_TAGS, [0, 1, 3, 5]);
 
     assert_eq!(FRAME_METHOD, 0);
     assert_eq!(FRAME_CLOSURE, 1);
@@ -277,41 +277,67 @@ fn graph_section_tags_are_fixed() {
     assert_eq!(FRAME_SUPERCLASS_MESSAGE, 5);
     assert_eq!(FRAME_MIXIN_APPLICATION_MESSAGE, 6);
 
-    assert_eq!(HASHED_BUILTIN_CLASS, 0);
-    assert_eq!(HASHED_PLATFORM, 2);
     assert_eq!(HASHED_METACLASS, 3);
-    assert_eq!(HASHED_PLATFORM_PATH, 4);
     assert_eq!(HASHED_MODULE_CLASS, 5);
     assert_eq!(HASHED_MODULE_LEVEL, 6);
-    assert_eq!(RETIRED_HASHED_TAGS, [1]);
+    assert_eq!(HASHED_SHIPPED, 7);
+    assert_eq!(RETIRED_HASHED_TAGS, [0, 1, 2, 4]);
 }
 
-/// The live class tags, which no retired one may rejoin.
-const LIVE_CLASS_TAGS: [u8; 6] = [
-    CLASS_BUILTIN,
+/// The live value tags, which no retired one may rejoin.
+const LIVE_VALUE_TAGS: [u8; 10] = [
+    VALUE_NIL,
+    VALUE_FALSE,
+    VALUE_TRUE,
+    VALUE_SMALL_INTEGER,
+    VALUE_FLOAT,
+    VALUE_OBJECT_ID,
+    VALUE_CLASS_TAG,
+    VALUE_LARGE_INTEGER,
+    VALUE_FRACTION,
+    VALUE_SHIPPED_MODULE,
+];
+
+/// The live mixin references, which no retired one may rejoin.
+const LIVE_MIXIN_TAGS: [u8; 2] = [MIXIN_ROW, MIXIN_SHIPPED];
+
+/// The live class tags, which no retired one may rejoin. `CLASS_METACLASS`
+/// names only a module class's metaclass now.
+const LIVE_CLASS_TAGS: [u8; 5] = [
     CLASS_RECORD,
     CLASS_METACLASS,
-    CLASS_PLATFORM_PATH,
     CLASS_MODULE,
     CLASS_MODULE_LEVEL,
+    CLASS_SHIPPED,
 ];
 
 /// The live tag-named hash tags, which no retired one may rejoin.
-const LIVE_HASHED_TAGS: [u8; 6] = [
-    HASHED_BUILTIN_CLASS,
-    HASHED_PLATFORM,
+const LIVE_HASHED_TAGS: [u8; 4] = [
     HASHED_METACLASS,
-    HASHED_PLATFORM_PATH,
     HASHED_MODULE_CLASS,
     HASHED_MODULE_LEVEL,
+    HASHED_SHIPPED,
 ];
 
-/// A retired class or hash tag stays retired: 1 and 3 named the one root
-/// class and its levels before an image carried several modules, and a
-/// stale image's reference must meet an unknown tag rather than name
-/// whichever module took the number.
+/// A retired value, mixin, class or hash tag stays retired: 1 and 3 named
+/// the one root class and its levels before an image carried several
+/// modules, and the builtin, platform and platform path tags each named a
+/// shipped object before a shipped name did. A stale image's reference must
+/// meet an unknown tag rather than name whatever took the number.
 #[test]
 fn retired_class_and_hashed_tags_are_never_reused() {
+    for retired in RETIRED_VALUE_TAGS {
+        assert!(
+            !LIVE_VALUE_TAGS.contains(&retired),
+            "value tag {retired} is retired"
+        );
+    }
+    for retired in RETIRED_MIXIN_TAGS {
+        assert!(
+            !LIVE_MIXIN_TAGS.contains(&retired),
+            "mixin tag {retired} is retired"
+        );
+    }
     for retired in RETIRED_CLASS_TAGS {
         assert!(
             !LIVE_CLASS_TAGS.contains(&retired),
@@ -331,19 +357,7 @@ fn retired_class_and_hashed_tags_are_never_reused() {
 #[test]
 fn no_two_graph_tags_in_a_family_share_a_number() {
     let families: [&[u8]; 6] = [
-        &[
-            VALUE_NIL,
-            VALUE_FALSE,
-            VALUE_TRUE,
-            VALUE_SMALL_INTEGER,
-            VALUE_FLOAT,
-            VALUE_OBJECT_ID,
-            VALUE_CLASS_TAG,
-            VALUE_PLATFORM,
-            VALUE_PLATFORM_PATH,
-            VALUE_LARGE_INTEGER,
-            VALUE_FRACTION,
-        ],
+        &LIVE_VALUE_TAGS,
         &[
             OBJECT_INSTANCE,
             OBJECT_STRING,
@@ -354,7 +368,7 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
             OBJECT_METACLASS,
             OBJECT_FRAME,
         ],
-        &[MIXIN_ROW, MIXIN_BUILTIN],
+        &LIVE_MIXIN_TAGS,
         &LIVE_CLASS_TAGS,
         &[
             FRAME_METHOD,
@@ -375,10 +389,10 @@ fn no_two_graph_tags_in_a_family_share_a_number() {
     }
 }
 
-/// A builtin class's tag is how an image names a builtin class -- in a
-/// `CLASS_BUILTIN` record and the hashed table -- so renumbering one would
-/// decode a stale image's reference into a different, perfectly valid
-/// builtin class. The tags are a match in
+/// A builtin class's tag is how a module's root section names the builtin
+/// its root builds on, so renumbering one would decode a stale image's
+/// reference into a different, perfectly valid builtin class. The tags are
+/// a match in
 /// `encode::builtin_class_tag` rather than constants in `opcodes.rs`, and are
 /// pinned here all the same.
 #[test]
@@ -422,7 +436,8 @@ fn builtin_class_tags_are_fixed() {
     assert_eq!(builtin_class_from_tag(8), None);
     // 13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
     // `KernelNamespace`, retired 2026-09-26 when the four moved into the
-    // shipped `PlatformFactory.ns`: an image names them by their platform paths.
+    // shipped `PlatformFactory.ns`: an image names them by their declarations.
+
     // 10 was `OrderedCollection`, retired 2026-09-28 when `platform collections
     // List`, Newspeak in the shipped `CollectionsFactory.ns`, replaced it.
     assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 10, 13, 18, 19, 29]);

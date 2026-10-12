@@ -470,7 +470,6 @@ fn load_refuses_an_image_that_is_not_started() {
     .expect("resolve");
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.load_module(&resolved);
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
@@ -481,8 +480,7 @@ fn load_refuses_an_image_that_is_not_started() {
             origin: &origin,
             source: None,
         }];
-        let platform = mutator.fetch(&platform);
-        ns_runtime::image::snapshot(mutator, &modules, platform, &[]).expect("snapshot")
+        ns_runtime::image::snapshot(mutator, &modules, &[]).expect("snapshot")
     });
     let directory = ScratchDirectory::new("not-started");
     let image = directory.join("world.img");

@@ -4,7 +4,7 @@
 //! flags, the shipped world's fingerprint), symbol table, code
 //! table, mixin table (one tree per module, in module order), module section
 //! (per module: `SourceOrigin`, optional source text, root section), then the
-//! platform paths, object table (frames included), roots, tag-named hashes.
+//! shipped names, object table (frames included), roots, tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
@@ -25,14 +25,14 @@ pub mod inspect;
 pub mod mixins;
 pub mod modules;
 pub mod opcodes;
-pub mod platform_paths;
+pub mod shipped_names;
 pub mod symbols;
 
 pub use modules::{ModuleClass, ModuleClasses, ModuleSource};
 
 use crate::heap::{Heap, Root};
 use crate::types::{ClassReference, SourceOrigin, Value};
-use crate::{HostSignal, Interpreter, Mutator, Symbol};
+use crate::{Interpreter, Mutator};
 
 /// The sections that describe code and structure, encoded into their own
 /// buffers with the symbol table still open so the caller can intern into it.
@@ -139,38 +139,31 @@ fn write_describing<'gc>(
 /// it back on `LoadedModule::source` and does nothing else with it. Source
 /// travels for every module or for none. The graph closes with the hashes of
 /// the objects it names by tag (`encode::encode_tag_named_hashes`), and is
-/// preceded by the platform paths it names objects by (`platform_paths`).
+/// preceded by the shipped names it names the binary's own objects by
+/// (`shipped_names`); the platform, if the graph reaches it, is an ordinary
+/// record.
 pub fn snapshot<'gc>(
     mutator: &Mutator<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
-    platform: Value<'gc>,
     roots: &[Value<'gc>],
 ) -> Result<Vec<u8>, String> {
-    write_image(mutator, modules, platform, roots, 0)
+    write_image(mutator, modules, roots, 0)
 }
 
 /// Serializes an application assembled but not yet started: its instance is
 /// the graph's one root, and `FLAG_START` tells `load` to send it
 /// `main: platform args:`.
 ///
-/// No platform exists for it yet, so none is named: the platform value is
-/// `nil` here, which means no platform path is discovered and a graph that
-/// reaches the platform or anything shipped meets the encoder's refusal of a
-/// shipped object no path names. An application that reached the platform
-/// could only have been handed it, and nothing hands one out before
-/// `main:args:`.
+/// No platform exists for it yet, and before `main:args:` a program reaches
+/// nothing of the shipped world but the kernel, so a graph naming anything
+/// of `PlatformFactory` or `CollectionsFactory` is refused: the loader
+/// refuses such a started image too.
 pub fn package<'gc>(
     mutator: &Mutator<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
     application: Value<'gc>,
 ) -> Result<Vec<u8>, String> {
-    write_image(
-        mutator,
-        modules,
-        Value::nil(),
-        &[application],
-        encode::FLAG_START,
-    )
+    write_image(mutator, modules, &[application], encode::FLAG_START)
 }
 
 /// The one writer of a graph-carrying image; `flags` is what tells `load` how
@@ -178,7 +171,6 @@ pub fn package<'gc>(
 fn write_image<'gc>(
     mutator: &Mutator<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
-    platform: Value<'gc>,
     roots: &[Value<'gc>],
     flags: u8,
 ) -> Result<Vec<u8>, String> {
@@ -203,31 +195,46 @@ fn write_image<'gc>(
     // consumes `describing` -- the graph needs the mixin table's row ids, and
     // those exist only on `describing.mixin_ids`.
     let mut graph_writer = encode::Writer::new();
-    let used_paths = encode::encode_graph_section(
-        heap,
+    let mut used = encode::encode_graph_section(
+        mutator,
         &mut graph_writer,
         roots,
-        platform,
         &describing.ids,
         &module_classes,
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;
-    encode::encode_tag_named_hashes(
-        mutator,
-        &mut graph_writer,
-        &module_classes,
-        platform,
-        &used_paths.objects,
+    encode::encode_tag_named_hashes(mutator, &mut graph_writer, &module_classes, &mut used);
+    // Before `main:args:` nothing hands a program the platform, so nothing
+    // of the shipped world but the kernel can be in its graph; the loader
+    // refuses a started image naming more, so none is written.
+    if flags & encode::FLAG_START != 0 {
+        let kernel = crate::Symbol::intern("Kernel");
+        if let Some(name) = used
+            .names(mutator)
+            .into_iter()
+            .find(|name| name.module != kernel)
+        {
+            return Err(format!(
+                "image encoding refuses {} in a started application: nothing before \
+                 main:args: reaches it",
+                name.describe()
+            ));
+        }
+    }
+    // Encoded after the graph and its hashes, which decide which names are
+    // used and in what order, and written ahead of the graph, since the
+    // loader resolves every name before it decodes the graph.
+    let mut names_writer = encode::Writer::new();
+    shipped_names::encode_section(
+        &mut names_writer,
+        &mutator.shipped_world,
+        &used.names,
+        &mut describing.symbols,
     );
-    // Encoded after the graph, which is what decides which paths are used
-    // and in what order, and written ahead of it, since the loader resolves
-    // every path before it decodes the graph.
-    let mut path_writer = encode::Writer::new();
-    platform_paths::encode_section(&mut path_writer, &used_paths.paths, &mut describing.symbols);
     let mut writer = encode::Writer::new();
     write_describing(heap, &mut writer, modules, flags, describing)?;
-    writer.write_raw(&path_writer.into_bytes());
+    writer.write_raw(&names_writer.into_bytes());
     writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
 }
@@ -265,7 +272,7 @@ pub struct LoadedImage {
 }
 
 /// Decodes an image: symbols, code table, mixin table, module section, then
-/// the platform paths and the object graph. Verifies the decoded declarations
+/// the shipped names and the object graph. Verifies the decoded declarations
 /// against their code and advances the identity-hash counter past the graph's
 /// maximum.
 ///
@@ -281,17 +288,15 @@ pub struct LoadedImage {
 /// body off the decoded mixins that carry it. A corrupt but version-matching
 /// image is an `Err` here, never a panic in the VM later.
 ///
-/// An image loads in three phases, because its platform paths are resolved
-/// by running code and its graph is decoded by running none
-/// (`docs/design/core-library.md`, "Platform paths in the image"). The first
-/// decodes everything up to and including the platform path section and
-/// roots every module's root class and levels: a run may move them, and the
-/// mixins and the code hold no handle. The second, outside any entry, sends
-/// each path's members to the loading platform -- each step a public slot's
-/// or nested class's accessor, sent as an ordinary public send, what the
-/// program's own `platform collections` may do -- and refuses a path that
-/// takes any other step, fails or answers no shipped object. The third
-/// decodes the graph against what the paths answered, and runs nothing.
+/// An image loads in two phases, and nothing runs between them or in
+/// either. The first decodes everything up to and including the
+/// shipped-name section and resolves every name against the loading boot's
+/// shipped world by table lookup alone (`shipped_names::resolve`), refusing
+/// a name the world does not have, a name given twice, and in a started
+/// image a name of any module but the kernel; it roots every module's root
+/// class and levels, and keeps the names, not handles. After a tenure, the
+/// second resolves the names again inside its own entry -- a lookup, no
+/// allocation -- and decodes the graph against them.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut reader = decode::Reader::new(bytes);
     let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
@@ -312,9 +317,11 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             .map_err(|error| error.to_string())?;
         let module_classes = modules::build_module_classes(mutator, &mixins, &decoded_modules)
             .map_err(|error| error.to_string())?;
-        let paths = platform_paths::decode_section(&mut reader, &symbols)
+        let names = shipped_names::decode_section(&mut reader, &symbols)
             .map_err(|error| error.to_string())?;
-        // Rooted, because the next phase runs code, and a run may move them.
+        shipped_names::resolve(&names, &mutator.shipped_world, header.start)
+            .map_err(|error| error.to_string())?;
+        // Rooted, because the tenure below moves them.
         let module_roots = module_classes
             .roots
             .iter()
@@ -337,33 +344,13 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             decoded_modules,
             module_roots,
             module_levels,
-            paths,
+            names,
         })
     })?;
-    // Following a path runs shipped code -- a platform member's lazy
-    // initializer, a nested class's accessor and superclass clause -- before
-    // the graph restores the identity hashes the image recorded, and
-    // `advance_identity_hash_past` moves the counter past them only
-    // afterwards. A hash drawn now could therefore equal one the graph hands
-    // back to a decoded object. Nothing `PlatformFactory.ns` runs on these paths
-    // draws one today; this is what notices the day something does.
-    #[cfg(debug_assertions)]
-    let hash_before_paths = interpreter.enter(|mutator| mutator.heap().next_identity_hash());
-    let resolved = resolve_platform_paths(&mut interpreter, &described.paths)?;
-    #[cfg(debug_assertions)]
-    {
-        let hash_after_paths = interpreter.enter(|mutator| mutator.heap().next_identity_hash());
-        debug_assert_eq!(
-            hash_before_paths, hash_after_paths,
-            "internal: following the image's platform paths drew an identity hash before the \
-             image's own hashes were restored"
-        );
-    }
-    // Every object the graph will name is old from here on: the builtins,
-    // the module classes and what the paths answered (decided with the user
-    // on 2026-10-04; `docs/design/image-format.md`, "The image under
-    // generations"). The graph pass then allocates old, and its stores are
-    // old-to-old.
+    // Every object the graph will name is old from here on: the shipped
+    // world and the module classes (decided with the user on 2026-10-04;
+    // `docs/design/image-format.md`, "The image under generations"). The
+    // graph pass then allocates old, and its stores are old-to-old.
     interpreter.tenure_now();
     let Described {
         symbols,
@@ -372,7 +359,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decoded_modules,
         module_roots,
         module_levels,
-        paths: _,
+        names,
     } = described;
     let roots = interpreter.enter(|mutator| -> Result<Vec<Root>, String> {
         mutator.heap.set_allocating_old(true);
@@ -385,7 +372,7 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
             &mixins,
             &module_roots,
             &module_levels,
-            &resolved,
+            &names,
         );
         // Cleared on the refusal path too: the interpreter of a refused image
         // is dropped, but nothing should rest on that.
@@ -418,8 +405,8 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     })
 }
 
-/// `load`'s third phase: the graph against what the paths answered, run
-/// with the heap allocating old.
+/// `load`'s second phase: the graph against the shipped names, resolved
+/// again in this entry, run with the heap allocating old.
 #[allow(clippy::too_many_arguments)]
 fn decode_graph_phase<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -430,7 +417,7 @@ fn decode_graph_phase<'gc>(
     mixins: &mixins::Decoded,
     module_roots: &[Root],
     module_levels: &[Vec<Root>],
-    resolved: &[Root],
+    names: &[shipped_names::ShippedName],
 ) -> Result<Vec<Root>, String> {
     let class_of = |root: &Root| match mutator.fetch(root).as_object() {
         Some(class) => class,
@@ -443,15 +430,14 @@ fn decode_graph_phase<'gc>(
             .map(|levels| levels.iter().map(class_of).collect())
             .collect(),
     };
-    let platform_paths: Vec<Value> = resolved.iter().map(|path| mutator.fetch(path)).collect();
-    let platform = mutator.platform_value();
+    let shipped = shipped_names::resolve(names, &mutator.shipped_world, header.start)
+        .map_err(|error| error.to_string())?;
     let mut context = decode::DecodeContext {
         mutator,
         modules: &module_classes,
         codes: &table.codes,
-        platform,
         mixins: &mixins.mixins,
-        platform_paths: &platform_paths,
+        shipped: &shipped,
     };
     let graph = decode::decode_graph_section(reader, &mut context, symbols)
         .map_err(|error| error.to_string())?;
@@ -461,9 +447,8 @@ fn decode_graph_phase<'gc>(
         }
         .to_string());
     }
-    let tag_named_max =
-        decode::decode_tag_named_hashes(mutator, reader, &module_classes, &platform_paths)
-            .map_err(|error| error.to_string())?;
+    let tag_named_max = decode::decode_tag_named_hashes(mutator, reader, &module_classes, &shipped)
+        .map_err(|error| error.to_string())?;
     decode::verify_graph(&mutator.heap, &graph, table).map_err(|error| error.to_string())?;
     mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
     // A byte sequence past the last section is refused, not ignored: an
@@ -486,9 +471,9 @@ fn decode_graph_phase<'gc>(
         .collect())
 }
 
-/// What `load`'s first phase decoded, carried across the second, which runs
-/// code: the tables hold no handle, and every module's root class and levels
-/// are rooted.
+/// What `load`'s first phase decoded, carried across the tenure, which moves
+/// objects: the tables and the names hold no handle, and every module's root
+/// class and levels are rooted.
 struct Described {
     symbols: symbols::Table,
     table: decode::DecodedCodeTable,
@@ -496,73 +481,5 @@ struct Described {
     decoded_modules: Vec<modules::DecodedModule>,
     module_roots: Vec<Root>,
     module_levels: Vec<Vec<Root>>,
-    paths: Vec<Vec<Symbol>>,
-}
-
-/// Sends each path's members to the loading interpreter's platform, one
-/// unary send each, and answers what every path reached, rooted, in section
-/// order. Each step must be one `discover` could take
-/// (`platform_paths::is_path_step`), checked before it is sent. A step that
-/// is none, or a send that fails, refuses the image, naming the path, and so
-/// does a
-/// final answer that is no shipped object
-/// (`platform_paths::is_shipped_object`): what an image names by a path must
-/// be something the loading binary owns, never an object a send made on the
-/// spot.
-fn resolve_platform_paths(
-    interpreter: &mut Interpreter,
-    paths: &[Vec<Symbol>],
-) -> Result<Vec<Root>, String> {
-    let mut resolved = Vec::with_capacity(paths.len());
-    for path in paths {
-        let described = platform_paths::describe(path);
-        let mut current = interpreter.platform();
-        for member in path {
-            // Only a step `discover` could have taken is sent: a public
-            // slot's getter, a public nested class's accessor or a public
-            // class accessor of the shipped instance reached so far. Any
-            // other public method -- `transcript newLine` -- would run
-            // arbitrary shipped code while the image is still being read.
-            let is_step = interpreter.enter(|mutator| match mutator.fetch(&current).as_object() {
-                Some(object) => platform_paths::is_path_step(&mutator.heap, object, *member),
-                _ => false,
-            });
-            if !is_step {
-                return Err(format!(
-                    "the image names platform path `{described}`, whose member `{}` is no \
-                     public slot, nested class or class accessor of what the path has \
-                     reached",
-                    member.as_str()
-                ));
-            }
-            current = match interpreter.send(&current, *member, &[]) {
-                Ok(answer) => answer,
-                Err(HostSignal::Error(error)) => {
-                    return Err(format!(
-                        "the image names platform path `{described}`, which the loading \
-                         platform cannot follow: {}",
-                        error.message
-                    ))
-                }
-                Err(HostSignal::Return) => {
-                    return Err(format!(
-                        "the image names platform path `{described}`, whose sends escaped \
-                         with a non-local return"
-                    ))
-                }
-            };
-        }
-        let shipped = interpreter.enter(|mutator| match mutator.fetch(&current).as_object() {
-            Some(object) => platform_paths::is_shipped_object(&mutator.heap, object),
-            _ => false,
-        });
-        if !shipped {
-            return Err(format!(
-                "the image names platform path `{described}`, which answers no object of the \
-                 loading binary's core library"
-            ));
-        }
-        resolved.push(current);
-    }
-    Ok(resolved)
+    names: Vec<shipped_names::ShippedName>,
 }
