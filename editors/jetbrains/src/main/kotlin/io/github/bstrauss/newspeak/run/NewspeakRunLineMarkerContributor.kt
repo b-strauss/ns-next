@@ -4,6 +4,7 @@ import com.intellij.execution.lineMarker.RunLineMarkerContributor
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.DumbAware
 import com.intellij.psi.PsiElement
+import io.github.bstrauss.newspeak.NewspeakBundle
 
 /**
  * The play button beside `main` and each script of a `newspeak.json`, opening
@@ -19,6 +20,10 @@ class NewspeakRunLineMarkerContributor : RunLineMarkerContributor(), DumbAware {
         return Info(
             AllIcons.RunConfigurations.TestState.Run,
             arrayOf(NewspeakRunAction(file, script, NewspeakCommand.RUN), NewspeakRunAction(file, script, NewspeakCommand.BENCH)),
-        ) { _ -> if (script == null) "Run the project" else "Run script '$script'" }
+        ) { _ -> if (script == null) {
+            NewspeakBundle.message("run.marker.tooltip.project")
+        } else {
+            NewspeakBundle.message("run.marker.tooltip.script", script)
+        } }
     }
 }

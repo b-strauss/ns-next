@@ -798,6 +798,22 @@ a release behind the API itself. Targeting the new API alone keeps one code path
 with no deprecated calls for the verifier to report; older IDE versions are the
 price.
 
+**Texts.** Every text the plugin shows -- settings labels and comments, the
+colour settings page's attribute names, notifications, the run configuration
+type and its editor, tooltips, the structure view's hover texts, the action's
+name -- is a key of `src/main/resources/messages/NewspeakBundle.properties`,
+read through `NewspeakBundle.message` (`lazyMessage` where a text is read
+later, as the colour settings page's attribute names are); `plugin.xml`
+names the bundle with `<resource-bundle>` and refers to it by `key` (the
+settings page, the notification group) and by `action.<id>.text` and
+`action.<id>.description`. Ids stay in code -- the language and file type
+names, the configuration type and notification group ids -- and so do the
+plugin's `<name>`, `<description>` and `<change-notes>`, which are Marketplace
+metadata. A message with parameters is a `MessageFormat` pattern, so a `'` in
+it is written `''`. There is no translation: the IDE's language comes from
+JetBrains' language packs, and a `NewspeakBundle_xx.properties` beside the
+bundle is what one would add.
+
 Components:
 
 - **Language and file type** — `NewspeakLanguage`, `NewspeakFileType` for

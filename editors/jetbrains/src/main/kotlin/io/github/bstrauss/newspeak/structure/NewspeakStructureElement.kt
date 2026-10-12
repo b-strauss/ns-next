@@ -11,6 +11,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.lsp.util.getOffsetInDocument
 import com.intellij.ui.IconManager
 import com.intellij.ui.icons.IconWrapperWithToolTip
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakIcons
 import io.github.bstrauss.newspeak.lsp.NewspeakSymbolKinds
 import org.eclipse.lsp4j.DocumentSymbol
@@ -62,7 +63,7 @@ fun presentationOf(symbol: DocumentSymbol, root: Boolean = false): SymbolPresent
     val valueClass = isClass && "value" in words
     return SymbolPresentation(
         name = symbol.name,
-        locationString = if ("lazy" in words) "lazy" else null,
+        locationString = if ("lazy" in words) NewspeakBundle.message("structure.lazy") else null,
         kindIcon = when {
             rootClass -> NewspeakIcons.ROOT_CLASS
             valueClass -> NewspeakIcons.VALUE_CLASS
@@ -71,14 +72,14 @@ fun presentationOf(symbol: DocumentSymbol, root: Boolean = false): SymbolPresent
         visibilityIcon = visibilityIcon,
         classSide = classSide,
         tooltip = when {
-            rootClass -> if (valueClass) "Root value class" else "Root class"
+            rootClass -> NewspeakBundle.message(if (valueClass) "structure.root.value.class" else "structure.root.class")
             else -> when (symbol.kind) {
-                SymbolKind.Class -> withAccess(access, if (valueClass) "value class" else "class")
-                SymbolKind.Constructor -> "Factory method"
-                SymbolKind.Constant -> if (access == null) "Local constant" else withAccess(access, "constant")
-                SymbolKind.Property -> withAccess(access, "variable")
-                SymbolKind.Variable -> "Local variable"
-                SymbolKind.Method -> withAccess(access, if (classSide) "class method" else "method")
+                SymbolKind.Class -> withAccess(access, NewspeakBundle.message(if (valueClass) "structure.kind.value.class" else "structure.kind.class"))
+                SymbolKind.Constructor -> NewspeakBundle.message("structure.factory.method")
+                SymbolKind.Constant -> if (access == null) NewspeakBundle.message("structure.local.constant") else withAccess(access, NewspeakBundle.message("structure.kind.constant"))
+                SymbolKind.Property -> withAccess(access, NewspeakBundle.message("structure.kind.variable"))
+                SymbolKind.Variable -> NewspeakBundle.message("structure.local.variable")
+                SymbolKind.Method -> withAccess(access, NewspeakBundle.message(if (classSide) "structure.kind.class.method" else "structure.kind.method"))
                 else -> null
             }
         },
@@ -88,8 +89,15 @@ fun presentationOf(symbol: DocumentSymbol, root: Boolean = false): SymbolPresent
 private val ACCESS_WORDS = setOf("public", "protected", "private")
 
 /** `Public method`; a member the server sent without an access word reads `Method`. */
-private fun withAccess(access: String?, noun: String): String =
-    (if (access == null) noun else "$access $noun").replaceFirstChar(Char::uppercaseChar)
+private fun withAccess(access: String?, kind: String): String {
+    val text = when (access) {
+        "public" -> NewspeakBundle.message("structure.access.public", kind)
+        "protected" -> NewspeakBundle.message("structure.access.protected", kind)
+        "private" -> NewspeakBundle.message("structure.access.private", kind)
+        else -> NewspeakBundle.message("structure.access.none", kind)
+    }
+    return text.replaceFirstChar(Char::uppercaseChar)
+}
 
 /**
  * The kind's icon with the access icon beside it, as Java's structure view

@@ -20,6 +20,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.execution.ParametersListUtil
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.settings.NewspeakSettings
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.nio.charset.StandardCharsets
@@ -114,13 +115,13 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
         val programPath = programFilePath(this)
         val kind = programPath?.let(::programKind)
         if (programPath == null || kind == null || !Files.isRegularFile(programPath)) {
-            throw RuntimeConfigurationError(NO_PROGRAM)
+            throw RuntimeConfigurationError(NewspeakBundle.message("run.configuration.error.no.program"))
         }
         if (kind == ProgramKind.MODULE && script != null) {
-            throw RuntimeConfigurationError(SCRIPT_OF_A_MODULE)
+            throw RuntimeConfigurationError(NewspeakBundle.message("run.configuration.error.script.of.module"))
         }
         if (command == NewspeakCommand.BENCH && iterations < 1) {
-            throw RuntimeConfigurationError("A benchmark takes at least one iteration")
+            throw RuntimeConfigurationError(NewspeakBundle.message("run.configuration.error.no.iterations"))
         }
     }
 
@@ -130,7 +131,7 @@ class NewspeakRunConfiguration(project: Project, factory: ConfigurationFactory, 
             is RuntimeLocation.Found -> location.path
             else -> throw ExecutionException(runtimeProblem(location))
         }
-        if (programArgument(this) == null) throw ExecutionException(NO_PROGRAM)
+        if (programArgument(this) == null) throw ExecutionException(NewspeakBundle.message("run.configuration.error.no.program"))
         val configuration = this
         return object : CommandLineState(environment) {
             override fun startProcess(): ProcessHandler {
@@ -172,11 +173,6 @@ fun namesAModule(text: String): Boolean = try {
 } catch (_: InvalidPathException) {
     false
 }
-
-private const val NO_PROGRAM = "Choose the program: a project's newspeak.json or a .ns module"
-
-private const val SCRIPT_OF_A_MODULE =
-    "A script belongs to a project's newspeak.json: ns-next refuses --script with a .ns module"
 
 /**
  * What ns-next is given: a project's directory, or the module's file. Null
@@ -220,8 +216,9 @@ private fun programFilePath(configuration: NewspeakRunConfiguration): Path? {
 private fun runtimeProblem(location: RuntimeLocation): String = when (location) {
     is RuntimeLocation.Found -> error("the runtime was found at ${location.path}")
     RuntimeLocation.NotConfigured ->
-        "The ns-next path is not set: choose the ns-next runtime under Settings | Languages & Frameworks | Newspeak"
-    is RuntimeLocation.ConfiguredPathMissing -> "No file at the ns-next path ${location.path}"
+        NewspeakBundle.message("run.configuration.error.runtime.not.set")
+    is RuntimeLocation.ConfiguredPathMissing ->
+        NewspeakBundle.message("run.configuration.error.runtime.missing", location.path)
 }
 
 /** The process a Newspeak run configuration starts: [newspeakCommandLine], in the program file's directory. */
@@ -239,7 +236,7 @@ fun newspeakCommandLine(runtime: Path, configuration: NewspeakRunConfiguration):
     configuration.script?.let { script -> add("--script=$script") }
     if (configuration.command == NewspeakCommand.BENCH) addAll(listOf("--iterations", configuration.iterations.toString()))
     // A project is given as its directory, a module as its file; the configuration names the file either way.
-    add(checkNotNull(programArgument(configuration)) { NO_PROGRAM }.toString())
+    add(checkNotNull(programArgument(configuration)) { "the configuration names no program" }.toString())
     val arguments = ParametersListUtil.parse(configuration.programArguments.orEmpty())
     if (arguments.isNotEmpty()) {
         add("--")
