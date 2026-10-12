@@ -120,6 +120,6 @@ class NewspeakOneLineMethodFolding : FoldingBuilderEx(), DumbAware {
 
     companion object {
         /** The formatter's width (`docs/design/formatting.md`, rule 1): a folded line never shows longer than it. */
-        const val MAXIMUM_WIDTH = 100
+        const val MAXIMUM_WIDTH = NewspeakCodeStyle.RIGHT_MARGIN
     }
 }

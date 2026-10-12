@@ -890,6 +890,78 @@ Components:
   (`NewspeakModuleRunConfigurationProducer`) ("The project file and running
   projects").
 
+### Indentation and width
+
+The formatter has one style and no options: two spaces per level,
+continuation lines at +4, never a tab, 100 columns
+([formatting.md](formatting.md), rules 1 and 12). The editor therefore
+takes these values for every `.ns` file rather than offering settings
+Reformat Code would ignore: there is no Code Style page for Newspeak, and
+neither the user's code style, the detected indents nor an `.editorconfig`
+reaches a Newspeak file. `editor/NewspeakCodeStyle.kt` holds the values and
+their hooks:
+
+- `NewspeakIndentOptionsProvider`, a `FileIndentOptionsProvider` ordered
+  first, answers indent 2, tab size 2, continuation 4 and spaces only. Tab,
+  smart Backspace and the editor's tab width read it. Its status-bar entry
+  shows "2 spaces" with the hint that the formatter fixes it, and offers no
+  action -- not "Configure Indents for Newspeak", which would open settings
+  that change nothing.
+- `NewspeakCodeStyleModifier`, a `CodeStyleSettingsModifier` ordered first,
+  claims every Newspeak file. Only the first modifier that claims a file is
+  asked, and an `.editorconfig`'s modifier ignores the indent options
+  providers, so without it a `[*]` section's `indent_size` and
+  `max_line_length` would reach `.ns` files. It leaves the indentation to
+  the provider (`acceptsFileIndentOptionsProviders`) and sets the file's
+  right margin to 100, which the editor reads for its margin guide and soft
+  wraps. The platform takes a language's own right margin otherwise only
+  from a `LanguageCodeStyleSettingsProvider`, which brings a Code Style page
+  with it. The interface is `@ApiStatus.Experimental`, the one experimental
+  API the plugin uses.
+
+Enter, smart Backspace and a typed closer place a line as the formatter
+would, from the editor's tokens alone -- the plugin has no Newspeak parser,
+and the formatter's own answer comes only from Reformat Code
+(`editor/NewspeakIndentation.kt`):
+
+1. After a line whose last code token, comments after it aside, is an
+   opening `(`, `[` or `{`, or the `|` closing a block's parameters
+   (`[:each |`, `[:key :value |`, a parameter's type included), the new
+   line stands at the opener line's indentation + 2. A `|` of temporaries
+   or slots is no block's parameters.
+2. Enter between an opener and its closer with nothing between them on the
+   line -- `= (<caret>)`, `[<caret>]`, `{<caret>}`, and `[:each |<caret>]`
+   -- gives three lines: the opener's, the caret's at +2, and the closer's
+   at the opener line's indentation.
+3. A closer typed as the first character of a line moves to the
+   indentation of the line holding its matching opener; brackets of every
+   kind are counted, as the formatter's tree nests them.
+4. Any other line keeps the indentation of the line before it, blank lines
+   skipped. No continuation indentation is guessed, since telling a broken
+   message from a statement needs the grammar.
+
+A string or comment spanning lines is never re-indented: inside one, Enter
+does what the platform does everywhere (the line break copies the current
+line's indentation), and a line that continues one is measured from the
+line it starts on. "The opener line's indentation" is that line's leading
+whitespace; where the opener stands on a continuation line, the formatter
+measures a block's body from the statement instead (rule 13), and Reformat
+Code corrects it.
+
+The hooks: `NewspeakLineIndentProvider`, a `LineIndentProvider`, is what
+`EnterHandler` asks for the new line and smart Backspace for the line it
+unindents, in place of a formatter -- Newspeak has no
+`FormattingModelBuilder` (see "Formatting"). `NewspeakEnterBetweenBracketsDelegate`,
+an `EnterBetweenBracesDelegate` for the language, makes the platform's
+`EnterBetweenBracesFinalHandler` open the pair: the platform's default takes
+only `()` and `{}` and places the closer through a formatter; this one takes
+`[]` and `|]` too, places the closer through the line indent provider and
+reads the editor's highlighter instead of committing the document.
+`NewspeakClosingBracketTypedHandler`, a `TypedHandlerDelegate`, moves a
+typed closer: the platform does it for `)` and `}` through a formatter only,
+and for `]` not at all. All of them read the editor's highlighter, which is
+up to date while typing, without a document commit.
+
 ### Which binary runs
 
 1. The path from the settings, when set — for working on `ns-syntax` or the
@@ -1183,7 +1255,17 @@ The server's own tests are described under its section, above ("Testing").
 - plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
   brace matching, commenting; `NewspeakOneLineMethodFoldingTest`, the
   one-line methods' folds (which bodies fold and which stay open, the width,
-  the setting); `NewspeakColorSettingsPageTest` is plain JUnit,
+  the setting); `NewspeakIndentationTest`, the editor's indentation and
+  width ("Indentation and width"): Enter after each opener, after a block's
+  parameters with and without a type, after an opener with a comment behind
+  it, but not after a temporaries' bar or an opener inside a string or
+  comment; Enter between each pair and inside `[:each |]`; each closer typed
+  first on its line moved, and one after code or inside a string left; a
+  line kept at the one before it, past a blank line and a string spanning
+  lines; Enter inside a string not re-indented; Tab inserting two spaces,
+  also under settings of eight and tabs; smart Backspace in the
+  indentation; and the editor's right margin at 100 where the project's is
+  120; `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
