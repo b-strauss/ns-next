@@ -4701,6 +4701,37 @@ fn load_refuses_a_version_mismatch() {
     assert!(error.contains("version"), "{error}");
 }
 
+/// An image another binary wrote is refused before anything past the
+/// header is read: its shipped names would resolve against another world.
+#[test]
+fn an_image_of_another_shipped_world_is_refused() {
+    let mut bytes = snapshot_of(EMPTY);
+    let fingerprint_at = encode::MAGIC.len() + 4 + 1;
+    bytes[fingerprint_at] ^= 1;
+    let error = load_error(&bytes);
+    assert!(
+        error.contains("another shipped world"),
+        "the refusal names the mismatch: {error}"
+    );
+}
+
+/// The fingerprint is a function of the binary alone.
+#[test]
+fn the_shipped_world_fingerprint_is_stable_within_a_binary() {
+    assert_eq!(
+        image::fingerprint::shipped_world_fingerprint(),
+        image::fingerprint::shipped_world_fingerprint()
+    );
+    let bytes = snapshot_of(EMPTY);
+    let fingerprint_at = encode::MAGIC.len() + 4 + 1;
+    let written = u64::from_le_bytes(
+        bytes[fingerprint_at..fingerprint_at + 8]
+            .try_into()
+            .expect("eight bytes"),
+    );
+    assert_eq!(written, image::fingerprint::shipped_world_fingerprint());
+}
+
 /// `image::load`'s error message. Never `expect_err`: that would require
 /// `Debug` on the `Ok` side, and `LoadedImage` has none -- it carries an
 /// `Interpreter`, which has no `Debug` impl either.

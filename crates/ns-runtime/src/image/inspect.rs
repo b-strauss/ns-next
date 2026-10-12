@@ -43,6 +43,7 @@ pub struct ModuleReport {
 
 pub struct Report {
     pub format_version: u32,
+    pub shipped_world: u64,
     pub start: bool,
     /// Every module the artifact carries, in module order.
     pub modules: Vec<ModuleReport>,
@@ -768,6 +769,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 
     Ok(Report {
         format_version: crate::image::encode::FORMAT_VERSION,
+        shipped_world: header.fingerprint,
         start: header.start,
         modules: module_reports,
         sections,
@@ -790,6 +792,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 pub fn render(report: &Report) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "format version {}", report.format_version);
+    let _ = writeln!(out, "shipped world {:016x}", report.shipped_world);
     let _ = writeln!(out, "start: {}", if report.start { "yes" } else { "no" });
     let _ = writeln!(out, "modules: {}", report.modules.len());
     for (index, module) in report.modules.iter().enumerate() {

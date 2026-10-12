@@ -1,6 +1,7 @@
 //! Image serialization: a versioned, architecture-neutral encoding of a
 //! live `ns-next` world, decoded on load (never a memory dump). See
-//! `docs/design/image-format.md`. Layout: header, symbol table, code
+//! `docs/design/image-format.md`. Layout: header (magic, format version,
+//! flags, the shipped world's fingerprint), symbol table, code
 //! table, mixin table (one tree per module, in module order), module section
 //! (per module: `SourceOrigin`, optional source text, root section), then the
 //! platform paths, object table (frames included), roots, tag-named hashes.
@@ -19,6 +20,7 @@
 
 pub mod decode;
 pub mod encode;
+pub mod fingerprint;
 pub mod inspect;
 pub mod mixins;
 pub mod modules;

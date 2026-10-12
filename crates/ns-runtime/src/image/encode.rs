@@ -35,6 +35,10 @@ pub const MAGIC: &[u8; 4] = b"NSNX";
 /// not know is refused (`DecodeError::UnknownHeaderFlags`), which is what
 /// keeps an optional section from being silently skipped by a reader that
 /// cannot see it.
+///
+/// The flag byte is followed by the 64-bit fingerprint of the shipped world
+/// the writing binary carries (`fingerprint.rs`); a binary with another
+/// refuses the image (`DecodeError::ShippedWorldMismatch`).
 pub const FORMAT_VERSION: u32 = 1;
 
 #[derive(Default)]
@@ -122,6 +126,7 @@ pub fn write_header(writer: &mut Writer, flags: u8) {
     writer.write_raw(MAGIC);
     writer.write_u32(FORMAT_VERSION);
     writer.write_u8(flags);
+    writer.write_u64(super::fingerprint::shipped_world_fingerprint());
 }
 
 /// A module's provenance. Kept for every module, source or not: it is what a

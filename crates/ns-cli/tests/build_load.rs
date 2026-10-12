@@ -222,11 +222,12 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     let original = std::fs::read(&image).expect("read image");
-    // Past the 8-byte header (magic + version), every 7th byte, each flipped
+    // Past the 17-byte header (magic, version, flags, the shipped world's
+    // fingerprint), which the loader refuses outright, every 7th byte, each flipped
     // two ways: enough coverage to sweep every section without turning one
     // test into thousands of processes.
     let (mut swept, mut rejected) = (0, 0);
-    for offset in (8..original.len()).step_by(7) {
+    for offset in (17..original.len()).step_by(7) {
         for delta in [1u8, 0x80] {
             let mut bytes = original.clone();
             bytes[offset] ^= delta;

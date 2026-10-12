@@ -35,6 +35,13 @@ pub enum DecodeError {
         found: u32,
         expected: u32,
     },
+    /// The header's fingerprint is not this binary's: the image names the
+    /// shipped world by declaration, and another world's declarations are
+    /// not this one's.
+    ShippedWorldMismatch {
+        found: u64,
+        expected: u64,
+    },
     InvalidTag {
         what: &'static str,
         tag: u8,
@@ -478,6 +485,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::VersionMismatch { found, expected } => {
                 write!(f, "image format version {found} is not supported (this build reads version {expected})")
             }
+            DecodeError::ShippedWorldMismatch { found, expected } => write!(
+                f,
+                "the image was written by another shipped world (fingerprint {found:016x}, this binary's {expected:016x})"
+            ),
             DecodeError::InvalidTag { what, tag } => write!(f, "invalid {what} tag {tag}"),
             DecodeError::UnknownHeaderFlags { flags } => write!(
                 f,
@@ -888,6 +899,9 @@ pub struct Header {
     pub has_source: bool,
     /// The graph's one root is an application to start (`FLAG_START`).
     pub start: bool,
+    /// The shipped world's fingerprint the image was written under; always
+    /// this binary's, since a header with another is refused.
+    pub fingerprint: u64,
 }
 
 pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
@@ -909,7 +923,16 @@ pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
     if flags & !super::encode::KNOWN_FLAGS != 0 {
         return Err(DecodeError::UnknownHeaderFlags { flags });
     }
+    let fingerprint = reader.read_u64()?;
+    let expected = super::fingerprint::shipped_world_fingerprint();
+    if fingerprint != expected {
+        return Err(DecodeError::ShippedWorldMismatch {
+            found: fingerprint,
+            expected,
+        });
+    }
     Ok(Header {
+        fingerprint,
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
         start: flags & super::encode::FLAG_START != 0,
     })
