@@ -9,8 +9,8 @@ use super::comments::{after, before, on_its_line, OwnTokens};
 use super::declarations::{annotation, code_body, name_separator, parameter};
 use super::document::{concat, group, hard_line, indent, line, soft_line, text, Document};
 use crate::ast::{
-    BlockExpression, Cascade, Expression, ExpressionKind, Literal, MessageSend, Selector, Send,
-    Statement, StatementKind,
+    Anchor, AttachedComment, BlockExpression, Cascade, Expression, ExpressionKind, Literal,
+    MessageSend, Placement, Selector, Send, Statement, StatementKind,
 };
 
 /// One indentation level: the body of a block or a tuple.
@@ -42,20 +42,39 @@ pub(super) fn statement(statement: &Statement) -> Document {
 /// keyword, an operator, `::`, `=` or `^`), so it goes at +4, not at the
 /// column a new statement would take.
 pub(super) fn expression(expression: &Expression) -> Document {
+    let (written, trailing) = expression_and_trailing(expression);
+    match trailing {
+        Some(trailing) => concat(vec![written, trailing]),
+        None => written,
+    }
+}
+
+/// `expression` with the comments leading it, and apart the comments
+/// trailing it, for a caller that writes them at an indentation of its
+/// own; `None` when they belong inside the continuation indentation of a
+/// leading comment that ends its line, with the expression.
+fn expression_and_trailing(expression: &Expression) -> (Document, Option<Document>) {
+    if leads_on_a_line_of_its_own(&expression.comments) {
+        let written = concat(vec![
+            before(&expression.comments),
+            expression_alone(expression),
+            after(&expression.comments),
+        ]);
+        return (indent(CONTINUATION, written), None);
+    }
     let written = concat(vec![
         before(&expression.comments),
         expression_alone(expression),
-        after(&expression.comments),
     ]);
-    let breaks_before = expression.comments.iter().any(|comment| {
-        comment.anchor == crate::ast::Anchor::Before
-            && comment.placement != crate::ast::Placement::Inline
-    });
-    if breaks_before {
-        indent(CONTINUATION, written)
-    } else {
-        written
-    }
+    (written, Some(after(&expression.comments)))
+}
+
+/// Whether a comment leading a node ends its line or stands on one of its
+/// own, which puts the node on the next line.
+fn leads_on_a_line_of_its_own(comments: &[AttachedComment]) -> bool {
+    comments
+        .iter()
+        .any(|comment| comment.anchor == Anchor::Before && comment.placement != Placement::Inline)
 }
 
 /// An expression without the comments leading and trailing it.
@@ -222,7 +241,7 @@ fn send_chain(send: &Send) -> Document {
             let only_trailing = envelope
                 .comments
                 .iter()
-                .all(|comment| comment.anchor == crate::ast::Anchor::After);
+                .all(|comment| comment.anchor == Anchor::After);
             if has_envelope(envelope) || !only_trailing {
                 let completed = finish_run(receiver, run.take()).unwrap_or_else(|| text(""));
                 let wrapped = enveloped(envelope, |tokens| {
@@ -257,8 +276,9 @@ fn send_chain(send: &Send) -> Document {
 /// `receiver` with the messages of `run` sent to it, the continuation
 /// lines one step in. After a receiver that may take more than one line,
 /// the messages are a group of their own, decided once it is written: on
-/// its last line when that ends on a broken block's `]`, else broken. A link that breaks by itself (an operand hugging its blocks)
-/// hugs as a block argument does: the links up to it stay on the line,
+/// its last line when that ends on a broken block's `]`, else broken, and
+/// broken whenever a comment ends that line. A link that breaks by itself
+/// (an operand hugging its blocks) hugs as a block argument does: the links up to it stay on the line,
 /// outside any continuation indent, so its body is indented from the line
 /// it opens on, and the links after it are again a group of their own.
 fn finish_run(receiver: Option<Document>, run: Option<Run>) -> Option<Document> {
@@ -405,6 +425,10 @@ enum Argument {
     Block(BlockParts),
     Other {
         document: Rc<Document>,
+        /// The comments trailing the argument, written after it: apart, so
+        /// that after the first argument of a broken message they stand at
+        /// the continuation indentation with the keywords after them.
+        trailing: Rc<Document>,
         breaks: bool,
     },
 }
@@ -448,6 +472,9 @@ impl Head {
 struct KeywordParts {
     keywords: Vec<String>,
     lead: Rc<Document>,
+    /// A comment leading the message ends its line or stands on one of its
+    /// own: the message starts the next line.
+    lead_breaks: bool,
     /// `between[index]` follows argument `index`.
     between: Vec<Rc<Document>>,
 }
@@ -477,12 +504,30 @@ impl KeywordParts {
         KeywordParts {
             keywords,
             lead: Rc::new(concat(lead)),
+            lead_breaks: leads_on_a_line_of_its_own(&message.comments),
             between,
         }
     }
 
     fn between(&self, index: usize) -> Document {
         Document::Shared(Rc::clone(&self.between[index]))
+    }
+
+    /// `message`, the part of the message that continues the line `head`
+    /// leaves. A message after a receiver goes on a continuation line when
+    /// a comment ends the receiver's line or leads the message on a line
+    /// of its own, as a unary or binary one does, never at the statement's
+    /// indentation, where it would read as a new statement sending to the
+    /// implicit receiver; what it holds is indented from that line.
+    fn continuing(&self, head: &Head, message: Document) -> Document {
+        match head {
+            Head::Nothing => message,
+            Head::Receiver(_) | Head::AfterReceiver if self.lead_breaks => {
+                indent(CONTINUATION, message)
+            }
+            Head::AfterReceiver => after_a_comment_ending_the_line(message),
+            Head::Receiver(_) => message,
+        }
     }
 }
 
@@ -507,10 +552,12 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
         .map(|argument| match huggable_block(argument) {
             Some(parts) => Argument::Block(parts),
             None => {
-                let document = expression(argument);
+                let (document, trailing) = expression_and_trailing(argument);
+                let trailing = trailing.unwrap_or_else(|| text(""));
                 Argument::Other {
-                    breaks: forces_break(&document),
+                    breaks: forces_break(&document) || forces_break(&trailing),
                     document: Rc::new(document),
+                    trailing: Rc::new(trailing),
                 }
             }
         })
@@ -549,33 +596,52 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
     }
 }
 
+/// `content` on a continuation line when it starts after a comment that
+/// ended the line, else where it stands.
+fn after_a_comment_ending_the_line(content: Document) -> Document {
+    Document::IndentAfterFreshLine(CONTINUATION, Box::new(content))
+}
+
 /// The keyword parts after the first on continuation lines: a group that
 /// breaks only when it does not fit, or, `broken`, the form already broken.
 fn standard(head: &Head, parts: &KeywordParts, arguments: &[Argument], broken: bool) -> Document {
-    let mut first = Vec::new();
-    head.lead(&mut first);
-    first.push(Document::Shared(Rc::clone(&parts.lead)));
+    let mut message = Vec::new();
+    head.lead(&mut message);
+    let mut first = vec![Document::Shared(Rc::clone(&parts.lead))];
     let mut rest = Vec::new();
+    let last = parts.keywords.len().saturating_sub(1);
     for (index, (keyword, argument)) in parts.keywords.iter().zip(arguments).enumerate() {
-        let argument = match argument {
-            Argument::Block(block) => block_frame(block, false),
-            Argument::Other { document, .. } => Document::Shared(Rc::clone(document)),
+        let (argument, trailing) = match argument {
+            Argument::Block(block) => (block_frame(block, false), text("")),
+            Argument::Other {
+                document, trailing, ..
+            } => (
+                Document::Shared(Rc::clone(document)),
+                Document::Shared(Rc::clone(trailing)),
+            ),
         };
         if index == 0 {
             first.push(text(keyword));
             first.push(argument);
-            first.push(parts.between(index));
+            // The comments after the first argument of a message with more
+            // go with the keywords after it: one on a line of its own then
+            // stands at their indentation, not at the receiver's.
+            let after_argument = if index == last { &mut first } else { &mut rest };
+            after_argument.push(trailing);
+            after_argument.push(parts.between(index));
         } else {
             rest.push(if broken { hard_line() } else { line() });
             rest.push(text(keyword));
             rest.push(argument);
+            rest.push(trailing);
             rest.push(parts.between(index));
         }
     }
+    message.push(parts.continuing(head, concat(first)));
     if !rest.is_empty() {
-        first.push(indent(CONTINUATION, concat(rest)));
+        message.push(indent(CONTINUATION, concat(rest)));
     }
-    let message = concat(first);
+    let message = concat(message);
     if broken {
         message
     } else {
@@ -590,24 +656,42 @@ fn standard(head: &Head, parts: &KeywordParts, arguments: &[Argument], broken: b
 /// would use up the measuring again that something breakable after it
 /// needs.
 fn hugged(head: &Head, parts: &KeywordParts, arguments: &[Argument]) -> Document {
-    let mut written = Vec::new();
-    head.lead(&mut written);
-    written.push(Document::Shared(Rc::clone(&parts.lead)));
+    let mut message = Vec::new();
+    head.lead(&mut message);
+    let mut written = vec![Document::Shared(Rc::clone(&parts.lead))];
     for (index, (keyword, argument)) in parts.keywords.iter().zip(arguments).enumerate() {
+        let mut part = Vec::new();
         if index > 0 {
-            written.push(text(" "));
+            part.push(text(" "));
         }
-        written.push(text(keyword));
-        written.push(match argument {
-            Argument::Block(block) => block_frame(block, true),
-            Argument::Other { document, breaks } if *breaks || is_text(document) => {
-                Document::Shared(Rc::clone(document))
+        part.push(text(keyword));
+        match argument {
+            Argument::Block(block) => part.push(block_frame(block, true)),
+            Argument::Other {
+                document,
+                trailing,
+                breaks,
+            } => {
+                part.push(if *breaks || is_text(document) {
+                    Document::Shared(Rc::clone(document))
+                } else {
+                    group(Document::Shared(Rc::clone(document)))
+                });
+                part.push(Document::Shared(Rc::clone(trailing)));
             }
-            Argument::Other { document, .. } => group(Document::Shared(Rc::clone(document))),
+        }
+        part.push(parts.between(index));
+        // A keyword after a comment that ended the line behind the
+        // argument before it starts a continuation line, as the first
+        // does after its receiver's.
+        written.push(if index > 0 {
+            after_a_comment_ending_the_line(concat(part))
+        } else {
+            concat(part)
         });
-        written.push(parts.between(index));
     }
-    concat(written)
+    message.push(parts.continuing(head, concat(written)));
+    concat(message)
 }
 
 /// What a block is made of apart from its frame: the `[` line and the
@@ -633,12 +717,10 @@ fn huggable_block(argument: &Expression) -> Option<BlockParts> {
         ExpressionKind::Block(block)
             if !has_envelope(argument)
                 && argument.comments.is_empty()
-                && block.comments.iter().all(|comment| {
-                    !matches!(
-                        comment.anchor,
-                        crate::ast::Anchor::Before | crate::ast::Anchor::After
-                    )
-                }) =>
+                && block
+                    .comments
+                    .iter()
+                    .all(|comment| !matches!(comment.anchor, Anchor::Before | Anchor::After)) =>
         {
             block_parts(block)
         }
@@ -801,7 +883,9 @@ fn may_end_on_a_line_of_its_own(document: &Document) -> bool {
     while let Some(document) = pending.pop() {
         match document {
             Document::Choice(_) => return true,
-            Document::Indent(_, content) | Document::Group(content) => pending.push(content),
+            Document::Indent(_, content)
+            | Document::IndentAfterFreshLine(_, content)
+            | Document::Group(content) => pending.push(content),
             Document::Shared(content) => pending.push(content),
             Document::Concat(parts) => pending.extend(parts),
             Document::Follow { receiver, rest } => {
@@ -824,7 +908,9 @@ fn forces_break(document: &Document) -> bool {
             Document::HardLine | Document::BreakParent | Document::FreshLine => return true,
             Document::Verbatim(content) if content.contains(['\n', '\r']) => return true,
             Document::Shifted { lines, .. } if lines.len() > 1 => return true,
-            Document::Indent(_, content) | Document::Group(content) => pending.push(content),
+            Document::Indent(_, content)
+            | Document::IndentAfterFreshLine(_, content)
+            | Document::Group(content) => pending.push(content),
             Document::Shared(content) => pending.push(content),
             Document::Concat(parts) => pending.extend(parts),
             Document::Choice(alternatives) => pending.extend(alternatives.first()),

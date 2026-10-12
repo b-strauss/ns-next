@@ -218,16 +218,16 @@ class Json usingPlatform: platform = (
       startCapture.
       [current = 16r22] whileFalse: [ /// "
         current = 16r5C /// \
-        ifTrue: [
-          pauseCapture.
-          readEscape.
-          startCapture.
-        ] ifFalse: [
-          /// The Java original rejects a control character
-          /// here; upstream does not, and neither does this
-          /// port, so the workload stays upstream's.
-          read.
-        ].
+            ifTrue: [
+              pauseCapture.
+              readEscape.
+              startCapture.
+            ] ifFalse: [
+              /// The Java original rejects a control character
+              /// here; upstream does not, and neither does this
+              /// port, so the workload stays upstream's.
+              read.
+            ].
       ].
       string:: endCapture.
       read.

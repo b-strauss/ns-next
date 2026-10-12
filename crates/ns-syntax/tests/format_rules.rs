@@ -1366,3 +1366,132 @@ fn rule_21_a_comment_between_pattern_keywords_stands_at_the_continuation() {
     "};
     assert_eq!(formatted(input), expected);
 }
+
+/// `input` formats to `expected`, and formatting that again changes
+/// nothing.
+fn formats_to_a_fixed_point(input: &str, expected: &str) {
+    let once = formatted(input);
+    assert_eq!(once, expected);
+    assert_eq!(
+        formatted(&once),
+        once,
+        "formatting again changed the output"
+    );
+}
+
+/// A comment that ends the line after a chain's receiver forces the broken
+/// form of the level after it, every link on its own continuation line,
+/// whether it is written there as a `///` or as a `(* *)` the width broke
+/// the chain at.
+#[test]
+fn rule_21_a_comment_trailing_a_chains_receiver_breaks_the_level_after_it() {
+    let receiver = "a".repeat(48);
+    let first = "b".repeat(44);
+    let second = "c".repeat(30);
+    formats_to_a_fixed_point(
+        &in_method(&format!("^{receiver} (* c *) + {first} + {second}")),
+        &method_text(&format!(
+            "^{receiver} (* c *)\n    + {first}\n    + {second}.\n"
+        )),
+    );
+    let cases = [
+        (
+            "^aaaa /// c\n+ bbbb + cccc",
+            "^aaaa /// c\n    + bbbb\n    + cccc.\n",
+        ),
+        ("^x /// c\nfoo bar", "^x /// c\n    foo\n    bar.\n"),
+        ("^x /// c\nfoo", "^x /// c\n    foo.\n"),
+    ];
+    for (statement, lines) in cases {
+        formats_to_a_fixed_point(&in_method(statement), &method_text(lines));
+    }
+}
+
+/// After a receiver that ends its line with a comment, a keyword message
+/// starts a continuation line, as a unary or binary one does: at the
+/// statement's indentation it would read as a new statement sending to the
+/// implicit receiver. It is broken; a message hugging its blocks hugs
+/// there, the blocks indented from that line.
+#[test]
+fn rule_21_a_keyword_message_after_a_receiver_ending_in_a_comment_continues_it() {
+    let cases = [
+        (
+            "x /// c\nfoo: 1 bar: 2",
+            "x /// c\n    foo: 1\n    bar: 2.\n",
+        ),
+        ("x /// c\nfoo: 1", "x /// c\n    foo: 1.\n"),
+        (
+            "x foo /// c\nbar: 1 baz: 2",
+            "x foo /// c\n    bar: 1\n    baz: 2.\n",
+        ),
+        (
+            "x /// c\nifTrue: [a. b] ifFalse: [c]",
+            indoc! {"
+                x /// c
+                    ifTrue: [
+                      a.
+                      b.
+                    ] ifFalse: [
+                      c.
+                    ].
+            "},
+        ),
+        (
+            "y:: x /// c\nifTrue: [a. b]",
+            indoc! {"
+                y:: x /// c
+                    ifTrue: [
+                      a.
+                      b.
+                    ].
+            "},
+        ),
+    ];
+    for (statement, lines) in cases {
+        formats_to_a_fixed_point(&in_method(statement), &method_text(lines));
+    }
+}
+
+/// A keyword part that a comment puts on a line of its own goes to the
+/// continuation indentation, never the statement's: after a comment on a
+/// line of its own leading the message, after one trailing the first
+/// argument, and after one ending the line behind a hugged block.
+#[test]
+fn rule_21_a_keyword_after_a_comment_on_its_line_stands_at_the_continuation() {
+    let cases = [
+        (
+            "x\n(* then *) foo: 1 bar: 2",
+            "x\n    (* then *)\n    foo: 1\n    bar: 2.\n",
+        ),
+        (
+            "^x foo: 1\n(* c *)\nbar: 2 baz: 3",
+            "^x foo: 1\n    (* c *)\n    bar: 2\n    baz: 3.\n",
+        ),
+        (
+            "^x foo: [a. b] /// c\nbar: 2",
+            indoc! {"
+                ^x foo: [
+                  a.
+                  b.
+                ] /// c
+                    bar: 2.
+            "},
+        ),
+        (
+            "^x foo: [a. b] /// c\nbar: [c. d]",
+            indoc! {"
+                ^x foo: [
+                  a.
+                  b.
+                ] /// c
+                    bar: [
+                      c.
+                      d.
+                    ].
+            "},
+        ),
+    ];
+    for (statement, lines) in cases {
+        formats_to_a_fixed_point(&in_method(statement), &method_text(lines));
+    }
+}

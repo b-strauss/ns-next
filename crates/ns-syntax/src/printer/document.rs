@@ -56,15 +56,20 @@ pub(crate) enum Document {
     BlockEnd,
     /// A receiver, then the messages sent to it, `rest`, a `Group`. When the
     /// receiver ends on a broken block's `]` or a multi-line string (only `)`
-    /// after it), or did not break, the group is decided where the receiver ends; when the
-    /// receiver broke otherwise, the outer level breaks first: the group is
-    /// broken.
+    /// after it), or did not break, the group is decided where the receiver
+    /// ends; when the receiver broke otherwise, or ended its line with a
+    /// comment, the outer level breaks first: the group is broken.
     Follow {
         receiver: Box<Document>,
         rest: Box<Document>,
     },
     /// Line breaks inside start `columns` further in.
     Indent(u32, Box<Document>),
+    /// `Indent` when a `FreshLine` waits where it starts, else its content
+    /// as it stands: a message after a receiver that ended its line with a
+    /// comment starts a continuation line, and what it holds is indented
+    /// from there; on the receiver's line it continues that line.
+    IndentAfterFreshLine(u32, Box<Document>),
     /// Flat if it fits on the line and holds nothing that forces a break,
     /// else broken, as a whole. Inside a flat group it is flat too, unless
     /// it holds something that forces a break, or a line break has been
@@ -130,7 +135,9 @@ impl Drop for Document {
 /// Moves the children of `document` into `pending`, leaving it childless.
 fn take_children(document: &mut Document, pending: &mut Vec<Document>) {
     match document {
-        Document::Indent(_, content) | Document::Group(content) => {
+        Document::Indent(_, content)
+        | Document::IndentAfterFreshLine(_, content)
+        | Document::Group(content) => {
             pending.push(std::mem::replace(
                 &mut **content,
                 Document::Concat(Vec::new()),
@@ -274,7 +281,12 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
         } = command;
         if let (Some(breaks_before), Document::Follow { rest, .. }) = (follows, document) {
             let broke = writer.line_breaks != breaks_before;
-            let decided = if broke && !writer.ends_after_block() {
+            // A receiver that ends its line with a comment leaves its
+            // messages no place on that line: the comment forces the broken
+            // form of the level after it, as a line break inside the
+            // receiver would. Its line break is still to be written, so it
+            // is a waiting fresh line, not a line break counted.
+            let decided = if writer.fresh_line || (broke && !writer.ends_after_block()) {
                 // The receiver broke by the rules of its own messages: the
                 // messages sent to it are the outer level, broken first.
                 let content = match &**rest {
@@ -356,6 +368,16 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
             }
             Document::Indent(columns, content) => commands.push(Command {
                 indentation: indentation.saturating_add(*columns),
+                mode,
+                document: content,
+                follows: None,
+            }),
+            Document::IndentAfterFreshLine(columns, content) => commands.push(Command {
+                indentation: if writer.fresh_line {
+                    indentation.saturating_add(*columns)
+                } else {
+                    indentation
+                },
                 mode,
                 document: content,
                 follows: None,
@@ -704,6 +726,18 @@ fn fits(
                 pending.push((indentation.saturating_add(*columns), mode, content));
                 ""
             }
+            // A fresh line waits while nothing is placed yet, or after a
+            // comment that ends the measured line.
+            Document::IndentAfterFreshLine(columns, content) => {
+                let waits = !placed || fresh_line;
+                let indentation = if waits {
+                    indentation.saturating_add(*columns)
+                } else {
+                    indentation
+                };
+                pending.push((indentation, mode, content));
+                ""
+            }
             Document::Shared(content) => {
                 pending.push((indentation, mode, &**content));
                 ""
@@ -827,7 +861,7 @@ fn broken_groups(document: &Document) -> BrokenGroups {
             Document::HardLine | Document::BreakParent | Document::FreshLine => true,
             Document::Verbatim(content) => content.contains(['\n', '\r']),
             Document::Shifted { lines, .. } => lines.len() > 1,
-            Document::Indent(_, content) => {
+            Document::Indent(_, content) | Document::IndentAfterFreshLine(_, content) => {
                 visits.push(Visit::Enter(content));
                 false
             }
