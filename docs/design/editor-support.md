@@ -7,8 +7,11 @@
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
 > `lsp/NewspeakSymbolKinds.kt`, the document symbols the structure view and
-> the run markers share in `lsp/DocumentSymbolCache.kt`) both exist: highlighting, errors as you
-> type, code folding, a structure view with breadcrumbs and Reformat Code,
+> the run markers share in `lsp/DocumentSymbolCache.kt`, the editing aids in
+> the `editor` package, every text in `messages/NewspeakBundle.properties`)
+> both exist: highlighting, errors as you type, code folding with one-line
+> methods shown on one line, a structure view with breadcrumbs, Reformat
+> Code, and typing in the formatter's indentation and width,
 > in every commercial JetBrains IDE from 2026.1.4, kept while a file has
 > syntax errors (Reformat Code leaves such a file alone). For a project's
 > `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the

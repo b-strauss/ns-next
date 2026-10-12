@@ -32,6 +32,9 @@ first.
 | The project file `newspeak.json`, its schema and scripts, and running projects from the JetBrains plugin | Complete | 2026-10-05 | [project-file-schema](superpowers/plans/2026-10-05-0013-ns-next-project-file-schema.md) |
 | Running a module from the play button beside its `main:args:` in the JetBrains plugin | Complete | 2026-10-05 | [module-play-button](superpowers/plans/2026-10-05-1225-module-play-button.md) |
 | The kernel completed to Primordial Soup's core API, in six sub-projects | In progress | 2026-10-10 | [kernel-aligning](superpowers/plans/2026-10-06-0311-ns-next-kernel-aligning.md), [kernel-foundations](superpowers/plans/2026-10-06-2036-ns-next-kernel-foundations.md) (the first two of six) |
+| `///` line comments | Complete | 2026-10-11 | [line-comments](superpowers/plans/2026-10-11-1750-ns-next-line-comments.md) |
+| The lossless AST and the formatter: `ns-next-analyzer fmt`, Reformat Code, the repository formatted | Complete | 2026-10-12 | [ns-next-formatter](superpowers/plans/2026-10-12-0112-ns-next-formatter.md) |
+| Editing in the JetBrains plugin: Reformat Code reaching the server, one-line methods, the formatter's indentation and width, Enter, a message bundle | Complete | 2026-10-12 | — |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -4807,8 +4810,8 @@ and all or nothing, block arguments hugged, comments kept with their
 owners, the file's line ending kept. It lowers the module to a document of
 groups and alternatives and lays that out in one linear pass on an
 explicit stack. `ns-next-analyzer fmt [--check]` and the server's
-`textDocument/formatting` run it, so the JetBrains plugin's Reformat Code
-works with no change to the plugin. Every Newspeak source of the
+`textDocument/formatting` run it, and the JetBrains plugin's Reformat Code
+reaches it (below, "Editing in the JetBrains plugin"). Every Newspeak source of the
 repository outside `corpus/` and `prior-art/` is reformatted to the two-space
 layout, every golden keeping its outcome, and `formatting_gate.rs` holds
 each to be the formatter's fixed point; `format_properties.rs` holds the
@@ -4843,3 +4846,30 @@ formatting and formatting on type; a long tail on a hugged block's `]` line
 and a group breaking where that does not shorten its line; `fmt`'s rename
 over a file's permissions and symlinks; `ClassDeclaration::class_comment`
 on a tree without spans.
+
+## Editing in the JetBrains plugin (2026-10-12)
+
+No plan: five small changes, each decided with the user in conversation;
+[editor-support.md](design/editor-support.md), "Formatting", "Folding",
+"Indentation and width".
+
+Reformat Code now reaches the server: the platform hands a file to a
+server's `textDocument/formatting` only when the server registered
+formatting dynamically, which ns-next's does not, so the plugin's
+`NewspeakFormatting` sends every Newspeak file to it. A method whose body
+is one line shows on its header's line, as Java's one-line methods do,
+folded by default and switched off under Code Folding's Newspeak section.
+The editor takes the formatter's style, fixed rather than offered as
+settings: two spaces, the margin at 100 columns (through the platform's
+experimental `CodeStyleSettingsModifier`, which also keeps an
+`.editorconfig` off `.ns` files), Enter indenting after an opener and
+opening a bracket pair onto three lines, a typed closer moved to its
+opener's indentation, and Enter in a `///` comment continuing it. Every
+text the plugin shows is in `messages/NewspeakBundle.properties`, with no
+translation.
+
+- `9c05da99` -- Reformat Code sent to the language server.
+- `15d0f14e` -- one-line methods.
+- `a6feb305` -- the message bundle.
+- `6ac8c402` -- the formatter's indentation, width and Enter.
+- `4d1cf869` -- Enter continuing a `///` comment.
