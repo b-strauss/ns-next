@@ -398,3 +398,91 @@ fn without_positions_moves_block_comment_lines_with_their_column() {
     let shallow = parsed("class A = () (\n  (* one\n     two\n three *)\n  m = ()\n)\n");
     assert_eq!(deep.without_positions(), shallow.without_positions());
 }
+
+/// `source` parsed, its layout erased.
+fn without_layout(source: &str) -> Module {
+    parsed(source).without_positions()
+}
+
+#[test]
+fn a_trailing_comment_in_a_one_line_block_keeps_its_owner_without_the_period() {
+    let with_period = parsed("class A = () ( m = ( ^[x (* c *).] ) )");
+    let without_period = parsed("class A = () ( m = ( ^[x (* c *)] ) )");
+    for module in [&with_period, &without_period] {
+        let ExpressionKind::Block(block) = &returned_expression(module).kind else {
+            panic!("a block");
+        };
+        assert_eq!(block.body.comments.len(), 1);
+        assert_eq!(block.body.comments[0].anchor, Anchor::After);
+        assert!(block.body.statements[0].comments.is_empty());
+    }
+    assert_eq!(
+        with_period.without_positions(),
+        without_period.without_positions()
+    );
+}
+
+#[test]
+fn a_trailing_comment_on_the_last_statement_keeps_its_owner_either_side_of_the_period() {
+    let before = parsed("class A = () ( m = ( ^1 (* c *). ) )");
+    let after = parsed("class A = () ( m = (\n  ^1. (* c *)\n) )");
+    for module in [&before, &after] {
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        assert_eq!(method.body.comments.len(), 1);
+        assert_eq!(method.body.comments[0].anchor, Anchor::After);
+    }
+    assert_eq!(before.without_positions(), after.without_positions());
+}
+
+#[test]
+fn a_trailing_comment_on_a_slot_keeps_its_owner_either_side_of_the_period() {
+    let before = parsed("class A = ( | x ::= 0 (* c *). | ) ()");
+    let after = parsed("class A = (\n  |\n    x ::= 0. (* c *)\n  |\n) ()");
+    for module in [&before, &after] {
+        let slot = &module.root_class.instance_side.header_slots[0];
+        assert_eq!(slot.comments.len(), 1);
+        assert_eq!(slot.comments[0].anchor, Anchor::After);
+    }
+    assert_eq!(before.without_positions(), after.without_positions());
+}
+
+#[test]
+fn placement_is_layout_and_erased() {
+    assert_eq!(
+        without_layout("class A = () ( m = ( ^1 (* c *) ) )"),
+        without_layout("class A = () (\n  m = (\n    ^1. (* c *)\n  )\n)")
+    );
+}
+
+#[test]
+fn anchors_survive_reformatting() {
+    for (written, reformatted) in [
+        // A comment on its own line before a statement leads it, however
+        // it is indented.
+        (
+            "class A = () ( m = ( a.\n(* c *)\nb ) )",
+            "class A = () (\n  m = (\n    a.\n    (* c *)\n    b.\n  )\n)",
+        ),
+        // A comment at the end of a statement's line trails it.
+        (
+            "class A = () ( m = ( a. (* c *)\nb ) )",
+            "class A = () (\n  m = (\n    a. (* c *)\n    b.\n  )\n)",
+        ),
+        // A one-line block opened up.
+        (
+            "class A = () ( m = ( ^[:each | each foo (* c *)] ) )",
+            "class A = () (\n  m = (\n    ^[:each |\n      each foo. (* c *)\n    ].\n  )\n)",
+        ),
+        // A dangling comment in a block, with and without the period.
+        (
+            "class A = () ( m = ( ^[x.\n(* c *)] ) )",
+            "class A = () (\n  m = (\n    ^[\n      x\n      (* c *)\n    ].\n  )\n)",
+        ),
+    ] {
+        assert_eq!(
+            without_layout(written),
+            without_layout(reformatted),
+            "{written:?}"
+        );
+    }
+}

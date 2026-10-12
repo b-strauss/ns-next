@@ -22,25 +22,29 @@
 //!   mixin application `<:` ‹its clause›; then `.` (a mixin application
 //!   without a body) or ‹the instance side›; then `:` ‹the class side›.
 //! - `ClassBody`, instance side: `(`, the slot section's opening `|` or
-//!   `||`, ‹each header slot›, its closing bar, ‹each initializer
-//!   expression› (a `Statement`) followed by its `.` where one is written,
-//!   `)`, `(`, ‹each member›, `)`. Class side: `(` ‹each method› `)`.
+//!   `||`, ‹each header slot› and its `.`, its closing bar, ‹each
+//!   initializer expression› (a `Statement`) and its `.`, `)`, `(`, ‹each
+//!   member› (a lazy slot with its `.`), `)`. Class side: `(` ‹each
+//!   method› `)`.
 //! - `SlotDeclaration` (a header slot, a temporary or a lazy slot): the
 //!   access modifier and `lazy` as written, the name, the type
-//!   annotation's tokens, `=` or `::=` ‹the initializer›, and the `.` after
-//!   the slot where one is written.
+//!   annotation's tokens, `=` or `::=` ‹the initializer›. The `.` after
+//!   the slot is its container's.
 //! - `MethodDeclaration`: the access modifier; the pattern's tokens -- a
 //!   unary selector and the type tokens after it, a binary selector, its
 //!   parameter's name and type tokens, or each keyword, its parameter's
 //!   name and type tokens; `^` and the return type's tokens; the `where`
-//!   clause's tokens; `=`, `(` ‹the code body› `)`.
-//! - `CodeBody`: the temporaries' opening `|` or `||`, ‹each temporary›,
-//!   their closing bar, ‹each statement› followed by its `.` where one is
-//!   written, the last statement's included.
+//!   clause's tokens; `=`, `(` ‹the code body› and the `.` after its last
+//!   statement, `)`.
+//! - `CodeBody`: the temporaries' opening `|` or `||`, ‹each temporary›
+//!   and its `.`, their closing bar, ‹each statement› and the `.` between
+//!   it and the next. The `.` after the last statement is the owner's (the
+//!   method or the block), and goes with the body.
 //! - `Statement`: `^` for a return; ‹the expression›.
 //! - `Expression`: each parenthesis's `(`, outermost first; the shape's own
 //!   tokens -- an identifier's token, a literal's token (a pattern literal:
-//!   every token its text lexes to, a run of `>` one token), a setter
+//!   as many as `crate::lex` answers for its `text`, the end of input not
+//!   counted -- a run of `>` is one token there as in the parser), a setter
 //!   keyword `name::` before ‹the assigned value›, a tuple's `{` ‹each
 //!   element› followed by its `.` `}`, a cascade's ‹receiver› ‹first
 //!   message› then `;` ‹message› for each further one, a send's ‹receiver›
@@ -53,7 +57,8 @@
 //!   argument tokens after it, or a binary selector ‹the argument›, or each
 //!   keyword ‹its argument›.
 //! - `BlockExpression`: `[`, each parameter's `:`, name and type tokens, the
-//!   parameters' `|`; ‹the code body›; `]`.
+//!   parameters' `|`; ‹the code body› and the `.` after its last
+//!   statement; `]`.
 //! - `SuperclassClause`: `self`, `super`, or `outer` and the name after
 //!   it; the receiver's name and the type argument tokens after it; ‹the
 //!   message›.
@@ -61,8 +66,10 @@
 //! A `.` right after a child goes with that child: it is an own token of
 //! the node around it, but one `Inner(n)` does not count, and as `P` below
 //! it stands for the child. A reprint writes the period after a statement,
-//! an initializer expression or a tuple's element by rules of its own, so
-//! whether the source had one must move no comment.
+//! a slot, an initializer expression or a tuple's element by rules of its
+//! own, so whether the source had one, and whether a comment stands
+//! before or after it, must move no comment: `^1 (* c *).` and
+//! `^1. (* c *)` both trail the code body.
 //!
 //! The tokens counted are the parser's final ones (`Parser::into_parts`):
 //! `3 -4` is the three tokens `3`, `-`, `4`, as a printer prints it. The
@@ -147,8 +154,8 @@ struct Node<'tree> {
     /// The first and the last token of the node, its children's included;
     /// `None` for a node without a token. Taken from the tokens, not from
     /// the node's span: a send's message spans its receiver too, a send
-    /// ends before the type arguments after its selector, and a bare slot
-    /// or a code body spans the token after it.
+    /// ends before the type arguments after its selector, and a slot or a
+    /// code body spans the token after it.
     extent: Option<(usize, usize)>,
 }
 
@@ -157,14 +164,6 @@ struct Node<'tree> {
 enum Shape {
     Module,
     Plain,
-    /// A slot's `.`, when the parser ended the slot's span at it.
-    Slot {
-        end: u32,
-    },
-    /// A body's `.` after its last statement.
-    Body {
-        has_statements: bool,
-    },
     /// A message's selector, whose token the tree does not record.
     Message {
         selector: SelectorShape,
@@ -304,30 +303,12 @@ impl<'tree> Tree<'tree> {
                 .into_iter()
                 .chain(children_extent)
                 .reduce(merge);
-            let next_is_a_period = |last: usize, end: u32| {
-                self.tokens.kinds.get(last + 1) == Some(&TokenKind::Dot)
-                    && self.tokens.ends[last + 1] <= end
-            };
             match node.shape {
                 Shape::Module => {
                     extent = self.tokens.len().checked_sub(1).map(|last| (0, last));
                 }
                 Shape::Plain => {}
                 Shape::Empty => extent = None,
-                Shape::Slot { end } => {
-                    if let Some((first, last)) = extent {
-                        if next_is_a_period(last, end) {
-                            extent = Some((first, last + 1));
-                        }
-                    }
-                }
-                Shape::Body { has_statements } => {
-                    if let Some((first, last)) = extent {
-                        if has_statements && next_is_a_period(last, u32::MAX) {
-                            extent = Some((first, last + 1));
-                        }
-                    }
-                }
                 Shape::Message {
                     selector,
                     eventual,
@@ -574,7 +555,7 @@ impl<'tree> Builder<'tree, '_> {
                     Span::new(span.start.min(name.span.end), name.span.end),
                 );
                 widen_annotation(&mut known, type_annotation);
-                let index = self.add(parent, comments, Shape::Slot { end: span.end }, known);
+                let index = self.add(parent, comments, Shape::Plain, known);
                 if let Some(initializer) = initializer {
                     self.pending.push((Pending::Expression(initializer), index));
                 }
@@ -606,10 +587,7 @@ impl<'tree> Builder<'tree, '_> {
                 }
                 let mut known = None;
                 widen_delimiters(&mut known, *temporaries_delimiters);
-                let shape = Shape::Body {
-                    has_statements: !statements.is_empty(),
-                };
-                let index = self.add(parent, comments, shape, known);
+                let index = self.add(parent, comments, Shape::Plain, known);
                 self.pending.extend(
                     temporaries
                         .iter_mut()

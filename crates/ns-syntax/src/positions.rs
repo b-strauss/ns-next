@@ -7,8 +7,10 @@ use crate::span::Span;
 
 impl Module {
     /// This module with every position erased -- spans, delimiters' spans
-    /// and block comments' columns zeroed -- so two parses of differently
-    /// laid out sources compare equal when they say the same. A block
+    /// and block comments' columns zeroed, and every comment's `placement`
+    /// set to `OwnLine`, since where a comment stands on its line is
+    /// layout -- so two parses of differently laid out sources compare
+    /// equal when they say the same; anchors stay compared. A block
     /// comment's continuation lines lose as much leading whitespace as its
     /// column, at most what they have: the indentation they keep is the
     /// one relative to `(*`, which a reprint moves with it.
@@ -383,6 +385,7 @@ fn erase_comments(comments: &mut [AttachedComment]) {
             }
         }
         comment.column = 0;
+        comment.placement = Placement::OwnLine;
         comment.span = NOWHERE;
     }
 }
