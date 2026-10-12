@@ -17,6 +17,7 @@ pub(crate) mod nested;
 pub(crate) mod resolve;
 pub(crate) mod safepoint;
 pub(crate) mod sends;
+pub(crate) mod shipped_world;
 mod slots;
 pub(crate) mod unwind;
 pub(crate) mod value_class;
@@ -280,6 +281,9 @@ pub struct Mutator<'gc> {
     /// enclosing object of every builtin class. `None` only until the
     /// bootstrap's kernel phase has run.
     pub(crate) kernel: Option<Value<'gc>>,
+    /// Every shipped module's one instance, the kernel's first, built at
+    /// boot and never changed afterwards (`interpreter::shipped_world`).
+    pub(crate) shipped_world: shipped_world::ShippedWorld<'gc>,
     /// The `=` the core library's `Value` declares, recorded by the
     /// bootstrap's kernel phase. `builtins::value`'s derived equality
     /// compares against it to tell an inherited `=` from an overridden one:
@@ -479,7 +483,7 @@ impl Interpreter {
         // instantiation is a run like any other, and they should see it, as
         // is the platform's, which needs the kernel instance.
         interpreter.install_kernel();
-        interpreter.install_platform();
+        interpreter.install_shipped_modules();
         interpreter
     }
 
@@ -1641,7 +1645,7 @@ impl<'gc> Mutator<'gc> {
 
     /// The `platform` object (`docs/design/core-library.md`, "The
     /// platform"): the instance of `PlatformFactory.ns`'s nested `Platform`
-    /// the bootstrap built (`Interpreter::install_platform`) from the module
+    /// the bootstrap built (`Interpreter::install_shipped_modules`) from the module
     /// instance it made with the VM mirror and the kernel instance, the same
     /// one for every reference within one interpreter. Asking for it, at
     /// bootstrap or in `image::load`, runs no Newspeak and fills no cache.

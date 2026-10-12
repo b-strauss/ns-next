@@ -25,10 +25,11 @@
 /// a holder of this root's instance could send it nothing but
 /// `newPlatform`: a second line of defence behind the instance being
 /// unreachable. The collections module is another such root
-/// (`CollectionsFactory.ns`), built once through the mirror's
-/// `moduleNamed:` and kept in a private lazy slot here; the platform hands
-/// out only the facet it answers. Nothing a program can name answers this
-/// root's instance or its class, so no program can build a second one over
+/// (`CollectionsFactory.ns`), whose one instance the host builds at boot
+/// and this root reaches through the mirror's `moduleInstanceNamed:`,
+/// keeping it in a private lazy slot here; the platform hands out only the
+/// facet it answers. Nothing a program can name answers this root's
+/// instance or its class, so no program can build a second one over
 /// something that is not the mirror. Keep it so: no code whose receiver is
 /// this root's instance may send it anything it does not understand, since
 /// a `MessageNotUnderstood` hands its receiver to whoever catches it
@@ -50,20 +51,18 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
     /// a member here reaches a native operation. Never handed out.
     private vmMirror = theMirror.
     /// The kernel module's instance, whose classes `KernelNamespace`
-    /// hands out and over which the collections module is built.
+    /// hands out.
     private kernelModule = theKernel.
   |
 ) (
-  /// The instance of the collections module, built over the kernel on
-  /// first use and the same object from then on.
+  /// The one collections module, the instance the boot built over the
+  /// kernel, and the same object on every use.
   ///
-  /// The collections module, built on first use and kept here, so that
-  /// every platform's facet comes from one factory and hands out one
-  /// `List` class. Its instance is as private as this one: only its
-  /// `newCollections` facet leaves this module.
-  lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [
-    nil.
-  ]) usingKernel: kernelModule.
+  /// The host builds every shipped module once, at boot, and the mirror
+  /// answers that instance, so every platform's facet comes from one
+  /// factory and hands out one `List` class. Its instance is as private
+  /// as this one: only its `newCollections` facet leaves this module.
+  lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
 
   /// The platform a program is handed: the namespace of what it may use
   /// beyond the kernel, each member built on first use.

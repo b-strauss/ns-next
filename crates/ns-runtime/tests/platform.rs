@@ -179,6 +179,43 @@ fn platform_collections_answers_the_collections_modules_list() {
     });
 }
 
+/// Every shipped module has one instance, built at boot: the collections
+/// facet's module is the same object before and after a second platform
+/// is made, and is there before any program asked for `platform collections`.
+#[test]
+fn the_collections_module_is_built_once_at_boot() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let first = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    let second_platform = expect_ok(
+        interpreter.send(&platform, Symbol::intern("class"), &[]),
+        "platform class",
+    );
+    let second_platform = expect_ok(
+        interpreter.send(&second_platform, Symbol::intern("new"), &[]),
+        "platform class new",
+    );
+    let second = expect_ok(
+        interpreter.send(&second_platform, Symbol::intern("collections"), &[]),
+        "second platform collections",
+    );
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let module_of = |facet: &Root| {
+            let facet = mutator
+                .fetch(facet)
+                .as_object()
+                .expect("a facet is an object");
+            heap.class_enclosing(heap.object_class(facet))
+                .expect("a facet's class is nested")
+        };
+        assert!(module_of(&first).same(module_of(&second)));
+    });
+}
+
 /// The namespace answers the collections module's classes and nothing
 /// more: `IdentitySet`, which the corpus asks for, names a class this
 /// runtime does not have, and must fail loudly rather than quietly alias

@@ -17,7 +17,8 @@ use crate::types::{ClassReference, FrameReference, Value};
 
 /// What the step state holds beside the heap that names objects: the
 /// bootstrap's builtin classes, the `platform` singleton, the VM mirror,
-/// the kernel and the depth limit's reserve. Marking, forwarding and
+/// the kernel, the shipped modules' instances and the depth limit's
+/// reserve. Marking, forwarding and
 /// scavenging all trace it through this one `Trace` impl, so that a root
 /// added later is named once and reached by all three.
 pub(crate) struct StepRoots<'state, 'gc> {
@@ -25,6 +26,7 @@ pub(crate) struct StepRoots<'state, 'gc> {
     platform_singleton: &'state mut Option<Value<'gc>>,
     vm_mirror: &'state mut Option<Value<'gc>>,
     kernel: &'state mut Option<Value<'gc>>,
+    shipped_world: &'state mut crate::interpreter::shipped_world::ShippedWorld<'gc>,
     depth_reserve: &'state mut Option<FrameReference<'gc>>,
 }
 
@@ -35,6 +37,7 @@ impl crate::trace::Trace for StepRoots<'_, '_> {
             platform_singleton,
             vm_mirror,
             kernel,
+            shipped_world,
             depth_reserve,
         } = self;
         for class in builtin_classes.iter_mut() {
@@ -49,6 +52,7 @@ impl crate::trace::Trace for StepRoots<'_, '_> {
         if let Some(kernel) = kernel.as_mut() {
             tracer.value(kernel);
         }
+        shipped_world.trace(tracer);
         if let Some(frame) = depth_reserve.as_mut() {
             tracer.frame(frame);
         }
@@ -66,6 +70,7 @@ fn split<'state, 'gc>(
         platform_singleton,
         vm_mirror,
         kernel,
+        shipped_world,
         depth_reserve,
         ..
     } = mutator;
@@ -76,6 +81,7 @@ fn split<'state, 'gc>(
             platform_singleton,
             vm_mirror,
             kernel,
+            shipped_world,
             depth_reserve,
         },
     )
@@ -95,6 +101,7 @@ impl World {
                 platform_singleton: None,
                 vm_mirror: None,
                 kernel: None,
+                shipped_world: crate::interpreter::shipped_world::ShippedWorld::default(),
                 value_equality_method: None,
                 value_mixin: None,
                 behavior_mixin: None,

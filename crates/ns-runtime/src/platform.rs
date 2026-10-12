@@ -4,7 +4,7 @@
 //! (`docs/design/core-library.md`, "The platform"): its members are lazy
 //! slots holding values of the module's nested classes and the facet of
 //! the shipped `CollectionsFactory.ns` module, whose `List` is Newspeak and
-//! needs no leaf; that module is reached through the mirror's `moduleNamed:`
+//! needs no leaf; that module is reached through the mirror's `moduleInstanceNamed:`
 //! (`builtins::module`). What is left here is `show:` and `newLine`, the
 //! forwarders of `Transcript`'s two methods, and the clock `Stopwatch`
 //! reads, nanoseconds since one origin per process, so that two
