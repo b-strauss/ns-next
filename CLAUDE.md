@@ -140,8 +140,8 @@ decoder sizes every record from its own bytes in a first pass and allocates
 nothing before it (`image-format.md`, "Two passes"), then fills each
 placeholder in place, so no record is built beside its placeholder. The
 decoder allocates its graph only after a tenure between entries: the
-platform-path sends before it may collect at their safepoints like any run,
-but the graph pass allocates old, after the last tenure, and never polls a
+loader runs no code before the graph, since a shipped name is a table
+lookup, and the graph pass allocates old, after the tenure, and never polls a
 safepoint, so nothing collects while its placeholders exist and the peak
 argument stands (`image-format.md`, "The image under generations"). The
 transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
@@ -151,8 +151,8 @@ amplification bound of a rejected load", has the breakdown and what is not
 counted; `decode_value`'s doc comment the derivation). The guarantee
 covers decoding only: `ns-next load` runs the packaged application's code,
 recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
-(`execution.md`, "The depth limit"), and an image that names platform paths
-first follows them through shipped code only.
+(`execution.md`, "The depth limit"), and an image that names the shipped
+world only looks its names up, running nothing before the application starts.
 
 **Every store into an existing object goes through `heap.rs`'s store
 accessors and their write barrier.** A scavenge reads only the young
@@ -249,10 +249,13 @@ and never add a way for a program to obtain the mirror, its class or a
 `MirrorSend` binding: (1) only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, and only the shipped modules are resolved with it; (2)
 the bootstrap checks the mirror slots of `Kernel` and `PlatformFactory`, and no
-program reaches a shipped root (the factory pattern); (3) the encoder names
-shipped instances by platform path (`image/platform_paths.rs`) and refuses one
-no path names; (4) no program can name the mirror's class or `Top`, and the
-decoder refuses builtin class tags 14 and 15 (`read_referenced_builtin_class`);
+program reaches a shipped root (the factory pattern); (3) the encoder names a
+shipped object by its declaration and refuses one the rule of what may be
+named where does not allow (`image/shipped_names.rs`); (4) no program can name
+the mirror's class or `Top`: the VM mirror's class has no declaration and so no
+name, and the decoder refuses `Top`, `Activation` and every other shipped name
+in a position the rule does not allow;
+
 (5) the encoder refuses a graph reaching the mirror, its class, `Top` or their
 metaclasses, and `decide_factory` refuses to instantiate the mirror's class;
 (6) `SendMirror` has no wire tag (`core-library.md`, "The VM mirror is the

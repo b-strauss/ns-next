@@ -4873,3 +4873,57 @@ translation.
 - `a6feb305` -- the message bundle.
 - `6ac8c402` -- the formatter's indentation, width and Enter.
 - `4d1cf869` -- Enter continuing a `///` comment.
+
+## Shipped names in the image (2026-10-13)
+
+Plan: [shipped-names-in-the-image](superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md);
+[image-format.md](design/image-format.md), "Shipped names", "Module
+section", "Verification", "The image under generations";
+[core-library.md](design/core-library.md), "The module table and the
+boot", "Shipped names in the image".
+
+Built before the kernel's fifth sub-project, whose private kernel classes
+no builtin class tag or platform path could name. Every boot now
+instantiates every shipped module -- `PlatformFactory` with the mirror and
+the kernel, `CollectionsFactory` with the kernel alone -- and builds every
+class the three roots declare, metaclasses and levels included
+(`interpreter/shipped_world.rs`, `complete_shipped_world`); the mirror's
+`moduleInstanceNamed:` answers the one instance, replacing `moduleNamed:`.
+An image names every one of these objects by module, declaration and kind
+in a section of its own before the graph, which the loader resolves by
+table lookup and without a send (`image/shipped_names.rs`), and holds each
+to a static rule of what may be named where, which the encoder and the
+decoder share and which is now locks (3) and (4) of the VM mirror. `Top` is
+no record's class, and a record of a shipped class that is no builtin is an
+instance record of its class's slot count. The header carries a
+fingerprint of the shipped world (`image/fingerprint.rs`), so an image
+another binary wrote is refused before anything is read. The platform and
+its facets are ordinary records, and a module's root class and its levels
+are class records the module section names by object id, held to the root
+rule by one check the encoder and decoder share
+(`modules::root_record_defect`). Retired: class tags 0, 1, 3 to 7, mixin
+reference 1, value tags 7 and 8, hash tags 0 to 6, the builtin class tag
+numbering as a whole and `image/platform_paths.rs`; new: `CLASS_SHIPPED`
+(8), `MIXIN_SHIPPED` (2), `VALUE_SHIPPED_MODULE` (11), `HASHED_SHIPPED` (7).
+No golden's outcome changed. Building `CollectionsFactory` at every boot
+costs about 3.7 ms a process start (a hello program's median 12.3 ms to
+16.0 ms, release, Windows 11); building the classes and naming the world
+add nothing measurable.
+
+- `e2e16951` -- the plan.
+- `1ff9a33f` -- every shipped module built once at boot, and
+  `moduleInstanceNamed:`.
+- `2d359511` -- the whole shipped world built at boot, and what an image
+  may name where.
+- `acdc8295` -- the shipped world's fingerprint in the header.
+- `7589c43a` -- the shipped-name section, its tags, and the retirement of
+  the builtin class tags and the platform paths.
+- `198ee410` -- `Top` kept out of records, and shipped classes held to
+  instance records.
+- `0ba07502` -- the program's module roots written as class records.
+- This commit -- the documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the cost
+of building the shipped world at boot and the two ways back; a second class
+record applying a module's root row; `accessed_classes`' match by class
+name across a whole module; the trust a running world's image needs.

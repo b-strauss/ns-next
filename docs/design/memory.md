@@ -196,8 +196,8 @@ One deliberate escape exists, and it is opaque rather than a hole.
 `Heap::object_identity_key` is `pub(crate)` and returns the offset as a
 `usize` for the places that need a handle as a `HashMap`/`HashSet` key rather
 than a comparison: `image/encode.rs`, `image/decode.rs`,
-`image/platform_paths.rs` and the derived equality walk of
-`builtins/value.rs`. A frame is an object, so a frame's key is its frame
+`interpreter/shipped_world.rs` (the shipped world's index by object) and
+the derived equality walk of `builtins/value.rs`. A frame is an object, so a frame's key is its frame
 object's. Every one stores it, compares it, or looks it up; none does
 arithmetic on it, and none assumes it is an offset into anything. So the
 property that matters survives — a handle's *encoding* is still `heap.rs`'s
@@ -428,8 +428,8 @@ before every move, collection and scavenge says so
 The one other place a collection is sound is between entries, where only
 roots hold values and no step is running: `Interpreter::collect_now`
 (`interpreter/safepoint.rs`) collects there, for tests only, and every
-image load tenures everything there once, between the platform paths and
-the graph pass (`Interpreter::tenure_now`; "Generations").
+image load tenures everything there once, between the shipped-name section
+and the graph pass (`Interpreter::tenure_now`; "Generations").
 
 The first four systems below chose this placement; the last four collect
 elsewhere, and their right-hand column is what that costs their runtime code:
@@ -693,9 +693,12 @@ check").
   VM mirror, the one object whose method table holds the leaves — and
   `kernel`, `Kernel.ns`'s one instance and the enclosing object of every
   builtin class ([core-library.md](core-library.md), "The bootstrap:
-  placeholders first, kernel second"). The step state holds all four beside
+  placeholders first, kernel second"), and `shipped_world`, every shipped
+  module's instance and every shipped object under its name
+  (`interpreter/shipped_world.rs`; [image-format.md](image-format.md),
+  "Shipped names"). The step state holds all five beside
   the heap, with the depth limit's reserve below, and one `Trace` impl
-  enumerates the five, `StepRoots` (`heap/world.rs`), which marking
+  enumerates the six, `StepRoots` (`heap/world.rs`), which marking
   (`World::mark_everything_reachable`), forwarding after a collection or a
   stress move (`forward_step_state`) and the scavenge (`World::scavenge`)
   all trace, so a root added later is named once and reached by all three.
@@ -1126,9 +1129,9 @@ need, stated carefully because the careless version is wrong.
 `decode_graph_section` allocates every record's object before it fills any,
 because a record must be addressable before the records that reference it
 are read. The decoder allocates them only after the load's one tenure,
-which runs between two entries; the platform paths' sends before it may
-collect at their safepoints like any run, but the graph pass allocates
-every placeholder old, after the last tenure, and never polls a safepoint,
+which runs between two entries; nothing before it runs Newspeak, since a
+shipped name is resolved by table lookup, and the graph pass allocates
+every placeholder old, after the tenure, and never polls a safepoint,
 so nothing collects while the placeholders exist and a rejected image
 cannot give them back part-way through ("Generations"). It is
 not retained past that: `image::load` owns its `Interpreter` in a local, so
@@ -1182,6 +1185,24 @@ integer costs a `LargeInteger` for the 9 bytes of an `i64`
 `i64` and a fraction outside its normal form are refused before an object is
 made, and a digit count is bounded against the bytes left before its `Vec`
 is allocated (`read_large_integer_parts`).
+
+**The shipped-name section adds no factor to that peak.** Its reader
+(`shipped_names::decode_section`) bounds the count by `MAX_SHIPPED_NAMES`
+(65,536) and by the bytes left at `MIN_SHIPPED_NAME_BYTES`, 9 an entry,
+before it reserves a `Vec` of 16-byte names, at most 1.8x of the section's
+bytes and 1 MiB; resolving them (`shipped_names::resolve`) reserves, for as
+many entries, a set of indices and a `Vec` of resolved names of 32 bytes
+(40 in a debug build, whose handle is two words), about 7.7x of the
+section's bytes (8.5x) for the moment it runs and at most about 5 MiB, all
+of it before any placeholder exists. A name the loading world does
+not have and a name given twice are refused, so a section that resolves
+lists at most as many names as the shipped world has, a few hundred; what
+the graph pass holds beside its placeholders -- the names and their
+resolution, a second resolution in the graph's own entry with the set
+dropped again -- is therefore bounded by the shipped world, a few KiB,
+not by the input. The figures above stand: about 10.7x of the graph
+section's bytes in a release build and 16x in a debug one, plus at most 4x
+of the symbol section's, plus that constant.
 
 **What the figures do not count**: the Rust allocator's own overhead per
 allocation of the decoder's tables; a table's `Vec` that doubles while the
@@ -1311,7 +1332,7 @@ The roots are the ones a move forwards -- the heap's own, which
 `Heap::begin_marking` pushes (the `Activation` class, the activation
 stack's entries and registers, the host roots), and the step state's,
 `StepRoots` (the builtin classes, the `platform` singleton, the VM mirror,
-the kernel and the depth limit's reserve) -- with the canonical symbol
+the kernel, the shipped world and the depth limit's reserve) -- with the canonical symbol
 table removed, since that is weak. The remembered set is not a root here:
 marking reaches every reachable object of both generations along its
 edges, an old one that names a young one included. The difference from a
@@ -2051,7 +2072,7 @@ come: "The
 VM mirror is a capability" gains, as a consequence, that no program reaches
 `become:` -- a leaf on the mirror that only the shipped mirrors module's
 atomic install uses -- and that the mirrors refuse every edit to a shipped
-mixin, which seals the mirror's class and keeps every object a platform path
+mixin, which seals the mirror's class and keeps every object a shipped name
 names out of the forward (road step 5; [object-model.md](object-model.md),
 "Planned: `become:` as an eager bulk forward"). "Decided per activation from the
 block's `outer_reach`" stands, since the divorce keeps that rule.
@@ -2283,11 +2304,12 @@ scavenge.
 
 ### An image load tenures once
 
-Every load bootstraps, rebuilds its module classes and follows its
-platform paths before it decodes the graph, so the builtins, the module
-classes and what the paths answered are young when the graph pass starts.
-One scavenge that tenures everything, between two entries
-(`Interpreter::tenure_now`), makes all three old, and the graph pass then
+Every load bootstraps, which builds the whole shipped world, before it
+decodes the graph, so every object an image can name is young when the
+graph pass starts; the first phase, which reads everything up to the
+graph and resolves the shipped names, allocates none. One scavenge that
+tenures everything, between two entries
+(`Interpreter::tenure_now`), makes the shipped world old, and the graph pass then
 allocates old, its stores old-to-old (decision 4;
 [image-format.md](image-format.md), "The image under generations").
 
@@ -2356,19 +2378,15 @@ Decided with the user on 2026-10-04:
    sizes are measured in [execution.md](execution.md), "What generations
    moved"; what a smaller eden would trade is open
    ([OPEN-WORK.md](../OPEN-WORK.md)).
-4. **An image load tenures once, between the platform paths and the graph
-   pass.** Spur, Primordial Soup, Strongtalk and HotSpot's CDS all load
-   into a heap that holds nothing young; here the bootstrap's objects, the
-   module classes and what the platform paths answered are young when the
-   graph pass starts, and one tenure between two entries makes all three
-   old. The decoder then allocates its graph old, as Soup's
-   `AllocateSnapshot` does (`prior-art/primordialsoup/vm/heap.cc:228`).
-   Rejected: a second tenure right after the bootstrap, which
-   `image::load` could run between the bootstrap and the entry in which
-   `build_module_classes` runs. It would be redundant: the module classes
-   and what the platform paths answer are made young after it, so the
-   tenure before the graph pass is needed anyway, and that one tenure
-   covers the bootstrap's objects too.
+4. **An image load tenures once, between the shipped-name section and the
+   graph pass.** Spur, Primordial Soup, Strongtalk and HotSpot's CDS all
+   load into a heap that holds nothing young; here the bootstrap's objects,
+   the whole shipped world among them, are young when the graph pass
+   starts, and one tenure between two entries makes them old. The decoder
+   then allocates its graph old, as Soup's `AllocateSnapshot` does
+   (`prior-art/primordialsoup/vm/heap.cc:228`). A second tenure right after
+   the bootstrap would be the same one: the first phase, which decodes up to
+   the graph and resolves the shipped names, allocates nothing.
 
 The plan also chose constants for the user to confirm, each one line to
 change and each stated where it is built above: eden's 512 KiB reserve,
@@ -2584,12 +2602,12 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   and more allocated old and a remembered set past 8,192 entries tenuring
   everything, both Primordial Soup's limits; and a tenuring threshold that
   adapts by Strongtalk's age table under HotSpot's rule, starting at 15.
-- **An image load tenures once, between the platform paths and the graph
-  pass** (decided with the user on 2026-10-04), so that the graph pass
+- **An image load tenures once, between the shipped-name section and the
+  graph pass** (decided with the user on 2026-10-04), so that the graph pass
   allocates old into a heap that holds nothing young, as every reference
-  loads; a tenure right after the bootstrap would be redundant, since the
-  module classes and what the paths answer are made young after it and the
-  one tenure before the graph pass covers the bootstrap's objects too.
+  loads; nothing between the bootstrap and the graph pass allocates, so the
+  one tenure covers the bootstrap's objects.
+
 - **A refused commit or an exhausted reservation aborts the process**, as a
   failed `Vec` push does, through `std::alloc::handle_alloc_error` (decided
   with the user on 2026-10-03). Allocation stays infallible, so no hot path

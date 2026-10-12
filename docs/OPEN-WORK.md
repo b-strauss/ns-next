@@ -36,15 +36,11 @@ Each has its own design and plan; the fifth sub-project is next --
 `ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
 arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
 [core-library.md](design/core-library.md), "Planned: sub-project 5,
-`ByteArray`, `StringBuilder` and the views") but has no plan yet. It
-waits for **shipped names in the image** (decided with the user on
-2026-10-12, designed, no plan yet; [image-format.md](design/image-format.md),
-"Planned: shipped names in the image"): the bootstrap builds the whole
-shipped world, and an image names each shipped module instance, class,
-metaclass and level by module, declaration and kind, resolved by lookup
-before the graph, in place of the builtin class tags, `MIXIN_BUILTIN`, the
-platform paths and the module class tags. It is planned and built next,
-then sub-project 5's plan is written. The decisions
+`ByteArray`, `StringBuilder` and the views") but has no plan yet, so the
+next session starts by writing it; the section's "What the plan must
+handle" lists what the code as it stands asks of it, and the shipped names
+in the image it waited for are built ([image-format.md](design/image-format.md),
+"Shipped names"). The decisions
 and the scope are
 [core-library.md](design/core-library.md), "Planned: the kernel completed
 to Primordial Soup's core API".
@@ -441,7 +437,7 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   *Unimplemented* by the specification; object literals need the activation as
   enclosing object and a syntax choice. [frontend.md](design/frontend.md),
   "Possible future extensions".
-- **The module namespace on the mirror.** `moduleNamed:` is built; the table
+- **The module namespace on the mirror.** `moduleInstanceNamed:` is built; the table
   of shipped modules is still the host's, a table entry has no "shipped" flag,
   and the file-system fallback for user modules does not exist — all three
   come with the first user module. Static module linking through it is decided,
@@ -497,20 +493,41 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   first: `verify_graph` never cross-checks a frame's `home` against its `kind`
   (`image/decode.rs`). [image-format.md](design/image-format.md), "Planned:
   suspend and resume".
-- **A running world's image is trusted** (2026-10-12): once shipped names
-  are built, a snapshot may hold frames of shipped code whose registers
-  hold the kernel, a module instance or an `Activation`, and a crafted
-  frame could pass one to the program's code, so such an image is loaded
-  only when its host decides to. A check over each body's dataflow, which
-  would let it be untrusted input like a started image, is undesigned.
-  [image-format.md](design/image-format.md), "Planned: shipped names in the
-  image".
-- **The cost of building the shipped world at boot**, should the start of a
-  release build measure too slow once shipped names are built: building a
-  shipped module on first demand through `shipped_module_instance`, or a
-  base image of the shipped world embedded at build time and decoded at
-  boot, names kept on the wire. [image-format.md](design/image-format.md),
-  "Planned: shipped names in the image".
+- **A running world's image is trusted** (2026-10-12): a snapshot may hold
+  frames of shipped code whose registers hold the kernel, a module instance
+  or an `Activation`, and a crafted frame could pass one to the program's
+  code, so such an image is loaded only when its host decides to. A check
+  over each body's dataflow, which would let it be untrusted input like a
+  started image, is undesigned. [image-format.md](design/image-format.md),
+  "Shipped names".
+- **The cost of building the shipped world at boot** (measured
+  2026-10-12): every boot compiles and instantiates every shipped module
+  and builds every class its root declares, since an image names them and
+  the loader runs nothing the image chooses. A hello program's median
+  start in a release build went from about 12.3 ms to about 16.0 ms on the
+  measuring workstation (Windows 11), +3.7 ms, almost all of it compiling
+  `CollectionsFactory.ns`'s 1,710 lines; building the classes and naming
+  the world add nothing measurable. Two ways back exist, neither touching
+  the format: building a shipped module on first demand, when the mirror's
+  `moduleInstanceNamed:` or a load first names it, and a base image of the
+  shipped world embedded at build time and decoded at boot, names kept on
+  the wire. Which, if either, is open, for the user to decide.
+  [execution.md](design/execution.md), "What the collections module cost";
+  [image-format.md](design/image-format.md), "Shipped names".
+- **A second class record applying a module's root row** (2026-10-13),
+  beside the one the module section names, still loads, as it did before
+  module roots became records: nothing a run writes has one, and whether
+  the decoder should refuse it is undesigned
+  (`image/modules.rs`, `module_root_classes`).
+  [image-format.md](design/image-format.md), "Module section".
+- **A class accessor is matched by class name across the whole module**
+  (2026-10-13): `interpreter/shipped_world.rs`'s `accessed_classes` lets a
+  private class be a value when a public class accessor anywhere in its
+  module, at any depth, answers a class of its name. That is right while
+  every shipped class is declared directly in its module's root, which a
+  name requires; it is to be revisited when a shipped module nests a class
+  deeper (sub-project 5 adds none, a later module may).
+  [image-format.md](design/image-format.md), "Shipped names".
 - **The debugger**: suspend, inspect, edit-and-continue at statement
   boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
   (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on
@@ -1209,8 +1226,8 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 - The selector and receiver of the instantiation refusals
   (`tests/value_conditions.rs` checks the message only), and a subclass
   inheriting a root clause's refusal.
-- A crafted-input test for `HASHED_METACLASS`, and the encoder's refusal of a
-  class record without a metaclass (`image/encode.rs`).
+- The encoder's refusal of a class record without a metaclass
+  (`image/encode.rs`).
 - A `doesNotUnderstand:` overrunning the depth limit's reserve
   (`tests/exceptions.rs` has the error and `pass` cases).
 - `tests/collector.rs`'s give-back test proves little and runs in debug
@@ -1241,11 +1258,10 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   only some carry source (`modules::encode_modules`); a back-reference into
   an earlier tree, or a child shared between trees, in the mixin forest; a
   load of an empty mixin table, which answers `ModuleCountMismatch` 1 against
-  0; `image::package`'s refusal of a shipped class or instance other than
-  the platform; the version word in `build_load.rs`'s corruption sweep;
-  `load --print-source` of an image `image::snapshot` wrote; `run-corpus`
-  refusing a row whose `send` is not unary; and that the CLI prints nothing
-  when an image's platform path is refused.
+  0; the version word in `build_load.rs`'s corruption sweep;
+  `load --print-source` of an image `image::snapshot` wrote; and `run-corpus`
+  refusing a row whose `send` is not unary.
+
   `a_module_shadowed_by_an_object_member_is_refused`
   (`crates/ns-cli/tests/run.rs`) asserts an empty stdout although its root
   has no initializer that could print, and

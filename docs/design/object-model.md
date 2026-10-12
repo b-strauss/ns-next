@@ -913,10 +913,10 @@ forwards every message it is sent, but as an argument it is itself —
 future a program can hold keeps "The four rules" above.
 `FutureImplementation` declares no `isKindOfFuture`: answering it would
 tell a future from its value, so that message is forwarded to the value
-like any other. `FutureImplementation` carries builtin
-class tag 30 because the collector, the leaves and the image must
-recognize it; `Proxy` carries 36 and `Future` 37 only because every kernel
-class is a builtin with a tag. The first future a
+like any other. `FutureImplementation` is a builtin
+(`BuiltinClass::FutureImplementation`) because the collector, the leaves
+and the image must recognize it; `Proxy` and `Future` are builtins only
+because every kernel class is one. The first future a
 heap makes sets `Mutator::futures_made`, which is never cleared, and the
 two checks that would otherwise run for every program — the leaves' search
 among their operands and the collector's replacement — stay behind that
@@ -1252,9 +1252,10 @@ not be subclassed". SOMns's `Metaclass = Class` would make every metaclass
 carry `Class`'s protocol and override it away again. None of the three
 inherits `Value`: whether a class object is a value is decided per object
 (below), and under the strict enforcement of §3.1.1 a subclass of `Value`
-refuses every instance that is not one. They carry builtin class tags 20, 21
-and 22 (`BuiltinClass::Behavior`, `Class`, `Metaclass`), the next free
-numbers ([image-format.md](image-format.md)).
+refuses every instance that is not one. They are builtins
+(`BuiltinClass::Behavior`, `Class`, `Metaclass`), and an image names them
+by their declarations in `Kernel.ns` like every shipped class
+([image-format.md](image-format.md), "Shipped names").
 
 **Where a class object's state lives.** In the class object's own eight
 fields, which only the VM reads ("The object layout" below): its
@@ -1507,20 +1508,21 @@ is written depends on its class:
   have had to patch every place such a reference can sit once the class
   records are decoded, a mechanism across the whole decoder to keep safe
   against a crafted image.
-- **The metaclass of a prebuilt class** — a builtin, a module's root class
-  or one of its levels, none of which is a record — is named by tag,
-  `CLASS_METACLASS` followed by that class's own tag, and its identity hash
-  travels in the closing hash table (`HASHED_METACLASS`, followed by the
-  class tag), as the builtin classes' own do.
+- **The metaclass of a shipped class or level**, which is no record, is
+  named by its own shipped name (`CLASS_SHIPPED`, of kind metaclass or level
+  metaclass), and its identity hash travels in the closing hash table
+  (`HASHED_SHIPPED`), as the shipped classes' own do. A module's root class
+  and its levels are records, so their metaclasses are records too.
 
 The decoder applies each metaclass record over `Class` as `attach_metaclass`
 does (`rebuild_metaclasses`) and holds each class record and its metaclass
 record to each other both ways (`pair_metaclasses`, `MetaclassPairing`), which
 keeps a metaclass's identity across a round trip: the metaclass a slot holds
-is the one its class answers. The three new builtin tags are refused wherever
-a program *names* a class — a superclass, a `<:` clause's mixin — as `Top`'s
-is, since no source module can name them; as values in the graph they are
-accepted, since `3 class class class` reaches `Metaclass`
+is the one its class answers. `Behavior`, `Class` and `Metaclass` are
+refused wherever a class is made from them — a superclass, a `<:` clause's
+mixin — since a class over one of them could never be instantiated; as
+values in the graph they are accepted, since `3 class class class` reaches
+`Metaclass`
 ([image-format.md](image-format.md), "What is *not* serialized",
 "Verification").
 
@@ -2160,8 +2162,9 @@ no program can observe, since a value has no identity.
   extending `builtins::value`'s walk with class objects as a node kind, and
   `Behavior` declares `=`, `==` and `hash`. Its hash is derived from its
   mixin's name alone. In the image, a class record's metaclass is a record
-  of its own (`OBJECT_METACLASS`), a prebuilt class's is named by tag
-  (`CLASS_METACLASS`, `HASHED_METACLASS`), and the amplification bound does
+  of its own (`OBJECT_METACLASS`), a shipped class's is named by its shipped
+  name (`CLASS_SHIPPED`, `HASHED_SHIPPED`), and the amplification bound does
+
   not move. Two further decisions came up while building it: `==` on
   `Behavior` and `Metaclass` is the same forwarder as `=`, to the same leaf,
   so it costs no activation; and the hash of a value class object is taken

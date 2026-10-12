@@ -4780,7 +4780,9 @@ slots — as first measured below, a lazy getter was a compiled method with
 `MethodFastPath::LazySlot`, its arm sitting beside the other
 `MethodFastPath` arms in `interpreter/resolve.rs`'s `act_with_base`; since
 "Recovering it" below, it has no fast path and answers a filled slot with
-`Instruction::ReturnSlotIfFilled` — platform paths in the image,
+`Instruction::ReturnSlotIfFilled` — platform paths in the image (since
+replaced by shipped names, [image-format.md](image-format.md), "Shipped
+names"),
 and a shipped `Platform.ns` (since 2026-09-27 `PlatformFactory.ns`, in the
 factory pattern of [core-library.md](core-library.md), "The platform")
 compiled and resolved once at bootstrap,
@@ -4996,7 +4998,7 @@ shipped module and every class their roots declare
 (`interpreter/shipped_world.rs`, `complete_shipped_world`): an image names
 the shipped world's objects by their declarations and the loader runs
 nothing the image chooses, so all of them exist before it decodes
-(`image-format.md`, "Planned: shipped names in the image"). The mirror's
+(`image-format.md`, "Shipped names"). The mirror's
 `moduleInstanceNamed:` answers the instance the boot built, and
 `PlatformFactory`'s lazy `collectionsModule` reads it.
 
@@ -5121,25 +5123,31 @@ with the output discarded, its median taken; the three binaries were
 sampled in turn, three rounds. Three trees: `e2e1695`, before the boot
 built any shipped module but `PlatformFactory`; `1ff9a33`, whose boot
 compiles and instantiates `PlatformFactory` and `CollectionsFactory` and
-builds only the classes a run asks for; and the head, whose boot then
+builds only the classes a run asks for; and `2d35951`, whose boot then
 builds every class the three roots declare and records each shipped
-object under its name (`complete_shipped_world`). Medians in ms:
+object under its name (`complete_shipped_world`), as every later tree's
+does. Medians in ms:
 
-| Round | `e2e1695` | `1ff9a33` | Head |
+| Round | `e2e1695` | `1ff9a33` | `2d35951` |
 |---|---|---|---|
 | 1 | 12.54 | 16.24 | 16.10 |
 | 2 | 12.28 | 15.92 | 16.07 |
 | 3 | 12.06 | 15.86 | 15.72 |
 
-A first sample of `1ff9a33` alone, before the head existed, gave 16.11 and
-16.06 ms, and two more of the head against `1ff9a33` 15.94 against 16.17
+A first sample of `1ff9a33` alone, before `2d35951` existed, gave 16.11 and
+16.06 ms, and two more of `2d35951` against `1ff9a33` 15.94 against 16.17
 and 16.06 against 15.87 ms. **Building every shipped class and naming the
-world does not show**: the head and `1ff9a33` lie within each other's
+world does not show**: `2d35951` and `1ff9a33` lie within each other's
 round-to-round spread of some 0.3 ms. **Building `CollectionsFactory` at
 every boot costs about 3.7 ms**, `1ff9a33` against `e2e1695`: parsing,
 resolving and compiling its 1,710 lines of source, against the 0.28 ms plan
-2 measured for its first use when it had 99. The per-process overhead of
+2 measured for its first use when it had 99: a hello program's median
+start went from about 12.3 ms to about 16.0 ms. The per-process overhead of
 this machine is high (above), so the figures compare with each other only.
+The two ways back -- building a shipped module on first demand, or an
+embedded base image of the shipped world -- are open
+([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
+at boot").
 
 ### What simultaneous slots cost
 
