@@ -463,6 +463,14 @@ pub enum DecodeError {
         expected: usize,
         found: usize,
     },
+    /// A record under the header of a shipped class that is no builtin with
+    /// a body other than `OBJECT_INSTANCE`. Such a class's instances are
+    /// instances with slots, laid out by the loading binary; an array,
+    /// string, closure, class or frame record under its header would be an
+    /// object its code reads as something it is not.
+    ShippedInstanceBody {
+        body: u8,
+    },
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
     /// never writes: one that fits `i64` (which travels as an `i64`), a zero
     /// top digit, or a negative zero. Accepting one would give an integer a
@@ -769,6 +777,11 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "an instance of a shipped class carries {found} field(s), but the loading \
                  binary lays that class out with {expected}"
+            ),
+            DecodeError::ShippedInstanceBody { body } => write!(
+                f,
+                "a record of a shipped class has object body {body}, but an instance of that \
+                 class is an instance record"
             ),
             DecodeError::NonCanonicalInteger => {
                 write!(f, "an integer is not in its one canonical encoding")
@@ -3599,16 +3612,18 @@ impl Sizing<'_, '_, '_> {
     }
 
     /// `decode_object_header`'s reading; answers the builtin the header
-    /// named, if it named a shipped builtin.
-    fn header(&self, reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
+    /// named, if it named a shipped builtin, and whether it named a shipped
+    /// class that is no builtin.
+    fn header(&self, reader: &mut Reader) -> Result<(Option<BuiltinClass>, bool), DecodeError> {
         let tag = reader.read_u8()?;
         if tag != CLASS_SHIPPED {
             return self
                 .class_tag_after(tag, reader, NamePosition::Header)
-                .map(|()| None);
+                .map(|()| (None, false));
         }
         let entry = read_shipped_class(reader, self.context.shipped, NamePosition::Header)?;
-        Ok(self.context.mutator.heap.class_builtin(entry.object))
+        let builtin = self.context.mutator.heap.class_builtin(entry.object);
+        Ok((builtin, builtin.is_none()))
     }
 
     /// `decode_value`'s reading. A `LargeInteger`'s digits, and a
@@ -3722,11 +3737,19 @@ impl Sizing<'_, '_, '_> {
         reader: &mut Reader,
         symbols_named: &mut [bool],
     ) -> Result<(PlannedRecord, usize), DecodeError> {
-        let header = self.header(reader)?;
+        let (header, shipped_non_builtin) = self.header(reader)?;
         let future = header == Some(BuiltinClass::FutureImplementation);
         let fraction = header == Some(BuiltinClass::Fraction);
         reader.read_u32()?; // the identity hash, checked by the second pass
         let body = reader.read_u8()?;
+        // A shipped class that is no builtin lays its instances out with
+        // slots, as the loading binary declares them: a record of any other
+        // shape under its header would make an object its code reads as
+        // something it is not. Refused before anything is allocated, as the
+        // second pass would refuse it.
+        if shipped_non_builtin && body != OBJECT_INSTANCE {
+            return Err(DecodeError::ShippedInstanceBody { body });
+        }
         // `Fraction new`'s record is the one a `Fraction` header may carry:
         // a fraction is a `VALUE_FRACTION`, its normal form checked, and a
         // record of fields under the header would make one unchecked. The
@@ -3936,6 +3959,11 @@ pub fn decode_graph_section<'gc>(
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
         let body = reader.read_u8()?;
+        // The first pass refused it already; restated here, beside the
+        // layout check below, as what filling the record rests on.
+        if shipped_non_builtin && body != OBJECT_INSTANCE {
+            return Err(DecodeError::ShippedInstanceBody { body });
+        }
         if body == OBJECT_FRAME {
             if !activation_header {
                 return Err(DecodeError::FrameRecordUnderAnotherClass);
@@ -4104,7 +4132,6 @@ pub fn decode_graph_section<'gc>(
                     &tables,
                     NamePosition::Header,
                 )?);
-
                 let class_class = context.mutator.builtin_class(BuiltinClass::Class);
                 pending_metaclasses.push(index);
                 Some(NewClass {

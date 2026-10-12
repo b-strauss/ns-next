@@ -12052,6 +12052,67 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
 }
 
+/// A `<:` clause can name a shipped class that is no builtin, here the
+/// collections facet's `List`: its level is a class record applying `List`'s
+/// mixin (`MIXIN_SHIPPED`), and the reloaded level applies the loading
+/// boot's own `List` mixin, enclosed where `List` is.
+#[test]
+fn a_level_applying_a_shipped_class_that_is_no_builtin_round_trips() {
+    let source = indoc! {"
+        class Host usingPlatform: p = Object new (| public listClass = p collections List. |) (
+            public class Listy = Object new <: listClass new: 4 () (
+                public answer = ( ^7 )
+            )
+        ) : ()
+    "};
+    let (mut interpreter, class, _platform, host) = instantiated_world(source);
+    let listy_class = expect_ok(
+        interpreter.send(&host, Symbol::intern("Listy"), &[]),
+        "Listy",
+    );
+    let listy = expect_ok(interpreter.instantiate(&listy_class, &[]), "Listy new");
+    let three = interpreter.stash(Value::small_integer(3));
+    expect_ok(
+        interpreter.send(&listy, Symbol::intern("add:"), &[three]),
+        "listy add: 3",
+    );
+    let bytes = snapshot_world(&mut interpreter, source, &class, &[listy]);
+
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    assert!(
+        report.contains("class mixin shipped CollectionsFactory List"),
+        "the level's record names List's mixin by its shipped name:\n{report}"
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let listy = loaded.roots[0].clone();
+    let loaded_platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &loaded_platform, "collections");
+    let list = send_to(&mut loaded, &collections, "List");
+    loaded.interpreter.enter(|mutator| {
+        let listy = mutator.fetch(&listy);
+        let list = object(mutator.fetch(&list));
+        let heap = mutator.heap();
+        let level = heap
+            .class_superclass(class_of(heap, listy))
+            .expect("Listy's level");
+        assert!(Rc::ptr_eq(
+            &application_of(heap, level).mixin,
+            &application_of(heap, list).mixin
+        ));
+        assert!(heap.class_applied_clause(level).is_some());
+        assert!(
+            heap.class_enclosing(level)
+                .zip(heap.class_enclosing(list))
+                .is_some_and(|(first, second)| first.same(second)),
+            "the level is enclosed where List is"
+        );
+    });
+    let answer = send_to(&mut loaded, &listy, "answer");
+    assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+    let size = send_to(&mut loaded, &listy, "size");
+    assert_eq!(integer_of(&mut loaded.interpreter, &size), 1);
+}
+
 /// §3.1.1's enclosing-object condition on a value class is decided when the
 /// class object is created and only *recorded* on it
 /// (`Heap::class_value_refusal`, `docs/design/object-model.md`, "A
@@ -12810,6 +12871,49 @@ fn a_shipped_name_in_a_forbidden_position_is_refused() {
             );
         },
     );
+}
+
+/// No object is an instance of `Top`, so a record of it is refused as `Top`
+/// is refused as a value.
+#[test]
+fn a_record_of_top_is_refused() {
+    let bytes = class_records(1, |writer| {
+        writer.write_shipped(TOP_NAME);
+        writer.write_u32(5); // identity hash
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel Top".to_string(),
+            position: "a record's class",
+        }
+    );
+}
+
+/// A shipped class that is no builtin has instance records only: an array,
+/// a string or a frame record under `PlatformFactory Stopwatch` is refused
+/// before anything is allocated.
+#[test]
+fn a_record_of_a_shipped_class_with_another_body_is_refused() {
+    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME] {
+        let bytes = class_records(1, |writer| {
+            writer.write_shipped(STOPWATCH_NAME);
+            writer.write_u32(5); // identity hash
+            writer.write_u8(body);
+            writer.write_u32(0); // no elements, an empty text or a program counter
+        });
+        let error = GraphFixture::new().decode_error(&bytes);
+        assert_eq!(error, decode::DecodeError::ShippedInstanceBody { body });
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "a record of a shipped class has object body {body}, but an instance of that \
+                 class is an instance record"
+            )
+        );
+    }
 }
 
 /// A record of a shipped class that is no builtin carries exactly the

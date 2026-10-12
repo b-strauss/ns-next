@@ -872,7 +872,6 @@ pub fn render_full(report: &Report) -> String {
         for (index, name) in report.shipped_names.iter().enumerate() {
             let _ = writeln!(out, "  {index:>4} {name}");
         }
-
         let _ = writeln!(out, "\ngraph");
         let _ = writeln!(out, "  objects ({})", report.graph_objects.len());
         for (index, object) in report.graph_objects.iter().enumerate() {

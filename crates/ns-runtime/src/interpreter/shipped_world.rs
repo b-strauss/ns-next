@@ -303,10 +303,15 @@ fn shipped_entries<'gc>(mutator: &Mutator<'gc>) -> Vec<ShippedEntry<'gc>> {
                     heap.class_builtin(class),
                     Some(BuiltinClass::Behavior | BuiltinClass::Class | BuiltinClass::Metaclass)
                 );
+            // No object is an instance of `Top`: §3.2 gives it no subclass
+            // but `Object`, which every class a program reaches inherits, so
+            // a record of it is refused as `Top` is refused as a value (lock
+            // (4) of the VM mirror).
+            let header = heap.class_builtin(class) != Some(BuiltinClass::Top);
             let positions = Positions {
                 value,
                 superclass,
-                header: true,
+                header,
                 frame_class: true,
                 frame_register: false,
             };
@@ -440,6 +445,11 @@ mod tests {
                     "{private} is no value"
                 );
                 assert!(positions.frame_class);
+                assert_eq!(
+                    positions.header,
+                    private != "Top",
+                    "{private} as a record's class"
+                );
             }
             for meta in ["Behavior", "Class", "Metaclass"] {
                 let positions = positions_of(world, name("Kernel", meta, ShippedKind::Class));

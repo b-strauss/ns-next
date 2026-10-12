@@ -437,7 +437,6 @@ fn builtin_class_tags_are_fixed() {
     // 13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
     // `KernelNamespace`, retired 2026-09-26 when the four moved into the
     // shipped `PlatformFactory.ns`: an image names them by their declarations.
-
     // 10 was `OrderedCollection`, retired 2026-09-28 when `platform collections
     // List`, Newspeak in the shipped `CollectionsFactory.ns`, replaced it.
     assert_eq!(RETIRED_BUILTIN_CLASS_TAGS, [8, 10, 13, 18, 19, 29]);
