@@ -1,5 +1,5 @@
 //! The shipped world: every object the binary owns and an image may name
-//! (`docs/design/image-format.md`, "Planned: shipped names in the image").
+//! (`docs/design/image-format.md`, "Shipped names").
 //! Filled during the boot -- each module instance as
 //! `install_shipped_modules` builds it, then every class the roots declare
 //! and every name, by `complete_shipped_world`, before the platform is
@@ -62,7 +62,7 @@ impl ShippedName {
 }
 
 /// Where an image may put a shipped object (`docs/design/image-format.md`,
-/// "Planned: shipped names in the image", the rule of what may be named
+/// "Shipped names", the rule of what may be named
 /// where): `value` as a slot's, a register's or an element's value;
 /// `superclass` as a class record's superclass or the mixin it applies;
 /// `header` as a record's class; `frame_class` as a frame's
@@ -209,8 +209,8 @@ impl crate::interpreter::Interpreter {
     /// The last phase of the boot before the platform is made: every class
     /// a shipped root declares is built, in declaration order, and every
     /// shipped object is recorded under its name with the positions it may
-    /// stand in (`docs/design/image-format.md`, "Planned: shipped names in
-    /// the image"). An image names into this world and the loader runs
+    /// stand in (`docs/design/image-format.md`, "Shipped names"). An image
+    /// names into this world and the loader runs
     /// nothing the image chooses, so all of it must exist before a decode.
     /// The kernel's own phase built the kernel's classes, so building one of
     /// them answers the class it cached. Only the binary's own code runs,
@@ -295,7 +295,16 @@ fn shipped_entries<'gc>(mutator: &Mutator<'gc>) -> Vec<ShippedEntry<'gc>> {
                         nested.name.as_str()
                     )
                 });
-            let value = nested.access == AccessModifier::Public || accessed.contains(&nested.name);
+            // A private kernel class whose instances the VM itself signals
+            // into a program -- `NonBooleanReceiver` today -- is a value: a
+            // program that catches one holds its class as `error class`, and
+            // a program that runs must also build.
+            let signalled = heap
+                .class_builtin(class)
+                .is_some_and(crate::types::ErrorClass::is_signalled);
+            let value = nested.access == AccessModifier::Public
+                || accessed.contains(&nested.name)
+                || signalled;
             // A class object is made only by evaluating a declaration, so
             // nothing may inherit from what every class object inherits.
             let superclass = value
@@ -463,12 +472,7 @@ mod tests {
             assert!(!array.frame_register);
             let array_class = positions_of(world, name("Kernel", "Array", ShippedKind::Metaclass));
             assert!(array_class.value && !array_class.header && array_class.frame_class);
-            for private in [
-                "Top",
-                "Activation",
-                "FutureImplementation",
-                "NonBooleanReceiver",
-            ] {
+            for private in ["Top", "Activation", "FutureImplementation"] {
                 let positions = positions_of(world, name("Kernel", private, ShippedKind::Class));
                 assert!(
                     !positions.value && !positions.superclass,
@@ -481,6 +485,18 @@ mod tests {
                     "{private} as a record's class"
                 );
             }
+            // The VM signals it into a program, which catches it and holds
+            // its class: a value and a superclass, though private.
+            let signalled = positions_of(
+                world,
+                name("Kernel", "NonBooleanReceiver", ShippedKind::Class),
+            );
+            assert!(signalled.value && signalled.superclass && signalled.header);
+            let signalled_class = positions_of(
+                world,
+                name("Kernel", "NonBooleanReceiver", ShippedKind::Metaclass),
+            );
+            assert!(signalled_class.value && !signalled_class.header);
             for meta in ["Behavior", "Class", "Metaclass"] {
                 let positions = positions_of(world, name("Kernel", meta, ShippedKind::Class));
                 assert!(

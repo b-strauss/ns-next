@@ -579,6 +579,37 @@ pub enum ErrorClass {
     CannotInstantiate,
 }
 
+impl ErrorClass {
+    /// Every class a VM error is signalled as.
+    pub const ALL: [ErrorClass; 5] = [
+        ErrorClass::Error,
+        ErrorClass::ArgumentError,
+        ErrorClass::CannotReturn,
+        ErrorClass::NonBooleanReceiver,
+        ErrorClass::CannotInstantiate,
+    ];
+
+    /// The kernel class whose instance `Mutator::signal_vm_error` signals.
+    pub fn builtin(self) -> BuiltinClass {
+        match self {
+            ErrorClass::Error => BuiltinClass::Error,
+            ErrorClass::ArgumentError => BuiltinClass::ArgumentError,
+            ErrorClass::CannotReturn => BuiltinClass::CannotReturn,
+            ErrorClass::NonBooleanReceiver => BuiltinClass::NonBooleanReceiver,
+            ErrorClass::CannotInstantiate => BuiltinClass::CannotInstantiate,
+        }
+    }
+
+    /// Whether the VM signals instances of `kind` into a program: a caught
+    /// one hands the program its class, so the class is a value the program
+    /// holds, private or not.
+    pub fn is_signalled(kind: BuiltinClass) -> bool {
+        ErrorClass::ALL
+            .iter()
+            .any(|error_class| error_class.builtin() == kind)
+    }
+}
+
 impl<'gc> NewspeakError<'gc> {
     /// An `Error`, which carries nothing.
     pub fn error(selector: Symbol, receiver: Value<'gc>, message: impl Into<Box<str>>) -> Self {

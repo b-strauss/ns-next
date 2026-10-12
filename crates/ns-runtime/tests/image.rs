@@ -7468,6 +7468,31 @@ fn a_root_class_over_kernel_array_is_not_written() {
     );
 }
 
+/// A module root with a declaring class is not its module's own root
+/// record, and the encoder's refusal says so rather than calling it a
+/// metaclass or a level.
+#[test]
+fn a_root_class_with_a_declaring_class_is_not_written() {
+    let (mut interpreter, class) = load(EMPTY);
+    let error = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        mutator
+            .heap_mut()
+            .class_set_lexical_context(class, None, Some(array));
+        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+            Ok(_) => panic!("a root with a declaring class must not be written"),
+            Err(error) => error,
+        }
+    });
+    assert!(
+        error.contains(
+            "a metaclass, a level, or a class with an enclosing object or a declaring class"
+        ),
+        "unexpected error: {error}"
+    );
+}
+
 #[test]
 fn a_module_count_that_disagrees_with_the_trees_is_refused() {
     let (mut interpreter, first, second, instance) = two_module_world();
@@ -12041,7 +12066,7 @@ fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
 // Shipped names: an object the loading binary owns is named by its
 // declaration in the image's shipped-name section, and resolved on load
 // against the loading boot's own shipped world by table lookup
-// (`docs/design/image-format.md`, "Planned: shipped names in the image").
+// (`docs/design/image-format.md`, "Shipped names").
 // ---------------------------------------------------------------------------
 
 /// A module whose root keeps three platform members and the platform itself
@@ -13041,6 +13066,49 @@ fn a_started_image_naming_another_module_is_refused() {
         decode::DecodeError::ShippedNameInStartedImage("PlatformFactory Platform".to_string())
             .to_string()
     );
+}
+
+/// A program that catches the error a non-Boolean loop condition signals
+/// and keeps its class builds and loads: the VM hands it the private
+/// `Kernel NonBooleanReceiver`, so the class is a value an image names, and
+/// the loaded slot holds the loading boot's own class.
+#[test]
+fn a_caught_non_boolean_receivers_class_round_trips_through_a_package() {
+    let (mut interpreter, class) = load(indoc! {"
+        class App = Object new (
+          | public held = [[4] whileFalse: [nil]] on: Error do: [:error | error class]. |
+        ) (
+          public main: platform args: arguments = ( ^held )
+        ) : ()
+    "});
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
+    let origin = SourceOrigin::File("App.ns".into());
+    let bytes = interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                origin: &origin,
+                source: None,
+            }];
+            image::package(mutator, &modules, mutator.fetch(&application))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(report
+        .shipped_names
+        .contains(&"Kernel NonBooleanReceiver".to_string()));
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let held = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("held"), &[]),
+        "held",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let held = mutator.fetch(&held);
+        let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
+        assert!(object(held).same(signalled));
+    });
 }
 
 #[test]

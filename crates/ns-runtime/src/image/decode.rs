@@ -430,8 +430,8 @@ pub enum DecodeError {
     /// A shipped-name reference whose index is past the image's section.
     BadShippedName(u32),
     /// A shipped name standing where the rule of what may be named where
-    /// forbids it (`docs/design/image-format.md`, "Planned: shipped names in
-    /// the image"): `Top` or `Activation` as a value, a module root as a
+    /// forbids it (`docs/design/image-format.md`, "Shipped names"): `Top` or
+    /// `Activation` as a value, a module root as a
     /// record's class, a module instance outside a frame. `position` is
     /// `NamePosition::describe`'s text.
     ShippedNameNotAllowed {

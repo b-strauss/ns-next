@@ -73,9 +73,9 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
   /// so a program pays only for what it asks for. This module's classes
   /// -- `Platform`, `Transcript`, `KernelNamespace`, `Time` and
   /// `Stopwatch` -- are handed out by class accessors, each exactly
-  /// `^outer PlatformFactory <Name>`, which an image names by its path
-  /// from the platform rather than carrying the class
-  /// (`docs/design/image-format.md`, "The platform path section"). Each is a lexical send, which reaches the root's
+  /// `^outer PlatformFactory <Name>`, which lets an image name the class
+  /// by its declaration rather than carry it
+  /// (`docs/design/image-format.md`, "Shipped names"). Each is a lexical send, which reaches the root's
   /// private classes (§5.9). The collections module's classes are its
   /// facet's, handed out the same way.
   private class Platform = Value new () (

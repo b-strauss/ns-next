@@ -1981,10 +1981,14 @@ impl<'gc> Heap<'gc> {
             .expect("internal: an object's offset fits the target's address width")
     }
 
-    /// Overwrites `object`'s identity hash. Two legitimate callers:
+    /// Overwrites `object`'s identity hash. Three legitimate callers:
     /// `image::decode::decode_tag_named_hashes`, which puts a recorded hash
     /// back onto an object of the shipped world -- no record, so nothing
-    /// else could restore what the image remembered for one -- and `tests/image.rs`'s
+    /// else could restore what the image remembered for one --
+    /// `image::decode::decode_graph_section`, which gives a frame record's
+    /// frame object, allocated as a frame rather than shaped from a
+    /// placeholder's header, the hash its record carries, and -- besides
+    /// this module's own tests -- `tests/image.rs`'s
     /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating`,
     /// which forces a live object's hash to the widest the header holds by
     /// hand, the only way to reach `advance_identity_hash_past`'s wrap

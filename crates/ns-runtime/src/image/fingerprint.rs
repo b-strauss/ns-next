@@ -1,5 +1,5 @@
 //! The shipped world's fingerprint, which an image's header carries
-//! (`docs/design/image-format.md`, "Planned: shipped names in the image"):
+//! (`docs/design/image-format.md`, "Shipped names"):
 //! an image names the shipped world by declaration, so it is loaded only
 //! by a binary whose shipped world is the one that wrote it.
 

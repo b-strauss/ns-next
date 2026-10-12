@@ -2,7 +2,7 @@
 //! binary owns -- a shipped module's instance, a class its root declares,
 //! that class's metaclass, a level its `<:` clauses add and that level's
 //! metaclass -- by where it is declared (`docs/design/image-format.md`,
-//! "Planned: shipped names in the image").
+//! "Shipped names").
 //!
 //! The encoder lists every name its graph uses once, in the order it first
 //! used each; a reference in the graph is a tag and a `u32` index into that

@@ -62,8 +62,8 @@ thread_local! {
     /// asks for every entry, because every shipped module is instantiated
     /// at every boot: an image names the shipped world's objects, and the
     /// loader runs nothing the image chooses, so they must all exist before
-    /// it decodes (`docs/design/image-format.md`, "Planned: shipped names in
-    /// the image"). Resolving is pure -- a parse and `resolve_kernel`, no
+    /// it decodes (`docs/design/image-format.md`, "Shipped names"). Resolving
+    /// is pure -- a parse and `resolve_kernel`, no
     /// heap and no handle -- and never asks for another module, so filling
     /// a cell cannot re-enter it. Each interpreter still compiles every
     /// module, because compiled code is numbered against one heap's inline
@@ -132,8 +132,8 @@ impl crate::interpreter::Interpreter {
     /// one instance (`interpreter::shipped_world`). Every shipped module is
     /// built at every boot, because an image names the shipped world's
     /// objects and the loader runs nothing the image chooses
-    /// (`docs/design/image-format.md`, "Planned: shipped names in the
-    /// image"); the mirror's `moduleInstanceNamed:` answers these
+    /// (`docs/design/image-format.md`, "Shipped names"); the mirror's
+    /// `moduleInstanceNamed:` answers these
     /// instances and builds nothing. Then `complete_shipped_world` builds
     /// every class the roots declare and records every shipped object
     /// under its name.

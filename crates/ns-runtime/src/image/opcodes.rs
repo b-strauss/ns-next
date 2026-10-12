@@ -302,8 +302,8 @@ pub const RETIRED_MIXIN_TAGS: [u8; 1] = [1];
 /// `CLASS_SHIPPED` is followed by a `u32` index into the image's
 /// shipped-name section (`image::shipped_names`), whose entry must be a
 /// class, a metaclass or a level -- never a module instance -- allowed where
-/// the reference stands (`docs/design/image-format.md`, "Planned: shipped
-/// names in the image"): as a value, a shipped class that is public or that
+/// the reference stands (`docs/design/image-format.md`, "Shipped names"): as a
+/// value, a shipped class that is public or that
 /// a public class accessor answers, and its metaclass; as a superclass, such
 /// a class but `Behavior`, `Class` and `Metaclass`; as a record's class, any
 /// shipped class but a module's root, `Activation` only on a frame record
