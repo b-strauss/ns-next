@@ -2164,7 +2164,6 @@ no program can observe, since a value has no identity.
   mixin's name alone. In the image, a class record's metaclass is a record
   of its own (`OBJECT_METACLASS`), a shipped class's is named by its shipped
   name (`CLASS_SHIPPED`, `HASHED_SHIPPED`), and the amplification bound does
-
   not move. Two further decisions came up while building it: `==` on
   `Behavior` and `Metaclass` is the same forwarder as `=`, to the same leaf,
   so it costs no activation; and the hash of a value class object is taken

@@ -1308,7 +1308,6 @@ mathematics through `asFloat`, and the answers to `isNaN`, `isFinite` and
 **`Fraction` is a builtin with a representation of its own**, as
 `LargeInteger` is, not a Newspeak class with slots: a subclass of `Number`,
 reached as `Fraction`, `Object`'s accessor ("The
-
 predefined classes are accessors on `Object`"). Its object is
 of the fixed-pointer format with two fields, the numerator and the
 denominator, each an integer value -- a `SmallInteger` or a `LargeInteger`
@@ -1647,7 +1646,7 @@ and loosening any one of them lets a program claim every primitive:
   refuses `Top`, `Activation` and every other shipped name in a position the
   rule does not allow ([image-format.md](image-format.md), "Verification").
 - The image encoder refuses an image whose graph reaches the mirror, its
-  class or its class's metaclass, and `decide_factory` refuses to
+  class, `Top` or their metaclasses, and `decide_factory` refuses to
   instantiate the mirror's class, so there is never a second mirror.
 - `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
   only for a `MirrorSend` and has no wire tag, so no artifact can carry one.
@@ -1658,7 +1657,6 @@ are held the same way: `Activation` is private to `Kernel.ns`, `Object`
 declares no accessor for it, a program reaches one only through a kernel
 method's local, and an image names its class only as the header of an
 activation record ("Exceptions" below).
-
 
 The platform keeps its separate role: §8.3 distinguishes the platform object,
 which is the environment, from the VM mirror, which is the virtual machine.
@@ -2003,7 +2001,6 @@ core-library modules" below) looks a name up among the module instances
 the boot built from the table the binary carries. The table itself is
 still the host's rather than the mirror's, and the fallback to the file
 system comes with user modules.
-
 
 **Start-up was measured, not assumed: the kernel costs about 0.5 ms** —
 `ns-next run` of a module that answers at once, 4.07 ms against 3.56 ms
@@ -2559,7 +2556,6 @@ open ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped
 world at boot"). Lazy slots are also what lets an image write the platform
 as a record whose empty members fill on demand, and §6.3.3 states
 the intent directly: "Lazy slots themselves need never be persisted or
-
 synchronized".
 
 **Built.** The parser keeps the modifier (`SlotDeclaration.lazy`,
@@ -2725,7 +2721,6 @@ boot built. The design as decided:
 - **The host takes every entry from the table itself**; `PlatformFactory.ns`
   reaches `CollectionsFactory`'s instance through `moduleInstanceNamed:`.
 
-
 #### Shipped names in the image
 
 **Built** (`image/shipped_names.rs`, `interpreter/shipped_world.rs`;
@@ -2756,7 +2751,10 @@ image can carry:
 - **A class is a value only if it is public or a public class accessor of
   its module answers it**, a method the compiler recognizes in shipped
   source other than the kernel as exactly `^outer <Root> <Name>`
-  (`MixinMethod::class_accessor`). Only such a class, and its metaclass, may
+  (`MixinMethod::class_accessor`), or if the VM signals its instances into a
+  program as a VM error (`ErrorClass::is_signalled`; the private
+  `NonBooleanReceiver`), since a program that catches one holds its class.
+  Only such a class, and its metaclass, may
   stand in a slot, an element or a register, or be a program's superclass
   or the mixin a program's `<:` clause applies. A private class without
   such an accessor -- a capability such as `Activation`, a future `File` --
@@ -2836,7 +2834,6 @@ a handle on, not a class the image needs a name for.
   widened, and `Platform>>Collections` is gone. `List` is a private class of
   the factory, handed out by the facet's class accessor `public List = (
   ^outer CollectionsFactory List )`; a program may still subclass it
-
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`).
 - **`List`, built,** is a kernel `Collection` written here. Its elements
   live in `data` from `firstIndex` on, `size_` of them, in an `Array` of
@@ -3097,7 +3094,6 @@ world adds nothing measurable beside it. How to take it back is open
 ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
 at boot").
 
-
 **The collections written here, measured 2026-10-10** (sub-project 3 of
 "Planned: the kernel completed to Primordial Soup's core API" below), the
 Are We Fast Yet benchmarks, release builds, three builds by three rounds a
@@ -3317,7 +3313,6 @@ trampoline step under `Continuation::Future`. Like `Activation`, it is
 private, `Object` declares no accessor for it, and an image names it,
 `Kernel FutureImplementation`, only where it must (an unresolved future's
 record). The
-
 instructions `MakeFuture` and `ResolveFuture` make and resolve the futures
 of a simultaneous slot clause, and the public `Future`, a class without
 instances, makes one for a program with `Future computing:`, which sends
@@ -3595,7 +3590,7 @@ own bytes -- the length bounded by `bounded_count` and by the bytes left
 -- and the second fills the placeholder; the reserve is not written, and
 the decoder places the data at its own address's alignment. `inspect`
 reads the record, a truncated or overlong one is a `DecodeError`, and
-`tests/opcode_tags.rs` pins both tags (`image-format.md`). A view or a
+`tests/opcode_tags.rs` pins the tag (`image-format.md`). A view or a
 `StringBuilder` is an ordinary instance whose slot holds the record, its
 class named as every shipped class is ("What the plan must handle"
 below).
@@ -3850,7 +3845,6 @@ stands; the shipped-class naming the first item needs is built.
   levels off its superclass chain); and the boot cost a larger kernel adds
   is measured ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the
   shipped world at boot").
-
 - **The bootstrap takes only builtins today.** `check_kernel_shape`
   (`interpreter/kernel.rs`) asserts one nested class per builtin and a
   superclass clause that is a bare kernel name; the plan lets `Kernel.ns`

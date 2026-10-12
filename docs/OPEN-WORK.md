@@ -1261,7 +1261,6 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   0; the version word in `build_load.rs`'s corruption sweep;
   `load --print-source` of an image `image::snapshot` wrote; and `run-corpus`
   refusing a row whose `send` is not unary.
-
   `a_module_shadowed_by_an_object_member_is_refused`
   (`crates/ns-cli/tests/run.rs`) asserts an empty stdout although its root
   has no initializer that could print, and

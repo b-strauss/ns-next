@@ -2607,7 +2607,6 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   allocates old into a heap that holds nothing young, as every reference
   loads; nothing between the bootstrap and the graph pass allocates, so the
   one tenure covers the bootstrap's objects.
-
 - **A refused commit or an exhausted reservation aborts the process**, as a
   failed `Vec` push does, through `std::alloc::handle_alloc_error` (decided
   with the user on 2026-10-03). Allocation stays infallible, so no hot path

@@ -255,7 +255,6 @@ named where does not allow (`image/shipped_names.rs`); (4) no program can name
 the mirror's class or `Top`: the VM mirror's class has no declaration and so no
 name, and the decoder refuses `Top`, `Activation` and every other shipped name
 in a position the rule does not allow;
-
 (5) the encoder refuses a graph reaching the mirror, its class, `Top` or their
 metaclasses, and `decide_factory` refuses to instantiate the mirror's class;
 (6) `SendMirror` has no wire tag (`core-library.md`, "The VM mirror is the

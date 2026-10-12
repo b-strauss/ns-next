@@ -946,8 +946,9 @@ and `build` refuse such a project alike, before anything runs, whether or not
 the application would instantiate the module; the encoder's refusal guards a
 `ResolvedModule` a host assembled past `resolve`. Before the walk the
 encoder also holds each module's root class to `modules::root_record_defect`
-("root object is not a class", "… is a metaclass, a level or a nested
-class", "… does not inherit what the root rule allows"), and refuses a root
+("root object is not a class", "… is a metaclass, a level, or a class with
+an enclosing object or a declaring class, such as a nested class", "… does
+not inherit what the root rule allows"), and refuses a root
 that is shipped. The loader holds the record the module section names to the
 same check and refuses what the encoder cannot write: a record that is not
 the module's own root class, as `ModuleRootNotItsRecord`, and a superclass
@@ -1117,12 +1118,15 @@ mirrors, so no program may name its class. A record under the retired
 activation body tag 9 is an unknown tag
 (`a_record_under_the_retired_activation_tag_is_refused`).
 
-**`NonBooleanReceiver` is private and no capability.** No source names it,
-and no public class accessor answers it, so it is no value and no
-superclass; a caught instance of it is an ordinary instance record whose
-class the image names as its header. Its class object, which a program
-reaches as that instance's `class`, is refused if a graph holds it, since
-it may not stand as a value.
+**`NonBooleanReceiver` is private and no capability, and the VM hands it
+out.** No source names it and no public class accessor answers it, but the
+VM signals its instances into a program, which catches one and reaches its
+class as `error class`; a program that runs must also build, so the rule
+lets a class the VM signals as a VM error (`ErrorClass::is_signalled`, every
+class of `types::ErrorClass`) stand as a value and a superclass, private or
+not. A caught instance is an ordinary instance record whose class the image
+names as its header, and its class object a value the graph may hold
+(`a_caught_non_boolean_receivers_class_round_trips_through_a_package`).
 
 **Futures in a graph: a resolved future is its value, an unresolved one a
 record of `Kernel FutureImplementation`.** `FutureImplementation` is the
@@ -1294,7 +1298,6 @@ otherwise require the thing the artifact was built to do without. It also
 makes checkable against the artifact itself what could otherwise be
 verified only by reading the encoder -- that a started image holds no
 platform and names nothing of the shipped world but the kernel.
-
 
 **One-way only. There is no text format that can be loaded back.** That would
 be a second encoder and decoder pair to keep in step with the binary one — the
@@ -1606,7 +1609,6 @@ and mutation and truncation tests for the module section, the shipped-name
 section, `FLAG_START`, the fingerprint and the retired tags and flag
 (`crates/ns-runtime/tests/image.rs`).
 
-
 ## The image under generations
 
 The decoder builds its objects in the object space ([memory.md](memory.md),
@@ -1783,16 +1785,18 @@ checked per position by the encoder and the decoder alike
 
 | Position | Allowed |
 |---|---|
-| a value (slot, register, element, root), a class as a value | a shipped class that is public or that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), and its metaclass |
+| a value (slot, register, element, root), a class as a value | a shipped class that is public, that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), or whose instances the VM signals as a VM error (`ErrorClass::is_signalled`: `NonBooleanReceiver` among the private ones), and its metaclass |
 | a superclass, `MIXIN_SHIPPED` | such a class, not its metaclass, but `Behavior`, `Class` and `Metaclass` |
 | a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
 | a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
 | `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only |
 
-It keeps the set the platform paths allowed -- `Top`, `Activation`,
-`FutureImplementation`, `NonBooleanReceiver` and the module roots are no
-value -- and keeps a future private class without a public accessor, a
-`File` say, unnamed. The mirror's class has no declaration and so no name.
+It keeps every capability out of a value -- `Top`, `Activation`,
+`FutureImplementation`, the module roots and their instances are no value,
+as no builtin class tag or platform path could name them either -- lets a
+program keep every class it can reach by running, the private
+`NonBooleanReceiver` included, and keeps a future private class without a
+public accessor, a `File` say, unnamed. The mirror's class has no declaration and so no name.
 Locks (3) and (4) of the mirror are this rule: the encoder names a shipped
 object by its declaration and refuses one the rule does not allow where it
 stands, and the decoder refuses the same, `Top` and `Activation` among
@@ -2097,7 +2101,6 @@ shipped world.
   refuses an image another binary wrote. The boot pays for it, about 3.7 ms
   a process start, measured ([execution.md](execution.md), "What the
   collections module cost"); how to take it back is open.
-
   Rejected: more builtin tags (a builtin is a class Rust needs a handle on),
   records relying on value semantics (a twin, not the canonical object),
   instances the loader supplies through accessors the image chooses, and
