@@ -1780,9 +1780,10 @@ would no longer reach a deployed artifact ([core-library.md](core-library.md),
 whole and in a fixed order, running only the binary's own code: after
 `wire_kernel_in` it evaluates every kernel class accessor not yet evaluated
 (today `Top`, `Activation`, `NonBooleanReceiver` and `FutureImplementation`),
-then instantiates `PlatformFactory` and `CollectionsFactory` through one
-factory, `usingVmMirror:kernel:`, and evaluates every class accessor of
-theirs, metaclasses and levels included. The instances live in one table,
+then instantiates `PlatformFactory` (`usingVmMirror:kernel:`) and
+`CollectionsFactory` (`usingKernel:`, since it needs no mirror and so is
+given none) and builds every class their roots declare, metaclasses and
+levels included. The instances live in one table,
 `Mutator::shipped_instances`, held as roots, and `moduleNamed:` becomes
 `moduleInstanceNamed:`, answering the canonical instance, so one collections
 module serving every platform becomes a guarantee of the VM; the platform's
@@ -1827,10 +1828,12 @@ tags 7 and 8, hash tags 0 and 2 to 6, and the builtin class tags as a whole;
 being a builtin stays a fact of Rust's and leaves the wire.
 
 **What becomes an ordinary record.** The platform is a record of class
-`CLASS_SHIPPED(PlatformFactory, Platform)` with no fields; it decodes to a
-value equal to the loading platform, since its lazy slots are no part of a
-value's state, and rebuilds them on demand through the canonical
-`PlatformFactory` instance. Its facets, a `Stopwatch`, a `List` and a `Map`
+`CLASS_SHIPPED(PlatformFactory, Platform)` like any instance, its lazy
+slots written as they stand; it decodes to a value equal to the loading
+platform, since lazy slots are no part of a value's state, and fills an
+empty one on demand through the canonical `PlatformFactory` instance. The
+decoder holds every record of a shipped class that is no builtin to its
+class's slot count, as it holds a platform path's instance today. Its facets, a `Stopwatch`, a `List` and a `Map`
 are records of their shipped classes. The program's module roots and the
 levels their clauses add become class records applying a `MIXIN_ROW`, their
 superclass `CLASS_SHIPPED(Kernel, Object)`, a `Value` level
@@ -1840,8 +1843,9 @@ and source, and its root section, `ModuleClasses`, `build_module_classes` and
 
 **The header carries the shipped world's fingerprint**, a `u64` after the
 flag byte: a hash over the shipped modules' sources, the names in
-`BuiltinClass::ALL`, the mirror's selectors and the lowering the shipped code
-is compiled with. A load whose binary computes another refuses the image
+`BuiltinClass::ALL` and the mirror's selectors. The lowering is not in it:
+`load` always compiles the shipped code with the optimized lowering, and an
+application built under the reference lowering carries its own code. A load whose binary computes another refuses the image
 before it reads anything else. It replaces retiring a builtin tag per removed
 class, and it closes a coupling no check covers today: a frame of a kernel
 method is reconciled against the loading binary's body of that method.
