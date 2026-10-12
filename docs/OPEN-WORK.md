@@ -37,15 +37,14 @@ Each has its own design and plan; the fifth sub-project is next --
 arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
 [core-library.md](design/core-library.md), "Planned: sub-project 5,
 `ByteArray`, `StringBuilder` and the views") but has no plan yet. It
-waits for **the naming of shipped classes in the image** (decided with the
-user on 2026-10-12): an image names every shipped class -- builtin,
-kernel or shipped-module class, and each level a `<:` clause adds -- by
-its module and its chain of nested class names, resolved by the loader
-before the graph is decoded, in place of the builtin class tags,
-`MIXIN_BUILTIN`, `HASHED_BUILTIN_CLASS` and the platform paths of classes
-(core-library.md, "What the plan must handle"). It has neither design nor
-plan yet, so the next session designs it, plans it and builds it, and
-then writes sub-project 5's plan. The decisions
+waits for **shipped names in the image** (decided with the user on
+2026-10-12, designed, no plan yet; [image-format.md](design/image-format.md),
+"Planned: shipped names in the image"): the bootstrap builds the whole
+shipped world, and an image names each shipped module instance, class,
+metaclass and level by module, declaration and kind, resolved by lookup
+before the graph, in place of the builtin class tags, `MIXIN_BUILTIN`, the
+platform paths and the module class tags. It is planned and built next,
+then sub-project 5's plan is written. The decisions
 and the scope are
 [core-library.md](design/core-library.md), "Planned: the kernel completed
 to Primordial Soup's core API".
@@ -498,6 +497,20 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   first: `verify_graph` never cross-checks a frame's `home` against its `kind`
   (`image/decode.rs`). [image-format.md](design/image-format.md), "Planned:
   suspend and resume".
+- **A running world's image is trusted** (2026-10-12): once shipped names
+  are built, a snapshot may hold frames of shipped code whose registers
+  hold the kernel, a module instance or an `Activation`, and a crafted
+  frame could pass one to the program's code, so such an image is loaded
+  only when its host decides to. A check over each body's dataflow, which
+  would let it be untrusted input like a started image, is undesigned.
+  [image-format.md](design/image-format.md), "Planned: shipped names in the
+  image".
+- **The cost of building the shipped world at boot**, should the start of a
+  release build measure too slow once shipped names are built: building a
+  shipped module on first demand through `shipped_module_instance`, or a
+  base image of the shipped world embedded at build time and decoded at
+  boot, names kept on the wire. [image-format.md](design/image-format.md),
+  "Planned: shipped names in the image".
 - **The debugger**: suspend, inspect, edit-and-continue at statement
   boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
   (a test-only `resume_unhandled_exceptions` hook stands in today). Blocked on

@@ -10,7 +10,9 @@
 > passes"), and a reified frame is an object record like every other
 > ("Frames are object records"). A load tenures everything once before
 > it decodes the graph, which it allocates old ("The image under
-> generations"). **Planned:** suspend and resume.
+> generations"). **Planned:** shipped names in the image, which replace the
+> builtin class tags, the platform paths and the module class tags; suspend
+> and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
 > `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
@@ -1734,6 +1736,160 @@ old space's bytes relocated on load, is the model this does not take.
   load is unchanged by the generations ([memory.md](memory.md), "The
   amplification bound of a rejected load").
 
+## Planned: shipped names in the image
+
+Would change: an image names every object the binary owns -- each shipped
+module's instance, each class its root declares, their metaclasses and the
+levels their `<:` clauses add -- by where it is declared, resolved against a
+shipped world the bootstrap builds whole, and the builtin class tags,
+`MIXIN_BUILTIN`, `CLASS_METACLASS`, the platform paths, `VALUE_PLATFORM`,
+`CLASS_MODULE`, `CLASS_MODULE_LEVEL` and every tag-named hash but the new one
+retire (decided with the user on 2026-10-12). It is built before sub-project
+5 of the kernel's completion, whose `StringBuilder`, typed arrays and
+`DataView` are ordinary kernel classes and two of them private, so neither a
+builtin tag nor a platform path could name them
+([core-library.md](core-library.md), "Planned: sub-project 5, `ByteArray`,
+`StringBuilder` and the views").
+
+**Why one mechanism.** The VM mirror is never in an image; every shipped
+module instance holds it or the kernel that does; every shipped class object
+reaches its module instance lexically. The whole shipped world is therefore
+the loader's, and an image can only name into it. Today it names in four
+coordinate systems -- a position in `BuiltinClass::ALL`, a path of sends from
+the platform replayed at load, an image-local module index and the platform
+singleton -- and each breaks on the next class that is neither a builtin nor
+handed out by the platform: a plain kernel class, a private one, the level a
+kernel mixin adds under a builtin. The coordinate system Newspeak itself
+provides is the lexical declaration tree of the shipped modules. Every
+shipped class is declared directly in its module's root, so a name is a pair:
+the module and the declaration. Rebuilding a shipped class as a record was
+rejected because Rust compares class objects by identity (the builtin field,
+the exception classes, `resolve.rs`) and `moduleNamed:` compiles fresh mixins
+on each call: a name has to resolve to the loading world's own, canonical
+object, as Java's serialization re-resolves an enum constant by name. Naming
+by a path from the platform was rejected because the loader sends the
+selectors the image chose before it decodes the graph, and because it reaches
+only what the platform hands out. Putting the shipped world into the image,
+as Primordial Soup's snapshot does, was rejected because it makes every image
+as trusted as the binary: an untrusted file holding the mirror runs every
+leaf, so locks (3) to (6) of the mirror would go, and a fix to the kernel
+would no longer reach a deployed artifact ([core-library.md](core-library.md),
+"The VM mirror is the whole Rust boundary").
+
+**The shipped world is a function of the binary.** The bootstrap builds it
+whole and in a fixed order, running only the binary's own code: after
+`wire_kernel_in` it evaluates every kernel class accessor not yet evaluated
+(today `Top`, `Activation`, `NonBooleanReceiver` and `FutureImplementation`),
+then instantiates `PlatformFactory` and `CollectionsFactory` through one
+factory, `usingVmMirror:kernel:`, and evaluates every class accessor of
+theirs, metaclasses and levels included. The instances live in one table,
+`Mutator::shipped_instances`, held as roots, and `moduleNamed:` becomes
+`moduleInstanceNamed:`, answering the canonical instance, so one collections
+module serving every platform becomes a guarantee of the VM; the platform's
+lazy `collections` slot takes it from there. A second table maps (module,
+declaration, kind) to the object, the kind being the module instance, a
+class, its metaclass, the level a clause adds by the clause's index, or that
+level's metaclass. Every name resolves to the object the bootstrap built, so
+no comparison by identity in Rust changes. The bootstrap draws no identity
+hash while it builds them, as today, so every hash a run draws stays the same
+under `run` and `load`. Building `CollectionsFactory` at every boot costs its
+compilation, measured at about 0.28 ms on first use
+([execution.md](execution.md)), and some sixty class objects; the plan
+measures the start of a release build before and after. Two ways back exist
+if the measurement asks for them, neither touching the format: building a
+module on first demand through the same `shipped_module_instance`, and a
+base image of the shipped world embedded at build time and decoded at boot,
+with names kept on the wire.
+
+**The shipped-name section** replaces the platform path section, just before
+the graph: a `u32` count, then per entry the module's symbol, the
+declaration's symbol (for the root, the module's own name), the kind as a
+`u8` and, for a level or a level's metaclass, the clause's `u32` index. Each
+name the image uses appears once. The loader resolves the whole section
+before the graph by table lookup alone and sends nothing; an unknown name, a
+name given twice, an index past the declaration's clauses and more entries
+than a fixed maximum are refused. In the graph, a reference is a tag and a
+`u32` index into the section -- five bytes, against two for today's builtin
+tag -- so an image of millions of small records pays for each name once and
+resolves each reference by indexing:
+
+| Tag | Number | Followed by | Replaces |
+|---|---|---|---|
+| `CLASS_SHIPPED` | class tag 8 | an entry of a class, a metaclass or a level | `CLASS_BUILTIN`, `CLASS_METACLASS`, `CLASS_PLATFORM_PATH`, `CLASS_MODULE`, `CLASS_MODULE_LEVEL` |
+| `MIXIN_SHIPPED` | mixin reference 2 | an entry of a class or a level, whose mixin the class record applies | `MIXIN_BUILTIN` |
+| `VALUE_SHIPPED_MODULE` | value tag 11 | an entry of a module instance | `VALUE_PLATFORM`, `VALUE_PLATFORM_PATH` |
+| `HASHED_SHIPPED` | hash tag 7 | an entry | `HASHED_BUILTIN_CLASS`, `HASHED_PLATFORM`, `HASHED_METACLASS`, `HASHED_PLATFORM_PATH`, `HASHED_MODULE_CLASS`, `HASHED_MODULE_LEVEL` |
+
+A class as a value stays `VALUE_CLASS_TAG` with a class reference, and a
+`<:` clause's message frame names its level by an ordinary class reference.
+Retired, never reused: class tags 0, 4, 5, 6 and 7, mixin reference 1, value
+tags 7 and 8, hash tags 0 and 2 to 6, and the builtin class tags as a whole;
+being a builtin stays a fact of Rust's and leaves the wire.
+
+**What becomes an ordinary record.** The platform is a record of class
+`CLASS_SHIPPED(PlatformFactory, Platform)` with no fields; it decodes to a
+value equal to the loading platform, since its lazy slots are no part of a
+value's state, and rebuilds them on demand through the canonical
+`PlatformFactory` instance. Its facets, a `Stopwatch`, a `List` and a `Map`
+are records of their shipped classes. The program's module roots and the
+levels their clauses add become class records applying a `MIXIN_ROW`, their
+superclass `CLASS_SHIPPED(Kernel, Object)`, a `Value` level
+`MIXIN_SHIPPED(Kernel, Value)`; the module section keeps each module's origin
+and source, and its root section, `ModuleClasses`, `build_module_classes` and
+`encode_root_class` go.
+
+**The header carries the shipped world's fingerprint**, a `u64` after the
+flag byte: a hash over the shipped modules' sources, the names in
+`BuiltinClass::ALL`, the mirror's selectors and the lowering the shipped code
+is compiled with. A load whose binary computes another refuses the image
+before it reads anything else. It replaces retiring a builtin tag per removed
+class, and it closes a coupling no check covers today: a frame of a kernel
+method is reconciled against the loading binary's body of that method.
+`FORMAT_VERSION` stays 1; images are disposable ("Layout").
+
+**What may be named where** is a static rule, computed once per boot from the
+declarations and checked per position by the encoder and the decoder alike:
+
+| Position | Allowed |
+|---|---|
+| a value (slot, register, element), a superclass, `MIXIN_SHIPPED` | a shipped class that is public or that a recognized public class accessor answers (`MixinMethod::class_accessor`), and its metaclass |
+| a record's class | any shipped class but a module's root; `Activation` only on a frame record, `FutureImplementation` only on a future's |
+| a frame's `current_class`, a class record's declaring class | any shipped class or level |
+| `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only |
+
+It reproduces the set the platform paths allow today -- `Top`, `Activation`,
+`FutureImplementation`, `NonBooleanReceiver` and the module roots are no
+value -- and keeps a future private class without a public accessor, a
+`File` say, unnamed. The mirror's class has no declaration and so no name.
+Locks (3) and (4) of the mirror become this rule: the encoder names a shipped
+object by its declaration and refuses one the rule does not allow where it
+stands, and the decoder refuses the same, `Top` among them, in place of
+refusing builtin tags 14 and 15.
+
+**A started image names only the kernel.** Before `main:args:` a program can
+reach nothing of `PlatformFactory` or `CollectionsFactory`, so the decoder
+refuses an image with `FLAG_START` whose shipped-name section names another
+module, and the encoder refuses to package one. Today only the encoder keeps
+the platform out of a started image, and the decoder accepts a crafted
+`VALUE_PLATFORM` there.
+
+**A running world's image is trusted.** A started image has neither frames
+nor module instances and stays untrusted input. An image of a running world
+-- a snapshot today, a suspended one later ("Planned: suspend and resume")
+-- may hold frames of shipped code whose registers legitimately hold the
+kernel, a module instance or an `Activation`, and a crafted frame could pass
+one to the program's code. Such an image is loaded only when its host
+decides to, and decoding it still never panics; a check over each body's
+dataflow that would close the gap is open ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**What goes.** `image/platform_paths.rs`, the platform path phase of `load`
+(the sends before the graph, and the tenure that separated them from it,
+which stays as the tenure before the graph), the platform argument of
+`package` and `snapshot`, and `encode::builtin_class_tag`'s numbering. The
+platform path tests of `tests/image.rs` become tests of shipped names, the
+tag tests of `tests/opcode_tags.rs` take the new and retired numbers, and
+`inspect`'s snapshots are written anew. No golden's outcome changes.
+
 ## Planned: suspend and resume
 
 An image cannot be taken mid-execution, and the obstacle is control flow rather
@@ -2001,6 +2157,17 @@ builtins.
   count once, so the bound of a rejected load is the largest of the per-record
   and per-value ratios rather than their sum; the wire stays id-based and
   records carry no size field.
+- **An image names the shipped world by declaration** (decided with the
+  user on 2026-10-12, not yet built; "Planned: shipped names in the
+  image"): the bootstrap builds every shipped module instance and class
+  whole, and an image names one by module, declaration and kind through a
+  section resolved by lookup before the graph; the platform and the
+  program's module roots become ordinary records; a fingerprint of the
+  shipped world in the header refuses an image another binary wrote.
+  Rejected: more builtin tags (a builtin is a class Rust needs a handle on),
+  records relying on value semantics (a twin, not the canonical object),
+  instances the loader supplies through accessors the image chooses, and
+  the shipped world in the image (every image as trusted as the binary).
 - **A string record under the `Symbol` class is refused**
   (`StringOfSymbolClass`, 2026-10-03): with `Symbol` a subclass of `String`
   and a symbol told from a string by its class alone, such a record would be

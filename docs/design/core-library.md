@@ -2691,7 +2691,11 @@ the table has two entries. The design as decided:
 #### Platform paths in the image (plan 1)
 
 **Built** (`image/platform_paths.rs`; [image-format.md](image-format.md),
-"Verification"). The design as decided:
+"Verification"); to be replaced by naming every shipped object by its
+declaration ([image-format.md](image-format.md), "Planned: shipped names in
+the image"), under which a shipped class may be named as a value only if it
+is public or a recognized public class accessor answers it -- the rule an
+author of a new shipped module keeps. The design as decided:
 
 An artifact names a shipped object by its **path of public members from
 the platform**: the empty path is the platform, `collections` its
@@ -3542,8 +3546,8 @@ barrier is involved. `describe` answers "a ByteArray of 3", as an `Array`
 describes itself.
 
 **The image** carries a `ByteArray` as the record `OBJECT_BYTE_ARRAY`, the
-next free object tag (11): a u32 length, then the bytes. `ByteArray` is
-builtin class tag 40. The decoder's first pass sizes the record from its
+next free object tag (11): a u32 length, then the bytes, its class named
+as every shipped class is. The decoder's first pass sizes the record from its
 own bytes -- the length bounded by `bounded_count` and by the bytes left
 -- and the second fills the placeholder; the reserve is not written, and
 the decoder places the data at its own address's alignment. `inspect`
@@ -3782,23 +3786,25 @@ formatting and the accessor tests cover the new members as they stand.
 Found on 2026-10-12 while the plan was being prepared, in the code as it
 stands; the plan is written after the shipped-class naming below is built.
 
-- **An image names every shipped class by where it is declared** (decided
-  with the user on 2026-10-12): a new class reference names the shipped
-  module and the chain of nested class names, and a level a `<:` clause
-  adds by its position, which the loader resolves before the graph is
-  decoded, as it resolves platform paths, so the decoder still runs no
-  code. It replaces the builtin class tags, `MIXIN_BUILTIN`,
-  `HASHED_BUILTIN_CLASS` and the platform paths of classes on the wire;
-  platform paths stay for the shipped instances, the program's own classes
-  stay `CLASS_MODULE` and `CLASS_MODULE_LEVEL`, and `Top` is refused by
-  name. It is its own design and plan, built before this sub-project
-  ([image-format.md](image-format.md); [OPEN-WORK.md](../OPEN-WORK.md),
-  "Next"). Without it a program holding a `Float32Array`, a `DataView` or
-  a `StringBuilder` could not be written to an image: a shipped class is
-  named by a builtin tag or by a platform path over public members, and a
-  plain kernel class has neither, a private one never. Making the sixteen
+- **An image names every shipped object by where it is declared**
+  (decided with the user on 2026-10-12; [image-format.md](image-format.md),
+  "Planned: shipped names in the image"): the bootstrap builds every
+  shipped module instance and class whole, metaclasses and levels
+  included, and an image names one by module, declaration and kind,
+  resolved by lookup before the graph is decoded, so the decoder runs no
+  code. It replaces the builtin class tags, `MIXIN_BUILTIN`, the platform
+  paths and the module class tags, and is its own plan, built before this
+  sub-project ([OPEN-WORK.md](../OPEN-WORK.md), "Next"). Without it a
+  program holding a `Float32Array`, a `DataView` or a `StringBuilder`
+  could not be written to an image: a shipped class is named today by a
+  builtin tag or by a platform path over public members, and a plain
+  kernel class has neither, a private one never. Making the sixteen
   classes builtins was rejected: a builtin is a class Rust needs a handle
-  on, not a class the image needs a name for.
+  on, not a class the image needs a name for. With it, this sub-project's
+  classes are named like any shipped class, `LittleEndianDataView`,
+  `BigEndianDataView` and `IndexedCollection` as a record's class or a
+  frame's but never as a value, and the eager boot builds them and the
+  level `IndexedCollection` adds.
 - **The bootstrap takes only builtins today.** `check_kernel_shape`
   (`interpreter/kernel.rs`) asserts one nested class per builtin and a
   superclass clause that is a bare kernel name; the plan lets `Kernel.ns`
