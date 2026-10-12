@@ -298,10 +298,12 @@ asks for nothing to be decided (a long line left long).
     So does one trailing the chain's receiver, every link then on a
     continuation line of its own (`^a /// why`, `+ b`, `+ c.`). A keyword
     message after a receiver whose line ends with a comment, or led by a
-    comment on a line of its own, starts a continuation line at +4 as well,
-    its further keywords at +4 and its blocks indented from that line: at
-    the statement's indentation it would read as a new statement sending
-    to the implicit receiver. A comment trailing the first argument of a
+    comment on a line of its own, starts a continuation line at +4 as well:
+    at the statement's indentation it would read as a new statement sending
+    to the implicit receiver. Without a block argument it is broken, each
+    further keyword on its own line at +4; one hugging its blocks stays on
+    that line when it fits (`ifTrue: [a] ifFalse: [b].`), else hugs there,
+    its blocks indented from that line. A comment trailing the first argument of a
     broken keyword message stands with the keywords after it, at +4.
     ```
         current = 16r5C /// \
