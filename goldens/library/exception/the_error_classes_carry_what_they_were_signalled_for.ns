@@ -11,8 +11,7 @@ class TheErrorClassesCarryWhatTheyWereSignalledFor = Object new () (
     transcript
         show: ([(kernel ArgumentError value: 3) signal] on: kernel ArgumentError do: [:error |
           error argument.
-        ])
-            printString;
+        ]) printString;
         newLine.
     transcript
         show: ([(kernel CannotReturn result: 4) signal] on: Error do: [:error | error result])
@@ -21,8 +20,7 @@ class TheErrorClassesCarryWhatTheyWereSignalledFor = Object new () (
     transcript
         show: ([(kernel CannotInstantiate behavior: Error) signal] on: Error do: [:error |
           error behavior.
-        ])
-            printString;
+        ]) printString;
         newLine.
     transcript
         show: ([(kernel ArgumentError value: 3) signal] on: Error do: [:error | error description]);

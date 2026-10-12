@@ -21,8 +21,7 @@ class AMapChangedWhileIteratedSignals = Object new () (
     transcript
         show: ([map keysAndValuesDo: [:key :value | map removeKey: key]] on: Modified do: [:error |
           #removed.
-        ])
-            printString;
+        ]) printString;
         newLine.
     map:: collections Map new.
     map

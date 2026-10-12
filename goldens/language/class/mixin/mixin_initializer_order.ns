@@ -67,8 +67,7 @@ class MixinInitializerOrder = Object new (
   ) ()
 
   class Applied from: argument
-      = Base withBase: (outer MixinInitializerOrder evaluated: 'ms'
-          with: argument)
+      = Base withBase: (outer MixinInitializerOrder evaluated: 'ms' with: argument)
       <: First withFirst: (outer MixinInitializerOrder evaluated: 'm1' with: argument)
       <: Second withSecond: (outer MixinInitializerOrder evaluated: 'm2' with: argument) (
     |

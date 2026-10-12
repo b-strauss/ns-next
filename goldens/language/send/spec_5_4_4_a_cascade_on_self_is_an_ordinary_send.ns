@@ -33,8 +33,7 @@ class Spec544ACascadeOnSelfIsAnOrdinarySend = Object new () (
     transcript
         show: ([Holder new cascaded] on: kernel MessageNotUnderstood do: [:error |
           error message selector.
-        ])
-            printString;
+        ]) printString;
         newLine.
   )
 )

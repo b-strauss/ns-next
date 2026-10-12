@@ -17,8 +17,7 @@ class AnExceptionInAHandlerSearchesFurtherOut = Object new () (
           [Exception signal: 'first'] on: Exception do: [:e |
             (Exception signal: 'second') , ' resumed'.
           ].
-        ] on: Exception
-            do: [:e | e resume: 'outer']);
+        ] on: Exception do: [:e | e resume: 'outer']);
         newLine.
   )
 )

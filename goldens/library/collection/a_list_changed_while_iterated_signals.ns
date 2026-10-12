@@ -27,8 +27,7 @@ class AListChangedWhileIteratedSignals = Object new () (
     transcript
         show: ([list do: [:each | list add: each]] on: Modified do: [:error |
           error collection == list.
-        ])
-            printString;
+        ]) printString;
         newLine.
     list:: List withAll: {1}.
     transcript

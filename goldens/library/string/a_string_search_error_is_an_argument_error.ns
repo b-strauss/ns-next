@@ -11,8 +11,7 @@ class AStringSearchErrorIsAnArgumentError = Object new () (
     transcript
         show: ([text indexOf: 'o' startingAt: 13] on: kernel ArgumentError do: [:error |
           error argument.
-        ])
-            printString;
+        ]) printString;
         newLine.
     transcript
         show: ([text indexOf: 'o' startingAt: 0] on: Error do: [:error | error messageText]);
@@ -20,8 +19,7 @@ class AStringSearchErrorIsAnArgumentError = Object new () (
     transcript
         show: ([text lastIndexOf: 'o' startingAt: 13] on: kernel ArgumentError do: [:error |
           error argument.
-        ])
-            printString;
+        ]) printString;
         newLine.
     transcript
         show: ([text indexOf: 3] on: Error do: [:error | error messageText]);
@@ -36,8 +34,7 @@ class AStringSearchErrorIsAnArgumentError = Object new () (
     transcript
         show: ([String withAll: {104. 55296}] on: kernel ArgumentError do: [:error |
           error argument.
-        ])
-            printString;
+        ]) printString;
         newLine.
     transcript
         show: ([String withAll: {104. 55296}] on: Error do: [:error | error messageText]);

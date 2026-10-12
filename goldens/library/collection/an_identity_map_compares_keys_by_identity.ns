@@ -60,8 +60,7 @@ class AnIdentityMapComparesKeysByIdentity = Object new () (
     transcript
         show: ([identity at: #missing putReplace: 1] on: collections NotFound do: [:error |
           error element.
-        ])
-            printString;
+        ]) printString;
         newLine.
     transcript
         show: (identity at: first ifAbsentPutVal: 99) printString;

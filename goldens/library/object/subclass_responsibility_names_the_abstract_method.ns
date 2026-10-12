@@ -49,8 +49,7 @@ class SubclassResponsibilityNamesTheAbstractMethod = Object new () (
     transcript
         show: ([Circle new subclassResponsibility] on: kernel MessageNotUnderstood do: [:error |
           #protected.
-        ])
-            printString;
+        ]) printString;
         newLine.
   )
 )

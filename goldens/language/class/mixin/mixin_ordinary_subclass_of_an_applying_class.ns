@@ -63,8 +63,7 @@ class MixinOrdinarySubclassOfAnApplyingClass = Object new (
   ) ()
 
   class Applied from: argument
-      = Base withBase: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'ms'
-          with: argument)
+      = Base withBase: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'ms' with: argument)
       <: First withFirst: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'm1'
           with: argument)
       <: Second withSecond: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'm2'

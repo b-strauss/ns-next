@@ -869,23 +869,22 @@ class CD usingPlatform: platform = (
             sibling color: #red.
             child:: childParent.
             childParent:: child parent.
-          ]
-              ifFalse: [
-                (sibling right isNil or: [sibling right color = #black]) ifTrue: [
-                  /// Case 3
-                  sibling left color: #black.
-                  sibling color: #red.
-                  rightRotate: sibling.
-                  sibling:: childParent right.
-                ].
-                /// Case 4
-                sibling color: childParent color.
-                childParent color: #black.
-                sibling right notNil ifTrue: [sibling right color: #black].
-                leftRotate: childParent.
-                child:: root.
-                childParent:: child parent.
-              ].
+          ] ifFalse: [
+            (sibling right isNil or: [sibling right color = #black]) ifTrue: [
+              /// Case 3
+              sibling left color: #black.
+              sibling color: #red.
+              rightRotate: sibling.
+              sibling:: childParent right.
+            ].
+            /// Case 4
+            sibling color: childParent color.
+            childParent color: #black.
+            sibling right notNil ifTrue: [sibling right color: #black].
+            leftRotate: childParent.
+            child:: root.
+            childParent:: child parent.
+          ].
         ] ifFalse: [
           |
             sibling
@@ -906,23 +905,22 @@ class CD usingPlatform: platform = (
             sibling color: #red.
             child:: childParent.
             childParent:: child parent.
-          ]
-              ifFalse: [
-                (sibling left isNil or: [sibling left color = #black]) ifTrue: [
-                  /// Case 3
-                  sibling right color: #black.
-                  sibling color: #red.
-                  leftRotate: sibling.
-                  sibling:: childParent left.
-                ].
-                /// Case 4
-                sibling color: childParent color.
-                childParent color: #black.
-                sibling left notNil ifTrue: [sibling left color: #black].
-                rightRotate: childParent.
-                child:: root.
-                childParent:: child parent.
-              ].
+          ] ifFalse: [
+            (sibling left isNil or: [sibling left color = #black]) ifTrue: [
+              /// Case 3
+              sibling right color: #black.
+              sibling color: #red.
+              leftRotate: sibling.
+              sibling:: childParent left.
+            ].
+            /// Case 4
+            sibling color: childParent color.
+            childParent color: #black.
+            sibling left notNil ifTrue: [sibling left color: #black].
+            rightRotate: childParent.
+            child:: root.
+            childParent:: child parent.
+          ].
         ].
       ].
       child notNil ifTrue: [child color: #black].

@@ -3895,11 +3895,10 @@ class Kernel vmMirror: theMirror = Object <: Value (
         ]) ifTrue: [
           target at: targetCursor put: (source at: leftCursor).
           leftCursor:: leftCursor + 1.
-        ]
-            ifFalse: [
-              target at: targetCursor put: (source at: rightCursor).
-              rightCursor:: rightCursor + 1.
-            ].
+        ] ifFalse: [
+          target at: targetCursor put: (source at: rightCursor).
+          rightCursor:: rightCursor + 1.
+        ].
         targetCursor:: targetCursor + 1.
       ].
     )
