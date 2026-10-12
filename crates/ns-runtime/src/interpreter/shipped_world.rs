@@ -360,10 +360,10 @@ fn push_class<'gc>(
             ..Positions::FRAME_CLASS_ONLY
         },
     });
-    for level in crate::image::encode::root_levels(heap, class) {
+    for level in own_levels(heap, class) {
         let applied = heap
             .class_applied_origin(level)
-            .expect("internal: root_levels answers only applied levels");
+            .expect("internal: own_levels answers only applied levels");
         let index = u32::try_from(applied.index)
             .expect("internal: a shipped declaration has fewer than 2^32 clauses");
         entries.push(ShippedEntry {
@@ -377,6 +377,36 @@ fn push_class<'gc>(
             positions: Positions::FRAME_CLASS_ONLY,
         });
     }
+}
+
+/// The levels `class`'s own `<:` clauses added, lowest first -- the order
+/// the clauses are written in, and the order their names number them by
+/// clause.
+///
+/// Walked down the superclass chain from `class` for as long as each class
+/// is a level one of `class`'s own clauses added -- the applying declaration
+/// is `class`'s mixin itself, not merely a mixin applied somewhere.
+fn own_levels<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) -> Vec<ClassReference<'gc>> {
+    let Some(mixin) = heap
+        .class_application(class)
+        .map(|application| application.mixin.clone())
+    else {
+        return Vec::new();
+    };
+    let mut levels = Vec::new();
+    let mut current = heap.class_superclass(class);
+    while let Some(level) = current {
+        let is_own_level = heap
+            .class_applied_origin(level)
+            .is_some_and(|applied| Rc::ptr_eq(&applied.declaration, &mixin));
+        if !is_own_level {
+            break;
+        }
+        levels.push(level);
+        current = heap.class_superclass(level);
+    }
+    levels.reverse();
+    levels
 }
 
 /// The names of the classes a public method of `root` or of any class it

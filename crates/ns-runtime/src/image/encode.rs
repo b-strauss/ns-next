@@ -14,7 +14,6 @@ use crate::types::{
 };
 use crate::{ArbitraryInteger, Mutator};
 
-use super::modules::{ModuleClass, ModuleClasses};
 use super::opcodes::*;
 use super::shipped_names::{NamePosition, ShippedKind, ShippedName};
 use super::{mixins, symbols};
@@ -234,50 +233,8 @@ impl CodeIds {
     }
 }
 
-/// Explicit wire tags for `BuiltinClass` -- never `as u8` on the enum,
-/// whose declaration order is not a wire format. The retired numbers are
-/// listed in `opcodes.rs` (`RETIRED_BUILTIN_CLASS_TAGS`).
-pub fn builtin_class_tag(kind: BuiltinClass) -> u8 {
-    match kind {
-        BuiltinClass::Object => 0,
-        BuiltinClass::Boolean => 1,
-        BuiltinClass::True => 2,
-        BuiltinClass::False => 3,
-        BuiltinClass::Integer => 4,
-        BuiltinClass::Float => 5,
-        BuiltinClass::String => 6,
-        BuiltinClass::Symbol => 7,
-        BuiltinClass::Array => 9,
-        BuiltinClass::UndefinedObject => 11,
-        BuiltinClass::Closure => 12,
-        BuiltinClass::VmMirror => 14,
-        BuiltinClass::Top => 15,
-        BuiltinClass::Value => 16,
-        BuiltinClass::Number => 17,
-        BuiltinClass::Behavior => 20,
-        BuiltinClass::Class => 21,
-        BuiltinClass::Metaclass => 22,
-        BuiltinClass::Activation => 23,
-        BuiltinClass::Exception => 24,
-        BuiltinClass::Error => 25,
-        BuiltinClass::MessageNotUnderstood => 26,
-        BuiltinClass::Message => 27,
-        BuiltinClass::Halt => 28,
-        BuiltinClass::FutureImplementation => 30,
-        BuiltinClass::LargeInteger => 31,
-        BuiltinClass::ArgumentError => 32,
-        BuiltinClass::CannotReturn => 33,
-        BuiltinClass::NonBooleanReceiver => 34,
-        BuiltinClass::CannotInstantiate => 35,
-        BuiltinClass::Proxy => 36,
-        BuiltinClass::Future => 37,
-        BuiltinClass::Collection => 38,
-        BuiltinClass::Fraction => 39,
-    }
-}
-
-/// Explicit wire tags for `CodeKind`, for the same reason as
-/// `builtin_class_tag`.
+/// Explicit wire tags for `CodeKind` -- never `as u8` on the enum, whose
+/// declaration order is not a wire format.
 pub fn code_kind_tag(kind: CodeKind) -> u8 {
     match kind {
         CodeKind::Method => 0,
@@ -285,132 +242,6 @@ pub fn code_kind_tag(kind: CodeKind) -> u8 {
         CodeKind::Initializer => 2,
         CodeKind::SuperclassClause => 3,
         CodeKind::SuperclassMessage => 4,
-    }
-}
-
-/// A module's root class object, which `load` rebuilds *before* the object
-/// graph (the graph's `CLASS_MODULE` tag names it, so it has to exist by
-/// then). Everything else about it comes from the first row of its module's
-/// tree in the mixin table: this section, one per module in the module
-/// section, carries the one thing a declaration does not determine, the
-/// class it inherits from -- its superclass, and the levels its `<:` clauses
-/// (`newspeak-spec.pdf` §6.2) stack on that superclass.
-///
-/// Written as a builtin-class tag, behind a presence flag that is always
-/// set, rather than as a general class
-/// tag, because the general form names an object-table id and the object
-/// table is not decoded yet. That costs nothing: the root rule
-/// (`resolver::root_clause_defect`) lets a root inherit only `Object` or
-/// `Value`, and `Mutator::load_root_class` builds every root over one of
-/// them, so a builtin tag names every superclass this runtime builds. A root
-/// class inheriting from a *user* class is refused here rather than written
-/// wrongly.
-///
-/// The root's one permitted `<:` clause, `Value` over `Object`, is written
-/// the same way: after the superclass, a count and, lowest level first, each
-/// level's clause position in the root's row and the builtin its clause
-/// named. A root
-/// whose clauses the rule forbids is built with no level at all, but never
-/// reaches here: `encode_describing` refuses it first, and the decoder
-/// refuses any level but that one (`decode::decode_root_section`).
-pub fn encode_root_class<'gc>(
-    heap: &Heap<'gc>,
-    writer: &mut Writer,
-    root_class: ClassReference<'gc>,
-) -> Result<(), String> {
-    if !heap.is_class(root_class) {
-        return Err("image encoding's root object is not a class".to_string());
-    }
-    let levels = root_levels(heap, root_class);
-    let lowest = levels.first().copied().unwrap_or(root_class);
-    // A root inheriting from nothing is refused as well: every root this
-    // runtime builds inherits `Object` or `Value`, and the decoder refuses a
-    // section that names no superclass (`DecodeError::RootWithoutSuperclass`).
-    let Some(superclass) = heap.class_superclass(lowest) else {
-        return Err(
-            "image encoding cannot serialize a root class that inherits from nothing: \
-             a module's root class inherits Object or Value"
-                .to_string(),
-        );
-    };
-    let Some(kind) = heap.class_builtin(superclass) else {
-        return Err(
-            "image encoding cannot serialize a root class whose superclass is a \
-             user-defined class: the format names the root's superclass by builtin \
-             tag, decoded before the object table exists"
-                .to_string(),
-        );
-    };
-    writer.write_boolean(true);
-    writer.write_u8(builtin_class_tag(kind));
-    writer.write_u32(u32_field("root class level count", levels.len()));
-    for level in levels {
-        let applied = heap
-            .class_applied_origin(level)
-            .expect("internal: root_levels answers only applied levels");
-        writer.write_u32(u32_field("mixin application clause index", applied.index));
-        writer.write_u8(builtin_class_tag(named_builtin(&applied)?));
-    }
-    Ok(())
-}
-
-/// The levels the root class's own `<:` clauses added, lowest first -- the
-/// order the clauses are written in, and the order the module's root section
-/// lists them in. A class tag names one by its module and its position here
-/// (`CLASS_MODULE_LEVEL`): like the root class, a root level exists before
-/// the graph does, so the graph never carries it as a record.
-///
-/// Walked down the superclass chain from the root for as long as each class
-/// is a level one of the root's own clauses added -- the applying declaration
-/// is the root's mixin itself, not merely a mixin applied somewhere.
-pub fn root_levels<'gc>(
-    heap: &Heap<'gc>,
-    root_class: ClassReference<'gc>,
-) -> Vec<ClassReference<'gc>> {
-    let Some(root_mixin) = heap
-        .class_application(root_class)
-        .map(|application| application.mixin.clone())
-    else {
-        return Vec::new();
-    };
-    let mut levels = Vec::new();
-    let mut current = heap.class_superclass(root_class);
-    while let Some(class) = current {
-        let is_root_level = heap
-            .class_applied_origin(class)
-            .is_some_and(|applied| Rc::ptr_eq(&applied.declaration, &root_mixin));
-        if !is_root_level {
-            break;
-        }
-        levels.push(class);
-        current = heap.class_superclass(class);
-    }
-    levels.reverse();
-    levels
-}
-
-/// The builtin a module root's level's `<:` clause named, as the root
-/// section can name it: a builtin a program can name at all. `Top`, the VM
-/// mirror's class, `Activation` and `FutureImplementation` are refused here
-/// because the decoder refuses their tags in a root section
-/// (`decode::read_program_builtin_class`), so writing one would produce an
-/// image nothing can load; no source can name any of them.
-fn named_builtin(applied: &crate::mixin::AppliedClause) -> Result<BuiltinClass, String> {
-    match applied.named_builtin {
-        Some(
-            BuiltinClass::Top
-            | BuiltinClass::VmMirror
-            | BuiltinClass::Activation
-            | BuiltinClass::FutureImplementation,
-        )
-        | None => Err(format!(
-            "image encoding cannot serialize a level that `<:` clause {} of class `{}` added: \
-             it applies a mixin that is neither part of any module the image carries nor a \
-             builtin class a program can name",
-            applied.index + 1,
-            applied.declaration.name
-        )),
-        Some(kind) => Ok(kind),
     }
 }
 
@@ -919,23 +750,6 @@ fn applies_a_shipped_mixin<'gc>(heap: &Heap<'gc>, class: ClassReference<'gc>) ->
     })
 }
 
-/// Whether `object` is a carried module's root class, one of its levels, or
-/// the metaclass of either: the class objects `load` rebuilds from the mixin
-/// table and the module section before the graph is decoded, which a class
-/// tag names by module index (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
-/// `CLASS_METACLASS`). None of them exists because the graph says so, so
-/// none is a record.
-fn is_module_class<'gc>(
-    heap: &Heap<'gc>,
-    object: ObjectReference<'gc>,
-    modules: &ModuleClasses<'gc>,
-) -> bool {
-    heap.is_class(object)
-        && modules
-            .find(heap.class_this_class(object).unwrap_or(object))
-            .is_some()
-}
-
 /// Why the image cannot carry `object` when it is a class object compiled
 /// from shipped source that no shipped name names: its code and layout
 /// belong to the loading binary, and only the shipped world's own objects
@@ -1018,10 +832,11 @@ impl UsedNames {
 }
 
 /// Every heap object (instances, strings, symbols, arrays, closures,
-/// reified frames, and the class objects that are neither shipped nor a
-/// carried module's) reachable from the roots, in discovery order, and the
-/// shipped names it reached. A shipped object is never entered: the loading
-/// world has it, so a name of the shipped-name section stands for it.
+/// reified frames, and the class objects that are not shipped, the carried
+/// modules' root classes among them) reachable from the roots and the
+/// module roots, in discovery order, and the shipped names it reached. A
+/// shipped object is never entered: the loading world has it, so a name of
+/// the shipped-name section stands for it.
 pub struct GraphTable<'gc> {
     objects: Vec<ObjectReference<'gc>>,
     object_ids: HashMap<usize, u32>,
@@ -1035,12 +850,10 @@ pub struct GraphTable<'gc> {
 
 /// What the graph walk resolves an object against before it enters it: the
 /// shipped world's entries by object (`ShippedWorld::index_by_object`) and
-/// by mixin (`ShippedWorld::index_by_mixin`), the carried modules' classes
-/// and the VM mirror.
+/// by mixin (`ShippedWorld::index_by_mixin`), and the VM mirror.
 struct Named<'a, 'gc> {
     by_object: &'a HashMap<usize, usize>,
     by_mixin: &'a HashMap<usize, usize>,
-    modules: &'a ModuleClasses<'gc>,
     mirror: Option<ObjectReference<'gc>>,
 }
 
@@ -1053,7 +866,18 @@ impl<'gc> GraphTable<'gc> {
     /// failing. The order is exactly what the recursive formulation would
     /// produce (children pushed in reverse so they pop in order), which is
     /// what makes the encoding canonical.
-    fn build(heap: &Heap<'gc>, roots: &[Value<'gc>], named: &Named<'_, 'gc>) -> GraphTable<'gc> {
+    ///
+    /// The carried modules' root classes are walked after the roots, as if
+    /// they followed them: a root class the roots reach keeps the id the
+    /// walk gives it there, and one they do not reach -- a module only
+    /// carried for its code -- still becomes a record, the one the module
+    /// section names.
+    fn build(
+        heap: &Heap<'gc>,
+        roots: &[Value<'gc>],
+        module_roots: &[ClassReference<'gc>],
+        named: &Named<'_, 'gc>,
+    ) -> GraphTable<'gc> {
         let mut table = GraphTable {
             objects: Vec::new(),
             object_ids: HashMap::new(),
@@ -1061,7 +885,12 @@ impl<'gc> GraphTable<'gc> {
             unnamed: None,
             used: UsedNames::new(),
         };
-        let mut stack: Vec<Value<'gc>> = roots.iter().rev().copied().collect();
+        let mut stack: Vec<Value<'gc>> = module_roots
+            .iter()
+            .rev()
+            .map(|class| Value::object(*class))
+            .chain(roots.iter().rev().copied())
+            .collect();
         while let Some(value) = stack.pop() {
             table.visit_value(heap, value, named, &mut stack);
         }
@@ -1113,9 +942,6 @@ impl<'gc> GraphTable<'gc> {
             if self.unnamed.is_none() {
                 self.unnamed = Some(refusal);
             }
-            return;
-        }
-        if is_module_class(heap, object, named.modules) {
             return;
         }
         if self.object_ids.contains_key(&key) {
@@ -1240,10 +1066,9 @@ fn frame_references<'gc>(
 }
 
 /// Everything the graph encoder resolves a reference against: the object
-/// table and the names it used, the shipped world it names into, the
-/// module classes (each named by a tag of its own rather than by an id),
-/// the code table's ids, and the mixin table's row ids -- which is how a
-/// class object's record names the declaration it applies.
+/// table and the names it used, the shipped world it names into, the code
+/// table's ids, and the mixin table's row ids -- which is how a class
+/// object's record names the declaration it applies.
 pub struct EncodeContext<'a, 'gc> {
     pub table: &'a GraphTable<'gc>,
     pub code_ids: &'a CodeIds,
@@ -1252,9 +1077,6 @@ pub struct EncodeContext<'a, 'gc> {
     shipped_by_object: &'a HashMap<usize, usize>,
     /// `ShippedWorld::index_by_mixin`, built for this encoding.
     shipped_by_mixin: &'a HashMap<usize, usize>,
-    /// Each carried module's root class and levels: what a class tag names
-    /// by module index (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`).
-    pub modules: &'a ModuleClasses<'gc>,
     /// `mixin::mixin_key` -> mixin-table row id, as `mixins::encode`
     /// assigned them.
     pub mixin_ids: &'a HashMap<usize, u32>,
@@ -1284,22 +1106,20 @@ fn not_allowed(entry: &ShippedEntry<'_>, position: NamePosition) -> String {
     )
 }
 
-/// `Shipped` (8 + section index), `Record` (2 + object id), `Module` (6 +
-/// module index), `ModuleLevel` (7 + module index + position) or
-/// `Metaclass` (4 + a module class's reference) -- the ways a class object
-/// can exist in a loaded world. `position` is where the reference stands,
-/// which decides whether a shipped name may be written there.
+/// `Shipped` (8 + section index) or `Record` (2 + object id) -- the two
+/// ways a class object can exist in a loaded world. `position` is where the
+/// reference stands, which decides whether a shipped name may be written
+/// there.
 ///
-/// All but `Record` exist before the graph is decoded: a shipped class,
-/// metaclass or level comes from the loading binary, and each module's root
-/// class and levels from its tree of the mixin table plus its root section
-/// (`decode::build_root_class`). Everything else is a class object the
-/// *graph* creates, and tag 2 names which one by the id of its own record in
-/// the object table. That third case is what nesting needs: a nested class
-/// object is the value of its enclosing instance's hidden cache slot and the
-/// `.class` of every instance of it, and there is one per enclosing
-/// instance, so no tag that names a class only by its position in the
-/// source could tell them apart.
+/// A shipped class, metaclass or level exists before the graph is decoded:
+/// the loading binary has it. Every other class object is one the *graph*
+/// creates -- a module's root class, the levels its `<:` clauses add, every
+/// nested class and every metaclass of these -- and tag 2 names which one
+/// by the id of its own record in the object table. That is what nesting
+/// needs: a nested class object is the value of its enclosing instance's
+/// hidden cache slot and the `.class` of every instance of it, and there is
+/// one per enclosing instance, so no tag that names a class only by its
+/// position in the source could tell them apart.
 fn encode_class_tag<'gc>(
     writer: &mut Writer,
     class: ClassReference<'gc>,
@@ -1318,40 +1138,9 @@ fn encode_class_tag<'gc>(
         writer.write_u32(context.table.used.index_of(world_index));
         return Ok(());
     }
-    match heap.class_this_class(class) {
-        Some(this_class) => match context.modules.find(this_class) {
-            Some(module_class) => {
-                writer.write_u8(CLASS_METACLASS);
-                write_module_class(writer, module_class);
-            }
-            None => {
-                writer.write_u8(CLASS_RECORD);
-                writer.write_u32(context.table.object_id(heap, class));
-            }
-        },
-        None => match context.modules.find(class) {
-            Some(module_class) => write_module_class(writer, module_class),
-            None => {
-                writer.write_u8(CLASS_RECORD);
-                writer.write_u32(context.table.object_id(heap, class));
-            }
-        },
-    }
+    writer.write_u8(CLASS_RECORD);
+    writer.write_u32(context.table.object_id(heap, class));
     Ok(())
-}
-
-fn write_module_class(writer: &mut Writer, module_class: ModuleClass) {
-    match module_class {
-        ModuleClass::Root(module) => {
-            writer.write_u8(CLASS_MODULE);
-            writer.write_u32(module);
-        }
-        ModuleClass::Level { module, position } => {
-            writer.write_u8(CLASS_MODULE_LEVEL);
-            writer.write_u32(module);
-            writer.write_u32(position);
-        }
-    }
 }
 
 fn encode_optional_class<'gc>(
@@ -1855,9 +1644,23 @@ fn encode_frame<'gc>(
     encode_values(writer, &registers, NamePosition::FrameRegister, context)
 }
 
+/// What `encode_graph_section` wrote besides its bytes: the shipped names
+/// the section uses, and the object id of every carried module's root
+/// class record, in module order, for the module section to name.
+pub struct EncodedGraph {
+    pub used: UsedNames,
+    pub module_roots: Vec<u32>,
+}
+
 /// The object table, frames included, and the roots. The count comes first;
 /// the decoder sizes every record and allocates it before filling any, so
 /// that records may reference each other freely.
+///
+/// Every carried module's root class (`module_roots`, in module order) is a
+/// record of the table, walked after the roots (`GraphTable::build`), and
+/// is held to its module's declaration and the root rule as the loader
+/// holds it (`modules::root_record_defect`), so no image is written that
+/// the loader refuses for its roots.
 ///
 /// Answers the shipped names the section uses, which the caller writes
 /// ahead of it in the shipped-name section (`shipped_names::encode_section`):
@@ -1868,21 +1671,43 @@ pub fn encode_graph_section<'gc>(
     writer: &mut Writer,
     roots: &[Value<'gc>],
     code_ids: &CodeIds,
-    modules: &ModuleClasses<'gc>,
+    module_roots: &[ClassReference<'gc>],
     mixin_ids: &HashMap<usize, u32>,
     symbols: &mut symbols::Builder,
-) -> Result<UsedNames, String> {
+) -> Result<EncodedGraph, String> {
     let heap = mutator.heap();
     let world = &mutator.shipped_world;
+    for class in module_roots {
+        let Some(application) = heap.class_application(*class) else {
+            return Err("image encoding's root object is not a class".to_string());
+        };
+        match super::modules::root_record_defect(mutator, &application.mixin, *class) {
+            None => {}
+            Some(super::modules::RootRecordDefect::NotItsRecord) => {
+                return Err(format!(
+                    "image encoding cannot serialize {} as a module's root class: it is a \
+                     metaclass, a level or a nested class",
+                    heap.class_display_name(*class)
+                ))
+            }
+            Some(super::modules::RootRecordDefect::RootRule) => {
+                return Err(format!(
+                    "image encoding cannot serialize {} as a module's root class: it does not \
+                     inherit what the root rule allows, Object or Value, or Value applied over \
+                     Object",
+                    heap.class_display_name(*class)
+                ))
+            }
+        }
+    }
     let shipped_by_object = world.index_by_object(heap);
     let shipped_by_mixin = world.index_by_mixin(heap);
     let named = Named {
         by_object: &shipped_by_object,
         by_mixin: &shipped_by_mixin,
-        modules,
         mirror: mutator.vm_mirror.and_then(|mirror| mirror.as_object()),
     };
-    let table = GraphTable::build(heap, roots, &named);
+    let table = GraphTable::build(heap, roots, module_roots, &named);
     // The VM mirror is a capability the bootstrap hands to the core library
     // alone (`docs/design/core-library.md`, "The VM mirror is the whole Rust
     // boundary"); an artifact that carried it would hand it to whatever
@@ -1899,13 +1724,30 @@ pub fn encode_graph_section<'gc>(
     if let Some(refusal) = &table.unnamed {
         return Err(refusal.clone());
     }
+    // A shipped class is a shipped name, never a record, so it cannot be a
+    // module's root.
+    let module_root_ids = module_roots
+        .iter()
+        .map(|class| {
+            table
+                .object_ids
+                .get(&heap.object_identity_key(*class))
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "image encoding cannot serialize {} as a module's root class: it is \
+                         shipped",
+                        heap.class_display_name(*class)
+                    )
+                })
+        })
+        .collect::<Result<Vec<u32>, String>>()?;
     let context = EncodeContext {
         table: &table,
         code_ids,
         world,
         shipped_by_object: &shipped_by_object,
         shipped_by_mixin: &shipped_by_mixin,
-        modules,
         mixin_ids,
         heap,
     };
@@ -1914,94 +1756,40 @@ pub fn encode_graph_section<'gc>(
         encode_object(writer, *object, &context, symbols)?;
     }
     encode_values(writer, roots, NamePosition::Value, &context)?;
-    Ok(table.used)
+    Ok(EncodedGraph {
+        used: table.used,
+        module_roots: module_root_ids,
+    })
 }
 
-/// The graph section's closing table: the identity hash of every object the
-/// image names by tag rather than carries as a record -- each module's root
-/// class and levels, their metaclasses, and every object of the shipped
-/// world -- so that a hash the program was given survives the load. Only an
-/// assigned hash (not 0) is written, in a fixed order -- the module roots in
-/// module order, then their levels (module by module, lowest first), then
-/// the module roots' metaclasses and their levels' in the same order, then
-/// the shipped world's objects in the world's own order -- so one world
-/// encodes to one byte sequence. Every object of the shipped world is
-/// considered, not only those the graph reaches: a program can keep
-/// `Integer hash` in a slot without keeping `Integer`. A shipped object the
-/// graph did not name is added to `used`, so the shipped-name section lists
-/// it. See `docs/design/image-format.md`, "Identity hashes are preserved
-/// verbatim".
+/// The graph section's closing table: the identity hash of every object of
+/// the shipped world, which the image names rather than carries as a
+/// record, so that a hash the program was given survives the load. Only an
+/// assigned hash (not 0) is written, in the shipped world's own order, so
+/// one world encodes to one byte sequence. Every object of the shipped
+/// world is considered, not only those the graph reaches: a program can
+/// keep `Integer hash` in a slot without keeping `Integer`. A shipped
+/// object the graph did not name is added to `used`, so the shipped-name
+/// section lists it. A record's hash, a module root class's among them, is
+/// in its header. See `docs/design/image-format.md`, "Identity hashes are
+/// preserved verbatim".
 pub fn encode_tag_named_hashes<'gc>(
     mutator: &Mutator<'gc>,
     writer: &mut Writer,
-    modules: &ModuleClasses<'gc>,
     used: &mut UsedNames,
 ) {
     let heap = mutator.heap();
-    let mut entries: Vec<(u8, Vec<u8>, u32)> = Vec::new();
-    for (module, root) in modules.roots.iter().enumerate() {
-        let hash = heap.object_identity_hash(*root);
-        if hash != 0 {
-            let module = u32_field("module index", module);
-            entries.push((HASHED_MODULE_CLASS, module.to_le_bytes().to_vec(), hash));
-        }
-    }
-    // A level is no record either, so without its own entry the hash a
-    // program read off it -- `self class superclass hash` in a module
-    // applying `<: Value` -- would change across an image.
-    for (module, levels) in modules.levels.iter().enumerate() {
-        for (position, level) in levels.iter().enumerate() {
-            let hash = heap.object_identity_hash(*level);
-            if hash != 0 {
-                let mut reference = Writer::new();
-                reference.write_u32(u32_field("module index", module));
-                reference.write_u32(u32_field("module level position", position));
-                entries.push((HASHED_MODULE_LEVEL, reference.into_bytes(), hash));
-            }
-        }
-    }
-    let mut module_classes: Vec<(ClassReference<'gc>, Vec<u8>)> = Vec::new();
-    for (module, root) in modules.roots.iter().enumerate() {
-        let mut reference = Writer::new();
-        write_module_class(
-            &mut reference,
-            ModuleClass::Root(u32_field("module index", module)),
-        );
-        module_classes.push((*root, reference.into_bytes()));
-    }
-    for (module, levels) in modules.levels.iter().enumerate() {
-        for (position, level) in levels.iter().enumerate() {
-            let mut reference = Writer::new();
-            write_module_class(
-                &mut reference,
-                ModuleClass::Level {
-                    module: u32_field("module index", module),
-                    position: u32_field("module level position", position),
-                },
-            );
-            module_classes.push((*level, reference.into_bytes()));
-        }
-    }
-    for (class, reference) in module_classes {
-        let Some(metaclass) = heap.class_metaclass(class) else {
-            continue;
-        };
-        let hash = heap.object_identity_hash(metaclass);
-        if hash != 0 {
-            entries.push((HASHED_METACLASS, reference, hash));
-        }
-    }
+    let mut entries: Vec<(u32, u32)> = Vec::new();
     for (world_index, entry) in mutator.shipped_world.entries().iter().enumerate() {
         let hash = heap.object_identity_hash(entry.object);
         if hash != 0 {
-            let index = used.use_name(world_index);
-            entries.push((HASHED_SHIPPED, index.to_le_bytes().to_vec(), hash));
+            entries.push((used.use_name(world_index), hash));
         }
     }
     writer.write_u32(u32_field("tag-named hash count", entries.len()));
-    for (tag, reference, hash) in entries {
-        writer.write_u8(tag);
-        writer.write_raw(&reference);
+    for (index, hash) in entries {
+        writer.write_u8(HASHED_SHIPPED);
+        writer.write_u32(index);
         writer.write_u32(hash);
     }
 }

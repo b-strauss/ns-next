@@ -644,7 +644,8 @@ pub struct Mixin {
     /// root rule, `resolver::root_clause_defect`). Only a module's root
     /// mixin built from a `ResolvedModule` a host assembled past `resolve`,
     /// which refuses such a root, carries one; a decoded mixin
-    /// never does, because the decoder refuses a defective root section and
+    /// never does, because the decoder refuses a root class record the root
+    /// rule forbids (`image::modules::root_record_defect`) and
     /// the encoder never writes one. `Mutator::apply_mixin` turns it into
     /// `InstantiationRefusal::RootClause` on the application.
     pub root_clause_defect: Option<RootClauseDefect>,

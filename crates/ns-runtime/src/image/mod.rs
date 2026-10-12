@@ -3,8 +3,9 @@
 //! `docs/design/image-format.md`. Layout: header (magic, format version,
 //! flags, the shipped world's fingerprint), symbol table, code
 //! table, mixin table (one tree per module, in module order), module section
-//! (per module: `SourceOrigin`, optional source text, root section), then the
-//! shipped names, object table (frames included), roots, tag-named hashes.
+//! (per module: `SourceOrigin`, optional source text, the object id of its
+//! root class record), then the shipped names, object table (frames
+//! included), roots, tag-named hashes.
 //!
 //! **Loading never runs the front end.** `load` decodes the world; it does
 //! not parse, resolve, or compile anything. The symbol table, the mixin
@@ -28,7 +29,7 @@ pub mod opcodes;
 pub mod shipped_names;
 pub mod symbols;
 
-pub use modules::{ModuleClass, ModuleClasses, ModuleSource};
+pub use modules::ModuleSource;
 
 use crate::heap::{Heap, Root};
 use crate::types::{ClassReference, SourceOrigin, Value};
@@ -98,10 +99,10 @@ fn encode_describing<'gc>(
 /// The header says the modules carry source when any one is handed some;
 /// `encode_modules` then refuses a module handed none, so a mix is an `Err`
 /// rather than an artifact that silently drops one module's text.
-fn write_describing<'gc>(
-    heap: &Heap<'gc>,
+fn write_describing(
     writer: &mut encode::Writer,
-    modules: &[ModuleSource<'_, 'gc>],
+    modules: &[ModuleSource<'_, '_>],
+    module_root_ids: &[u32],
     flags: u8,
     describing: Describing,
 ) -> Result<(), String> {
@@ -123,7 +124,7 @@ fn write_describing<'gc>(
     describing.symbols.write(writer);
     writer.write_raw(&describing.code.into_bytes());
     writer.write_raw(&describing.mixins.into_bytes());
-    modules::encode_modules(heap, writer, modules, with_source)
+    modules::encode_modules(writer, modules, module_root_ids, with_source)
 }
 
 /// Serializes a quiesced world: `roots` (the root instance and, if any,
@@ -189,22 +190,25 @@ fn write_image<'gc>(
     }
     let mut describing = encode_describing(heap, modules)?;
     let classes: Vec<ClassReference<'gc>> = modules.iter().map(|module| module.class).collect();
-    let module_classes = ModuleClasses::of(heap, &classes);
     // The graph section is encoded into its own buffer, against the same
     // `symbols` builder the describing sections used, before `write_describing`
     // consumes `describing` -- the graph needs the mixin table's row ids, and
-    // those exist only on `describing.mixin_ids`.
+    // those exist only on `describing.mixin_ids`. It answers the ids of the
+    // module roots' records, which the module section names.
     let mut graph_writer = encode::Writer::new();
-    let mut used = encode::encode_graph_section(
+    let encode::EncodedGraph {
+        mut used,
+        module_roots,
+    } = encode::encode_graph_section(
         mutator,
         &mut graph_writer,
         roots,
         &describing.ids,
-        &module_classes,
+        &classes,
         &describing.mixin_ids,
         &mut describing.symbols,
     )?;
-    encode::encode_tag_named_hashes(mutator, &mut graph_writer, &module_classes, &mut used);
+    encode::encode_tag_named_hashes(mutator, &mut graph_writer, &mut used);
     // Before `main:args:` nothing hands a program the platform, so nothing
     // of the shipped world but the kernel can be in its graph; the loader
     // refuses a started image naming more, so none is written.
@@ -233,7 +237,7 @@ fn write_image<'gc>(
         &mut describing.symbols,
     );
     let mut writer = encode::Writer::new();
-    write_describing(heap, &mut writer, modules, flags, describing)?;
+    write_describing(&mut writer, modules, &module_roots, flags, describing)?;
     writer.write_raw(&names_writer.into_bytes());
     writer.write_raw(&graph_writer.into_bytes());
     Ok(writer.into_bytes())
@@ -276,11 +280,12 @@ pub struct LoadedImage {
 /// against their code and advances the identity-hash counter past the graph's
 /// maximum.
 ///
-/// Nothing here parses, resolves or compiles. Each module's root class is
-/// rebuilt from the first row of its tree in the mixin table
-/// (`modules::build_module_classes`), in module order, which is what makes
-/// the front end unnecessary -- and, since an artifact is untrusted input,
-/// what keeps the parser off the load path entirely.
+/// Nothing here parses, resolves or compiles. Each module's root class is a
+/// record of the graph like any class, built over the first row of its tree
+/// in the mixin table, which is what makes the front end unnecessary -- and,
+/// since an artifact is untrusted input, what keeps the parser off the load
+/// path entirely. The record the module section names is held to its
+/// module's root row and to the root rule (`modules::module_root_classes`).
 ///
 /// Both verification passes run before anything the image describes can be
 /// executed: `verify_code_table` and `verify_mixins` before anything is
@@ -293,10 +298,10 @@ pub struct LoadedImage {
 /// shipped-name section and resolves every name against the loading boot's
 /// shipped world by table lookup alone (`shipped_names::resolve`), refusing
 /// a name the world does not have, a name given twice, and in a started
-/// image a name of any module but the kernel; it roots every module's root
-/// class and levels, and keeps the names, not handles. After a tenure, the
-/// second resolves the names again inside its own entry -- a lookup, no
-/// allocation -- and decodes the graph against them.
+/// image a name of any module but the kernel; it builds no object and keeps
+/// the names, not handles. After a tenure, the second resolves the names
+/// again inside its own entry -- a lookup, no allocation -- and decodes the
+/// graph against them.
 pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     let mut reader = decode::Reader::new(bytes);
     let header = decode::read_header(&mut reader).map_err(|error| error.to_string())?;
@@ -315,40 +320,20 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         decode::verify_mixins(&mixins).map_err(|error| error.to_string())?;
         let decoded_modules = modules::decode_modules(&mut reader, &mixins, header.has_source)
             .map_err(|error| error.to_string())?;
-        let module_classes = modules::build_module_classes(mutator, &mixins, &decoded_modules)
-            .map_err(|error| error.to_string())?;
         let names = shipped_names::decode_section(&mut reader, &symbols)
             .map_err(|error| error.to_string())?;
         shipped_names::resolve(&names, &mutator.shipped_world, header.start)
             .map_err(|error| error.to_string())?;
-        // Rooted, because the tenure below moves them.
-        let module_roots = module_classes
-            .roots
-            .iter()
-            .map(|root| mutator.stash(Value::object(*root)))
-            .collect();
-        let module_levels = module_classes
-            .levels
-            .iter()
-            .map(|levels| {
-                levels
-                    .iter()
-                    .map(|level| mutator.stash(Value::object(*level)))
-                    .collect()
-            })
-            .collect();
         Ok(Described {
             symbols,
             table,
             mixins,
             decoded_modules,
-            module_roots,
-            module_levels,
             names,
         })
     })?;
     // Every object the graph will name is old from here on: the shipped
-    // world and the module classes (decided with the user on 2026-10-04;
+    // world (decided with the user on 2026-10-04;
     // `docs/design/image-format.md`, "The image under generations"). The
     // graph pass then allocates old, and its stores are old-to-old.
     interpreter.tenure_now();
@@ -357,34 +342,32 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
         table,
         mixins,
         decoded_modules,
-        module_roots,
-        module_levels,
         names,
     } = described;
-    let roots = interpreter.enter(|mutator| -> Result<Vec<Root>, String> {
-        mutator.heap.set_allocating_old(true);
-        let decoded = decode_graph_phase(
-            mutator,
-            &mut reader,
-            header,
-            &symbols,
-            &table,
-            &mixins,
-            &module_roots,
-            &module_levels,
-            &names,
-        );
-        // Cleared on the refusal path too: the interpreter of a refused image
-        // is dropped, but nothing should rest on that.
-        mutator.heap.set_allocating_old(false);
-        decoded
-    })?;
-    let modules = module_roots
+    let (roots, module_classes) =
+        interpreter.enter(|mutator| -> Result<(Vec<Root>, Vec<Root>), String> {
+            mutator.heap.set_allocating_old(true);
+            let decoded = decode_graph_phase(
+                mutator,
+                &mut reader,
+                header,
+                &symbols,
+                &table,
+                &mixins,
+                &decoded_modules,
+                &names,
+            );
+            // Cleared on the refusal path too: the interpreter of a refused
+            // image is dropped, but nothing should rest on that.
+            mutator.heap.set_allocating_old(false);
+            decoded
+        })?;
+    let modules = module_classes
         .into_iter()
         .zip(decoded_modules)
         .enumerate()
         .map(|(index, (class, decoded))| {
-            // `build_module_classes` refused a module without a tree already.
+            // `decode_modules` refused a module without a tree already.
             let declaration = mixins
                 .module_root(index)
                 .cloned()
@@ -405,8 +388,9 @@ pub fn load(bytes: &[u8]) -> Result<LoadedImage, String> {
     })
 }
 
-/// `load`'s second phase: the graph against the shipped names, resolved
-/// again in this entry, run with the heap allocating old.
+/// The second phase of `load`: the graph against the shipped names,
+/// resolved again in this entry, run with the heap allocating old. Answers
+/// the graph's roots and every module's root class record, rooted.
 #[allow(clippy::too_many_arguments)]
 fn decode_graph_phase<'gc>(
     mutator: &mut Mutator<'gc>,
@@ -415,26 +399,15 @@ fn decode_graph_phase<'gc>(
     symbols: &symbols::Table,
     table: &decode::DecodedCodeTable,
     mixins: &mixins::Decoded,
-    module_roots: &[Root],
-    module_levels: &[Vec<Root>],
+    decoded_modules: &[modules::DecodedModule],
     names: &[shipped_names::ShippedName],
-) -> Result<Vec<Root>, String> {
-    let class_of = |root: &Root| match mutator.fetch(root).as_object() {
-        Some(class) => class,
-        _ => unreachable!("internal: a module class is a class object"),
-    };
-    let module_classes = ModuleClasses {
-        roots: module_roots.iter().map(class_of).collect(),
-        levels: module_levels
-            .iter()
-            .map(|levels| levels.iter().map(class_of).collect())
-            .collect(),
-    };
+) -> Result<(Vec<Root>, Vec<Root>), String> {
     let shipped = shipped_names::resolve(names, &mutator.shipped_world, header.start)
         .map_err(|error| error.to_string())?;
+    let module_root_ids: Vec<u32> = decoded_modules.iter().map(|module| module.root).collect();
     let mut context = decode::DecodeContext {
         mutator,
-        modules: &module_classes,
+        module_roots: &module_root_ids,
         codes: &table.codes,
         mixins: &mixins.mixins,
         shipped: &shipped,
@@ -447,7 +420,10 @@ fn decode_graph_phase<'gc>(
         }
         .to_string());
     }
-    let tag_named_max = decode::decode_tag_named_hashes(mutator, reader, &module_classes, &shipped)
+    let module_classes =
+        modules::module_root_classes(mutator, mixins, decoded_modules, &graph.objects)
+            .map_err(|error| error.to_string())?;
+    let tag_named_max = decode::decode_tag_named_hashes(mutator, reader, &shipped)
         .map_err(|error| error.to_string())?;
     decode::verify_graph(&mutator.heap, &graph, table).map_err(|error| error.to_string())?;
     mutator.advance_identity_hash_past(graph.max_identity_hash.max(tag_named_max));
@@ -464,22 +440,24 @@ fn decode_graph_phase<'gc>(
     // check: nothing runs while the graph decodes, so nothing moves under
     // the plain handles above, and a refused artifact answers nothing to
     // root (`docs/design/image-format.md`, "Packaging").
-    Ok(graph
+    let roots = graph
         .roots
         .into_iter()
         .map(|root| mutator.stash(root))
-        .collect())
+        .collect();
+    let module_classes = module_classes
+        .into_iter()
+        .map(|class| mutator.stash(Value::object(class)))
+        .collect();
+    Ok((roots, module_classes))
 }
 
-/// What `load`'s first phase decoded, carried across the tenure, which moves
-/// objects: the tables and the names hold no handle, and every module's root
-/// class and levels are rooted.
+/// What the first phase of `load` decoded, carried across the tenure, which
+/// moves objects: the tables, the modules and the names hold no handle.
 struct Described {
     symbols: symbols::Table,
     table: decode::DecodedCodeTable,
     mixins: mixins::Decoded,
     decoded_modules: Vec<modules::DecodedModule>,
-    module_roots: Vec<Root>,
-    module_levels: Vec<Vec<Root>>,
     names: Vec<shipped_names::ShippedName>,
 }

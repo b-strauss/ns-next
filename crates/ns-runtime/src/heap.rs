@@ -1983,10 +1983,8 @@ impl<'gc> Heap<'gc> {
 
     /// Overwrites `object`'s identity hash. Two legitimate callers:
     /// `image::decode::decode_tag_named_hashes`, which puts a recorded hash
-    /// back onto a module's root class, one of its levels or their
-    /// metaclasses, or an object of the shipped world -- none of them a
-    /// record, so nothing else could restore what the image remembered for
-    /// one -- and `tests/image.rs`'s
+    /// back onto an object of the shipped world -- no record, so nothing
+    /// else could restore what the image remembered for one -- and `tests/image.rs`'s
     /// `an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating`,
     /// which forces a live object's hash to the widest the header holds by
     /// hand, the only way to reach `advance_identity_hash_past`'s wrap

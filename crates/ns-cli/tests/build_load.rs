@@ -354,12 +354,13 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// The slot initializers ask a builtin class, the module class and its
 /// metaclass for their hashes while `build` assembles the application; the
-/// load answers the same three questions against the objects it rebuilt
-/// from tags. Without the image's tag-named hashes, all three would print
-/// `false`.
+/// load answers the same three questions against the builtin it names, its
+/// hash in the image's tag-named hashes, and the two records it decoded,
+/// their hashes in their headers. Had the image dropped them, all three
+/// would print `false`.
 ///
 /// `stamp` is drawn and never checked: it gives the identity-hash counter a
-/// fourth, ordinary draw after the three tag-named ones, so that a load
+/// fourth, ordinary draw after the three recorded ones, so that a load
 /// which forgot the recorded hashes would draw different numbers rather than
 /// the same first three by coincidence (image-format.md, "Identity hashes
 /// are preserved verbatim").

@@ -37,8 +37,7 @@ pub struct ModuleReport {
     pub origin: String,
     /// Whether the module carries its source text.
     pub has_source: bool,
-    /// What its root class inherits: the superclass and each level its `<:`
-    /// clauses add.
+    /// Which record of the graph is its root class: `root object {id}`.
     pub root: String,
 }
 
@@ -216,13 +215,11 @@ struct GraphView {
     tag_named: Vec<String>,
 }
 
-/// What the graph's tags name by index: the shipped names, and how many
-/// levels each module's root section rebuilds, in module order. A reference
+/// What the graph's tags name by index: the shipped names. A reference
 /// past them is shown as such rather than refused: `inspect` reports on the
 /// files that fail to load too.
 struct TagTargets<'a> {
     names: &'a [ShippedName],
-    module_levels: Vec<usize>,
 }
 
 /// A shipped name reference, after its tag, as the name describes itself:
@@ -248,75 +245,8 @@ fn read_class_tag(
     Ok(match reader.read_u8()? {
         opcodes::CLASS_SHIPPED => read_shipped_name(reader, targets)?,
         opcodes::CLASS_RECORD => format!("object {}", reader.read_u32()?),
-        opcodes::CLASS_MODULE => read_module_class_tag(reader, targets)?,
-        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
-        opcodes::CLASS_METACLASS => {
-            format!(
-                "metaclass of {}",
-                read_module_reference_tag(reader, targets)?
-            )
-        }
-        tag => {
-            return Err(decode::DecodeError::InvalidTag {
-                what: "class tag",
-                tag,
-            })
-        }
+        tag => return Err(decode::DecodeError::InvalidTag { what: "class", tag }),
     })
-}
-
-/// The class a metaclass reference names the metaclass of: a module's root
-/// class or one of its levels, never a record, a shipped name or a second
-/// metaclass, as the loader reads it -- which is also what keeps this walk's
-/// recursion one level deep.
-fn read_module_reference_tag(
-    reader: &mut decode::Reader,
-    targets: &TagTargets<'_>,
-) -> Result<String, decode::DecodeError> {
-    Ok(match reader.read_u8()? {
-        opcodes::CLASS_MODULE => read_module_class_tag(reader, targets)?,
-        opcodes::CLASS_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
-        tag => {
-            return Err(decode::DecodeError::InvalidTag {
-                what: "module class",
-                tag,
-            })
-        }
-    })
-}
-
-/// A module's root class, after its `CLASS_MODULE` or `HASHED_MODULE_CLASS`
-/// tag. A module past the module section is shown as such, as a shipped
-/// name past its section is.
-fn read_module_class_tag(
-    reader: &mut decode::Reader,
-    targets: &TagTargets<'_>,
-) -> Result<String, decode::DecodeError> {
-    let module = reader.read_u32()?;
-    Ok(if (module as usize) < targets.module_levels.len() {
-        format!("<module {module}>")
-    } else {
-        format!("<module {module}: out of range>")
-    })
-}
-
-/// A module level, after its `CLASS_MODULE_LEVEL` or `HASHED_MODULE_LEVEL`
-/// tag. A module past the module section, or a position past the levels its
-/// root section rebuilds, is shown as such.
-fn read_module_level_tag(
-    reader: &mut decode::Reader,
-    targets: &TagTargets<'_>,
-) -> Result<String, decode::DecodeError> {
-    let module = reader.read_u32()?;
-    let position = reader.read_u32()?;
-    let levels = targets.module_levels.get(module as usize).copied();
-    Ok(
-        if levels.is_some_and(|levels| (position as usize) < levels) {
-            format!("<module {module} level {position}>")
-        } else {
-            format!("<module {module} level {position}: out of range>")
-        },
-    )
 }
 
 /// A class record's body, after its tag: a class applying a row of the mixin
@@ -551,14 +481,6 @@ fn walk_graph(
     let mut tag_named = Vec::with_capacity(count);
     for _ in 0..count {
         let who = match reader.read_u8()? {
-            opcodes::HASHED_MODULE_CLASS => read_module_class_tag(reader, targets)?,
-            opcodes::HASHED_MODULE_LEVEL => read_module_level_tag(reader, targets)?,
-            opcodes::HASHED_METACLASS => {
-                format!(
-                    "metaclass of {}",
-                    read_module_reference_tag(reader, targets)?
-                )
-            }
             opcodes::HASHED_SHIPPED => read_shipped_name(reader, targets)?,
             tag => {
                 return Err(decode::DecodeError::InvalidTag {
@@ -700,21 +622,17 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
 
     offset = reader.position();
 
-    // Each module's origin, source and root section, read without resolving
-    // a builtin tag to a live class, which would need a `Mutator`. A count
+    // Each module's origin, source and the object id of its root class
+    // record, shown as written: the graph it indexes comes later. A count
     // that disagrees with the mixin table's trees is refused here as it is
-    // by `load`: which tree a root section is checked against depends on
-    // the count, so a report past it would describe modules that are not
-    // there.
+    // by `load`: which tree a module's root is held to depends on the
+    // count, so a report past it would describe modules that are not there.
     let decoded_modules = modules::decode_modules(&mut reader, &decoded, header.has_source)
         .map_err(|error| error.to_string())?;
     let module_reports = decoded_modules
         .iter()
         .map(|module| {
-            let mut root = format!("superclass {:?}", module.section.superclass);
-            for (index, kind) in &module.section.levels {
-                let _ = write!(root, ", applies {kind:?} (clause {index})");
-            }
+            let root = format!("root object {}", module.root);
             ModuleReport {
                 origin: match &module.origin {
                     SourceOrigin::Embedded(name) => format!("embedded {name}"),
@@ -742,13 +660,7 @@ pub fn inspect(bytes: &[u8]) -> Result<Report, String> {
         detail: format!("{} names", names.len()),
     });
     offset = reader.position();
-    let targets = TagTargets {
-        names: &names,
-        module_levels: decoded_modules
-            .iter()
-            .map(|module| module.section.levels.len())
-            .collect(),
-    };
+    let targets = TagTargets { names: &names };
     let graph =
         walk_graph(&mut reader, &symbol_table, &targets).map_err(|error| error.to_string())?;
     sections.push(Section {

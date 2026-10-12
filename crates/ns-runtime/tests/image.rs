@@ -2129,79 +2129,6 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
     );
 }
 
-/// A builtin class tag names no builtin at the root-class section either:
-/// `decode_root_section` reads its superclass through the same
-/// `read_program_builtin_class`, so an out-of-range byte is refused there as
-/// well, never misread as some other builtin class.
-#[test]
-fn an_invalid_builtin_class_tag_at_the_root_section_is_a_decode_error_not_a_panic() {
-    let source = indoc! {"
-        class Root = Object new <: Value () ()
-    "};
-    let decoded = mixin_table_of(&snapshot_of(source));
-    let mut writer = encode::Writer::new();
-    writer.write_boolean(true); // the root's superclass is present ...
-    writer.write_u8(200); // ... naming no builtin class
-    writer.write_u32(0); // no levels
-    let bytes = writer.into_bytes();
-    assert_eq!(
-        decode::decode_root_section(&mut decode::Reader::new(&bytes), &decoded, 0),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class",
-            tag: 200
-        })
-    );
-}
-
-/// A root class's superclass tag can decode to `Metaclass`, but a program
-/// may not *declare* a root over it:
-/// `decode_root_section` reads the superclass through
-/// `read_program_builtin_class`, which refuses `Behavior`, `Class` and
-/// `Metaclass` the same way it refuses the VM mirror's class and `Top`.
-/// Patched into a real binary and located the way `corrupt_first_symbol_id`
-/// locates the symbol table's count, so this exercises the whole `load`
-/// pipeline, not `decode_root_section` alone.
-#[test]
-fn a_root_superclass_naming_metaclass_is_refused() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let origin = Origin::File(PathBuf::from("t.ns"));
-    let mut binary = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        module_only_image(mutator, None, &origin, class).expect("snapshot")
-    });
-
-    let superclass_tag_at = {
-        let mut reader = decode::Reader::new(&binary);
-        let header = decode::read_header(&mut reader).expect("valid header");
-        let symbols = symbols::decode(&mut reader).expect("symbols");
-        let mut table = decode::decode_code_table(&mut reader, &symbols).expect("code table");
-        decode::verify_code_table(&table).expect("verify code table");
-        decode::number_call_site_families(&mut table).expect("number call site families");
-        mixins::decode(&mut reader, &symbols, &table.codes).expect("mixins");
-        // The module section: its count, then module 0's origin and source.
-        reader.read_u32().expect("module count");
-        decode::decode_source_origin(&mut reader).expect("origin");
-        if header.has_source {
-            reader.read_str().expect("source");
-        }
-        // The root section opens with the "has superclass" boolean, then the
-        // superclass's builtin-class tag byte.
-        reader.position() + 1
-    };
-    binary[superclass_tag_at] = encode::builtin_class_tag(BuiltinClass::Metaclass);
-
-    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has no
-    // `Debug` impl, so neither type has one.
-    let error = match image::load(&binary) {
-        Ok(_) => panic!("a root superclass naming Metaclass must be refused"),
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("builtin class a program may name"),
-        "unexpected error: {error}"
-    );
-}
-
 #[test]
 fn an_invalid_integer_operation_tag_is_a_decode_error_not_a_panic() {
     // An unknown operation byte must be refused, never defaulted to an
@@ -2253,41 +2180,6 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
             "a code table cut to {cut} bytes must not decode"
         );
     }
-}
-
-#[test]
-fn every_builtin_class_tag_round_trips() {
-    let all = [
-        BuiltinClass::Object,
-        BuiltinClass::Boolean,
-        BuiltinClass::True,
-        BuiltinClass::False,
-        BuiltinClass::Integer,
-        BuiltinClass::Float,
-        BuiltinClass::String,
-        BuiltinClass::Symbol,
-        BuiltinClass::Array,
-        BuiltinClass::UndefinedObject,
-        BuiltinClass::Closure,
-        BuiltinClass::VmMirror,
-        BuiltinClass::Top,
-        BuiltinClass::Value,
-        BuiltinClass::Number,
-    ];
-    for kind in all {
-        assert_eq!(
-            decode::builtin_class_from_tag(encode::builtin_class_tag(kind)),
-            Some(kind)
-        );
-    }
-    assert_eq!(decode::builtin_class_from_tag(200), None);
-    let mut tags: Vec<u8> = all
-        .iter()
-        .map(|kind| encode::builtin_class_tag(*kind))
-        .collect();
-    tags.sort_unstable();
-    tags.dedup();
-    assert_eq!(tags.len(), all.len(), "every builtin class has its own tag");
 }
 
 #[test]
@@ -2487,18 +2379,20 @@ fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
 }
 
 /// An image whose mixin table is empty describes no root class, so there is
-/// nothing for `load` to build the world around -- and nothing for the
-/// graph's class tag 1 to name.
+/// no declaration for a module's root record to be held to -- and nothing
+/// for `load` to build the world around.
 #[test]
 fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     let mut interpreter = Interpreter::bootstrap();
     let empty = mixins::Decoded::empty();
     interpreter.enter(|mutator| {
-        let section = decode::RootSection {
-            superclass: BuiltinClass::Object,
-            levels: Vec::new(),
+        let module = image::modules::DecodedModule {
+            origin: SourceOrigin::Embedded("t".to_string()),
+            source: None,
+            root: 0,
         };
-        match decode::build_root_class(mutator, &empty, 0, &section) {
+        let objects = [mutator.builtin_class(BuiltinClass::Object)];
+        match image::modules::module_root_classes(mutator, &empty, &[module], &objects) {
             Err(decode::DecodeError::NotAClass) => assert_eq!(
                 decode::DecodeError::NotAClass.to_string(),
                 "the image's mixin table describes no root class"
@@ -2662,8 +2556,9 @@ fn mixin_ids_for<'gc>(
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
 /// graph section, decodes both with the same `Reader`, and returns
-/// (interpreter, class root, original roots, decoded roots, maximum identity
-/// hash) -- every handle rooted, since none of them may outlive the entry
+/// (interpreter, the decoded root class -- a record of the graph, as the
+/// module section would name it -- original roots, decoded roots, maximum
+/// identity hash) -- every handle rooted, since none of them may outlive the entry
 /// that produced it. `make_roots` may run code, so the class and the roots
 /// are only read again, inside a fresh entry, once it has returned.
 fn round_trip_graph(
@@ -2672,7 +2567,7 @@ fn round_trip_graph(
 ) -> (Interpreter, Root, Vec<Root>, Vec<Root>, u32) {
     let (mut interpreter, class) = load(source);
     let roots = make_roots(&mut interpreter, &class);
-    let (decoded_roots, max_identity_hash) = interpreter.enter(|mutator| {
+    let (decoded_class, decoded_roots, max_identity_hash) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let root_values: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
         let mut symbols = symbols::Builder::new();
@@ -2684,28 +2579,27 @@ fn round_trip_graph(
         )
         .expect("encode code table");
         let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
-        let used = encode::encode_graph_section(
+        let encoded = encode::encode_graph_section(
             mutator,
             &mut writer,
             &root_values,
             &ids,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &[class],
             &mixin_ids,
             &mut symbols,
         )
         .expect("encode graph");
-        let shipped = shipped_names::resolve_in(mutator, &used.names(mutator), false)
+        let shipped = shipped_names::resolve_in(mutator, &encoded.used.names(mutator), false)
             .expect("the graph's own names resolve");
         let bytes = writer.into_bytes();
         let symbol_table = symbols.build();
         let mut reader = decode::Reader::new(&bytes);
         let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
         let mixin_order = mixin_preorder(mutator.heap(), class);
-        let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
         let decoded = {
             let mut context = decode::DecodeContext {
                 mutator,
-                modules: &module_classes,
+                module_roots: &encoded.module_roots,
                 codes: &code_table.codes,
                 mixins: &mixin_order,
                 shipped: &shipped,
@@ -2717,9 +2611,18 @@ fn round_trip_graph(
             .iter()
             .map(|value| mutator.stash(*value))
             .collect();
-        (decoded_roots, decoded.max_identity_hash)
+        let decoded_class = mutator.stash(Value::object(
+            decoded.objects[encoded.module_roots[0] as usize],
+        ));
+        (decoded_class, decoded_roots, decoded.max_identity_hash)
     });
-    (interpreter, class, roots, decoded_roots, max_identity_hash)
+    (
+        interpreter,
+        decoded_class,
+        roots,
+        decoded_roots,
+        max_identity_hash,
+    )
 }
 
 const EMPTY: &str = indoc! {"
@@ -3049,7 +2952,7 @@ fn the_graph_section_encoding_is_deterministic() {
                 &mut writer,
                 &roots,
                 &ids,
-                &image::ModuleClasses::of(mutator.heap(), &[class]),
+                &[class],
                 &mixin_ids,
                 &mut symbols,
             )
@@ -3152,9 +3055,6 @@ impl WriteShipped for encode::Writer {
 /// class, no compiled code, and the shipped names of `FIXTURE_NAMES`.
 struct GraphFixture {
     interpreter: Interpreter,
-    /// A root, not a handle: a fixture outlives every entry it makes, and
-    /// only a `Root` may do that. `decode` fetches it inside its own entry.
-    class: Root,
     codes: Vec<Rc<CompiledCode>>,
     /// Empty by default: most fixtures' hand-crafted bytes never reference a
     /// selector. Tests that do (a frame kind's method name, a closure's
@@ -3166,6 +3066,10 @@ struct GraphFixture {
     /// The section the bytes are decoded against, resolved against the
     /// fixture's own world inside each entry: `FIXTURE_NAMES`.
     names: Vec<ShippedName>,
+    /// The object ids the module section would name the module roots by:
+    /// empty by default, since most hand-crafted graphs carry no root class
+    /// record; one whose method frame has no current class names its own.
+    module_roots: Vec<u32>,
 }
 
 impl GraphFixture {
@@ -3181,11 +3085,11 @@ impl GraphFixture {
             .enter(|mutator| mixin_preorder(mutator.heap(), class_reference(mutator, &class)));
         GraphFixture {
             interpreter,
-            class,
             codes: Vec::new(),
             symbols: symbols::Table::empty(),
             mixins,
             names: fixture_names(),
+            module_roots: Vec::new(),
         }
     }
 
@@ -3203,20 +3107,18 @@ impl GraphFixture {
             Result<decode::DecodedGraph<'gc>, decode::DecodeError>,
         ) -> R,
     ) -> R {
-        let class = &self.class;
         let codes = &self.codes;
         let mixins = &self.mixins;
         let symbols = &self.symbols;
         let names = &self.names;
+        let module_roots = &self.module_roots;
         self.interpreter.enter(|mutator| {
-            let class = class_reference(mutator, class);
-            let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
             let shipped = shipped_names::resolve_in(mutator, names, false)
                 .expect("the fixture's names resolve");
             let decoded = {
                 let mut context = decode::DecodeContext {
                     mutator,
-                    modules: &module_classes,
+                    module_roots,
                     codes,
                     mixins,
                     shipped: &shipped,
@@ -3471,9 +3373,10 @@ fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
 fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     // 200 is no class tag at all; 1 and 3 are retired, the one root class
     // and its levels before an image carried several modules, and must name
-    // no module now rather than whichever came first; 0 and 5 are retired,
-    // a builtin by builtin tag and a class a platform path named.
-
+    // no module now rather than whichever came first; 4, 6 and 7 are
+    // retired, a module's root class, its levels and their metaclasses
+    // before those became records; 0 and 5 are retired, a builtin by
+    // builtin tag and a class a platform path named.
     for tag in [200].into_iter().chain(RETIRED_CLASS_TAGS) {
         let mut writer = encode::Writer::new();
         graph_counts(&mut writer, 1);
@@ -3834,14 +3737,20 @@ fn a_frame_record_with_a_stray_byte_is_refused() {
 
 #[test]
 fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
-    let mut writer = one_frame_prefix();
+    // The frame has no current class, so its method is resolved against the
+    // module's root class record, object 1, which declares no `gone`.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 3);
+    frame_header(&mut writer, 0);
     writer.write_u8(FRAME_METHOD); // frame kind: Method
     writer.write_u32(0); // selector id 0 ("gone")
     frame_tail(&mut writer, 0, 0);
+    root_class_records(&mut writer, 1);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     let mut fixture = GraphFixture::new();
     fixture.symbols = table_with(&["gone"]);
+    fixture.module_roots = vec![1];
     let error = fixture.decode_error(&bytes);
     assert_eq!(
         error,
@@ -3906,26 +3815,25 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let before = writer.into_bytes().len();
         let mut writer = encode::Writer::new();
         let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
-        let used = encode::encode_graph_section(
+        let encoded = encode::encode_graph_section(
             mutator,
             &mut writer,
             &roots,
             &ids,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &[class],
             &mixin_ids,
             &mut symbols,
         )
         .expect("encode graph");
-        let shipped = shipped_names::resolve_in(mutator, &used.names(mutator), false)
+        let shipped = shipped_names::resolve_in(mutator, &encoded.used.names(mutator), false)
             .expect("the graph's own names resolve");
         let graph = writer.into_bytes();
         let symbol_table = symbols.build();
         assert!(before > 0 && graph.len() > 8);
         let mixin_order = mixin_preorder(mutator.heap(), class);
-        let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
         let mut context = decode::DecodeContext {
             mutator,
-            modules: &module_classes,
+            module_roots: &encoded.module_roots,
             codes: &[],
             mixins: &mixin_order,
             shipped: &shipped,
@@ -5636,13 +5544,13 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
     let fixture = GraphFixture {
         codes: table.codes.clone(),
         interpreter,
-        class,
         // `foo_frame` below writes the `Method` frame kind's selector as id
         // 0, which must resolve to "foo" -- the method `install_mixin` just
         // gave the compiled body to.
         symbols: table_with(&["foo"]),
         mixins,
         names: fixture_names(),
+        module_roots: vec![2],
     };
 
     (fixture, table)
@@ -5651,10 +5559,12 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
 /// A graph section holding one closure object over code id 0 and the one
 /// frame it names as its `captured_frame`, object 1, whose record `frame`
 /// writes after its header. The home follows from the captured frame, so the
-/// record carries no second id.
+/// record carries no second id. The module root's two records follow at 2
+/// (`root_class_records`), the class a frame with no current class resolves
+/// its method against.
 fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2);
+    graph_counts(&mut writer, 4);
     writer.write_shipped(CLOSURE_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
@@ -5663,6 +5573,7 @@ fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     writer.write_u16(0); // copying nothing
     frame_header(&mut writer, 0);
     frame(&mut writer);
+    root_class_records(&mut writer, 2);
     writer.write_u32(1); // one root...
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0); // ...the closure
@@ -6143,13 +6054,12 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     });
 }
 
-/// A builtin class and the root class are named by tag, not carried as
-/// records, so before the closing hash table nothing recorded a hash one of
-/// them had been given: after the load the bootstrap's fresh objects drew
-/// new ones (`docs/design/image-format.md`, "Identity hashes are preserved
-/// verbatim"). One that nothing asked stays unassigned. The platform is a
-/// record, so its hash travels in its record's header: a root holding it
-/// decodes to a record of that hash.
+/// A builtin class is named, not carried as a record, so before the closing
+/// hash table nothing recorded a hash it had been given: after the load the
+/// bootstrap's fresh objects drew new ones (`docs/design/image-format.md`,
+/// "Identity hashes are preserved verbatim"). One that nothing asked stays
+/// unassigned. The root class and the platform are records, so their
+/// hashes travel in their records' headers.
 #[test]
 fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let source = indoc! {"
@@ -6184,11 +6094,16 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.graph_tag_named_hashes,
-        vec![
-            format!("<module 0> hash {class_hash}"),
-            format!("Kernel Integer hash {integer_hash}"),
-        ],
-        "inspect reads the table, in the encoder's fixed order"
+        vec![format!("Kernel Integer hash {integer_hash}")],
+        "inspect reads the table, the shipped names alone"
+    );
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|record| record.contains(&format!("hash {class_hash}, class mixin row 0"))),
+        "the root class's hash is its record's: {:?}",
+        report.graph_objects
     );
 
     let mut loaded = image::load(&bytes).expect("load");
@@ -6221,14 +6136,12 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
 /// The closing table alone, decoded against a freshly loaded world and the
 /// section of `FIXTURE_NAMES`.
 fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
-    let (mut interpreter, class) = load(EMPTY);
+    let (mut interpreter, _class) = load(EMPTY);
     interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let modules = image::ModuleClasses::of(mutator.heap(), &[class]);
         let shipped = shipped_names::resolve_in(mutator, &fixture_names(), false)
             .expect("the fixture's names resolve");
         let mut reader = decode::Reader::new(bytes);
-        decode::decode_tag_named_hashes(mutator, &mut reader, &modules, &shipped)
+        decode::decode_tag_named_hashes(mutator, &mut reader, &shipped)
     })
 }
 
@@ -6238,8 +6151,8 @@ fn a_tag_named_hash_of_zero_is_refused() {
     // out; accepting it would give one world two encodings.
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(image::opcodes::HASHED_MODULE_CLASS);
-    writer.write_u32(0); // module 0
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(0);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
@@ -6296,32 +6209,6 @@ fn an_unknown_tag_named_hash_tag_is_refused() {
     }
 }
 
-#[test]
-fn a_tag_named_hash_past_the_modules_is_refused() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(HASHED_MODULE_CLASS);
-    writer.write_u32(1); // the world carries module 0 alone
-    writer.write_u32(5);
-    assert_eq!(
-        decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::BadModuleReference { module: 1 })
-    );
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(HASHED_MODULE_LEVEL);
-    writer.write_u32(0);
-    writer.write_u32(0); // `EMPTY`'s root adds no level
-    writer.write_u32(5);
-    assert_eq!(
-        decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::BadModuleLevel {
-            module: 0,
-            position: 0
-        })
-    );
-}
-
 /// A shipped entry's index past the section is refused before it indexes.
 #[test]
 fn a_tag_named_hash_past_the_shipped_names_is_refused() {
@@ -6342,10 +6229,8 @@ fn a_tag_named_hash_past_the_shipped_names_is_refused() {
 /// world's own object.
 #[test]
 fn a_tag_named_hash_may_name_a_module_instance() {
-    let (mut interpreter, class) = load(EMPTY);
+    let mut interpreter = Interpreter::bootstrap();
     interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let modules = image::ModuleClasses::of(mutator.heap(), &[class]);
         let shipped = shipped_names::resolve_in(mutator, &fixture_names(), false)
             .expect("the fixture's names resolve");
         let kernel = shipped[KERNEL_INSTANCE_NAME as usize].object;
@@ -6357,7 +6242,7 @@ fn a_tag_named_hash_may_name_a_module_instance() {
         let bytes = writer.into_bytes();
         let mut reader = decode::Reader::new(&bytes);
         assert_eq!(
-            decode::decode_tag_named_hashes(mutator, &mut reader, &modules, &shipped),
+            decode::decode_tag_named_hashes(mutator, &mut reader, &shipped),
             Ok(7)
         );
         assert_eq!(mutator.heap().object_identity_hash(kernel), 7);
@@ -6382,8 +6267,8 @@ fn the_tag_named_hash_table_answers_its_largest_hash() {
     writer.write_u32(STRING_NAME);
     writer.write_u32(9);
 
-    writer.write_u8(image::opcodes::HASHED_MODULE_CLASS);
-    writer.write_u32(0); // module 0
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(4);
     assert_eq!(decode_tag_named(&writer.into_bytes()), Ok(9));
 }
@@ -7241,6 +7126,29 @@ fn snapshot_of(source: &str) -> Vec<u8> {
 // The module section: several modules in one image, each named by its index.
 // ---------------------------------------------------------------------------
 
+/// A module's root class is a record of the graph like any class: the
+/// module section names it by object id, and a load answers that record.
+#[test]
+fn a_modules_root_class_is_a_record_the_module_section_names() {
+    let (mut interpreter, class) = load(EMPTY);
+    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        snapshot_one(mutator, Some(EMPTY), &origin, class, &[]).expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("class mixin row 0")),
+        "the root class is a class record: {:?}",
+        report.graph_objects
+    );
+    let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(loaded.modules.len(), 1);
+}
+
 /// Loads a further module into `interpreter`, resolved as coming from `name`.
 fn load_another(interpreter: &mut Interpreter, source: &str, name: &str) -> Root {
     let module = ns_syntax::parse(source).expect("parse");
@@ -7362,12 +7270,10 @@ fn an_image_of_two_modules_restores_both_and_the_graph_reaching_them() {
             .map(|section| section.detail.as_str()),
         Some("2 modules")
     );
+    let second_root = module_root_object(&bytes, 1);
     assert!(
-        report
-            .graph_objects
-            .iter()
-            .any(|object| object.contains("<module 1>")),
-        "the graph names Second by its module index: {:?}",
+        report.graph_objects[second_root].contains("class mixin row"),
+        "the module section names Second's root class record: {:?}",
         report.graph_objects
     );
 }
@@ -7402,83 +7308,163 @@ fn rewrite_in_graph(bytes: &mut [u8], pattern: &[u8], replacement: &[u8]) {
     bytes[position..position + replacement.len()].copy_from_slice(replacement);
 }
 
-/// `inspect` reports on the files that fail to load too, so a class tag
-/// naming a module past the module section, or a level past the ones a root
-/// section rebuilds, is shown marked as such rather than refused or printed
-/// as if it named one.
-#[test]
-fn inspect_marks_a_module_class_tag_past_the_modules() {
-    let (mut interpreter, first, second, instance) = two_module_world();
-    expect_ok(
-        interpreter.send(
-            &instance,
-            Symbol::intern("held:"),
-            std::slice::from_ref(&second),
-        ),
-        "held:",
-    );
-    let mut bytes = two_module_image(&mut interpreter, &first, &second, &instance);
-    let mut held_second = vec![VALUE_CLASS_TAG, CLASS_MODULE];
-    held_second.extend(1u32.to_le_bytes());
-    let mut held_seventh = vec![VALUE_CLASS_TAG, CLASS_MODULE];
-    held_seventh.extend(7u32.to_le_bytes());
-    rewrite_in_graph(&mut bytes, &held_second, &held_seventh);
-    let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert!(
-        report
-            .graph_objects
-            .iter()
-            .any(|object| object.contains("class <module 7: out of range>")),
-        "the module past the section is marked: {:?}",
-        report.graph_objects
-    );
+/// The object id the module section names `module`'s root class record by,
+/// as `inspect` reports it (`root object {id}`).
+fn module_root_object(bytes: &[u8], module: usize) -> usize {
+    let report = image::inspect::inspect(bytes).expect("inspect");
+    report.modules[module]
+        .root
+        .strip_prefix("root object ")
+        .and_then(|id| id.parse().ok())
+        .expect("a module line names its root object")
+}
 
-    let source = indoc! {"
-        class Root = Object new <: Value () ()
-    "};
-    let (mut interpreter, class) = load(source);
-    let mut bytes = interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &class);
-        let level = mutator
-            .heap()
-            .class_superclass(root_class)
-            .expect("the root's level");
+/// Where the `u32` object id of `module`'s root class record sits in the
+/// module section.
+fn module_root_id_at(bytes: &[u8], module: usize) -> usize {
+    let has_source = decode::read_header(&mut decode::Reader::new(bytes))
+        .expect("valid header")
+        .has_source;
+    let mut reader = decode::Reader::new(bytes);
+    reader
+        .read_raw(module_section_start(bytes))
+        .expect("the sections before");
+    reader.read_u32().expect("module count");
+    for _ in 0..module {
+        decode::decode_source_origin(&mut reader).expect("an earlier module's origin");
+        if has_source {
+            reader.read_str().expect("an earlier module's source");
+        }
+        reader.read_u32().expect("an earlier module's root");
+    }
+    decode::decode_source_origin(&mut reader).expect("the module's origin");
+    if has_source {
+        reader.read_str().expect("the module's source");
+    }
+    reader.position()
+}
+
+/// `EMPTY` carried with one root, an empty array: its graph holds the
+/// array, the root class's record and its metaclass's, and its shipped
+/// names `Kernel Array` and `Kernel Object` both.
+fn empty_module_with_an_array() -> Vec<u8> {
+    let (mut interpreter, class) = load(EMPTY);
+    interpreter.enter(|mutator| {
+        let array = Value::object(mutator.new_array(Vec::new()));
+        let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
-            root_class,
-            &[Value::object(level)],
+            class,
+            &[array],
         )
         .expect("snapshot")
-    });
-    let mut level_zero = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
-    level_zero.extend(0u32.to_le_bytes());
-    level_zero.extend(0u32.to_le_bytes());
-    let mut level_three = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
-    level_three.extend(0u32.to_le_bytes());
-    level_three.extend(3u32.to_le_bytes());
-    rewrite_in_graph(&mut bytes, &level_zero, &level_three);
-    let report = image::inspect::inspect(&bytes).expect("inspect");
+    })
+}
+
+/// A module's root is named by an id into the object table, which is
+/// checked against the decoded graph like every other id.
+#[test]
+fn a_module_root_id_past_the_graph_is_refused() {
+    let mut bytes = empty_module_with_an_array();
+    let root_id_at = module_root_id_at(&bytes, 0);
+    bytes[root_id_at..root_id_at + 4].copy_from_slice(&999u32.to_le_bytes());
     assert_eq!(
-        report.graph_roots,
-        vec!["class <module 0 level 3: out of range>".to_string()]
+        load_error(&bytes),
+        decode::DecodeError::BadObjectId(999).to_string()
     );
 }
 
-/// No image reaches this refusal today -- the root rule admits only `Object`
-/// and `Value`, which every bootstrap applies -- so its report is pinned
-/// here, where a malformed message would otherwise go unseen.
+/// The record a module section names must be a class of the module's own
+/// root declaration: an array is no class at all.
 #[test]
-fn a_root_builtin_without_an_application_names_its_module_and_builtin() {
-    let error = decode::DecodeError::RootBuiltinWithoutApplication {
-        module: 2,
-        builtin: BuiltinClass::Value,
-    };
+fn a_module_root_naming_an_array_is_refused() {
+    let mut bytes = empty_module_with_an_array();
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let array = report
+        .graph_objects
+        .iter()
+        .position(|record| record.contains("array []"))
+        .expect("the array's record");
+    let root_id_at = module_root_id_at(&bytes, 0);
+    bytes[root_id_at..root_id_at + 4]
+        .copy_from_slice(&u32::try_from(array).expect("an id").to_le_bytes());
     assert_eq!(
-        error.to_string(),
-        "the root class of the image's module 2 builds on the builtin Value, which this build \
-         has no behaviour for"
+        load_error(&bytes),
+        decode::DecodeError::ModuleRootNotItsRecord { module: 0 }.to_string()
+    );
+}
+
+/// A root class record over `Kernel Array` applies its module's root row,
+/// but the root rule builds no root over anything but `Object` or `Value`:
+/// refused, though `Kernel Array` may stand as a superclass elsewhere.
+#[test]
+fn a_root_record_over_kernel_array_breaks_the_root_rule() {
+    let mut bytes = empty_module_with_an_array();
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let index_of = |name: &str| {
+        u32::try_from(
+            report
+                .shipped_names
+                .iter()
+                .position(|shipped| shipped == name)
+                .expect("the name is in the section"),
+        )
+        .expect("an index")
+    };
+    let row = mixin_table_of(&bytes).module_rows[0];
+    let superclass = |index: u32| {
+        let mut record = vec![OBJECT_CLASS, MIXIN_ROW];
+        record.extend(row.to_le_bytes());
+        record.push(1);
+        record.push(CLASS_SHIPPED);
+        record.extend(index.to_le_bytes());
+        record
+    };
+    rewrite_in_graph(
+        &mut bytes,
+        &superclass(index_of("Kernel Object")),
+        &superclass(index_of("Kernel Array")),
+    );
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::RootRule { module: 0 }.to_string()
+    );
+}
+
+/// The two refusals of a module's root record, pinned by variant.
+#[test]
+fn the_refusals_of_a_module_root_record_name_their_module() {
+    assert_eq!(
+        decode::DecodeError::ModuleRootNotItsRecord { module: 2 }.to_string(),
+        "the image names a record as the root class of its module 2 that is no class of that \
+         module's root declaration"
+    );
+    assert_eq!(
+        decode::DecodeError::RootRule { module: 2 }.to_string(),
+        "the root class of the image's module 2 inherits neither Object nor Value, nor Value \
+         applied over Object, as a module's root class must"
+    );
+}
+
+/// The encoder holds a root to the same rule, so it never writes a root the
+/// loader refuses.
+#[test]
+fn a_root_class_over_kernel_array_is_not_written() {
+    let (mut interpreter, class) = load(EMPTY);
+    let error = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        mutator.heap_mut().class_set_superclass(class, array);
+        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+            Ok(_) => panic!("a root over Kernel Array must not be written"),
+            Err(error) => error,
+        }
+    });
+    assert!(
+        error.contains("does not inherit what the root rule allows"),
+        "unexpected error: {error}"
     );
 }
 
@@ -7527,11 +7513,11 @@ fn a_module_count_past_the_bytes_left_is_refused() {
     ));
 }
 
+/// Each module's root record is held to its own module's root row: module
+/// 1's id naming module 0's root class record -- a class record that obeys
+/// the root rule, of another declaration -- is refused for module 1.
 #[test]
-fn a_root_section_clause_is_checked_against_its_own_modules_row() {
-    // Module 0's row declares a `<:` clause; module 1's declares none. Module
-    // 1's section naming clause 0 is refused against module 1's own row --
-    // module 0's would have accepted it.
+fn a_module_root_is_held_to_its_own_modules_row() {
     let (mut interpreter, first) = load(indoc! {"
         class First = Object new <: Value () () : ()
     "});
@@ -7556,39 +7542,12 @@ fn a_root_section_clause_is_checked_against_its_own_modules_row() {
         })
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
-    let decoded = mixin_table_of(&bytes);
-    let second_row = decoded.module_rows[1];
-    let level_count_at = {
-        let mut reader = decode::Reader::new(&bytes);
-        reader
-            .read_raw(module_section_start(&bytes))
-            .expect("the sections before");
-        reader.read_u32().expect("module count");
-        decode::decode_source_origin(&mut reader).expect("module 0's origin");
-        decode::decode_root_section(&mut reader, &decoded, 0).expect("module 0's root section");
-        decode::decode_source_origin(&mut reader).expect("module 1's origin");
-        // Module 1's root section: the presence flag, the superclass tag,
-        // then the level count.
-        reader.position() + 2
-    };
-    assert_eq!(
-        bytes[level_count_at..level_count_at + 4],
-        0u32.to_le_bytes(),
-        "Second applies no mixin"
-    );
-    bytes[level_count_at..level_count_at + 4].copy_from_slice(&1u32.to_le_bytes());
-    let mut level = encode::Writer::new();
-    level.write_u32(0); // clause 0 ...
-    level.write_u8(encode::builtin_class_tag(BuiltinClass::Value)); // ... naming Value
-    let insert_at = level_count_at + 4;
-    bytes.splice(insert_at..insert_at, level.into_bytes());
+    let first_root = u32::try_from(module_root_object(&bytes, 0)).expect("an id");
+    let root_id_at = module_root_id_at(&bytes, 1);
+    bytes[root_id_at..root_id_at + 4].copy_from_slice(&first_root.to_le_bytes());
     assert_eq!(
         load_error(&bytes),
-        decode::DecodeError::BadMixinApplicationClause {
-            row: second_row,
-            index: 0
-        }
-        .to_string()
+        decode::DecodeError::ModuleRootNotItsRecord { module: 1 }.to_string()
     );
 }
 
@@ -7642,11 +7601,11 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
     }
 }
 
-/// A level a module root's `<:` clause added is no record, so its own
-/// identity hash travels in the closing table (`HASHED_MODULE_LEVEL`), as
-/// its metaclass's already did. The kernel gives a program no `superclass`
-/// accessor, so the hash is drawn from Rust, where a later reflective
-/// reach would draw it.
+/// A level a module root's `<:` clause added is a record, so its own
+/// identity hash travels in its record's header, as its root's and both
+/// metaclasses' do. The kernel gives a program no `superclass` accessor,
+/// so the hash is drawn from Rust, where a later reflective reach would
+/// draw it.
 #[test]
 fn a_module_levels_own_hash_survives_an_image() {
     let source = indoc! {"
@@ -7673,11 +7632,11 @@ fn a_module_levels_own_hash_survives_an_image() {
     });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
-        report
-            .graph_tag_named_hashes
-            .contains(&format!("<module 0 level 0> hash {hash}")),
-        "the closing table records the level: {:?}",
-        report.graph_tag_named_hashes
+        report.graph_objects.iter().any(
+            |record| record.contains(&format!("hash {hash}, class mixin shipped Kernel Value"))
+        ),
+        "the level's record carries its hash: {:?}",
+        report.graph_objects
     );
     let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
     let module_class = loaded.modules[0].class.clone();
@@ -8606,31 +8565,41 @@ fn instance_chain_depth<'gc>(heap: &Heap<'gc>, head: Value<'gc>) -> u32 {
     depth
 }
 
-/// A complete image whose graph section is `graph` verbatim. Everything
-/// before it comes from a real `snapshot` of `EMPTY`, its shipped-name
-/// section replaced by `FIXTURE_NAMES`'s, so `graph` may use the fixture's
-/// indices. The snapshot's own graph section is exactly the three zero
-/// counts at the end of the file -- so the splice point is found by
-/// structure, not by a hardcoded offset.
-fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
+/// A complete image whose graph section is `graph` verbatim and whose
+/// module section names record `root` as `EMPTY`'s root class. Everything
+/// before the graph comes from a real `snapshot` of `EMPTY`, its
+/// shipped-name section replaced by `FIXTURE_NAMES`'s, so `graph` may use
+/// the fixture's indices. The splice point is found by structure, where
+/// `inspect` says the graph section starts, not by a hardcoded offset.
+fn image_with_graph_section(graph: &[u8], root: u32) -> Vec<u8> {
     let mut bytes = with_fixture_names(&snapshot_of(EMPTY));
-    let tail = bytes.len() - 12;
-    assert_eq!(
-        &bytes[tail..],
-        &[0u8; 12],
-        "a rootless snapshot ends in three zero counts: objects, roots, tag-named hashes"
-    );
-    bytes.truncate(tail);
+    let root_id_at = module_root_id_at(&bytes, 0);
+    bytes[root_id_at..root_id_at + 4].copy_from_slice(&root.to_le_bytes());
+    bytes.truncate(graph_section_start(&bytes));
     bytes.extend_from_slice(graph);
     bytes
 }
 
+/// `EMPTY`'s root class as records `id` and `id + 1`: a class record of
+/// row 0 over `Kernel Object` and its metaclass record -- what a graph
+/// spliced into `EMPTY`'s image needs for its module section to name.
+fn root_class_records(writer: &mut encode::Writer, id: u32) {
+    class_record(writer, id + 1, 0, |writer| {
+        writer.write_boolean(true);
+        writer.write_shipped(OBJECT_NAME); // superclass: Kernel Object
+        writer.write_boolean(false); // no enclosing object
+        writer.write_boolean(false); // no declaring class
+    });
+    metaclass_record(writer, id);
+}
+
 /// `levels` class records, each inheriting from the next, with the
 /// outermost as the image's single root, followed by their `levels`
-/// metaclass records in the same order.
+/// metaclass records in the same order, then the module root's
+/// two (`root_class_records`) at `2 * levels`.
 fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2 * levels);
+    graph_counts(&mut writer, 2 * levels + 2);
     for level in 0..levels {
         class_record(&mut writer, levels + level, 0, |writer| {
             if level + 1 < levels {
@@ -8647,6 +8616,7 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     for level in 0..levels {
         metaclass_record(&mut writer, level);
     }
+    root_class_records(&mut writer, 2 * levels);
     writer.write_u32(1); // one root
     writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
     writer.write_u8(CLASS_RECORD); // class tag: object-table record
@@ -8657,10 +8627,11 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
 
 /// `levels` instance records, each holding the next in its one field, with
 /// the outermost as the image's single root -- the shape that has been
-/// expressible since the object table existed.
+/// expressible since the object table existed -- then the module root's two
+/// records (`root_class_records`) at `levels`.
 fn instance_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, levels);
+    graph_counts(&mut writer, levels + 2);
     for level in 0..levels {
         writer.write_shipped(OBJECT_NAME);
         writer.write_u32(level);
@@ -8673,6 +8644,7 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
             writer.write_u32(0);
         }
     }
+    root_class_records(&mut writer, levels);
     writer.write_u32(1); // one root
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0);
@@ -8689,7 +8661,7 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // (`dispatch::walk`), iteratively over an explicit stack, on a chain a
     // four-megabyte image describes. Recursing on either walk would abort
     // here.
-    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
     loaded.interpreter.enter(|mutator| {
@@ -8713,7 +8685,7 @@ fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack
     // not see a per-level recursion (`docs/design/execution.md`, "A
     // superclass chain is walked iteratively"). Recursing once per level
     // would abort here.
-    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
     loaded.interpreter.enter(|mutator| {
@@ -8740,7 +8712,7 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the
     // is the root and the chain it alone owns -- and the application chain
     // `rebuild_applications` built alongside it -- so the cascade fires
     // here, at the end of the test, with no send of any kind.
-    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
         let root_0 = mutator.fetch(&loaded.roots[0]);
@@ -8751,7 +8723,7 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the
 
 #[test]
 fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_the_stack() {
-    let bytes = image_with_graph_section(&instance_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&instance_chain_graph(DEEP), DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
         let root_0 = mutator.fetch(&loaded.roots[0]);
@@ -9906,12 +9878,11 @@ fn a_metaclass_identity_hash_survives() {
     });
 }
 
-/// The metaclass of a root level is named by tag, behind the level's own
-/// `CLASS_MODULE_LEVEL`, and its identity hash travels in the closing table:
-/// the root and its levels are built before the graph, metaclasses
-/// included, so both resolve to the loading world's own.
+/// The metaclass of a root level is a record like the level's, named by its
+/// object id, and its identity hash travels in its header: it decodes to the
+/// loaded level's own metaclass.
 #[test]
-fn a_root_level_metaclass_round_trips_by_tag() {
+fn a_root_level_metaclass_round_trips_as_a_record() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
@@ -9935,9 +9906,11 @@ fn a_root_level_metaclass_round_trips_by_tag() {
         (bytes, hash)
     });
     let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert_eq!(
-        report.graph_roots,
-        vec!["class metaclass of <module 0 level 0>".to_string()]
+    assert_eq!(report.graph_roots, vec!["class object 0".to_string()]);
+    assert!(
+        report.graph_objects[0].contains(&format!("hash {hash}, metaclass of object ")),
+        "the root is the level's metaclass record: {:?}",
+        report.graph_objects
     );
     let mut loaded = image::load(&bytes).expect("load");
     let root = loaded.roots[0].clone();
@@ -10162,70 +10135,6 @@ fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     );
 }
 
-/// A metaclass reference names a module class's metaclass, one level deep:
-/// behind `CLASS_METACLASS` a second `CLASS_METACLASS`, a `CLASS_RECORD` --
-/// whose metaclass is a record of its own -- or a `CLASS_SHIPPED` -- whose
-/// metaclass is a shipped name of its own -- is refused.
-#[test]
-fn a_nested_metaclass_reference_is_refused() {
-    let mut fixture = GraphFixture::new();
-    let mut one_level = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_MODULE);
-        writer.write_u32(0);
-    });
-    one_level.extend_from_slice(&[0, 0, 0, 0]); // no roots
-    fixture.decoded(&one_level, "the root's metaclass by tag", |heap, graph| {
-        let Some(element) = heap
-            .array_element(graph.objects[0], 0)
-            .and_then(Value::as_object)
-        else {
-            panic!("the array holds a class object");
-        };
-        assert!(heap.class_this_class(element).is_some());
-    });
-    let nested = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_MODULE);
-        writer.write_u32(0);
-    });
-    assert_eq!(
-        fixture.decode_error(&nested),
-        decode::DecodeError::InvalidTag {
-            what: "module class",
-            tag: CLASS_METACLASS
-        }
-    );
-    let of_a_record = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_RECORD);
-        writer.write_u32(0);
-    });
-    assert_eq!(
-        fixture.decode_error(&of_a_record),
-        decode::DecodeError::InvalidTag {
-            what: "module class",
-            tag: CLASS_RECORD
-        }
-    );
-    let of_a_shipped_class = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_shipped(INTEGER_NAME);
-    });
-    assert_eq!(
-        fixture.decode_error(&of_a_shipped_class),
-        decode::DecodeError::InvalidTag {
-            what: "module class",
-            tag: CLASS_SHIPPED
-        }
-    );
-}
-
 /// No source can make an instance of `Metaclass`, `Class` or a metaclass,
 /// so an image recording one is refused.
 #[test]
@@ -10241,19 +10150,29 @@ fn an_instance_of_metaclass_is_refused() {
         writer.into_bytes()
     };
     let shipped_class = |index: u32| move |writer: &mut encode::Writer| writer.write_shipped(index);
-    let root_metaclass = |writer: &mut encode::Writer| {
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_MODULE);
-        writer.write_u32(0);
+    // An instance of a metaclass record: a class record (object 0), its
+    // metaclass record (object 1), and an instance whose header names it.
+    let of_a_metaclass_record = {
+        let mut writer = encode::Writer::new();
+        graph_counts(&mut writer, 3);
+        class_record(&mut writer, 1, 0, no_class_references);
+        metaclass_record(&mut writer, 0);
+        writer.write_u8(CLASS_RECORD);
+        writer.write_u32(1); // its class: the metaclass record
+        writer.write_u32(3); // identity hash
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
+        writer.write_u32(0); // no roots
+        writer.into_bytes()
     };
     let mut fixture = GraphFixture::new();
-    let refused: [&dyn Fn(&mut encode::Writer); 3] = [
-        &shipped_class(METACLASS_NAME),
-        &shipped_class(CLASS_NAME),
-        &root_metaclass,
+    let refused = [
+        instance_of(&shipped_class(METACLASS_NAME)),
+        instance_of(&shipped_class(CLASS_NAME)),
+        of_a_metaclass_record,
     ];
-    for class in refused {
-        let error = fixture.decode_error(&instance_of(class));
+    for bytes in refused {
+        let error = fixture.decode_error(&bytes);
         assert_eq!(error, decode::DecodeError::InstanceOfAClassClass);
         assert_eq!(
             error.to_string(),
@@ -10301,23 +10220,22 @@ fn a_class_record_applying_a_class_side_is_refused() {
     );
 }
 
-/// `inspect` reads every metaclass form the way `load` does, and refuses a
-/// nested metaclass reference the same way.
+/// `inspect` refuses a retired class tag the way `load` does: 4 was the
+/// metaclass of a module's root class or level before those became records.
 #[test]
-fn inspect_refuses_a_nested_metaclass_reference() {
+fn inspect_refuses_a_retired_metaclass_tag() {
     let mut graph = one_array_object(|writer| {
         writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(4);
     });
     graph.extend_from_slice(&[0, 0, 0, 0]); // no roots
     graph.extend_from_slice(&[0, 0, 0, 0]); // no tag-named hashes
-    let bytes = image_with_graph_section(&graph);
+    let bytes = image_with_graph_section(&graph, 0);
     let error = match image::inspect::inspect(&bytes) {
-        Ok(_) => panic!("inspect accepted a nested metaclass reference"),
+        Ok(_) => panic!("inspect accepted a retired metaclass tag"),
         Err(error) => error,
     };
-    assert_eq!(error, "invalid module class tag 4");
+    assert_eq!(error, "invalid class tag 4");
     assert_eq!(load_error(&bytes), error);
 }
 
@@ -11562,88 +11480,6 @@ fn the_retired_class_record_tag_is_refused() {
     );
 }
 
-#[test]
-fn a_root_level_class_tag_past_the_roots_levels_is_a_decode_error_not_a_panic() {
-    let bytes = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_MODULE_LEVEL); // class tag: a level of a module's root
-        writer.write_u32(0); // module 0 ...
-        writer.write_u32(5); // ... whose root, EMPTY's, applies no mixin
-    });
-    let mut bytes = bytes;
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
-    let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(
-        error,
-        decode::DecodeError::BadModuleLevel {
-            module: 0,
-            position: 5
-        }
-    );
-    assert_eq!(
-        error.to_string(),
-        "the image names level 5 of module 0, which its module section does not rebuild"
-    );
-}
-
-#[test]
-fn a_module_class_tag_past_the_modules_is_refused() {
-    let mut bytes = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_MODULE); // class tag: a module's root class
-        writer.write_u32(7); // the fixture carries module 0 alone
-    });
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
-    assert_eq!(
-        GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::BadModuleReference { module: 7 }
-    );
-}
-
-/// A root level exists before the graph does, so the graph names it by its
-/// position among the root's levels, and decodes that back to the very class
-/// object the root-class section rebuilt.
-#[test]
-fn a_root_level_class_tag_names_the_root_classs_own_level() {
-    let source = indoc! {"
-        class Root = Object new <: Value () ()
-    "};
-    let mut bytes = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_MODULE_LEVEL); // class tag: a level of a module's root
-        writer.write_u32(0); // module 0
-        writer.write_u32(0); // its lowest level
-    });
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
-                                                  // A decoded graph's handles cannot leave the entry that decoded it, so
-                                                  // the element is compared with the root's level by a value both sides can
-                                                  // answer: the identity hash, assigned here, before the decode, to the
-                                                  // level the fixture's own root class sits on.
-    let mut fixture = GraphFixture::with_source(source);
-    let class = fixture.class.clone();
-    let level_hash = fixture.interpreter.enter(|mutator| {
-        let root = class_reference(mutator, &class);
-        let level = mutator
-            .heap()
-            .class_superclass(root)
-            .expect("the root's level");
-        mutator.heap_mut().object_ensure_identity_hash(level)
-    });
-    fixture.decoded(&bytes, "a root level", |heap, graph| {
-        let element = heap
-            .array_elements(graph.objects[0])
-            .expect("an array")
-            .first()
-            .copied()
-            .expect("one element");
-        let Some(level) = element.as_object() else {
-            panic!("the element is a class object")
-        };
-        assert_eq!(heap.object_identity_hash(level), level_hash);
-        assert!(heap.class_applied_clause(level).is_some());
-    });
-}
-
 /// The frame kind of a `<:` clause message names the level the clause added
 /// -- its body is that level's clause's -- and decodes back to that kind.
 #[test]
@@ -11667,117 +11503,91 @@ fn the_mixin_application_message_frame_kind_decodes() {
     );
 }
 
-/// The root-class section's bytes for a root that inherits `superclass` --
-/// written as absent for `None`, which the reader refuses -- then `levels` as
-/// (clause position, builtin tag) pairs.
-fn root_section_bytes(superclass: Option<BuiltinClass>, levels: &[(u32, u8)]) -> Vec<u8> {
-    let mut writer = encode::Writer::new();
-    match superclass {
-        Some(kind) => {
-            writer.write_boolean(true);
-            writer.write_u8(encode::builtin_class_tag(kind));
-        }
-        None => writer.write_boolean(false),
-    }
-    writer.write_u32(levels.len() as u32);
-    for (index, tag) in levels {
-        writer.write_u32(*index);
-        writer.write_u8(*tag);
-    }
-    writer.into_bytes()
-}
-
-/// The root's levels are listed in clause order, at most one per clause, and
-/// only for clauses row 0 declares -- which is also what bounds the count
-/// before anything is reserved for it.
+/// The root rule (`docs/design/object-model.md`, "The root rule"), held to
+/// a root class's superclass chain as the encoder and the loader both hold
+/// it (`modules::root_record_defect`): `Object <: Value` passes, and every
+/// chain the rule does not build -- the level skipped, `Value` applied over
+/// `Value`, the level over a class but `Object`, the root itself standing
+/// as a level -- is refused.
 #[test]
-fn a_root_level_naming_a_clause_out_of_place_is_refused() {
+fn the_root_rule_holds_a_root_classs_superclass_chain() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
-    let decoded = mixin_table_of(&snapshot_of(source));
-    let value = encode::builtin_class_tag(BuiltinClass::Value);
-    let read = |levels: &[(u32, u8)]| {
-        decode::decode_root_section(
-            &mut decode::Reader::new(&root_section_bytes(Some(BuiltinClass::Object), levels)),
-            &decoded,
-            0,
-        )
-    };
-    assert_eq!(
-        read(&[(0, value)]).expect("the one clause"),
-        decode::RootSection {
-            superclass: BuiltinClass::Object,
-            levels: vec![(0, BuiltinClass::Value)],
-        }
-    );
-    for (levels, index) in [(vec![(1, value)], 1), (vec![(0, value), (0, value)], 0)] {
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let root = class_reference(mutator, &class);
+        let root_mixin = mutator
+            .heap()
+            .class_application(root)
+            .expect("a class")
+            .mixin
+            .clone();
+        let level = mutator
+            .heap()
+            .class_superclass(root)
+            .expect("the root's level");
+        let object = mutator.builtin_class(BuiltinClass::Object);
+        let value = mutator.builtin_class(BuiltinClass::Value);
+        let array = mutator.builtin_class(BuiltinClass::Array);
         assert_eq!(
-            read(&levels),
-            Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index })
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            None
         );
-    }
-    let mut huge = encode::Writer::new();
-    huge.write_boolean(true);
-    huge.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
-    huge.write_u32(u32::MAX); // a count no clause list could back
-    assert_eq!(
-        decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded, 0),
-        Err(decode::DecodeError::UnexpectedEndOfFile)
-    );
-    let mirror = encode::builtin_class_tag(BuiltinClass::VmMirror);
-    assert_eq!(
-        read(&[(0, mirror)]),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: mirror
-        })
-    );
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, level),
+            Some(image::modules::RootRecordDefect::NotItsRecord),
+            "a level is no root"
+        );
+        mutator.heap_mut().class_set_superclass(level, value);
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            Some(image::modules::RootRecordDefect::RootRule),
+            "Value applied over Value"
+        );
+        mutator.heap_mut().class_set_superclass(level, array);
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            Some(image::modules::RootRecordDefect::RootRule),
+            "Value applied over Array"
+        );
+        mutator.heap_mut().class_set_superclass(level, object);
+        mutator.heap_mut().class_set_superclass(root, object);
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            Some(image::modules::RootRecordDefect::RootRule),
+            "a root whose clause added no level"
+        );
+    });
 }
 
-/// The root rule (`docs/design/object-model.md`, "The root rule"), read back:
-/// a root section the encoder could never write is refused, so a crafted
-/// artifact cannot bring back a root the rule forbids.
+/// A root's `<:` level is a record like the root, and loads as the level
+/// its clause added: applying `Kernel Value` over the loading boot's own
+/// `Kernel Object`.
 #[test]
-fn a_root_section_the_root_rule_forbids_is_refused() {
+fn a_root_level_loads_as_a_record_applying_kernel_value() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
-    let decoded = mixin_table_of(&snapshot_of(source));
-    let read = |superclass: Option<BuiltinClass>, levels: &[(u32, u8)]| {
-        decode::decode_root_section(
-            &mut decode::Reader::new(&root_section_bytes(superclass, levels)),
-            &decoded,
-            0,
-        )
-    };
-    let tag = encode::builtin_class_tag;
-    assert_eq!(
-        read(Some(BuiltinClass::Array), &[]),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a module's root may inherit",
-            tag: tag(BuiltinClass::Array),
-        })
-    );
-    assert_eq!(
-        read(Some(BuiltinClass::Object), &[(0, tag(BuiltinClass::Array))]),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a module's root may apply",
-            tag: tag(BuiltinClass::Array),
-        })
-    );
-    assert_eq!(
-        read(Some(BuiltinClass::Value), &[(0, tag(BuiltinClass::Value))]),
-        Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index: 0 })
-    );
-    assert_eq!(
-        read(None, &[(0, tag(BuiltinClass::Value))]),
-        Err(decode::DecodeError::RootWithoutSuperclass)
-    );
-    assert_eq!(
-        read(None, &[]),
-        Err(decode::DecodeError::RootWithoutSuperclass)
-    );
+    let loaded = image::load(&snapshot_of(source)).unwrap_or_else(|error| panic!("{error}"));
+    let module_class = loaded.modules[0].class.clone();
+    let mut interpreter = loaded.interpreter;
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let root = class_reference(mutator, &module_class);
+        let level = heap.class_superclass(root).expect("the loaded level");
+        let applied = heap.class_applied_origin(level).expect("a level");
+        assert_eq!(applied.index, 0);
+        assert_eq!(applied.named_builtin, Some(BuiltinClass::Value));
+        let value = mutator.builtin_class(BuiltinClass::Value);
+        assert!(Rc::ptr_eq(
+            &heap.class_application(level).expect("a class").mixin,
+            &heap.class_application(value).expect("a class").mixin
+        ));
+        assert!(heap
+            .class_superclass(level)
+            .is_some_and(|below| below.same(mutator.builtin_class(BuiltinClass::Object))));
+    });
 }
 
 /// A root the rule forbids can never be instantiated, so no image is written
@@ -11994,12 +11804,19 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
-    let report =
-        image::inspect::render(&image::inspect::inspect(&snapshot_of(source)).expect("inspect"));
-    assert!(
-        report.contains("superclass Object, applies Value (clause 0)"),
-        "inspect prints the root's levels:\n{report}"
-    );
+    let bytes = snapshot_of(source);
+    let root = module_root_object(&bytes, 0);
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    for expected in [
+        format!("source present, root object {root}"),
+        "class mixin shipped Kernel Value, superclass Kernel Object, applied by clause 0 of row 0"
+            .to_string(),
+    ] {
+        assert!(
+            report.contains(&expected),
+            "inspect prints the root and its level as records, `{expected}`:\n{report}"
+        );
+    }
 }
 
 /// A nested class's `<:` clause can name a builtin too, and its level is then
@@ -12460,6 +12277,8 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
     assert_eq!(
         report.shipped_names,
         vec![
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
             "PlatformFactory Transcript".to_string(),
             "PlatformFactory Platform".to_string(),
             "CollectionsFactory Collections".to_string(),
@@ -12513,6 +12332,8 @@ fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
     assert_eq!(
         report.shipped_names,
         vec![
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
             "Kernel Array".to_string(),
             "Kernel Integer class".to_string(),
             "CollectionsFactory List".to_string()
@@ -12795,7 +12616,7 @@ fn an_index_past_the_shipped_name_section_is_refused() {
     let crafted = with_shipped_name_section(&bytes, |_, writer| writer.write_u32(0));
     assert_eq!(
         load_error(&crafted),
-        decode::DecodeError::BadShippedName(0).to_string()
+        decode::DecodeError::BadShippedName(1).to_string()
     );
 }
 
@@ -13087,7 +12908,12 @@ fn an_object_reached_twice_is_listed_once() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.shipped_names,
-        vec!["Kernel Array".to_string(), "Kernel Array class".to_string()]
+        vec![
+            "Kernel Array".to_string(),
+            "Kernel Array class".to_string(),
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
+        ]
     );
     assert_eq!(
         report.graph_tag_named_hashes,
@@ -13197,7 +13023,14 @@ fn a_started_image_naming_another_module_is_refused() {
         })
         .unwrap_or_else(|error| panic!("{error}"));
     let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert_eq!(report.shipped_names, vec!["Kernel Array".to_string()]);
+    assert_eq!(
+        report.shipped_names,
+        vec![
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
+            "Kernel Array".to_string(),
+        ]
+    );
     image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
     let crafted = with_shipped_name_section(&bytes, |intern, writer| {
         writer.write_u32(1);
