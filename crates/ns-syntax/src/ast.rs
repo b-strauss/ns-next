@@ -40,7 +40,8 @@ pub enum AccessModifier {
 pub struct ClassDeclaration {
     pub access: Option<AccessModifier>,
     pub name: Identifier,
-    /// The type parameters after the name, `<[K, V]>` or `[E]`, as written.
+    /// The type parameters after the name, `<[K, V]>`, `[E]` or both, as
+    /// written: one annotation may hold two bracket groups.
     pub type_parameters: Option<TypeAnnotation>,
     pub factory: Option<MessagePattern>, // absent form: `class C = Super (...)`
     /// The factory's `^<Type>`, the caret left out.
@@ -249,7 +250,8 @@ pub enum MessagePattern {
     Unary {
         selector: Identifier,
         /// What follows the selector: the type parameters, `List[E]`, and a
-        /// `<Type>` after them, in one annotation as written.
+        /// `<Type>` after them, in one annotation as written, which may
+        /// therefore hold two bracket groups.
         type_parameters: Option<TypeAnnotation>,
     },
     Binary {

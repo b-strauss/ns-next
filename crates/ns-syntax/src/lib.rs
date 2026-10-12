@@ -9,11 +9,6 @@ pub mod diagnostic;
 pub mod lexer;
 mod parser;
 mod positions;
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "only its tests lay documents out so far"
-)]
 mod printer;
 pub mod span;
 pub mod token;
@@ -21,6 +16,7 @@ pub mod token;
 pub use ast::Module;
 pub use comment::{Comment, CommentKind};
 pub use diagnostic::{Diagnostic, Severity};
+pub use printer::{format, print_module, LineEnding};
 pub use span::Span;
 pub use token::{Token, TokenKind};
 
