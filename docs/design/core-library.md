@@ -3567,9 +3567,14 @@ mixin, `IndexedCollection` (named with the user on 2026-10-12), that `Array`,
 Collection <: IndexedCollection`. A class overrides what a leaf does faster,
 as `Array`'s and `ByteArray`'s `copyFrom:to:` and
 `replaceFrom:to:with:startingAt:` do.
-Programs see the same selectors; `Array superclass` answers the
-application of `IndexedCollection` over `Collection` rather than
-`Collection`. `IndexedCollection` declares `Collection` its own
+Programs see the same selectors and no new level: the kernel has no
+public `superclass`, so only road step 5's mirrors will show the level
+between `Array` and `Collection`, a class whose name is its mixin's,
+`IndexedCollection` -- `Class>>name` answers the name of a class's
+application's mixin (`builtins/behavior.rs`), and an applied level's
+application is the named class's mixin over the level below
+(`interpreter/nested.rs`, `build_applied_levels`), §6.2's "class *I* with
+mixin *M*". `IndexedCollection` declares `Collection` its own
 superclass, which records that its members build on `Collection`'s
 protocol; applying it with `<:` takes only its own members (§6.2). A mixin rather than an abstract
 class (decided with the user on 2026-10-12): the shipped library uses the
