@@ -630,10 +630,16 @@ error is left as the user wrote it -- and for a document the client has not
 opened: like folds and tokens, only an open editor buffer is formatted,
 never a file read from disk. The request's options (`tabSize`,
 `insertSpaces`) are ignored, since the formatter has one style. The
-platform's native LSP API hands Reformat Code to a server announcing
-`documentFormattingProvider` (since 2023.3), so the plugin needs no code of
-its own; a platform-native formatter (`FormattingModelBuilder`) would need a
-PSI tree, the second parser this design avoids. The format runs on the
+platform's native LSP API hands Reformat Code to the server, but by default
+only for a file the server has registered formatting for dynamically
+(`client/registerCapability`); the static `documentFormattingProvider`
+the server announces does not count, and without more Reformat Code never
+reaches the server and reports the file as formatted already. The plugin's
+`NewspeakFormatting` (`NewspeakLspClientDescriptor.kt`, a
+`LspFormattingSupport`) therefore sends every file the client supports to
+the server, which is the only formatter Newspeak has. A platform-native
+formatter (`FormattingModelBuilder`) would need a PSI tree, the second
+parser this design avoids. The format runs on the
 server's one thread under `catch_unwind`, as the analysis does
 ("Robustness"): a panic in the printer answers no edit and leaves the
 document as it is.
