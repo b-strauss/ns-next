@@ -6,22 +6,51 @@
 /// only behind a modifier. Each starts nil and runs its initializer on its
 /// first read only.
 class Spec633TheUnreservedWordsNameLazySlots = Object new () (
-    class Holder = Object new (| public trace ::= ''. |) (
-        lazy public public = mark: 'a'.
-        public lazy protected = mark: 'b'.
-        lazy public private ::= mark: 'c'.
-        lazy lazy = mark: 'd'.
-        protected lazy class = mark: 'e'.
-        mark: tag = ( trace:: trace, tag. ^tag )
-        public all = ( ^public, protected, private, lazy, class )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. holder |
-        holder:: Holder new.
-        t show: 'before: ', holder trace; newLine.
-        t show: holder all; newLine.
-        t show: holder all; newLine.
-        t show: holder public, holder protected, holder private; newLine.
-        t show: 'after: ', holder trace; newLine
+  class Holder = Object new (
+    |
+      public trace ::= ''.
+    |
+  ) (
+    lazy public public = mark: 'a'.
+
+    public lazy protected = mark: 'b'.
+
+    lazy public private ::= mark: 'c'.
+
+    lazy lazy = mark: 'd'.
+
+    protected lazy class = mark: 'e'.
+
+    mark: tag = (
+      trace:: trace , tag.
+      ^tag.
     )
-) : ()
+
+    public all = (
+      ^public , protected , private , lazy , class.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      holder
+    |
+    holder:: Holder new.
+    t
+        show: 'before: ' , holder trace;
+        newLine.
+    t
+        show: holder all;
+        newLine.
+    t
+        show: holder all;
+        newLine.
+    t
+        show: holder public , holder protected , holder private;
+        newLine.
+    t
+        show: 'after: ' , holder trace;
+        newLine.
+  )
+)

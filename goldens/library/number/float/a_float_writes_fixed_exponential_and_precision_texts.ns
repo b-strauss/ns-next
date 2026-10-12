@@ -5,31 +5,81 @@
 /// binary value; the non-finite values are written by name, as
 /// `asStringFixed:` writes them and every value at or beyond 1e21.
 class AFloatWritesFixedExponentialAndPrecisionTexts = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: (3.0 asStringExponential: 0); newLine.
-        transcript show: (3.0 asStringExponential: 1); newLine.
-        transcript show: (1.5 asStringExponential: 0); newLine.
-        transcript show: ((200.0 / 3.0) asStringExponential: 2); newLine.
-        transcript show: (0.0 asStringExponential: 1); newLine.
-        transcript show: (-0.0 asStringExponential: 0); newLine.
-        transcript show: ((1.0 / 3.0) asStringExponential: 1); newLine.
-        transcript show: ((1.0 / 0.0) asStringExponential: 2); newLine.
-        transcript show: (3.0 asStringPrecision: 1); newLine.
-        transcript show: (3.0 asStringPrecision: 2); newLine.
-        transcript show: ((200.0 / 3.0) asStringPrecision: 1); newLine.
-        transcript show: ((200.0 / 3.0) asStringPrecision: 2); newLine.
-        transcript show: ((200.0 / 3.0) asStringPrecision: 3); newLine.
-        transcript show: ((1.0 / 3.0) asStringPrecision: 1); newLine.
-        transcript show: (-0.0 asStringPrecision: 2); newLine.
-        transcript show: (0.000001 asStringPrecision: 2); newLine.
-        transcript show: (0.0000001 asStringPrecision: 2); newLine.
-        transcript show: ((0.0 / 0.0) asStringPrecision: 3); newLine.
-        transcript show: (1000000000000000000000 asFloat asStringFixed: 2); newLine.
-        transcript show: ((-1.0 / 0.0) asStringFixed: 1); newLine.
-        transcript show: ([3.0 asStringExponential: 21] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([3.0 asStringPrecision: 0] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([3.0 asStringPrecision: 22] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([3.0 asStringPrecision: nil] on: Error do: [:error | error messageText]); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (3.0 asStringExponential: 0);
+        newLine.
+    transcript
+        show: (3.0 asStringExponential: 1);
+        newLine.
+    transcript
+        show: (1.5 asStringExponential: 0);
+        newLine.
+    transcript
+        show: ((200.0 / 3.0) asStringExponential: 2);
+        newLine.
+    transcript
+        show: (0.0 asStringExponential: 1);
+        newLine.
+    transcript
+        show: (-0.0 asStringExponential: 0);
+        newLine.
+    transcript
+        show: ((1.0 / 3.0) asStringExponential: 1);
+        newLine.
+    transcript
+        show: ((1.0 / 0.0) asStringExponential: 2);
+        newLine.
+    transcript
+        show: (3.0 asStringPrecision: 1);
+        newLine.
+    transcript
+        show: (3.0 asStringPrecision: 2);
+        newLine.
+    transcript
+        show: ((200.0 / 3.0) asStringPrecision: 1);
+        newLine.
+    transcript
+        show: ((200.0 / 3.0) asStringPrecision: 2);
+        newLine.
+    transcript
+        show: ((200.0 / 3.0) asStringPrecision: 3);
+        newLine.
+    transcript
+        show: ((1.0 / 3.0) asStringPrecision: 1);
+        newLine.
+    transcript
+        show: (-0.0 asStringPrecision: 2);
+        newLine.
+    transcript
+        show: (0.000001 asStringPrecision: 2);
+        newLine.
+    transcript
+        show: (0.0000001 asStringPrecision: 2);
+        newLine.
+    transcript
+        show: ((0.0 / 0.0) asStringPrecision: 3);
+        newLine.
+    transcript
+        show: (1000000000000000000000 asFloat asStringFixed: 2);
+        newLine.
+    transcript
+        show: ((-1.0 / 0.0) asStringFixed: 1);
+        newLine.
+    transcript
+        show: ([3.0 asStringExponential: 21] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([3.0 asStringPrecision: 0] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([3.0 asStringPrecision: 22] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([3.0 asStringPrecision: nil] on: Error do: [:error | error messageText]);
+        newLine.
+  )
 )

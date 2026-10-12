@@ -3,15 +3,26 @@
 /// representation in either position. Bounce's and Storage's `Random`
 /// masks with it.
 class BitAnd = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript.
-          two64 = 18446744073709551616.
-          pairs = {
-            {12. 10}. {-1. 255}. {-256. 255}. {74755 * 1309 + 13849. 65535}.
-            {-9223372036854775808. -1}.
-            {two64 negated. two64 - 1}. {-1. two64}. {two64 + 5. -2}.
-            {two64 negated - 1. two64 negated - 1} }. |
-        pairs do: [:pair |
-            transcript print: ((pair at: 1) bitAnd: (pair at: 2)); newLine]
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      two64 = 18446744073709551616.
+      pairs = {
+        {12. 10}.
+        {-1. 255}.
+        {-256. 255}.
+        {74755 * 1309 + 13849. 65535}.
+        {-9223372036854775808. -1}.
+        {two64 negated. two64 - 1}.
+        {-1. two64}.
+        {two64 + 5. -2}.
+        {two64 negated - 1. two64 negated - 1}.
+      }.
+    |
+    pairs do: [:pair |
+      transcript
+          print: ((pair at: 1) bitAnd: (pair at: 2));
+          newLine.
+    ].
+  )
 )

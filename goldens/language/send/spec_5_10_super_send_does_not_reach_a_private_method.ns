@@ -2,15 +2,20 @@
 /// defined for (3.5) S, the value of the send is the result of invoking f" --
 /// a private method of the superclass is not one, so `super p` falls to "the
 /// #doesNotUnderstand: method defined for S", which is `Object`'s.
-class SuperPrivate = Object new (
-) (
-    class SuperBase = Object new () (
-        private p = ( ^10 )
+class SuperPrivate = Object new () (
+  class SuperBase = Object new () (
+    private p = (
+      ^10.
     )
-    class SuperChild = SuperBase new () (
-        public run = ( ^super p )
+  )
+
+  class SuperChild = SuperBase new () (
+    public run = (
+      ^super p.
     )
-    public main: pl args: a = (
-        SuperChild new run
-    )
-) : ()
+  )
+
+  public main: pl args: a = (
+    SuperChild new run.
+  )
+)

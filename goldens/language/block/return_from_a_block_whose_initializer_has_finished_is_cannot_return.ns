@@ -2,10 +2,14 @@
 /// initializer has returned: its home is dead, so this is §7.2's
 /// `cannotReturn`.
 class InitBlockReturn = Object new (
-    | blk = [ ^2 ]. |
+  |
+    blk = [^2].
+  |
 ) (
-    public main: p args: a = (
-        blk value.
-        p transcript show: 'unreachable'; newLine
-    )
-) : ()
+  public main: p args: a = (
+    blk value.
+    p transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

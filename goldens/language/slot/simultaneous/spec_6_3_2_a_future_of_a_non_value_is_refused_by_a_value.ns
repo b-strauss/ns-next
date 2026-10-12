@@ -5,14 +5,30 @@
 /// Array, which no slot of a value may hold. So the Pair's initializer
 /// refuses it with the ordinary refusal, naming the Array and not the
 /// future, caught here like any other error.
-class Spec632AFutureOfANonValueIsRefusedByAValue = Object <: Value (
-) (
-    class Pair first: firstValue second: secondValue = Value new (
-        | public first = firstValue. public second = secondValue. |
-    ) () : ()
-    class Probe = Object new (|| public pair = Pair first: elements second: 1. public elements = {1. 2}. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: ([Probe new. 'no error'] on: Error do: [:error | error messageText]); newLine
-    )
-) : ()
+class Spec632AFutureOfANonValueIsRefusedByAValue = Object <: Value () (
+  class Pair first: firstValue second: secondValue = Value new (
+    |
+      public first = firstValue.
+      public second = secondValue.
+    |
+  ) ()
+
+  class Probe = Object new (
+    ||
+      public pair = Pair first: elements second: 1.
+      public elements = {1. 2}.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: ([
+          Probe new.
+          'no error'.
+        ] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

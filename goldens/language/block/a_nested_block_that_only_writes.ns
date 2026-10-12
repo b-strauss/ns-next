@@ -12,31 +12,51 @@
 /// capture, 1. aBlockLocalOnlyWritten: the variable belongs to a block, not
 /// to the method, and the two blocks below it carry that block's vector, so
 /// 9.
-class ANestedBlockThatOnlyWrites = Object new (
-    
-) (
-    writeThroughTwoBlocks = (
-        | count ::= 0. maker ::= nil. |
-        maker:: [[count:: 7]].
-        maker value value.
-        ^count
-    )
-    writerAndReaderThreeDeep = (
-        | value ::= 1. reader ::= nil. |
-        reader:: [value].
-        ^{[[value:: 42]]. reader}
-    )
-    aBlockLocalOnlyWritten = (
-        ^[ | slot ::= 0. |
-           [[slot:: 9]] value value.
-           slot ]
-    )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. pair |
-        transcript show: self writeThroughTwoBlocks printString; newLine.
-        pair:: self writerAndReaderThreeDeep.
-        (pair at: 1) value value.
-        transcript show: (pair at: 2) value printString; newLine.
-        transcript show: self aBlockLocalOnlyWritten value printString; newLine
-    )
-) : ()
+class ANestedBlockThatOnlyWrites = Object new () (
+  writeThroughTwoBlocks = (
+    |
+      count ::= 0.
+      maker ::= nil.
+    |
+    maker:: [[count:: 7]].
+    maker value value.
+    ^count.
+  )
+
+  writerAndReaderThreeDeep = (
+    |
+      value ::= 1.
+      reader ::= nil.
+    |
+    reader:: [value].
+    ^{[[value:: 42]]. reader}.
+  )
+
+  aBlockLocalOnlyWritten = (
+    ^[
+      |
+        slot ::= 0.
+      |
+      [[slot:: 9]] value value.
+      slot.
+    ].
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      pair
+    |
+    transcript
+        show: self writeThroughTwoBlocks printString;
+        newLine.
+    pair:: self writerAndReaderThreeDeep.
+    (pair at: 1) value value.
+    transcript
+        show: (pair at: 2) value printString;
+        newLine.
+    transcript
+        show: self aBlockLocalOnlyWritten value printString;
+        newLine.
+  )
+)

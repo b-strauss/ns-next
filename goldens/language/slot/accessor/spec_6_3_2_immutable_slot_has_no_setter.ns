@@ -1,10 +1,14 @@
 /// `newspeak-spec.pdf` §6.3.2: an immutable slot "may be accessed exclusively
 /// by invoking a getter method" -- "There is no setter method associated with
 /// the slot", however public the slot is.
-class ImmutableSetter = Object new (
-) (
-    class Holder = Object new (| public y = 1. |) ()
-    public main: pl args: a = (
-        Holder new y: 2
-    )
-) : ()
+class ImmutableSetter = Object new () (
+  class Holder = Object new (
+    |
+      public y = 1.
+    |
+  ) ()
+
+  public main: pl args: a = (
+    Holder new y: 2.
+  )
+)

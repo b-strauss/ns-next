@@ -5,18 +5,39 @@
 /// answer another receiver with it (`docs/design/dispatch.md`, "3b — The
 /// caches").
 class CacheDoesNotUnderstandHandlers = Object new () (
-    class Catcher = Object new () (
-        public doesNotUnderstand: message = ( ^'caught ', message selector printString )
+  class Catcher = Object new () (
+    public doesNotUnderstand: message = (
+      ^'caught ' , message selector printString.
     )
-    class Recorder = Object new (| public doesNotUnderstand ::= nil. |) (
-    )
-    public main: platform args: args = (
-        | transcript = platform transcript. recorder |
-        recorder:: Recorder new.
-        {Catcher new. recorder. Catcher new. recorder} do: [:each |
-            transcript show: (each zork == each) printString; newLine].
-        transcript show: recorder doesNotUnderstand selector printString; newLine.
-        transcript show: recorder doesNotUnderstand arguments size printString; newLine.
-        {Catcher new. 3} do: [:each | transcript show: each zork printString; newLine].
-    )
-) : ()
+  )
+
+  class Recorder = Object new (
+    |
+      public doesNotUnderstand ::= nil.
+    |
+  ) ()
+
+  public main: platform args: args = (
+    |
+      transcript = platform transcript.
+      recorder
+    |
+    recorder:: Recorder new.
+    {Catcher new. recorder. Catcher new. recorder} do: [:each |
+      transcript
+          show: (each zork == each) printString;
+          newLine.
+    ].
+    transcript
+        show: recorder doesNotUnderstand selector printString;
+        newLine.
+    transcript
+        show: recorder doesNotUnderstand arguments size printString;
+        newLine.
+    {Catcher new. 3} do: [:each |
+      transcript
+          show: each zork printString;
+          newLine.
+    ].
+  )
+)

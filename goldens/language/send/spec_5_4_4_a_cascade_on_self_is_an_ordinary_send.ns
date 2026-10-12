@@ -6,14 +6,35 @@
 /// (§5.8) is a self send. Primordial Soup's compiler likewise emits an
 /// ordinary send for every message of a cascade.
 class Spec544ACascadeOnSelfIsAnOrdinarySend = Object new () (
-    class Holder = Object new () (
-        protected secret = ( ^5 )
-        public direct = ( ^self secret )
-        public cascaded = ( ^self secret; yourself )
+  class Holder = Object new () (
+    protected secret = (
+      ^5.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. |
-        transcript show: Holder new direct printString; newLine.
-        transcript show: ([Holder new cascaded] on: kernel MessageNotUnderstood do: [:error | error message selector]) printString; newLine.
+
+    public direct = (
+      ^self secret.
     )
-) : ()
+
+    public cascaded = (
+      ^self
+          secret;
+          yourself.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+    |
+    transcript
+        show: Holder new direct printString;
+        newLine.
+    transcript
+        show: ([Holder new cascaded] on: kernel MessageNotUnderstood do: [:error |
+          error message selector.
+        ])
+            printString;
+        newLine.
+  )
+)

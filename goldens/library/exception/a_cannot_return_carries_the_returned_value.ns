@@ -1,16 +1,26 @@
 /// A `^` from a block whose home has returned signals a `CannotReturn`
 /// carrying the value it tried to return.
 class ACannotReturnCarriesTheReturnedValue = Object new (
-    | stored ::= nil. |
+  |
+    stored ::= nil.
+  |
 ) (
-    stash = (
-        stored:: [^'too late'].
-        ^'stashed'
-    )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. |
-        self stash.
-        transcript show: ([stored value] on: kernel CannotReturn do: [:error | error result]); newLine.
-        transcript show: ([stored value] on: Error do: [:error | error class name]); newLine.
-    )
-) : ()
+  stash = (
+    stored:: [^'too late'].
+    ^'stashed'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+    |
+    self stash.
+    transcript
+        show: ([stored value] on: kernel CannotReturn do: [:error | error result]);
+        newLine.
+    transcript
+        show: ([stored value] on: Error do: [:error | error class name]);
+        newLine.
+  )
+)

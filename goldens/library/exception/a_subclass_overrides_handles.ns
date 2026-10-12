@@ -7,16 +7,30 @@
 /// no class-side `signal:` of its own: it is signalled as `Picky new
 /// signal:`. The uncaught 'other' ends the run -- last.
 class ASubclassOverridesHandles = Object new () (
-    public class Picky = Error new () (
-    ) : (
-        public handles: exception = ( ^exception messageText = 'mine' )
+  public class Picky = Error new () () : (
+    public handles: exception = (
+      ^exception messageText = 'mine'.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ([Error signal: 'mine'] on: Picky do: [:e | 'picked ' , e messageText]); newLine.
-        transcript show: ([Picky new signal: 'mine'] on: Picky do: [:e | 'picked picky']); newLine.
-        transcript show: ([Picky new signal: 'x'] on: Error do: [:e | 'error catches picky']); newLine.
-        transcript show: ([Error signal: 'other'] on: Picky do: [:e | 'wrong']); newLine.
-        transcript show: 'not reached'; newLine.
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([Error signal: 'mine'] on: Picky do: [:e | 'picked ' , e messageText]);
+        newLine.
+    transcript
+        show: ([Picky new signal: 'mine'] on: Picky do: [:e | 'picked picky']);
+        newLine.
+    transcript
+        show: ([Picky new signal: 'x'] on: Error do: [:e | 'error catches picky']);
+        newLine.
+    transcript
+        show: ([Error signal: 'other'] on: Picky do: [:e | 'wrong']);
+        newLine.
+    transcript
+        show: 'not reached';
+        newLine.
+  )
+)

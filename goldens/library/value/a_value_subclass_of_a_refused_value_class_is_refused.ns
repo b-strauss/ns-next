@@ -10,17 +10,31 @@
 /// carries a recorded refusal of its own, and `Stamped` inherits that
 /// fault rather than the walk trusting `Counter` blindly.
 class ValueSubclassOfARefusedValueClass = Object <: Value () (
-    public class Holder = Object new (
-        | public count ::= 0. |
-    ) (
-        public class Counter = Value new () (
-            public bump = ( count:: count + 1. ^count )
-        )
+  public class Holder = Object new (
+    |
+      public count ::= 0.
+    |
+  ) (
+    public class Counter = Value new () (
+      public bump = (
+        count:: count + 1.
+        ^count.
+      )
     )
-    public MutableCounter = ( ^Holder new Counter )
-    public class Stamped = MutableCounter new () ()
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        platform transcript show: Stamped new bump printString; newLine.
-    )
-) : ()
+  )
+
+  public MutableCounter = (
+    ^Holder new Counter.
+  )
+
+  public class Stamped = MutableCounter new () ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    platform transcript
+        show: Stamped new bump printString;
+        newLine.
+  )
+)

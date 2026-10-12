@@ -4,47 +4,114 @@
 /// leaves the order, and storing an existing key keeps its place. A map
 /// given itself to `addAll:` stays as it is.
 class AMapHasTheWholeProtocol = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. Map = collections Map. map other show showMap |
-        show:: [:collection |
-            collection do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
-            transcript newLine].
-        showMap:: [:aMap |
-            aMap keysAndValuesDo: [:key :value |
-                transcript show: key printString; show: '->'; show: value printString; show: ' '].
-            transcript newLine].
-        map:: Map new.
-        map at: #a put: 1; at: #b put: 2; at: #c put: 3.
-        showMap value: map.
-        transcript show: map size printString; show: ' '; show: map isEmpty printString; newLine.
-        transcript show: (map at: #z ifAbsent: [0]) printString; newLine.
-        transcript show: (map at: #d ifAbsentPut: [4]) printString; show: ' '; show: (map at: #d ifAbsentPut: [5]) printString; newLine.
-        transcript show: (map includesKey: #d) printString; show: ' '; show: (map includesKey: #e) printString; newLine.
-        transcript show: (map removeKey: #b) printString; newLine.
-        transcript show: (map removeKey: #b ifAbsent: [#gone]) printString; newLine.
-        transcript show: ([map removeKey: #b] on: collections NotFound do: [:error | error element]) printString; newLine.
-        transcript show: ([map removeKey: #b] on: Error do: [:error | error messageText]); newLine.
-        showMap value: map.
-        map do: [:value | transcript show: value printString; show: ' '].
-        transcript newLine.
-        transcript show: (map includes: 3) printString; show: ' '; show: (map includes: #c) printString; newLine.
-        transcript show: (map inject: 0 into: [:sum :value | sum + value]) printString; newLine.
-        showMap value: (map collect: [:value | value * 10]).
-        showMap value: (map select: [:value | value > 1]).
-        showMap value: (map reject: [:value | value > 1]).
-        transcript show: (map select: [:value | true]) class printString; newLine.
-        show value: map keys.
-        show value: map values.
-        other:: Map withAll: map.
-        other at: #e put: 5.
-        transcript show: map size printString; show: ' '; show: other size printString; newLine.
-        map addAll: other.
-        showMap value: map.
-        map addAll: map.
-        transcript show: map size printString; newLine.
-        map at: #a put: 100.
-        showMap value: map.
-        map removeAll.
-        transcript show: map size printString; show: ' '; show: map isEmpty printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+      Map = collections Map.
+      map
+      other
+      show
+      showMap
+    |
+    show:: [:collection |
+      collection do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+    ].
+    showMap:: [:aMap |
+      aMap keysAndValuesDo: [:key :value |
+        transcript
+            show: key printString;
+            show: '->';
+            show: value printString;
+            show: ' '.
+      ].
+      transcript newLine.
+    ].
+    map:: Map new.
+    map
+        at: #a put: 1;
+        at: #b put: 2;
+        at: #c put: 3.
+    showMap value: map.
+    transcript
+        show: map size printString;
+        show: ' ';
+        show: map isEmpty printString;
+        newLine.
+    transcript
+        show: (map at: #z ifAbsent: [0]) printString;
+        newLine.
+    transcript
+        show: (map at: #d ifAbsentPut: [4]) printString;
+        show: ' ';
+        show: (map at: #d ifAbsentPut: [5]) printString;
+        newLine.
+    transcript
+        show: (map includesKey: #d) printString;
+        show: ' ';
+        show: (map includesKey: #e) printString;
+        newLine.
+    transcript
+        show: (map removeKey: #b) printString;
+        newLine.
+    transcript
+        show: (map removeKey: #b ifAbsent: [#gone]) printString;
+        newLine.
+    transcript
+        show: ([map removeKey: #b] on: collections NotFound do: [:error | error element])
+            printString;
+        newLine.
+    transcript
+        show: ([map removeKey: #b] on: Error do: [:error | error messageText]);
+        newLine.
+    showMap value: map.
+    map do: [:value |
+      transcript
+          show: value printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    transcript
+        show: (map includes: 3) printString;
+        show: ' ';
+        show: (map includes: #c) printString;
+        newLine.
+    transcript
+        show: (map inject: 0 into: [:sum :value | sum + value]) printString;
+        newLine.
+    showMap value: (map collect: [:value | value * 10]).
+    showMap value: (map select: [:value | value > 1]).
+    showMap value: (map reject: [:value | value > 1]).
+    transcript
+        show: (map select: [:value | true]) class printString;
+        newLine.
+    show value: map keys.
+    show value: map values.
+    other:: Map withAll: map.
+    other at: #e put: 5.
+    transcript
+        show: map size printString;
+        show: ' ';
+        show: other size printString;
+        newLine.
+    map addAll: other.
+    showMap value: map.
+    map addAll: map.
+    transcript
+        show: map size printString;
+        newLine.
+    map at: #a put: 100.
+    showMap value: map.
+    map removeAll.
+    transcript
+        show: map size printString;
+        show: ' ';
+        show: map isEmpty printString;
+        newLine.
+  )
+)

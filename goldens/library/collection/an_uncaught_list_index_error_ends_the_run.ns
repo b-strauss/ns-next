@@ -1,11 +1,16 @@
 /// An unhandled List index error ends the run like any other Error.
-class AnUncaughtListIndexErrorEndsTheRun = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. List = platform collections List. |
-        transcript show: 'before'; newLine.
-        List new at: 1.
-        transcript show: 'after'; newLine
-    )
-) : ()
+class AnUncaughtListIndexErrorEndsTheRun = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      List = platform collections List.
+    |
+    transcript
+        show: 'before';
+        newLine.
+    List new at: 1.
+    transcript
+        show: 'after';
+        newLine.
+  )
+)

@@ -4,13 +4,24 @@
 /// instantiation -- the line before it still prints -- and names the class
 /// and the slot as an eager slot's refusal does.
 class ValueLazySlotHoldsAValue = Object <: Value () (
-    class Point x: xValue = Value new (| public x = xValue. |) (
-        lazy public both = {x. x}.
-    ) : ()
-    public main: platform args: arguments = (
-        | point |
-        point:: Point x: 3.
-        platform transcript show: point x printString; newLine.
-        platform transcript show: point both printString; newLine.
-    )
-) : ()
+  class Point x: xValue = Value new (
+    |
+      public x = xValue.
+    |
+  ) (
+    lazy public both = {x. x}.
+  )
+
+  public main: platform args: arguments = (
+    |
+      point
+    |
+    point:: Point x: 3.
+    platform transcript
+        show: point x printString;
+        newLine.
+    platform transcript
+        show: point both printString;
+        newLine.
+  )
+)

@@ -12,20 +12,36 @@
 /// the two goldens pin that the answer depends on neither the name nor the
 /// order the declarations are collected in.
 class Spec57NamesakesMembersAreNotInReach = Object new () (
-    class Beta = Object new () (
-        marker = ( ^'Beta''s marker' )
-        class Dup = Object new () (
-            public reach = ( ^marker )
-        ) : ()
-        public probe = ( ^Dup new reach )
-    ) : ()
-    class Alpha = Object new () (
-        class Dup = Object new () (
-            marker = ( ^'Alpha''s Dup''s marker' )
-        ) : ()
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: Beta new probe; newLine
+  class Beta = Object new () (
+    marker = (
+      ^'Beta''s marker'.
     )
-) : ()
+
+    class Dup = Object new () (
+      public reach = (
+        ^marker.
+      )
+    )
+
+    public probe = (
+      ^Dup new reach.
+    )
+  )
+
+  class Alpha = Object new () (
+    class Dup = Object new () (
+      marker = (
+        ^'Alpha''s Dup''s marker'.
+      )
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Beta new probe;
+        newLine.
+  )
+)

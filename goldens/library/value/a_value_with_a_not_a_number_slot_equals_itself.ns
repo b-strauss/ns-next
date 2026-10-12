@@ -15,25 +15,37 @@
 /// class's enclosing object to be one; the transcript lives in `Script`,
 /// which is no value.
 class ValueWithNotANumberSlot = Object <: Value () (
-    public class Box value: aValue = Value new (
-        | public value = aValue. |
-    ) ()
-    class Script on: aTranscript = Object new (
-        | transcript = aTranscript. |
-    ) (
-        report: label for: first and: second = (
-            transcript show: label; show: ' '; show: (first = second) printString;
-                show: ' '; show: (first == second) printString;
-                show: ' '; show: (first hash = second hash) printString; newLine
-        )
-        public run = (
-            report: 'two NaNs' for: (Box value: 0.0 / 0.0)
-                and: (Box value: (1.0 / 0.0) - (1.0 / 0.0)).
-            report: 'zeros' for: (Box value: 0.0) and: (Box value: -0.0).
-            report: 'NaN and one' for: (Box value: 0.0 / 0.0) and: (Box value: 1.0).
-        )
+  public class Box value: aValue = Value new (
+    |
+      public value = aValue.
+    |
+  ) ()
+
+  class Script on: aTranscript = Object new (
+    |
+      transcript = aTranscript.
+    |
+  ) (
+    report: label for: first and: second = (
+      transcript
+          show: label;
+          show: ' ';
+          show: (first = second) printString;
+          show: ' ';
+          show: (first == second) printString;
+          show: ' ';
+          show: (first hash = second hash) printString;
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform transcript) run
+
+    public run = (
+      report: 'two NaNs' for: (Box value: 0.0 / 0.0) and: (Box value: (1.0 / 0.0) - (1.0 / 0.0)).
+      report: 'zeros' for: (Box value: 0.0) and: (Box value: -0.0).
+      report: 'NaN and one' for: (Box value: 0.0 / 0.0) and: (Box value: 1.0).
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform transcript) run.
+  )
+)

@@ -5,15 +5,20 @@
 /// over a map. Not privileged: it holds no mirror and is compiled into the
 /// program like any module, so an application may keep it.
 class Manifest names: moduleNames definitions: moduleDefinitions = (
-    | private names = moduleNames.
-      private definitions = moduleDefinitions. |
+  |
+    private names = moduleNames.
+    private definitions = moduleDefinitions.
+  |
 ) (
-    protected doesNotUnderstand: message = (
-        | index |
-        index:: 1.
-        [index <= names size] whileTrue: [
-            ((names at: index) = message selector) ifTrue: [^definitions at: index].
-            index:: index + 1].
-        ^super doesNotUnderstand: message
-    )
-) : ()
+  protected doesNotUnderstand: message = (
+    |
+      index
+    |
+    index:: 1.
+    [index <= names size] whileTrue: [
+      ((names at: index) = message selector) ifTrue: [^definitions at: index].
+      index:: index + 1.
+    ].
+    ^super doesNotUnderstand: message.
+  )
+)

@@ -9,88 +9,189 @@
 /// the primary factory, so a class of the program may name `List new: 15`
 /// in its superclass clause.
 class AListIsAQueueAStackAndSorts = Object new (
-    | private List ::= nil. |
+  |
+    private List ::= nil.
+  |
 ) (
-    class Plan = List new: 15 () (
-        public total = (
-            | sum |
-            sum:: 0.
-            self do: [:each | sum:: sum + each].
-            ^sum
-        )
+  class Plan = List new: 15 () (
+    public total = (
+      |
+        sum
+      |
+      sum:: 0.
+      self do: [:each | sum:: sum + each].
+      ^sum.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript.
-          queue last stack list pairs line plan sum |
-        List:: platform collections List.
-        queue:: List new.
-        transcript print: queue isEmpty; newLine.
-        1 to: 1000 do: [:index |
-            queue add: index.
-            index \\ 3 = 0 ifTrue: [queue removeFirst]].
-        transcript print: queue size; show: ' '; print: (queue at: 1); show: ' '; print: (queue at: 667); newLine.
-        transcript print: queue removeFirst; show: ' '; print: (queue at: 1); newLine.
-        sum:: 0.
-        queue do: [:each | sum:: sum + each].
-        transcript print: sum; newLine.
-        queue at: 1 put: 0.
-        transcript print: (queue at: 1); show: ' '; print: (queue anySatisfy: [:each | each = 0]); show: ' '; print: (queue anySatisfy: [:each | each > 1000]); newLine.
-        [queue isEmpty] whileFalse: [last:: queue removeFirst].
-        transcript print: last; show: ' '; print: queue size; newLine.
-        queue add: 7.
-        transcript print: (queue at: 1); show: ' '; print: queue size; newLine.
+  )
 
-        stack:: List new: 0.
-        1 to: 20 do: [:index | stack add: index].
-        transcript print: stack removeLast; show: ' '; print: stack removeLast; show: ' '; print: stack size; show: ' '; print: (stack at: 18); newLine.
-
-        list:: List new.
-        list add: 10; add: 20; add: 30; add: 20; add: 40.
-        transcript print: (list remove: 20 ifAbsent: [nil]); show: ' '; show: (list remove: 99 ifAbsent: ['absent']); newLine.
-        list remove: 10 ifAbsent: [nil].
-        list remove: 40 ifAbsent: [nil].
-        line:: ''.
-        list do: [:each | line:: line, each printString, ' '].
-        transcript show: line; print: list size; newLine.
-        list add: 'ab'.
-        transcript show: (list remove: 'a', 'b' ifAbsent: ['absent']); show: ' '; print: list size; newLine.
-        list removeAll.
-        transcript print: list size; show: ' '; print: list isEmpty; newLine.
-        list add: 5.
-        transcript print: (list at: 1); newLine.
-
-        pairs:: List new.
-        pairs add: {3. 'a'}; add: {1. 'b'}; add: {3. 'c'}; add: {2. 'd'}; add: {1. 'e'}.
-        pairs sort: [:first :second | (first at: 1) <= (second at: 1)].
-        line:: ''.
-        pairs do: [:each | line:: line, (each at: 2)].
-        transcript show: line; newLine.
-        pairs sort: [:first :second | (first at: 1) > (second at: 1)].
-        line:: ''.
-        pairs do: [:each | line:: line, (each at: 2)].
-        transcript show: line; newLine.
-
-        queue:: List new.
-        1 to: 5 do: [:index | queue add: index].
-        6 to: 1005 do: [:index |
-            queue add: index.
-            queue removeFirst].
-        line:: ''.
-        queue do: [:each | line:: line, each printString, ' '].
-        transcript show: line; print: queue size; newLine.
-        list:: List new.
-        list add: 9; add: 3; add: 7; add: 1; add: 8; add: 2.
-        list removeFirst; removeFirst.
-        list sort: [:first :second | first <= second].
-        line:: ''.
-        list do: [:each | line:: line, each printString, ' '].
-        transcript show: line; print: list size; newLine.
-
-        plan:: Plan new.
-        plan add: 4; add: 5.
-        transcript print: plan total; show: ' '; print: plan size; newLine.
-
-        transcript show: ([List new removeFirst] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([List new removeLast] on: Error do: [:error | error messageText]); newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      queue
+      last
+      stack
+      list
+      pairs
+      line
+      plan
+      sum
+    |
+    List:: platform collections List.
+    queue:: List new.
+    transcript
+        print: queue isEmpty;
+        newLine.
+    1 to: 1000 do: [:index |
+      queue add: index.
+      index \\ 3 = 0 ifTrue: [queue removeFirst].
+    ].
+    transcript
+        print: queue size;
+        show: ' ';
+        print: (queue at: 1);
+        show: ' ';
+        print: (queue at: 667);
+        newLine.
+    transcript
+        print: queue removeFirst;
+        show: ' ';
+        print: (queue at: 1);
+        newLine.
+    sum:: 0.
+    queue do: [:each | sum:: sum + each].
+    transcript
+        print: sum;
+        newLine.
+    queue at: 1 put: 0.
+    transcript
+        print: (queue at: 1);
+        show: ' ';
+        print: (queue anySatisfy: [:each | each = 0]);
+        show: ' ';
+        print: (queue anySatisfy: [:each | each > 1000]);
+        newLine.
+    [queue isEmpty] whileFalse: [last:: queue removeFirst].
+    transcript
+        print: last;
+        show: ' ';
+        print: queue size;
+        newLine.
+    queue add: 7.
+    transcript
+        print: (queue at: 1);
+        show: ' ';
+        print: queue size;
+        newLine.
+    stack:: List new: 0.
+    1 to: 20 do: [:index | stack add: index].
+    transcript
+        print: stack removeLast;
+        show: ' ';
+        print: stack removeLast;
+        show: ' ';
+        print: stack size;
+        show: ' ';
+        print: (stack at: 18);
+        newLine.
+    list:: List new.
+    list
+        add: 10;
+        add: 20;
+        add: 30;
+        add: 20;
+        add: 40.
+    transcript
+        print: (list remove: 20 ifAbsent: [nil]);
+        show: ' ';
+        show: (list remove: 99 ifAbsent: ['absent']);
+        newLine.
+    list remove: 10 ifAbsent: [nil].
+    list remove: 40 ifAbsent: [nil].
+    line:: ''.
+    list do: [:each | line:: line , each printString , ' '].
+    transcript
+        show: line;
+        print: list size;
+        newLine.
+    list add: 'ab'.
+    transcript
+        show: (list remove: 'a' , 'b' ifAbsent: ['absent']);
+        show: ' ';
+        print: list size;
+        newLine.
+    list removeAll.
+    transcript
+        print: list size;
+        show: ' ';
+        print: list isEmpty;
+        newLine.
+    list add: 5.
+    transcript
+        print: (list at: 1);
+        newLine.
+    pairs:: List new.
+    pairs
+        add: {3. 'a'};
+        add: {1. 'b'};
+        add: {3. 'c'};
+        add: {2. 'd'};
+        add: {1. 'e'}.
+    pairs sort: [:first :second | (first at: 1) <= (second at: 1)].
+    line:: ''.
+    pairs do: [:each | line:: line , (each at: 2)].
+    transcript
+        show: line;
+        newLine.
+    pairs sort: [:first :second | (first at: 1) > (second at: 1)].
+    line:: ''.
+    pairs do: [:each | line:: line , (each at: 2)].
+    transcript
+        show: line;
+        newLine.
+    queue:: List new.
+    1 to: 5 do: [:index | queue add: index].
+    6 to: 1005 do: [:index |
+      queue add: index.
+      queue removeFirst.
+    ].
+    line:: ''.
+    queue do: [:each | line:: line , each printString , ' '].
+    transcript
+        show: line;
+        print: queue size;
+        newLine.
+    list:: List new.
+    list
+        add: 9;
+        add: 3;
+        add: 7;
+        add: 1;
+        add: 8;
+        add: 2.
+    list
+        removeFirst;
+        removeFirst.
+    list sort: [:first :second | first <= second].
+    line:: ''.
+    list do: [:each | line:: line , each printString , ' '].
+    transcript
+        show: line;
+        print: list size;
+        newLine.
+    plan:: Plan new.
+    plan
+        add: 4;
+        add: 5.
+    transcript
+        print: plan total;
+        show: ' ';
+        print: plan size;
+        newLine.
+    transcript
+        show: ([List new removeFirst] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([List new removeLast] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

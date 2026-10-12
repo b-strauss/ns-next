@@ -4,13 +4,24 @@
 /// pins when): a future whose value is a block answers that block's value,
 /// and a future of anything else forwards `value` to it.
 class AFutureHandedToFutureComputingIsItsValue = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. Future = platform kernel Future. ofBlock ofNumber |
-        ofBlock:: Future computing: [[6 * 7]].
-        transcript show: ((Future computing: ofBlock) + 0) printString; newLine.
-        ofNumber:: Future computing: [5].
-        ofNumber + 0.
-        transcript show: ([(Future computing: ofNumber) + 1] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([(Future computing: 5) + 1] on: Error do: [:error | error messageText]); newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Future = platform kernel Future.
+      ofBlock
+      ofNumber
+    |
+    ofBlock:: Future computing: [[6 * 7]].
+    transcript
+        show: ((Future computing: ofBlock) + 0) printString;
+        newLine.
+    ofNumber:: Future computing: [5].
+    ofNumber + 0.
+    transcript
+        show: ([(Future computing: ofNumber) + 1] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([(Future computing: 5) + 1] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

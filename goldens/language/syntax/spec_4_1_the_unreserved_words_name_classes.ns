@@ -7,25 +7,63 @@
 /// stays a method named class, since no identifier follows the class
 /// token.
 class Spec41TheUnreservedWordsNameClasses = Object new () (
-    class Names = Object new () (
-        class public = Object new () (
-            public class Inner = Object new () (
-                public outerName = ( ^outer public name )
-            ) : ()
-            public name = ( ^'public' )
-        ) : ()
-        class protected = public new () ( public name = ( ^super name, ' protected' ) ) : ()
-        class private = protected new () ( public name = ( ^super name, ' private' ) ) : ()
-        class lazy = private new () ( public name = ( ^super name, ' lazy' ) ) : ()
-        public class class = lazy new () ( public name = ( ^super name, ' class' ) ) : ()
-        public all = ( ^public new name, ', ', class new name, ', ', public new Inner new outerName )
-    ) : ()
-    class Holder = Object new () (
-        public class = ( ^'a method named class' )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: Names new all; newLine.
-        t show: Holder new class; newLine
+  class Names = Object new () (
+    class public = Object new () (
+      public class Inner = Object new () (
+        public outerName = (
+          ^outer public name.
+        )
+      )
+
+      public name = (
+        ^'public'.
+      )
     )
-) : ()
+
+    class protected = public new () (
+      public name = (
+        ^super name , ' protected'.
+      )
+    )
+
+    class private = protected new () (
+      public name = (
+        ^super name , ' private'.
+      )
+    )
+
+    class lazy = private new () (
+      public name = (
+        ^super name , ' lazy'.
+      )
+    )
+
+    public class class = lazy new () (
+      public name = (
+        ^super name , ' class'.
+      )
+    )
+
+    public all = (
+      ^public new name , ', ' , class new name , ', ' , public new Inner new outerName.
+    )
+  )
+
+  class Holder = Object new () (
+    public class = (
+      ^'a method named class'.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Names new all;
+        newLine.
+    t
+        show: Holder new class;
+        newLine.
+  )
+)

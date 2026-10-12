@@ -2,15 +2,24 @@
 /// built on first use, so a List made through a second platform is an
 /// instance of the same class. The facet is a value: any two are equal,
 /// one a program makes from the facet's class included.
-class EveryPlatformSharesOneCollectionsModule = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. second |
-        second:: platform class new.
-        transcript show: (second collections == platform collections) printString; newLine.
-        transcript show: (second collections List == platform collections List) printString; newLine.
-        transcript show: (platform collections Collections new = platform collections) printString; newLine.
-        transcript show: (platform collections Collections == platform collections class) printString; newLine
-    )
-) : ()
+class EveryPlatformSharesOneCollectionsModule = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      second
+    |
+    second:: platform class new.
+    transcript
+        show: (second collections == platform collections) printString;
+        newLine.
+    transcript
+        show: (second collections List == platform collections List) printString;
+        newLine.
+    transcript
+        show: (platform collections Collections new = platform collections) printString;
+        newLine.
+    transcript
+        show: (platform collections Collections == platform collections class) printString;
+        newLine.
+  )
+)

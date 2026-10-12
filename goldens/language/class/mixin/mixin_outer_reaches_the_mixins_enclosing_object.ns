@@ -10,26 +10,61 @@
 /// own method still answers the Host. Each of the three objects identifies
 /// itself differently, so reaching the Host, or the module, from Marker's
 /// method would print a different first line.
-class MixinOuterReachesTheMixinsEnclosingObject = Object new (|
+class MixinOuterReachesTheMixinsEnclosingObject = Object new (
+  |
     library = Library named: 'the library'.
-|) (
-    class Library named: name = Object new (| libraryName = name. |) (
-        public class Marker = Object new () (
-            public markerSees = ( ^'Marker''s outer Library is ', outer Library identify )
-        ) : ()
-        public identify = ( ^libraryName )
-    ) : ()
-    class Host named: name = Object new (| hostName = name. |) (
-        public class Applied = Object new <: libraryMarker () (
-            public appliedSees = ( ^'Applied''s outer Host is ', outer Host identify )
-        ) : ()
-        public identify = ( ^hostName )
-    ) : ()
-    libraryMarker = ( ^library Marker )
-    public identify = ( ^'the module' )
-    public main: platform args: arguments = (
-        | t = platform transcript. applied = (Host named: 'the host') Applied new. |
-        t show: applied markerSees; newLine.
-        t show: applied appliedSees; newLine.
+  |
+) (
+  class Library named: name = Object new (
+    |
+      libraryName = name.
+    |
+  ) (
+    public class Marker = Object new () (
+      public markerSees = (
+        ^'Marker''s outer Library is ' , outer Library identify.
+      )
     )
-) : ()
+
+    public identify = (
+      ^libraryName.
+    )
+  )
+
+  class Host named: name = Object new (
+    |
+      hostName = name.
+    |
+  ) (
+    public class Applied = Object new <: libraryMarker () (
+      public appliedSees = (
+        ^'Applied''s outer Host is ' , outer Host identify.
+      )
+    )
+
+    public identify = (
+      ^hostName.
+    )
+  )
+
+  libraryMarker = (
+    ^library Marker.
+  )
+
+  public identify = (
+    ^'the module'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      applied = (Host named: 'the host') Applied new.
+    |
+    t
+        show: applied markerSees;
+        newLine.
+    t
+        show: applied appliedSees;
+        newLine.
+  )
+)

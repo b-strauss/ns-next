@@ -20,29 +20,48 @@
 /// class's enclosing object to be one; the transcript lives in `Script`,
 /// which is no value.
 class UserValueClass = Object <: Value () (
-    public class Point x: anX y: aY = Value new (
-        | public x = anX. public y = aY. |
-    ) ()
-    public class Pair x: anX y: aY = Value new (
-        | public x = anX. public y = aY. |
-    ) ()
-    class Script on: aTranscript = Object new (
-        | transcript = aTranscript. |
-    ) (
-        report: label for: first and: second = (
-            transcript show: label; show: ' '; show: (first = second) printString;
-                show: ' '; show: (first == second) printString;
-                show: ' '; show: (first hash = second hash) printString; newLine
-        )
-        public run = (
-            report: 'equal' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2).
-            report: 'different' for: (Point x: 1 y: 2) and: (Point x: 1 y: 3).
-            report: 'other class' for: (Point x: 1 y: 2) and: (Pair x: 1 y: 2).
-            report: 'nested' for: (Point x: (Point x: 1 y: 2) y: 'a')
-                and: (Point x: (Point x: 1 y: 2) y: 'a').
-        )
+  public class Point x: anX y: aY = Value new (
+    |
+      public x = anX.
+      public y = aY.
+    |
+  ) ()
+
+  public class Pair x: anX y: aY = Value new (
+    |
+      public x = anX.
+      public y = aY.
+    |
+  ) ()
+
+  class Script on: aTranscript = Object new (
+    |
+      transcript = aTranscript.
+    |
+  ) (
+    report: label for: first and: second = (
+      transcript
+          show: label;
+          show: ' ';
+          show: (first = second) printString;
+          show: ' ';
+          show: (first == second) printString;
+          show: ' ';
+          show: (first hash = second hash) printString;
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform transcript) run
+
+    public run = (
+      report: 'equal' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2).
+      report: 'different' for: (Point x: 1 y: 2) and: (Point x: 1 y: 3).
+      report: 'other class' for: (Point x: 1 y: 2) and: (Pair x: 1 y: 2).
+      report: 'nested'
+          for: (Point x: (Point x: 1 y: 2) y: 'a')
+          and: (Point x: (Point x: 1 y: 2) y: 'a').
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform transcript) run.
+  )
+)

@@ -2,15 +2,22 @@
 /// returns normally; a later send invokes it after its home's frame was
 /// divorced.
 class StoredBlockReturn = Object new (
-    | blk ::= nil. |
+  |
+    blk ::= nil.
+  |
 ) (
-    stash = (
-        blk:: [^'too late'].
-        ^'stashed'
-    )
-    public main: p args: a = (
-        p transcript show: self stash; newLine.
-        blk value.
-        p transcript show: 'unreachable'; newLine
-    )
-) : ()
+  stash = (
+    blk:: [^'too late'].
+    ^'stashed'.
+  )
+
+  public main: p args: a = (
+    p transcript
+        show: self stash;
+        newLine.
+    blk value.
+    p transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

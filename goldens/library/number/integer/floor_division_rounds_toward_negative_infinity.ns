@@ -4,19 +4,37 @@
 /// four have literal operands, which the inlined `IntegerBinary` computes
 /// itself; the last four go through a local, so the fast path and the send
 /// are both pinned under both lowerings.
-class FloorDivision = Object new (
-) (
-    public main: p args: a = (
-        | seven two |
-        p transcript show: (7 // 2) printString; newLine.
-        p transcript show: (7 // -2) printString; newLine.
-        p transcript show: (-7 // 2) printString; newLine.
-        p transcript show: (-7 // -2) printString; newLine.
-        seven:: 7.
-        two:: 2.
-        p transcript show: (seven // two) printString; newLine.
-        p transcript show: (seven // two negated) printString; newLine.
-        p transcript show: (seven negated // two) printString; newLine.
-        p transcript show: (seven negated // two negated) printString; newLine
-    )
-) : ()
+class FloorDivision = Object new () (
+  public main: p args: a = (
+    |
+      seven
+      two
+    |
+    p transcript
+        show: (7 // 2) printString;
+        newLine.
+    p transcript
+        show: (7 // -2) printString;
+        newLine.
+    p transcript
+        show: (-7 // 2) printString;
+        newLine.
+    p transcript
+        show: (-7 // -2) printString;
+        newLine.
+    seven:: 7.
+    two:: 2.
+    p transcript
+        show: (seven // two) printString;
+        newLine.
+    p transcript
+        show: (seven // two negated) printString;
+        newLine.
+    p transcript
+        show: (seven negated // two) printString;
+        newLine.
+    p transcript
+        show: (seven negated // two negated) printString;
+        newLine.
+  )
+)

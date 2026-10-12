@@ -1,1 +1,5 @@
-class Counter = Object new (| public count ::= 0. |) () : ()
+class Counter = Object new (
+  |
+    public count ::= 0.
+  |
+) ()

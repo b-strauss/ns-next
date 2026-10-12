@@ -1,11 +1,16 @@
 /// A loop body that is no block and has no `value` ends in
 /// `doesNotUnderstand:` the first time the condition lets it run.
-class ALoopWhoseBodyUnderstandsNothingFails = Object new (
-) (
-    public main: platform args: arguments = (
-        | count body |
-        count:: 0.
-        body:: 7.
-        ^[count:: count + 1. count < 3] whileTrue: body
-    )
-) : ()
+class ALoopWhoseBodyUnderstandsNothingFails = Object new () (
+  public main: platform args: arguments = (
+    |
+      count
+      body
+    |
+    count:: 0.
+    body:: 7.
+    ^[
+      count:: count + 1.
+      count < 3.
+    ] whileTrue: body.
+  )
+)

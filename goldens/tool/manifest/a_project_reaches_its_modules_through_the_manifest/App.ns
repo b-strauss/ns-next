@@ -4,14 +4,22 @@
 /// class (§6.4), instantiated here with whatever its own factory takes; the
 /// platform reaches the program only through main:args: (§8.4).
 class App packageUsing: manifest = Object new (
-    | private Greeting = manifest Greeting.
-      private Counter = manifest Counter. |
+  |
+    private Greeting = manifest Greeting.
+    private Counter = manifest Counter.
+  |
 ) (
-    public main: platform args: arguments = (
-        | counter = Counter new. |
-        counter bump; bump.
-        platform transcript
-            show: (Greeting named: 'modules') text; newLine;
-            show: counter count printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      counter = Counter new.
+    |
+    counter
+        bump;
+        bump.
+    platform transcript
+        show: (Greeting named: 'modules') text;
+        newLine;
+        show: counter count printString;
+        newLine.
+  )
+)

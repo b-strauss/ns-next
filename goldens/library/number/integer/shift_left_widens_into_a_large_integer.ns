@@ -3,14 +3,30 @@
 /// `LargeInteger` when the result does not fit and back when it does. A
 /// zero receiver answers zero for any count. Mandelbrot shifts with it.
 class ShiftLeft = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript.
-          two64 = 18446744073709551616.
-          pairs = {
-            {1. 3}. {5. 0}. {-3. 2}. {1. 62}. {1. 63}. {-1. 63}. {-1. 64}.
-            {3. 64}. {-9223372036854775808. 1}. {two64. 1}. {two64 negated. 65}.
-            {0. 100}. {0. two64} }. |
-        pairs do: [:pair |
-            transcript print: ((pair at: 1) << (pair at: 2)); newLine]
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      two64 = 18446744073709551616.
+      pairs = {
+        {1. 3}.
+        {5. 0}.
+        {-3. 2}.
+        {1. 62}.
+        {1. 63}.
+        {-1. 63}.
+        {-1. 64}.
+        {3. 64}.
+        {-9223372036854775808. 1}.
+        {two64. 1}.
+        {two64 negated. 65}.
+        {0. 100}.
+        {0. two64}.
+      }.
+    |
+    pairs do: [:pair |
+      transcript
+          print: ((pair at: 1) << (pair at: 2));
+          newLine.
+    ].
+  )
 )

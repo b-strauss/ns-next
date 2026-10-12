@@ -5,13 +5,33 @@
 /// character literals are gone, as it announces: "a" is a string, equal to
 /// 'a'. A quote of the other kind needs no escape at all.
 class DoubleQuoted = Object new () (
-    public main: p args: a = (
-        | t |
-        t:: p transcript.
-        t show: "abc"; newLine.
-        t show: ("a" = 'a') printString; show: ' '; show: ("a" class == String) printString; newLine.
-        t show: "it's"; show: ' '; show: '"quoted"'; newLine.
-        t show: """; show: ' '; show: "'"; newLine.
-        t show: "" size printString; show: ' '; show: "a''b" size printString; newLine
-    )
-) : ()
+  public main: p args: a = (
+    |
+      t
+    |
+    t:: p transcript.
+    t
+        show: "abc";
+        newLine.
+    t
+        show: ("a" = 'a') printString;
+        show: ' ';
+        show: ("a" class == String) printString;
+        newLine.
+    t
+        show: "it's";
+        show: ' ';
+        show: '"quoted"';
+        newLine.
+    t
+        show: """;
+        show: ' ';
+        show: "'";
+        newLine.
+    t
+        show: "" size printString;
+        show: ' ';
+        show: "a''b" size printString;
+        newLine.
+  )
+)

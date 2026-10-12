@@ -2,12 +2,24 @@
 /// | id -- a quoted string, keywords each ending in their colon, a binary
 /// selector, or an identifier.
 class Spec42TheFormsOfASymbol = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: #name printString; newLine.
-        t show: #at:put: printString; newLine.
-        t show: #-> printString; newLine.
-        t show: #'two words' printString; newLine.
-        t show: (#at:put: == #at:put:) printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: #name printString;
+        newLine.
+    t
+        show: #at:put: printString;
+        newLine.
+    t
+        show: #-> printString;
+        newLine.
+    t
+        show: #'two words' printString;
+        newLine.
+    t
+        show: (#at:put: == #at:put:) printString;
+        newLine.
+  )
+)

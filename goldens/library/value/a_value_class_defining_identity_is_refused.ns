@@ -6,11 +6,18 @@
 /// but refused only where an instance is made -- `Odd new`, right after the
 /// line before it prints.
 class ValueDefiningIdentity = Object <: Value () (
-    public class Odd = Value new () (
-        public == other = ( ^false )
+  public class Odd = Value new () (
+    public == other = (
+      ^false.
     )
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        platform transcript show: Odd new printString; newLine.
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    platform transcript
+        show: Odd new printString;
+        newLine.
+  )
+)

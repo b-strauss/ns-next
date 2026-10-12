@@ -6,33 +6,78 @@
 /// operands are literal small integers, so the inlined `IntegerBinary` runs,
 /// declines a result beyond 61 bits, and the ordinary send promotes: inlining
 /// must not take the promotion away from the primitive.
-class Overflow = Object new (
-) (
-    public main: p args: a = (
-        | max min big |
-        p transcript show: (9223372036854775807 + 1) printString; newLine.
-        max:: 9223372036854775807.
-        min:: max negated - 1.
-        p transcript show: (min - 1) printString; newLine.
-        p transcript show: (max * max) printString; newLine.
-        p transcript show: min negated printString; newLine.
-        p transcript show: min abs printString; newLine.
-        p transcript show: (min // -1) printString; newLine.
-        big:: max + 1.
-        p transcript show: big class printString; newLine.
-        p transcript show: max class printString; newLine.
-        p transcript show: (big = (max + 1)) printString; newLine.
-        p transcript show: (big hash = (max + 1) hash) printString; newLine.
-        p transcript show: (big == (max + 1)) printString; newLine.
-        p transcript show: (big = max) printString; newLine.
-        p transcript show: (max = big) printString; newLine.
-        p transcript show: ((big - 1) = max) printString; newLine.
-        p transcript show: (1152921504606846975 + 1) printString; newLine.
-        p transcript show: (-1152921504606846976 - 1) printString; newLine.
-        p transcript show: -1152921504606846976 negated printString; newLine.
-        p transcript show: -1152921504606846976 abs printString; newLine.
-        p transcript show: (-1152921504606846976 // -1) printString; newLine.
-        p transcript show: (1152921504606846975 * 2) printString; newLine.
-        p transcript show: (1152921504606846975 + 1 - 1) class printString; newLine
-    )
-) : ()
+class Overflow = Object new () (
+  public main: p args: a = (
+    |
+      max
+      min
+      big
+    |
+    p transcript
+        show: (9223372036854775807 + 1) printString;
+        newLine.
+    max:: 9223372036854775807.
+    min:: max negated - 1.
+    p transcript
+        show: (min - 1) printString;
+        newLine.
+    p transcript
+        show: (max * max) printString;
+        newLine.
+    p transcript
+        show: min negated printString;
+        newLine.
+    p transcript
+        show: min abs printString;
+        newLine.
+    p transcript
+        show: (min // -1) printString;
+        newLine.
+    big:: max + 1.
+    p transcript
+        show: big class printString;
+        newLine.
+    p transcript
+        show: max class printString;
+        newLine.
+    p transcript
+        show: (big = (max + 1)) printString;
+        newLine.
+    p transcript
+        show: (big hash = (max + 1) hash) printString;
+        newLine.
+    p transcript
+        show: (big == (max + 1)) printString;
+        newLine.
+    p transcript
+        show: (big = max) printString;
+        newLine.
+    p transcript
+        show: (max = big) printString;
+        newLine.
+    p transcript
+        show: ((big - 1) = max) printString;
+        newLine.
+    p transcript
+        show: (1152921504606846975 + 1) printString;
+        newLine.
+    p transcript
+        show: (-1152921504606846976 - 1) printString;
+        newLine.
+    p transcript
+        show: -1152921504606846976 negated printString;
+        newLine.
+    p transcript
+        show: -1152921504606846976 abs printString;
+        newLine.
+    p transcript
+        show: (-1152921504606846976 // -1) printString;
+        newLine.
+    p transcript
+        show: (1152921504606846975 * 2) printString;
+        newLine.
+    p transcript
+        show: (1152921504606846975 + 1 - 1) class printString;
+        newLine.
+  )
+)

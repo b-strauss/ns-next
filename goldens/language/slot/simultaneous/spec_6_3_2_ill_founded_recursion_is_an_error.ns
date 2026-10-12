@@ -3,12 +3,23 @@
 /// forcing a future while its own block runs is an ordinary error, caught
 /// here like any other. A program's own future (`Future computing:`)
 /// diverges with the same error, so its text names the future.
-class Spec632IllFoundedRecursion = Object new (
-    
-) (
-    class Probe = Object new (|| public first = second + 1. public second = first + 1. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: ([Probe new. 'no error'] on: Error do: [:error | error messageText]); newLine
-    )
-) : ()
+class Spec632IllFoundedRecursion = Object new () (
+  class Probe = Object new (
+    ||
+      public first = second + 1.
+      public second = first + 1.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: ([
+          Probe new.
+          'no error'.
+        ] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

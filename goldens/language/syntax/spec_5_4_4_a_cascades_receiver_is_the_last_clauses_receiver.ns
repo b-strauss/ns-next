@@ -20,16 +20,44 @@
 /// [receiver once][inner one][outer two][outer three] rather than an error.
 /// The trace also shows e evaluated exactly once, which the equivalence
 /// requires: value: takes one argument.
-class Spec544CascadeReceiver = Object new (| trace ::= ''. |) (
-    class Inner on: owner = Object new (| owner = owner. |) (
-        public mark: label = ( owner note: 'inner ', label )
-    ) : ()
-    public note: label = ( trace:: trace, '[', label, ']' )
-    inner = ( note: 'receiver once'. ^Inner on: self )
-    public mark: label = ( note: 'outer ', label )
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        self inner mark: 'one'; mark: 'two'; mark: 'three'.
-        t show: trace; newLine.
+class Spec544CascadeReceiver = Object new (
+  |
+    trace ::= ''.
+  |
+) (
+  class Inner on: owner = Object new (
+    |
+      owner = owner.
+    |
+  ) (
+    public mark: label = (
+      owner note: 'inner ' , label.
     )
-) : ()
+  )
+
+  public note: label = (
+    trace:: trace , '[' , label , ']'.
+  )
+
+  inner = (
+    note: 'receiver once'.
+    ^Inner on: self.
+  )
+
+  public mark: label = (
+    note: 'outer ' , label.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    self inner
+        mark: 'one';
+        mark: 'two';
+        mark: 'three'.
+    t
+        show: trace;
+        newLine.
+  )
+)

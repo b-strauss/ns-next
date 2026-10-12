@@ -1,23 +1,38 @@
 /// Sends of three to eight arguments, explicit, implicit-receiver and
 /// super, each the wide form of its kind.
-class SendsOfThreeToEightArguments = Object new (
-) (
-    class Base = Object new (
-    ) (
-        public a: one b: two c: three = ( ^one + two + three )
-    ) : ()
-    class Derived = Base new (
-    ) (
-        public a: one b: two c: three = ( ^(super a: one b: two c: three) * 10 )
-    ) : ()
-    public sum: one with: two with: three with: four = ( ^one + two + three + four )
-    public sum: one with: two with: three with: four with: five with: six with: seven with: eight = (
-        ^one + two + three + four + five + six + seven + eight
+class SendsOfThreeToEightArguments = Object new () (
+  class Base = Object new () (
+    public a: one b: two c: three = (
+      ^one + two + three.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: (Derived new a: 1 b: 2 c: 3) printString; newLine.
-        transcript show: (sum: 1 with: 2 with: 3 with: 4) printString; newLine.
-        transcript show: (self sum: 1 with: 2 with: 3 with: 4 with: 5 with: 6 with: 7 with: 8) printString; newLine.
+  )
+
+  class Derived = Base new () (
+    public a: one b: two c: three = (
+      ^(super a: one b: two c: three) * 10.
     )
-) : ()
+  )
+
+  public sum: one with: two with: three with: four = (
+    ^one + two + three + four.
+  )
+
+  public sum: one with: two with: three with: four with: five with: six with: seven with: eight = (
+    ^one + two + three + four + five + six + seven + eight.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (Derived new a: 1 b: 2 c: 3) printString;
+        newLine.
+    transcript
+        show: (sum: 1 with: 2 with: 3 with: 4) printString;
+        newLine.
+    transcript
+        show: (self sum: 1 with: 2 with: 3 with: 4 with: 5 with: 6 with: 7 with: 8) printString;
+        newLine.
+  )
+)

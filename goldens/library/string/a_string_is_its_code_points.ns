@@ -6,24 +6,54 @@
 /// the transcript and `printString` write UTF-8. The strings sit in slots,
 /// so the image round trip carries both widths.
 class AStringIsItsCodePoints = Object new (
-    | ascii = 'plain'.
-      latin = 'café'.
-      wide = '€uro 😀'. |
+  |
+    ascii = 'plain'.
+    latin = 'café'.
+    wide = '€uro 😀'.
+  |
 ) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ascii; newLine.
-        transcript show: latin; newLine.
-        transcript show: wide; newLine.
-        transcript print: ascii size; newLine.
-        transcript print: latin size; newLine.
-        transcript print: wide size; newLine.
-        transcript print: (latin, wide) size; newLine.
-        transcript print: (latin, wide) = 'café€uro 😀'; newLine.
-        transcript print: (latin, wide) hash = 'café€uro 😀' hash; newLine.
-        transcript print: ('caf', 'é') = latin; newLine.
-        transcript print: latin = 'cafe'; newLine.
-        transcript show: wide printString; newLine.
-        transcript show: wide asSymbol printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ascii;
+        newLine.
+    transcript
+        show: latin;
+        newLine.
+    transcript
+        show: wide;
+        newLine.
+    transcript
+        print: ascii size;
+        newLine.
+    transcript
+        print: latin size;
+        newLine.
+    transcript
+        print: wide size;
+        newLine.
+    transcript
+        print: (latin , wide) size;
+        newLine.
+    transcript
+        print: (latin , wide) = 'café€uro 😀';
+        newLine.
+    transcript
+        print: (latin , wide) hash = 'café€uro 😀' hash;
+        newLine.
+    transcript
+        print: ('caf' , 'é') = latin;
+        newLine.
+    transcript
+        print: latin = 'cafe';
+        newLine.
+    transcript
+        show: wide printString;
+        newLine.
+    transcript
+        show: wide asSymbol printString;
+        newLine.
+  )
+)

@@ -15,39 +15,72 @@
 /// asASetterValue: `sink:: t` answers the value t had before `sink:` ran,
 /// so 1, and 9 without the copy.
 class AFallbackClosureWritesALocalASendReads = Object new (
-    |
-      keeper ::= nil. |
+  |
+    keeper ::= nil.
+  |
 ) (
-    class Keeper = Object new (
-        | kept ::= nil. |
-    ) (
-        public ifTrue: block = ( kept:: block. ^nil )
-        public runKept = ( ^kept value )
-    ) : ()
-    sum: first with: second = ( ^first + second )
-    sink: value = ( ^keeper runKept )
-    asAnOperand = (
-        | t ::= 1. |
-        keeper ifTrue: [t:: 9].
-        ^t + keeper runKept
+  class Keeper = Object new (
+    |
+      kept ::= nil.
+    |
+  ) (
+    public ifTrue: block = (
+      kept:: block.
+      ^nil.
     )
-    asAnArgument = (
-        | t ::= 1. |
-        keeper ifTrue: [t:: 9].
-        ^self sum: t with: keeper runKept
+
+    public runKept = (
+      ^kept value.
     )
-    asASetterValue = (
-        | t ::= 1. |
-        keeper ifTrue: [t:: 9].
-        ^sink:: t
-    )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        keeper:: Keeper new.
-        transcript show: self asAnOperand printString; newLine.
-        keeper:: Keeper new.
-        transcript show: self asAnArgument printString; newLine.
-        keeper:: Keeper new.
-        transcript show: self asASetterValue printString; newLine
-    )
-) : ()
+  )
+
+  sum: first with: second = (
+    ^first + second.
+  )
+
+  sink: value = (
+    ^keeper runKept.
+  )
+
+  asAnOperand = (
+    |
+      t ::= 1.
+    |
+    keeper ifTrue: [t:: 9].
+    ^t + keeper runKept.
+  )
+
+  asAnArgument = (
+    |
+      t ::= 1.
+    |
+    keeper ifTrue: [t:: 9].
+    ^self sum: t with: keeper runKept.
+  )
+
+  asASetterValue = (
+    |
+      t ::= 1.
+    |
+    keeper ifTrue: [t:: 9].
+    ^sink:: t.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    keeper:: Keeper new.
+    transcript
+        show: self asAnOperand printString;
+        newLine.
+    keeper:: Keeper new.
+    transcript
+        show: self asAnArgument printString;
+        newLine.
+    keeper:: Keeper new.
+    transcript
+        show: self asASetterValue printString;
+        newLine.
+  )
+)

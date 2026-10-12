@@ -7,18 +7,34 @@
 /// same selector as m", where m defaults to new (6.1), so new instantiates
 /// each.
 class MixinBodyLessApplication = Object new () (
-    class Base = Object new () (
-        public fromBase = ( ^'Base answers fromBase' )
-    ) : ()
-    class Marker = Object new () (
-        public mark = ( ^'Marker answers mark' )
-    ) : ()
-    class Applied = Object <: Marker.
-    class Tagged = Base new <: Marker.
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: Applied new mark; newLine.
-        t show: Tagged new mark; newLine.
-        t show: Tagged new fromBase; newLine.
+  class Base = Object new () (
+    public fromBase = (
+      ^'Base answers fromBase'.
     )
-) : ()
+  )
+
+  class Marker = Object new () (
+    public mark = (
+      ^'Marker answers mark'.
+    )
+  )
+
+  class Applied = Object <: Marker.
+
+  class Tagged = Base new <: Marker.
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Applied new mark;
+        newLine.
+    t
+        show: Tagged new mark;
+        newLine.
+    t
+        show: Tagged new fromBase;
+        newLine.
+  )
+)

@@ -3,21 +3,61 @@
 /// -- signals a ConcurrentModification; storing a new value under an
 /// existing key does not.
 class AMapChangedWhileIteratedSignals = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. Modified = collections ConcurrentModification. map |
-        map:: collections Map new.
-        map at: 1 put: 1; at: 2 put: 2.
-        transcript show: ([map do: [:value | map at: 3 put: 3]] on: Modified do: [:error | #added]) printString; newLine.
-        transcript show: ([map keysAndValuesDo: [:key :value | map removeKey: key]] on: Modified do: [:error | #removed]) printString; newLine.
-        map:: collections Map new.
-        map at: 1 put: 1; at: 2 put: 2.
-        map keysAndValuesDo: [:key :value | map at: key put: value * 10].
-        map do: [:value | transcript show: value printString; show: ' '].
-        transcript newLine.
-        transcript show: ([map collect: [:value | map removeAll]] on: Modified do: [:error | #removeAll]) printString; newLine.
-        map:: collections Map new.
-        map at: 1 put: 1; at: 2 put: 2.
-        transcript show: ([map select: [:value | map at: value + 10 put: value. true]] on: Modified do: [:error | #select]) printString; newLine.
-        transcript show: ([map reject: [:value | map removeKey: 1. false]] on: Modified do: [:error | #reject]) printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+      Modified = collections ConcurrentModification.
+      map
+    |
+    map:: collections Map new.
+    map
+        at: 1 put: 1;
+        at: 2 put: 2.
+    transcript
+        show: ([map do: [:value | map at: 3 put: 3]] on: Modified do: [:error | #added])
+            printString;
+        newLine.
+    transcript
+        show: ([map keysAndValuesDo: [:key :value | map removeKey: key]] on: Modified do: [:error |
+          #removed.
+        ])
+            printString;
+        newLine.
+    map:: collections Map new.
+    map
+        at: 1 put: 1;
+        at: 2 put: 2.
+    map keysAndValuesDo: [:key :value | map at: key put: value * 10].
+    map do: [:value |
+      transcript
+          show: value printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    transcript
+        show: ([map collect: [:value | map removeAll]] on: Modified do: [:error | #removeAll])
+            printString;
+        newLine.
+    map:: collections Map new.
+    map
+        at: 1 put: 1;
+        at: 2 put: 2.
+    transcript
+        show: ([
+          map select: [:value |
+            map at: value + 10 put: value.
+            true.
+          ].
+        ] on: Modified do: [:error | #select]) printString;
+        newLine.
+    transcript
+        show: ([
+          map reject: [:value |
+            map removeKey: 1.
+            false.
+          ].
+        ] on: Modified do: [:error | #reject]) printString;
+        newLine.
+  )
+)

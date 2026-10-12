@@ -3,8 +3,14 @@
 /// slot of it holds its value, so it must see 2 -- not the nil the register
 /// held when the block was made.
 class Spec632ACapturedSibling = Object new () (
-    public main: platform args: arguments = (
-        || t = platform transcript. first = [second + 1]. second = 2. ||
-        t show: first value printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    ||
+      t = platform transcript.
+      first = [second + 1].
+      second = 2.
+    ||
+    t
+        show: first value printString;
+        newLine.
+  )
+)

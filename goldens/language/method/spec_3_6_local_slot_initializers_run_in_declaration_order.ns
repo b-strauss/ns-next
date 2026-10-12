@@ -11,12 +11,36 @@
 /// same way. The class-level counterpart, a slot initializer, is what the
 /// instance initializer already does.
 class Spec36LocalSlotInitializersRunInDeclarationOrder = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. first = 3. second ::= first + 4. third |
-        t show: first printString; newLine.
-        t show: second printString; newLine.
-        t show: (third == nil) printString; newLine.
-        [:argument | | doubled = argument * 2. | t show: doubled printString; newLine] value: 5.
-        t show: ([| only = 1. |] value == nil) printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      first = 3.
+      second ::= first + 4.
+      third
+    |
+    t
+        show: first printString;
+        newLine.
+    t
+        show: second printString;
+        newLine.
+    t
+        show: (third == nil) printString;
+        newLine.
+    [:argument |
+      |
+        doubled = argument * 2.
+      |
+      t
+          show: doubled printString;
+          newLine.
+    ] value: 5.
+    t
+        show: ([
+          |
+            only = 1.
+          |
+        ] value == nil) printString;
+        newLine.
+  )
+)

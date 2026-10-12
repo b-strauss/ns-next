@@ -1,11 +1,12 @@
 /// True>>ifTrue: is ^trueBlock value: an argument that is no block is sent
 /// value like any other object, and no Object>>value answers it, as in
 /// Primordial Soup's kernel.
-class NotABlock = Object new (
-) (
-    public main: p args: a = (
-        | three |
-        three:: 3.
-        ^true ifTrue: three
-    )
-) : ()
+class NotABlock = Object new () (
+  public main: p args: a = (
+    |
+      three
+    |
+    three:: 3.
+    ^true ifTrue: three.
+  )
+)

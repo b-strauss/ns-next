@@ -1,13 +1,22 @@
 /// A side that decides alone answers without looking at its argument, so a
 /// non-block there is never sent value, as in Primordial Soup's kernel.
-class ShortCircuit = Object new (
-) (
-    public main: p args: a = (
-        | three |
-        three:: 3.
-        p transcript show: ((false ifTrue: three) == nil) printString; newLine.
-        p transcript show: ((true ifFalse: three) == nil) printString; newLine.
-        p transcript show: (false and: three) printString; newLine.
-        p transcript show: (true or: three) printString; newLine
-    )
-) : ()
+class ShortCircuit = Object new () (
+  public main: p args: a = (
+    |
+      three
+    |
+    three:: 3.
+    p transcript
+        show: ((false ifTrue: three) == nil) printString;
+        newLine.
+    p transcript
+        show: ((true ifFalse: three) == nil) printString;
+        newLine.
+    p transcript
+        show: (false and: three) printString;
+        newLine.
+    p transcript
+        show: (true or: three) printString;
+        newLine.
+  )
+)

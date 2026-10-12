@@ -6,14 +6,29 @@
 /// to the future after the clause is abandoned forces it, which runs that
 /// initializer then and answers its value.
 class Spec632AnAbandonedClause = Object new (
-    | public escaped. |
+  |
+    public escaped.
+  |
 ) (
-    class Probe keep: holder = Object new (
-        || public first = {holder escaped: second. nil zork}. public second = 2 + 1. ||
-    ) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: ([Probe keep: self. 'no error'] on: Error do: [:error | error class name]); newLine.
-        t show: (escaped + 1) printString; newLine
-    )
-) : ()
+  class Probe keep: holder = Object new (
+    ||
+      public first = {holder escaped: second. nil zork}.
+      public second = 2 + 1.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: ([
+          Probe keep: self.
+          'no error'.
+        ] on: Error do: [:error | error class name]);
+        newLine.
+    t
+        show: (escaped + 1) printString;
+        newLine.
+  )
+)

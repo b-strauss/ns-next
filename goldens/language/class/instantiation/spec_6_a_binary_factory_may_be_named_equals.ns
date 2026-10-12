@@ -4,9 +4,18 @@
 /// "other" are a binary factory pattern, and the second "=" ends the
 /// header.
 class Spec6ABinaryFactoryMayBeNamedEquals = Object new () (
-    class Pair = other = Object new (| public held = other. |) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: (Pair = 'right') held; newLine
-    )
-) : ()
+  class Pair = other = Object new (
+    |
+      public held = other.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (Pair = 'right') held;
+        newLine.
+  )
+)

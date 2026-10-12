@@ -11,7 +11,9 @@
 /// either, so this is a resolve error and `main:args:` never runs
 /// (`docs/design/README.md`, "Deviations from the language specification").
 class RootMixinNamesAnotherBuiltin = Object <: Array () (
-    public main: platform args: arguments = (
-        platform transcript show: 'unreachable'; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

@@ -1,16 +1,23 @@
 /// `Array>>do:` reads each element when it reaches it, so a store the
 /// block makes to a later index is seen, and one to an index already
 /// visited is not; the size is read once, when the walk starts.
-class DoSeesAStoreMadeInsideItsBlock = Object new (
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. array |
-        array:: {1. 2. 3}.
-        array do: [:each |
-            array at: 3 put: 99.
-            array at: 1 put: 0.
-            transcript show: each printString; show: ' '].
-        transcript newLine.
-        transcript show: (array at: 1) printString; newLine
-    )
-) : ()
+class DoSeesAStoreMadeInsideItsBlock = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      array
+    |
+    array:: {1. 2. 3}.
+    array do: [:each |
+      array at: 3 put: 99.
+      array at: 1 put: 0.
+      transcript
+          show: each printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    transcript
+        show: (array at: 1) printString;
+        newLine.
+  )
+)

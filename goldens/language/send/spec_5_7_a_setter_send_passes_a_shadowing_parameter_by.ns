@@ -7,10 +7,20 @@
 /// setter send searches them outward
 /// (prior-art/newspeak/NewspeakCompilation.ns, setterSendNode:).
 class Spec57ASetterSendPassesAShadowingParameterBy = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. v |
-        v:: 'the method''s own'.
-        [:v | v:: 'written from the block'. t show: v; newLine] value: 'the parameter'.
-        t show: v; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      v
+    |
+    v:: 'the method''s own'.
+    [:v |
+      v:: 'written from the block'.
+      t
+          show: v;
+          newLine.
+    ] value: 'the parameter'.
+    t
+        show: v;
+        newLine.
+  )
+)

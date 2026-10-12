@@ -2,12 +2,26 @@
 /// with the text an uncaught one ends the run with; `on: Error do:` still
 /// catches it. Division by zero refuses its divisor.
 class ALeafsArgumentErrorIsCaughtByItsClass = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. array = Array new: 3. |
-        transcript show: ([array at: 7] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([array at: 7] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([3 // 0] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: (['abc' , 4] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([[:each | each] value] on: kernel ArgumentError do: [:error | error class name]); newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      array = Array new: 3.
+    |
+    transcript
+        show: ([array at: 7] on: kernel ArgumentError do: [:error | error argument]) printString;
+        newLine.
+    transcript
+        show: ([array at: 7] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([3 // 0] on: kernel ArgumentError do: [:error | error argument]) printString;
+        newLine.
+    transcript
+        show: (['abc' , 4] on: kernel ArgumentError do: [:error | error argument]) printString;
+        newLine.
+    transcript
+        show: ([[:each | each] value] on: kernel ArgumentError do: [:error | error class name]);
+        newLine.
+  )
+)

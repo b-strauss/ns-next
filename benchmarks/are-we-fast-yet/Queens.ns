@@ -25,47 +25,63 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
 class Queens usingPlatform: platform = (
-    | freeMaxs freeRows freeMins queenRows |
+  |
+    freeMaxs.
+    freeRows.
+    freeMins.
+    queenRows.
+  |
 ) (
-    public bench = (
-        | result |
-        result:: true.
-        1 to: 10 do: [:index | result:: result & queens].
-        result ifFalse: [Error signal: 'Queens: expected true, got false'].
-        ^result
-    )
-    queens = (
-        freeRows:: newArray: 8 withAll: true.
-        freeMaxs:: newArray: 16 withAll: true.
-        freeMins:: newArray: 16 withAll: true.
-        queenRows:: newArray: 8 withAll: -1.
-        ^placeQueen: 1
-    )
-    placeQueen: column = (
-        1 to: 8 do: [:row |
-            (row: row column: column) ifTrue: [
-                queenRows at: row put: column.
-                row: row column: column put: false.
-                column = 8 ifTrue: [^true].
-                (placeQueen: column + 1) ifTrue: [^true].
-                row: row column: column put: true]].
-        ^false
-    )
-    row: row column: column = (
-        ^(freeRows at: row) & (freeMaxs at: column + row) & (freeMins at: column - row + 8)
-    )
-    row: row column: column put: value = (
-        freeRows at: row put: value.
-        freeMaxs at: column + row put: value.
-        freeMins at: column - row + 8 put: value
-    )
-    /// SOMns's `Array new:withAll:` sends its argument `value`; Primordial
-    /// Soup's has no such message, and a Boolean or an Integer is stored as
-    /// it is.
-    newArray: size withAll: element = (
-        | array |
-        array:: Array new: size.
-        1 to: size do: [:index | array at: index put: element].
-        ^array
-    )
+  public bench = (
+    |
+      result
+    |
+    result:: true.
+    1 to: 10 do: [:index | result:: result & queens].
+    result ifFalse: [Error signal: 'Queens: expected true, got false'].
+    ^result.
+  )
+
+  queens = (
+    freeRows:: newArray: 8 withAll: true.
+    freeMaxs:: newArray: 16 withAll: true.
+    freeMins:: newArray: 16 withAll: true.
+    queenRows:: newArray: 8 withAll: -1.
+    ^placeQueen: 1.
+  )
+
+  placeQueen: column = (
+    1 to: 8 do: [:row |
+      (row: row column: column) ifTrue: [
+        queenRows at: row put: column.
+        row: row column: column put: false.
+        column = 8 ifTrue: [^true].
+        (placeQueen: column + 1) ifTrue: [^true].
+        row: row column: column put: true.
+      ].
+    ].
+    ^false.
+  )
+
+  row: row column: column = (
+    ^(freeRows at: row) & (freeMaxs at: column + row) & (freeMins at: column - row + 8).
+  )
+
+  row: row column: column put: value = (
+    freeRows at: row put: value.
+    freeMaxs at: column + row put: value.
+    freeMins at: column - row + 8 put: value.
+  )
+
+  /// SOMns's `Array new:withAll:` sends its argument `value`; Primordial
+  /// Soup's has no such message, and a Boolean or an Integer is stored as
+  /// it is.
+  newArray: size withAll: element = (
+    |
+      array
+    |
+    array:: Array new: size.
+    1 to: size do: [:index | array at: index put: element].
+    ^array.
+  )
 )

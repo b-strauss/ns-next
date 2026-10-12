@@ -1,23 +1,79 @@
 class CacheSlotsUnderTwoApplications = Object new () (
-    class Narrow = Object new (| first ::= 'narrow a'. |) (
-        public describe = ( ^'narrow' )
+  class Narrow = Object new (
+    |
+      first ::= 'narrow a'.
+    |
+  ) (
+    public describe = (
+      ^'narrow'.
     )
-    class Wide = Object new (| first ::= 'wide a'. second ::= 'wide b'. third ::= 'wide c'. |) (
-        public describe = ( ^'wide ', first, ' ', third )
+  )
+
+  class Wide = Object new (
+    |
+      first ::= 'wide a'.
+      second ::= 'wide b'.
+      third ::= 'wide c'.
+    |
+  ) (
+    public describe = (
+      ^'wide ' , first , ' ' , third.
     )
-    class Box on: base = Object new (| base = base. |) (
-        public class Cell = base new (| public held ::= 'cell v'. private hidden ::= 'hidden'. |) (
-            public describe = ( ^super describe, ' cell' )
-            public both = ( ^held, ' / ', self held )
-            public touch = ( hidden: hidden, '!'. ^hidden )
-        )
+  )
+
+  class Box on: base = Object new (
+    |
+      base = base.
+    |
+  ) (
+    public class Cell = base new (
+      |
+        public held ::= 'cell v'.
+        private hidden ::= 'hidden'.
+      |
+    ) (
+      public describe = (
+        ^super describe , ' cell'.
+      )
+
+      public both = (
+        ^held , ' / ' , self held.
+      )
+
+      public touch = (
+        hidden: hidden , '!'.
+        ^hidden.
+      )
     )
-    public main: platform args: args = (
-        | transcript = platform transcript. cells |
-        cells:: {(Box on: Narrow) Cell new. (Box on: Wide) Cell new. (Box on: Narrow) Cell new}.
-        cells do: [:each | transcript show: each held; show: ' | '; show: each describe; newLine].
-        cells do: [:each | each held: 'set ', each describe].
-        cells do: [:each | transcript show: each both; show: ' | '; show: each touch; newLine].
-        cells do: [:each | transcript show: each describe; show: ' | '; show: each touch; newLine].
-    )
-) : ()
+  )
+
+  public main: platform args: args = (
+    |
+      transcript = platform transcript.
+      cells
+    |
+    cells:: {(Box on: Narrow) Cell new. (Box on: Wide) Cell new. (Box on: Narrow) Cell new}.
+    cells do: [:each |
+      transcript
+          show: each held;
+          show: ' | ';
+          show: each describe;
+          newLine.
+    ].
+    cells do: [:each | each held: 'set ' , each describe].
+    cells do: [:each |
+      transcript
+          show: each both;
+          show: ' | ';
+          show: each touch;
+          newLine.
+    ].
+    cells do: [:each |
+      transcript
+          show: each describe;
+          show: ' | ';
+          show: each touch;
+          newLine.
+    ].
+  )
+)

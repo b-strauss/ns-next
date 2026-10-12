@@ -7,12 +7,20 @@
 /// `Counting` alone is no value and keeps its mutable slot legally; only an
 /// instance of `Counted` is refused, where it would come into being.
 class MutableSlotAboveValue = Object <: Value () (
-    public class Counting = Object new (
-        | public count ::= 0. |
-    ) ()
-    public class Counted = Counting new <: Value () ()
-    public main: platform args: arguments = (
-        platform transcript show: Counting new count printString; newLine.
-        platform transcript show: Counted new count printString; newLine.
-    )
-) : ()
+  public class Counting = Object new (
+    |
+      public count ::= 0.
+    |
+  ) ()
+
+  public class Counted = Counting new <: Value () ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: Counting new count printString;
+        newLine.
+    platform transcript
+        show: Counted new count printString;
+        newLine.
+  )
+)

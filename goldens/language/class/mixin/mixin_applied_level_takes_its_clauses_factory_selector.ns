@@ -13,19 +13,39 @@
 /// instance prints its own tag; an implementation that sent the level new
 /// instead would fail 6.1's primary factory check, or leave the tag nil.
 class MixinAppliedLevelTakesItsClausesFactorySelector = Object new () (
-    class Marker withTag: aTag = Object new (| public tag = aTag. |) (
-        public describe = ( ^'tagged ', tag )
-    ) : ()
-    class Applied = Object new <: Marker withTag: 'x'.
-    class Tagged label: aLabel = Object new <: Marker withTag: aLabel (
-    ) (
-        public describeLabel = ( ^'Tagged, ', describe )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: 'Applied new is ', Applied new describe; newLine.
-        t show: 'Applied new tag is ', Applied new tag; newLine.
-        t show: (Tagged label: 'y') describeLabel; newLine.
-        t show: 'Tagged label: ''z'' tag is ', (Tagged label: 'z') tag; newLine.
+  class Marker withTag: aTag = Object new (
+    |
+      public tag = aTag.
+    |
+  ) (
+    public describe = (
+      ^'tagged ' , tag.
     )
-) : ()
+  )
+
+  class Applied = Object new <: Marker withTag: 'x'.
+
+  class Tagged label: aLabel = Object new <: Marker withTag: aLabel () (
+    public describeLabel = (
+      ^'Tagged, ' , describe.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: 'Applied new is ' , Applied new describe;
+        newLine.
+    t
+        show: 'Applied new tag is ' , Applied new tag;
+        newLine.
+    t
+        show: (Tagged label: 'y') describeLabel;
+        newLine.
+    t
+        show: 'Tagged label: ''z'' tag is ' , (Tagged label: 'z') tag;
+        newLine.
+  )
+)

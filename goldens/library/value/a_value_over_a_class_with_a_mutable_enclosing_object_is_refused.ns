@@ -7,17 +7,31 @@
 /// own. Decided where `Stamped` is created, refused where an instance is
 /// made -- both here in the one send, `Stamped new`.
 class ValueOverAMutableLevel = Object <: Value () (
-    public class Holder = Object new (
-        | public count ::= 0. |
-    ) (
-        public class Counter = Object new () (
-            public bump = ( count:: count + 1. ^count )
-        )
+  public class Holder = Object new (
+    |
+      public count ::= 0.
+    |
+  ) (
+    public class Counter = Object new () (
+      public bump = (
+        count:: count + 1.
+        ^count.
+      )
     )
-    public MutableCounter = ( ^Holder new Counter )
-    public class Stamped = MutableCounter new <: Value () ()
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        platform transcript show: Stamped new bump printString; newLine.
-    )
-) : ()
+  )
+
+  public MutableCounter = (
+    ^Holder new Counter.
+  )
+
+  public class Stamped = MutableCounter new <: Value () ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    platform transcript
+        show: Stamped new bump printString;
+        newLine.
+  )
+)

@@ -11,24 +11,51 @@
 /// Reversed applies the same two mixins the other way round, and both
 /// answers turn round with it.
 class MixinTwoMixinsAppliedInOrder = Object new () (
-    class Base = Object new () (
-        public chain = ( ^'Base' )
-    ) : ()
-    class First = Object new () (
-        public who = ( ^'First' )
-        public chain = ( ^'First, ', super chain )
-    ) : ()
-    class Second = Object new () (
-        public who = ( ^'Second' )
-        public chain = ( ^'Second, ', super chain )
-    ) : ()
-    class InOrder = Base new <: First <: Second () ()
-    class Reversed = Base new <: Second <: First () ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: 'InOrder who: ', InOrder new who; newLine.
-        t show: 'InOrder chain: ', InOrder new chain; newLine.
-        t show: 'Reversed who: ', Reversed new who; newLine.
-        t show: 'Reversed chain: ', Reversed new chain; newLine.
+  class Base = Object new () (
+    public chain = (
+      ^'Base'.
     )
-) : ()
+  )
+
+  class First = Object new () (
+    public who = (
+      ^'First'.
+    )
+
+    public chain = (
+      ^'First, ' , super chain.
+    )
+  )
+
+  class Second = Object new () (
+    public who = (
+      ^'Second'.
+    )
+
+    public chain = (
+      ^'Second, ' , super chain.
+    )
+  )
+
+  class InOrder = Base new <: First <: Second () ()
+
+  class Reversed = Base new <: Second <: First () ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: 'InOrder who: ' , InOrder new who;
+        newLine.
+    t
+        show: 'InOrder chain: ' , InOrder new chain;
+        newLine.
+    t
+        show: 'Reversed who: ' , Reversed new who;
+        newLine.
+    t
+        show: 'Reversed chain: ' , Reversed new chain;
+        newLine.
+  )
+)

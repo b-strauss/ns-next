@@ -12,29 +12,45 @@
 /// and are no values themselves -- only a value class is asked about its
 /// enclosing object.
 class FallThrough = Object <: Value () (
-    class MyBoolean = Boolean new () ()
-    class MyInteger = Integer new () ()
-    class MyFloat = Float new () ()
-    class MySymbol = Symbol new () ()
-    class MyArray = Array new () ()
-    class MyClosure = Closure new () ()
-    class Script on: aTranscript = Object new (
-        | transcript = aTranscript. |
-    ) (
-        report: instance = (
-            transcript show: (instance = instance) printString; show: ' '; show: instance printString; newLine
-        )
-        public run = (
-            report: MyBoolean new.
-            report: MyInteger new.
-            report: MyFloat new.
-            report: MySymbol new.
-            report: MyArray new.
-            report: MyClosure new.
-            transcript show: MyArray new size printString; newLine
-        )
+  class MyBoolean = Boolean new () ()
+
+  class MyInteger = Integer new () ()
+
+  class MyFloat = Float new () ()
+
+  class MySymbol = Symbol new () ()
+
+  class MyArray = Array new () ()
+
+  class MyClosure = Closure new () ()
+
+  class Script on: aTranscript = Object new (
+    |
+      transcript = aTranscript.
+    |
+  ) (
+    report: instance = (
+      transcript
+          show: (instance = instance) printString;
+          show: ' ';
+          show: instance printString;
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform transcript) run
+
+    public run = (
+      report: MyBoolean new.
+      report: MyInteger new.
+      report: MyFloat new.
+      report: MySymbol new.
+      report: MyArray new.
+      report: MyClosure new.
+      transcript
+          show: MyArray new size printString;
+          newLine.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform transcript) run.
+  )
+)

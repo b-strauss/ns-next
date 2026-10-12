@@ -6,13 +6,21 @@
 /// progress before the same overflow (`docs/design/compiler.md`, "How the
 /// limit counts").
 class DeepThroughTheBooleans = Object new (
-    | transcript ::= nil. |
+  |
+    transcript ::= nil.
+  |
 ) (
-    down: depth = (
-        depth = (depth // 20000 * 20000)
-            ifTrue: [transcript show: depth printString; newLine].
-        ^(depth >= 0) and: [(depth < 0) or: [down: depth + 1]]
-    )
-    public main: p args: a = (
-        transcript:: p transcript. down: 0 )
-) : ()
+  down: depth = (
+    depth = (depth // 20000 * 20000) ifTrue: [
+      transcript
+          show: depth printString;
+          newLine.
+    ].
+    ^(depth >= 0) and: [(depth < 0) or: [down: depth + 1]].
+  )
+
+  public main: p args: a = (
+    transcript:: p transcript.
+    down: 0.
+  )
+)

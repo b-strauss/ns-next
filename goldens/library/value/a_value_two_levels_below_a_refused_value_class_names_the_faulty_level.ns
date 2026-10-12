@@ -9,18 +9,33 @@
 /// survive the hand-over -- the enclosing object at fault is `Counter`'s,
 /// not `Stamped`'s, whose enclosing object is this value module.
 class ValueTwoLevelsBelowARefusedValueClass = Object <: Value () (
-    public class Holder = Object new (
-        | public count ::= 0. |
-    ) (
-        public class Counter = Value new () (
-            public bump = ( count:: count + 1. ^count )
-        )
+  public class Holder = Object new (
+    |
+      public count ::= 0.
+    |
+  ) (
+    public class Counter = Value new () (
+      public bump = (
+        count:: count + 1.
+        ^count.
+      )
     )
-    public MutableCounter = ( ^Holder new Counter )
-    public class Stamped = MutableCounter new () ()
-    public class Restamped = Stamped new () ()
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        platform transcript show: Restamped new bump printString; newLine.
-    )
-) : ()
+  )
+
+  public MutableCounter = (
+    ^Holder new Counter.
+  )
+
+  public class Stamped = MutableCounter new () ()
+
+  public class Restamped = Stamped new () ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    platform transcript
+        show: Restamped new bump printString;
+        newLine.
+  )
+)

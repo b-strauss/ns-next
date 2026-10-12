@@ -1,13 +1,19 @@
 /// `Array new:` refuses a negative size, a size that is no Integer and a
 /// size it cannot allocate, each as an ordinary Error a handler catches --
 /// never an abort of the process.
-class ArrayNewRefusesWhatIsNoSize = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ([Array new: -1] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([Array new: 'three'] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([Array new: 9223372036854775807] on: Error do: [:e | e messageText]); newLine
-    )
-) : ()
+class ArrayNewRefusesWhatIsNoSize = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([Array new: -1] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([Array new: 'three'] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([Array new: 9223372036854775807] on: Error do: [:e | e messageText]);
+        newLine.
+  )
+)

@@ -8,9 +8,20 @@
 /// (`Resolver::check_activation_names`), which two parameters or two locals
 /// of one name are too.
 class Spec36ParameterAndLocalClash = Object new () (
-    shadow: value = ( | value | value:: 5. ^value )
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: (self shadow: 1) printString; newLine.
-    )
-) : ()
+  shadow: value = (
+    |
+      value
+    |
+    value:: 5.
+    ^value.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (self shadow: 1) printString;
+        newLine.
+  )
+)

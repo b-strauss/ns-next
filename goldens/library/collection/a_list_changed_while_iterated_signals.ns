@@ -9,32 +9,93 @@
 /// earlier rule that `do:` visited the elements the list held when it
 /// started (decided with the user on 2026-10-10).
 class AListChangedWhileIteratedSignals = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. List = collections List. Modified = collections ConcurrentModification. list |
-        list:: List withAll: {1. 2}.
-        transcript show: ([list do: [:each | list add: each]] on: Modified do: [:error | error messageText]); newLine.
-        transcript show: list size printString; newLine.
-        transcript show: ([list do: [:each | list add: each]] on: Modified do: [:error | error collection == list]) printString; newLine.
-        list:: List withAll: {1}.
-        transcript show: ([list do: [:each | list removeFirst]. #finished] on: Modified do: [:error | #signalled]) printString; newLine.
-        list:: List withAll: {3. 1. 2}.
-        list do: [:each | list at: 1 put: each].
-        transcript show: (list at: 1) printString; newLine.
-        list do: [:each | list sort: [:left :right | left <= right]].
-        list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
-        transcript newLine.
-        transcript show: ([list keysAndValuesDo: [:index :each | list removeLast]] on: Error do: [:error | error class printString]); newLine.
-        list:: List withAll: {1. 2. 3}.
-        transcript show: ([list collect: [:each | list add: 0]] on: Modified do: [:error | #collect]) printString; newLine.
-        transcript show: ([list anySatisfy: [:each | list add: 0. false]] on: Modified do: [:error | #anySatisfy]) printString; newLine.
-        transcript show: ([list removeAllSuchThat: [:each | list add: 0. false]] on: Modified do: [:error | #removeAllSuchThat]) printString; newLine.
-        list:: List withAll: {3. 1. 2}.
-        transcript show: ([list sort: [:left :right | list size = 3 ifTrue: [list removeLast]. left <= right]] on: Modified do: [:error | error collection == list]) printString; newLine.
-        list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
-        transcript newLine.
-        list:: List withAll: {3. 1. 2}.
-        transcript show: ([list sort: [:left :right | list add: 0. left <= right]] on: Modified do: [:error | #sortAdded]) printString; newLine.
-        (list copyFrom: 1 to: 4) do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
-        transcript newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+      List = collections List.
+      Modified = collections ConcurrentModification.
+      list
+    |
+    list:: List withAll: {1. 2}.
+    transcript
+        show: ([list do: [:each | list add: each]] on: Modified do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: list size printString;
+        newLine.
+    transcript
+        show: ([list do: [:each | list add: each]] on: Modified do: [:error |
+          error collection == list.
+        ])
+            printString;
+        newLine.
+    list:: List withAll: {1}.
+    transcript
+        show: ([
+          list do: [:each | list removeFirst].
+          #finished.
+        ] on: Modified do: [:error | #signalled]) printString;
+        newLine.
+    list:: List withAll: {3. 1. 2}.
+    list do: [:each | list at: 1 put: each].
+    transcript
+        show: (list at: 1) printString;
+        newLine.
+    list do: [:each | list sort: [:left :right | left <= right]].
+    list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
+    transcript newLine.
+    transcript
+        show: ([list keysAndValuesDo: [:index :each | list removeLast]] on: Error do: [:error |
+          error class printString.
+        ]);
+        newLine.
+    list:: List withAll: {1. 2. 3}.
+    transcript
+        show: ([list collect: [:each | list add: 0]] on: Modified do: [:error | #collect])
+            printString;
+        newLine.
+    transcript
+        show: ([
+          list anySatisfy: [:each |
+            list add: 0.
+            false.
+          ].
+        ] on: Modified do: [:error | #anySatisfy]) printString;
+        newLine.
+    transcript
+        show: ([
+          list removeAllSuchThat: [:each |
+            list add: 0.
+            false.
+          ].
+        ] on: Modified do: [:error | #removeAllSuchThat]) printString;
+        newLine.
+    list:: List withAll: {3. 1. 2}.
+    transcript
+        show: ([
+          list sort: [:left :right |
+            list size = 3 ifTrue: [list removeLast].
+            left <= right.
+          ].
+        ] on: Modified do: [:error | error collection == list]) printString;
+        newLine.
+    list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
+    transcript newLine.
+    list:: List withAll: {3. 1. 2}.
+    transcript
+        show: ([
+          list sort: [:left :right |
+            list add: 0.
+            left <= right.
+          ].
+        ] on: Modified do: [:error | #sortAdded]) printString;
+        newLine.
+    (list copyFrom: 1 to: 4) do: [:each |
+      transcript show: each printString.
+    ] separatedBy: [
+      transcript show: ' '.
+    ].
+    transcript newLine.
+  )
+)

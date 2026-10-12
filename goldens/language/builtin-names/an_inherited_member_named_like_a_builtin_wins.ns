@@ -7,13 +7,21 @@
 /// `Array` in `Base` before it reaches `Object`, whose accessor for the
 /// predefined class (3.2) is therefore overridden.
 class InheritedBuiltinName = Object new () (
-    class Base = Object new () (
-        public Array = ( ^'inherited' )
+  class Base = Object new () (
+    public Array = (
+      ^'inherited'.
     )
-    class Derived = Base new () (
-        public show = ( ^Array )
+  )
+
+  class Derived = Base new () (
+    public show = (
+      ^Array.
     )
-    public main: platform args: arguments = (
-        platform transcript show: Derived new show; newLine
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: Derived new show;
+        newLine.
+  )
+)

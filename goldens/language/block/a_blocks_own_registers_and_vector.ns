@@ -18,36 +18,68 @@
 /// blocks answer the last value written, 2. Textual order alone would
 /// copy and answer 0 1 2.
 class ABlocksOwnRegistersAndVector = Object new (
-    | transcript ::= nil. private List ::= nil. |
+  |
+    transcript ::= nil.
+    private List ::= nil.
+  |
 ) (
-    fullLayout = (
-        | outerCopied ::= 3. |
-        ^[:increment |
-            | own ::= 0. shared ::= 0. bump ::= nil. |
-            bump:: [shared:: shared + increment].
-            own:: outerCopied + increment.
-            bump value.
-            bump value.
-            own + shared]
-    )
-    loopInsideABlock = (
-        ^[
-            | index ::= 0. x ::= 0. blocks ::= nil. |
-            blocks:: List new.
-            [index < 3] whileTrue: [x:: index. blocks add: [x]. index:: index + 1].
-            blocks]
-    )
-    show: blocks = (
-        blocks do: [:each | transcript show: each value printString; show: ' '].
-        transcript newLine
-    )
-    public main: platform args: arguments = (
-        | block |
-        transcript:: platform transcript.
-        List:: platform collections List.
-        block:: self fullLayout.
-        transcript show: (block value: 5) printString; newLine.
-        transcript show: (block value: 2) printString; newLine.
-        self show: self loopInsideABlock value
-    )
-) : ()
+  fullLayout = (
+    |
+      outerCopied ::= 3.
+    |
+    ^[:increment |
+      |
+        own ::= 0.
+        shared ::= 0.
+        bump ::= nil.
+      |
+      bump:: [shared:: shared + increment].
+      own:: outerCopied + increment.
+      bump value.
+      bump value.
+      own + shared.
+    ].
+  )
+
+  loopInsideABlock = (
+    ^[
+      |
+        index ::= 0.
+        x ::= 0.
+        blocks ::= nil.
+      |
+      blocks:: List new.
+      [index < 3] whileTrue: [
+        x:: index.
+        blocks add: [x].
+        index:: index + 1.
+      ].
+      blocks.
+    ].
+  )
+
+  show: blocks = (
+    blocks do: [:each |
+      transcript
+          show: each value printString;
+          show: ' '.
+    ].
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      block
+    |
+    transcript:: platform transcript.
+    List:: platform collections List.
+    block:: self fullLayout.
+    transcript
+        show: (block value: 5) printString;
+        newLine.
+    transcript
+        show: (block value: 2) printString;
+        newLine.
+    self show: self loopInsideABlock value.
+  )
+)

@@ -3,16 +3,36 @@
 /// does: a tie rounds up on the exact binary value, and the sign is the
 /// value's. The harness's score is printed with it.
 class AsFloatAndFixed = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript print: 3 asFloat; newLine.
-        transcript print: -9223372036854775808 asFloat; newLine.
-        transcript print: 9223372036854775808 asFloat; newLine.
-        transcript show: ((1000000000 * 7) asFloat / 3 asFloat asStringFixed: 1); newLine.
-        transcript show: (0.125 asStringFixed: 2); newLine.
-        transcript show: (-0.125 asStringFixed: 2); newLine.
-        transcript show: (2.5 asStringFixed: 0); newLine.
-        transcript show: (-0.04 asStringFixed: 1); newLine.
-        transcript show: (1.005 asStringFixed: 2); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        print: 3 asFloat;
+        newLine.
+    transcript
+        print: -9223372036854775808 asFloat;
+        newLine.
+    transcript
+        print: 9223372036854775808 asFloat;
+        newLine.
+    transcript
+        show: ((1000000000 * 7) asFloat / 3 asFloat asStringFixed: 1);
+        newLine.
+    transcript
+        show: (0.125 asStringFixed: 2);
+        newLine.
+    transcript
+        show: (-0.125 asStringFixed: 2);
+        newLine.
+    transcript
+        show: (2.5 asStringFixed: 0);
+        newLine.
+    transcript
+        show: (-0.04 asStringFixed: 1);
+        newLine.
+    transcript
+        show: (1.005 asStringFixed: 2);
+        newLine.
+  )
 )

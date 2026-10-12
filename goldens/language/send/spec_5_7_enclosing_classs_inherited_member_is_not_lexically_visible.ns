@@ -3,18 +3,26 @@
 /// to a self send", and on figure 4, "Only if this fails is the receiver's
 /// inheritance chain followed": the receiver's, `Nested`'s, which has no
 /// `n`. §2.3.1: "After that, no further lookup is done."
-class EnclosingInherited = Object new (
-) (
-    class OuterBase = Object new () (
-        public n = ( ^1 )
+class EnclosingInherited = Object new () (
+  class OuterBase = Object new () (
+    public n = (
+      ^1.
     )
-    class Enclosing = OuterBase new () (
-        class Nested = Object new () (
-            public implicit = ( ^n )
-        )
-        public test = ( ^Nested new implicit )
+  )
+
+  class Enclosing = OuterBase new () (
+    class Nested = Object new () (
+      public implicit = (
+        ^n.
+      )
     )
-    public main: pl args: a = (
-        Enclosing new test
+
+    public test = (
+      ^Nested new implicit.
     )
-) : ()
+  )
+
+  public main: pl args: a = (
+    Enclosing new test.
+  )
+)

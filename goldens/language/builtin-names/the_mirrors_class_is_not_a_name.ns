@@ -4,7 +4,9 @@
 /// 5.7, `self VmMirror`, which finds nothing on the receiver's inheritance
 /// chain (2.3.1) and is an ordinary `doesNotUnderstand:`.
 class MirrorsClassIsNotAName = Object new () (
-    public main: platform args: arguments = (
-        platform transcript show: VmMirror printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    platform transcript
+        show: VmMirror printString;
+        newLine.
+  )
+)

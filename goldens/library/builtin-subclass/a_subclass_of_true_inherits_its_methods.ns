@@ -7,19 +7,31 @@
 /// The module is a value because §3.1.1 asks a value class's enclosing
 /// object to be one; the transcript lives in `Script`, which is no value.
 class Subclassed = Object <: Value () (
-    class MyTrue = True new () ()
-    class Script on: aTranscript = Object new (
-        | transcript = aTranscript. |
-    ) (
-        public run = (
-            | instance |
-            instance:: MyTrue new.
-            transcript show: (instance ifTrue: ['taken'] ifFalse: ['not taken']); newLine.
-            transcript show: instance printString; newLine.
-            transcript show: instance not printString; newLine
-        )
+  class MyTrue = True new () ()
+
+  class Script on: aTranscript = Object new (
+    |
+      transcript = aTranscript.
+    |
+  ) (
+    public run = (
+      |
+        instance
+      |
+      instance:: MyTrue new.
+      transcript
+          show: (instance ifTrue: ['taken'] ifFalse: ['not taken']);
+          newLine.
+      transcript
+          show: instance printString;
+          newLine.
+      transcript
+          show: instance not printString;
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform transcript) run
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform transcript) run.
+  )
+)

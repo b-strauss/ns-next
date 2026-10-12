@@ -25,29 +25,37 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
 class Permute usingPlatform: platform = (
-    | count
-      values |
+  |
+    count.
+    values.
+  |
 ) (
-    public bench = (
-        count:: 0.
-        values:: Array new: 7.
-        permute: 6.
-        count = 8660 ifFalse: [Error signal: 'Permute: expected 8660, got ', count printString].
-        ^count
-    )
-    permute: size = (
-        count:: count + 1.
-        size = 0 ifFalse: [
-            permute: size - 1.
-            size to: 1 by: -1 do: [:index |
-                swap: size with: index.
-                permute: size - 1.
-                swap: size with: index]]
-    )
-    swap: first with: second = (
-        | temp |
-        temp:: values at: first.
-        values at: first put: (values at: second).
-        values at: second put: temp
-    )
+  public bench = (
+    count:: 0.
+    values:: Array new: 7.
+    permute: 6.
+    count = 8660 ifFalse: [Error signal: 'Permute: expected 8660, got ' , count printString].
+    ^count.
+  )
+
+  permute: size = (
+    count:: count + 1.
+    size = 0 ifFalse: [
+      permute: size - 1.
+      size to: 1 by: -1 do: [:index |
+        swap: size with: index.
+        permute: size - 1.
+        swap: size with: index.
+      ].
+    ].
+  )
+
+  swap: first with: second = (
+    |
+      temp
+    |
+    temp:: values at: first.
+    values at: first put: (values at: second).
+    values at: second put: temp.
+  )
 )

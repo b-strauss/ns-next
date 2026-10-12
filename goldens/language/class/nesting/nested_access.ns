@@ -1,13 +1,25 @@
 class NestedAccess = Object new () (
-    public class Inner = Object new () (
-        public value = ( ^42 )
+  public class Inner = Object new () (
+    public value = (
+      ^42.
     )
-    public main: platform args: args = (
-        | t ::= platform transcript. a b inst |
-        a:: Inner.
-        b:: Inner.
-        t show: (a == b) printString; newLine.
-        inst:: a new.
-        t show: inst value printString; newLine.
-    )
+  )
+
+  public main: platform args: args = (
+    |
+      t ::= platform transcript.
+      a
+      b
+      inst
+    |
+    a:: Inner.
+    b:: Inner.
+    t
+        show: (a == b) printString;
+        newLine.
+    inst:: a new.
+    t
+        show: inst value printString;
+        newLine.
+  )
 )

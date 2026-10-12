@@ -26,75 +26,116 @@
 /// class's enclosing object to be one; the transcript lives in `Script`,
 /// which is no value.
 class NestedClassIsNotState = Object <: Value () (
-    public class Point x: anX y: aY = Value new (
-        | public x = anX. public y = aY. |
-    ) (
-        class Tag = Object new () ()
-        public touch = ( ^Tag )
+  public class Point x: anX y: aY = Value new (
+    |
+      public x = anX.
+      public y = aY.
+    |
+  ) (
+    class Tag = Object new () ()
+
+    public touch = (
+      ^Tag.
     )
-    public class Labelled x: anX y: aY label: aLabel = Point x: anX y: aY (
-        | public label = aLabel. |
-    ) ()
-    class Script on: aTranscript = Object new (
-        | transcript = aTranscript. |
-    ) (
-        report: label for: first and: second = (
-            transcript show: label; show: ' '; show: (first = second) printString;
-                show: ' '; show: (first == second) printString;
-                show: ' '; show: (first hash = second hash) printString; newLine
-        )
-        untouched = (
-            report: 'untouched' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2)
-        )
-        oneTouched = (
-            | first second |
-            first:: Point x: 1 y: 2.
-            second:: Point x: 1 y: 2.
-            first touch.
-            report: 'one touched' for: first and: second
-        )
-        bothTouched = (
-            | first second |
-            first:: Point x: 1 y: 2.
-            second:: Point x: 1 y: 2.
-            first touch.
-            second touch.
-            report: 'both touched' for: first and: second
-        )
-        stillDistinguishesState = (
-            | first second |
-            first:: Point x: 1 y: 2.
-            second:: Point x: 1 y: 3.
-            first touch.
-            second touch.
-            report: 'different state' for: first and: second
-        )
-        inheritedNested = (
-            | first second |
-            first:: Labelled x: 1 y: 2 label: 'a'.
-            second:: Labelled x: 1 y: 2 label: 'a'.
-            first touch.
-            second touch.
-            report: 'inherited nested' for: first and: second
-        )
-        inheritedNestedDiffers = (
-            | first second |
-            first:: Labelled x: 1 y: 2 label: 'a'.
-            second:: Labelled x: 1 y: 2 label: 'b'.
-            first touch.
-            second touch.
-            report: 'inherited differs' for: first and: second
-        )
-        public run = (
-            untouched.
-            oneTouched.
-            bothTouched.
-            stillDistinguishesState.
-            inheritedNested.
-            inheritedNestedDiffers.
-        )
+  )
+
+  public class Labelled x: anX y: aY label: aLabel = Point x: anX y: aY (
+    |
+      public label = aLabel.
+    |
+  ) ()
+
+  class Script on: aTranscript = Object new (
+    |
+      transcript = aTranscript.
+    |
+  ) (
+    report: label for: first and: second = (
+      transcript
+          show: label;
+          show: ' ';
+          show: (first = second) printString;
+          show: ' ';
+          show: (first == second) printString;
+          show: ' ';
+          show: (first hash = second hash) printString;
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform transcript) run
+
+    untouched = (
+      report: 'untouched' for: (Point x: 1 y: 2) and: (Point x: 1 y: 2).
     )
-) : ()
+
+    oneTouched = (
+      |
+        first
+        second
+      |
+      first:: Point x: 1 y: 2.
+      second:: Point x: 1 y: 2.
+      first touch.
+      report: 'one touched' for: first and: second.
+    )
+
+    bothTouched = (
+      |
+        first
+        second
+      |
+      first:: Point x: 1 y: 2.
+      second:: Point x: 1 y: 2.
+      first touch.
+      second touch.
+      report: 'both touched' for: first and: second.
+    )
+
+    stillDistinguishesState = (
+      |
+        first
+        second
+      |
+      first:: Point x: 1 y: 2.
+      second:: Point x: 1 y: 3.
+      first touch.
+      second touch.
+      report: 'different state' for: first and: second.
+    )
+
+    inheritedNested = (
+      |
+        first
+        second
+      |
+      first:: Labelled x: 1 y: 2 label: 'a'.
+      second:: Labelled x: 1 y: 2 label: 'a'.
+      first touch.
+      second touch.
+      report: 'inherited nested' for: first and: second.
+    )
+
+    inheritedNestedDiffers = (
+      |
+        first
+        second
+      |
+      first:: Labelled x: 1 y: 2 label: 'a'.
+      second:: Labelled x: 1 y: 2 label: 'b'.
+      first touch.
+      second touch.
+      report: 'inherited differs' for: first and: second.
+    )
+
+    public run = (
+      untouched.
+      oneTouched.
+      bothTouched.
+      stillDistinguishesState.
+      inheritedNested.
+      inheritedNestedDiffers.
+    )
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform transcript) run.
+  )
+)

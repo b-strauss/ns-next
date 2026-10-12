@@ -3,17 +3,27 @@
 /// caught, its text the one an uncaught one ends the run with, and the
 /// program carries on after the handler.
 class ACannotReturnIsCaught = Object new (
-    |
-      stored ::= nil. |
+  |
+    stored ::= nil.
+  |
 ) (
-    stash = (
-        stored:: [^'too late'].
-        ^'stashed'
-    )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: self stash; newLine.
-        transcript show: ([stored value] on: Error do: [:e | e messageText]); newLine.
-        transcript show: 'after'; newLine.
-    )
-) : ()
+  stash = (
+    stored:: [^'too late'].
+    ^'stashed'.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: self stash;
+        newLine.
+    transcript
+        show: ([stored value] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: 'after';
+        newLine.
+  )
+)

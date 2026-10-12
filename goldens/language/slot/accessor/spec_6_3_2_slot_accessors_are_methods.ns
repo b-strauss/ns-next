@@ -11,23 +11,60 @@
 /// readX and writeX: reach them, while creating a Child initializes x
 /// without running Child's x:.
 class Spec632SlotAccessorsAreMethods = Object new () (
-    class Base = Object new (| public x ::= 1. |) (
-        public readX = ( ^x )
-        public writeX: value = ( ^x: value )
+  class Base = Object new (
+    |
+      public x ::= 1.
+    |
+  ) (
+    public readX = (
+      ^x.
     )
-    class Child = Base new (| public log ::= 'no setter ran'. |) (
-        public x = ( ^42 )
-        public x: value = ( log:: 'the overriding setter ran'. ^self )
+
+    public writeX: value = (
+      ^x: value.
     )
-    public main: platform args: args = (
-        | t = platform transcript. base child |
-        child:: Child new.
-        t show: child log; newLine.
-        t show: child readX printString; newLine.
-        t show: ((child writeX: 5) == child) printString; newLine.
-        t show: child log; newLine.
-        base:: Base new.
-        t show: ((base writeX: 5) == base) printString; newLine.
-        t show: base readX printString; newLine.
+  )
+
+  class Child = Base new (
+    |
+      public log ::= 'no setter ran'.
+    |
+  ) (
+    public x = (
+      ^42.
     )
-) : ()
+
+    public x: value = (
+      log:: 'the overriding setter ran'.
+      ^self.
+    )
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+      base
+      child
+    |
+    child:: Child new.
+    t
+        show: child log;
+        newLine.
+    t
+        show: child readX printString;
+        newLine.
+    t
+        show: ((child writeX: 5) == child) printString;
+        newLine.
+    t
+        show: child log;
+        newLine.
+    base:: Base new.
+    t
+        show: ((base writeX: 5) == base) printString;
+        newLine.
+    t
+        show: base readX printString;
+        newLine.
+  )
+)

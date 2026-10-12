@@ -4,14 +4,40 @@
 /// a range that crosses the 61-bit edge of an `Integer` into `LargeInteger`
 /// keeps counting.
 class NumberIteration = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        1 to: 3 do: [:index | transcript print: index; newLine].
-        5 to: 1 by: -2 do: [:index | transcript print: index; newLine].
-        3 to: 1 do: [:index | transcript show: 'never'; newLine].
-        transcript print: (1 to: 0 do: [:index | index]); newLine.
-        transcript print: (1 to: 0 by: 1 do: [:index | index]); newLine.
-        1.5 to: 3 do: [:value | transcript print: value; newLine].
-        1152921504606846974 to: 1152921504606846976 do: [:index | transcript print: index; newLine]
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    1 to: 3 do: [:index |
+      transcript
+          print: index;
+          newLine.
+    ].
+    5 to: 1 by: -2 do: [:index |
+      transcript
+          print: index;
+          newLine.
+    ].
+    3 to: 1 do: [:index |
+      transcript
+          show: 'never';
+          newLine.
+    ].
+    transcript
+        print: (1 to: 0 do: [:index | index]);
+        newLine.
+    transcript
+        print: (1 to: 0 by: 1 do: [:index | index]);
+        newLine.
+    1.5 to: 3 do: [:value |
+      transcript
+          print: value;
+          newLine.
+    ].
+    1152921504606846974 to: 1152921504606846976 do: [:index |
+      transcript
+          print: index;
+          newLine.
+    ].
+  )
 )

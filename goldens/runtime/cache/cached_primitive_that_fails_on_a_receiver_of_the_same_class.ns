@@ -18,17 +18,35 @@
 /// enclosing object must be a value; the transcript is therefore read where
 /// it is used, never held in a slot.
 class CacheFailingPrimitive = Object <: Value () (
-    class Text = String new () (
-    )
-    public main: platform args: args = (
-        | text transcript |
-        transcript:: platform transcript.
-        text:: Text new.
-        {'abc'. text. 'abc'. text} do: [:each |
-            transcript show: (each = each) printString; show: ' '; show: each printString; newLine].
-        {platform transcript. platform. platform transcript} do: [:each |
-            transcript show: (each = each) printString; newLine].
-        {'abc'. {1. 2}} do: [:each | transcript show: each size printString; newLine].
-        {platform transcript. platform transcript. platform} do: [:each | each show: 'shown'. each newLine].
-    )
-) : ()
+  class Text = String new () ()
+
+  public main: platform args: args = (
+    |
+      text
+      transcript
+    |
+    transcript:: platform transcript.
+    text:: Text new.
+    {'abc'. text. 'abc'. text} do: [:each |
+      transcript
+          show: (each = each) printString;
+          show: ' ';
+          show: each printString;
+          newLine.
+    ].
+    {platform transcript. platform. platform transcript} do: [:each |
+      transcript
+          show: (each = each) printString;
+          newLine.
+    ].
+    {'abc'. {1. 2}} do: [:each |
+      transcript
+          show: each size printString;
+          newLine.
+    ].
+    {platform transcript. platform transcript. platform} do: [:each |
+      each show: 'shown'.
+      each newLine.
+    ].
+  )
+)

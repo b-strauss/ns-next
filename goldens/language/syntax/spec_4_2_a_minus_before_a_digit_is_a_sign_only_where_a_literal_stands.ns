@@ -5,16 +5,34 @@
 /// the sign. A "-" starts a selector and continues none, so +-4 is "+" and -4.
 /// Only decimalNum has a sign; radixNum has one after its "r".
 class Spec42AMinusBeforeADigitIsASignOnlyWhereALiteralStands = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. three numbers |
-        three:: 3.
-        t show: (three -4) printString; newLine.
-        t show: (three-4) printString; newLine.
-        t show: (three +-4) printString; newLine.
-        t show: (three - -4) printString; newLine.
-        numbers:: {-4. 16r-1F. 2r1010}.
-        t show: (numbers at: 1) printString; newLine.
-        t show: (numbers at: 2) printString; newLine.
-        t show: (numbers at: 3) printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      three
+      numbers
+    |
+    three:: 3.
+    t
+        show: (three - 4) printString;
+        newLine.
+    t
+        show: (three - 4) printString;
+        newLine.
+    t
+        show: (three + -4) printString;
+        newLine.
+    t
+        show: (three - -4) printString;
+        newLine.
+    numbers:: {-4. 16r-1F. 2r1010}.
+    t
+        show: (numbers at: 1) printString;
+        newLine.
+    t
+        show: (numbers at: 2) printString;
+        newLine.
+    t
+        show: (numbers at: 3) printString;
+        newLine.
+  )
+)

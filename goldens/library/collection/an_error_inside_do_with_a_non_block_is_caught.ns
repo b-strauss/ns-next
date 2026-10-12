@@ -1,21 +1,33 @@
 /// An error raised by the `value:` that `Array>>do:` sends to a non-block
 /// unwinds out of the loop like an error raised inside a block, and the
 /// loop does not carry on.
-class AnErrorInsideDoWithANonBlockIsCaught = Object new (
-) (
-    class Failing = Object new (
-        | public seen ::= 0. |
-    ) (
-        public value: element = (
-            seen:: seen + 1.
-            element = 2 ifTrue: [1 + nil].
-            ^element
-        )
+class AnErrorInsideDoWithANonBlockIsCaught = Object new () (
+  class Failing = Object new (
+    |
+      public seen ::= 0.
+    |
+  ) (
+    public value: element = (
+      seen:: seen + 1.
+      element = 2 ifTrue: [1 + nil].
+      ^element.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. failing |
-        failing:: Failing new.
-        transcript show: ([{1. 2. 3} do: failing. 'finished'] on: Error do: [:error | 'caught']); newLine.
-        transcript show: failing seen printString; newLine
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      failing
+    |
+    failing:: Failing new.
+    transcript
+        show: ([
+          {1. 2. 3} do: failing.
+          'finished'.
+        ] on: Error do: [:error | 'caught']);
+        newLine.
+    transcript
+        show: failing seen printString;
+        newLine.
+  )
+)

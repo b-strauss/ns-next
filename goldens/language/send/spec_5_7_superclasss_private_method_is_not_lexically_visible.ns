@@ -3,15 +3,20 @@
 /// is `self p`, that is `outer Child2 p` (§5.8). §5.9: `Child2` declares no
 /// private `p`, and `lookupProtected` passes `Base2`'s private `p` over, so
 /// the send falls to `doesNotUnderstand:`.
-class InheritedPrivate = Object new (
-) (
-    class Base2 = Object new () (
-        private p = ( ^10 )
+class InheritedPrivate = Object new () (
+  class Base2 = Object new () (
+    private p = (
+      ^10.
     )
-    class Child2 = Base2 new () (
-        public run = ( ^p )
+  )
+
+  class Child2 = Base2 new () (
+    public run = (
+      ^p.
     )
-    public main: pl args: a = (
-        Child2 new run
-    )
-) : ()
+  )
+
+  public main: pl args: a = (
+    Child2 new run.
+  )
+)

@@ -19,354 +19,528 @@
 /// obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 /// and in THIRD-PARTY-NOTICES.md at the repository root.
 class Havlak usingPlatform: platform = (
-    | private List = platform collections List.
-      private Map = platform collections Map.
-      private Set = platform collections Set. |
+  |
+    private List = platform collections List.
+    private Map = platform collections Map.
+    private Set = platform collections Set.
+  |
 ) (
-    public bench = (
-        | result |
-        result:: LoopTesterApp new
-            main: 1500
-            iterations: 50
-            parallelLoops: 10
-            nestedLoops: 10
-            baseLoops: 5.
-        ((result at: 1) = 6102 and: [(result at: 2) = 5213]) ifFalse: [
-            Error signal: 'Havlak: expected 6102 loops and 5213 nodes, got ',
-                (result at: 1) printString, ' and ', (result at: 2) printString].
-        ^result
+  public bench = (
+    |
+      result
+    |
+    result:: LoopTesterApp new main: 1500
+        iterations: 50
+        parallelLoops: 10
+        nestedLoops: 10
+        baseLoops: 5.
+    ((result at: 1) = 6102 and: [(result at: 2) = 5213]) ifFalse: [
+      Error signal: 'Havlak: expected 6102 loops and 5213 nodes, got '
+          , (result at: 1) printString
+          , ' and '
+          , (result at: 2) printString.
+    ].
+    ^result.
+  )
+
+  class BasicBlock new: name = (
+    |
+      public inEdges = List new: 2.
+      public outEdges = List new: 2.
+      private name = name.
+    |
+  ) (
+    public predecessorCount = (
+      ^inEdges size.
     )
-    class BasicBlock new: name = (
-        | public inEdges = List new: 2.
-          public outEdges = List new: 2.
-          private name = name. |
-    ) (
-        public predecessorCount = ( ^inEdges size )
-        public addOutEdge: to = ( outEdges add: to )
-        public addInEdge: from = ( inEdges add: from )
+
+    public addOutEdge: to = (
+      outEdges add: to.
     )
-    class BasicBlockEdge for: controlFlowGraph from: fromName to: toName = (
-        | private from = controlFlowGraph createNode: fromName.
-          private to = controlFlowGraph createNode: toName. |
-        from addOutEdge: to.
-        to addInEdge: from.
-        controlFlowGraph addEdge: self
-    ) ()
-    class ControlFlowGraph = (
-        | private basicBlockMap = List new.
-          private startNode ::= nil.
-          private edgeList = List new. |
-    ) (
-        public createNode: name = (
-            | node |
-            basicBlockMap size >= name
-                ifTrue: [node:: basicBlockMap at: name]
-                ifFalse: [
-                    node:: BasicBlock new: name.
-                    basicBlockMap add: node].
-            nodeCount = 1 ifTrue: [startNode:: node].
-            ^node
-        )
-        public addEdge: edge = ( edgeList add: edge )
-        public nodeCount = ( ^basicBlockMap size )
-        public startBasicBlock = ( ^startNode )
-        public basicBlocks = ( ^basicBlockMap )
+
+    public addInEdge: from = (
+      inEdges add: from.
     )
-    class LoopStructureGraph = (
-        | private root = SimpleLoop basicBlock: nil reducible: false.
-          private loops = List new.
-          private loopCounter ::= 0. |
-        root nestingLevel: 0.
-        root counter: loopCounter.
-        loopCounter:: loopCounter + 1.
-        loops add: root
-    ) (
-        public createNewLoop: basicBlock reducible: isReducible = (
-            | loop |
-            loop:: SimpleLoop basicBlock: basicBlock reducible: isReducible.
-            loop counter: loopCounter.
-            loopCounter:: loopCounter + 1.
-            loops add: loop.
-            ^loop
-        )
-        public calculateNestingLevel = (
-            loops do: [:loop |
-                loop isRoot ifFalse: [
-                    loop parent isNil ifTrue: [
-                        loop parent: root]]].
-            calculateNestingLevelOf: root depth: 0
-        )
-        private calculateNestingLevelOf: loop depth: depth = (
-            loop depthLevel: depth.
-            loop children do: [:child |
-                calculateNestingLevelOf: child depth: depth + 1.
-                loop nestingLevel: (loop nestingLevel max: 1 + child nestingLevel)]
-        )
-        public loopCount = ( ^loops size )
+  )
+
+  class BasicBlockEdge for: controlFlowGraph from: fromName to: toName = (
+    |
+      private from = controlFlowGraph createNode: fromName.
+      private to = controlFlowGraph createNode: toName.
+    |
+    from addOutEdge: to.
+    to addInEdge: from.
+    controlFlowGraph addEdge: self.
+  ) ()
+
+  class ControlFlowGraph = (
+    |
+      private basicBlockMap = List new.
+      private startNode ::= nil.
+      private edgeList = List new.
+    |
+  ) (
+    public createNode: name = (
+      |
+        node
+      |
+      basicBlockMap size >= name ifTrue: [
+        node:: basicBlockMap at: name.
+      ] ifFalse: [
+        node:: BasicBlock new: name.
+        basicBlockMap add: node.
+      ].
+      nodeCount = 1 ifTrue: [startNode:: node].
+      ^node.
     )
-    class SimpleLoop basicBlock: basicBlock reducible: isReducible = (
-        | public counter ::= 0.
-          public depthLevel ::= 0.
-          private parent_ ::= nil.
-          private isRoot_ ::= false.
-          private nestingLevel_ ::= 0.
-          private header = basicBlock.
-          private isReducible = isReducible.
-          private basicBlocks = Set new.
-          public children = Set new. |
-        basicBlock notNil ifTrue: [basicBlocks add: basicBlock]
-    ) (
-        public addNode: basicBlock = ( basicBlocks add: basicBlock )
-        public addChildLoop: loop = ( children add: loop )
-        public parent = ( ^parent_ )
-        public parent: loop = (
-            parent_:: loop.
-            parent_ addChildLoop: self
-        )
-        public isRoot = ( ^isRoot_ )
-        public setIsRoot = ( isRoot_:: true )
-        public nestingLevel = ( ^nestingLevel_ )
-        public nestingLevel: level = (
-            nestingLevel_:: level.
-            level = 0 ifTrue: [setIsRoot]
-        )
+
+    public addEdge: edge = (
+      edgeList add: edge.
     )
-    class UnionFindNode = (
-        | private parent_ ::= nil.
-          private basicBlock_ ::= nil.
-          private depthFirstNumber_ ::= 0.
-          public loop ::= nil. |
-    ) (
-        public initializeNode: basicBlock depthFirstNumber: depthFirstNumber = (
-            parent_:: self.
-            basicBlock_:: basicBlock.
-            depthFirstNumber_:: depthFirstNumber.
-            loop:: nil
-        )
-        public findSet = (
-            | nodeList node |
-            nodeList:: List new.
-            node:: self.
-            [(node == node parent) not] whileTrue: [
-                (node parent == node parent parent) not ifTrue: [
-                    nodeList add: node].
-                node:: node parent].
-            nodeList do: [:each | each union: parent_].
-            ^node
-        )
-        public union: node = ( parent_:: node )
-        public parent = ( ^parent_ )
-        public basicBlock = ( ^basicBlock_ )
-        public depthFirstNumber = ( ^depthFirstNumber_ )
+
+    public nodeCount = (
+      ^basicBlockMap size.
     )
-    class LoopTesterApp = (
-        | private controlFlowGraph = ControlFlowGraph new.
-          private loopStructureGraph = LoopStructureGraph new. |
-        controlFlowGraph createNode: 1
-    ) (
-        private buildDiamond: start = (
-            BasicBlockEdge for: controlFlowGraph from: start to: start + 1.
-            BasicBlockEdge for: controlFlowGraph from: start to: start + 2.
-            BasicBlockEdge for: controlFlowGraph from: start + 1 to: start + 3.
-            BasicBlockEdge for: controlFlowGraph from: start + 2 to: start + 3.
-            ^start + 3
-        )
-        private buildConnect: start end: end = (
-            BasicBlockEdge for: controlFlowGraph from: start to: end
-        )
-        private buildStraight: start length: length = (
-            0 to: length - 1 do: [:index |
-                buildConnect: start + index end: start + index + 1].
-            ^start + length
-        )
-        private buildBaseLoop: from = (
-            | header firstDiamond between secondDiamond footer |
-            header:: buildStraight: from length: 1.
-            firstDiamond:: buildDiamond: header.
-            between:: buildStraight: firstDiamond length: 1.
-            secondDiamond:: buildDiamond: between.
-            footer:: buildStraight: secondDiamond length: 1.
-            buildConnect: secondDiamond end: between.
-            buildConnect: firstDiamond end: header.
-            buildConnect: footer end: from.
-            footer:: buildStraight: footer length: 1.
-            ^footer
-        )
-        public main: dummyLoopCount iterations: findLoopIterations parallelLoops: parallelLoops nestedLoops: nestedLoops baseLoops: baseLoops = (
-            constructSimpleControlFlowGraph.
-            addDummyLoops: dummyLoopCount.
-            constructControlFlowGraph: parallelLoops nestedLoops: nestedLoops baseLoops: baseLoops.
-            findLoops: loopStructureGraph.
-            findLoopIterations timesRepeat: [
-                findLoops: LoopStructureGraph new].
-            loopStructureGraph calculateNestingLevel.
-            ^{loopStructureGraph loopCount. controlFlowGraph nodeCount}
-        )
-        private constructControlFlowGraph: parallelLoops nestedLoops: nestedLoops baseLoops: baseLoops = (
-            | current |
-            current:: 3.
-            parallelLoops timesRepeat: [
-                controlFlowGraph createNode: current + 1.
-                buildConnect: 2 end: current + 1.
-                current:: current + 1.
-                nestedLoops timesRepeat: [
-                    | top bottom |
-                    top:: current.
-                    current:: buildStraight: current length: 1.
-                    baseLoops timesRepeat: [current:: buildBaseLoop: current].
-                    bottom:: buildStraight: current length: 1.
-                    buildConnect: current end: top.
-                    current:: bottom].
-                buildConnect: current end: 1]
-        )
-        private addDummyLoops: dummyLoopCount = (
-            dummyLoopCount timesRepeat: [
-                findLoops: loopStructureGraph]
-        )
-        private findLoops: loopStructure = (
-            | finder |
-            finder:: HavlakLoopFinder new: controlFlowGraph loopStructureGraph: loopStructure.
-            finder findLoops
-        )
-        private constructSimpleControlFlowGraph = (
-            controlFlowGraph createNode: 1.
-            buildBaseLoop: 1.
-            controlFlowGraph createNode: 2.
-            BasicBlockEdge for: controlFlowGraph from: 1 to: 3
-        )
+
+    public startBasicBlock = (
+      ^startNode.
     )
-    class HavlakLoopFinder new: controlFlowGraph loopStructureGraph: loopStructureGraph = (
-        | private controlFlowGraph = controlFlowGraph.
-          private loopStructureGraph = loopStructureGraph.
-          private Unvisited = 2147483647.
-          private MaxNonBackPredecessors = 32 * 1024.
-          private nonBackPredecessors = List new.
-          private backPredecessors = List new.
-          private number = Map new.
-          private maxSize ::= 0.
-          private header ::= nil.
-          private type ::= nil.
-          private last ::= nil.
-          private nodes ::= nil. |
-    ) (
-        /// The kinds of basic block: #nonHeader #reducible #selfLoop
-        /// #irreducible #dead.
-        private isAncestor: ancestor of: descendant = (
-            ^ancestor <= descendant and: [descendant <= (last at: ancestor)]
-        )
-        private depthFirstSearch: currentNode current: current = (
-            | lastId outerBlocks |
-            (nodes at: current) initializeNode: currentNode depthFirstNumber: current.
-            number at: currentNode put: current.
-            lastId:: current.
-            outerBlocks:: currentNode outEdges.
-            1 to: outerBlocks size do: [:index |
-                | target |
-                target:: outerBlocks at: index.
-                (number at: target) = Unvisited ifTrue: [
-                    lastId:: depthFirstSearch: target current: lastId + 1]].
-            last at: current put: lastId.
-            ^lastId
-        )
-        private initializeAllNodes = (
-            controlFlowGraph basicBlocks do: [:basicBlock |
-                number at: basicBlock put: Unvisited].
-            depthFirstSearch: controlFlowGraph startBasicBlock current: 1
-        )
-        private identifyEdges: size = (
-            1 to: size do: [:candidate |
-                | candidateBlock |
-                header at: candidate put: 1.
-                type at: candidate put: #nonHeader.
-                candidateBlock:: (nodes at: candidate) basicBlock.
-                candidateBlock isNil
-                    ifTrue: [type at: candidate put: #dead]
-                    ifFalse: [processEdges: candidateBlock candidate: candidate]]
-        )
-        private processEdges: candidateBlock candidate: candidate = (
-            candidateBlock predecessorCount > 0 ifTrue: [
-                candidateBlock inEdges do: [:predecessorBlock |
-                    | predecessor |
-                    predecessor:: number at: predecessorBlock.
-                    (predecessor = Unvisited) not ifTrue: [
-                        (isAncestor: candidate of: predecessor)
-                            ifTrue: [(backPredecessors at: candidate) add: predecessor]
-                            ifFalse: [(nonBackPredecessors at: candidate) add: predecessor]]]]
-        )
-        public findLoops = (
-            | size |
-            controlFlowGraph startBasicBlock isNil ifTrue: [^self].
-            size:: controlFlowGraph nodeCount.
-            nonBackPredecessors removeAll.
-            backPredecessors removeAll.
-            number removeAll.
-            size > maxSize ifTrue: [
-                header:: Array new: size.
-                type:: Array new: size.
-                last:: Array new: size.
-                nodes:: Array new: size.
-                maxSize:: size].
-            1 to: size do: [:index |
-                nonBackPredecessors add: Set new.
-                backPredecessors add: List new.
-                nodes at: index put: UnionFindNode new].
-            initializeAllNodes.
-            identifyEdges: size.
-            header at: 1 put: 1.
-            size to: 1 by: -1 do: [:candidate |
-                | nodePool candidateBlock |
-                nodePool:: List new.
-                candidateBlock:: (nodes at: candidate) basicBlock.
-                candidateBlock notNil ifTrue: [
-                    | workList |
-                    collectBackPredecessors: candidate nodePool: nodePool.
-                    workList:: List new.
-                    nodePool do: [:each | workList add: each].
-                    (nodePool size = 0) not ifTrue: [
-                        type at: candidate put: #reducible].
-                    [workList isEmpty] whileFalse: [
-                        | workNode nonBackSize |
-                        workNode:: workList removeFirst.
-                        nonBackSize:: (nonBackPredecessors at: workNode depthFirstNumber) size.
-                        nonBackSize > MaxNonBackPredecessors ifTrue: [^self].
-                        processNonBackPredecessors: candidate nodePool: nodePool workList: workList node: workNode].
-                    (nodePool size > 0 or: [(type at: candidate) = #selfLoop]) ifTrue: [
-                        | loop |
-                        loop:: loopStructureGraph
-                            createNewLoop: candidateBlock
-                            reducible: ((type at: candidate) = #irreducible) not.
-                        setLoopAttribute: candidate nodePool: nodePool loop: loop]]]
-        )
-        /// Step e of Havlak's algorithm.
-        private processNonBackPredecessors: candidate nodePool: nodePool workList: workList node: workNode = (
-            (nonBackPredecessors at: workNode depthFirstNumber) do: [:predecessor |
-                | representative |
-                representative:: (nodes at: predecessor) findSet.
-                (isAncestor: candidate of: representative depthFirstNumber) not
-                    ifTrue: [
-                        type at: candidate put: #irreducible.
-                        (nonBackPredecessors at: candidate) add: representative depthFirstNumber]
-                    ifFalse: [
-                        (representative depthFirstNumber = candidate) not ifTrue: [
-                            (nodePool anySatisfy: [:each | each == representative]) ifFalse: [
-                                workList add: representative.
-                                nodePool add: representative]]]]
-        )
-        private setLoopAttribute: candidate nodePool: nodePool loop: loop = (
-            (nodes at: candidate) loop: loop.
-            nodePool do: [:node |
-                header at: node depthFirstNumber put: candidate.
-                node union: (nodes at: candidate).
-                node loop notNil
-                    ifTrue: [node loop parent: loop]
-                    ifFalse: [loop addNode: node basicBlock]]
-        )
-        /// Step d of Havlak's algorithm.
-        private collectBackPredecessors: candidate nodePool: nodePool = (
-            (backPredecessors at: candidate) do: [:predecessor |
-                (predecessor = candidate) not
-                    ifTrue: [nodePool add: (nodes at: predecessor) findSet]
-                    ifFalse: [type at: candidate put: #selfLoop]]
-        )
+
+    public basicBlocks = (
+      ^basicBlockMap.
     )
+  )
+
+  class LoopStructureGraph = (
+    |
+      private root = SimpleLoop basicBlock: nil reducible: false.
+      private loops = List new.
+      private loopCounter ::= 0.
+    |
+    root nestingLevel: 0.
+    root counter: loopCounter.
+    loopCounter:: loopCounter + 1.
+    loops add: root.
+  ) (
+    public createNewLoop: basicBlock reducible: isReducible = (
+      |
+        loop
+      |
+      loop:: SimpleLoop basicBlock: basicBlock reducible: isReducible.
+      loop counter: loopCounter.
+      loopCounter:: loopCounter + 1.
+      loops add: loop.
+      ^loop.
+    )
+
+    public calculateNestingLevel = (
+      loops do: [:loop | loop isRoot ifFalse: [loop parent isNil ifTrue: [loop parent: root]]].
+      calculateNestingLevelOf: root depth: 0.
+    )
+
+    private calculateNestingLevelOf: loop depth: depth = (
+      loop depthLevel: depth.
+      loop children do: [:child |
+        calculateNestingLevelOf: child depth: depth + 1.
+        loop nestingLevel: (loop nestingLevel max: 1 + child nestingLevel).
+      ].
+    )
+
+    public loopCount = (
+      ^loops size.
+    )
+  )
+
+  class SimpleLoop basicBlock: basicBlock reducible: isReducible = (
+    |
+      public counter ::= 0.
+      public depthLevel ::= 0.
+      private parent_ ::= nil.
+      private isRoot_ ::= false.
+      private nestingLevel_ ::= 0.
+      private header = basicBlock.
+      private isReducible = isReducible.
+      private basicBlocks = Set new.
+      public children = Set new.
+    |
+    basicBlock notNil ifTrue: [basicBlocks add: basicBlock].
+  ) (
+    public addNode: basicBlock = (
+      basicBlocks add: basicBlock.
+    )
+
+    public addChildLoop: loop = (
+      children add: loop.
+    )
+
+    public parent = (
+      ^parent_.
+    )
+
+    public parent: loop = (
+      parent_:: loop.
+      parent_ addChildLoop: self.
+    )
+
+    public isRoot = (
+      ^isRoot_.
+    )
+
+    public setIsRoot = (
+      isRoot_:: true.
+    )
+
+    public nestingLevel = (
+      ^nestingLevel_.
+    )
+
+    public nestingLevel: level = (
+      nestingLevel_:: level.
+      level = 0 ifTrue: [setIsRoot].
+    )
+  )
+
+  class UnionFindNode = (
+    |
+      private parent_ ::= nil.
+      private basicBlock_ ::= nil.
+      private depthFirstNumber_ ::= 0.
+      public loop ::= nil.
+    |
+  ) (
+    public initializeNode: basicBlock depthFirstNumber: depthFirstNumber = (
+      parent_:: self.
+      basicBlock_:: basicBlock.
+      depthFirstNumber_:: depthFirstNumber.
+      loop:: nil.
+    )
+
+    public findSet = (
+      |
+        nodeList
+        node
+      |
+      nodeList:: List new.
+      node:: self.
+      [(node == node parent) not] whileTrue: [
+        (node parent == node parent parent) not ifTrue: [nodeList add: node].
+        node:: node parent.
+      ].
+      nodeList do: [:each | each union: parent_].
+      ^node.
+    )
+
+    public union: node = (
+      parent_:: node.
+    )
+
+    public parent = (
+      ^parent_.
+    )
+
+    public basicBlock = (
+      ^basicBlock_.
+    )
+
+    public depthFirstNumber = (
+      ^depthFirstNumber_.
+    )
+  )
+
+  class LoopTesterApp = (
+    |
+      private controlFlowGraph = ControlFlowGraph new.
+      private loopStructureGraph = LoopStructureGraph new.
+    |
+    controlFlowGraph createNode: 1.
+  ) (
+    private buildDiamond: start = (
+      BasicBlockEdge for: controlFlowGraph from: start to: start + 1.
+      BasicBlockEdge for: controlFlowGraph from: start to: start + 2.
+      BasicBlockEdge for: controlFlowGraph from: start + 1 to: start + 3.
+      BasicBlockEdge for: controlFlowGraph from: start + 2 to: start + 3.
+      ^start + 3.
+    )
+
+    private buildConnect: start end: end = (
+      BasicBlockEdge for: controlFlowGraph from: start to: end.
+    )
+
+    private buildStraight: start length: length = (
+      0 to: length - 1 do: [:index | buildConnect: start + index end: start + index + 1].
+      ^start + length.
+    )
+
+    private buildBaseLoop: from = (
+      |
+        header
+        firstDiamond
+        between
+        secondDiamond
+        footer
+      |
+      header:: buildStraight: from length: 1.
+      firstDiamond:: buildDiamond: header.
+      between:: buildStraight: firstDiamond length: 1.
+      secondDiamond:: buildDiamond: between.
+      footer:: buildStraight: secondDiamond length: 1.
+      buildConnect: secondDiamond end: between.
+      buildConnect: firstDiamond end: header.
+      buildConnect: footer end: from.
+      footer:: buildStraight: footer length: 1.
+      ^footer.
+    )
+
+    public main: dummyLoopCount
+        iterations: findLoopIterations
+        parallelLoops: parallelLoops
+        nestedLoops: nestedLoops
+        baseLoops: baseLoops = (
+      constructSimpleControlFlowGraph.
+      addDummyLoops: dummyLoopCount.
+      constructControlFlowGraph: parallelLoops nestedLoops: nestedLoops baseLoops: baseLoops.
+      findLoops: loopStructureGraph.
+      findLoopIterations timesRepeat: [findLoops: LoopStructureGraph new].
+      loopStructureGraph calculateNestingLevel.
+      ^{loopStructureGraph loopCount. controlFlowGraph nodeCount}.
+    )
+
+    private constructControlFlowGraph: parallelLoops
+        nestedLoops: nestedLoops
+        baseLoops: baseLoops = (
+      |
+        current
+      |
+      current:: 3.
+      parallelLoops timesRepeat: [
+        controlFlowGraph createNode: current + 1.
+        buildConnect: 2 end: current + 1.
+        current:: current + 1.
+        nestedLoops timesRepeat: [
+          |
+            top
+            bottom
+          |
+          top:: current.
+          current:: buildStraight: current length: 1.
+          baseLoops timesRepeat: [current:: buildBaseLoop: current].
+          bottom:: buildStraight: current length: 1.
+          buildConnect: current end: top.
+          current:: bottom.
+        ].
+        buildConnect: current end: 1.
+      ].
+    )
+
+    private addDummyLoops: dummyLoopCount = (
+      dummyLoopCount timesRepeat: [findLoops: loopStructureGraph].
+    )
+
+    private findLoops: loopStructure = (
+      |
+        finder
+      |
+      finder:: HavlakLoopFinder new: controlFlowGraph loopStructureGraph: loopStructure.
+      finder findLoops.
+    )
+
+    private constructSimpleControlFlowGraph = (
+      controlFlowGraph createNode: 1.
+      buildBaseLoop: 1.
+      controlFlowGraph createNode: 2.
+      BasicBlockEdge for: controlFlowGraph from: 1 to: 3.
+    )
+  )
+
+  class HavlakLoopFinder new: controlFlowGraph loopStructureGraph: loopStructureGraph = (
+    |
+      private controlFlowGraph = controlFlowGraph.
+      private loopStructureGraph = loopStructureGraph.
+      private Unvisited = 2147483647.
+      private MaxNonBackPredecessors = 32 * 1024.
+      private nonBackPredecessors = List new.
+      private backPredecessors = List new.
+      private number = Map new.
+      private maxSize ::= 0.
+      private header ::= nil.
+      private type ::= nil.
+      private last ::= nil.
+      private nodes ::= nil.
+    |
+  ) (
+    /// The kinds of basic block: #nonHeader #reducible #selfLoop
+    /// #irreducible #dead.
+    private isAncestor: ancestor of: descendant = (
+      ^ancestor <= descendant and: [descendant <= (last at: ancestor)].
+    )
+
+    private depthFirstSearch: currentNode current: current = (
+      |
+        lastId
+        outerBlocks
+      |
+      (nodes at: current) initializeNode: currentNode depthFirstNumber: current.
+      number at: currentNode put: current.
+      lastId:: current.
+      outerBlocks:: currentNode outEdges.
+      1 to: outerBlocks size do: [:index |
+        |
+          target
+        |
+        target:: outerBlocks at: index.
+        (number at: target) = Unvisited ifTrue: [
+          lastId:: depthFirstSearch: target current: lastId + 1.
+        ].
+      ].
+      last at: current put: lastId.
+      ^lastId.
+    )
+
+    private initializeAllNodes = (
+      controlFlowGraph basicBlocks do: [:basicBlock | number at: basicBlock put: Unvisited].
+      depthFirstSearch: controlFlowGraph startBasicBlock current: 1.
+    )
+
+    private identifyEdges: size = (
+      1 to: size do: [:candidate |
+        |
+          candidateBlock
+        |
+        header at: candidate put: 1.
+        type at: candidate put: #nonHeader.
+        candidateBlock:: (nodes at: candidate) basicBlock.
+        candidateBlock isNil ifTrue: [
+          type at: candidate put: #dead.
+        ] ifFalse: [
+          processEdges: candidateBlock candidate: candidate.
+        ].
+      ].
+    )
+
+    private processEdges: candidateBlock candidate: candidate = (
+      candidateBlock predecessorCount > 0 ifTrue: [
+        candidateBlock inEdges do: [:predecessorBlock |
+          |
+            predecessor
+          |
+          predecessor:: number at: predecessorBlock.
+          (predecessor = Unvisited) not ifTrue: [
+            (isAncestor: candidate of: predecessor) ifTrue: [
+              (backPredecessors at: candidate) add: predecessor.
+            ] ifFalse: [
+              (nonBackPredecessors at: candidate) add: predecessor.
+            ].
+          ].
+        ].
+      ].
+    )
+
+    public findLoops = (
+      |
+        size
+      |
+      controlFlowGraph startBasicBlock isNil ifTrue: [^self].
+      size:: controlFlowGraph nodeCount.
+      nonBackPredecessors removeAll.
+      backPredecessors removeAll.
+      number removeAll.
+      size > maxSize ifTrue: [
+        header:: Array new: size.
+        type:: Array new: size.
+        last:: Array new: size.
+        nodes:: Array new: size.
+        maxSize:: size.
+      ].
+      1 to: size do: [:index |
+        nonBackPredecessors add: Set new.
+        backPredecessors add: List new.
+        nodes at: index put: UnionFindNode new.
+      ].
+      initializeAllNodes.
+      identifyEdges: size.
+      header at: 1 put: 1.
+      size to: 1 by: -1 do: [:candidate |
+        |
+          nodePool
+          candidateBlock
+        |
+        nodePool:: List new.
+        candidateBlock:: (nodes at: candidate) basicBlock.
+        candidateBlock notNil ifTrue: [
+          |
+            workList
+          |
+          collectBackPredecessors: candidate nodePool: nodePool.
+          workList:: List new.
+          nodePool do: [:each | workList add: each].
+          (nodePool size = 0) not ifTrue: [type at: candidate put: #reducible].
+          [workList isEmpty] whileFalse: [
+            |
+              workNode
+              nonBackSize
+            |
+            workNode:: workList removeFirst.
+            nonBackSize:: (nonBackPredecessors at: workNode depthFirstNumber) size.
+            nonBackSize > MaxNonBackPredecessors ifTrue: [^self].
+            processNonBackPredecessors: candidate
+                nodePool: nodePool
+                workList: workList
+                node: workNode.
+          ].
+          (nodePool size > 0 or: [(type at: candidate) = #selfLoop]) ifTrue: [
+            |
+              loop
+            |
+            loop:: loopStructureGraph createNewLoop: candidateBlock
+                reducible: ((type at: candidate) = #irreducible) not.
+            setLoopAttribute: candidate nodePool: nodePool loop: loop.
+          ].
+        ].
+      ].
+    )
+
+    /// Step e of Havlak's algorithm.
+    private processNonBackPredecessors: candidate
+        nodePool: nodePool
+        workList: workList
+        node: workNode = (
+      (nonBackPredecessors at: workNode depthFirstNumber) do: [:predecessor |
+        |
+          representative
+        |
+        representative:: (nodes at: predecessor) findSet.
+        (isAncestor: candidate of: representative depthFirstNumber) not ifTrue: [
+          type at: candidate put: #irreducible.
+          (nonBackPredecessors at: candidate) add: representative depthFirstNumber.
+        ] ifFalse: [
+          (representative depthFirstNumber = candidate) not ifTrue: [
+            (nodePool anySatisfy: [:each | each == representative]) ifFalse: [
+              workList add: representative.
+              nodePool add: representative.
+            ].
+          ].
+        ].
+      ].
+    )
+
+    private setLoopAttribute: candidate nodePool: nodePool loop: loop = (
+      (nodes at: candidate) loop: loop.
+      nodePool do: [:node |
+        header at: node depthFirstNumber put: candidate.
+        node union: (nodes at: candidate).
+        node loop notNil ifTrue: [node loop parent: loop] ifFalse: [loop addNode: node basicBlock].
+      ].
+    )
+
+    /// Step d of Havlak's algorithm.
+    private collectBackPredecessors: candidate nodePool: nodePool = (
+      (backPredecessors at: candidate) do: [:predecessor |
+        (predecessor = candidate) not ifTrue: [
+          nodePool add: (nodes at: predecessor) findSet.
+        ] ifFalse: [
+          type at: candidate put: #selfLoop.
+        ].
+      ].
+    )
+  )
 )

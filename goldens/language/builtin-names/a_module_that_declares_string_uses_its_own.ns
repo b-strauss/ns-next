@@ -8,8 +8,13 @@
 /// proceed up the inheritance chain of self". A regression guard: the
 /// lexical member won before `String` became a send, and must still.
 class ModuleDeclaresString = Object new () (
-    String = ( ^'mine' )
-    public main: platform args: arguments = (
-        platform transcript show: String; newLine
-    )
-) : ()
+  String = (
+    ^'mine'.
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: String;
+        newLine.
+  )
+)

@@ -4,8 +4,14 @@
 /// text it stands for (docs/design/object-model.md, "Where Rust sees a
 /// future").
 class Spec632AnUnhandledErrorDescribedByAFuture = Object new () (
-    class Probe = Object new (|| public failed = Error signal: text. public text = 'boom'. ||) () : ()
-    public main: platform args: arguments = (
-        Probe new
-    )
-) : ()
+  class Probe = Object new (
+    ||
+      public failed = Error signal: text.
+      public text = 'boom'.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    Probe new.
+  )
+)

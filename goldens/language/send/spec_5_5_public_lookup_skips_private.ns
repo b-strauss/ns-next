@@ -5,14 +5,24 @@
 /// therefore passed over, not a stop: PrivateShadow new foo reaches
 /// PublicBase's public foo.
 class Spec55PublicLookupSkipsPrivate = Object new () (
-    class PublicBase = Object new () (
-        public foo = ( ^1 )
+  class PublicBase = Object new () (
+    public foo = (
+      ^1.
     )
-    class PrivateShadow = PublicBase new () (
-        private foo = ( ^2 )
+  )
+
+  class PrivateShadow = PublicBase new () (
+    private foo = (
+      ^2.
     )
-    public main: platform args: args = (
-        | t = platform transcript. |
-        t show: PrivateShadow new foo printString; newLine.
-    )
-) : ()
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: PrivateShadow new foo printString;
+        newLine.
+  )
+)

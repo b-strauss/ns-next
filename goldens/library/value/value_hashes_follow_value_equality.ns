@@ -30,36 +30,53 @@
 /// constant, and one line for the one float pair whose bits differ while
 /// their values are equal.
 class ValueHashes = Object new (
-    | transcript ::= nil. |
+  |
+    transcript ::= nil.
+  |
 ) (
-    report: label for: first and: second = (
-        transcript show: label; show: ' '; show: (first = second) printString;
-            show: ' '; show: (first hash = second hash) printString; newLine
-    )
-    cross: label for: first and: second = (
-        transcript show: label; show: ' '; show: (first = second) printString;
-            show: ' '; show: (first hash = second hash) printString; newLine
-    )
-    show: value = (
-        transcript show: value printString; newLine
-    )
-    public main: ignoredPlatform args: arguments = (
-        transcript:: ignoredPlatform transcript.
-        report: 'Integer' for: 1 + 2 and: 3.
-        report: 'Float' for: 1.0 + 1.5 and: 2.5.
-        report: 'String' for: 'ab' , 'c' and: 'abc'.
-        report: 'Symbol' for: 'abc' asSymbol and: #abc.
-        report: 'Boolean' for: 1 < 2 and: true.
-        cross: 'Symbol/String' for: #a and: 'a'.
-        cross: 'String/Symbol' for: 'a' and: #a.
-        cross: 'Float/Integer' for: 1.0 and: 1.
-        cross: 'Integer/Float' for: 1 and: 1.0.
-        show: 3 hash.
-        show: 0 hash.
-        show: true hash.
-        show: false hash.
-        show: 'abc' hash = 'abd' hash.
-        show: #abc hash = #abd hash.
-        show: ((0.0 - 1.0) * 0.0) hash = 0.0 hash.
-    )
-) : ()
+  report: label for: first and: second = (
+    transcript
+        show: label;
+        show: ' ';
+        show: (first = second) printString;
+        show: ' ';
+        show: (first hash = second hash) printString;
+        newLine.
+  )
+
+  cross: label for: first and: second = (
+    transcript
+        show: label;
+        show: ' ';
+        show: (first = second) printString;
+        show: ' ';
+        show: (first hash = second hash) printString;
+        newLine.
+  )
+
+  show: value = (
+    transcript
+        show: value printString;
+        newLine.
+  )
+
+  public main: ignoredPlatform args: arguments = (
+    transcript:: ignoredPlatform transcript.
+    report: 'Integer' for: 1 + 2 and: 3.
+    report: 'Float' for: 1.0 + 1.5 and: 2.5.
+    report: 'String' for: 'ab' , 'c' and: 'abc'.
+    report: 'Symbol' for: 'abc' asSymbol and: #abc.
+    report: 'Boolean' for: 1 < 2 and: true.
+    cross: 'Symbol/String' for: #a and: 'a'.
+    cross: 'String/Symbol' for: 'a' and: #a.
+    cross: 'Float/Integer' for: 1.0 and: 1.
+    cross: 'Integer/Float' for: 1 and: 1.0.
+    show: 3 hash.
+    show: 0 hash.
+    show: true hash.
+    show: false hash.
+    show: 'abc' hash = 'abd' hash.
+    show: #abc hash = #abd hash.
+    show: ((0.0 - 1.0) * 0.0) hash = 0.0 hash.
+  )
+)

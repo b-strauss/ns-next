@@ -28,44 +28,89 @@
 ///
 /// Applied and Plain are instantiated first, so that Sub's instantiation
 /// follows both an application's and an ordinary class's.
-class MixinOrdinarySubclassOfAnApplyingClass = Object new (| t ::= nil. |) (
-    class Root withRoot: value = Object new (
-        | rootSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Root initializer receives ', value. |
-    ) () : ()
-    class Base withBase: value = Root withRoot: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'bm' with: value) (
-        | baseSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Base initializer receives ', value. |
-    ) () : ()
-    class First withFirst: value = Object new (
-        | firstSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'First initializer receives ', value. |
-    ) () : ()
-    class Second withSecond: value = Object new (
-        | secondSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Second initializer receives ', value. |
-    ) () : ()
-    class Applied from: argument =
-        Base withBase: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'ms' with: argument)
-        <: First withFirst: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'm1' with: argument)
-        <: Second withSecond: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'm2' with: argument) (
-        | appliedSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Applied initializer receives ', argument. |
-    ) () : ()
-    class Plain w: value = Root withRoot: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'pm' with: value) (
-        | plainSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Plain initializer receives ', value. |
-    ) () : ()
-    class Sub z: value = Applied from: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'sm' with: value) (
-        | subSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Sub initializer receives ', value. |
-    ) () : ()
-    public log: line = ( t show: line; newLine. ^line )
-    public evaluated: clause with: argument = (
-        log: clause, ' evaluated with ', argument.
-        ^clause, '(', argument, ')'
-    )
-    public main: platform args: arguments = (
-        t:: platform transcript.
-        log: '-- Applied from: a'.
-        Applied from: 'a'.
-        log: '-- Plain w: p'.
-        Plain w: 'p'.
-        log: '-- Sub z: z'.
-        Sub z: 'z'.
-        log: 'the factory answered'.
-    )
-) : ()
+class MixinOrdinarySubclassOfAnApplyingClass = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  class Root withRoot: value = Object new (
+    |
+      rootSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Root initializer receives '
+          , value.
+    |
+  ) ()
+
+  class Base withBase: value
+      = Root withRoot: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'bm' with: value) (
+    |
+      baseSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Base initializer receives '
+          , value.
+    |
+  ) ()
+
+  class First withFirst: value = Object new (
+    |
+      firstSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'First initializer receives '
+          , value.
+    |
+  ) ()
+
+  class Second withSecond: value = Object new (
+    |
+      secondSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Second initializer receives '
+          , value.
+    |
+  ) ()
+
+  class Applied from: argument
+      = Base withBase: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'ms'
+          with: argument)
+      <: First withFirst: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'm1'
+          with: argument)
+      <: Second withSecond: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'm2'
+          with: argument) (
+    |
+      appliedSlot = outer
+          MixinOrdinarySubclassOfAnApplyingClass log: 'Applied initializer receives ' , argument.
+    |
+  ) ()
+
+  class Plain w: value
+      = Root withRoot: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'pm' with: value) (
+    |
+      plainSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Plain initializer receives '
+          , value.
+    |
+  ) ()
+
+  class Sub z: value
+      = Applied from: (outer MixinOrdinarySubclassOfAnApplyingClass evaluated: 'sm' with: value) (
+    |
+      subSlot = outer MixinOrdinarySubclassOfAnApplyingClass log: 'Sub initializer receives '
+          , value.
+    |
+  ) ()
+
+  public log: line = (
+    t
+        show: line;
+        newLine.
+    ^line.
+  )
+
+  public evaluated: clause with: argument = (
+    log: clause , ' evaluated with ' , argument.
+    ^clause , '(' , argument , ')'.
+  )
+
+  public main: platform args: arguments = (
+    t:: platform transcript.
+    log: '-- Applied from: a'.
+    Applied from: 'a'.
+    log: '-- Plain w: p'.
+    Plain w: 'p'.
+    log: '-- Sub z: z'.
+    Sub z: 'z'.
+    log: 'the factory answered'.
+  )
+)

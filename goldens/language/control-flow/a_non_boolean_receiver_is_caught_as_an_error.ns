@@ -1,12 +1,23 @@
 /// A `NonBooleanReceiver` is an Error carrying the condition's answer;
 /// `whileFalse:` signals it as `whileTrue:` does, inlined and native.
 class ANonBooleanReceiverIsCaughtAsAnError = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. condition |
-        transcript show: ([[4] whileFalse: [nil]] on: Error do: [:error | error class name]); newLine.
-        transcript show: ([[4] whileFalse: [nil]] on: Error do: [:error | error receiver]) printString; newLine.
-        condition:: [5].
-        transcript show: ([condition whileTrue: [nil]] on: Error do: [:error | error receiver]) printString; newLine.
-        transcript show: ([condition whileFalse: [nil]] on: Error do: [:error | error messageText]); newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      condition
+    |
+    transcript
+        show: ([[4] whileFalse: [nil]] on: Error do: [:error | error class name]);
+        newLine.
+    transcript
+        show: ([[4] whileFalse: [nil]] on: Error do: [:error | error receiver]) printString;
+        newLine.
+    condition:: [5].
+    transcript
+        show: ([condition whileTrue: [nil]] on: Error do: [:error | error receiver]) printString;
+        newLine.
+    transcript
+        show: ([condition whileFalse: [nil]] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

@@ -13,28 +13,57 @@
 /// slot, and the nested classes' metaclasses. `==` answers what `=` does:
 /// a value class object has no identity (3.1.1).
 class AValueModulesNestedClass = Object <: Value () (
-    public class Box x: anX = Value new (
-        | public x = anX. |
-    ) (
-        public class Point = Value new () ()
-    )
-    public class Holder of: aClass = Value new (
-        | public held = aClass. |
-    ) ()
-    public main: platform args: arguments = (
-        | transcript one another other |
-        transcript:: platform transcript.
-        one:: Box x: 1.
-        another:: Box x: 1.
-        other:: Box x: 2.
-        transcript show: (one = another) printString; newLine.
-        transcript show: (one Point == another Point) printString; newLine.
-        transcript show: (one Point = another Point) printString; newLine.
-        transcript show: (one Point hash = another Point hash) printString; newLine.
-        transcript show: (one Point = other Point) printString; newLine.
-        transcript show: (one Point new = another Point new) printString; newLine.
-        transcript show: (one Point new = other Point new) printString; newLine.
-        transcript show: ((Holder of: one Point) = (Holder of: another Point)) printString; newLine.
-        transcript show: (one Point class = another Point class) printString; newLine.
-    )
-) : ()
+  public class Box x: anX = Value new (
+    |
+      public x = anX.
+    |
+  ) (
+    public class Point = Value new () ()
+  )
+
+  public class Holder of: aClass = Value new (
+    |
+      public held = aClass.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      transcript
+      one
+      another
+      other
+    |
+    transcript:: platform transcript.
+    one:: Box x: 1.
+    another:: Box x: 1.
+    other:: Box x: 2.
+    transcript
+        show: (one = another) printString;
+        newLine.
+    transcript
+        show: (one Point == another Point) printString;
+        newLine.
+    transcript
+        show: (one Point = another Point) printString;
+        newLine.
+    transcript
+        show: (one Point hash = another Point hash) printString;
+        newLine.
+    transcript
+        show: (one Point = other Point) printString;
+        newLine.
+    transcript
+        show: (one Point new = another Point new) printString;
+        newLine.
+    transcript
+        show: (one Point new = other Point new) printString;
+        newLine.
+    transcript
+        show: ((Holder of: one Point) = (Holder of: another Point)) printString;
+        newLine.
+    transcript
+        show: (one Point class = another Point class) printString;
+        newLine.
+  )
+)

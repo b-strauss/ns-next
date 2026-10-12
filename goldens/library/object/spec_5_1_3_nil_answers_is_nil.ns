@@ -8,8 +8,12 @@
 /// isNil appears nowhere else in the specification, so what a non-nil
 /// receiver answers is not a rule this file may record.
 class Spec513NilIsNil = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: nil isNil printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: nil isNil printString;
+        newLine.
+  )
+)

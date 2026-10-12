@@ -3,11 +3,14 @@
 /// initializer activations and ends at the activation limit. It used to end at
 /// the limit on re-entries of the run loop from Rust, which no longer exists
 /// (`docs/design/execution.md`, "No re-entry from Rust").
-class Tower = Object new (
-) (
-    public class Floor = Object new (
-        | above = Floor new. |
-    ) (
-    )
-    public main: p args: a = ( Floor new )
-) : ()
+class Tower = Object new () (
+  public class Floor = Object new (
+    |
+      above = Floor new.
+    |
+  ) ()
+
+  public main: p args: a = (
+    Floor new.
+  )
+)

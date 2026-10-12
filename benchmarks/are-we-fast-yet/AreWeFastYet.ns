@@ -20,66 +20,102 @@
 /// '<Name>: ok'; with it, measures each for at least 20 ms after 3 ms of
 /// warm-up and prints its runs per second, as Primordial Soup does.
 class AreWeFastYet packageUsing: manifest = (
-    | private benchmarks = {
-        manifest Bounce. manifest CD. manifest DeltaBlue.
-        manifest DeltaBlueTon80. manifest Havlak. manifest Json.
-        manifest List. manifest Mandelbrot. manifest NBody.
-        manifest Permute. manifest Queens. manifest Richards.
-        manifest RichardsTon80. manifest Sieve. manifest Storage.
-        manifest Towers }. |
+  |
+    private benchmarks = {
+      manifest Bounce.
+      manifest CD.
+      manifest DeltaBlue.
+      manifest DeltaBlueTon80.
+      manifest Havlak.
+      manifest Json.
+      manifest List.
+      manifest Mandelbrot.
+      manifest NBody.
+      manifest Permute.
+      manifest Queens.
+      manifest Richards.
+      manifest RichardsTon80.
+      manifest Sieve.
+      manifest Storage.
+      manifest Towers.
+    }.
+  |
 ) (
-    class Benchmarking usingPlatform: platform = (
-        | private Stopwatch = platform time Stopwatch.
-          private transcript = platform transcript.
-          private benchmarkPlatform = platform. |
-    ) (
-        /// Primordial Soup's measure: runs the block until the time is
-        /// spent and answers runs per second.
-        measure: block forAtLeast: nanoseconds = (
-            | runs stopwatch elapsed |
-            runs:: 0.
-            stopwatch:: Stopwatch new start.
-            [block value.
-             runs:: runs + 1.
-             elapsed:: stopwatch elapsedNanoseconds.
-             elapsed < nanoseconds] whileTrue: [].
-            ^(runs * 1000000000) asFloat / elapsed asFloat
-        )
-        /// The line is written only once the benchmark has run, so a
-        /// benchmark that raises leaves no half-written line on stdout.
-        report: benchmark timed: timed = (
-            | instance result |
-            instance:: benchmark usingPlatform: benchmarkPlatform.
-            timed
-                ifTrue: [
-                    measure: [instance bench] forAtLeast: 3000000.
-                    result:: (measure: [instance bench] forAtLeast: 20000000) asStringFixed: 1]
-                ifFalse: [
-                    instance bench.
-                    result:: 'ok'].
-            transcript show: benchmark name, ': ', result; newLine
-        )
-        public run: name timed: timed = (
-            | found |
-            found:: false.
-            benchmarks do: [:benchmark |
-                (name isNil or: [benchmark name = name]) ifTrue: [
-                    found:: true.
-                    report: benchmark timed: timed]].
-            found ifFalse: [Error signal: 'Unknown benchmark: ', name]
-        )
-        public usage = (
-            Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]'
-        )
+  class Benchmarking usingPlatform: platform = (
+    |
+      private Stopwatch = platform time Stopwatch.
+      private transcript = platform transcript.
+      private benchmarkPlatform = platform.
+    |
+  ) (
+    /// Primordial Soup's measure: runs the block until the time is
+    /// spent and answers runs per second.
+    measure: block forAtLeast: nanoseconds = (
+      |
+        runs
+        stopwatch
+        elapsed
+      |
+      runs:: 0.
+      stopwatch:: Stopwatch new start.
+      [
+        block value.
+        runs:: runs + 1.
+        elapsed:: stopwatch elapsedNanoseconds.
+        elapsed < nanoseconds.
+      ] whileTrue: [].
+      ^(runs * 1000000000) asFloat / elapsed asFloat.
     )
-    public main: platform args: arguments = (
-        | benchmarking = Benchmarking usingPlatform: platform.
-          timed first |
-        timed:: arguments size >= 1 and: [(arguments at: 1) = '--timed'].
-        first:: timed ifTrue: [2] ifFalse: [1].
-        arguments size > first ifTrue: [^benchmarking usage].
-        benchmarking
-            run: (arguments size = first ifTrue: [arguments at: first] ifFalse: [nil])
-            timed: timed
+
+    /// The line is written only once the benchmark has run, so a
+    /// benchmark that raises leaves no half-written line on stdout.
+    report: benchmark timed: timed = (
+      |
+        instance
+        result
+      |
+      instance:: benchmark usingPlatform: benchmarkPlatform.
+      timed ifTrue: [
+        measure: [instance bench] forAtLeast: 3000000.
+        result:: (measure: [instance bench] forAtLeast: 20000000) asStringFixed: 1.
+      ] ifFalse: [
+        instance bench.
+        result:: 'ok'.
+      ].
+      transcript
+          show: benchmark name , ': ' , result;
+          newLine.
     )
+
+    public run: name timed: timed = (
+      |
+        found
+      |
+      found:: false.
+      benchmarks do: [:benchmark |
+        (name isNil or: [benchmark name = name]) ifTrue: [
+          found:: true.
+          report: benchmark timed: timed.
+        ].
+      ].
+      found ifFalse: [Error signal: 'Unknown benchmark: ' , name].
+    )
+
+    public usage = (
+      Error signal: 'usage: ns-next run benchmarks/are-we-fast-yet -- [--timed] [Benchmark]'.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      benchmarking = Benchmarking usingPlatform: platform.
+      timed
+      first
+    |
+    timed:: arguments size >= 1 and: [(arguments at: 1) = '--timed'].
+    first:: timed ifTrue: [2] ifFalse: [1].
+    arguments size > first ifTrue: [^benchmarking usage].
+    benchmarking run: (arguments size = first ifTrue: [arguments at: first] ifFalse: [nil])
+        timed: timed.
+  )
 )

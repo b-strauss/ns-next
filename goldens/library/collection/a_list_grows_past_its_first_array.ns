@@ -3,22 +3,47 @@
 /// so ten elements take two moves; `add:` answers the element and
 /// `at:put:` the value (docs/design/core-library.md, "The collections
 /// module").
-class AListGrowsPastItsFirstArray = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. List = platform collections List. list count total |
-        list:: List new.
-        transcript show: list size printString; newLine.
-        count:: 0.
-        [count < 10] whileTrue: [count:: count + 1. list add: count * count].
-        transcript show: list size printString; newLine.
-        transcript show: (list at: 1) printString; show: ' '; show: (list at: 5) printString; show: ' '; show: (list at: 10) printString; newLine.
-        total:: 0.
-        list do: [:each | total:: total + each].
-        transcript show: total printString; newLine.
-        transcript show: (list add: 'eleven'); newLine.
-        list at: 11 put: 'replaced'.
-        transcript show: (list at: 11); show: ' '; show: (list at: 11 put: 'again'); newLine
-    )
-) : ()
+class AListGrowsPastItsFirstArray = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      List = platform collections List.
+      list
+      count
+      total
+    |
+    list:: List new.
+    transcript
+        show: list size printString;
+        newLine.
+    count:: 0.
+    [count < 10] whileTrue: [
+      count:: count + 1.
+      list add: count * count.
+    ].
+    transcript
+        show: list size printString;
+        newLine.
+    transcript
+        show: (list at: 1) printString;
+        show: ' ';
+        show: (list at: 5) printString;
+        show: ' ';
+        show: (list at: 10) printString;
+        newLine.
+    total:: 0.
+    list do: [:each | total:: total + each].
+    transcript
+        show: total printString;
+        newLine.
+    transcript
+        show: (list add: 'eleven');
+        newLine.
+    list at: 11 put: 'replaced'.
+    transcript
+        show: (list at: 11);
+        show: ' ';
+        show: (list at: 11 put: 'again');
+        newLine.
+  )
+)

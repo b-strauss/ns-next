@@ -6,7 +6,9 @@ Newspeak3
 /// header"); this module keeps it, so a module opening with one stays
 /// pinned.
 class Spec81AModuleNeedsNoCategory = Object new () (
-    public main: platform args: arguments = (
-        platform transcript show: 'no category'; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'no category';
+        newLine.
+  )
+)

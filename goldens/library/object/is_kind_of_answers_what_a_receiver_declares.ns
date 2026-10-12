@@ -4,32 +4,82 @@
 /// with `isKindOf` is not such a question. An integer declares
 /// `isKindOfFraction`, being a fraction whose denominator is 1.
 class IsKindOfAnswersWhatAReceiverDeclares = Object new () (
-    class Shape = Object new () (
-        public isKindOfShape = ( ^true )
+  class Shape = Object new () (
+    public isKindOfShape = (
+      ^true.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. |
-        transcript show: (Array new: 2) isKindOfArray printString; newLine.
-        transcript show: 3 isKindOfInteger printString; newLine.
-        transcript show: 100000000000000000000000 isKindOfInteger printString; newLine.
-        transcript show: 3 isKindOfNumber printString; newLine.
-        transcript show: 3 isKindOfFloat printString; newLine.
-        transcript show: 3 isKindOfFraction printString; newLine.
-        transcript show: 1.5 isKindOfFloat printString; newLine.
-        transcript show: 1.5 isKindOfInteger printString; newLine.
-        transcript show: 'abc' isKindOfString printString; newLine.
-        transcript show: #abc isKindOfString printString; newLine.
-        transcript show: true isKindOfBoolean printString; newLine.
-        transcript show: [] isKindOfClosure printString; newLine.
-        transcript show: Object isKindOfBehavior printString; newLine.
-        transcript show: collections List new isKindOfList printString; newLine.
-        transcript show: collections Map new isKindOfMap printString; newLine.
-        transcript show: collections Set new isKindOfSet printString; newLine.
-        transcript show: Object new isKindOfArray printString; newLine.
-        transcript show: nil isKindOfString printString; newLine.
-        transcript show: Shape new isKindOfShape printString; newLine.
-        transcript show: 3 isKindOfShape printString; newLine.
-        transcript show: 3 isKindOf printString; newLine.
-        transcript show: ([3 isKindOf: 4] on: Error do: [:error | error class name]); newLine.
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+    |
+    transcript
+        show: (Array new: 2) isKindOfArray printString;
+        newLine.
+    transcript
+        show: 3 isKindOfInteger printString;
+        newLine.
+    transcript
+        show: 100000000000000000000000 isKindOfInteger printString;
+        newLine.
+    transcript
+        show: 3 isKindOfNumber printString;
+        newLine.
+    transcript
+        show: 3 isKindOfFloat printString;
+        newLine.
+    transcript
+        show: 3 isKindOfFraction printString;
+        newLine.
+    transcript
+        show: 1.5 isKindOfFloat printString;
+        newLine.
+    transcript
+        show: 1.5 isKindOfInteger printString;
+        newLine.
+    transcript
+        show: 'abc' isKindOfString printString;
+        newLine.
+    transcript
+        show: #abc isKindOfString printString;
+        newLine.
+    transcript
+        show: true isKindOfBoolean printString;
+        newLine.
+    transcript
+        show: [] isKindOfClosure printString;
+        newLine.
+    transcript
+        show: Object isKindOfBehavior printString;
+        newLine.
+    transcript
+        show: collections List new isKindOfList printString;
+        newLine.
+    transcript
+        show: collections Map new isKindOfMap printString;
+        newLine.
+    transcript
+        show: collections Set new isKindOfSet printString;
+        newLine.
+    transcript
+        show: Object new isKindOfArray printString;
+        newLine.
+    transcript
+        show: nil isKindOfString printString;
+        newLine.
+    transcript
+        show: Shape new isKindOfShape printString;
+        newLine.
+    transcript
+        show: 3 isKindOfShape printString;
+        newLine.
+    transcript
+        show: 3 isKindOf printString;
+        newLine.
+    transcript
+        show: ([3 isKindOf: 4] on: Error do: [:error | error class name]);
+        newLine.
+  )
+)

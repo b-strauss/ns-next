@@ -11,32 +11,56 @@
 /// orReadsLater: nothing captures x by a real block, so x stays in a
 /// register and the kept closure reads that register. The method writes 5
 /// after making the closure, so running it answers 5.
-class AndOrFallbackClosuresShareVariables = Object new (
-    
-) (
-    class Keeper = Object new (
-        | kept ::= nil. |
-    ) (
-        public and: block = ( kept:: block. ^nil )
-        public or: block = ( kept:: block. ^nil )
-        public runKept = ( ^kept value )
-    ) : ()
-    andWritesAfterCapture: keeper = (
-        | x ::= 1. reader ::= nil. |
-        reader:: [x].
-        keeper and: [x:: 2].
-        keeper runKept.
-        ^reader value
+class AndOrFallbackClosuresShareVariables = Object new () (
+  class Keeper = Object new (
+    |
+      kept ::= nil.
+    |
+  ) (
+    public and: block = (
+      kept:: block.
+      ^nil.
     )
-    orReadsLater: keeper = (
-        | x ::= 1. |
-        keeper or: [x].
-        x:: 5.
-        ^keeper runKept
+
+    public or: block = (
+      kept:: block.
+      ^nil.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: (self andWritesAfterCapture: Keeper new) printString; newLine.
-        transcript show: (self orReadsLater: Keeper new) printString; newLine
+
+    public runKept = (
+      ^kept value.
     )
-) : ()
+  )
+
+  andWritesAfterCapture: keeper = (
+    |
+      x ::= 1.
+      reader ::= nil.
+    |
+    reader:: [x].
+    keeper and: [x:: 2].
+    keeper runKept.
+    ^reader value.
+  )
+
+  orReadsLater: keeper = (
+    |
+      x ::= 1.
+    |
+    keeper or: [x].
+    x:: 5.
+    ^keeper runKept.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: (self andWritesAfterCapture: Keeper new) printString;
+        newLine.
+    transcript
+        show: (self orReadsLater: Keeper new) printString;
+        newLine.
+  )
+)

@@ -3,13 +3,35 @@
 /// clause, by equality or identity and from either side, it answers as the
 /// value would. `thing` is an ordinary object, so `==` is identity.
 class Spec632AFutureIsEqualAndIdentical = Object new () (
-    class Thing = Object new () () : ()
-    class Probe = Object new (||
-        public thing = Thing new.
-        public checks = {3 = three. three = 3. 'a' = text. #a = symbol. thing == other. other == thing. thing = other}.
-        public three = 3. public text = 'a'. public symbol = #a. public other = thing. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        Probe new checks do: [:each | t show: each printString; newLine]
-    )
-) : ()
+  class Thing = Object new () ()
+
+  class Probe = Object new (
+    ||
+      public thing = Thing new.
+      public checks = {
+        3 = three.
+        three = 3.
+        'a' = text.
+        #a = symbol.
+        thing == other.
+        other == thing.
+        thing = other.
+      }.
+      public three = 3.
+      public text = 'a'.
+      public symbol = #a.
+      public other = thing.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    Probe new checks do: [:each |
+      t
+          show: each printString;
+          newLine.
+    ].
+  )
+)

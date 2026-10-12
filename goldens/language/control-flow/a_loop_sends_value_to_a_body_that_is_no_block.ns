@@ -1,24 +1,42 @@
 /// `whileTrue:` and `whileFalse:` send `value` to a body that is no block,
 /// once per iteration, as they would evaluate a block; a body that is never
 /// reached is sent nothing.
-class ALoopSendsValueToABodyThatIsNoBlock = Object new (
-) (
-    class Counter = Object new (
-        | public count ::= 0. |
-    ) (
-        public value = ( count:: count + 1. ^'ignored' )
+class ALoopSendsValueToABodyThatIsNoBlock = Object new () (
+  class Counter = Object new (
+    |
+      public count ::= 0.
+    |
+  ) (
+    public value = (
+      count:: count + 1.
+      ^'ignored'.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. counter body condition |
-        counter:: Counter new.
-        body:: counter.
-        condition:: [counter count < 3].
-        transcript show: (condition whileTrue: body) printString; newLine.
-        transcript show: counter count printString; newLine.
-        condition:: [counter count >= 5].
-        condition whileFalse: body.
-        transcript show: counter count printString; newLine.
-        [false] whileTrue: 3.
-        transcript show: 'never sent'; newLine
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      counter
+      body
+      condition
+    |
+    counter:: Counter new.
+    body:: counter.
+    condition:: [counter count < 3].
+    transcript
+        show: (condition whileTrue: body) printString;
+        newLine.
+    transcript
+        show: counter count printString;
+        newLine.
+    condition:: [counter count >= 5].
+    condition whileFalse: body.
+    transcript
+        show: counter count printString;
+        newLine.
+    [false] whileTrue: 3.
+    transcript
+        show: 'never sent';
+        newLine.
+  )
+)

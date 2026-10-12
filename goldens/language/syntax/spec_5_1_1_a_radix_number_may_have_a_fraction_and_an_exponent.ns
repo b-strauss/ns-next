@@ -6,14 +6,30 @@
 /// exponent no base. Non-integral numbers are binary floats here (a recorded
 /// deviation), which print with `.0` when they have no fractional part.
 class Spec511ARadixNumberMayHaveAFractionAndAnExponent = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: 16r1.8 printString; newLine.
-        t show: 2r1e3 printString; newLine.
-        t show: 16r1Fe2 printString; newLine.
-        t show: 16r-1.8 printString; newLine.
-        t show: 2r0.01 printString; newLine.
-        t show: 16r1F printString; newLine.
-        t show: 36rZ printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: 16r1.8 printString;
+        newLine.
+    t
+        show: 2r1e3 printString;
+        newLine.
+    t
+        show: 16r1Fe2 printString;
+        newLine.
+    t
+        show: 16r-1.8 printString;
+        newLine.
+    t
+        show: 2r0.01 printString;
+        newLine.
+    t
+        show: 16r1F printString;
+        newLine.
+    t
+        show: 36rZ printString;
+        newLine.
+  )
+)

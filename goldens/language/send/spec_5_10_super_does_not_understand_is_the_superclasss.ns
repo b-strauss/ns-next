@@ -4,15 +4,28 @@
 /// S is the superclass of the current class, A: nothing above B defines
 /// foo, so A's doesNotUnderstand: answers -- not B's, the receiver's own.
 class Spec510SuperDoesNotUnderstandIsTheSuperclasss = Object new () (
-    class A = Object new () (
-        protected doesNotUnderstand: message = ( ^'A handled it' )
+  class A = Object new () (
+    protected doesNotUnderstand: message = (
+      ^'A handled it'.
     )
-    class B = A new () (
-        protected doesNotUnderstand: message = ( ^'B handled it' )
-        public foo = ( ^super foo )
+  )
+
+  class B = A new () (
+    protected doesNotUnderstand: message = (
+      ^'B handled it'.
     )
-    public main: platform args: args = (
-        | t = platform transcript. |
-        t show: B new foo; newLine.
+
+    public foo = (
+      ^super foo.
     )
-) : ()
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: B new foo;
+        newLine.
+  )
+)

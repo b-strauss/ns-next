@@ -4,10 +4,20 @@
 /// String, in order, in an Array -- the list a tuple literal makes -- and an
 /// argument that looks like an option or holds a space arrives unchanged.
 class Spec84MainArgsReceivesTheProgramArguments = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: arguments size printString; newLine.
-        arguments do: [:each | t show: each; newLine].
-        t show: ((arguments at: 2) = 'second word') printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: arguments size printString;
+        newLine.
+    arguments do: [:each |
+      t
+          show: each;
+          newLine.
+    ].
+    t
+        show: ((arguments at: 2) = 'second word') printString;
+        newLine.
+  )
+)

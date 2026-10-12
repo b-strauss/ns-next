@@ -3,11 +3,20 @@
 /// written as nothing at all (decided with the user on 2026-09-27). `print:`
 /// is the message that writes any object.
 class ShowOfANumber = Object new () (
-    public main: platform args: arguments = (
-        | t |
-        t:: platform transcript.
-        t show: 'before'; newLine.
-        t show: ([t show: 42. 'not reached'] on: Error do: [:error | error return: 'caught']); newLine.
-        t show: 42
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t
+    |
+    t:: platform transcript.
+    t
+        show: 'before';
+        newLine.
+    t
+        show: ([
+          t show: 42.
+          'not reached'.
+        ] on: Error do: [:error | error return: 'caught']);
+        newLine.
+    t show: 42.
+  )
+)

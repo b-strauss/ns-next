@@ -11,11 +11,23 @@
 /// forced in turn through the message first's initializer sends it, so
 /// second is 2 when first is computed.
 class Spec632SimultaneousSlots = Object new () (
-    class Probe = Object new (|| first = second + 1. second = 2. ||) (
-        public answer = ( ^first )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: Probe new answer printString; newLine
+  class Probe = Object new (
+    ||
+      first = second + 1.
+      second = 2.
+    ||
+  ) (
+    public answer = (
+      ^first.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Probe new answer printString;
+        newLine.
+  )
+)

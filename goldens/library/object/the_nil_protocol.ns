@@ -4,20 +4,49 @@
 /// takes an argument and nothing when it takes none. `nil ifNotNil:`
 /// answers nil, `3 ifNil:` answers 3.
 class NilProtocol = Object new () (
-    public main: p args: a = (
-        | t |
-        t:: p transcript.
-        t show: nil isNil printString; show: ' '; show: 3 isNil printString; newLine.
-        t show: nil notNil printString; show: ' '; show: 'a' notNil printString; newLine.
-        t show: (nil ifNil: [1]) printString; show: ' '; show: (3 ifNil: [1]) printString; newLine.
-        t show: ((nil ifNotNil: [:x | x]) == nil) printString; show: ' ';
-            show: (3 ifNotNil: [:x | x + 1]) printString; show: ' ';
-            show: (3 ifNotNil: [7]) printString; newLine.
-        t show: (nil ifNil: [1] ifNotNil: [:x | x]) printString; show: ' ';
-            show: (3 ifNil: [1] ifNotNil: [:x | x * 2]) printString; show: ' ';
-            show: (3 ifNil: [1] ifNotNil: [8]) printString; newLine.
-        t show: (nil ifNotNil: [:x | x] ifNil: [2]) printString; show: ' ';
-            show: (3 ifNotNil: [:x | x] ifNil: [2]) printString; newLine.
-        t show: ([:x | x] cull: 5) printString; show: ' '; show: ([6] cull: 5) printString; newLine
-    )
-) : ()
+  public main: p args: a = (
+    |
+      t
+    |
+    t:: p transcript.
+    t
+        show: nil isNil printString;
+        show: ' ';
+        show: 3 isNil printString;
+        newLine.
+    t
+        show: nil notNil printString;
+        show: ' ';
+        show: 'a' notNil printString;
+        newLine.
+    t
+        show: (nil ifNil: [1]) printString;
+        show: ' ';
+        show: (3 ifNil: [1]) printString;
+        newLine.
+    t
+        show: ((nil ifNotNil: [:x | x]) == nil) printString;
+        show: ' ';
+        show: (3 ifNotNil: [:x | x + 1]) printString;
+        show: ' ';
+        show: (3 ifNotNil: [7]) printString;
+        newLine.
+    t
+        show: (nil ifNil: [1] ifNotNil: [:x | x]) printString;
+        show: ' ';
+        show: (3 ifNil: [1] ifNotNil: [:x | x * 2]) printString;
+        show: ' ';
+        show: (3 ifNil: [1] ifNotNil: [8]) printString;
+        newLine.
+    t
+        show: (nil ifNotNil: [:x | x] ifNil: [2]) printString;
+        show: ' ';
+        show: (3 ifNotNil: [:x | x] ifNil: [2]) printString;
+        newLine.
+    t
+        show: ([:x | x] cull: 5) printString;
+        show: ' ';
+        show: ([6] cull: 5) printString;
+        newLine.
+  )
+)

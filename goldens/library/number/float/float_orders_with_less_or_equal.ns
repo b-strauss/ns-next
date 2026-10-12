@@ -3,14 +3,31 @@
 /// widened to the nearest double as for `<`, and a NaN is ordered with
 /// nothing.
 class FloatOrders = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. nan = 0.0 / 0.0. |
-        transcript print: 1.5 <= 2; newLine.
-        transcript print: 2.0 <= 2; newLine.
-        transcript print: 2.5 <= 2; newLine.
-        transcript print: 2.0 >= 2; newLine.
-        transcript print: 1.5 >= 9223372036854775808; newLine.
-        transcript print: nan <= 1.0; newLine.
-        transcript print: nan >= 1.0; newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      nan = 0.0 / 0.0.
+    |
+    transcript
+        print: 1.5 <= 2;
+        newLine.
+    transcript
+        print: 2.0 <= 2;
+        newLine.
+    transcript
+        print: 2.5 <= 2;
+        newLine.
+    transcript
+        print: 2.0 >= 2;
+        newLine.
+    transcript
+        print: 1.5 >= 9223372036854775808;
+        newLine.
+    transcript
+        print: nan <= 1.0;
+        newLine.
+    transcript
+        print: nan >= 1.0;
+        newLine.
+  )
 )

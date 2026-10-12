@@ -5,22 +5,49 @@
 /// declaration, so both sends are "equivalent to a self send", and Base,
 /// Inner's superclass, answers them.
 class Spec57FullSelectors = Object new () (
-    class Base = Object new () (
-        public foo: x = ( ^x + 100 )
-        public at = ( ^'unary at of Base' )
+  class Base = Object new () (
+    public foo: x = (
+      ^x + 100.
     )
-    class Outer = Object new () (
-        public foo: x bar: y = ( ^0 )
-        public at: index put: value = ( ^'at:put: of Outer' )
-        class Inner = Base new () (
-            public keyword = ( ^foo: 1 )
-            public unary = ( ^at )
-        )
-        public test = ( ^Inner new )
+
+    public at = (
+      ^'unary at of Base'.
     )
-    public main: platform args: args = (
-        | t = platform transcript. |
-        t show: Outer new test keyword printString; newLine.
-        t show: Outer new test unary; newLine.
+  )
+
+  class Outer = Object new () (
+    public foo: x bar: y = (
+      ^0.
     )
-) : ()
+
+    public at: index put: value = (
+      ^'at:put: of Outer'.
+    )
+
+    class Inner = Base new () (
+      public keyword = (
+        ^foo: 1.
+      )
+
+      public unary = (
+        ^at.
+      )
+    )
+
+    public test = (
+      ^Inner new.
+    )
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Outer new test keyword printString;
+        newLine.
+    t
+        show: Outer new test unary;
+        newLine.
+  )
+)

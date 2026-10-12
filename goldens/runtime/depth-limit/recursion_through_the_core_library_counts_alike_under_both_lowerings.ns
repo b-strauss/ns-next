@@ -7,14 +7,23 @@
 /// core library in Newspeak only because a primitive method runs its leaf
 /// without an activation of its own.
 class DeepThroughTheKernel = Object new (
-    | transcript ::= nil. |
+  |
+    transcript ::= nil.
+  |
 ) (
-    down: depth = (
-        depth = (depth // 20000 * 20000)
-            ifTrue: [transcript show: depth printString; newLine]
-            ifFalse: [nil].
-        ^depth < 0 ifTrue: [0] ifFalse: [down: depth + 1]
-    )
-    public main: p args: a = (
-        transcript:: p transcript. down: 0 )
-) : ()
+  down: depth = (
+    depth = (depth // 20000 * 20000) ifTrue: [
+      transcript
+          show: depth printString;
+          newLine.
+    ] ifFalse: [
+      nil.
+    ].
+    ^depth < 0 ifTrue: [0] ifFalse: [down: depth + 1].
+  )
+
+  public main: p args: a = (
+    transcript:: p transcript.
+    down: 0.
+  )
+)
