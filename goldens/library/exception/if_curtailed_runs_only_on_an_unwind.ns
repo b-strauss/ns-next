@@ -2,24 +2,52 @@
 /// protected block -- once, before the method's value is printed -- and
 /// never when the block ends normally.
 class IfCurtailedRuns = Object new (
-    | private transcript ::= nil. |
+  |
+    private transcript ::= nil.
+  |
 ) (
-    endsNormally = (
-        ^[3] ifCurtailed: [transcript show: 'curtailed'; newLine]
-    )
-    isUnwound = (
-        [^4] ifCurtailed: [transcript show: 'curtailed'; newLine].
-        ^0
-    )
-    isUnwoundThroughAnEnsure = (
-        [[^5] ensure: [transcript show: 'ensured'; newLine]]
-            ifCurtailed: [transcript show: 'curtailed'; newLine].
-        ^0
-    )
-    public main: platform args: arguments = (
-        transcript:: platform transcript.
-        transcript show: self endsNormally printString; newLine.
-        transcript show: self isUnwound printString; newLine.
-        transcript show: self isUnwoundThroughAnEnsure printString; newLine.
-    )
-) : ()
+  endsNormally = (
+    ^[3] ifCurtailed: [
+      transcript
+          show: 'curtailed';
+          newLine.
+    ].
+  )
+
+  isUnwound = (
+    [^4] ifCurtailed: [
+      transcript
+          show: 'curtailed';
+          newLine.
+    ].
+    ^0.
+  )
+
+  isUnwoundThroughAnEnsure = (
+    [
+      [^5] ensure: [
+        transcript
+            show: 'ensured';
+            newLine.
+      ].
+    ] ifCurtailed: [
+      transcript
+          show: 'curtailed';
+          newLine.
+    ].
+    ^0.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    transcript
+        show: self endsNormally printString;
+        newLine.
+    transcript
+        show: self isUnwound printString;
+        newLine.
+    transcript
+        show: self isUnwoundThroughAnEnsure printString;
+        newLine.
+  )
+)

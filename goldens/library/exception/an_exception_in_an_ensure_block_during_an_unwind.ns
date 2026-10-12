@@ -5,20 +5,31 @@
 /// its `return:` unwinds past that target, and the first unwind is
 /// abandoned: the method's `^` never answers.
 class AnExceptionInAnEnsureBlockDuringAnUnwind = Object new (
-    | transcript ::= nil. |
+  |
+    transcript ::= nil.
+  |
 ) (
-    unwinding = (
-        [^'unwound'] ensure: [
-            transcript show: ([Error signal: 'in ensure'] on: Error do: [:e | e messageText]); newLine].
-        ^'not reached'
-    )
-    escaping = (
-        [^'unwound'] ensure: [Error signal: 'escape'].
-        ^'not reached'
-    )
-    public main: platform args: arguments = (
-        transcript:: platform transcript.
-        transcript show: self unwinding; newLine.
-        transcript show: ([self escaping] on: Error do: [:e | 'abandoned by ' , e messageText]); newLine.
-    )
-) : ()
+  unwinding = (
+    [^'unwound'] ensure: [
+      transcript
+          show: ([Error signal: 'in ensure'] on: Error do: [:e | e messageText]);
+          newLine.
+    ].
+    ^'not reached'.
+  )
+
+  escaping = (
+    [^'unwound'] ensure: [Error signal: 'escape'].
+    ^'not reached'.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    transcript
+        show: self unwinding;
+        newLine.
+    transcript
+        show: ([self escaping] on: Error do: [:e | 'abandoned by ' , e messageText]);
+        newLine.
+  )
+)

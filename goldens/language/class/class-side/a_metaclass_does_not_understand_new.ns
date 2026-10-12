@@ -4,11 +4,18 @@
 /// evaluates to, so it has no metaclass of its own holding a factory:
 /// `Foo class new` is not understood.
 class AMetaclassDoesNotUnderstandNew = Object new () (
-    class Foo = Object new () ()
-    public main: platform args: args = (
-        | transcript = platform transcript. |
-        transcript show: 'before'; newLine.
-        Foo class new.
-        transcript show: 'not reached'; newLine.
-    )
-) : ()
+  class Foo = Object new () ()
+
+  public main: platform args: args = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: 'before';
+        newLine.
+    Foo class new.
+    transcript
+        show: 'not reached';
+        newLine.
+  )
+)

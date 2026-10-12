@@ -5,22 +5,78 @@
 /// prints as `(numerator/denominator)`; `Fraction new` holds no value and
 /// is no number.
 class AFractionIsMadeInNormalForm = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript.
-          kernel = platform kernel.
-          threeQuarters = Fraction numerator: 6 denominator: 8. |
-        transcript print: threeQuarters; show: ' '; print: threeQuarters numerator; show: ' '; print: threeQuarters denominator; show: ' '; print: threeQuarters class; newLine.
-        transcript print: (Fraction numerator: 1 denominator: -2); show: ' '; print: (Fraction numerator: -3 denominator: -6); newLine.
-        transcript print: (Fraction numerator: 6 denominator: 3); show: ' '; print: (Fraction numerator: 6 denominator: 3) class; show: ' '; print: (Fraction numerator: 0 denominator: 5); newLine.
-        transcript print: (Fraction numerator: 1180591620717411303424 denominator: 3); show: ' '; print: (Fraction numerator: 1 denominator: 1180591620717411303424) denominator class; newLine.
-        transcript print: (Fraction reducedNumerator: 3 denominator: 4); show: ' '; show: (Fraction reducedNumerator: -3 denominator: 4) asString; newLine.
-        transcript print: threeQuarters isKindOfFraction; show: ' '; print: threeQuarters isKindOfNumber; show: ' '; print: threeQuarters isKindOfInteger; show: ' '; print: threeQuarters isKindOfFloat; newLine.
-        transcript show: ([Fraction numerator: 1 denominator: 0] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Fraction numerator: 1.5 denominator: 2] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Fraction numerator: 1 denominator: nil] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Fraction reducedNumerator: 2 denominator: 4] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Fraction reducedNumerator: 3 denominator: 1] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Fraction reducedNumerator: 3 denominator: -4] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Fraction new numerator] on: kernel MessageNotUnderstood do: [:error | 'no number']); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      threeQuarters = Fraction numerator: 6 denominator: 8.
+    |
+    transcript
+        print: threeQuarters;
+        show: ' ';
+        print: threeQuarters numerator;
+        show: ' ';
+        print: threeQuarters denominator;
+        show: ' ';
+        print: threeQuarters class;
+        newLine.
+    transcript
+        print: (Fraction numerator: 1 denominator: -2);
+        show: ' ';
+        print: (Fraction numerator: -3 denominator: -6);
+        newLine.
+    transcript
+        print: (Fraction numerator: 6 denominator: 3);
+        show: ' ';
+        print: (Fraction numerator: 6 denominator: 3) class;
+        show: ' ';
+        print: (Fraction numerator: 0 denominator: 5);
+        newLine.
+    transcript
+        print: (Fraction numerator: 1180591620717411303424 denominator: 3);
+        show: ' ';
+        print: (Fraction numerator: 1 denominator: 1180591620717411303424) denominator class;
+        newLine.
+    transcript
+        print: (Fraction reducedNumerator: 3 denominator: 4);
+        show: ' ';
+        show: (Fraction reducedNumerator: -3 denominator: 4) asString;
+        newLine.
+    transcript
+        print: threeQuarters isKindOfFraction;
+        show: ' ';
+        print: threeQuarters isKindOfNumber;
+        show: ' ';
+        print: threeQuarters isKindOfInteger;
+        show: ' ';
+        print: threeQuarters isKindOfFloat;
+        newLine.
+    transcript
+        show: ([Fraction numerator: 1 denominator: 0] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Fraction numerator: 1.5 denominator: 2] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Fraction numerator: 1 denominator: nil] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Fraction reducedNumerator: 2 denominator: 4] on: Error do: [:error |
+          error messageText.
+        ]);
+        newLine.
+    transcript
+        show: ([Fraction reducedNumerator: 3 denominator: 1] on: Error do: [:error |
+          error messageText.
+        ]);
+        newLine.
+    transcript
+        show: ([Fraction reducedNumerator: 3 denominator: -4] on: Error do: [:error |
+          error messageText.
+        ]);
+        newLine.
+    transcript
+        show: ([Fraction new numerator] on: kernel MessageNotUnderstood do: [:error | 'no number']);
+        newLine.
+  )
 )

@@ -11,20 +11,36 @@
 /// never mentions. A member set belongs to its declaration instead
 /// (docs/design/dispatch.md, "Resolution"), so the two Dups never meet.
 class Spec57MemberSetPerDeclaration = Object new () (
-    class Alpha = Object new () (
-        marker = ( ^'an enclosing marker' )
-        class Dup = Object new () (
-            marker = ( ^'Dup''s own marker' )
-            public reach = ( ^marker )
-        ) : ()
-        public probe = ( ^Dup new reach )
-    ) : ()
-    class Beta = Object new () (
-        class Dup = Object new () (
-        ) : ()
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: Alpha new probe; newLine
+  class Alpha = Object new () (
+    marker = (
+      ^'an enclosing marker'.
     )
-) : ()
+
+    class Dup = Object new () (
+      marker = (
+        ^'Dup''s own marker'.
+      )
+
+      public reach = (
+        ^marker.
+      )
+    )
+
+    public probe = (
+      ^Dup new reach.
+    )
+  )
+
+  class Beta = Object new () (
+    class Dup = Object new () ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Alpha new probe;
+        newLine.
+  )
+)

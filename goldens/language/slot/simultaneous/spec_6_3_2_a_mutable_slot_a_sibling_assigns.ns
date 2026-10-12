@@ -5,10 +5,23 @@
 /// and then `second`'s, which writes 5 into `first`. Each slot ends with
 /// what was last written to it.
 class Spec632AMutableSlotASiblingAssigns = Object new () (
-    class Probe = Object new (|| public first ::= 1. public second = first:: 5. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. probe = Probe new. |
-        t show: probe first printString; newLine.
-        t show: probe second printString; newLine
-    )
-) : ()
+  class Probe = Object new (
+    ||
+      public first ::= 1.
+      public second = first:: 5.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      probe = Probe new.
+    |
+    t
+        show: probe first printString;
+        newLine.
+    t
+        show: probe second printString;
+        newLine.
+  )
+)

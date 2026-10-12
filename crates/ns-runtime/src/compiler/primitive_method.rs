@@ -75,26 +75,26 @@ fn recognize_quick_method(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(expression) = &body.statements[0] else {
+    let ast::StatementKind::Return(expression) = &body.statements[0].kind else {
         return None;
     };
     let parameters = parameter_names(&declaration.pattern);
-    match expression {
-        ast::Expression::Literal(ast::Literal::Boolean { value: true, .. }) => {
+    match &expression.kind {
+        ast::ExpressionKind::Literal(ast::Literal::Boolean { value: true, .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::True))
         }
-        ast::Expression::Literal(ast::Literal::Boolean { value: false, .. }) => {
+        ast::ExpressionKind::Literal(ast::Literal::Boolean { value: false, .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::False))
         }
-        ast::Expression::Literal(ast::Literal::Nil { .. }) => {
+        ast::ExpressionKind::Literal(ast::Literal::Nil { .. }) => {
             Some(MethodFastPath::Constant(QuickConstant::Nil))
         }
-        ast::Expression::Identifier(_) if is_self(expression) => Some(MethodFastPath::Receiver),
-        ast::Expression::Identifier(identifier) => {
+        ast::ExpressionKind::Identifier(_) if is_self(expression) => Some(MethodFastPath::Receiver),
+        ast::ExpressionKind::Identifier(identifier) => {
             parameter_position(identifier, &parameters, bindings).map(MethodFastPath::Parameter)
         }
-        ast::Expression::Send(send) => {
-            let ast::Expression::Identifier(identifier) = &send.receiver else {
+        ast::ExpressionKind::Send(send) => {
+            let ast::ExpressionKind::Identifier(identifier) = &send.receiver.kind else {
                 return None;
             };
             let shape: fn(u8) -> MethodFastPath =
@@ -161,7 +161,11 @@ fn recognize_builtin_class_accessor(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+    let ast::StatementKind::Return(ast::Expression {
+        kind: ast::ExpressionKind::Send(send),
+        ..
+    }) = &body.statements[0].kind
+    else {
         return None;
     };
     if crate::resolver::sends::outer_class_name(&send.receiver) != Some("Kernel") {
@@ -200,7 +204,11 @@ pub(crate) fn recognize_class_accessor(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+    let ast::StatementKind::Return(ast::Expression {
+        kind: ast::ExpressionKind::Send(send),
+        ..
+    }) = &body.statements[0].kind
+    else {
         return None;
     };
     if crate::resolver::sends::outer_class_name(&send.receiver) != Some(root.name.name.as_str()) {
@@ -213,8 +221,7 @@ pub(crate) fn recognize_class_accessor(
         return None;
     };
     root.instance_side
-        .nested_classes
-        .iter()
+        .nested_classes()
         .any(|nested| nested.name.name == *name)
         .then(|| crate::mixin::ClassAccessor {
             depth: *depth,
@@ -236,7 +243,11 @@ fn recognize_mirror_forwarder(
     if !body.temporaries.is_empty() || body.statements.len() != 1 {
         return None;
     }
-    let ast::Statement::Return(ast::Expression::Send(send)) = &body.statements[0] else {
+    let ast::StatementKind::Return(ast::Expression {
+        kind: ast::ExpressionKind::Send(send),
+        ..
+    }) = &body.statements[0].kind
+    else {
         return None;
     };
     let (row, _) = control_flow::recognize_mirror_send(bindings, send)?;
@@ -266,7 +277,7 @@ fn recognize_mirror_forwarder(
         .zip(&parameters)
         .enumerate()
         .all(|(position, (argument, name))| {
-            let ast::Expression::Identifier(identifier) = argument else {
+            let ast::ExpressionKind::Identifier(identifier) = &argument.kind else {
                 return false;
             };
             identifier.name == *name
@@ -295,7 +306,7 @@ pub(crate) fn disabled() -> bool {
 /// An explicit `self`. The resolver's implicit-receiver marker is a `self`
 /// too, but only ever in a receiver position, never as an argument.
 fn is_self(expression: &ast::Expression) -> bool {
-    matches!(expression, ast::Expression::Identifier(identifier) if identifier.name == "self")
+    matches!(&expression.kind, ast::ExpressionKind::Identifier(identifier) if identifier.name == "self")
 }
 
 /// The method's parameters in declaration order -- the order the resolver
@@ -303,10 +314,10 @@ fn is_self(expression: &ast::Expression) -> bool {
 fn parameter_names(pattern: &ast::MessagePattern) -> Vec<&str> {
     match pattern {
         ast::MessagePattern::Unary { .. } => Vec::new(),
-        ast::MessagePattern::Binary { parameter, .. } => vec![parameter.name.as_str()],
+        ast::MessagePattern::Binary { parameter, .. } => vec![parameter.name.name.as_str()],
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(_, parameter)| parameter.name.as_str())
+            .map(|part| part.parameter.name.name.as_str())
             .collect(),
     }
 }
@@ -346,12 +357,15 @@ mod tests {
             resolved.kernel,
             "resolve_kernel marks its module as the kernel"
         );
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        recognize(
-            &nested.instance_side.methods[0],
-            &resolved.bindings,
-            resolved.kernel,
-        )
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        recognize(method, &resolved.bindings, resolved.kernel)
     }
 
     /// `fast_path_in_the_kernel`, as a mirror row index.
@@ -375,12 +389,15 @@ mod tests {
         )
         .expect("resolve");
         assert!(!resolved.kernel, "a user module is not the kernel");
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        recognize(
-            &nested.instance_side.methods[0],
-            &resolved.bindings,
-            resolved.kernel,
-        )
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        recognize(method, &resolved.bindings, resolved.kernel)
     }
 
     fn row(selector: &str) -> Option<usize> {
@@ -601,8 +618,13 @@ mod tests {
             panic!("the shipped module resolves");
         };
         let root = &resolved.module.root_class;
-        let nested = &root.instance_side.nested_classes[0];
-        recognize_class_accessor(&nested.instance_side.methods[0], &resolved.bindings, root)
+        let nested = root
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        recognize_class_accessor(method, &resolved.bindings, root)
     }
 
     #[test]

@@ -13,11 +13,19 @@
 /// class's enclosing object to be one; the transcript is therefore read
 /// from `platform` where it is used, never held in a slot.
 class ValueSlotHoldsAValue = Object <: Value () (
-    public class Holder on: elements = Value new (
-        | public elements = elements. public missing = nil. |
-    ) ()
-    public main: platform args: arguments = (
-        platform transcript show: (Holder on: 'a') printString; newLine.
-        platform transcript show: (Holder on: {1. 2}) printString; newLine.
-    )
-) : ()
+  public class Holder on: elements = Value new (
+    |
+      public elements = elements.
+      public missing = nil.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (Holder on: 'a') printString;
+        newLine.
+    platform transcript
+        show: (Holder on: {1. 2}) printString;
+        newLine.
+  )
+)

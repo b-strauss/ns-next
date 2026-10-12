@@ -25,52 +25,70 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
 class Towers usingPlatform: platform = (
-    | piles
-      movesDone |
+  |
+    piles.
+    movesDone.
+  |
 ) (
-    public bench = (
-        piles:: Array new: 4.
-        buildTowerAt: 1 disks: 13.
-        movesDone:: 0.
-        move: 13 disksFrom: 1 to: 2.
-        movesDone = 8191 ifFalse: [Error signal: 'Towers: expected 8191, got ', movesDone printString].
-        ^movesDone
-    )
-    pushDisk: disk onPile: pile = (
-        | top |
-        top:: piles at: pile.
-        (top notNil and: [disk size >= top size])
-            ifTrue: [Error signal: 'Cannot put a big disk on a smaller one'].
-        disk next: top.
-        piles at: pile put: disk
-    )
-    popDiskFrom: pile = (
-        | top |
-        top:: piles at: pile.
-        top isNil ifTrue: [Error signal: 'Attempting to remove a disk from an empty pile'].
-        piles at: pile put: top next.
-        top next: nil.
-        ^top
-    )
-    moveTopDiskFrom: fromPile to: toPile = (
-        pushDisk: (popDiskFrom: fromPile) onPile: toPile.
-        movesDone:: movesDone + 1
-    )
-    buildTowerAt: pile disks: disks = (
-        disks to: 0 by: -1 do: [:size | pushDisk: (TowersDisk new: size) onPile: pile]
-    )
-    move: disks disksFrom: fromPile to: toPile = (
-        disks = 1
-            ifTrue: [moveTopDiskFrom: fromPile to: toPile]
-            ifFalse: [
-                | otherPile |
-                otherPile:: 6 - fromPile - toPile.
-                move: disks - 1 disksFrom: fromPile to: otherPile.
-                moveTopDiskFrom: fromPile to: toPile.
-                move: disks - 1 disksFrom: otherPile to: toPile]
-    )
-    class TowersDisk new: diskSize = (
-        | public size = diskSize.
-          public next |
-    ) ()
+  public bench = (
+    piles:: Array new: 4.
+    buildTowerAt: 1 disks: 13.
+    movesDone:: 0.
+    move: 13 disksFrom: 1 to: 2.
+    movesDone = 8191 ifFalse: [Error signal: 'Towers: expected 8191, got ' , movesDone printString].
+    ^movesDone.
+  )
+
+  pushDisk: disk onPile: pile = (
+    |
+      top
+    |
+    top:: piles at: pile.
+    (top notNil and: [disk size >= top size]) ifTrue: [
+      Error signal: 'Cannot put a big disk on a smaller one'.
+    ].
+    disk next: top.
+    piles at: pile put: disk.
+  )
+
+  popDiskFrom: pile = (
+    |
+      top
+    |
+    top:: piles at: pile.
+    top isNil ifTrue: [Error signal: 'Attempting to remove a disk from an empty pile'].
+    piles at: pile put: top next.
+    top next: nil.
+    ^top.
+  )
+
+  moveTopDiskFrom: fromPile to: toPile = (
+    pushDisk: (popDiskFrom: fromPile) onPile: toPile.
+    movesDone:: movesDone + 1.
+  )
+
+  buildTowerAt: pile disks: disks = (
+    disks to: 0 by: -1 do: [:size | pushDisk: (TowersDisk new: size) onPile: pile].
+  )
+
+  move: disks disksFrom: fromPile to: toPile = (
+    disks = 1 ifTrue: [
+      moveTopDiskFrom: fromPile to: toPile.
+    ] ifFalse: [
+      |
+        otherPile
+      |
+      otherPile:: 6 - fromPile - toPile.
+      move: disks - 1 disksFrom: fromPile to: otherPile.
+      moveTopDiskFrom: fromPile to: toPile.
+      move: disks - 1 disksFrom: otherPile to: toPile.
+    ].
+  )
+
+  class TowersDisk new: diskSize = (
+    |
+      public size = diskSize.
+      public next.
+    |
+  ) ()
 )

@@ -26,7 +26,7 @@ pub enum Lowering {
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, Statement, StatementKind};
 use ns_syntax::Span;
 
 use crate::bytecode::{CodeKind, CompiledCode, Instruction, Literal};
@@ -356,7 +356,7 @@ fn compile_superclass_clause(
 ) -> Option<CompiledCode> {
     let declaration = mixin.declaration.as_ref()?;
     let clause = declaration.superclass.as_ref()?;
-    let statements = vec![Statement::Return(
+    let statements = vec![Statement::of_return(
         crate::interpreter::nested::superclass_clause_expression(
             clause,
             &declaration.mixin_applications,
@@ -422,7 +422,7 @@ fn compile_clause_message(
     let arguments =
         crate::interpreter::nested::superclass_clause_message_arguments_expression(clause)?;
     let argument_count = factory_argument_count(mixin);
-    let statements = vec![Statement::Return(arguments)];
+    let statements = vec![Statement::of_return(arguments)];
     let captures = Rc::new(capture::analyze(
         RootBody {
             argument_count,
@@ -455,33 +455,9 @@ fn merge_span(accumulator: Option<Span>, next: Span) -> Span {
 }
 
 fn statement_span(statement: &Statement) -> Span {
-    match statement {
-        Statement::Expression(expression) | Statement::Return(expression) => {
-            expression_span(expression)
+    match &statement.kind {
+        StatementKind::Expression(expression) | StatementKind::Return(expression) => {
+            expression.kind.span()
         }
-    }
-}
-
-fn expression_span(expression: &Expression) -> Span {
-    match expression {
-        Expression::Identifier(id) => id.span,
-        Expression::Literal(literal) => literal_span(literal),
-        Expression::Send(send) => send.span,
-        Expression::Cascade(cascade) => cascade.span,
-        Expression::Assign { span, .. } => *span,
-        Expression::Block(block) => block.span,
-        Expression::DynamicArray { span, .. } => *span,
-    }
-}
-
-fn literal_span(literal: &ast::Literal) -> Span {
-    match literal {
-        ast::Literal::Integer { span, .. }
-        | ast::Literal::Float { span, .. }
-        | ast::Literal::String { span, .. }
-        | ast::Literal::Symbol { span, .. }
-        | ast::Literal::Boolean { span, .. }
-        | ast::Literal::Nil { span }
-        | ast::Literal::Pattern { span, .. } => *span,
     }
 }

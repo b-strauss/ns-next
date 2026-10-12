@@ -6,14 +6,28 @@
 /// `docs/design/core-library.md`, "The platform"). `print:` answers the
 /// transcript, so it cascades like `show:`.
 class TranscriptPrint = Object new () (
-    public main: platform args: arguments = (
-        | t |
-        t:: platform transcript.
-        t print: 42; newLine.
-        t print: 'text'; newLine.
-        t show: 'text'; newLine.
-        t print: #symbol; newLine.
-        t print: nil; newLine.
-        t print: (t print: 1) == t; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t
+    |
+    t:: platform transcript.
+    t
+        print: 42;
+        newLine.
+    t
+        print: 'text';
+        newLine.
+    t
+        show: 'text';
+        newLine.
+    t
+        print: #symbol;
+        newLine.
+    t
+        print: nil;
+        newLine.
+    t
+        print: (t print: 1) == t;
+        newLine.
+  )
+)

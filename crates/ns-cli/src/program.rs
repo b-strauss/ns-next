@@ -195,11 +195,11 @@ pub(crate) fn instantiate_application(
 
 pub(crate) fn selector_of(pattern: &ns_syntax::ast::MessagePattern) -> String {
     match pattern {
-        ns_syntax::ast::MessagePattern::Unary { selector } => selector.name.clone(),
+        ns_syntax::ast::MessagePattern::Unary { selector, .. } => selector.name.clone(),
         ns_syntax::ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ns_syntax::ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }

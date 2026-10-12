@@ -51,7 +51,7 @@ fn build_methods(
     lowering: crate::compiler::Lowering,
 ) -> IdentityMap<Symbol, MethodEntry> {
     let mut methods: IdentityMap<Symbol, MethodEntry> = slot_accessors(slots).into_iter().collect();
-    for declaration in &body.methods {
+    for declaration in body.methods() {
         let mut method =
             MixinMethod::from_declaration(Rc::new(declaration.clone()), bindings, kernel, lowering);
         method.class_accessor = class_accessor_root.and_then(|root| {
@@ -104,8 +104,7 @@ fn build_methods(
 }
 
 fn build_slots(body: &ast::ClassBody) -> Vec<MixinSlot> {
-    body.slots
-        .iter()
+    body.slots()
         .map(|slot| MixinSlot::from_declaration(Rc::new(slot.clone())))
         .collect()
 }
@@ -352,8 +351,7 @@ impl<'gc> Mutator<'gc> {
         );
         let nested = declaration
             .instance_side
-            .nested_classes
-            .iter()
+            .nested_classes()
             .map(|nested| self.build_mixin(nested, root, bindings, source))
             .collect();
         // §6's unnumbered introduction, before §6.1 begins: "If the
@@ -1598,11 +1596,11 @@ fn factory_selector(application: &crate::mixin::MixinApplication) -> Symbol {
 /// `current_class` (`image::decode::method_declaration`).
 pub(crate) fn method_name(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } => selector.name.clone(),
+        ast::MessagePattern::Unary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }

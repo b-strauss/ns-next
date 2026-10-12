@@ -635,7 +635,7 @@ fn check_mirror_send_arguments(resolved: &ResolvedModule) {
         let leading = &arguments[..arguments.len().saturating_sub(1)];
         if leading
             .iter()
-            .any(|argument| matches!(argument, ast::Expression::Block(_)))
+            .any(|argument| matches!(argument.kind, ast::ExpressionKind::Block(_)))
         {
             panic!(
                 "internal: Kernel.ns passes a literal block to the mirror's {} before its \
@@ -659,8 +659,8 @@ pub(super) fn for_each_send_to_vm_mirror(
 ) {
     for_each_send(resolved, |send| {
         let to_the_mirror = matches!(
-            &send.receiver,
-            ast::Expression::Identifier(identifier) if identifier.name == "vmMirror"
+            &send.receiver.kind,
+            ast::ExpressionKind::Identifier(identifier) if identifier.name == "vmMirror"
         );
         if to_the_mirror {
             visit(send);
@@ -674,16 +674,16 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
     fn class(declaration: &ast::ClassDeclaration, visit: &mut dyn FnMut(&ast::Send)) {
         let sides = std::iter::once(&declaration.instance_side).chain(&declaration.class_side);
         for side in sides {
-            for slot in &side.slots {
+            for slot in side.slots() {
                 if let Some(initializer) = &slot.initializer {
                     expression(initializer, visit);
                 }
             }
             statements(&side.initializer_expressions, visit);
-            for method in &side.methods {
+            for method in side.methods() {
                 body(&method.body, visit);
             }
-            for nested in &side.nested_classes {
+            for nested in side.nested_classes() {
                 class(nested, visit);
             }
         }
@@ -698,24 +698,24 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
     }
     fn statements(list: &[ast::Statement], visit: &mut dyn FnMut(&ast::Send)) {
         for statement in list {
-            match statement {
-                ast::Statement::Expression(inner) | ast::Statement::Return(inner) => {
+            match &statement.kind {
+                ast::StatementKind::Expression(inner) | ast::StatementKind::Return(inner) => {
                     expression(inner, visit)
                 }
             }
         }
     }
     fn expression(node: &ast::Expression, visit: &mut dyn FnMut(&ast::Send)) {
-        match node {
-            ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
-            ast::Expression::Send(send) => {
+        match &node.kind {
+            ast::ExpressionKind::Identifier(_) | ast::ExpressionKind::Literal(_) => {}
+            ast::ExpressionKind::Send(send) => {
                 visit(send);
                 expression(&send.receiver, visit);
                 for argument in &send.message.arguments {
                     expression(argument, visit);
                 }
             }
-            ast::Expression::Cascade(cascade) => {
+            ast::ExpressionKind::Cascade(cascade) => {
                 expression(&cascade.receiver, visit);
                 for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                     for argument in &message.arguments {
@@ -723,9 +723,9 @@ fn for_each_send(resolved: &ResolvedModule, mut visit: impl FnMut(&ast::Send)) {
                     }
                 }
             }
-            ast::Expression::Assign { value, .. } => expression(value, visit),
-            ast::Expression::Block(block) => body(&block.body, visit),
-            ast::Expression::DynamicArray { elements, .. } => {
+            ast::ExpressionKind::Assign { value, .. } => expression(value, visit),
+            ast::ExpressionKind::Block(block) => body(&block.body, visit),
+            ast::ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     expression(element, visit);
                 }

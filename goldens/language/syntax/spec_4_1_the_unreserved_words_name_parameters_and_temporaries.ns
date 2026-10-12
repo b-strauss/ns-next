@@ -7,31 +7,60 @@
 /// need no modifier, an access modifier's word names one behind a
 /// modifier.
 class Spec41TheUnreservedWordsNameParametersAndTemporaries = Object new () (
-    class Box value: public = Object new (| public held = public. |) ()
-    class Holder = Object new () (
-        public class: class protected: protected private: private lazy: lazy = (
-            ^class + protected + private + lazy
-        )
-        public + public = ( ^public * 10 )
-        public blocks = (
-            ^([:class :public :lazy | class + public + lazy] value: 1 value: 2 value: 3)
-                + ([:protected :private | protected + private] value: 4 value: 5)
-        )
-        public temporaries = (
-            | class lazy. public private = 7. private public ::= 8. |
-            class:: 1.
-            lazy:: 2.
-            public:: public + 1.
-            ^class + lazy + private + public
-        )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. holder |
-        holder:: Holder new.
-        t show: (Box value: 42) held printString; newLine.
-        t show: (holder class: 1 protected: 2 private: 3 lazy: 4) printString; newLine.
-        t show: (holder + 5) printString; newLine.
-        t show: holder blocks printString; newLine.
-        t show: holder temporaries printString; newLine
+  class Box value: public = Object new (
+    |
+      public held = public.
+    |
+  ) ()
+
+  class Holder = Object new () (
+    public class: class protected: protected private: private lazy: lazy = (
+      ^class + protected + private + lazy.
     )
-) : ()
+
+    public + public = (
+      ^public * 10.
+    )
+
+    public blocks = (
+      ^([:class :public :lazy | class + public + lazy] value: 1 value: 2 value: 3)
+          + ([:protected :private | protected + private] value: 4 value: 5).
+    )
+
+    public temporaries = (
+      |
+        class
+        lazy
+        public private = 7.
+        private public ::= 8.
+      |
+      class:: 1.
+      lazy:: 2.
+      public:: public + 1.
+      ^class + lazy + private + public.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      holder
+    |
+    holder:: Holder new.
+    t
+        show: (Box value: 42) held printString;
+        newLine.
+    t
+        show: (holder class: 1 protected: 2 private: 3 lazy: 4) printString;
+        newLine.
+    t
+        show: (holder + 5) printString;
+        newLine.
+    t
+        show: holder blocks printString;
+        newLine.
+    t
+        show: holder temporaries printString;
+        newLine.
+  )
+)

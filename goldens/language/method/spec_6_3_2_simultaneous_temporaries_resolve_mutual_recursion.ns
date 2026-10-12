@@ -3,9 +3,17 @@
 /// a class's does: `first` reads `second`, declared after it, and after the
 /// clause both hold their values.
 class Spec632SimultaneousTemporaries = Object new () (
-    public main: platform args: arguments = (
-        || t = platform transcript. first = second + 1. second = 2. ||
-        t show: first printString; newLine.
-        t show: second printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    ||
+      t = platform transcript.
+      first = second + 1.
+      second = 2.
+    ||
+    t
+        show: first printString;
+        newLine.
+    t
+        show: second printString;
+        newLine.
+  )
+)

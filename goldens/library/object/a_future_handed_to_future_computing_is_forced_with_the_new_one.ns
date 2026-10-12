@@ -3,15 +3,33 @@
 /// new future sends it `value`, which forces it then. Its value here is a
 /// block, so the new future answers that block's value.
 class AFutureHandedToFutureComputingIsForcedWithTheNewOne = Object new (
-    | ran ::= false. |
+  |
+    ran ::= false.
+  |
 ) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. Future = platform kernel Future. handed made |
-        handed:: Future computing: [ran:: true. [6 * 7]].
-        transcript show: ran printString; newLine.
-        made:: Future computing: handed.
-        transcript show: ran printString; newLine.
-        transcript show: (made + 0) printString; newLine.
-        transcript show: ran printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Future = platform kernel Future.
+      handed
+      made
+    |
+    handed:: Future computing: [
+      ran:: true.
+      [6 * 7].
+    ].
+    transcript
+        show: ran printString;
+        newLine.
+    made:: Future computing: handed.
+    transcript
+        show: ran printString;
+        newLine.
+    transcript
+        show: (made + 0) printString;
+        newLine.
+    transcript
+        show: ran printString;
+        newLine.
+  )
+)

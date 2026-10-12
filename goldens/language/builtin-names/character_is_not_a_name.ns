@@ -3,7 +3,7 @@
 /// accessor for it and a bare Character is an ordinary self send nothing
 /// answers.
 class NoCharacter = Object new () (
-    public main: p args: a = (
-        ^Character
-    )
-) : ()
+  public main: p args: a = (
+    ^Character.
+  )
+)

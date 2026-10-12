@@ -1,10 +1,11 @@
 /// A block with a parameter passed where the native activates it with none
 /// is the ordinary wrong-arity error.
-class IfArity = Object new (
-) (
-    public main: p args: a = (
-        | b |
-        b:: [:x | x].
-        true ifTrue: b
-    )
-) : ()
+class IfArity = Object new () (
+  public main: p args: a = (
+    |
+      b
+    |
+    b:: [:x | x].
+    true ifTrue: b.
+  )
+)

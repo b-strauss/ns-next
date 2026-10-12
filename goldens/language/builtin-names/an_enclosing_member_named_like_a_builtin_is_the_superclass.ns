@@ -12,11 +12,17 @@
 /// nested class `Object = Object new` finds itself in its own clause by the
 /// same rule and is refused as a cyclic class definition.
 class EnclosingBuiltinName = Object new () (
-    class String = Object new () (
-        public tag = ( ^'local' )
+  class String = Object new () (
+    public tag = (
+      ^'local'.
     )
-    class Derived = String new () ()
-    public main: platform args: arguments = (
-        platform transcript show: Derived new tag; newLine
-    )
-) : ()
+  )
+
+  class Derived = String new () ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: Derived new tag;
+        newLine.
+  )
+)

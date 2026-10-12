@@ -4,19 +4,32 @@
 /// Soup's `-1 - self`. Each line is a pair's `bitOr:`, then its `bitXor:`;
 /// the last six are `bitInvert`s. Richards and Mandelbrot send them.
 class BitOrAndXor = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript.
-          two64 = 18446744073709551616.
-          pairs = {
-            {12. 10}. {-1. 255}. {-256. 255}.
-            {-9223372036854775808. -1}.
-            {two64 negated. two64 - 1}. {-1. two64}. {two64 + 5. -2}.
-            {two64 negated - 1. two64 negated - 1} }. |
-        pairs do: [:pair |
-            transcript
-                print: ((pair at: 1) bitOr: (pair at: 2)); show: ' ';
-                print: ((pair at: 1) bitXor: (pair at: 2)); newLine].
-        {0. 5. -6. 9223372036854775807. -9223372036854775808. two64} do: [:value |
-            transcript print: value bitInvert; newLine]
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      two64 = 18446744073709551616.
+      pairs = {
+        {12. 10}.
+        {-1. 255}.
+        {-256. 255}.
+        {-9223372036854775808. -1}.
+        {two64 negated. two64 - 1}.
+        {-1. two64}.
+        {two64 + 5. -2}.
+        {two64 negated - 1. two64 negated - 1}.
+      }.
+    |
+    pairs do: [:pair |
+      transcript
+          print: ((pair at: 1) bitOr: (pair at: 2));
+          show: ' ';
+          print: ((pair at: 1) bitXor: (pair at: 2));
+          newLine.
+    ].
+    {0. 5. -6. 9223372036854775807. -9223372036854775808. two64} do: [:value |
+      transcript
+          print: value bitInvert;
+          newLine.
+    ].
+  )
 )

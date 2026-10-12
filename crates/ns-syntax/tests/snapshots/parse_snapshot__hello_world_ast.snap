@@ -3,8 +3,8 @@ source: crates/ns-syntax/tests/parse_snapshot.rs
 expression: module
 ---
 Module {
-    language_id: "",
-    category: "",
+    language_id: None,
+    category: None,
     root_class: ClassDeclaration {
         access: None,
         name: Identifier {
@@ -14,33 +14,38 @@ Module {
                 end: 11,
             },
         },
+        type_parameters: None,
         factory: Some(
             Keyword {
                 parts: [
-                    (
-                        Identifier {
+                    KeywordPart {
+                        keyword: Identifier {
                             name: "usingPlatform",
                             span: Span {
                                 start: 12,
                                 end: 26,
                             },
                         },
-                        Identifier {
-                            name: "platform",
-                            span: Span {
-                                start: 27,
-                                end: 35,
+                        parameter: Parameter {
+                            name: Identifier {
+                                name: "platform",
+                                span: Span {
+                                    start: 27,
+                                    end: 35,
+                                },
                             },
+                            type_annotation: None,
                         },
-                    ),
+                    },
                 ],
             },
         ),
+        factory_return_type: None,
+        factory_where_clause: None,
         superclass: None,
         mixin_applications: [],
-        class_comment: None,
         instance_side: ClassBody {
-            slots: [
+            header_slots: [
                 SlotDeclaration {
                     access: Some(
                         Private,
@@ -52,38 +57,64 @@ Module {
                             end: 64,
                         },
                     },
+                    type_annotation: None,
                     mutability: Immutable,
                     initializer: Some(
-                        Send(
-                            Send {
-                                receiver: Identifier(
-                                    Identifier {
-                                        name: "platform",
+                        Expression {
+                            kind: Send(
+                                Send {
+                                    receiver: Expression {
+                                        kind: Identifier(
+                                            Identifier {
+                                                name: "platform",
+                                                span: Span {
+                                                    start: 67,
+                                                    end: 75,
+                                                },
+                                            },
+                                        ),
+                                        parentheses: [],
+                                        type_arguments: None,
+                                        synthesized: false,
+                                        comments: [],
                                         span: Span {
                                             start: 67,
                                             end: 75,
                                         },
                                     },
-                                ),
-                                message: MessageSend {
-                                    selector: Unary(
-                                        "Transcript",
-                                    ),
-                                    arguments: [],
+                                    message: MessageSend {
+                                        selector: Unary(
+                                            "Transcript",
+                                        ),
+                                        arguments: [],
+                                        eventual: false,
+                                        type_arguments: None,
+                                        comments: [],
+                                        span: Span {
+                                            start: 67,
+                                            end: 86,
+                                        },
+                                    },
                                     span: Span {
                                         start: 67,
                                         end: 86,
                                     },
                                 },
-                                span: Span {
-                                    start: 67,
-                                    end: 86,
-                                },
+                            ),
+                            parentheses: [],
+                            type_arguments: None,
+                            synthesized: false,
+                            comments: [],
+                            span: Span {
+                                start: 67,
+                                end: 86,
                             },
-                        ),
+                        },
                     ),
                     lazy: false,
+                    access_before_lazy: false,
                     simultaneous: false,
+                    comments: [],
                     span: Span {
                         start: 46,
                         end: 87,
@@ -91,101 +122,150 @@ Module {
                 },
             ],
             initializer_expressions: [],
-            methods: [
-                MethodDeclaration {
-                    access: Some(
-                        Public,
-                    ),
-                    pattern: Keyword {
-                        parts: [
-                            (
-                                Identifier {
-                                    name: "main",
-                                    span: Span {
-                                        start: 105,
-                                        end: 110,
+            members: [
+                Method(
+                    MethodDeclaration {
+                        access: Some(
+                            Public,
+                        ),
+                        pattern: Keyword {
+                            parts: [
+                                KeywordPart {
+                                    keyword: Identifier {
+                                        name: "main",
+                                        span: Span {
+                                            start: 105,
+                                            end: 110,
+                                        },
                                     },
-                                },
-                                Identifier {
-                                    name: "args",
-                                    span: Span {
-                                        start: 111,
-                                        end: 115,
-                                    },
-                                },
-                            ),
-                        ],
-                    },
-                    body: CodeBody {
-                        temporaries: [],
-                        temporaries_delimiters: None,
-                        statements: [
-                            Expression(
-                                Send(
-                                    Send {
-                                        receiver: Identifier(
-                                            Identifier {
-                                                name: "Transcript",
-                                                span: Span {
-                                                    start: 120,
-                                                    end: 130,
-                                                },
+                                    parameter: Parameter {
+                                        name: Identifier {
+                                            name: "args",
+                                            span: Span {
+                                                start: 111,
+                                                end: 115,
                                             },
-                                        ),
-                                        message: MessageSend {
-                                            selector: Keyword(
-                                                "show:",
-                                            ),
-                                            arguments: [
-                                                Literal(
-                                                    String {
-                                                        value: "Hello, World!",
+                                        },
+                                        type_annotation: None,
+                                    },
+                                },
+                            ],
+                        },
+                        return_type: None,
+                        where_clause: None,
+                        body: CodeBody {
+                            temporaries: [],
+                            temporaries_delimiters: None,
+                            statements: [
+                                Statement {
+                                    kind: Expression(
+                                        Expression {
+                                            kind: Send(
+                                                Send {
+                                                    receiver: Expression {
+                                                        kind: Identifier(
+                                                            Identifier {
+                                                                name: "Transcript",
+                                                                span: Span {
+                                                                    start: 120,
+                                                                    end: 130,
+                                                                },
+                                                            },
+                                                        ),
+                                                        parentheses: [],
+                                                        type_arguments: None,
+                                                        synthesized: false,
+                                                        comments: [],
                                                         span: Span {
-                                                            start: 137,
+                                                            start: 120,
+                                                            end: 130,
+                                                        },
+                                                    },
+                                                    message: MessageSend {
+                                                        selector: Keyword(
+                                                            "show:",
+                                                        ),
+                                                        arguments: [
+                                                            Expression {
+                                                                kind: Literal(
+                                                                    String {
+                                                                        value: "Hello, World!",
+                                                                        text: "'Hello, World!'",
+                                                                        span: Span {
+                                                                            start: 137,
+                                                                            end: 152,
+                                                                        },
+                                                                    },
+                                                                ),
+                                                                parentheses: [],
+                                                                type_arguments: None,
+                                                                synthesized: false,
+                                                                comments: [],
+                                                                span: Span {
+                                                                    start: 137,
+                                                                    end: 152,
+                                                                },
+                                                            },
+                                                        ],
+                                                        eventual: false,
+                                                        type_arguments: None,
+                                                        comments: [],
+                                                        span: Span {
+                                                            start: 120,
                                                             end: 152,
                                                         },
                                                     },
-                                                ),
-                                            ],
+                                                    span: Span {
+                                                        start: 120,
+                                                        end: 152,
+                                                    },
+                                                },
+                                            ),
+                                            parentheses: [],
+                                            type_arguments: None,
+                                            synthesized: false,
+                                            comments: [],
                                             span: Span {
                                                 start: 120,
                                                 end: 152,
                                             },
                                         },
-                                        span: Span {
-                                            start: 120,
-                                            end: 152,
-                                        },
+                                    ),
+                                    comments: [],
+                                    span: Span {
+                                        start: 120,
+                                        end: 152,
+                                    },
+                                },
+                            ],
+                            comments: [],
+                            span: Span {
+                                start: 120,
+                                end: 154,
+                            },
+                        },
+                        body_delimiters: Some(
+                            Delimiters {
+                                open: Span {
+                                    start: 118,
+                                    end: 119,
+                                },
+                                close: Some(
+                                    Span {
+                                        start: 153,
+                                        end: 154,
                                     },
                                 ),
-                            ),
-                        ],
+                            },
+                        ),
+                        comments: [],
                         span: Span {
-                            start: 120,
+                            start: 98,
                             end: 154,
                         },
                     },
-                    body_delimiters: Some(
-                        Delimiters {
-                            open: Span {
-                                start: 118,
-                                end: 119,
-                            },
-                            close: Some(
-                                Span {
-                                    start: 153,
-                                    end: 154,
-                                },
-                            ),
-                        },
-                    ),
-                    span: Span {
-                        start: 98,
-                        end: 154,
-                    },
-                },
+                ),
             ],
-            nested_classes: [],
             delimiters: Some(
                 Delimiters {
                     open: Span {
@@ -214,6 +294,7 @@ Module {
                     ),
                 },
             ),
+            comments: [],
             span: Span {
                 start: 44,
                 end: 156,
@@ -221,10 +302,9 @@ Module {
         },
         class_side: Some(
             ClassBody {
-                slots: [],
+                header_slots: [],
                 initializer_expressions: [],
-                methods: [],
-                nested_classes: [],
+                members: [],
                 delimiters: Some(
                     Delimiters {
                         open: Span {
@@ -240,17 +320,20 @@ Module {
                     },
                 ),
                 slot_delimiters: None,
+                comments: [],
                 span: Span {
                     start: 160,
                     end: 161,
                 },
             },
         ),
+        comments: [],
         span: Span {
             start: 0,
             end: 161,
         },
     },
+    comments: [],
     span: Span {
         start: 0,
         end: 162,

@@ -3,16 +3,30 @@
 /// resumes it with is the value of the send nothing understood, and the
 /// expression goes on from there. The exception names the message and the
 /// receiver, and its text is the one an uncaught one ends the run with.
-class AMessageNotUnderstoodIsResumed = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. MessageNotUnderstood = platform kernel MessageNotUnderstood. |
-        transcript show: ([3 zork] on: MessageNotUnderstood do: [:e | e resume: 42]) printString; newLine.
-        transcript show: ([3 zork + 1] on: MessageNotUnderstood do: [:e | e resume: 42]) printString; newLine.
-        transcript show: ([3 zork] on: MessageNotUnderstood do: [:e | e message selector]) printString; newLine.
-        transcript show: ([3 zork: 4] on: MessageNotUnderstood do: [:e | e message arguments size]) printString; newLine.
-        transcript show: ([3 zork] on: MessageNotUnderstood do: [:e | e receiver]) printString; newLine.
-        transcript show: ([3 zork] on: MessageNotUnderstood do: [:e | e messageText]); newLine.
-    )
-) : ()
+class AMessageNotUnderstoodIsResumed = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      MessageNotUnderstood = platform kernel MessageNotUnderstood.
+    |
+    transcript
+        show: ([3 zork] on: MessageNotUnderstood do: [:e | e resume: 42]) printString;
+        newLine.
+    transcript
+        show: ([3 zork + 1] on: MessageNotUnderstood do: [:e | e resume: 42]) printString;
+        newLine.
+    transcript
+        show: ([3 zork] on: MessageNotUnderstood do: [:e | e message selector]) printString;
+        newLine.
+    transcript
+        show: ([3 zork: 4] on: MessageNotUnderstood do: [:e | e message arguments size])
+            printString;
+        newLine.
+    transcript
+        show: ([3 zork] on: MessageNotUnderstood do: [:e | e receiver]) printString;
+        newLine.
+    transcript
+        show: ([3 zork] on: MessageNotUnderstood do: [:e | e messageText]);
+        newLine.
+  )
+)

@@ -11,27 +11,59 @@
 /// getter answer it without evaluating the initializer, and writing nil
 /// empties the slot again, so the next read evaluates it once more.
 class Spec633LazyApplications = Object new () (
-    class Counting = Object new (| public evaluations ::= 0. |) (
-        lazy public counter ::= count.
-        count = ( evaluations:: evaluations + 1. ^evaluations * 10 )
-    ) : ()
-    class Wide = Object new (| public left = 'left'. public right = 'right'. |) () : ()
-    class Direct = Object new <: Counting.
-    class Shifted = Wide new <: Counting.
-    public main: platform args: arguments = (
-        | t = platform transcript. direct shifted round |
-        direct:: Direct new.
-        shifted:: Shifted new.
-        round:: 1.
-        [round <= 3] whileTrue: [
-            {direct. shifted} do: [:each |
-                t show: each counter printString; show: ' '].
-            t newLine.
-            round:: round + 1].
-        t show: shifted left, ' ', shifted right, ' ', shifted evaluations printString; newLine.
-        direct counter: 7.
-        t show: direct counter printString, ' ', direct evaluations printString; newLine.
-        direct counter: nil.
-        t show: direct counter printString, ' ', direct evaluations printString; newLine.
+  class Counting = Object new (
+    |
+      public evaluations ::= 0.
+    |
+  ) (
+    lazy public counter ::= count.
+
+    count = (
+      evaluations:: evaluations + 1.
+      ^evaluations * 10.
     )
-) : ()
+  )
+
+  class Wide = Object new (
+    |
+      public left = 'left'.
+      public right = 'right'.
+    |
+  ) ()
+
+  class Direct = Object new <: Counting.
+
+  class Shifted = Wide new <: Counting.
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      direct
+      shifted
+      round
+    |
+    direct:: Direct new.
+    shifted:: Shifted new.
+    round:: 1.
+    [round <= 3] whileTrue: [
+      {direct. shifted} do: [:each |
+        t
+            show: each counter printString;
+            show: ' '.
+      ].
+      t newLine.
+      round:: round + 1.
+    ].
+    t
+        show: shifted left , ' ' , shifted right , ' ' , shifted evaluations printString;
+        newLine.
+    direct counter: 7.
+    t
+        show: direct counter printString , ' ' , direct evaluations printString;
+        newLine.
+    direct counter: nil.
+    t
+        show: direct counter printString , ' ' , direct evaluations printString;
+        newLine.
+  )
+)

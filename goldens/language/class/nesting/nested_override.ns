@@ -15,26 +15,50 @@
 /// be `n1 new` itself rather than the line above it -- and its primary
 /// factory is `new`, which `Nested`'s superclass clause sends; `List`'s is
 /// `new:`.
-class NestedOverride = Object new (| private Stopwatch ::= nil. |) (
-    class Outer = Object new () (
-        class Inner = Object new () (
-            public printString = ( ^'Inner instance' )
-        )
+class NestedOverride = Object new (
+  |
+    private Stopwatch ::= nil.
+  |
+) (
+  class Outer = Object new () (
+    class Inner = Object new () (
+      public printString = (
+        ^'Inner instance'.
+      )
     )
-    class ChildOfOuter = Outer () (
-        public class Nested = Inner () ()
+  )
+
+  class ChildOfOuter = Outer () (
+    public class Nested = Inner () ()
+  )
+
+  class GrandChildOfOuter = ChildOfOuter (
+    |
+      public Inner ::= Stopwatch.
+    |
+  ) (
+    public setInner: v = (
+      Inner:: v.
     )
-    class GrandChildOfOuter = ChildOfOuter (| public Inner ::= Stopwatch. |) (
-        public setInner: v = ( Inner:: v )
-    )
-    public main: platform args: args = (
-        | t ::= platform transcript. g n1 n2 |
-        Stopwatch:: platform time Stopwatch.
-        g:: GrandChildOfOuter new.
-        n1:: g Nested.
-        t show: n1 new printString; newLine.
-        g setInner: Array.
-        n2:: g Nested.
-        t show: (n1 == n2) printString; newLine.
-    )
+  )
+
+  public main: platform args: args = (
+    |
+      t ::= platform transcript.
+      g
+      n1
+      n2
+    |
+    Stopwatch:: platform time Stopwatch.
+    g:: GrandChildOfOuter new.
+    n1:: g Nested.
+    t
+        show: n1 new printString;
+        newLine.
+    g setInner: Array.
+    n2:: g Nested.
+    t
+        show: (n1 == n2) printString;
+        newLine.
+  )
 )

@@ -14,15 +14,24 @@
 /// class's enclosing object to be one; the transcript is therefore read
 /// from `platform` where it is used, never held in a slot.
 class ValueSlotNamesARefusedMetaclass = Object <: Value () (
-    public class Wrapper = Object new () (
-        public class Plain = Object new () ()
-    )
-    public class Accepted = Value new () ()
-    public class Holder of: aClass = Value new (
-        | public held = aClass. |
-    ) ()
-    public main: platform args: arguments = (
-        platform transcript show: (Holder of: Accepted) held printString; newLine.
-        platform transcript show: (Holder of: Wrapper new Plain class) printString; newLine.
-    )
-) : ()
+  public class Wrapper = Object new () (
+    public class Plain = Object new () ()
+  )
+
+  public class Accepted = Value new () ()
+
+  public class Holder of: aClass = Value new (
+    |
+      public held = aClass.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (Holder of: Accepted) held printString;
+        newLine.
+    platform transcript
+        show: (Holder of: Wrapper new Plain class) printString;
+        newLine.
+  )
+)

@@ -6,17 +6,33 @@
 /// inside a line comment. The line comment is ns-next's deviation from
 /// 4.2, whose binSel admits ///; docs/design/README.md records it.
 class LineComment = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: (3 +/// the addend is on the next line
-            4) printString; newLine.
-        t show: (17 // 5) printString; newLine. /// still integer division
-        t show: 'a /// b'; newLine.
-        t show: "a /// b"; newLine.
-        (* a block comment, /// inside it is text *)
-        t show: 'after the block'; newLine.
-        //// four slashes are a comment too
-        /// (* opens nothing here
-        t show: 'after the line'; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (3
+            + /// the addend is on the next line
+                4)
+            printString;
+        newLine.
+    t
+        show: (17 // 5) printString;
+        newLine. /// still integer division
+    t
+        show: 'a /// b';
+        newLine.
+    t
+        show: "a /// b";
+        newLine.
+    (* a block comment, /// inside it is text *)
+    t
+        show: 'after the block';
+        newLine.
+    //// four slashes are a comment too
+    /// (* opens nothing here
+    t
+        show: 'after the line';
+        newLine.
+  )
+)

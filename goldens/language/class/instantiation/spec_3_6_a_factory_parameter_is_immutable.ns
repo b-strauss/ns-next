@@ -6,11 +6,24 @@
 /// keyword, so the refusal cannot be mistaken for one about the factory,
 /// which is a class-side member.)
 class Spec36AFactoryParameterIsImmutable = Object new () (
-    class Holder seed: initial = Object new (| stored ::= 0. | initial:: 9. stored:: initial ) (
-        public contents = ( ^stored )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: (Holder seed: 1) contents printString; newLine.
+  class Holder seed: initial = Object new (
+    |
+      stored ::= 0.
+    |
+    initial:: 9.
+    stored:: initial.
+  ) (
+    public contents = (
+      ^stored.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (Holder seed: 1) contents printString;
+        newLine.
+  )
+)

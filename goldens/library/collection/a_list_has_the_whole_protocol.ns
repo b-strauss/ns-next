@@ -4,57 +4,114 @@
 /// rest of Collection's protocol is inherited. A list given itself as
 /// argument is read before it changes.
 class AListHasTheWholeProtocol = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. collections = platform collections. List = collections List. list show |
-        show:: [:collection |
-            collection do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
-            transcript newLine].
-        list:: List withAll: {3. 1. 2}.
-        show value: list.
-        list addFirst: 0; addLast: 9.
-        show value: list.
-        list addAll: {7. 7}.
-        show value: list.
-        transcript show: list first printString; show: ' '; show: list last printString; newLine.
-        transcript show: (list indexOf: 2) printString; show: ' '; show: (list indexOf: 5) printString; newLine.
-        transcript show: (list remove: 7) printString; newLine.
-        show value: list.
-        transcript show: ([list remove: 5] on: collections NotFound do: [:error | error element]) printString; newLine.
-        transcript show: ([list remove: 5] on: Error do: [:error | error messageText]); newLine.
-        list removeAllSuchThat: [:each | each > 2].
-        show value: list.
-        show value: (list collect: [:each | each * 10]).
-        transcript show: (list collect: [:each | each]) class printString; newLine.
-        show value: (list select: [:each | each > 0]).
-        show value: (list reject: [:each | each > 0]).
-        show value: list , {5. 6}.
-        show value: (list copyFrom: 2 to: 3).
-        transcript show: (list copyFrom: 2 to: 3) class printString; newLine.
-        show value: list asArray.
-        transcript show: list asArray class printString; newLine.
-        list keysAndValuesDo: [:index :each |
-            transcript show: index printString; show: '='; show: each printString; show: ' '].
-        transcript newLine.
-        transcript show: (list inject: 0 into: [:sum :each | sum + each]) printString; newLine.
-        transcript show: (list includes: 2) printString; newLine.
-        transcript show: (list detect: [:each | each > 0]) printString; newLine.
-        list addAll: list.
-        show value: list.
-        show value: (kernel Array withAll: list).
-        show value: {9} , list.
-        show value: list , list.
-        transcript show: ([List new first] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: List new isEmpty printString; newLine.
-        list removeAll.
-        transcript show: list size printString; newLine.
-        list:: List new: 0.
-        list addFirst: 2; addFirst: 1; add: 3.
-        show value: list.
-        list:: List withAll: {1. 2. 3. 4. 5}.
-        12 timesRepeat: [list addFirst: list removeLast].
-        show value: list.
-        list:: List withAll: {1. 2. 3. 4}.
-        list removeAllSuchThat: [:each | each = 2 ifTrue: [list at: 4 put: 40]. (each = 1) or: [each = 3]].
-        show value: list.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      collections = platform collections.
+      List = collections List.
+      list
+      show
+    |
+    show:: [:collection |
+      collection do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+    ].
+    list:: List withAll: {3. 1. 2}.
+    show value: list.
+    list
+        addFirst: 0;
+        addLast: 9.
+    show value: list.
+    list addAll: {7. 7}.
+    show value: list.
+    transcript
+        show: list first printString;
+        show: ' ';
+        show: list last printString;
+        newLine.
+    transcript
+        show: (list indexOf: 2) printString;
+        show: ' ';
+        show: (list indexOf: 5) printString;
+        newLine.
+    transcript
+        show: (list remove: 7) printString;
+        newLine.
+    show value: list.
+    transcript
+        show: ([list remove: 5] on: collections NotFound do: [:error | error element]) printString;
+        newLine.
+    transcript
+        show: ([list remove: 5] on: Error do: [:error | error messageText]);
+        newLine.
+    list removeAllSuchThat: [:each | each > 2].
+    show value: list.
+    show value: (list collect: [:each | each * 10]).
+    transcript
+        show: (list collect: [:each | each]) class printString;
+        newLine.
+    show value: (list select: [:each | each > 0]).
+    show value: (list reject: [:each | each > 0]).
+    show value: list , {5. 6}.
+    show value: (list copyFrom: 2 to: 3).
+    transcript
+        show: (list copyFrom: 2 to: 3) class printString;
+        newLine.
+    show value: list asArray.
+    transcript
+        show: list asArray class printString;
+        newLine.
+    list keysAndValuesDo: [:index :each |
+      transcript
+          show: index printString;
+          show: '=';
+          show: each printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    transcript
+        show: (list inject: 0 into: [:sum :each | sum + each]) printString;
+        newLine.
+    transcript
+        show: (list includes: 2) printString;
+        newLine.
+    transcript
+        show: (list detect: [:each | each > 0]) printString;
+        newLine.
+    list addAll: list.
+    show value: list.
+    show value: (kernel Array withAll: list).
+    show value: {9} , list.
+    show value: list , list.
+    transcript
+        show: ([List new first] on: kernel ArgumentError do: [:error | error argument]) printString;
+        newLine.
+    transcript
+        show: List new isEmpty printString;
+        newLine.
+    list removeAll.
+    transcript
+        show: list size printString;
+        newLine.
+    list:: List new: 0.
+    list
+        addFirst: 2;
+        addFirst: 1;
+        add: 3.
+    show value: list.
+    list:: List withAll: {1. 2. 3. 4. 5}.
+    12 timesRepeat: [list addFirst: list removeLast].
+    show value: list.
+    list:: List withAll: {1. 2. 3. 4}.
+    list removeAllSuchThat: [:each |
+      each = 2 ifTrue: [list at: 4 put: 40].
+      (each = 1) or: [each = 3].
+    ].
+    show value: list.
+  )
+)

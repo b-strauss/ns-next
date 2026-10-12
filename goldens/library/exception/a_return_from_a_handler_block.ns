@@ -3,14 +3,25 @@
 /// block, by the same unwinder: the `ensure:` block on the way runs, and
 /// the statement after the `on:do:` does not.
 class AReturnFromAHandlerBlock = Object new (
-    | transcript ::= nil. |
+  |
+    transcript ::= nil.
+  |
 ) (
-    tryIt = (
-        [[Error signal: 'r'] ensure: [transcript show: 'ensured'; newLine]] on: Error do: [:e | ^'returned'].
-        ^'not reached'
-    )
-    public main: platform args: arguments = (
-        transcript:: platform transcript.
-        transcript show: self tryIt; newLine.
-    )
-) : ()
+  tryIt = (
+    [
+      [Error signal: 'r'] ensure: [
+        transcript
+            show: 'ensured';
+            newLine.
+      ].
+    ] on: Error do: [:e | ^'returned'].
+    ^'not reached'.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    transcript
+        show: self tryIt;
+        newLine.
+  )
+)

@@ -25,31 +25,39 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
 class Storage usingPlatform: platform = (
-    | count |
+  |
+    count.
+  |
 ) (
-    public bench = (
-        count:: 0.
-        buildTreeDepth: 7 with: (Random new: 74755).
-        count = 5461 ifFalse: [Error signal: 'Storage: expected 5461, got ', count printString].
-        ^count
+  public bench = (
+    count:: 0.
+    buildTreeDepth: 7 with: (Random new: 74755).
+    count = 5461 ifFalse: [Error signal: 'Storage: expected 5461, got ' , count printString].
+    ^count.
+  )
+
+  buildTreeDepth: depth with: random = (
+    |
+      array
+    |
+    count:: count + 1.
+    depth = 1 ifTrue: [^Array new: random next \\ 10 + 1].
+    array:: Array new: 4.
+    /// SOMns's `Array new:withAll:` evaluates its block once per element,
+    /// in index order.
+    1 to: 4 do: [:index | array at: index put: (buildTreeDepth: depth - 1 with: random)].
+    ^array.
+  )
+
+  /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
+  class Random new: initialSeed = (
+    |
+      seed ::= initialSeed.
+    |
+  ) (
+    public next = (
+      seed:: seed * 1309 + 13849 bitAnd: 65535.
+      ^seed.
     )
-    buildTreeDepth: depth with: random = (
-        | array |
-        count:: count + 1.
-        depth = 1 ifTrue: [^Array new: random next \\ 10 + 1].
-        array:: Array new: 4.
-        /// SOMns's `Array new:withAll:` evaluates its block once per element,
-        /// in index order.
-        1 to: 4 do: [:index | array at: index put: (buildTreeDepth: depth - 1 with: random)].
-        ^array
-    )
-    /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
-    class Random new: initialSeed = (
-        | seed ::= initialSeed. |
-    ) (
-        public next = (
-            seed:: seed * 1309 + 13849 bitAnd: 65535.
-            ^seed
-        )
-    )
+  )
 )

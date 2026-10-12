@@ -1,9 +1,13 @@
 /// An uncaught `ArgumentError` signalled without a text ends the run with
 /// its description, its class's name and its argument.
 class AnUncaughtArgumentErrorDescribesItsArgument = Object new () (
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        (platform kernel ArgumentError value: 7) signal.
-        platform transcript show: 'not reached'; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    (platform kernel ArgumentError value: 7) signal.
+    platform transcript
+        show: 'not reached';
+        newLine.
+  )
+)

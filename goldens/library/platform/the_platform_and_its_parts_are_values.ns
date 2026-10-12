@@ -6,16 +6,32 @@
 /// VM mirror is the `PlatformFactory` instance enclosing it, which no
 /// program is handed, so a second platform is as harmless as the first.
 class PlatformValues = Object new () (
-    public main: platform args: arguments = (
-        | t c |
-        t:: platform transcript.
-        c:: platform collections.
-        t show: (t == platform transcript) printString; newLine.
-        t show: (t = t class new) printString; newLine.
-        t show: (platform = platform class new) printString; newLine.
-        t show: (platform hash = platform class new hash) printString; newLine.
-        t show: (t class == platform class) printString; show: ' ';
-            show: (c class == platform class) printString; newLine.
-        t show: (c List == platform class new collections List) printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t
+      c
+    |
+    t:: platform transcript.
+    c:: platform collections.
+    t
+        show: (t == platform transcript) printString;
+        newLine.
+    t
+        show: (t = t class new) printString;
+        newLine.
+    t
+        show: (platform = platform class new) printString;
+        newLine.
+    t
+        show: (platform hash = platform class new hash) printString;
+        newLine.
+    t
+        show: (t class == platform class) printString;
+        show: ' ';
+        show: (c class == platform class) printString;
+        newLine.
+    t
+        show: (c List == platform class new collections List) printString;
+        newLine.
+  )
+)

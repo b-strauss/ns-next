@@ -5,48 +5,116 @@
 /// and `show:` while the unwind is in progress, pushing activations above
 /// the stack the unwind has already popped.
 class EnsureRuns = Object new (
-    | private transcript ::= nil. |
+  |
+    private transcript ::= nil.
+  |
 ) (
-    returnsFromTheProtectedBlock = (
-        [^1] ensure: [transcript show: 'ensured'; newLine].
-        ^0
-    )
-    answersTheProtectedBlocksValue = (
-        ^[2] ensure: [transcript show: 'ensured'; newLine]
-    )
-    sendsAMessageThatReturnsThroughItsOwnEnsure = (
-        ^([self returnsThroughAnEnsure] ensure: [transcript show: 'outer ensured'; newLine]) + 10
-    )
-    returnsThroughAnEnsure = (
-        [^3] ensure: [transcript show: 3 printString; show: ' inner ensured'; newLine].
-        ^0
-    )
-    returnsThroughTwo = (
-        [[^4] ensure: [transcript show: 4 printString; show: ' inner'; newLine]]
-            ensure: [transcript show: 'outer'; newLine].
-        ^0
-    )
-    returnsOutOfALoop = (
-        [{1. 2. 3} do: [:each | each = 2 ifTrue: [^each * 10]]]
-            ensure: [transcript show: 'loop ensured'; newLine].
-        ^0
-    )
-    theEnsureBlockReturns = (
-        [transcript show: 'body'; newLine] ensure: [transcript show: 'ensure'; newLine. ^6].
-        ^0
-    )
-    theEnsureBlockReturnsDuringAnUnwind = (
-        [^1] ensure: [transcript show: 'ensure'; newLine. ^7].
-        ^0
-    )
-    public main: platform args: arguments = (
-        transcript:: platform transcript.
-        transcript show: self returnsFromTheProtectedBlock printString; newLine.
-        transcript show: self answersTheProtectedBlocksValue printString; newLine.
-        transcript show: self sendsAMessageThatReturnsThroughItsOwnEnsure printString; newLine.
-        transcript show: self returnsThroughTwo printString; newLine.
-        transcript show: self returnsOutOfALoop printString; newLine.
-        transcript show: self theEnsureBlockReturns printString; newLine.
-        transcript show: self theEnsureBlockReturnsDuringAnUnwind printString; newLine.
-    )
-) : ()
+  returnsFromTheProtectedBlock = (
+    [^1] ensure: [
+      transcript
+          show: 'ensured';
+          newLine.
+    ].
+    ^0.
+  )
+
+  answersTheProtectedBlocksValue = (
+    ^[2] ensure: [
+      transcript
+          show: 'ensured';
+          newLine.
+    ].
+  )
+
+  sendsAMessageThatReturnsThroughItsOwnEnsure = (
+    ^([self returnsThroughAnEnsure] ensure: [
+      transcript
+          show: 'outer ensured';
+          newLine.
+    ]) + 10.
+  )
+
+  returnsThroughAnEnsure = (
+    [^3] ensure: [
+      transcript
+          show: 3 printString;
+          show: ' inner ensured';
+          newLine.
+    ].
+    ^0.
+  )
+
+  returnsThroughTwo = (
+    [
+      [^4] ensure: [
+        transcript
+            show: 4 printString;
+            show: ' inner';
+            newLine.
+      ].
+    ] ensure: [
+      transcript
+          show: 'outer';
+          newLine.
+    ].
+    ^0.
+  )
+
+  returnsOutOfALoop = (
+    [{1. 2. 3} do: [:each | each = 2 ifTrue: [^each * 10]]] ensure: [
+      transcript
+          show: 'loop ensured';
+          newLine.
+    ].
+    ^0.
+  )
+
+  theEnsureBlockReturns = (
+    [
+      transcript
+          show: 'body';
+          newLine.
+    ] ensure: [
+      transcript
+          show: 'ensure';
+          newLine.
+      ^6.
+    ].
+    ^0.
+  )
+
+  theEnsureBlockReturnsDuringAnUnwind = (
+    [^1] ensure: [
+      transcript
+          show: 'ensure';
+          newLine.
+      ^7.
+    ].
+    ^0.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    transcript
+        show: self returnsFromTheProtectedBlock printString;
+        newLine.
+    transcript
+        show: self answersTheProtectedBlocksValue printString;
+        newLine.
+    transcript
+        show: self sendsAMessageThatReturnsThroughItsOwnEnsure printString;
+        newLine.
+    transcript
+        show: self returnsThroughTwo printString;
+        newLine.
+    transcript
+        show: self returnsOutOfALoop printString;
+        newLine.
+    transcript
+        show: self theEnsureBlockReturns printString;
+        newLine.
+    transcript
+        show: self theEnsureBlockReturnsDuringAnUnwind printString;
+        newLine.
+  )
+)

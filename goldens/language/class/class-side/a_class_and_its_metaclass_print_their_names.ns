@@ -2,15 +2,32 @@
 /// by ` class`, as Primordial Soup's `Class>>printString` and
 /// `Metaclass>>printString` do. `Metaclass` itself is a class.
 class AClassAndItsMetaclassPrint = Object new () (
-    class Foo = Object new () ()
-    public main: platform args: args = (
-        | transcript = platform transcript. |
-        transcript show: Foo printString; newLine.
-        transcript show: Foo class printString; newLine.
-        transcript show: Foo class class printString; newLine.
-        transcript show: Foo class class class printString; newLine.
-        transcript show: 3 class printString; newLine.
-        transcript show: 3 class class printString; newLine.
-        transcript show: Foo new printString; newLine.
-    )
-) : ()
+  class Foo = Object new () ()
+
+  public main: platform args: args = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: Foo printString;
+        newLine.
+    transcript
+        show: Foo class printString;
+        newLine.
+    transcript
+        show: Foo class class printString;
+        newLine.
+    transcript
+        show: Foo class class class printString;
+        newLine.
+    transcript
+        show: 3 class printString;
+        newLine.
+    transcript
+        show: 3 class class printString;
+        newLine.
+    transcript
+        show: Foo new printString;
+        newLine.
+  )
+)

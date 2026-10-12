@@ -1,14 +1,16 @@
 /// §6.1: "It is a run time error if the message selector specified by the
 /// inheritance clause is not the selector of the primary factory of the
 /// class *C*."
-class WrongFactory = Object new (
-) (
-    public class Base withBase: b = Object new (| v ::= b. |) (
-    )
-    public class Derived = Base new (
-    ) (
-    )
-    public main: p args: a = (
-        ^Derived new
-    )
-) : ()
+class WrongFactory = Object new () (
+  public class Base withBase: b = Object new (
+    |
+      v ::= b.
+    |
+  ) ()
+
+  public class Derived = Base new () ()
+
+  public main: p args: a = (
+    ^Derived new.
+  )
+)

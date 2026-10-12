@@ -4,9 +4,8 @@
 /// send of `doesNotUnderstand:` finds nothing, and `Object`'s
 /// `doesNotUnderstand:` -- found by the access-blind "defined for" walk --
 /// is invoked for that send, whose selector is `doesNotUnderstand:`.
-class Dnu = Object new (
-) (
-    public main: p args: a = (
-        3 doesNotUnderstand: 5
-    )
-) : ()
+class Dnu = Object new () (
+  public main: p args: a = (
+    3 doesNotUnderstand: 5.
+  )
+)

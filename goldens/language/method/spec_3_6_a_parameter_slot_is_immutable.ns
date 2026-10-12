@@ -12,9 +12,17 @@
 /// the write lands and the method answers 9 at exit status 0. Skipped until
 /// a parameter refuses its setter.
 class Spec36ParameterIsImmutable = Object new () (
-    replace: value = ( value:: 9. ^value )
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: (self replace: 1) printString; newLine.
-    )
-) : ()
+  replace: value = (
+    value:: 9.
+    ^value.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (self replace: 1) printString;
+        newLine.
+  )
+)

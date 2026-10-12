@@ -1,6 +1,5 @@
-class Dnu = Object new (
-) (
-    public main: p args: a = (
-        3 fooBar
-    )
-) : ()
+class Dnu = Object new () (
+  public main: p args: a = (
+    3 fooBar.
+  )
+)

@@ -5,12 +5,26 @@
 /// it is sent, and the local keeps its initial value. The canonical compiler
 /// enters an immutable temporary's getter alone into its scope
 /// (prior-art/newspeak/NewspeakCompilation.ns, codeBodyNode:).
-class Spec36AnImmutableLocalSlotHasNoSetter = Object new (| log ::= 'nothing'. |) (
-    x: value = ( log:: value printString )
-    public main: platform args: arguments = (
-        | t = platform transcript. x = 1. |
-        x:: 9.
-        t show: x printString; newLine.
-        t show: log; newLine.
-    )
-) : ()
+class Spec36AnImmutableLocalSlotHasNoSetter = Object new (
+  |
+    log ::= 'nothing'.
+  |
+) (
+  x: value = (
+    log:: value printString.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      x = 1.
+    |
+    x:: 9.
+    t
+        show: x printString;
+        newLine.
+    t
+        show: log;
+        newLine.
+  )
+)

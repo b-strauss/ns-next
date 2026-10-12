@@ -16,11 +16,21 @@
 /// answer at exit status 0. Skipped until a symbol literal answers one
 /// object per interned id.
 class Spec516SymbolIdentity = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: (#foo == #foo) printString; newLine.
-        t show: (#at:put: == #at:put:) printString; newLine.
-        t show: (#+ == #+) printString; newLine.
-        t show: (#'hello there' == #'hello there') printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: (#foo == #foo) printString;
+        newLine.
+    t
+        show: (#at:put: == #at:put:) printString;
+        newLine.
+    t
+        show: (#+ == #+) printString;
+        newLine.
+    t
+        show: (#'hello there' == #'hello there') printString;
+        newLine.
+  )
+)

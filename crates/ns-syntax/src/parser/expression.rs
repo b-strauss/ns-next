@@ -18,7 +18,7 @@ impl<'a> Parser<'a> {
             let token = self.current();
             self.push_error(token.span, "expression nested too deeply");
             self.skip_to_structural();
-            Expression::Literal(Literal::Nil { span: token.span })
+            bare(ExpressionKind::Literal(Literal::Nil { span: token.span }))
         };
         self.leave();
         expression
@@ -46,10 +46,11 @@ impl<'a> Parser<'a> {
     fn parse_primary_inner(&mut self) -> Expression {
         match self.peek() {
             TokenKind::LeftParenthesis => {
-                self.bump();
+                let open = self.bump().span;
                 let before = self.position;
-                let expression = self.parse_expression();
-                if !self.eat(TokenKind::RightParenthesis) {
+                let mut expression = self.parse_expression();
+                let mut close = self.eat_token(TokenKind::RightParenthesis);
+                if close.is_none() {
                     // An expression that consumed nothing has reported its
                     // token already: one diagnostic for one fault.
                     if self.position != before {
@@ -66,35 +67,41 @@ impl<'a> Parser<'a> {
                     // means it was never closed, so the skip stops there and
                     // leaves an enclosing body's `)` alone.
                     self.skip_balanced(&[TokenKind::Dot]);
-                    self.eat(TokenKind::RightParenthesis);
+                    close = self.eat_token(TokenKind::RightParenthesis);
                 }
+                let close = close.map(|token| token.span);
+                expression.span = open.merge(close.unwrap_or(expression.span));
+                expression.parentheses.push(Parenthesis {
+                    delimiters: Delimiters { open, close },
+                    type_arguments: None,
+                });
                 expression
             }
             TokenKind::LeftBracket => self.parse_block(),
             TokenKind::LeftBrace => self.parse_dynamic_array(),
             TokenKind::Number | TokenKind::String | TokenKind::Symbol => {
-                Expression::Literal(self.parse_literal())
+                bare(ExpressionKind::Literal(self.parse_literal()))
             }
             TokenKind::Identifier => {
                 let token = self.current();
                 match self.text(token) {
                     "nil" => {
                         self.bump();
-                        Expression::Literal(Literal::Nil { span: token.span })
+                        bare(ExpressionKind::Literal(Literal::Nil { span: token.span }))
                     }
                     "true" => {
                         self.bump();
-                        Expression::Literal(Literal::Boolean {
+                        bare(ExpressionKind::Literal(Literal::Boolean {
                             value: true,
                             span: token.span,
-                        })
+                        }))
                     }
                     "false" => {
                         self.bump();
-                        Expression::Literal(Literal::Boolean {
+                        bare(ExpressionKind::Literal(Literal::Boolean {
                             value: false,
                             span: token.span,
-                        })
+                        }))
                     }
                     "super" => {
                         let identifier = self.identifier();
@@ -107,7 +114,7 @@ impl<'a> Parser<'a> {
                                 "`super` is followed by a message (§5.10)",
                             );
                         }
-                        Expression::Identifier(identifier)
+                        bare(ExpressionKind::Identifier(identifier))
                     }
                     "outer" => {
                         let identifier = self.identifier();
@@ -124,25 +131,25 @@ impl<'a> Parser<'a> {
                                 "`outer` is followed by the name of an enclosing class (§5.9)",
                             );
                         }
-                        Expression::Identifier(identifier)
+                        bare(ExpressionKind::Identifier(identifier))
                     }
-                    _ => Expression::Identifier(self.identifier()),
+                    _ => bare(ExpressionKind::Identifier(self.identifier())),
                 }
             }
             // `class` and the access modifiers have tokens of their own, but
             // in an expression they are names (`super::is_name`): `class
             // onContext: it`, a slot read `^public`.
             TokenKind::Class | TokenKind::Public | TokenKind::Protected | TokenKind::Private => {
-                Expression::Identifier(self.identifier())
+                bare(ExpressionKind::Identifier(self.identifier()))
             }
-            TokenKind::LessThan => Expression::Literal(self.parse_pattern_literal()),
+            TokenKind::LessThan => bare(ExpressionKind::Literal(self.parse_pattern_literal())),
             _ => {
                 let token = self.current();
                 self.diagnostics.push(crate::diagnostic::Diagnostic::error(
                     token.span,
                     format!("expected an expression, found {}", self.found(token)),
                 ));
-                Expression::Literal(Literal::Nil { span: token.span })
+                bare(ExpressionKind::Literal(Literal::Nil { span: token.span }))
             }
         }
     }
@@ -173,10 +180,12 @@ impl<'a> Parser<'a> {
             }
             TokenKind::String => Literal::String {
                 value: unescape_string(&raw),
+                text: raw,
                 span: token.span,
             },
             TokenKind::Symbol => Literal::Symbol {
                 value: symbol_body(&raw),
+                text: raw,
                 span: token.span,
             },
             _ => unreachable!("parse_literal called on {:?}", token.kind),
@@ -354,10 +363,14 @@ impl<'a> Parser<'a> {
         while self.at(TokenKind::Colon) {
             self.bump();
             has_parameters = true;
-            parameters.extend(self.declared_identifier("name a block parameter"));
+            let name = self.declared_identifier("name a block parameter");
             // `[:x <T> :y <T> | ...]` — block parameters carry the same
             // declaration-position `<Type>` annotations as method parameters.
-            self.skip_type_annotation();
+            let type_annotation = self.take_type_annotation();
+            parameters.extend(name.map(|name| Parameter {
+                name,
+                type_annotation,
+            }));
         }
         if has_parameters {
             self.expect(TokenKind::Bar);
@@ -366,15 +379,16 @@ impl<'a> Parser<'a> {
         let right_bracket = self.expect(TokenKind::RightBracket);
         let end = right_bracket.map_or_else(|| self.previous_span(), |token| token.span);
         let span = left_bracket.span.merge(end);
-        Expression::Block(Box::new(BlockExpression {
+        bare(ExpressionKind::Block(Box::new(BlockExpression {
             parameters,
             body,
             delimiters: Some(Delimiters {
                 open: left_bracket.span,
                 close: right_bracket.map(|token| token.span),
             }),
+            comments: Vec::new(),
             span,
-        }))
+        })))
     }
 
     fn parse_dynamic_array(&mut self) -> Expression {
@@ -407,10 +421,10 @@ impl<'a> Parser<'a> {
         }
         let right_brace = self.expect(TokenKind::RightBrace);
         let end = right_brace.map_or_else(|| self.previous_span(), |token| token.span);
-        Expression::DynamicArray {
+        bare(ExpressionKind::DynamicArray {
             elements,
             span: left_brace.span.merge(end),
-        }
+        })
     }
 }
 
@@ -430,7 +444,7 @@ impl<'a> Parser<'a> {
                 let token = self.current();
                 self.push_error(token.span, "expression nested too deeply");
                 self.skip_to_structural();
-                return Expression::Literal(Literal::Nil { span: token.span });
+                return bare(ExpressionKind::Literal(Literal::Nil { span: token.span }));
             }
             let keyword = self.bump();
             let name = self.text(keyword).trim_end_matches(':');
@@ -445,11 +459,11 @@ impl<'a> Parser<'a> {
             let value = self.parse_expression();
             self.leave();
             let span = target.span.merge(expression_span(&value));
-            return Expression::Assign {
+            return bare(ExpressionKind::Assign {
                 target,
                 value: Box::new(value),
                 span,
-            };
+            });
         }
         self.parse_send_expression()
     }
@@ -466,10 +480,11 @@ impl<'a> Parser<'a> {
             // receiver is modelled as the identifier `self` with a zero-width
             // span at the selector's start.
             let selector_start = self.current().span.start;
-            let receiver = Expression::Identifier(Identifier {
+            let mut receiver = bare(ExpressionKind::Identifier(Identifier {
                 name: "self".to_string(),
                 span: crate::span::Span::new(selector_start, selector_start),
-            });
+            }));
+            receiver.synthesized = true;
             let expression = self.parse_keyword_messages(receiver);
             if self.at(TokenKind::Semicolon) {
                 self.push_error(
@@ -497,7 +512,7 @@ impl<'a> Parser<'a> {
     /// The `cascadeMsg*` after `first`, whose last message's receiver is the
     /// cascade's receiver.
     fn parse_cascade_on(&mut self, first: Expression) -> Expression {
-        let Expression::Send(boxed) = first else {
+        let ExpressionKind::Send(boxed) = first.kind else {
             while self.eat(TokenKind::Semicolon) {
                 let _ = self.parse_cascade_message();
             }
@@ -513,19 +528,24 @@ impl<'a> Parser<'a> {
             .last()
             .map(|message| message.span)
             .unwrap_or(first_span);
-        Expression::Cascade(Box::new(Cascade {
+        bare(ExpressionKind::Cascade(Box::new(Cascade {
             span: expression_span(&receiver).merge(last),
             receiver,
             first: message,
             rest,
-        }))
+        })))
     }
 
     /// A primary and the type arguments of the canonical grammar's generic
-    /// instantiation, `Array[E] new: n` (`NewspeakGrammar.ns:376`), dropped.
+    /// instantiation, `Array[E] new: n` (`NewspeakGrammar.ns:376`): after a
+    /// `)` they are its parenthesis's, otherwise the primary's own.
     fn parse_primary_operand(&mut self) -> Expression {
-        let primary = self.parse_primary();
-        self.skip_type_arguments();
+        let mut primary = self.parse_primary();
+        let type_arguments = self.take_type_arguments();
+        match primary.parentheses.last_mut() {
+            Some(outermost) => outermost.type_arguments = type_arguments,
+            None => primary.type_arguments = type_arguments,
+        }
         primary
     }
 
@@ -560,45 +580,51 @@ impl<'a> Parser<'a> {
 
     fn parse_unary_messages(&mut self, mut receiver: Expression) -> Expression {
         loop {
-            self.eat_eventual_send_operator(|parser| parser.at_name());
+            let eventual = self.eat_eventual_send_operator(|parser| parser.at_name());
             if !self.at_name() {
                 return receiver;
             }
             let selector_token = self.bump();
             let selector_name = self.text(selector_token).to_string();
             self.refuse_reserved_word(&selector_name, selector_token.span, "be a message selector");
+            // `foo bar[E]` — type arguments on a unary send result.
+            let type_arguments = self.take_type_arguments();
             let span = expression_span(&receiver).merge(selector_token.span);
-            receiver = Expression::Send(Box::new(Send {
+            receiver = bare(ExpressionKind::Send(Box::new(Send {
                 span,
                 receiver,
                 message: MessageSend {
                     selector: Selector::Unary(selector_name),
                     arguments: Vec::new(),
+                    eventual,
+                    type_arguments,
+                    comments: Vec::new(),
                     span,
                 },
-            }));
-            // `foo bar[E]` — type arguments on a unary send result.
-            self.skip_type_arguments();
+            })));
         }
     }
 
     fn parse_binary_messages(&mut self, mut receiver: Expression) -> Expression {
         loop {
-            self.eat_eventual_send_operator(|parser| parser.at_binary_operator());
+            let eventual = self.eat_eventual_send_operator(|parser| parser.at_binary_operator());
             if !self.at_binary_operator() {
                 return receiver;
             }
             let (operator, argument) = self.parse_binary_operator_and_argument();
             let span = expression_span(&receiver).merge(expression_span(&argument));
-            receiver = Expression::Send(Box::new(Send {
+            receiver = bare(ExpressionKind::Send(Box::new(Send {
                 span,
                 receiver,
                 message: MessageSend {
                     selector: Selector::Binary(operator),
                     arguments: vec![argument],
+                    eventual,
+                    type_arguments: None,
+                    comments: Vec::new(),
                     span,
                 },
-            }));
+            })));
         }
     }
 
@@ -614,19 +640,22 @@ impl<'a> Parser<'a> {
 
     /// `keywordMsg → (keyword binaryExpression)+` sent to `receiver`.
     fn parse_keyword_messages(&mut self, receiver: Expression) -> Expression {
-        self.eat_eventual_send_operator(|parser| parser.at(TokenKind::Keyword));
+        let eventual = self.eat_eventual_send_operator(|parser| parser.at(TokenKind::Keyword));
         let start = expression_span(&receiver);
         let (selector, arguments, end) = self.parse_keyword_parts(start);
         let span = start.merge(end);
-        Expression::Send(Box::new(Send {
+        bare(ExpressionKind::Send(Box::new(Send {
             span,
             receiver,
             message: MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                eventual,
+                type_arguments: None,
+                comments: Vec::new(),
                 span,
             },
-        }))
+        })))
     }
 
     /// The `(keyword binaryExpression)+` at the cursor: the selector, the
@@ -669,7 +698,7 @@ impl<'a> Parser<'a> {
     /// message the source does not have is left out.
     fn parse_cascade_message(&mut self) -> Option<MessageSend> {
         let start = self.current().span;
-        self.eat_eventual_send_operator(|parser| {
+        let eventual = self.eat_eventual_send_operator(|parser| {
             parser.at(TokenKind::Keyword) || parser.at_binary_operator() || parser.at_name()
         });
         if self.at(TokenKind::Keyword) {
@@ -677,6 +706,9 @@ impl<'a> Parser<'a> {
             return Some(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                eventual,
+                type_arguments: None,
+                comments: Vec::new(),
                 span: start.merge(end),
             });
         }
@@ -684,6 +716,9 @@ impl<'a> Parser<'a> {
             let (operator, argument) = self.parse_binary_operator_and_argument();
             return Some(MessageSend {
                 selector: Selector::Binary(operator),
+                eventual,
+                type_arguments: None,
+                comments: Vec::new(),
                 span: start.merge(expression_span(&argument)),
                 arguments: vec![argument],
             });
@@ -695,6 +730,9 @@ impl<'a> Parser<'a> {
             return Some(MessageSend {
                 selector: Selector::Unary(selector_name),
                 arguments: Vec::new(),
+                eventual,
+                type_arguments: None,
+                comments: Vec::new(),
                 span: selector_token.span,
             });
         }
@@ -765,20 +803,23 @@ impl<'a> Parser<'a> {
     /// the caller that parses its kind when it is another, and reported when
     /// no message follows at all. The send is parsed as an ordinary one: there
     /// are no actors to send it to (`docs/design/frontend.md`, "What is
-    /// parsed and dropped").
-    fn eat_eventual_send_operator(&mut self, message_follows: impl Fn(&Self) -> bool) {
+    /// kept but ignored, and what a reprint drops"). Answers whether the
+    /// operator was consumed for a message of this kind, which then records
+    /// `eventual`.
+    fn eat_eventual_send_operator(&mut self, message_follows: impl Fn(&Self) -> bool) -> bool {
         if !self.at(TokenKind::EventualSendOperator) {
-            return;
+            return false;
         }
         let operator = self.bump();
         if message_follows(self) {
-            return;
+            return true;
         }
         if self.at(TokenKind::Keyword) || self.at_binary_operator() || self.at_name() {
             self.position -= 1;
-            return;
+            return false;
         }
         self.push_error(operator.span, "expected a message after `<-:` (§5.6)");
+        false
     }
 
     pub(super) fn is_reserved_identifier(&self, token: crate::token::Token) -> bool {
@@ -804,27 +845,13 @@ pub(super) fn starts_primary(kind: TokenKind) -> bool {
 }
 
 pub(super) fn expression_span(expression: &Expression) -> crate::span::Span {
-    match expression {
-        Expression::Identifier(identifier) => identifier.span,
-        Expression::Literal(literal) => literal_span(literal),
-        Expression::Send(send) => send.span,
-        Expression::Cascade(cascade) => cascade.span,
-        Expression::Assign { span, .. } => *span,
-        Expression::Block(block) => block.span,
-        Expression::DynamicArray { span, .. } => *span,
-    }
+    expression.span
 }
 
-pub(super) fn literal_span(literal: &Literal) -> crate::span::Span {
-    match literal {
-        Literal::Integer { span, .. }
-        | Literal::Float { span, .. }
-        | Literal::String { span, .. }
-        | Literal::Symbol { span, .. }
-        | Literal::Boolean { span, .. }
-        | Literal::Nil { span }
-        | Literal::Pattern { span, .. } => *span,
-    }
+/// An expression of `kind` with nothing around it, spanning the shape.
+pub(super) fn bare(kind: ExpressionKind) -> Expression {
+    let span = kind.span();
+    Expression::bare(kind, span)
 }
 
 /// A string literal's value: a single-quoted one un-doubles `''`, and a

@@ -3,12 +3,26 @@
 /// method -- so a public slot's accessors answer an explicit receiver,
 /// and the setter "returns the receiver of the message".
 class Spec632PublicSlotExplicitReceiver = Object new () (
-    class Holder = Object new (| public z ::= 7. |) ()
-    public main: platform args: args = (
-        | t = platform transcript. holder |
-        holder:: Holder new.
-        t show: holder z printString; newLine.
-        t show: ((holder z: 9) == holder) printString; newLine.
-        t show: holder z printString; newLine.
-    )
-) : ()
+  class Holder = Object new (
+    |
+      public z ::= 7.
+    |
+  ) ()
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+      holder
+    |
+    holder:: Holder new.
+    t
+        show: holder z printString;
+        newLine.
+    t
+        show: ((holder z: 9) == holder) printString;
+        newLine.
+    t
+        show: holder z printString;
+        newLine.
+  )
+)

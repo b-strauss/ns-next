@@ -13,11 +13,18 @@
 /// class's enclosing object to be one; the transcript is therefore read
 /// from `platform` where it is used, never held in a slot.
 class ValueMutableSlot = Object <: Value () (
-    public class Counter = Value new (
-        | public count ::= 1. |
-    ) ()
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        platform transcript show: Counter new printString; newLine.
-    )
-) : ()
+  public class Counter = Value new (
+    |
+      public count ::= 1.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    platform transcript
+        show: Counter new printString;
+        newLine.
+  )
+)

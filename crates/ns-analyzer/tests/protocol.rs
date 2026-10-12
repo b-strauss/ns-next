@@ -87,6 +87,10 @@ fn an_editor_session() {
     );
     assert_eq!(capabilities["capabilities"]["foldingRangeProvider"], true);
     assert_eq!(capabilities["capabilities"]["documentSymbolProvider"], true);
+    assert_eq!(
+        capabilities["capabilities"]["documentFormattingProvider"],
+        true
+    );
     notify(&client, "initialized", json!({}));
 
     // Non-ASCII text before the error on its line, so a position counted in
@@ -518,4 +522,113 @@ fn a_fifo_answers_no_symbols_without_blocking() {
     assert_eq!(symbols, json!([]));
     shut_down(&client, server_thread);
     let _ = std::fs::remove_dir_all(&directory);
+}
+
+/// Opens `text` as `uri` and waits for the diagnostics the open publishes.
+fn open_document(client: &Connection, uri: &str, text: &str) {
+    notify(
+        client,
+        "textDocument/didOpen",
+        json!({ "textDocument": { "uri": uri, "languageId": "newspeak", "version": 1, "text": text } }),
+    );
+    let _ = next_diagnostics(client);
+}
+
+fn format_request(client: &Connection, id: i32, uri: &str, options: Value) -> Value {
+    request(
+        client,
+        id,
+        "textDocument/formatting",
+        json!({ "textDocument": { "uri": uri }, "options": options }),
+    )
+}
+
+#[test]
+fn formatting_answers_one_edit_over_the_whole_document() {
+    // Non-ASCII text on the last line, so an end column counted in bytes
+    // rather than UTF-16 units would be off.
+    let unformatted = "class   Module = Object new () (
+public run = ( ^'Grüße 😀' ) )  : ()";
+    let formatted = ns_syntax::format(unformatted).expect("the module parses");
+    assert_ne!(formatted, unformatted, "the fixture needs formatting");
+
+    let (client, server_thread) = initialized_server();
+    open_document(&client, URI, unformatted);
+    let edits = format_request(
+        &client,
+        2,
+        URI,
+        json!({ "tabSize": 8, "insertSpaces": false }),
+    );
+    let last_line = unformatted.lines().count() as u64 - 1;
+    let last_column = unformatted
+        .lines()
+        .last()
+        .expect("a last line")
+        .encode_utf16()
+        .count() as u64;
+    assert_eq!(
+        edits,
+        json!([{
+            "range": {
+                "start": { "line": 0, "character": 0 },
+                "end": { "line": last_line, "character": last_column },
+            },
+            "newText": formatted,
+        }])
+    );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn formatting_a_formatted_document_answers_no_edit() {
+    let formatted = ns_syntax::format("class Module = Object new () ( public run = ( ^1 ) ) : ()")
+        .expect("the module parses");
+    let (client, server_thread) = initialized_server();
+    open_document(&client, URI, &formatted);
+    assert_eq!(
+        format_request(
+            &client,
+            2,
+            URI,
+            json!({ "tabSize": 4, "insertSpaces": true })
+        ),
+        json!([])
+    );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn formatting_a_document_with_a_syntax_error_answers_no_edit() {
+    let (client, server_thread) = initialized_server();
+    open_document(
+        &client,
+        URI,
+        "class Module = Object new () ( public run = ( ^ ) ",
+    );
+    assert_eq!(
+        format_request(
+            &client,
+            2,
+            URI,
+            json!({ "tabSize": 4, "insertSpaces": true })
+        ),
+        json!([])
+    );
+    shut_down(&client, server_thread);
+}
+
+#[test]
+fn formatting_an_unopened_document_answers_no_edit() {
+    let (client, server_thread) = initialized_server();
+    assert_eq!(
+        format_request(
+            &client,
+            2,
+            "file:///never/opened.ns",
+            json!({ "tabSize": 4, "insertSpaces": true })
+        ),
+        json!([])
+    );
+    shut_down(&client, server_thread);
 }

@@ -8,15 +8,22 @@
 /// here, and the run ends in Object's error. Before the core library moved into Kernel.ns a declining primitive
 /// continued the receiver's own lookup and reached this handler instead
 /// (`docs/design/core-library.md`, "The one observable difference").
-class HandlerPassedBy = Object new (
-    
-) (
-    class Handled = Array new () (
-        protected doesNotUnderstand: message = ( ^'handled here' )
+class HandlerPassedBy = Object new () (
+  class Handled = Array new () (
+    protected doesNotUnderstand: message = (
+      ^'handled here'.
     )
-    public main: p args: a = (
-        | transcript = p transcript. |
-        transcript show: 'before'; newLine.
-        transcript show: (Handled new at: 1) printString; newLine
-    )
-) : ()
+  )
+
+  public main: p args: a = (
+    |
+      transcript = p transcript.
+    |
+    transcript
+        show: 'before';
+        newLine.
+    transcript
+        show: (Handled new at: 1) printString;
+        newLine.
+  )
+)

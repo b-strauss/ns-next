@@ -1,12 +1,18 @@
 /// A `MessageNotUnderstood` is an `Error`, so `on: Error do:` catches a
 /// send nothing understands, `nil`'s included.
-class ADoesNotUnderstandIsCaughtAsAnError = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ([nil zork] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([nil zork] on: Error do: [:e | e class name]); newLine.
-        transcript show: ([nil zork] on: Error do: [:e | e receiver]) printString; newLine.
-    )
-) : ()
+class ADoesNotUnderstandIsCaughtAsAnError = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([nil zork] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([nil zork] on: Error do: [:e | e class name]);
+        newLine.
+    transcript
+        show: ([nil zork] on: Error do: [:e | e receiver]) printString;
+        newLine.
+  )
+)

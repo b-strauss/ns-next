@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use super::control_flow;
@@ -158,7 +158,7 @@ pub(crate) fn compile_lazy_slot_getter(
 fn superclass_clause(mixin: &Mixin, bindings: &Bindings) -> Option<CompiledCode> {
     let declaration = mixin.declaration.as_ref()?;
     let clause = declaration.superclass.as_ref()?;
-    let statements = [Statement::Return(
+    let statements = [Statement::of_return(
         crate::interpreter::nested::superclass_clause_expression(
             clause,
             &declaration.mixin_applications,
@@ -191,7 +191,7 @@ fn clause_message(
         0,
         bindings,
     );
-    body.statements_and_end(&[Statement::Return(arguments)]);
+    body.statements_and_end(&[Statement::of_return(arguments)]);
     Some(body.finish(clause.span))
 }
 
@@ -350,7 +350,10 @@ impl<'a> Body<'a> {
             last_value = self.statement(statement);
         }
         self.end(
-            matches!(statements.last(), Some(Statement::Return(_))),
+            matches!(
+                statements.last().map(|statement| &statement.kind),
+                Some(StatementKind::Return(_))
+            ),
             last_value,
         );
     }
@@ -360,9 +363,9 @@ impl<'a> Body<'a> {
     /// `None` when it emitted a return.
     fn statement(&mut self, statement: &Statement) -> Option<u16> {
         let start = self.code.len();
-        let value = match statement {
-            Statement::Expression(expression) => Some(self.value(expression)),
-            Statement::Return(expression) => {
+        let value = match &statement.kind {
+            StatementKind::Expression(expression) => Some(self.value(expression)),
+            StatementKind::Return(expression) => {
                 let register = self.value(expression);
                 match self.kind {
                     CodeKind::Method | CodeKind::SuperclassClause | CodeKind::SuperclassMessage => {
@@ -427,14 +430,14 @@ impl<'a> Body<'a> {
     /// Lowers `expression` and answers the register holding its value -- always
     /// a register this lowering wrote for it and will never write again.
     fn value(&mut self, expression: &Expression) -> u16 {
-        match expression {
-            Expression::Literal(literal) => self.literal(lower_literal(literal)),
-            Expression::Identifier(id) => self.read(id),
-            Expression::Assign { target, value, .. } => self.assign(target, value),
-            Expression::Send(send) => self.send(send),
-            Expression::Cascade(cascade) => self.cascade(cascade),
-            Expression::Block(block) => self.block(block),
-            Expression::DynamicArray { elements, .. } => {
+        match &expression.kind {
+            ExpressionKind::Literal(literal) => self.literal(lower_literal(literal)),
+            ExpressionKind::Identifier(id) => self.read(id),
+            ExpressionKind::Assign { target, value, .. } => self.assign(target, value),
+            ExpressionKind::Send(send) => self.send(send),
+            ExpressionKind::Cascade(cascade) => self.cascade(cascade),
+            ExpressionKind::Block(block) => self.block(block),
+            ExpressionKind::DynamicArray { elements, .. } => {
                 let element_registers = self.values(elements);
                 let destination = self.fresh();
                 self.emit(Instruction::MakeArray {
@@ -628,7 +631,7 @@ impl<'a> Body<'a> {
         let parameters: Vec<Symbol> = block
             .parameters
             .iter()
-            .map(|parameter| Symbol::intern(&parameter.name))
+            .map(|parameter| Symbol::intern(&parameter.name.name))
             .collect();
         let mut inner = Body::new(
             CodeKind::Block,
@@ -870,10 +873,14 @@ mod tests {
             crate::SourceOrigin::File(PathBuf::from("t.ns")),
         )
         .expect("resolve");
-        compile_method(
-            &resolved.module.root_class.instance_side.methods[index],
-            &resolved.bindings,
-        )
+        let method = resolved
+            .module
+            .root_class
+            .instance_side
+            .methods()
+            .nth(index)
+            .expect("a method");
+        compile_method(method, &resolved.bindings)
     }
 
     fn method(declaration: &str) -> String {
@@ -1023,12 +1030,15 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        compile_method(
-            &resolved.module.root_class.instance_side.nested_classes[0]
-                .instance_side
-                .methods[0],
-            &resolved.bindings,
-        )
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let method = nested.instance_side.methods().next().expect("a method");
+        compile_method(method, &resolved.bindings)
     }
 
     /// The mirror send the optimized lowering lowers inline is a real send

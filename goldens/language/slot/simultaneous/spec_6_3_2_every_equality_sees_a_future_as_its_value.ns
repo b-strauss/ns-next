@@ -4,17 +4,35 @@
 /// another kind answers for the value a future stands for: Float's `=`,
 /// a value object's `=`, and the handler class `on:do:` tests an error
 /// against, each met while the sibling is still its future.
-class Spec632EveryEqualitySeesAFuture = Object <: Value (
-) (
-    class Pair first: a second: b = Value new (| public first = a. public second = b. |) () : ()
-    class Probe = Object new (||
-        public checks = {1.5 = float. (Pair first: 1 second: 2) = pair. caught}.
-        public caught = [Error signal: 'boom'. 'not caught'] on: errorClass do: [:error | 'caught'].
-        public float = 1.5.
-        public pair = Pair first: 1 second: 2.
-        public errorClass = Error. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        Probe new checks do: [:each | t show: each printString; newLine]
-    )
-) : ()
+class Spec632EveryEqualitySeesAFuture = Object <: Value () (
+  class Pair first: a second: b = Value new (
+    |
+      public first = a.
+      public second = b.
+    |
+  ) ()
+
+  class Probe = Object new (
+    ||
+      public checks = {1.5 = float. (Pair first: 1 second: 2) = pair. caught}.
+      public caught = [
+        Error signal: 'boom'.
+        'not caught'.
+      ] on: errorClass do: [:error | 'caught'].
+      public float = 1.5.
+      public pair = Pair first: 1 second: 2.
+      public errorClass = Error.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    Probe new checks do: [:each |
+      t
+          show: each printString;
+          newLine.
+    ].
+  )
+)

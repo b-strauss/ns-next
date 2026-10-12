@@ -1,12 +1,22 @@
 /// A native loop whose condition goes non-Boolean after two rounds
 /// signals a `NonBooleanReceiver`, after exactly two bodies.
 class AVariableLoopConditionThatGoesNonBooleanSignalsNonBooleanReceiver = Object new (
-    | n ::= 0. |
+  |
+    n ::= 0.
+  |
 ) (
-    public main: p args: a = (
-        | cond body |
-        cond:: [n < 2 ifTrue: [true] ifFalse: [n]].
-        body:: [n:: n + 1. p transcript show: n printString; newLine].
-        cond whileTrue: body
-    )
-) : ()
+  public main: p args: a = (
+    |
+      cond
+      body
+    |
+    cond:: [n < 2 ifTrue: [true] ifFalse: [n]].
+    body:: [
+      n:: n + 1.
+      p transcript
+          show: n printString;
+          newLine.
+    ].
+    cond whileTrue: body.
+  )
+)

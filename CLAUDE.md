@@ -5,9 +5,15 @@ resolver, bytecode compiler and register VM, and a versioned image format.
 Rust 1.98.0, edition 2021, six crates:
 
 - `crates/ns-syntax` — lexer, recursive-descent + Pratt parser, AST, `Span`;
-  `parse` refuses a source with errors, `parse_for_editor` answers a
-  recovered module for the editor, its recovery bounded by a work budget
-  (`docs/design/frontend.md`, "Recovery").
+  the AST is lossless except for layout -- parentheses, literal spellings,
+  type annotations as tokens, the prologue, `<-:`, members in source order
+  -- and every comment is attached to its node (`attach.rs`;
+  `docs/design/frontend.md`, "AST", "Comments"); `parse` refuses a source
+  with errors, `parse_for_editor` answers a recovered module for the editor,
+  its recovery bounded by a work budget (`docs/design/frontend.md`,
+  "Recovery"); the printer (`printer/`: `print_module` writes a module back
+  as source, `format` parses and reprints one) has one layout and no options
+  (`docs/design/formatting.md`).
 - `crates/ns-runtime` — resolver, object model, dispatch, the compiler (`compiler/`,
   checked against the reference lowering in `compiler/reference.rs`), the
   instructions (`bytecode.rs`, stored and run in the eight-byte encoding of
@@ -45,9 +51,11 @@ Rust 1.98.0, edition 2021, six crates:
   holds the reader to and the JetBrains plugin bundles.
 - `crates/ns-analyzer` — the `ns-next-analyzer` binary, everything that looks at
   Newspeak without running it: `lsp`, a language server for `.ns` files
-  (diagnostics, semantic tokens, fold ranges, document symbols); `dump-tokens`,
-  which the JetBrains plugin's lexer is checked against; `parse`, `parse-corpus`,
-  `disasm` and `inspect`. It never runs a program: `disasm` compiles a module or
+  (diagnostics, semantic tokens, fold ranges, document symbols, formatting);
+  `dump-tokens`, which the JetBrains plugin's lexer is checked against;
+  `parse`, `parse-corpus`, `disasm` and `inspect`; and `fmt`, the one command
+  that writes, which rewrites `.ns` files in the formatter's layout
+  (`--check` only lists the files that would change). It never runs a program: `disasm` compiles a module or
   decodes an image, `inspect` reads an image without loading it, and neither runs
   the program's code (the interpreter `disasm` bootstraps instantiates only the
   shipped core library). Its server dependencies
@@ -65,8 +73,9 @@ Rust 1.98.0, edition 2021, six crates:
 
 `editors/jetbrains/` — the JetBrains plugin (Kotlin, Gradle wrapper inside): a
 lexer mirroring `ns-syntax`'s, compared against it token by token over every
-module (`LexerComparisonTest`), the connection to `ns-next-analyzer`, and a
-structure view of its own over the server's document symbols.
+module (`LexerComparisonTest`), the connection to `ns-next-analyzer` (Reformat
+Code included, through the server's formatting), and a structure view of its
+own over the server's document symbols.
 
 `benchmarks/are-we-fast-yet/` — the fourteen Are We Fast Yet benchmarks,
 Primordial Soup's Ton80 Richards and DeltaBlue, and their harness, one
@@ -348,11 +357,17 @@ decision, made so far only for `num-bigint` and `num-integer`
 - All code, identifiers, comments, commit messages and developer documentation
   are in English.
 - Classic terminology: `blacklist`, `whitelist`, `sane`.
-- Newspeak sources (`.ns`) outside `corpus/` are indented with four spaces,
-  never tabs, and commented with `///` lines, never `(* … *)` (but in
-  `goldens/language/syntax/line_comment.ns`, which pins both forms);
-  `crates/ns-cli/tests/source_formatting.rs` holds both, and `corpus/` stays
-  upstream's verbatim copy.
+- Newspeak sources (`.ns`) outside `corpus/` and `prior-art/` are formatted
+  by `ns-next-analyzer fmt` (two spaces, `docs/design/formatting.md`) and
+  commented with `///` lines, never `(* … *)` (but in
+  `goldens/language/syntax/line_comment.ns`, which pins both forms).
+  `crates/ns-analyzer/tests/formatting_gate.rs` holds the layout of every
+  `.ns` under `goldens/`, `benchmarks/` and `crates/ns-runtime/core-library/`
+  (the directories it walks), and `crates/ns-cli/tests/source_formatting.rs`
+  the `///`; `corpus/` stays upstream's verbatim copy. After editing a `.ns`
+  file run `cargo run -p ns-analyzer -- fmt <paths>`, naming files or those
+  directories: `fmt` formats exactly what it is given, so at the repository
+  root it would rewrite `corpus/` and `prior-art/` too.
 - **Names are written out.** No identifier of one or two characters and no
   truncated word, in every kind of name and every segment of a compound:
   `mutator`, `index`, `error`, `interpreter` (not `interp`), `program_counter`

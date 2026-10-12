@@ -8,8 +8,13 @@
 /// which the root never reaches. `run` instantiates the root before sending
 /// `main:args:`, so the method never runs.
 class ValueModuleDefiningIdentity = Object <: Value () (
-    public == other = ( ^false )
-    public main: platform args: arguments = (
-        platform transcript show: 'ran'; newLine
-    )
-) : ()
+  public == other = (
+    ^false.
+  )
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'ran';
+        newLine.
+  )
+)

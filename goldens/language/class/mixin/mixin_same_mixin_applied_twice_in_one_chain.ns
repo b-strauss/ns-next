@@ -24,48 +24,110 @@
 ///   level's method; its markerTag is the same virtual send, so it too
 ///   answers the upper level's 'upper': the topmost application wins a
 ///   selector even when the lower one's own method sends it.
-class MixinSameMixinAppliedTwiceInOneChain = Object new (| t ::= nil. |) (
-    class Base withBase: value = Object new (|
-        baseFirst = outer MixinSameMixinAppliedTwiceInOneChain note: 'Base' receives: value, '1'.
-        baseSecond = value, '2'.
-    |) (
-        public who = ( ^'Base' )
-        public chain = ( ^'Base' )
-        public baseSlots = ( ^baseFirst, ' ', baseSecond )
-    ) : ()
-    class Marker tag: value = Object new (|
-        markerTag = outer MixinSameMixinAppliedTwiceInOneChain note: 'Marker' receives: value.
-    |) (
-        public who = ( ^'Marker tagged ', markerTag )
-        public chain = ( ^'Marker > ', super chain )
-        public markerSees = ( ^markerTag )
-    ) : ()
-    class Middle = Object new (|
-        middleSlot = outer MixinSameMixinAppliedTwiceInOneChain note: 'Middle' receives: 'm'.
-    |) (
-        public who = ( ^'Middle' )
-        public chain = ( ^'Middle > ', super chain )
-        public middleSlotValue = ( ^middleSlot )
-        public belowSees = ( ^super markerSees )
-    ) : ()
-    class Twice = Base withBase: 'b' <: Marker tag: 'lower' <: Middle <: Marker tag: 'upper' (|
-        twiceSlot = outer MixinSameMixinAppliedTwiceInOneChain note: 'Twice' receives: 't'.
-    |) (
-        public twiceSlotValue = ( ^twiceSlot )
-    ) : ()
-    public note: name receives: value = (
-        t show: name, ' initializer receives ', value; newLine.
-        ^value
+class MixinSameMixinAppliedTwiceInOneChain = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  class Base withBase: value = Object new (
+    |
+      baseFirst = outer MixinSameMixinAppliedTwiceInOneChain note: 'Base' receives: value , '1'.
+      baseSecond = value , '2'.
+    |
+  ) (
+    public who = (
+      ^'Base'.
     )
-    public main: platform args: arguments = (
-        | twice |
-        t:: platform transcript.
-        twice:: Twice new.
-        t show: 'who: ', twice who; newLine.
-        t show: 'chain: ', twice chain; newLine.
-        t show: 'lower Marker level reads markerTag as: ', twice belowSees; newLine.
-        t show: 'Base slots: ', twice baseSlots; newLine.
-        t show: 'Middle slot: ', twice middleSlotValue; newLine.
-        t show: 'Twice slot: ', twice twiceSlotValue; newLine.
+
+    public chain = (
+      ^'Base'.
     )
-) : ()
+
+    public baseSlots = (
+      ^baseFirst , ' ' , baseSecond.
+    )
+  )
+
+  class Marker tag: value = Object new (
+    |
+      markerTag = outer MixinSameMixinAppliedTwiceInOneChain note: 'Marker' receives: value.
+    |
+  ) (
+    public who = (
+      ^'Marker tagged ' , markerTag.
+    )
+
+    public chain = (
+      ^'Marker > ' , super chain.
+    )
+
+    public markerSees = (
+      ^markerTag.
+    )
+  )
+
+  class Middle = Object new (
+    |
+      middleSlot = outer MixinSameMixinAppliedTwiceInOneChain note: 'Middle' receives: 'm'.
+    |
+  ) (
+    public who = (
+      ^'Middle'.
+    )
+
+    public chain = (
+      ^'Middle > ' , super chain.
+    )
+
+    public middleSlotValue = (
+      ^middleSlot.
+    )
+
+    public belowSees = (
+      ^super markerSees.
+    )
+  )
+
+  class Twice = Base withBase: 'b' <: Marker tag: 'lower' <: Middle <: Marker tag: 'upper' (
+    |
+      twiceSlot = outer MixinSameMixinAppliedTwiceInOneChain note: 'Twice' receives: 't'.
+    |
+  ) (
+    public twiceSlotValue = (
+      ^twiceSlot.
+    )
+  )
+
+  public note: name receives: value = (
+    t
+        show: name , ' initializer receives ' , value;
+        newLine.
+    ^value.
+  )
+
+  public main: platform args: arguments = (
+    |
+      twice
+    |
+    t:: platform transcript.
+    twice:: Twice new.
+    t
+        show: 'who: ' , twice who;
+        newLine.
+    t
+        show: 'chain: ' , twice chain;
+        newLine.
+    t
+        show: 'lower Marker level reads markerTag as: ' , twice belowSees;
+        newLine.
+    t
+        show: 'Base slots: ' , twice baseSlots;
+        newLine.
+    t
+        show: 'Middle slot: ' , twice middleSlotValue;
+        newLine.
+    t
+        show: 'Twice slot: ' , twice twiceSlotValue;
+        newLine.
+  )
+)

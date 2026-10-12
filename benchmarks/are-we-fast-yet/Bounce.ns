@@ -24,62 +24,78 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Bounce usingPlatform: platform = (
-) (
-    public bench = (
-        | ballCount balls bounces random |
-        random:: Random new: 74755.
-        ballCount:: 100.
-        bounces:: 0.
-        balls:: Array new: ballCount.
-        /// SOMns's `Array new:withAll:` evaluates its block once per element,
-        /// in index order; the loop draws from the generator in that order.
-        1 to: ballCount do: [:index | balls at: index put: (Ball new: random)].
-        1 to: 50 do: [:index |
-            balls do: [:ball |
-                ball bounce ifTrue: [bounces:: bounces + 1]]].
-        bounces = 1331 ifFalse: [Error signal: 'Bounce: expected 1331, got ', bounces printString].
-        ^bounces
+class Bounce usingPlatform: platform = () (
+  public bench = (
+    |
+      ballCount
+      balls
+      bounces
+      random
+    |
+    random:: Random new: 74755.
+    ballCount:: 100.
+    bounces:: 0.
+    balls:: Array new: ballCount.
+    /// SOMns's `Array new:withAll:` evaluates its block once per element,
+    /// in index order; the loop draws from the generator in that order.
+    1 to: ballCount do: [:index | balls at: index put: (Ball new: random)].
+    1 to: 50 do: [:index | balls do: [:ball | ball bounce ifTrue: [bounces:: bounces + 1]]].
+    bounces = 1331 ifFalse: [Error signal: 'Bounce: expected 1331, got ' , bounces printString].
+    ^bounces.
+  )
+
+  /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
+  class Random new: initialSeed = (
+    |
+      seed ::= initialSeed.
+    |
+  ) (
+    public next = (
+      seed:: seed * 1309 + 13849 bitAnd: 65535.
+      ^seed.
     )
-    /// The Are We Fast Yet harness's generator (SOMns's Harness.ns).
-    class Random new: initialSeed = (
-        | seed ::= initialSeed. |
-    ) (
-        public next = (
-            seed:: seed * 1309 + 13849 bitAnd: 65535.
-            ^seed
-        )
+  )
+
+  class Ball new: random = (
+    |
+      horizontal ::= random next \\ 500.
+      vertical ::= random next \\ 500.
+      horizontalVelocity ::= (random next \\ 300) - 150.
+      verticalVelocity ::= (random next \\ 300) - 150.
+    |
+  ) (
+    public bounce = (
+      |
+        horizontalLimit
+        verticalLimit
+        bounced
+      |
+      horizontalLimit:: 500.
+      verticalLimit:: 500.
+      bounced:: false.
+      horizontal:: horizontal + horizontalVelocity.
+      vertical:: vertical + verticalVelocity.
+      horizontal > horizontalLimit ifTrue: [
+        horizontal:: horizontalLimit.
+        horizontalVelocity:: 0 - horizontalVelocity abs.
+        bounced:: true.
+      ].
+      horizontal < 0 ifTrue: [
+        horizontal:: 0.
+        horizontalVelocity:: horizontalVelocity abs.
+        bounced:: true.
+      ].
+      vertical > verticalLimit ifTrue: [
+        vertical:: verticalLimit.
+        verticalVelocity:: 0 - verticalVelocity abs.
+        bounced:: true.
+      ].
+      vertical < 0 ifTrue: [
+        vertical:: 0.
+        verticalVelocity:: verticalVelocity abs.
+        bounced:: true.
+      ].
+      ^bounced.
     )
-    class Ball new: random = (
-        | horizontal ::= random next \\ 500.
-          vertical ::= random next \\ 500.
-          horizontalVelocity ::= (random next \\ 300) - 150.
-          verticalVelocity ::= (random next \\ 300) - 150. |
-    ) (
-        public bounce = (
-            | horizontalLimit verticalLimit bounced |
-            horizontalLimit:: 500.
-            verticalLimit:: 500.
-            bounced:: false.
-            horizontal:: horizontal + horizontalVelocity.
-            vertical:: vertical + verticalVelocity.
-            horizontal > horizontalLimit ifTrue: [
-                horizontal:: horizontalLimit.
-                horizontalVelocity:: 0 - horizontalVelocity abs.
-                bounced:: true].
-            horizontal < 0 ifTrue: [
-                horizontal:: 0.
-                horizontalVelocity:: horizontalVelocity abs.
-                bounced:: true].
-            vertical > verticalLimit ifTrue: [
-                vertical:: verticalLimit.
-                verticalVelocity:: 0 - verticalVelocity abs.
-                bounced:: true].
-            vertical < 0 ifTrue: [
-                vertical:: 0.
-                verticalVelocity:: verticalVelocity abs.
-                bounced:: true].
-            ^bounced
-        )
-    )
+  )
 )

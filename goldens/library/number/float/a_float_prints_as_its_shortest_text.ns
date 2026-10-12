@@ -5,24 +5,60 @@
 /// `asString` answer the same, and so does the description an error
 /// message gives.
 class AFloatPrintsAsItsShortestText = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript print: 3.0; newLine.
-        transcript print: -0.0; newLine.
-        transcript print: 1.5; newLine.
-        transcript print: 0.1; newLine.
-        transcript print: 1.0 / 3.0; newLine.
-        transcript print: 100000000000000000000 asFloat; newLine.
-        transcript print: 1000000000000000000000 asFloat; newLine.
-        transcript print: 123456789012345678901234567890 asFloat; newLine.
-        transcript print: 0.000001; newLine.
-        transcript print: 0.0000001; newLine.
-        transcript print: 1.0 / 0.0; newLine.
-        transcript print: -1.0 / 0.0; newLine.
-        transcript print: 0.0 / 0.0; newLine.
-        transcript show: 2.5 asString; newLine.
-        transcript print: 4 * 3.5; newLine.
-        transcript show: ([(-1.0 / 0.0) asInteger] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([3 bitAnd: 2.0] on: Error do: [:error | error messageText]); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        print: 3.0;
+        newLine.
+    transcript
+        print: -0.0;
+        newLine.
+    transcript
+        print: 1.5;
+        newLine.
+    transcript
+        print: 0.1;
+        newLine.
+    transcript
+        print: 1.0 / 3.0;
+        newLine.
+    transcript
+        print: 100000000000000000000 asFloat;
+        newLine.
+    transcript
+        print: 1000000000000000000000 asFloat;
+        newLine.
+    transcript
+        print: 123456789012345678901234567890 asFloat;
+        newLine.
+    transcript
+        print: 0.000001;
+        newLine.
+    transcript
+        print: 0.0000001;
+        newLine.
+    transcript
+        print: 1.0 / 0.0;
+        newLine.
+    transcript
+        print: -1.0 / 0.0;
+        newLine.
+    transcript
+        print: 0.0 / 0.0;
+        newLine.
+    transcript
+        show: 2.5 asString;
+        newLine.
+    transcript
+        print: 4 * 3.5;
+        newLine.
+    transcript
+        show: ([(-1.0 / 0.0) asInteger] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([3 bitAnd: 2.0] on: Error do: [:error | error messageText]);
+        newLine.
+  )
 )

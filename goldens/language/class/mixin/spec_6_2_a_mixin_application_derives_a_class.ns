@@ -4,16 +4,29 @@
 /// inheritance clause after <: specifies. So Combined answers Trait's own
 /// method and inherits Base's.
 class Spec62MixinApplication = Object new () (
-    class Base = Object new () (
-        public inherited = ( ^'from the superclass' )
-    ) : ()
-    class Trait = Object new () (
-        public own = ( ^'from the mixin' )
-    ) : ()
-    class Combined = Base new <: Trait new.
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: Combined new own; newLine.
-        t show: Combined new inherited; newLine
+  class Base = Object new () (
+    public inherited = (
+      ^'from the superclass'.
     )
-) : ()
+  )
+
+  class Trait = Object new () (
+    public own = (
+      ^'from the mixin'.
+    )
+  )
+
+  class Combined = Base new <: Trait new.
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Combined new own;
+        newLine.
+    t
+        show: Combined new inherited;
+        newLine.
+  )
+)

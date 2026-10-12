@@ -1,9 +1,18 @@
-class ControlFlowFallback = Object new (
-) (
-    me = ( ^self )
-    public ifTrue: t ifFalse: f = ( ^f value )
-    public main: p args: a = (
-        p transcript show: (me ifTrue: ['inlined'] ifFalse: ['fell back']); newLine.
-        p transcript show: (3 < 4 ifTrue: ['fast path'] ifFalse: ['?']); newLine
-    )
-) : ()
+class ControlFlowFallback = Object new () (
+  me = (
+    ^self.
+  )
+
+  public ifTrue: t ifFalse: f = (
+    ^f value.
+  )
+
+  public main: p args: a = (
+    p transcript
+        show: (me ifTrue: ['inlined'] ifFalse: ['fell back']);
+        newLine.
+    p transcript
+        show: (3 < 4 ifTrue: ['fast path'] ifFalse: ['?']);
+        newLine.
+  )
+)

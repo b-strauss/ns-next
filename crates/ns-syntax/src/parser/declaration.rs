@@ -2,9 +2,17 @@
 
 use super::Parser;
 use crate::ast::*;
-use crate::comment::{Comment, CommentKind};
-use crate::span::Span;
 use crate::token::{Token, TokenKind};
+
+/// The annotations a message pattern carries after it, before its `=`: a
+/// method keeps them on its declaration, a class on its factory.
+#[derive(Default)]
+pub(crate) struct PatternTypes {
+    /// The `^<Type>`, the caret left out.
+    pub(crate) return_type: Option<TypeAnnotation>,
+    /// The `where { ... }` clause.
+    pub(crate) where_clause: Option<TypeAnnotation>,
+}
 
 impl<'a> Parser<'a> {
     /// `codeBody → [temporaries] statements` (§5.1.8, and §7.2 for the return), where
@@ -30,9 +38,15 @@ impl<'a> Parser<'a> {
                             token.span,
                             &format!("expected an expression, found {}", self.found(token)),
                         );
-                        Expression::Literal(Literal::Nil { span: caret.span })
+                        super::expression::bare(ExpressionKind::Literal(Literal::Nil {
+                            span: caret.span,
+                        }))
                     });
-                    statements.push(Statement::Return(expression));
+                    statements.push(Statement {
+                        span: caret.span.merge(expression.span),
+                        kind: StatementKind::Return(expression),
+                        comments: Vec::new(),
+                    });
                     self.eat(TokenKind::Dot); // optional trailing dot
 
                     // Nothing follows a return (§7.2). What does is skipped to
@@ -60,7 +74,7 @@ impl<'a> Parser<'a> {
                     let Some(expression) = self.parse_statement() else {
                         break;
                     };
-                    statements.push(Statement::Expression(expression));
+                    statements.push(Statement::of_expression(expression));
                     if self.eat(TokenKind::Dot) || self.at_body_close() {
                         continue;
                     }
@@ -93,6 +107,7 @@ impl<'a> Parser<'a> {
             temporaries,
             temporaries_delimiters,
             statements,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -404,18 +419,21 @@ impl<'a> Parser<'a> {
 
     /// A message pattern, or `None` when its selector or a parameter is
     /// missing: a pattern without one is left out whole, after its tokens
-    /// are consumed as a whole one's would be.
-    pub(crate) fn parse_message_pattern(&mut self) -> Option<MessagePattern> {
+    /// are consumed as a whole one's would be. The pattern's `^<Type>` and
+    /// `where { ... }` clause come with it.
+    pub(crate) fn parse_message_pattern(&mut self) -> (Option<MessagePattern>, PatternTypes) {
         // Declarations may carry `<Type>` annotations after each parameter name,
-        // and a `^<Type>` return annotation before the `=`; Milestone 1 discards
-        // them via `skip_type_annotation` / `skip_return_type_annotation`.
+        // and a `^<Type>` return annotation before the `=`.
         let pattern = if self.at_binary_selector_pattern() {
             let selector = self.identifier_from_bump();
-            let parameter = self.declared_identifier("name a parameter");
-            self.skip_type_annotation();
-            parameter.map(|parameter| MessagePattern::Binary {
+            let name = self.declared_identifier("name a parameter");
+            let type_annotation = self.take_type_annotation();
+            name.map(|name| MessagePattern::Binary {
                 selector,
-                parameter,
+                parameter: Parameter {
+                    name,
+                    type_annotation,
+                },
             })
         } else {
             match self.peek() {
@@ -426,14 +444,20 @@ impl<'a> Parser<'a> {
                     let mut missing = false;
                     while self.at(TokenKind::Keyword) {
                         let keyword = self.bump();
-                        let key = Identifier {
+                        let keyword = Identifier {
                             name: self.text(keyword).trim_end_matches(':').to_string(),
                             span: keyword.span,
                         };
-                        let parameter = self.declared_identifier("name a parameter");
-                        self.skip_type_annotation();
-                        match parameter {
-                            Some(parameter) => parts.push((key, parameter)),
+                        let name = self.declared_identifier("name a parameter");
+                        let type_annotation = self.take_type_annotation();
+                        match name {
+                            Some(name) => parts.push(KeywordPart {
+                                keyword,
+                                parameter: Parameter {
+                                    name,
+                                    type_annotation,
+                                },
+                            }),
                             None => missing = true,
                         }
                     }
@@ -443,21 +467,32 @@ impl<'a> Parser<'a> {
                     let selector = self.declared_identifier("be a message selector");
                     // `selectorTypeParameters` (`NewspeakGrammar.ns:446`):
                     // `public List[E] = (...)` — type parameters on the
-                    // selector itself. Dropped in Milestone 1.
-                    self.skip_type_arguments();
-                    self.skip_type_annotation();
-                    selector.map(|selector| MessagePattern::Unary { selector })
+                    // selector itself.
+                    let start = self.position;
+                    self.consume_type_arguments();
+                    self.consume_type_annotation();
+                    let type_parameters = self.type_annotation_since(start);
+                    selector.map(|selector| MessagePattern::Unary {
+                        selector,
+                        type_parameters,
+                    })
                 }
             }
         };
-        self.skip_return_type_annotation();
-        self.skip_where_clause();
-        pattern
+        let return_type = self.take_return_type();
+        let where_clause = self.take_where_clause();
+        (
+            pattern,
+            PatternTypes {
+                return_type,
+                where_clause,
+            },
+        )
     }
 
     /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
     /// identifier)* rbracket rangleBracket`, the cursor at its `<`: the names
-    /// are checked and dropped, since there is no type AST.
+    /// are checked; the caller keeps the declaration as its tokens.
     fn parse_type_parameter_declaration(&mut self) {
         self.bump(); // `<`
         self.bump(); // `[`
@@ -487,13 +522,26 @@ impl<'a> Parser<'a> {
 
     /// A method/slot return type `^ <Type>` (grammar's `returnType`, e.g.
     /// `storageKey ^<String> = (...)`, `seed: v <Value> ^<FarReference[Value]>
-    /// = (...)`). Milestone 1 drops it. A bare `^` with no following `<` is left
-    /// in place (it is then a syntax error the caller reports).
-    fn skip_return_type_annotation(&mut self) {
+    /// = (...)`), kept without its caret. A bare `^` with no following `<` is
+    /// left in place (it is then a syntax error the caller reports).
+    fn take_return_type(&mut self) -> Option<TypeAnnotation> {
+        let after_caret = self.position + 1;
+        if self.consume_return_type() {
+            self.type_annotation_since(after_caret)
+        } else {
+            None
+        }
+    }
+
+    /// `take_return_type` for a lookahead, which keeps nothing; answers
+    /// whether there was one.
+    fn consume_return_type(&mut self) -> bool {
         if self.at(TokenKind::Caret) && self.peek2() == TokenKind::LessThan {
             self.bump(); // `^`
-            self.skip_type_annotation();
+            self.consume_type_annotation();
+            return true;
         }
+        false
     }
 
     /// A method, parsed whole; `None` when its pattern is missing a name,
@@ -501,7 +549,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_method_declaration(&mut self) -> Option<MethodDeclaration> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
-        let pattern = self.parse_message_pattern();
+        let (pattern, types) = self.parse_message_pattern();
         self.expect(TokenKind::Equals);
         let open = self.expect(TokenKind::LeftParenthesis);
         let body = self.parse_code_body();
@@ -510,11 +558,14 @@ impl<'a> Parser<'a> {
         pattern.map(|pattern| MethodDeclaration {
             access,
             pattern,
+            return_type: types.return_type,
+            where_clause: types.where_clause,
             body,
             body_delimiters: open.map(|open| Delimiters {
                 open: open.span,
                 close: close.map(|token| token.span),
             }),
+            comments: Vec::new(),
             span: start.merge(end),
         })
     }
@@ -601,8 +652,7 @@ impl<'a> Parser<'a> {
             // A name stands here (`at_name` above).
             let name = self.identifier();
             self.refuse_reserved_word(&name.name, name.span, "name a slot or a temporary");
-            // `slotName <Type>` — the annotation is dropped in Milestone 1.
-            self.skip_type_annotation();
+            let type_annotation = self.take_type_annotation();
             let (mutability, initializer) = match self.peek() {
                 TokenKind::Equals => {
                     self.bump();
@@ -639,10 +689,13 @@ impl<'a> Parser<'a> {
             slots.push(SlotDeclaration {
                 access,
                 name,
+                type_annotation,
                 mutability,
                 initializer,
                 lazy: false,
+                access_before_lazy: false,
                 simultaneous: close == TokenKind::DoubleBar,
+                comments: Vec::new(),
                 span: start.merge(end),
             });
         }
@@ -699,18 +752,25 @@ impl<'a> Parser<'a> {
         };
         let language_id = if is_language_id {
             let token = self.bump();
-            self.text(token).to_string()
+            Some(Identifier {
+                name: self.text(token).to_string(),
+                span: token.span,
+            })
         } else {
-            String::new()
+            None
         };
         // §8.1's `toplevelClass → classCategory classDeclaration`, with
         // `classCategory → [string]`: the category is optional, and a module's
         // class, which nothing encloses, takes no access modifier.
         let category = if self.at(TokenKind::String) {
             let token = self.bump();
-            string_lexeme_body(self.text(token))
+            Some(Category {
+                value: string_lexeme_body(self.text(token)),
+                text: self.text(token).to_string(),
+                span: token.span,
+            })
         } else {
-            String::new()
+            None
         };
         if matches!(
             self.peek(),
@@ -733,6 +793,7 @@ impl<'a> Parser<'a> {
             language_id,
             category,
             root_class,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -775,10 +836,10 @@ impl<'a> Parser<'a> {
     /// - **G2** (`sideDecl` body): nested classes, methods, and lazy slot declarations.
     /// - **G3** (`classSideDecl` body): methods only.
     ///
-    /// The AST keeps a single `instance_side: ClassBody`: G1's slots (plus any
-    /// G2 lazy slot declarations) land in `slots`, G1's initializer expressions in
-    /// `initializer_expressions`, and G2's methods / nested classes in
-    /// `methods` / `nested_classes`. `class_side` is G3.
+    /// The AST keeps a single `instance_side: ClassBody`: G1's slots land in
+    /// `header_slots`, G1's initializer expressions in
+    /// `initializer_expressions`, and G2's members, in source order, in
+    /// `members`. `class_side` is G3.
     pub(crate) fn parse_class_declaration(&mut self) -> ClassDeclaration {
         let start = self.current().span;
         let access = self.parse_access_modifier();
@@ -792,22 +853,25 @@ impl<'a> Parser<'a> {
                 span: crate::span::Span::new(offset, offset),
             }
         });
-        // A generic class's type parameters, dropped: §6's
-        // `typeParameterDecl`, `class Map <[K, V]> ...`, and the canonical
-        // grammar's `class List[E] ...` (`NewspeakGrammar.ns:465`).
+        // A generic class's type parameters: §6's `typeParameterDecl`,
+        // `class Map <[K, V]> ...`, and the canonical grammar's
+        // `class List[E] ...` (`NewspeakGrammar.ns:465`).
+        let type_parameters_start = self.position;
         if self.at(TokenKind::LessThan) && self.peek2() == TokenKind::LeftBracket {
             self.parse_type_parameter_declaration();
         }
-        self.skip_type_arguments();
+        self.consume_type_arguments();
+        let type_parameters = self.type_annotation_since(type_parameters_start);
         // §6's two alternatives, `messagePattern equalSign ...` before
         // `empty equalSign ...`: an `=` here is the factory's binary selector
         // when a parameter and another `=` follow it (`class Pair = other =
         // Object new () ()`), and otherwise the one that ends the header.
-        let factory = if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
-            None
-        } else {
-            self.parse_message_pattern()
-        };
+        let (factory, factory_types) =
+            if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
+                (None, PatternTypes::default())
+            } else {
+                self.parse_message_pattern()
+            };
         self.expect(TokenKind::Equals);
         let superclass = if self.at(TokenKind::LeftParenthesis) {
             None
@@ -845,27 +909,29 @@ impl<'a> Parser<'a> {
             return ClassDeclaration {
                 access,
                 name,
+                type_parameters,
                 factory,
+                factory_return_type: factory_types.return_type,
+                factory_where_clause: factory_types.where_clause,
                 superclass,
                 mixin_applications,
-                class_comment: None,
                 instance_side: ClassBody {
-                    slots: Vec::new(),
+                    header_slots: Vec::new(),
                     initializer_expressions: Vec::new(),
-                    methods: Vec::new(),
-                    nested_classes: Vec::new(),
+                    members: Vec::new(),
                     delimiters: None,
                     slot_delimiters: None,
+                    comments: Vec::new(),
                     span,
                 },
                 class_side: None,
+                comments: Vec::new(),
                 span,
             };
         }
 
         // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
         let instance_open = self.expect(TokenKind::LeftParenthesis);
-        let class_comment = self.take_class_comment();
         let (header_slots, slot_delimiters, initializer_expressions, g1_span) =
             self.parse_header_body();
         let g1_end = self.end_of_group();
@@ -874,41 +940,36 @@ impl<'a> Parser<'a> {
         // --- G2: sideDecl body `( ( classDecl | lazySlotDecl | methodDecl )* )` ---
         // §6.3's `classBody → classHeader sideDecl [classSideDecl]`: the
         // instance side is not optional, however empty.
-        let (lazy_slots, methods, nested_classes, g2_end, instance_close) =
-            if self.at(TokenKind::LeftParenthesis) {
-                self.bump(); // `(`
-                let (lazy, methods, nested) = self.parse_side_body();
-                let end = self.end_of_group();
-                let close = self.expect(TokenKind::RightParenthesis);
-                (lazy, methods, nested, end, close)
-            } else {
-                self.push_error(
-                    self.current().span,
-                    "expected the instance side's `( ... )` after the class header (§6.3)",
-                );
-                (Vec::new(), Vec::new(), Vec::new(), g1_end, None)
-            };
+        let (members, g2_end, instance_close) = if self.at(TokenKind::LeftParenthesis) {
+            self.bump(); // `(`
+            let members = self.parse_side_body();
+            let end = self.end_of_group();
+            let close = self.expect(TokenKind::RightParenthesis);
+            (members, end, close)
+        } else {
+            self.push_error(
+                self.current().span,
+                "expected the instance side's `( ... )` after the class header (§6.3)",
+            );
+            (Vec::new(), g1_end, None)
+        };
 
-        let mut slots = header_slots;
-        slots.extend(lazy_slots);
         let instance_side = ClassBody {
-            slots,
+            header_slots,
             initializer_expressions,
-            methods,
-            nested_classes,
+            members,
             delimiters: instance_open.map(|open| Delimiters {
                 open: open.span,
                 close: instance_close.map(|token| token.span),
             }),
             slot_delimiters,
+            comments: Vec::new(),
             span: g1_span.merge(g2_end),
         };
 
         // --- G3: classSideDecl body `: ( methodDecl* )` ---
         let class_side = if self.eat(TokenKind::Colon) {
             let open = self.expect(TokenKind::LeftParenthesis);
-            // A class-side comment is allowed but not retained.
-            let _ = self.take_class_comment();
             let mut body = self.parse_class_side_body();
             let close = self.expect(TokenKind::RightParenthesis);
             body.delimiters = open.map(|open| Delimiters {
@@ -924,69 +985,17 @@ impl<'a> Parser<'a> {
         ClassDeclaration {
             access,
             name,
+            type_parameters,
             factory,
+            factory_return_type: factory_types.return_type,
+            factory_where_clause: factory_types.where_clause,
             superclass,
             mixin_applications,
-            class_comment,
             instance_side,
             class_side,
+            comments: Vec::new(),
             span: start.merge(end),
         }
-    }
-
-    /// A class body may open with a class comment. Per the vendored grammar
-    /// (`corpus/reference/NewspeakGrammar.ns:196`,
-    /// `classComment = whitespace opt , comment`, where `comment` is a
-    /// `(* ... *)` block form — `beginNSComment`/`endNSComment`, grammar
-    /// lines 152-153) it is *exclusively* a block comment, which the lexer
-    /// drops as trivia; that form is recovered here from the source gap
-    /// between the opening `(` and the next token.
-    ///
-    /// A leading `'...'` string in the header body is NOT a class comment: per
-    /// grammar line 165 it is the first `initExprs` expression (e.g. its
-    /// receiver in `'hello' printLine.`). Consuming it here silently dropped a
-    /// valid initializer expression, so that branch was removed.
-    ///
-    /// The comment is kept as its form and the source it spans, markers and
-    /// layout included, so that a formatter can write it back as it was;
-    /// `Comment::text` answers its text for a reader. A block of ns-next's
-    /// `///` lines in the same place is the class comment too: the block
-    /// the whole source's lexer forms, so a remark after the `(` on its
-    /// line is no part of it.
-    fn take_class_comment(&mut self) -> Option<Comment> {
-        let previous_end = self.tokens.get(self.position.checked_sub(1)?)?.span.end as usize;
-        let current_start = self.current().span.start as usize;
-        let gap = self.source.get(previous_end..current_start)?;
-        let trimmed = gap.trim();
-        if trimmed.starts_with("(*") && trimmed.ends_with("*)") {
-            let start = previous_end + (gap.len() - gap.trim_start().len());
-            return Some(Comment {
-                kind: CommentKind::Block,
-                span: Span::new(start as u32, (start + trimmed.len()) as u32),
-            });
-        }
-        // Lexed alone, the gap starts a line, so a `///` after the `(` would
-        // seem to start its line and take the lines below into its block,
-        // where the whole source's lexer (and with it the editor's folds)
-        // keeps it a remark on the `(`'s line. That line is cut off first;
-        // the class comment is the block the rest holds, as the whole
-        // source forms it.
-        let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
-        let mut rest_start = 0;
-        if let Some(first) = lexed.comments.first() {
-            let first_start = first.span.start as usize;
-            if first.kind == CommentKind::Line
-                && !crate::comment::starts_its_line(self.source, previous_end + first_start)
-            {
-                rest_start = gap[first_start..].find(['\n', '\r'])? + first_start;
-            }
-        }
-        let comment = lone_line_block(&gap[rest_start..])?;
-        let offset = (previous_end + rest_start) as u32;
-        Some(Comment {
-            kind: comment.kind,
-            span: Span::new(comment.span.start + offset, comment.span.end + offset),
-        })
     }
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
@@ -1020,7 +1029,7 @@ impl<'a> Parser<'a> {
         // a literal or a reserved word.
         let receiver = self.declared_identifier("name a superclass")?;
         // `Collection[E] new` — type arguments on the superclass receiver.
-        self.skip_type_arguments();
+        let receiver_type_arguments = self.take_type_arguments();
         let mut messages = Vec::new();
         self.parse_trailing_sends(&mut messages);
         let end = messages
@@ -1030,7 +1039,9 @@ impl<'a> Parser<'a> {
         Some(SuperclassClause {
             prefix,
             receiver,
+            receiver_type_arguments,
             messages,
+            comments: Vec::new(),
             span: start.merge(end),
         })
     }
@@ -1045,6 +1056,9 @@ impl<'a> Parser<'a> {
             out.push(MessageSend {
                 selector: Selector::Unary(self.text(selector_token).to_string()),
                 arguments: Vec::new(),
+                eventual: false,
+                type_arguments: None,
+                comments: Vec::new(),
                 span: selector_token.span,
             });
         } else if self.at_binary_operator() {
@@ -1055,6 +1069,9 @@ impl<'a> Parser<'a> {
             let argument = self.parse_unary_message();
             out.push(MessageSend {
                 selector: Selector::Binary(self.text(operator).to_string()),
+                eventual: false,
+                type_arguments: None,
+                comments: Vec::new(),
                 span: operator
                     .span
                     .merge(super::expression::expression_span(&argument)),
@@ -1076,6 +1093,9 @@ impl<'a> Parser<'a> {
             out.push(MessageSend {
                 selector: Selector::Keyword(selector),
                 arguments,
+                eventual: false,
+                type_arguments: None,
+                comments: Vec::new(),
                 span: start.merge(end),
             });
         }
@@ -1088,11 +1108,12 @@ impl<'a> Parser<'a> {
     }
 
     /// **G1** — `classHeader` body (`NewspeakGrammar.ns:208`):
-    /// `classComment? , slotDecls? , initExprs`. The class comment is consumed
-    /// by the caller via [`Parser::take_class_comment`] right after the `(`.
-    /// Here: an optional single slot section (`| .. |` or `|| .. ||`), then
-    /// zero or more `Dot`-separated/terminated initializer expressions, until `)` or
-    /// end of input. Methods, nested classes and a second slot section are NOT
+    /// `classComment? , slotDecls? , initExprs`. The class comment is a
+    /// comment like any other, attached after the parse
+    /// (`ClassDeclaration::class_comment`). Here: an optional single slot
+    /// section (`| .. |` or `|| .. ||`), then zero or more
+    /// `Dot`-separated/terminated initializer expressions, until `)` or end
+    /// of input. Methods, nested classes and a second slot section are NOT
     /// accepted here — they belong to G2.
     fn parse_header_body(
         &mut self,
@@ -1141,7 +1162,7 @@ impl<'a> Parser<'a> {
                         let token = self.bump();
                         self.push_error(token.span, "expected an init expression or `)`");
                     } else {
-                        initializer_expressions.push(Statement::Expression(expression));
+                        initializer_expressions.push(Statement::of_expression(expression));
                     }
                 }
             }
@@ -1156,20 +1177,11 @@ impl<'a> Parser<'a> {
     }
 
     /// **G2** — `sideDecl` body (`NewspeakGrammar.ns:189`):
-    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the lazy slot
-    /// declarations (merged into `ClassBody::slots` by the caller), the methods, and
-    /// the nested classes. A `| .. |` slot section, a bare initializer expression or a
+    /// `( classDecl | lazySlotDecl | methodDecl )*`. Returns the members in
+    /// source order. A `| .. |` slot section, a bare initializer expression or a
     /// class comment here is malformed (those belong to G1).
-    fn parse_side_body(
-        &mut self,
-    ) -> (
-        Vec<SlotDeclaration>,
-        Vec<MethodDeclaration>,
-        Vec<ClassDeclaration>,
-    ) {
-        let mut lazy_slots = Vec::new();
-        let mut methods = Vec::new();
-        let mut nested_classes = Vec::new();
+    fn parse_side_body(&mut self) -> Vec<Member> {
+        let mut members = Vec::new();
         loop {
             match self.peek() {
                 TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
@@ -1207,7 +1219,7 @@ impl<'a> Parser<'a> {
                         self.skip_to_structural();
                         break;
                     }
-                    nested_classes.push(self.parse_class_declaration());
+                    members.push(Member::Class(Box::new(self.parse_class_declaration())));
                     self.leave();
                 }
                 // `sideDecl`'s alternatives in their PEG order: a nested class
@@ -1215,15 +1227,15 @@ impl<'a> Parser<'a> {
                 // full before the next, so `private lazy = ( ^1 )`, which is
                 // no lazy slot, is a method named `lazy`.
                 _ if self.at_lazy_slot() => {
-                    lazy_slots.extend(self.parse_lazy_slot_declaration());
+                    members.extend(self.parse_lazy_slot_declaration().map(Member::LazySlot));
                 }
                 _ if self.looks_like_method() => {
-                    methods.extend(self.parse_method_declaration());
+                    members.extend(self.parse_method_declaration().map(Member::Method));
                 }
                 // Neither matched in full: a declaration that starts as a lazy
                 // slot is reported as one, so its error names what is missing.
                 _ if self.at_lazy_slot_prefix() => {
-                    lazy_slots.extend(self.parse_lazy_slot_declaration());
+                    members.extend(self.parse_lazy_slot_declaration().map(Member::LazySlot));
                 }
                 _ => {
                     let token = self.current();
@@ -1243,15 +1255,15 @@ impl<'a> Parser<'a> {
                 self.push_error(token.span, "unexpected token in class body");
             }
         }
-        (lazy_slots, methods, nested_classes)
+        members
     }
 
     /// **G3** — `classSideDecl` body (`NewspeakGrammar.ns:200`):
-    /// `methodDecl*`. Methods only; slots / initializer expressions / nested classes stay
-    /// empty.
+    /// `methodDecl*`. Methods only; the header's slots and initializer
+    /// expressions stay empty.
     fn parse_class_side_body(&mut self) -> ClassBody {
         let start = self.current().span;
-        let mut methods = Vec::new();
+        let mut members = Vec::new();
         loop {
             match self.peek() {
                 TokenKind::RightParenthesis | TokenKind::EndOfInput => break,
@@ -1267,7 +1279,7 @@ impl<'a> Parser<'a> {
                     );
                 }
                 _ if self.looks_like_method() => {
-                    methods.extend(self.parse_method_declaration());
+                    members.extend(self.parse_method_declaration().map(Member::Method));
                 }
                 _ => {
                     let token = self.current();
@@ -1285,12 +1297,12 @@ impl<'a> Parser<'a> {
         }
         let end = self.end_of_group();
         ClassBody {
-            slots: Vec::new(),
+            header_slots: Vec::new(),
             initializer_expressions: Vec::new(),
-            methods,
-            nested_classes: Vec::new(),
+            members,
             delimiters: None,
             slot_delimiters: None,
+            comments: Vec::new(),
             span: start.merge(end),
         }
     }
@@ -1351,7 +1363,7 @@ impl<'a> Parser<'a> {
             && self.at_name()
             && {
                 self.bump(); // the name
-                self.skip_type_annotation();
+                self.consume_type_annotation();
                 self.eat(TokenKind::Equals) || self.eat(TokenKind::ColonColonEquals)
             }
             && {
@@ -1375,11 +1387,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes `lazy [accessModifier]` or `accessModifier lazy` and answers
-    /// the access modifier; the outer `None` means neither is there.
-    fn lazy_slot_modifiers(&mut self) -> Option<Option<AccessModifier>> {
+    /// the access modifier and whether it came first; `None` means neither
+    /// is there.
+    fn lazy_slot_modifiers(&mut self) -> Option<(Option<AccessModifier>, bool)> {
         if self.at_lazy_word(self.position) {
             self.bump(); // `lazy`
-            return Some(self.parse_access_modifier());
+            return Some((self.parse_access_modifier(), false));
         }
         if matches!(
             self.peek(),
@@ -1388,7 +1401,7 @@ impl<'a> Parser<'a> {
         {
             let access = self.parse_access_modifier();
             self.bump(); // `lazy`
-            return Some(access);
+            return Some((access, true));
         }
         None
     }
@@ -1399,9 +1412,9 @@ impl<'a> Parser<'a> {
     /// missing: the slot is left out, after its initializer is parsed.
     fn parse_lazy_slot_declaration(&mut self) -> Option<SlotDeclaration> {
         let start = self.current().span;
-        let access = self.lazy_slot_modifiers().flatten();
+        let (access, access_before_lazy) = self.lazy_slot_modifiers().unwrap_or((None, false));
         let name = self.declared_identifier("name a slot or a temporary");
-        self.skip_type_annotation();
+        let type_annotation = self.take_type_annotation();
         let mutability = if self.eat(TokenKind::ColonColonEquals) {
             SlotMutability::MutableInitialized
         } else {
@@ -1424,10 +1437,13 @@ impl<'a> Parser<'a> {
         name.map(|name| SlotDeclaration {
             access,
             name,
+            type_annotation,
             mutability,
             initializer,
             lazy: true,
+            access_before_lazy,
             simultaneous: false,
+            comments: Vec::new(),
             span: start.merge(end),
         })
     }
@@ -1500,13 +1516,13 @@ impl<'a> Parser<'a> {
     }
 
     fn try_parse_message_pattern(&mut self) -> Option<()> {
-        // Mirror `parse_message_pattern`'s `<Type>` / `^<Type>` skipping and its
+        // Mirror `parse_message_pattern`'s `<Type>` / `^<Type>` consuming and its
         // `= < >`-as-binary-selector handling so the speculative
         // `looks_like_method` lookahead lands on `=` `(`, not `<` / `^`.
         let matched = if self.at_binary_selector_pattern() {
             self.bump(); // selector
             self.bump(); // parameter identifier
-            self.skip_type_annotation();
+            self.consume_type_annotation();
             Some(())
         } else {
             match self.peek() {
@@ -1518,22 +1534,22 @@ impl<'a> Parser<'a> {
                         } else {
                             return None;
                         }
-                        self.skip_type_annotation();
+                        self.consume_type_annotation();
                     }
                     Some(())
                 }
                 kind if super::is_name(kind) => {
                     self.bump();
-                    self.skip_type_arguments();
-                    self.skip_type_annotation();
+                    self.consume_type_arguments();
+                    self.consume_type_annotation();
                     Some(())
                 }
                 _ => None,
             }
         };
         matched?;
-        self.skip_return_type_annotation();
-        self.skip_where_clause();
+        self.consume_return_type();
+        self.consume_where_clause();
         Some(())
     }
 }
@@ -1702,21 +1718,6 @@ fn string_lexeme_body(raw: &str) -> String {
     super::lexeme_body(raw).replace("''", "'")
 }
 
-/// The one `///` block `gap` holds when it holds nothing else: no token
-/// but the end of input and no other comment. Two blocks, or a `(* ... *)`
-/// beside one, make no class comment.
-fn lone_line_block(gap: &str) -> Option<crate::comment::Comment> {
-    let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
-    match lexed.comments.as_slice() {
-        [comment]
-            if comment.kind == crate::comment::CommentKind::Line && lexed.tokens.len() == 1 =>
-        {
-            Some(*comment)
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 impl<'a> Parser<'a> {
     pub(crate) fn parse_method_declaration_for_test(&mut self) -> Option<MethodDeclaration> {
@@ -1813,6 +1814,98 @@ mod class_tests {
         }
     }
 
+    /// The name of a unary method's selector.
+    fn method_selector(method: &MethodDeclaration) -> &str {
+        match &method.pattern {
+            MessagePattern::Unary { selector, .. } => selector.name.as_str(),
+            other => panic!("expected a unary method, found {other:?}"),
+        }
+    }
+
+    #[test]
+    fn members_keep_their_source_order_across_kinds() {
+        let module = module(indoc! {"
+            class Outer = (
+            ) (
+                public b = ( ^2 )
+                class Inner = () ()
+                lazy cache = 3.
+                public a = ( ^1 )
+            )
+        "});
+        let kinds: Vec<&str> = module
+            .root_class
+            .instance_side
+            .members
+            .iter()
+            .map(|member| match member {
+                Member::Method(_) => "method",
+                Member::Class(_) => "class",
+                Member::LazySlot(_) => "lazy",
+            })
+            .collect();
+        assert_eq!(kinds, ["method", "class", "lazy", "method"]);
+        let methods: Vec<&str> = module
+            .root_class
+            .instance_side
+            .methods()
+            .map(method_selector)
+            .collect();
+        assert_eq!(methods, ["b", "a"]);
+    }
+
+    #[test]
+    fn slots_answers_header_slots_then_lazy_slots() {
+        let module = module(indoc! {"
+            class Outer = (
+                |
+                  first = 1.
+                |
+            ) (
+                lazy second = 2.
+                public m = ( ^first )
+                lazy third = 3.
+            )
+        "});
+        let names: Vec<&str> = module
+            .root_class
+            .instance_side
+            .slots()
+            .map(|slot| slot.name.name.as_str())
+            .collect();
+        assert_eq!(names, ["first", "second", "third"]);
+    }
+
+    #[test]
+    fn a_statement_spans_its_caret() {
+        let source = indoc! {"
+            class Outer = () (
+                public m = ( ^3 )
+            )
+        "};
+        let module = module(source);
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        let statement = &method.body.statements[0];
+        assert!(matches!(statement.kind, StatementKind::Return(_)));
+        assert_eq!(statement.span.text(source), "^3");
+    }
+
+    /// An expression statement spans its expression, a leading `(`
+    /// included, and not the period after it.
+    #[test]
+    fn an_expression_statement_spans_its_expression_without_the_period() {
+        let source = indoc! {"
+            class Outer = () (
+                public m = ( (3 + 4) printString. ^nil )
+            )
+        "};
+        let module = module(source);
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        let statement = &method.body.statements[0];
+        assert!(matches!(statement.kind, StatementKind::Expression(_)));
+        assert_eq!(statement.span.text(source), "(3 + 4) printString");
+    }
+
     /// The editor folds from an opening token to its closing one, so the
     /// AST records both for every construct that folds.
     #[test]
@@ -1856,12 +1949,16 @@ mod class_tests {
             text_of(class_side.delimiters),
             "(\n    make = ( ^self new )\n)"
         );
-        let run = &root.instance_side.methods[0];
+        let run = root.instance_side.methods().next().expect("a method");
         let body = text_of(run.body_delimiters);
         assert!(body.starts_with("(\n        | temporary |"), "{body}");
         assert!(body.ends_with("each]\n    )"), "{body}");
         assert_eq!(text_of(run.body.temporaries_delimiters), "| temporary |");
-        let Statement::Return(Expression::Block(block)) = &run.body.statements[0] else {
+        let StatementKind::Return(Expression {
+            kind: ExpressionKind::Block(block),
+            ..
+        }) = &run.body.statements[0].kind
+        else {
             panic!("a returned block");
         };
         assert_eq!(text_of(block.delimiters), "[:each | each]");
@@ -1892,14 +1989,21 @@ mod class_tests {
         "};
         let (module, _clean) = module_with_diagnostics(source);
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1, "the slot survives");
-        assert_eq!(body.slots[0].name.name, "a");
+        assert_eq!(body.slots().count(), 1, "the slot survives");
+        assert_eq!(body.slots().next().expect("a slot").name.name, "a");
         assert_eq!(
-            body.nested_classes.len(),
+            body.nested_classes().count(),
             1,
             "the following nested class is not swallowed"
         );
-        assert_eq!(body.nested_classes[0].name.name, "Inner");
+        assert_eq!(
+            body.nested_classes()
+                .next()
+                .expect("a nested class")
+                .name
+                .name,
+            "Inner"
+        );
     }
 
     // The boolean-or case still works: `|` with a primary after it is a binary
@@ -1911,15 +2015,20 @@ mod class_tests {
              | flag = a | b. |
             ) ()
         "});
-        let initializer = module.root_class.instance_side.slots[0]
+        let initializer = module
+            .root_class
+            .instance_side
+            .slots()
+            .next()
+            .expect("a slot")
             .initializer
             .as_ref()
             .unwrap();
-        let Expression::Send(send) = initializer else {
+        let ExpressionKind::Send(send) = &initializer.kind else {
             panic!("{initializer:?}")
         };
         assert_eq!(send.message.selector, Selector::Binary("|".into()));
-        let Expression::Identifier(argument) = &send.message.arguments[0] else {
+        let ExpressionKind::Identifier(argument) = &send.message.arguments[0].kind else {
             panic!()
         };
         assert_eq!(argument.name, "b");
@@ -1933,15 +2042,15 @@ mod class_tests {
             'App'
             class Empty usingPlatform: p = () ()
         "});
-        assert_eq!(module.language_id, "Newspeak3");
-        assert_eq!(module.category, "App");
+        assert_eq!(module.language_id.expect("an id").name, "Newspeak3");
+        assert_eq!(module.category.expect("a category").value, "App");
         assert_eq!(module.root_class.name.name, "Empty");
         let MessagePattern::Keyword { parts } = &module.root_class.factory.as_ref().unwrap() else {
             panic!()
         };
-        assert_eq!(parts[0].0.name, "usingPlatform");
-        assert!(module.root_class.instance_side.slots.is_empty());
-        assert!(module.root_class.instance_side.methods.is_empty());
+        assert_eq!(parts[0].keyword.name, "usingPlatform");
+        assert!(module.root_class.instance_side.slots().next().is_none());
+        assert!(module.root_class.instance_side.methods().next().is_none());
     }
 
     #[test]
@@ -1982,8 +2091,8 @@ mod class_tests {
         "});
         let declaration = &module.root_class;
         assert_eq!(declaration.mixin_applications.len(), 1);
-        assert!(declaration.instance_side.methods.is_empty());
-        assert!(declaration.instance_side.slots.is_empty());
+        assert!(declaration.instance_side.methods().next().is_none());
+        assert!(declaration.instance_side.slots().next().is_none());
     }
 
     // A declaration without `<:` carries no mixin application at all, and the
@@ -2012,11 +2121,11 @@ mod class_tests {
         "};
         let module = module(source);
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
+        assert_eq!(body.slots().count(), 1);
         assert_eq!(body.initializer_expressions.len(), 1);
-        assert_eq!(body.methods.len(), 1);
-        assert_eq!(body.nested_classes.len(), 1);
-        let comment = module.root_class.class_comment.expect("a class comment");
+        assert_eq!(body.methods().count(), 1);
+        assert_eq!(body.nested_classes().count(), 1);
+        let comment = module.root_class.class_comment().expect("a class comment");
         assert_eq!(comment.span.text(source), "(* a comment *)");
     }
 
@@ -2027,7 +2136,13 @@ mod class_tests {
         "};
         let module = module(source);
         assert_eq!(
-            module.root_class.class_side.as_ref().unwrap().methods.len(),
+            module
+                .root_class
+                .class_side
+                .as_ref()
+                .unwrap()
+                .methods()
+                .count(),
             1
         );
     }
@@ -2091,7 +2206,7 @@ mod class_tests {
             ) : ()
         "};
         let module = module(source);
-        assert_eq!(module.root_class.instance_side.methods.len(), 1);
+        assert_eq!(module.root_class.instance_side.methods().count(), 1);
         assert!(module.root_class.class_side.is_some());
     }
 
@@ -2101,12 +2216,17 @@ mod class_tests {
             class C = () ( class Inner = ( ) ( m = () ) : () ) : ()
         "};
         let module = module(source);
-        assert_eq!(module.root_class.instance_side.nested_classes.len(), 1);
+        assert_eq!(module.root_class.instance_side.nested_classes().count(), 1);
         assert_eq!(
-            module.root_class.instance_side.nested_classes[0]
+            module
+                .root_class
                 .instance_side
-                .methods
-                .len(),
+                .nested_classes()
+                .next()
+                .expect("a nested class")
+                .instance_side
+                .methods()
+                .count(),
             1
         );
     }
@@ -2118,7 +2238,7 @@ mod class_tests {
         "});
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 2);
-        assert!(body.methods.is_empty());
+        assert!(body.methods().next().is_none());
     }
 
     #[test]
@@ -2127,11 +2247,14 @@ mod class_tests {
             class C = () ( lazy foo = bar baz. ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
-        assert_eq!(body.slots[0].name.name, "foo");
-        assert_eq!(body.slots[0].mutability, SlotMutability::Immutable);
+        assert_eq!(body.slots().count(), 1);
+        assert_eq!(body.slots().next().expect("a slot").name.name, "foo");
+        assert_eq!(
+            body.slots().next().expect("a slot").mutability,
+            SlotMutability::Immutable
+        );
         assert!(
-            body.slots[0].lazy,
+            body.slots().next().expect("a slot").lazy,
             "a class body's `lazy` slot is lazy (§6.3.3)"
         );
     }
@@ -2142,10 +2265,16 @@ mod class_tests {
             class C = () ( public lazy foo ::= bar. ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
-        assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
-        assert_eq!(body.slots[0].mutability, SlotMutability::MutableInitialized);
-        assert!(body.slots[0].lazy);
+        assert_eq!(body.slots().count(), 1);
+        assert_eq!(
+            body.slots().next().expect("a slot").access,
+            Some(AccessModifier::Public)
+        );
+        assert_eq!(
+            body.slots().next().expect("a slot").mutability,
+            SlotMutability::MutableInitialized
+        );
+        assert!(body.slots().next().expect("a slot").lazy);
     }
 
     #[test]
@@ -2154,8 +2283,8 @@ mod class_tests {
             class C = ( | foo = 1. | ) ( ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert_eq!(body.slots.len(), 1);
-        assert!(!body.slots[0].lazy);
+        assert_eq!(body.slots().count(), 1);
+        assert!(!body.slots().next().expect("a slot").lazy);
     }
 
     // A method literally named `lazy` must not be mistaken for a lazy slot.
@@ -2165,8 +2294,8 @@ mod class_tests {
             class C = () ( lazy = ( ^ 1 ) ) : ()
         "});
         let body = &module.root_class.instance_side;
-        assert!(body.slots.is_empty());
-        assert_eq!(body.methods.len(), 1);
+        assert!(body.slots().next().is_none());
+        assert_eq!(body.methods().count(), 1);
     }
 
     // --- I2: a leading string in the class header body is an initializer expression,
@@ -2176,35 +2305,40 @@ mod class_tests {
         let module = module(indoc! {"
             class C = ( 'hello' printLine. ) ()
         "});
-        assert_eq!(module.root_class.class_comment, None);
+        assert_eq!(module.root_class.class_comment(), None);
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 1);
-        let Statement::Expression(Expression::Send(send)) = &body.initializer_expressions[0] else {
+        let StatementKind::Expression(Expression {
+            kind: ExpressionKind::Send(send),
+            ..
+        }) = &body.initializer_expressions[0].kind
+        else {
             panic!("{:?}", body.initializer_expressions[0])
         };
         assert_eq!(send.message.selector, Selector::Unary("printLine".into()));
         assert!(
-            matches!(send.receiver, Expression::Literal(Literal::String { .. })),
+            matches!(
+                send.receiver.kind,
+                ExpressionKind::Literal(Literal::String { .. })
+            ),
             "{:?}",
             send.receiver
         );
     }
 
-    /// The class comment of `source`'s root class as a formatter reads it,
-    /// its form and the exact source it spans, and as a reader shows it,
-    /// its text.
-    fn class_comment_of(source: &str) -> Option<(CommentKind, &str, String)> {
-        let comment = module(source).root_class.class_comment?;
-        Some((
-            comment.kind,
-            comment.span.text(source),
-            comment.text(source),
-        ))
+    /// The class comment of `source`'s root class: its form, the exact
+    /// source it spans, and its lines as the tree keeps them.
+    fn class_comment_of(source: &str) -> Option<(CommentKind, &str, Vec<String>)> {
+        let comment = module(source).root_class.class_comment()?.clone();
+        Some((comment.kind, comment.span.text(source), comment.lines))
     }
 
-    // `(* ... *)` in G1 is the class comment. The AST keeps where it stands,
-    // markers and layout included, so a formatter can write it back as it
-    // was; its text is the reader's.
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    // `(* ... *)` in G1 is the class comment, kept with its markers and
+    // layout so a formatter can write it back as it was.
     #[test]
     fn block_comment_in_header_is_still_the_class_comment() {
         assert_eq!(
@@ -2214,7 +2348,7 @@ mod class_tests {
             Some((
                 CommentKind::Block,
                 "(* a comment *)",
-                "a comment".to_string()
+                lines(&["(* a comment *)"])
             ))
         );
         assert_eq!(
@@ -2226,8 +2360,9 @@ mod class_tests {
             "}),
             Some((
                 CommentKind::Block,
-                "(* a comment\n       on two lines *)",
-                "a comment\non two lines".to_string()
+                "(* a comment
+       on two lines *)",
+                lines(&["(* a comment", "       on two lines *)"])
             ))
         );
     }
@@ -2245,8 +2380,9 @@ mod class_tests {
             "}),
             Some((
                 CommentKind::Line,
-                "/// a comment\n    /// on two lines",
-                "a comment\non two lines".to_string()
+                "/// a comment
+    /// on two lines",
+                lines(&[" a comment", " on two lines"])
             ))
         );
     }
@@ -2271,7 +2407,7 @@ mod class_tests {
         assert_eq!(texts, ["a", "b"]);
         assert_eq!(
             class_comment_of(source),
-            Some((CommentKind::Line, "/// b", "b".to_string()))
+            Some((CommentKind::Line, "/// b", lines(&[" b"])))
         );
     }
 
@@ -2287,7 +2423,7 @@ mod class_tests {
         "};
         assert_eq!(
             class_comment_of(source),
-            Some((CommentKind::Line, "/// b", "b".to_string()))
+            Some((CommentKind::Line, "/// b", lines(&[" b"])))
         );
     }
 
@@ -2418,8 +2554,8 @@ mod method_tests {
             panic!("{:?}", method.pattern)
         };
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].1.name, "k");
-        assert_eq!(parts[1].1.name, "v");
+        assert_eq!(parts[0].parameter.name.name, "k");
+        assert_eq!(parts[1].parameter.name.name, "v");
     }
 
     #[test]
@@ -2433,7 +2569,7 @@ mod method_tests {
             panic!()
         };
         assert_eq!(selector.name, "+");
-        assert_eq!(parameter.name, "other");
+        assert_eq!(parameter.name.name, "other");
     }
 
     #[test]
@@ -2485,7 +2621,7 @@ mod method_tests {
 
     #[test]
     fn unterminated_type_annotation_recovers_without_panic() {
-        // `skip_type_annotation` must push a diagnostic and stop, not run away
+        // `take_type_annotation` must push a diagnostic and stop, not run away
         // or panic, on a malformed `<...>`.
         let tokens = crate::lex("foo: x <Bad = ( ^ nil )").unwrap();
         let mut parser = Parser::new("foo: x <Bad = ( ^ nil )", tokens);
@@ -2503,7 +2639,10 @@ mod method_tests {
         assert!(method.body.temporaries.is_empty());
         assert!(matches!(
             method.body.statements.as_slice(),
-            [Statement::Return(_)]
+            [Statement {
+                kind: StatementKind::Return(_),
+                ..
+            }]
         ));
     }
 
@@ -2530,7 +2669,10 @@ mod method_tests {
         );
         assert!(matches!(
             method.body.statements.as_slice(),
-            [Statement::Return(_)]
+            [Statement {
+                kind: StatementKind::Return(_),
+                ..
+            }]
         ));
     }
 
@@ -2564,7 +2706,10 @@ mod method_tests {
         );
         assert!(matches!(
             method.body.statements.as_slice(),
-            [Statement::Return(_)]
+            [Statement {
+                kind: StatementKind::Return(_),
+                ..
+            }]
         ));
     }
 
@@ -2878,7 +3023,7 @@ mod unreserved_word_tests {
 
     fn unary_selector(method: &MethodDeclaration) -> &str {
         match &method.pattern {
-            MessagePattern::Unary { selector } => &selector.name,
+            MessagePattern::Unary { selector, .. } => &selector.name,
             other => panic!("{other:?}"),
         }
     }
@@ -2887,27 +3032,49 @@ mod unreserved_word_tests {
     fn a_declaration_is_what_its_whole_production_matches() {
         // No lazy slot: a private method named `lazy`.
         let body = instance_side_of("private lazy = ( ^1 )");
-        assert!(body.slots.is_empty());
-        assert_eq!(body.methods[0].access, Some(AccessModifier::Private));
-        assert_eq!(unary_selector(&body.methods[0]), "lazy");
+        assert!(body.slots().next().is_none());
+        assert_eq!(
+            body.methods().next().expect("a method").access,
+            Some(AccessModifier::Private)
+        );
+        assert_eq!(
+            unary_selector(body.methods().next().expect("a method")),
+            "lazy"
+        );
 
         // A lazy slot named `lazy`.
         let body = instance_side_of("lazy lazy = 1.");
-        assert!(body.methods.is_empty());
-        assert_eq!(body.slots[0].name.name, "lazy");
-        assert!(body.slots[0].lazy);
+        assert!(body.methods().next().is_none());
+        assert_eq!(body.slots().next().expect("a slot").name.name, "lazy");
+        assert!(body.slots().next().expect("a slot").lazy);
 
         // A public lazy slot named `public`.
         let body = instance_side_of("lazy public public = 1.");
-        assert_eq!(body.slots[0].name.name, "public");
-        assert_eq!(body.slots[0].access, Some(AccessModifier::Public));
-        assert!(body.slots[0].lazy);
+        assert_eq!(body.slots().next().expect("a slot").name.name, "public");
+        assert_eq!(
+            body.slots().next().expect("a slot").access,
+            Some(AccessModifier::Public)
+        );
+        assert!(body.slots().next().expect("a slot").lazy);
 
         // A nested class named `public`, and a public method named `class`.
         let body = instance_side_of("class public = Object new () () public class = ( ^1 )");
-        assert_eq!(body.nested_classes[0].name.name, "public");
-        assert_eq!(body.methods[0].access, Some(AccessModifier::Public));
-        assert_eq!(unary_selector(&body.methods[0]), "class");
+        assert_eq!(
+            body.nested_classes()
+                .next()
+                .expect("a nested class")
+                .name
+                .name,
+            "public"
+        );
+        assert_eq!(
+            body.methods().next().expect("a method").access,
+            Some(AccessModifier::Public)
+        );
+        assert_eq!(
+            unary_selector(body.methods().next().expect("a method")),
+            "class"
+        );
     }
 
     /// The one deviation (decided with the user on 2026-09-27): §6.3.4's
@@ -2984,9 +3151,14 @@ mod specification_tests {
     fn expression(source: &str) -> Expression {
         let module = parse_member(&format!("probe = ( ^{source} )"))
             .unwrap_or_else(|errors| panic!("{source}: {errors:?}"));
-        let method = &module.root_class.instance_side.methods[0];
-        match &method.body.statements[0] {
-            Statement::Return(expression) => expression.clone(),
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
+        match &method.body.statements[0].kind {
+            StatementKind::Return(expression) => expression.clone(),
             other => panic!("{other:?}"),
         }
     }
@@ -2997,7 +3169,7 @@ mod specification_tests {
     #[test]
     fn a_negative_number_is_one_only_where_a_literal_stands() {
         for source in ["3 -4", "3-4", "3 - 4"] {
-            let Expression::Send(send) = expression(source) else {
+            let ExpressionKind::Send(send) = expression(source).kind else {
                 panic!("{source}")
             };
             assert_eq!(
@@ -3006,18 +3178,18 @@ mod specification_tests {
                 "{source}"
             );
             assert!(
-                matches!(&send.message.arguments[0], Expression::Literal(Literal::Integer { text, .. }) if text == "4"),
+                matches!(&send.message.arguments[0].kind, ExpressionKind::Literal(Literal::Integer { text, .. }) if text == "4"),
                 "{source}"
             );
         }
-        let Expression::Send(send) = expression("3 at: -4") else {
+        let ExpressionKind::Send(send) = expression("3 at: -4").kind else {
             panic!()
         };
         assert!(matches!(
-            &send.message.arguments[0],
-            Expression::Literal(Literal::Integer { text, .. }) if text == "-4"
+            &send.message.arguments[0].kind,
+            ExpressionKind::Literal(Literal::Integer { text, .. }) if text == "-4"
         ));
-        let Expression::Send(send) = expression("3 +-4") else {
+        let ExpressionKind::Send(send) = expression("3 +-4").kind else {
             panic!()
         };
         assert_eq!(send.message.selector, Selector::Binary("+".into()));
@@ -3171,6 +3343,7 @@ mod specification_tests {
             parse_module_source(source)
                 .unwrap_or_else(|errors| panic!("{source}: {errors:?}"))
                 .language_id
+                .map_or_else(String::new, |identifier| identifier.name)
         };
         assert_eq!(language_id_of("class Root = () ()\n"), "");
         assert_eq!(language_id_of("'T'\nclass Root = () ()\n"), "");
@@ -3186,6 +3359,16 @@ mod specification_tests {
             language_id_of("Newspeak3\n'T'\nclass Root = () ()\n"),
             "Newspeak3"
         );
+    }
+
+    #[test]
+    fn the_prologue_is_kept_when_present_and_absent_otherwise() {
+        let with = parse_module_source("Newspeak3\n'Root'\nclass A = () ()").expect("a module");
+        assert_eq!(with.language_id.expect("an id").name, "Newspeak3");
+        assert_eq!(with.category.expect("a category").text, "'Root'");
+        let without = parse_module_source("class A = () ()").expect("a module");
+        assert!(without.language_id.is_none());
+        assert!(without.category.is_none());
     }
 
     /// A name is expected where the grammar has an `identifier`.
@@ -3225,8 +3408,8 @@ mod specification_tests {
             ("1e3", true),
         ] {
             let integral = matches!(
-                expression(number),
-                Expression::Literal(Literal::Integer { .. })
+                expression(number).kind,
+                ExpressionKind::Literal(Literal::Integer { .. })
             );
             assert_eq!(integral, !non_integral, "{number}");
         }
@@ -3244,7 +3427,7 @@ mod specification_tests {
             matches!(
                 &class.factory,
                 Some(MessagePattern::Binary { selector, parameter })
-                    if selector.name == "=" && parameter.name == "other"
+                    if selector.name == "=" && parameter.name.name == "other"
             ),
             "{:?}",
             class.factory
@@ -3270,7 +3453,12 @@ mod specification_tests {
         let module = parse_member("probe = ( || c = 3. d = 4. || ^c + d )")
             .unwrap_or_else(|errors| panic!("{errors:?}"));
         assert_eq!(
-            module.root_class.instance_side.methods[0]
+            module
+                .root_class
+                .instance_side
+                .methods()
+                .next()
+                .expect("a method")
                 .body
                 .temporaries
                 .len(),
@@ -3294,22 +3482,19 @@ mod specification_tests {
         let module = crate::parse(source).expect("parse");
         let body = &module.root_class.instance_side;
         let header: Vec<bool> = body
-            .slots
-            .iter()
+            .slots()
             .filter(|slot| !slot.lazy)
             .map(|slot| slot.simultaneous)
             .collect();
         assert_eq!(header, vec![true, true]);
         assert!(body
-            .slots
-            .iter()
+            .slots()
             .filter(|slot| slot.lazy)
             .all(|slot| !slot.simultaneous));
         let temporaries = |selector_name: &str| -> Vec<bool> {
-            body.methods
-                .iter()
+            body.methods()
                 .find(|method| match &method.pattern {
-                    MessagePattern::Unary { selector } => selector.name == selector_name,
+                    MessagePattern::Unary { selector, .. } => selector.name == selector_name,
                     _ => false,
                 })
                 .map(|method| {
@@ -3328,7 +3513,7 @@ mod specification_tests {
     }
 
     /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
-    /// identifier)* rbracket rangleBracket`, dropped like every type.
+    /// identifier)* rbracket rangleBracket`, kept as its tokens like every type.
     #[test]
     fn a_class_declares_its_type_parameters_as_the_specification_writes_them() {
         accepted("class Map <[K, V]> new: capacity <Integer> = Object new () ()");
@@ -3364,10 +3549,9 @@ mod recovery_work_tests {
         module
             .root_class
             .instance_side
-            .methods
-            .iter()
+            .methods()
             .map(|method| match &method.pattern {
-                MessagePattern::Unary { selector } => selector.name.clone(),
+                MessagePattern::Unary { selector, .. } => selector.name.clone(),
                 pattern => format!("{pattern:?}"),
             })
             .collect()
@@ -3520,5 +3704,316 @@ mod recovery_work_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod type_annotation_tests {
+    use super::*;
+    use indoc::indoc;
+
+    fn module(source: &str) -> Module {
+        match crate::parse(source) {
+            Ok(module) => module,
+            Err(diagnostics) => panic!("parse errors: {diagnostics:#?}"),
+        }
+    }
+
+    fn type_text(annotation: &TypeAnnotation) -> String {
+        annotation
+            .tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn every_type_annotation_is_kept() {
+        let module = module(indoc! {"
+            class Map <[K, V]> new: capacity <Integer> = (
+                |
+                  size <Integer> ::= 0.
+                |
+            ) (
+                public at: key <K> put: value <V> ^<V> = (
+                    | previous <V | Nil> |
+                    ^[:each <K> | each] value: key
+                )
+                public items ^<List[V]> = ( ^Box[Integer] new )
+            )
+        "});
+        let class = &module.root_class;
+        assert_eq!(
+            type_text(class.type_parameters.as_ref().expect("<[K, V]>")),
+            "< [ K , V ] >"
+        );
+        let Some(MessagePattern::Keyword {
+            parts: factory_parts,
+        }) = &class.factory
+        else {
+            panic!("new:");
+        };
+        assert_eq!(factory_parts[0].keyword.name, "new");
+        assert_eq!(factory_parts[0].parameter.name.name, "capacity");
+        assert_eq!(
+            type_text(
+                factory_parts[0]
+                    .parameter
+                    .type_annotation
+                    .as_ref()
+                    .expect("<Integer>")
+            ),
+            "< Integer >"
+        );
+        let header_slot = &class.instance_side.header_slots[0];
+        assert_eq!(
+            type_text(header_slot.type_annotation.as_ref().expect("<Integer>")),
+            "< Integer >"
+        );
+        let methods: Vec<&MethodDeclaration> = class.instance_side.methods().collect();
+        let MessagePattern::Keyword { parts } = &methods[0].pattern else {
+            panic!("at:put:");
+        };
+        assert_eq!(parts[1].keyword.name, "put");
+        assert_eq!(parts[1].parameter.name.name, "value");
+        assert_eq!(
+            type_text(parts[1].parameter.type_annotation.as_ref().expect("<V>")),
+            "< V >"
+        );
+        assert_eq!(
+            type_text(methods[0].return_type.as_ref().expect("^<V>")),
+            "< V >"
+        );
+        assert!(methods[0].where_clause.is_none());
+        let temporary = &methods[0].body.temporaries[0];
+        assert_eq!(
+            type_text(temporary.type_annotation.as_ref().expect("<V | Nil>")),
+            "< V | Nil >"
+        );
+        let StatementKind::Return(returned) = &methods[0].body.statements[0].kind else {
+            panic!("a return");
+        };
+        let ExpressionKind::Send(value_send) = &returned.kind else {
+            panic!("[...] value: key");
+        };
+        let ExpressionKind::Block(block) = &value_send.receiver.kind else {
+            panic!("a block");
+        };
+        assert_eq!(block.parameters[0].name.name, "each");
+        assert_eq!(
+            type_text(block.parameters[0].type_annotation.as_ref().expect("<K>")),
+            "< K >"
+        );
+        assert_eq!(
+            type_text(methods[1].return_type.as_ref().expect("^<List[V]>")),
+            "< List [ V ] >"
+        );
+        let StatementKind::Return(value) = &methods[1].body.statements[0].kind else {
+            panic!("a return");
+        };
+        let ExpressionKind::Send(send) = &value.kind else {
+            panic!("Box[Integer] new");
+        };
+        assert_eq!(
+            type_text(send.receiver.type_arguments.as_ref().expect("[Integer]")),
+            "[ Integer ]"
+        );
+    }
+
+    #[test]
+    fn an_unannotated_declaration_has_no_annotations() {
+        let module = module(indoc! {"
+            class Plain new: capacity = Object new (
+                | size ::= 0. |
+            ) (
+                public at: key = ( | previous | ^[:each | each] value: key )
+                lazy cache = 1.
+            )
+        "});
+        let class = &module.root_class;
+        assert!(class.type_parameters.is_none());
+        assert!(class.factory_return_type.is_none());
+        assert!(class.factory_where_clause.is_none());
+        let superclass = class.superclass.as_ref().expect("Object new");
+        assert!(superclass.receiver_type_arguments.is_none());
+        assert!(class.instance_side.header_slots[0]
+            .type_annotation
+            .is_none());
+        let method = class.instance_side.methods().next().expect("at:");
+        let MessagePattern::Keyword { parts } = &method.pattern else {
+            panic!("at:");
+        };
+        assert!(parts[0].parameter.type_annotation.is_none());
+        assert!(method.return_type.is_none());
+        assert!(method.where_clause.is_none());
+        assert!(method.body.temporaries[0].type_annotation.is_none());
+        let lazy_slot = class.instance_side.lazy_slots().next().expect("cache");
+        assert!(lazy_slot.type_annotation.is_none());
+    }
+
+    #[test]
+    fn a_binary_parameter_keeps_its_type() {
+        let module = module(indoc! {"
+            class Number = () (
+                public + other <Number> = ( ^self )
+            )
+        "});
+        let method = module.root_class.instance_side.methods().next().expect("+");
+        let MessagePattern::Binary {
+            selector,
+            parameter,
+        } = &method.pattern
+        else {
+            panic!("+");
+        };
+        assert_eq!(selector.name, "+");
+        assert_eq!(parameter.name.name, "other");
+        assert_eq!(
+            type_text(parameter.type_annotation.as_ref().expect("<Number>")),
+            "< Number >"
+        );
+    }
+
+    #[test]
+    fn a_unary_pattern_keeps_its_type_parameters() {
+        let source = indoc! {"
+            class Lists = () (
+                public List[E] = ( ^nil )
+                public plain = ( ^nil )
+            )
+        "};
+        let module = module(source);
+        let methods: Vec<&MethodDeclaration> = module.root_class.instance_side.methods().collect();
+        let MessagePattern::Unary {
+            selector,
+            type_parameters,
+        } = &methods[0].pattern
+        else {
+            panic!("List[E]");
+        };
+        assert_eq!(selector.name, "List");
+        let type_parameters = type_parameters.as_ref().expect("[E]");
+        assert_eq!(type_text(type_parameters), "[ E ]");
+        assert_eq!(type_parameters.span.text(source), "[E]");
+        let MessagePattern::Unary {
+            type_parameters, ..
+        } = &methods[1].pattern
+        else {
+            panic!("plain");
+        };
+        assert!(type_parameters.is_none());
+    }
+
+    #[test]
+    fn a_where_clause_is_kept() {
+        let source = indoc! {"
+            class Reducer = () (
+                public reduce: function <[:RE :RE | RE]> ^<RE> where { C <: RE :: nil } = ( ^nil )
+            )
+        "};
+        let module = module(source);
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("reduce:");
+        let where_clause = method.where_clause.as_ref().expect("where { ... }");
+        assert_eq!(where_clause.span.text(source), "where { C <: RE :: nil }");
+        assert_eq!(
+            where_clause.tokens.first().map(|token| token.text.as_str()),
+            Some("where")
+        );
+        assert_eq!(
+            where_clause.tokens.last().map(|token| token.kind),
+            Some(TokenKind::RightBrace)
+        );
+        assert_eq!(
+            type_text(method.return_type.as_ref().expect("^<RE>")),
+            "< RE >"
+        );
+        let MessagePattern::Keyword { parts } = &method.pattern else {
+            panic!("reduce:");
+        };
+        assert_eq!(
+            type_text(
+                parts[0]
+                    .parameter
+                    .type_annotation
+                    .as_ref()
+                    .expect("<[:RE :RE | RE]>")
+            ),
+            "< [ : RE : RE | RE ] >"
+        );
+    }
+
+    #[test]
+    fn a_factory_keeps_its_return_type_and_where_clause() {
+        let source = indoc! {"
+            class Box new: value <E> ^<Box[E]> where { E <: Object :: nil } = () ()
+        "};
+        let module = module(source);
+        let class = &module.root_class;
+        assert_eq!(
+            type_text(class.factory_return_type.as_ref().expect("^<Box[E]>")),
+            "< Box [ E ] >"
+        );
+        assert_eq!(
+            class
+                .factory_where_clause
+                .as_ref()
+                .expect("where { ... }")
+                .span
+                .text(source),
+            "where { E <: Object :: nil }"
+        );
+    }
+
+    #[test]
+    fn a_lazy_slot_keeps_its_type() {
+        let module = module(indoc! {"
+            class Cache = () (
+                lazy public count <Integer> = 0.
+            )
+        "});
+        let slot = module
+            .root_class
+            .instance_side
+            .lazy_slots()
+            .next()
+            .expect("count");
+        assert_eq!(
+            type_text(slot.type_annotation.as_ref().expect("<Integer>")),
+            "< Integer >"
+        );
+    }
+
+    #[test]
+    fn a_superclass_receiver_keeps_its_type_arguments() {
+        let module = module(indoc! {"
+            class List = Collection[E] new () ()
+        "});
+        let superclass = module
+            .root_class
+            .superclass
+            .as_ref()
+            .expect("Collection[E] new");
+        assert_eq!(superclass.receiver.name, "Collection");
+        assert_eq!(
+            type_text(superclass.receiver_type_arguments.as_ref().expect("[E]")),
+            "[ E ]"
+        );
+    }
+
+    #[test]
+    fn a_class_keeps_its_bracketed_type_parameters() {
+        let module = module(indoc! {"
+            class List[E] = () ()
+        "});
+        assert_eq!(
+            type_text(module.root_class.type_parameters.as_ref().expect("[E]")),
+            "[ E ]"
+        );
     }
 }

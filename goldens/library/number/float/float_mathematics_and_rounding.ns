@@ -6,25 +6,140 @@
 /// finite number does. `atan:` is the angle of the point (argument,
 /// receiver).
 class FloatMathematicsAndRounding = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. quarter natural common |
-        transcript print: 0.0 tan; show: ' '; print: 0.0 asin; show: ' '; print: 1.0 acos; show: ' '; print: 0.0 atan; newLine.
-        transcript print: (0.0 atan: 1.0); show: ' '; print: 0.0 exp; show: ' '; print: 1.0 ln; show: ' '; print: 1.0 log; newLine.
-        quarter:: 1.0 atan: 1.0.
-        natural:: 1.0 exp.
-        common:: 100.0 log.
-        transcript print: (quarter > 0.7853 and: [quarter < 0.7854]); show: ' '; print: (natural > 2.718 and: [natural < 2.719]); show: ' '; print: (common > 1.9999999 and: [common < 2.0000001]); newLine.
-        transcript print: (2.0 raisedTo: 10); show: ' '; print: (4.0 raisedTo: 0.5); show: ' '; print: (2.0 raisedTo: -1); show: ' '; print: (2.0 raisedTo: 3); newLine.
-        transcript print: 3.7 floor; show: ' '; print: -3.7 floor; show: ' '; print: 3.2 ceiling; show: ' '; print: -3.2 ceiling; newLine.
-        transcript print: 2.5 rounded; show: ' '; print: -2.5 rounded; show: ' '; print: 2.4 rounded; show: ' '; print: 3.7 truncated; show: ' '; print: -3.7 truncated; newLine.
-        transcript print: (1.0 / 0.0) floor; show: ' '; print: (0.0 / 0.0) rounded; show: ' '; print: -0.4 rounded; newLine.
-        transcript print: 1.5 negated; show: ' '; print: 0.0 negated; show: ' '; print: -2.5 abs; show: ' '; print: -0.0 abs; show: ' '; print: 1.5 asFloat; newLine.
-        transcript print: (0.0 / 0.0) isNaN; show: ' '; print: 1.5 isNaN; show: ' '; print: (1.0 / 0.0) isInfinite; show: ' '; print: (1.0 / 0.0) isFinite; show: ' '; print: 1.5 isFinite; newLine.
-        transcript print: 3 isNaN; show: ' '; print: 3 isFinite; show: ' '; print: 3 isInfinite; show: ' '; print: 100000000000000000000 isFinite; newLine.
-        transcript print: 4 sqrt; show: ' '; print: 0 sin; show: ' '; print: 1 ln; show: ' '; print: 0 exp; show: ' '; print: 100000000000000000000 sqrt; newLine.
-        transcript print: (3 between: 1 and: 5); show: ' '; print: (3 between: 4 and: 5); show: ' '; print: (3 between: 3 and: 3); newLine.
-        transcript print: (3 min: 5); show: ' '; print: (5 min: 3); show: ' '; print: (2.5 min: 3); show: ' '; print: (3 max: 2.5); newLine.
-        transcript show: ([1.5 atan: nil] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([2.0 raisedTo: 'x'] on: Error do: [:error | error messageText]); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      quarter
+      natural
+      common
+    |
+    transcript
+        print: 0.0 tan;
+        show: ' ';
+        print: 0.0 asin;
+        show: ' ';
+        print: 1.0 acos;
+        show: ' ';
+        print: 0.0 atan;
+        newLine.
+    transcript
+        print: (0.0 atan: 1.0);
+        show: ' ';
+        print: 0.0 exp;
+        show: ' ';
+        print: 1.0 ln;
+        show: ' ';
+        print: 1.0 log;
+        newLine.
+    quarter:: 1.0 atan: 1.0.
+    natural:: 1.0 exp.
+    common:: 100.0 log.
+    transcript
+        print: (quarter > 0.7853 and: [quarter < 0.7854]);
+        show: ' ';
+        print: (natural > 2.718 and: [natural < 2.719]);
+        show: ' ';
+        print: (common > 1.9999999 and: [common < 2.0000001]);
+        newLine.
+    transcript
+        print: (2.0 raisedTo: 10);
+        show: ' ';
+        print: (4.0 raisedTo: 0.5);
+        show: ' ';
+        print: (2.0 raisedTo: -1);
+        show: ' ';
+        print: (2.0 raisedTo: 3);
+        newLine.
+    transcript
+        print: 3.7 floor;
+        show: ' ';
+        print: -3.7 floor;
+        show: ' ';
+        print: 3.2 ceiling;
+        show: ' ';
+        print: -3.2 ceiling;
+        newLine.
+    transcript
+        print: 2.5 rounded;
+        show: ' ';
+        print: -2.5 rounded;
+        show: ' ';
+        print: 2.4 rounded;
+        show: ' ';
+        print: 3.7 truncated;
+        show: ' ';
+        print: -3.7 truncated;
+        newLine.
+    transcript
+        print: (1.0 / 0.0) floor;
+        show: ' ';
+        print: (0.0 / 0.0) rounded;
+        show: ' ';
+        print: -0.4 rounded;
+        newLine.
+    transcript
+        print: 1.5 negated;
+        show: ' ';
+        print: 0.0 negated;
+        show: ' ';
+        print: -2.5 abs;
+        show: ' ';
+        print: -0.0 abs;
+        show: ' ';
+        print: 1.5 asFloat;
+        newLine.
+    transcript
+        print: (0.0 / 0.0) isNaN;
+        show: ' ';
+        print: 1.5 isNaN;
+        show: ' ';
+        print: (1.0 / 0.0) isInfinite;
+        show: ' ';
+        print: (1.0 / 0.0) isFinite;
+        show: ' ';
+        print: 1.5 isFinite;
+        newLine.
+    transcript
+        print: 3 isNaN;
+        show: ' ';
+        print: 3 isFinite;
+        show: ' ';
+        print: 3 isInfinite;
+        show: ' ';
+        print: 100000000000000000000 isFinite;
+        newLine.
+    transcript
+        print: 4 sqrt;
+        show: ' ';
+        print: 0 sin;
+        show: ' ';
+        print: 1 ln;
+        show: ' ';
+        print: 0 exp;
+        show: ' ';
+        print: 100000000000000000000 sqrt;
+        newLine.
+    transcript
+        print: (3 between: 1 and: 5);
+        show: ' ';
+        print: (3 between: 4 and: 5);
+        show: ' ';
+        print: (3 between: 3 and: 3);
+        newLine.
+    transcript
+        print: (3 min: 5);
+        show: ' ';
+        print: (5 min: 3);
+        show: ' ';
+        print: (2.5 min: 3);
+        show: ' ';
+        print: (3 max: 2.5);
+        newLine.
+    transcript
+        show: ([1.5 atan: nil] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([2.0 raisedTo: 'x'] on: Error do: [:error | error messageText]);
+        newLine.
+  )
 )

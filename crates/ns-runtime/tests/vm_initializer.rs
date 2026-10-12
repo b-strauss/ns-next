@@ -173,10 +173,13 @@ fn raw_slot_declaration(name: &str) -> Rc<ns_syntax::ast::SlotDeclaration> {
             name: name.to_string(),
             span: Span::new(0, 0),
         },
+        type_annotation: None,
         mutability: ns_syntax::ast::SlotMutability::Immutable,
         initializer: None,
         lazy: false,
+        access_before_lazy: false,
         simultaneous: false,
+        comments: Vec::new(),
         span: Span::new(0, 0),
     })
 }

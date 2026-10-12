@@ -2,9 +2,19 @@
 /// or step: `Number`'s loop compares and adds across the two classes, and
 /// the counter becomes a `Float` once a `Float` step is added.
 class IntegerCountsToFloat = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        1 to: 2.5 do: [:index | transcript print: index; newLine].
-        1 to: 2 by: 0.5 do: [:value | transcript print: value; newLine]
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    1 to: 2.5 do: [:index |
+      transcript
+          print: index;
+          newLine.
+    ].
+    1 to: 2 by: 0.5 do: [:value |
+      transcript
+          print: value;
+          newLine.
+    ].
+  )
 )

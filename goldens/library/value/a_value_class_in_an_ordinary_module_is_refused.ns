@@ -5,11 +5,19 @@
 /// instance. Decided where the class is created, refused where an instance
 /// is made -- both here in the one send, `Point x: 1 y: 2`.
 class ValueInAnOrdinaryModule = Object new () (
-    public class Point x: anX y: aY = Value new (
-        | public x = anX. public y = aY. |
-    ) ()
-    public main: platform args: arguments = (
-        platform transcript show: 'before'; newLine.
-        platform transcript show: (Point x: 1 y: 2) x printString; newLine.
-    )
-) : ()
+  public class Point x: anX y: aY = Value new (
+    |
+      public x = anX.
+      public y = aY.
+    |
+  ) ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'before';
+        newLine.
+    platform transcript
+        show: (Point x: 1 y: 2) x printString;
+        newLine.
+  )
+)

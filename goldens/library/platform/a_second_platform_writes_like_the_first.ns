@@ -6,15 +6,31 @@
 /// the class its own members are instances of; the collections facet hands
 /// out its module's classes as the platform hands out its own.
 class ASecondPlatformWritesLikeTheFirst = Object new () (
-    public main: platform args: arguments = (
-        | second |
-        second:: platform class new.
-        platform transcript show: 'first'; newLine.
-        second transcript show: 'second'; newLine.
-        platform transcript show: (second transcript = platform transcript) printString; newLine.
-        platform transcript show: (platform collections Collections new = second collections) printString; newLine.
-        platform transcript show: (platform Transcript == platform transcript class) printString; newLine.
-        platform transcript show: (platform Platform == platform class) printString; newLine.
-        platform transcript show: (second Platform == platform class) printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      second
+    |
+    second:: platform class new.
+    platform transcript
+        show: 'first';
+        newLine.
+    second transcript
+        show: 'second';
+        newLine.
+    platform transcript
+        show: (second transcript = platform transcript) printString;
+        newLine.
+    platform transcript
+        show: (platform collections Collections new = second collections) printString;
+        newLine.
+    platform transcript
+        show: (platform Transcript == platform transcript class) printString;
+        newLine.
+    platform transcript
+        show: (platform Platform == platform class) printString;
+        newLine.
+    platform transcript
+        show: (second Platform == platform class) printString;
+        newLine.
+  )
+)

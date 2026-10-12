@@ -8,12 +8,19 @@
 /// with and this answers nothing instead of the recorded line. Skipped
 /// until the initializer runs.
 class Spec36LocalSlotInitializer = Object new () (
-    public probe = (
-        | value = 'the initializer ran'. |
-        ^value
-    )
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: probe; newLine
-    )
-) : ()
+  public probe = (
+    |
+      value = 'the initializer ran'.
+    |
+    ^value.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: probe;
+        newLine.
+  )
+)

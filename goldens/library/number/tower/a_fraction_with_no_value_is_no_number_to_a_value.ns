@@ -7,20 +7,37 @@
 /// class's enclosing object to be one; the transcript lives in `Script`,
 /// which is no value.
 class AFractionWithNoValueIsNoNumberToAValue = Object <: Value () (
-    class Box of: initialContents = Value new (
-        | public contents = initialContents. |
-    ) ()
-    class Script on: aPlatform = Object new (
-        | platform = aPlatform. transcript = aPlatform transcript. |
-    ) (
-        public run = (
-            | half = Fraction numerator: 1 denominator: 2.
-              empty = Fraction new. |
-            transcript print: (Box of: half) = (Box of: empty); show: ' '; print: (Box of: empty) = (Box of: half); newLine.
-            transcript print: (Box of: 3) = (Box of: empty); show: ' '; print: (Box of: empty) = (Box of: 3); newLine
-        )
+  class Box of: initialContents = Value new (
+    |
+      public contents = initialContents.
+    |
+  ) ()
+
+  class Script on: aPlatform = Object new (
+    |
+      platform = aPlatform.
+      transcript = aPlatform transcript.
+    |
+  ) (
+    public run = (
+      |
+        half = Fraction numerator: 1 denominator: 2.
+        empty = Fraction new.
+      |
+      transcript
+          print: (Box of: half) = (Box of: empty);
+          show: ' ';
+          print: (Box of: empty) = (Box of: half);
+          newLine.
+      transcript
+          print: (Box of: 3) = (Box of: empty);
+          show: ' ';
+          print: (Box of: empty) = (Box of: 3);
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform) run
-    )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform) run.
+  )
+)

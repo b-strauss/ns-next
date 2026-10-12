@@ -25,18 +25,18 @@ use crate::Symbol;
 /// Nothing inherited: §5.7 asks where a member is *declared*.
 fn declared_members(body: &ast::ClassBody) -> Vec<Symbol> {
     let mut members = Vec::new();
-    for slot in &body.slots {
+    for slot in body.slots() {
         members.push(Symbol::intern(&slot.name.name));
         if slot.mutability != ast::SlotMutability::Immutable {
             members.push(Symbol::intern(&format!("{}:", slot.name.name)));
         }
     }
-    for method in &body.methods {
+    for method in body.methods() {
         members.push(Symbol::intern(
             &crate::interpreter::instantiate::method_name(&method.pattern),
         ));
     }
-    for nested in &body.nested_classes {
+    for nested in body.nested_classes() {
         members.push(Symbol::intern(&nested.name.name));
     }
     members

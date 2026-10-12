@@ -64,7 +64,7 @@ fn member_starts(module: &Module) -> Vec<(String, usize)> {
         }
         for (side, body) in sides {
             collect_body(&side, body, &mut members);
-            for nested in &body.nested_classes {
+            for nested in body.nested_classes() {
                 let nested_path = format!("{side}>>{}", nested.name.name);
                 members.push((format!("{nested_path} (class)"), class_start(nested)));
                 pending.push((nested_path, nested));
@@ -76,11 +76,11 @@ fn member_starts(module: &Module) -> Vec<(String, usize)> {
 
 /// The slots and methods of one side of a class.
 fn collect_body(side: &str, body: &ClassBody, members: &mut Vec<(String, usize)>) {
-    for slot in &body.slots {
+    for slot in body.slots() {
         let start = (slot.span.start.min(slot.name.span.start)) as usize;
         members.push((format!("{side}>>{} (slot)", slot.name.name), start));
     }
-    for method in &body.methods {
+    for method in body.methods() {
         let (selector, selector_start) = selector_of(&method.pattern);
         let start = method.span.start.min(selector_start) as usize;
         members.push((format!("{side}>>{selector}"), start));
@@ -95,14 +95,14 @@ fn class_start(class: &ClassDeclaration) -> usize {
 /// A pattern's selector and the offset of its first token.
 fn selector_of(pattern: &MessagePattern) -> (String, u32) {
     match pattern {
-        MessagePattern::Unary { selector } => (selector.name.clone(), selector.span.start),
+        MessagePattern::Unary { selector, .. } => (selector.name.clone(), selector.span.start),
         MessagePattern::Binary { selector, .. } => (selector.name.clone(), selector.span.start),
         MessagePattern::Keyword { parts } => {
             let selector = parts
                 .iter()
-                .map(|(keyword, _)| format!("{}:", keyword.name))
+                .map(|part| format!("{}:", part.keyword.name))
                 .collect::<String>();
-            let start = parts.first().map_or(0, |(keyword, _)| keyword.span.start);
+            let start = parts.first().map_or(0, |part| part.keyword.span.start);
             (selector, start)
         }
     }

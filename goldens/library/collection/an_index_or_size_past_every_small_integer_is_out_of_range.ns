@@ -1,17 +1,35 @@
 /// An index, size or count that is a LargeInteger is refused in the words
 /// an out-of-range SmallInteger is: no index, size or count reaches one,
 /// and a LargeInteger is still an Integer.
-class AnIndexOrSizePastEverySmallIntegerIsOutOfRange = Object new (
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. huge = 18446744073709551616. |
-        transcript show: ([(Array new: 3) at: huge] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([(Array new: 3) at: huge negated put: 1] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Array new: huge] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Array new: huge negated] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' at: huge] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: 1 to: huge] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: huge negated to: 2] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([1.5 asStringFixed: huge] on: Error do: [:error | error messageText]); newLine
-    )
-) : ()
+class AnIndexOrSizePastEverySmallIntegerIsOutOfRange = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      huge = 18446744073709551616.
+    |
+    transcript
+        show: ([(Array new: 3) at: huge] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([(Array new: 3) at: huge negated put: 1] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Array new: huge] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Array new: huge negated] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' at: huge] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: 1 to: huge] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: huge negated to: 2] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([1.5 asStringFixed: huge] on: Error do: [:error | error messageText]);
+        newLine.
+  )
+)

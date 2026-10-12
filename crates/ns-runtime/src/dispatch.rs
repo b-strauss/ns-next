@@ -462,7 +462,13 @@ mod tests {
             ) : ()
         "};
         let module = ns_syntax::parse(&source).expect("parse");
-        let method = module.root_class.instance_side.methods[0].clone();
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .clone();
         let mut methods = crate::hash::IdentityMap::default();
         methods.insert(
             Symbol::intern(selector.trim_end_matches(':')),

@@ -3,13 +3,29 @@
 /// (docs/design/object-model.md, "Where Rust sees a future"): `1 + second`
 /// reaches Integer's `+` leaf with the future, and `show:` the transcript's
 /// with it.
-class Spec632AFutureIsAnArgument = Object new (| t ::= nil. |) (
-    class Probe = Object new (|| public sum = 1 + second. public shown = t show: text. public text = 'shown'. public second = 2. ||) () : ()
-    public main: platform args: arguments = (
-        | probe |
-        t:: platform transcript.
-        probe:: Probe new.
-        t newLine.
-        t show: probe sum printString; newLine
-    )
-) : ()
+class Spec632AFutureIsAnArgument = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  class Probe = Object new (
+    ||
+      public sum = 1 + second.
+      public shown = t show: text.
+      public text = 'shown'.
+      public second = 2.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      probe
+    |
+    t:: platform transcript.
+    probe:: Probe new.
+    t newLine.
+    t
+        show: probe sum printString;
+        newLine.
+  )
+)

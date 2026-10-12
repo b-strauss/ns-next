@@ -1,7 +1,9 @@
 /// A count whose result cannot be allocated is an error the program sees,
 /// never a Rust allocation abort, as `Array new:` refuses such a size.
 class HugeShift = () (
-    public main: platform args: arguments = (
-        platform transcript print: 1 << 9223372036854775807; newLine
-    )
+  public main: platform args: arguments = (
+    platform transcript
+        print: 1 << 9223372036854775807;
+        newLine.
+  )
 )

@@ -5,23 +5,93 @@
 /// every other number. `=` with something that is no number is false; an
 /// ordering with it is an ArgumentError.
 class NumbersCompareByExactValue = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript.
-          half = Fraction numerator: 1 denominator: 2.
-          third = Fraction numerator: 1 denominator: 3.
-          nan = 0.0 / 0.0.
-          infinity = 1.0 / 0.0.
-          twoToThe53 = 9007199254740992.
-          twoToThe70 = 1180591620717411303424. |
-        transcript print: 1 = 1.0; show: ' '; print: 1.0 = 1; show: ' '; print: -0.0 = 0; show: ' '; print: 3 = 3; newLine.
-        transcript print: twoToThe53 = twoToThe53 asFloat; show: ' '; print: twoToThe53 + 1 = (twoToThe53 + 1) asFloat; show: ' '; print: (twoToThe53 + 1) asFloat = twoToThe53; newLine.
-        transcript print: twoToThe70 = twoToThe70 asFloat; show: ' '; print: twoToThe70 asFloat = twoToThe70; show: ' '; print: twoToThe70 + 1 = twoToThe70 asFloat; newLine.
-        transcript print: half = 0.5; show: ' '; print: 0.5 = half; show: ' '; print: third = 0.3333333333333333; show: ' '; print: half = (Fraction numerator: 2 denominator: 4); show: ' '; print: half = third; show: ' '; print: half = nil; newLine.
-        transcript print: half < 0.6; show: ' '; print: 0.6 > half; show: ' '; print: third < half; show: ' '; print: 3 < (Fraction numerator: 7 denominator: 2); show: ' '; print: (Fraction numerator: 7 denominator: 2) <= 3; newLine.
-        transcript print: twoToThe53 + 1 > twoToThe53 asFloat; show: ' '; print: twoToThe53 asFloat < (twoToThe53 + 1); show: ' '; print: twoToThe70 + 1 > twoToThe70 asFloat; newLine.
-        transcript print: nan < 1; show: ' '; print: 1 < nan; show: ' '; print: nan = nan; show: ' '; print: 1 = nan; show: ' '; print: half < nan; newLine.
-        transcript print: infinity > twoToThe70; show: ' '; print: infinity negated < (Fraction numerator: -1 denominator: 3); show: ' '; print: twoToThe70 < infinity; newLine.
-        transcript show: ([half < nil] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([3 < 'x'] on: Error do: [:error | error messageText]); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      half = Fraction numerator: 1 denominator: 2.
+      third = Fraction numerator: 1 denominator: 3.
+      nan = 0.0 / 0.0.
+      infinity = 1.0 / 0.0.
+      twoToThe53 = 9007199254740992.
+      twoToThe70 = 1180591620717411303424.
+    |
+    transcript
+        print: 1 = 1.0;
+        show: ' ';
+        print: 1.0 = 1;
+        show: ' ';
+        print: -0.0 = 0;
+        show: ' ';
+        print: 3 = 3;
+        newLine.
+    transcript
+        print: twoToThe53 = twoToThe53 asFloat;
+        show: ' ';
+        print: twoToThe53 + 1 = (twoToThe53 + 1) asFloat;
+        show: ' ';
+        print: (twoToThe53 + 1) asFloat = twoToThe53;
+        newLine.
+    transcript
+        print: twoToThe70 = twoToThe70 asFloat;
+        show: ' ';
+        print: twoToThe70 asFloat = twoToThe70;
+        show: ' ';
+        print: twoToThe70 + 1 = twoToThe70 asFloat;
+        newLine.
+    transcript
+        print: half = 0.5;
+        show: ' ';
+        print: 0.5 = half;
+        show: ' ';
+        print: third = 0.3333333333333333;
+        show: ' ';
+        print: half = (Fraction numerator: 2 denominator: 4);
+        show: ' ';
+        print: half = third;
+        show: ' ';
+        print: half = nil;
+        newLine.
+    transcript
+        print: half < 0.6;
+        show: ' ';
+        print: 0.6 > half;
+        show: ' ';
+        print: third < half;
+        show: ' ';
+        print: 3 < (Fraction numerator: 7 denominator: 2);
+        show: ' ';
+        print: (Fraction numerator: 7 denominator: 2) <= 3;
+        newLine.
+    transcript
+        print: twoToThe53 + 1 > twoToThe53 asFloat;
+        show: ' ';
+        print: twoToThe53 asFloat < (twoToThe53 + 1);
+        show: ' ';
+        print: twoToThe70 + 1 > twoToThe70 asFloat;
+        newLine.
+    transcript
+        print: nan < 1;
+        show: ' ';
+        print: 1 < nan;
+        show: ' ';
+        print: nan = nan;
+        show: ' ';
+        print: 1 = nan;
+        show: ' ';
+        print: half < nan;
+        newLine.
+    transcript
+        print: infinity > twoToThe70;
+        show: ' ';
+        print: infinity negated < (Fraction numerator: -1 denominator: 3);
+        show: ' ';
+        print: twoToThe70 < infinity;
+        newLine.
+    transcript
+        show: ([half < nil] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([3 < 'x'] on: Error do: [:error | error messageText]);
+        newLine.
+  )
 )

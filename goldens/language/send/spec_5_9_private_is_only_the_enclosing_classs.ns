@@ -6,15 +6,28 @@
 /// N is Base): Child's private s is neither N's nor reachable by
 /// lookupProtected, so Child new run answers 1.
 class Spec59PrivateIsOnlyTheEnclosingClasss = Object new () (
-    class Base = Object new () (
-        s = ( ^1 )
-        public run = ( ^s )
+  class Base = Object new () (
+    s = (
+      ^1.
     )
-    class Child = Base new () (
-        private s = ( ^2 )
+
+    public run = (
+      ^s.
     )
-    public main: platform args: args = (
-        | t = platform transcript. |
-        t show: Child new run printString; newLine.
+  )
+
+  class Child = Base new () (
+    private s = (
+      ^2.
     )
-) : ()
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Child new run printString;
+        newLine.
+  )
+)

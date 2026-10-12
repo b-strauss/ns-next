@@ -1,1 +1,5 @@
-class Greeting named: name = Object new (| public text = 'hello, ', name. |) () : ()
+class Greeting named: name = Object new (
+  |
+    public text = 'hello, ' , name.
+  |
+) ()

@@ -1,6 +1,8 @@
-//! The repository's own Newspeak sources are indented with four spaces, never
-//! tabs, and commented with `///`. `corpus/` is excluded because it is
-//! upstream's verbatim copy (`corpus/PROVENANCE.md`).
+//! The repository's own Newspeak sources are commented with `///`, the one
+//! rule of their form `ns-next-analyzer fmt` does not enforce (the formatter
+//! keeps every comment as written; `formatting_gate.rs` in `ns-analyzer`
+//! holds the layout). `corpus/` is excluded because it is upstream's verbatim
+//! copy (`corpus/PROVENANCE.md`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,25 +28,6 @@ fn tracked_sources_outside_the_corpus(root: &Path) -> Vec<String> {
         .filter(|name| !name.starts_with("corpus/"))
         .map(str::to_string)
         .collect()
-}
-
-#[test]
-fn newspeak_sources_outside_the_corpus_contain_no_tab() {
-    let root = repository_root();
-    let mut offences = Vec::new();
-    for name in tracked_sources_outside_the_corpus(&root) {
-        let text = std::fs::read_to_string(root.join(&name)).expect("a tracked file reads");
-        for (index, line) in text.lines().enumerate() {
-            if line.contains('\t') {
-                offences.push(format!("{name}:{}", index + 1));
-            }
-        }
-    }
-    assert!(
-        offences.is_empty(),
-        "tabs in Newspeak sources (indent with four spaces):\n{}",
-        offences.join("\n")
-    );
 }
 
 /// The house style is the `///` line comment, whose text an editor reads;

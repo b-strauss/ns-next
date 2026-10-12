@@ -14,27 +14,63 @@
 ///   understand #layered. The mixin carries the methods, not the
 ///   superclass.
 class MixinMethodLookupAndOverride = Object new () (
-    class Base = Object new () (
-        public onlyInBase = ( ^'Base answers onlyInBase' )
-        public shadowed = ( ^'Base answers shadowed' )
-        public layered = ( ^'Base' )
-    ) : ()
-    class Trait = Object new () (
-        public greet = ( ^'Trait answers greet' )
-        public describe = ( ^'Trait answers describe' )
-        public shadowed = ( ^'Trait answers shadowed' )
-        public layered = ( ^'Trait over ', super layered )
-    ) : ()
-    class Combined = Base new <: Trait (
-    ) (
-        public describe = ( ^'Combined overrides describe, then ', super describe )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. combined = Combined new. |
-        t show: combined greet; newLine.
-        t show: combined describe; newLine.
-        t show: combined onlyInBase; newLine.
-        t show: combined shadowed; newLine.
-        t show: combined layered; newLine.
+  class Base = Object new () (
+    public onlyInBase = (
+      ^'Base answers onlyInBase'.
     )
-) : ()
+
+    public shadowed = (
+      ^'Base answers shadowed'.
+    )
+
+    public layered = (
+      ^'Base'.
+    )
+  )
+
+  class Trait = Object new () (
+    public greet = (
+      ^'Trait answers greet'.
+    )
+
+    public describe = (
+      ^'Trait answers describe'.
+    )
+
+    public shadowed = (
+      ^'Trait answers shadowed'.
+    )
+
+    public layered = (
+      ^'Trait over ' , super layered.
+    )
+  )
+
+  class Combined = Base new <: Trait () (
+    public describe = (
+      ^'Combined overrides describe, then ' , super describe.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      combined = Combined new.
+    |
+    t
+        show: combined greet;
+        newLine.
+    t
+        show: combined describe;
+        newLine.
+    t
+        show: combined onlyInBase;
+        newLine.
+    t
+        show: combined shadowed;
+        newLine.
+    t
+        show: combined layered;
+        newLine.
+  )
+)

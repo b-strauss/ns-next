@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use super::capture::{BodyKey, Captured, Captures, Place};
@@ -723,13 +723,13 @@ impl<'a> Lowerer<'a> {
     /// discarded initializer `^`), `None` when a return instruction was
     /// emitted.
     fn lower_statement_inner(&mut self, statement: &Statement, use_: ValueUse) -> Option<u16> {
-        match statement {
-            Statement::Expression(expression) => {
+        match &statement.kind {
+            StatementKind::Expression(expression) => {
                 let register = self.lower_expression_for(expression, use_);
                 self.last_expression_register = Some(register);
                 Some(register)
             }
-            Statement::Return(expression) => {
+            StatementKind::Return(expression) => {
                 let make_return = self.return_instruction();
                 let use_ = if make_return.is_some() {
                     ValueUse::Read
@@ -810,8 +810,10 @@ impl<'a> Lowerer<'a> {
     /// returns its last statement's value, `nil` if it has none; a superclass
     /// clause returns the value of the one expression it is.
     fn finish_body(&mut self, statements: &[Statement]) {
-        let ends_in_return = matches!(statements.last(), Some(Statement::Return(_)))
-            && self.kind != CodeKind::Initializer;
+        let ends_in_return = matches!(
+            statements.last().map(|statement| &statement.kind),
+            Some(StatementKind::Return(_))
+        ) && self.kind != CodeKind::Initializer;
         if ends_in_return {
             return;
         }
@@ -836,7 +838,7 @@ impl<'a> Lowerer<'a> {
         let parameters: Vec<crate::Symbol> = block
             .parameters
             .iter()
-            .map(|parameter| crate::Symbol::intern(&parameter.name))
+            .map(|parameter| crate::Symbol::intern(&parameter.name.name))
             .collect();
         let key = BodyKey::Block(block.span);
         // A fallback closure's block, and everything nested in one, keeps the
@@ -960,11 +962,11 @@ impl<'a> Lowerer<'a> {
     /// use on to their blocks. None of them infers it, so a new position
     /// cannot silently be given the cheap form without the property holding.
     fn lower_expression_for(&mut self, expression: &Expression, use_: ValueUse) -> u16 {
-        match (use_, expression) {
-            (ValueUse::Discarded, Expression::Assign { target, value, .. }) => {
+        match (use_, &expression.kind) {
+            (ValueUse::Discarded, ExpressionKind::Assign { target, value, .. }) => {
                 self.lower_assign(target, value, ValueUse::Discarded)
             }
-            (ValueUse::Discarded, Expression::Send(send)) => {
+            (ValueUse::Discarded, ExpressionKind::Send(send)) => {
                 self.lower_send(send, ValueUse::Discarded)
             }
             _ => self.lower_expression(expression),
@@ -1047,22 +1049,22 @@ impl<'a> Lowerer<'a> {
     /// that value when its consumer executes") -- silent wrong output, not a
     /// crash.
     fn writes_register(&self, expression: &Expression, register: u16, inlined_depth: u16) -> bool {
-        match expression {
+        match &expression.kind {
             // `LoadLiteral` and `MakeClosure` write only their own scratch
             // destination. A block literal that is not inlined runs nothing
             // here, and the body it compiles to writes its own registers.
-            Expression::Literal(_) | Expression::Block(_) => false,
-            Expression::Identifier(identifier) => {
+            ExpressionKind::Literal(_) | ExpressionKind::Block(_) => false,
+            ExpressionKind::Identifier(identifier) => {
                 self.identifier_sends(identifier) && self.a_send_can_write(register)
             }
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Assign { target, value, .. } => {
                 self.writes_register(value, register, inlined_depth)
                     || self.assignment_target_register(target, inlined_depth) == Some(register)
                     // A setter send runs user code like any other send.
                     || (self.identifier_sends(target) && self.a_send_can_write(register))
             }
-            Expression::Send(send) => self.send_writes_register(send, register, inlined_depth),
-            Expression::Cascade(cascade) => {
+            ExpressionKind::Send(send) => self.send_writes_register(send, register, inlined_depth),
+            ExpressionKind::Cascade(cascade) => {
                 self.a_send_can_write(register)
                     || self.writes_register(&cascade.receiver, register, inlined_depth)
                     || std::iter::once(&cascade.first)
@@ -1072,7 +1074,7 @@ impl<'a> Lowerer<'a> {
             }
             // `MakeArray` itself writes nothing but its destination; its
             // elements can.
-            Expression::DynamicArray { elements, .. } => elements
+            ExpressionKind::DynamicArray { elements, .. } => elements
                 .iter()
                 .any(|element| self.writes_register(element, register, inlined_depth)),
         }
@@ -1166,8 +1168,8 @@ impl<'a> Lowerer<'a> {
         blocks
             .into_iter()
             .flat_map(|block| block.body.statements.iter())
-            .any(|statement| match statement {
-                Statement::Expression(expression) | Statement::Return(expression) => {
+            .any(|statement| match &statement.kind {
+                StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                     self.writes_register(expression, register, inlined_depth + 1)
                 }
             })
@@ -1175,8 +1177,8 @@ impl<'a> Lowerer<'a> {
 
     /// Returns the register holding `expression`'s value.
     pub(crate) fn lower_expression(&mut self, expression: &Expression) -> u16 {
-        match expression {
-            Expression::Literal(literal) => {
+        match &expression.kind {
+            ExpressionKind::Literal(literal) => {
                 let destination = self.allocate_scratch();
                 self.emit(Instruction::LoadLiteral {
                     destination,
@@ -1184,14 +1186,14 @@ impl<'a> Lowerer<'a> {
                 });
                 destination
             }
-            Expression::Identifier(id) => self.lower_identifier_read(id),
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Identifier(id) => self.lower_identifier_read(id),
+            ExpressionKind::Assign { target, value, .. } => {
                 self.lower_assign(target, value, ValueUse::Read)
             }
-            Expression::Send(send) => self.lower_send(send, ValueUse::Read),
-            Expression::Cascade(cascade) => self.lower_cascade(cascade),
-            Expression::Block(block) => self.lower_block_literal(block),
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::Send(send) => self.lower_send(send, ValueUse::Read),
+            ExpressionKind::Cascade(cascade) => self.lower_cascade(cascade),
+            ExpressionKind::Block(block) => self.lower_block_literal(block),
+            ExpressionKind::DynamicArray { elements, .. } => {
                 let element_registers: Vec<u16> = (0..elements.len())
                     .map(|index| self.lower_operand(&elements[index], &elements[index + 1..]))
                     .collect();
@@ -2106,7 +2108,14 @@ mod tests {
             crate::SourceOrigin::File(PathBuf::from("t.ns")),
         )
         .expect("resolve");
-        let method = resolved.module.root_class.instance_side.methods[index].clone();
+        let method = resolved
+            .module
+            .root_class
+            .instance_side
+            .methods()
+            .nth(index)
+            .expect("a method")
+            .clone();
         (method, resolved.bindings.clone())
     }
 
@@ -2130,7 +2139,7 @@ mod tests {
     }
 
     fn return_expression(method: &ast::MethodDeclaration) -> &Expression {
-        let Statement::Return(expression) = &method.body.statements[0] else {
+        let StatementKind::Return(expression) = &method.body.statements[0].kind else {
             panic!("expected a return statement");
         };
         expression
@@ -2711,8 +2720,8 @@ mod tests {
         ));
         let (foo, bindings) = resolve_method(source, 1);
         let mut lowerer = method_lowerer(&foo, &bindings);
-        lowerer.lower_expression(match &foo.body.statements[1] {
-            Statement::Return(expression) => expression,
+        lowerer.lower_expression(match &foo.body.statements[1].kind {
+            StatementKind::Return(expression) => expression,
             _ => panic!(),
         });
         let code = lowerer.finish(foo.span);
@@ -2849,8 +2858,10 @@ mod tests {
             .body
             .statements
             .iter()
-            .map(|statement| match statement {
-                Statement::Expression(expression) | Statement::Return(expression) => expression,
+            .map(|statement| match &statement.kind {
+                StatementKind::Expression(expression) | StatementKind::Return(expression) => {
+                    expression
+                }
             })
             .collect();
         let mut lowerer = lowerer_for(
@@ -3803,9 +3814,17 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        let method = &resolved.module.root_class.instance_side.nested_classes[0]
+        let method = resolved
+            .module
+            .root_class
             .instance_side
-            .methods[0];
+            .nested_classes()
+            .next()
+            .expect("a nested class")
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
         let mut lowerer = method_lowerer(method, &resolved.bindings);
         lowerer.lower_local_initializers(&method.body.temporaries);
         lowerer.lower_body(&method.body.statements);

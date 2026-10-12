@@ -1,12 +1,16 @@
 # Frontend — lexer, parser, AST
 
 > **Status:** built.
-> **Code:** `crates/ns-syntax/` — lexer, tokens, AST, recursive-descent and
-> Pratt parser, `Span`, diagnostics; for an editor, `parse_for_editor`
+> **Code:** `crates/ns-syntax/` — lexer, tokens, AST (`ast.rs`, lossless
+> except for layout), recursive-descent and Pratt parser, `Span`,
+> diagnostics; the comment attachment (`attach.rs`) and the comparison
+> without positions (`positions.rs`); for an editor, `parse_for_editor`
 > (`lib.rs`), the recovery with its work budget (`parser/declaration.rs`,
-> `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop
-> and `receiver_chain` (`ast.rs`); the recovery's tests in
-> `tests/recovery.rs`.
+> `parser/mod.rs`), the AST's `Delimiters`, and `Send`'s link-by-link drop,
+> clone and `receiver_chain` (`ast.rs`); the recovery's tests in
+> `tests/recovery.rs`, the attachment's in `tests/attachment.rs`. The
+> printer that writes a module back as source is
+> [formatting.md](formatting.md)'s.
 
 Turns source bytes into a `Module` AST with source spans, and reports lexer and
 parser diagnostics; for an editor, it answers a recovered module for any
@@ -17,22 +21,27 @@ should change for runtime work.
 
 ```
 class Name usingPlatform: platform = SuperclassClause (
-    /// optional class comment
-    |
+  /// optional class comment
+  |
     private Foo = platform collections Foo.
     bar ::= 0.
-    |
-    initExpr1.
-    initExpr2.
+  |
+  initExpr1.
+  initExpr2.
 ) (
-    public method = ( ^expr )
+  public method = (
+    ^expr.
+  )
 ) : (
-    public classSideMethod = ( ... )
+  public classSideMethod = (
+    ...
+  )
 )
 ```
 
 A comment is `(* ... *)` or a block of `///` lines (see "Comments"); the
-repository's own sources use `///`.
+repository's own sources use `///`. The layout is the formatter's
+([formatting.md](formatting.md)).
 
 Three bracketed sections in order: the class body (slots and initializer
 expressions), the instance side, and — after `) : (` — the class side.
@@ -111,9 +120,10 @@ The productions, and what the parser does with each:
   takes no access modifier -- only `nestedClassDecl → [accessModifier]
   classDeclaration` has one.
 - `classDeclaration` (§6): `class`, a name, an optional `typeParameterDecl`
-  (`<[K, V]>`, dropped, "What is parsed and dropped"), then the factory's
-  `messagePattern` and `=`, or `=` alone -- tried in that order, so
-  `class Pair = other = Object new () ()` has the binary factory `=`.
+  (`<[K, V]>`, kept and ignored, "What is kept but ignored, and what a
+  reprint drops"), then the factory's `messagePattern` and `=`, or `=`
+  alone -- tried in that order, so `class Pair = other = Object new () ()`
+  has the binary factory `=`.
 - `inheritanceClause → [inheritancePrefix] unarySelector [message]` (§6.1):
   a prefix (`outer N`, `self` or `super`), the receiver, and at most one
   message -- unary, binary or keyword, whose arguments may be any binary or
@@ -126,7 +136,7 @@ The productions, and what the parser does with each:
   in written order, in `ClassDeclaration::mixin_applications`. What the
   runtime builds from it is [object-model.md](object-model.md), "Mixin
   application". Inside a `<...>` type body or a `where { ... }` clause `<:`
-  is the bound operator (`<Foo <: Bar>`) and is dropped with it.
+  is the bound operator (`<Foo <: Bar>`), one of the annotation's tokens.
 - `classBody → classHeader sideDecl [classSideDecl]` (§6.3): the instance
   side is required, however empty -- `class C = () ()` -- and the class side
   optional. `classHeader → lparen [classComment] [slotDecls] initExprs
@@ -178,7 +188,7 @@ The productions, and what the parser does with each:
   or tuple, or keywords each with an optional value -- `_`, a literal,
   `?name` or a nested pattern (`<x: <y: 1>>`, whose closing `>>` the parser
   splits). Parsed in full and kept as its text; what it evaluates to is a
-  deviation ("What is parsed and dropped").
+  deviation ("What is kept but ignored, and what a reprint drops").
 - `super` is followed by a message (§5.10) and `outer` by a class's name
   (§5.9), both at the parser. `outer N` with no message after it is the
   enclosing object ([dispatch.md](dispatch.md), "Shapes the resolver must
@@ -310,26 +320,111 @@ lose the indentation they share and their trailing whitespace, and leading
 and trailing blank lines are dropped. It renders nothing (no Markdown);
 that is the reader's business.
 
-The class comment (`ClassDeclaration::class_comment`), the comment standing
-first in a class header, is taken from either form (`take_class_comment`)
-and kept as a `Comment`, its form and the source it spans, markers and
-layout included: the AST holds what a formatter needs to write the comment
-back as it was, and `Comment::text` answers its text for a reader. The
-block is the one the whole source's lexer forms, so the parser and an
-editor agree on it: a `///` after the header's `(` on
-its line is a remark there, no part of the class comment, and the block
-below it, if it is all that stands before the header's first token, is the
-class comment.
+`parse` and `parse_for_editor` attach every comment to the node of the
+syntax tree it belongs to (`attach.rs`, whose module documentation states
+the rule and, for each node, which tokens are its own). Each commentable
+node -- the module, a class, a class side, a slot, a method, a code body,
+a statement, an expression, a message, a block, a superclass clause --
+keeps its `comments`, each an `AttachedComment`: its form, its lines
+(a `///` block's text after each `///`; a `(* ... *)`'s lines as written),
+the column its `(*` stood at, its `Anchor` and its `Placement` (on its own
+line, at the end of a line, or inline). A printer writes it back from these
+alone ([formatting.md](formatting.md), rule 21). A comment above a member leads it
+(`Before`), one after code on its line trails that code's construct
+(`After`), and one after the last element before a closer dangles in the
+container (`Inner(n)`, after the container's `n`-th own token). The
+anchors count the parser's final tokens, `3 -4` as three, and leave out
+the tokens of an empty slot section, empty temporaries and an empty class
+side, which a reprint drops; a comment inside a pattern literal stays in
+the literal's text. The class comment (`ClassDeclaration::class_comment`)
+is the first comment in a class header, before any slot or initializer
+expression, in either form; a `///` after the header's `(` on its line is
+a remark there, not the class comment. `Module::without_positions` erases
+every position -- spans, and a block comment's column, its continuation
+lines moved with it -- and every comment's `Placement`, since where a
+comment stands on its line is layout (anchors stay compared), and reads an
+empty part as absent, so two parses that say the same compare equal however
+they are laid out.
 
-`run`, and with it `lex` and `parse`, drops the list, and the token stream
-is the same either way.
+`run`, and with it `lex`, drops the list; the token stream is the same
+either way.
 
 ## AST
 
-`Module`, `ClassDeclaration`, `ClassHeader`, `SuperclassClause`,
-`SlotDeclaration { name, mutability, initializer }`, `MethodDeclaration { pattern, body }`,
-`MessagePattern`, `CodeBody { temporaries, statements }`, `Statement`, `Expression` (`Identifier`,
-`Literal`, `Block`, `Send`, `Cascade`, `Assign`, `Array`), `Literal`.
+`ast.rs`: `Module`, `ClassDeclaration`, `ClassBody`, `Member`,
+`SuperclassClause`, `SlotDeclaration`, `MethodDeclaration`,
+`MessagePattern` (with `Parameter` and `KeywordPart`), `CodeBody`,
+`Statement`, `Expression` and its `ExpressionKind` (`Identifier`,
+`Literal`, `Send`, `Cascade`, `Assign`, `Block`, `DynamicArray`),
+`MessageSend`, `Selector`, `BlockExpression`, `Literal`, `TypeAnnotation`,
+`AttachedComment`.
+
+**The tree is lossless except for layout.** A module printed from its tree
+alone, without the source ([formatting.md](formatting.md)), parses back to
+the same tree, positions aside (`Module::without_positions`, "Comments"),
+because the runtime is to write source back from trees it builds or edits.
+What a reader of the source sees beyond the meaning is therefore kept:
+
+- **The prologue.** `Module::language_id` and `Module::category` are
+  `Option`s, `None` when the source leaves one out; a `Category` keeps its
+  `value`, unescaped, and its `text`, as written.
+- **Literal spellings.** An `Integer` and a `Float` keep their text, a
+  `String` and a `Symbol` their unescaped `value` and their `text` as
+  written (`'it''s'`, `"a"`, `#at:put:`, `#'a b'`), a `Pattern` its source
+  text.
+- **The expression envelope.** An `Expression` is its shape, `kind`, and
+  what surrounds the shape without changing what it means: its
+  `parentheses`, innermost first, each with its `Delimiters` and the type
+  arguments written after its `)` (`(Box)[Integer]`); the `type_arguments`
+  written right after the shape (`Box[Integer]`); `synthesized`, set on a
+  node the parser made up, which nothing in the source spells (the implicit
+  receiver of a send); its `comments`; and its `span`, widened over the
+  parentheses. Parentheses sit beside the shape, not in a variant of their
+  own, so every match on the shape -- `(outer N) m` in the resolver,
+  `ifTrue: ([…])` inlining, the primitive fast paths -- sees what it sees
+  without them ([dispatch.md](dispatch.md)). `ExpressionKind::span` is the
+  shape's span alone, the key of every side table, so a parenthesised name
+  finds the binding the bare one would.
+- **Statements.** A `Statement` is its `kind`, an expression or a `^`
+  return, its `comments` and its span, from its first token (the `^` of a
+  return) to its last, the separating `.` excluded.
+- **`<-:`.** `MessageSend::eventual` records an eventual send; the runtime
+  runs it as an ordinary one ("What is kept but ignored, and what a reprint
+  drops"). A unary message keeps the type arguments after its selector
+  (`a foo[E]`).
+- **Type annotations** are `TypeAnnotation { tokens, span }`, each token
+  its lexer kind and text, from the opening `<`, `[` or `where` through the
+  closer that ends it, at every place one may stand: a class's type
+  parameters, its factory's return type and `where` clause, a slot's,
+  temporary's or parameter's type, a unary pattern's type parameters, a
+  method's return type and `where` clause, a superclass or `<:` clause's
+  receiver type arguments, and the value-site type arguments above. The
+  specification gives no type grammar and makes the annotations
+  documentation only, so an annotation the parser accepts is kept as its
+  tokens, not as a type AST.
+- **Members in source order.** See below.
+- **A lazy slot's modifier order.** `lazy public x` and `public lazy x`
+  are the same declaration; `SlotDeclaration::access_before_lazy` records
+  which was written.
+- **Every comment**, attached to its node ("Comments").
+- **Empty parts as written.** An empty slot section (`| |`, `|| ||`) keeps
+  its `slot_delimiters`, empty temporaries their `temporaries_delimiters`,
+  and an empty class side `: ()` is `Some` with no member -- the runtime
+  builds a class-side mixin row for it as for any class side. A reprint
+  drops each unless a comment stands inside it.
+
+What the tree does not keep is the optional period: the one after the
+last statement of a body, the last initializer expression of a header or
+the last element of a tuple, and the one after a slot or temporary without
+an initializer. It carries nothing, and a reprint writes periods by rules
+of its own ([formatting.md](formatting.md), rules 5, 6 and 10).
+
+A `ClassBody` is one side of a class: `header_slots` and
+`initializer_expressions` (the instance side's header, empty on a class
+side), then `members`, each a nested class, a lazy slot or a method, in
+source order. `slots()` answers the header's slots, then the lazy slots in
+source order, the order slot indices and image rows use; `methods()`,
+`nested_classes()` and `lazy_slots()` answer theirs in source order.
 
 **Every node carries a `Span`** — byte offsets into the source, as
 `Span { start: u32, end: u32 }`. Spans are how the resolver attaches bindings,
@@ -349,19 +444,23 @@ ended by `.`), `ClassBody::slot_delimiters` (the header's `| |` or `|| ||`),
 `BlockExpression::delimiters` (the `[ ]`; `None` for a block the compiler
 builds). Nothing in the runtime reads them.
 
-## What is parsed and dropped
+## What is kept but ignored, and what a reprint drops
 
-Typed-Newspeak declaration syntax parses and is discarded, because there is no
-type AST: `<Type>` annotations on parameters and slots, `^<Type>` return
-annotations, `[T]` type parameters on class names and selectors and type
-arguments on a superclass or `<:` clause's receiver (`<: Collection[E]`), and
-`where { ... }` constraint clauses. §4.3 acknowledges this "built-in optional
-type annotation syntax based on the Strongtalk type system" without giving it
-a grammar, so the canonical grammar's is followed, and §6's own
-`typeParameterDecl`, `class Map <[K, V]> new: capacity <Integer>`, is
-accepted beside the canonical `class List[E]` (decided with the user on
-2026-09-27). The eventual-send operator `<-:` is likewise
-accepted and dropped, which makes an asynchronous send (§5.6) run as an
+Typed-Newspeak declaration syntax parses and is kept in the syntax tree as
+the tokens written (`ast::TypeAnnotation`), not as a type AST, and nothing
+after the parser reads it: `<Type>` annotations on parameters and slots,
+`^<Type>` return annotations, `[T]` type parameters on class names and
+selectors, type arguments on a superclass or `<:` clause's receiver
+(`<: Collection[E]`) and at a value site (`Box[Integer] new`, `a foo[E]`,
+`(Box)[Integer]`), and `where { ... }` constraint clauses. §4.3
+acknowledges this "built-in optional type annotation syntax based on the
+Strongtalk type system" without giving it a grammar, so the canonical
+grammar's is followed, and §6's own `typeParameterDecl`,
+`class Map <[K, V]> new: capacity <Integer>`, is accepted beside the
+canonical `class List[E]` (decided with the user on 2026-09-27). The
+eventual-send operator `<-:` is likewise
+accepted and recorded in the syntax tree (`MessageSend::eventual`), but the
+runtime ignores it, which makes an asynchronous send (§5.6) run as an
 ordinary synchronous one and answer the value where the specification gives a
 promise. Nothing in the runtime implements actors, so there is no promise to
 answer with; the alternative would be to refuse the operator outright.
@@ -384,7 +483,7 @@ provides one, a clean `doesNotUnderstand: #Pattern` instead of a silent
 corpus, `corpus/modules/NSPatternMatching.ns` (`<val: ?y> => [ y ]`).
 Closing it retires the deviations-table row.
 
-Two of the things dropped here -- the asynchronous send and the pattern
+Two of the things ignored here -- the asynchronous send and the pattern
 literal -- change what a correct program answers, rather than only what an
 incorrect one is allowed to say. Each has a row in [README.md](README.md)'s
 deviations table; this section is what those rows point at.
@@ -394,6 +493,13 @@ A code body's temporary list has the full slot-declaration form
 `| x = expression. |` and `| x ::= expression. |` inside a method or block body
 declare initialized local slots, and `CodeBody.temporaries` keeps the full
 declaration -- name, mutability and initializer -- not just the name.
+
+**What a reprint drops.** The parser keeps every part of a source that
+says something, and a reprint ([formatting.md](formatting.md)) writes all
+of it back. It drops only what says nothing: an empty slot section
+(`| |`, `|| ||`), empty temporaries and an empty class side `: ()`, each
+kept in the tree as written but left out of the reprint unless a comment
+stands inside it, and the optional periods the tree does not keep ("AST").
 
 ## The six reserved words
 
@@ -493,7 +599,7 @@ a design of its own rather than a conformance fix:
 
 §5.4.3 gives Newspeak exactly one assignment form, the setter send `id:: e`
 (desugaring to `id: e`, "Setter Sends"), which `parse_expression` reads at an
-expression's head as an `Expression::Assign` ([dispatch.md](dispatch.md),
+expression's head as an `ExpressionKind::Assign` ([dispatch.md](dispatch.md),
 "Setter sends"). Nothing in the specification grammar, the canonical grammar
 (`corpus/reference/NewspeakGrammar.ns`), Primordial Soup or SOMns accepts
 `:=`, Smalltalk's assignment. The lexer refuses it by name — one diagnostic,
@@ -541,15 +647,17 @@ them.
   so nothing compiled ever sees a recovered module.
 - `ns_syntax::parse_for_editor` always answers an `EditorParse`: `tokens`,
   the lexer's, before the parser splits any; `module`, recovered where the
-  source has errors; `comments`, every comment in source order,
-  consecutive `///` lines as one ("Comments"); and `diagnostics`, the lexer's, then the parser's. A lexer
-  error does not stop the parse: the lexer answers a complete token stream
-  beside its errors, an unterminated string or comment running to the end
-  of the file. A source longer than a span can address answers a root class
-  with an empty name and nothing in it, and the one `source_too_long`
-  diagnostic. On a source without errors both entries answer the same
-  module, which `ns-analyzer`'s `the_editor_parse_agrees_with_parse` checks over
-  every corpus module, golden and the kernel.
+  source has errors, its comments attached as `parse` attaches them;
+  `comments`, every comment in source order, consecutive `///` lines as
+  one ("Comments"), for the folds; and `diagnostics`, the lexer's, then
+  the parser's. A lexer error does not stop the parse: the lexer answers a
+  complete token stream beside its errors, an unterminated string or
+  comment running to the end of the file. A source longer than a span can
+  address answers a root class with an empty name and nothing in it, and
+  the one `source_too_long` diagnostic. On a source without errors both
+  entries answer the same module, which `ns-analyzer`'s
+  `the_editor_parse_agrees_with_parse` checks over every corpus module,
+  golden and the kernel.
 
 **Resynchronisation.** Two means:
 
@@ -690,8 +798,10 @@ them.
    the editor's (`ns-analyzer`'s semantic tokens and folds) takes each chain
    from `Send::receiver_chain`. 128,000 unclosed methods, or a valid chain
    of a million messages, parse and are analysed on the server's 8 MiB, and
-   on 1 MiB. The compiler, and the AST's derived `Clone`, `PartialEq` and
-   `Debug`, still recurse along a chain ([OPEN-WORK.md](../OPEN-WORK.md),
+   on 1 MiB. `Send`'s `Clone` takes the chain link by link as well, and so
+   do the printer and `Module::without_positions` ([formatting.md](formatting.md)).
+   The compiler, and the AST's derived `PartialEq` and `Debug`, still
+   recurse along a chain ([OPEN-WORK.md](../OPEN-WORK.md),
    "Defects that change a correct program's output").
 
 **Left as it is.** An unfinished body whose next line is a valid expression

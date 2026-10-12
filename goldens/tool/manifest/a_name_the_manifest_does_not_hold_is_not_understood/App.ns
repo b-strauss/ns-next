@@ -2,9 +2,13 @@
 /// any other name is an ordinary unknown message, raised while the root is
 /// instantiated, so main:args: never runs.
 class App packageUsing: manifest = Object new (
-    | private Missing = manifest Missing. |
+  |
+    private Missing = manifest Missing.
+  |
 ) (
-    public main: platform args: arguments = (
-        platform transcript show: 'unreachable'; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    platform transcript
+        show: 'unreachable';
+        newLine.
+  )
+)

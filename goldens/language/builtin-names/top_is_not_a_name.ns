@@ -4,7 +4,9 @@
 /// inheritance chain (2.3.1) and is an ordinary `doesNotUnderstand:`; a bare
 /// `Top` is the same send by 5.7.
 class TopIsNotAName = Object new () (
-    public main: platform args: arguments = (
-        platform transcript show: self Top printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    platform transcript
+        show: self Top printString;
+        newLine.
+  )
+)

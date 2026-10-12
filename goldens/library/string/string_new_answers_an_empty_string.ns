@@ -1,9 +1,17 @@
 /// `String new` answers an empty String, not a slotless instance.
 class StringNewAnswersAnEmptyString = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript print: String new size; newLine.
-        transcript print: String new = ''; newLine.
-        transcript show: String new class name; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        print: String new size;
+        newLine.
+    transcript
+        print: String new = '';
+        newLine.
+    transcript
+        show: String new class name;
+        newLine.
+  )
+)

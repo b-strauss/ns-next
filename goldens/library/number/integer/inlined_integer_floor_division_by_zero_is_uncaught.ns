@@ -2,9 +2,10 @@
 /// path's guard passes on two literal integers, then the fallback's ordinary
 /// `//` send raises the primitive's own "division by zero" -- not a message
 /// the fast path invents.
-class IntegerDivisionByZero = Object new (
-) (
-    public main: p args: a = (
-        p transcript show: (7 // 0) printString; newLine
-    )
-) : ()
+class IntegerDivisionByZero = Object new () (
+  public main: p args: a = (
+    p transcript
+        show: (7 // 0) printString;
+        newLine.
+  )
+)

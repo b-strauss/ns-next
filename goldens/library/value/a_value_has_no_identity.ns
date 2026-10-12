@@ -31,25 +31,35 @@
 /// class's enclosing object to be one; the transcript lives in `Script`,
 /// which is no value.
 class ValueIdentity = Object <: Value () (
-    public class Text = String new () ()
-    class Script on: aTranscript = Object new (
-        | transcript = aTranscript. |
-    ) (
-        report: label for: first and: second = (
-            transcript show: label; show: ' '; show: (first = second) printString;
-                show: ' '; show: (first == second) printString; newLine
-        )
-        public run = (
-            report: 'String' for: 'a' and: 'a'.
-            report: 'Symbol' for: #a and: #a.
-            report: 'Integer' for: 3 and: 3.
-            report: 'Nil' for: nil and: nil.
-            report: 'Float/Integer' for: 1.0 and: 1.
-            report: 'Integer/Float' for: 1 and: 1.0.
-            report: 'Text' for: Text new and: Text new.
-        )
+  public class Text = String new () ()
+
+  class Script on: aTranscript = Object new (
+    |
+      transcript = aTranscript.
+    |
+  ) (
+    report: label for: first and: second = (
+      transcript
+          show: label;
+          show: ' ';
+          show: (first = second) printString;
+          show: ' ';
+          show: (first == second) printString;
+          newLine.
     )
-    public main: platform args: arguments = (
-        (Script on: platform transcript) run
+
+    public run = (
+      report: 'String' for: 'a' and: 'a'.
+      report: 'Symbol' for: #a and: #a.
+      report: 'Integer' for: 3 and: 3.
+      report: 'Nil' for: nil and: nil.
+      report: 'Float/Integer' for: 1.0 and: 1.
+      report: 'Integer/Float' for: 1 and: 1.0.
+      report: 'Text' for: Text new and: Text new.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    (Script on: platform transcript) run.
+  )
+)

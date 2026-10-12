@@ -4,12 +4,22 @@
 /// form as a self send as well". A self send is outer C m, so (self)
 /// secret reaches Holder's protected secret.
 class Spec58ParenthesizedSelfIsASelfSend = Object new () (
-    class Holder = Object new () (
-        protected secret = ( ^5 )
-        public viaParenthesizedSelf = ( ^(self) secret )
+  class Holder = Object new () (
+    protected secret = (
+      ^5.
     )
-    public main: platform args: args = (
-        | t = platform transcript. |
-        t show: Holder new viaParenthesizedSelf printString; newLine.
+
+    public viaParenthesizedSelf = (
+      ^(self) secret.
     )
-) : ()
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Holder new viaParenthesizedSelf printString;
+        newLine.
+  )
+)

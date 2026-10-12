@@ -40,783 +40,899 @@
 /// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 /// SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 class CD usingPlatform: platform = (
-    | private List = platform collections List.
-
-      private MinX = 0.0.
-      private MinY = 0.0.
-      private MaxX = 1000.0.
-      private MaxY = 1000.0.
-      private MinZ = 0.0.
-      private MaxZ = 10.0.
-      private ProximityRadius = 1.0.
-      private GoodVoxelSize = ProximityRadius * 2.0.
-
-      private horizontal = Vector2D coordinateX: GoodVoxelSize coordinateY: 0.0.
-      private vertical = Vector2D coordinateX: 0.0 coordinateY: GoodVoxelSize. |
+  |
+    private List = platform collections List.
+    private MinX = 0.0.
+    private MinY = 0.0.
+    private MaxX = 1000.0.
+    private MaxY = 1000.0.
+    private MinZ = 0.0.
+    private MaxZ = 10.0.
+    private ProximityRadius = 1.0.
+    private GoodVoxelSize = ProximityRadius * 2.0.
+    private horizontal = Vector2D coordinateX: GoodVoxelSize coordinateY: 0.0.
+    private vertical = Vector2D coordinateX: 0.0 coordinateY: GoodVoxelSize.
+  |
 ) (
-    public bench = (
-        | collisions |
-        collisions:: benchmark: 250.
-        collisions = 10830 ifFalse: [
-            Error signal: 'CD: expected 10830, got ', collisions printString].
-        ^collisions
-    )
-    benchmark: aircraftCount = (
-        | frameCount simulator detector actualCollisions |
-        frameCount:: 200.
+  public bench = (
+    |
+      collisions
+    |
+    collisions:: benchmark: 250.
+    collisions = 10830 ifFalse: [Error signal: 'CD: expected 10830, got ' , collisions printString].
+    ^collisions.
+  )
 
-        simulator:: Simulator new: aircraftCount.
-        detector:: CollisionDetector new.
+  benchmark: aircraftCount = (
+    |
+      frameCount
+      simulator
+      detector
+      actualCollisions
+    |
+    frameCount:: 200.
+    simulator:: Simulator new: aircraftCount.
+    detector:: CollisionDetector new.
+    actualCollisions:: 0.
+    0 to: frameCount - 1 do: [:frame |
+      |
+        time
+        collisions
+      |
+      time:: frame asFloat / 10.0.
+      collisions:: detector handleNewFrame: (simulator simulate: time).
+      actualCollisions:: actualCollisions + collisions size.
+    ].
+    ^actualCollisions.
+  )
 
-        actualCollisions:: 0.
-
-        0 to: frameCount - 1 do: [:frame |
-            | time collisions |
-            time:: frame asFloat / 10.0.
-            collisions:: detector handleNewFrame: (simulator simulate: time).
-            actualCollisions:: actualCollisions + collisions size].
-
-        ^actualCollisions
-    )
-
-    private class Vector2D coordinateX: coordinateX coordinateY: coordinateY = (
-        | public coordinateX = coordinateX.
-          public coordinateY = coordinateY. |
-    ) (
-        public plus: other = (
-            ^Vector2D
-                coordinateX: coordinateX + other coordinateX
-                coordinateY: coordinateY + other coordinateY
-        )
-
-        public minus: other = (
-            ^Vector2D
-                coordinateX: coordinateX - other coordinateX
-                coordinateY: coordinateY - other coordinateY
-        )
-
-        public compareTo: other = (
-            | result |
-            result:: compare: coordinateX and: other coordinateX.
-            (result = 0) not ifTrue: [^result].
-            ^compare: coordinateY and: other coordinateY
-        )
-
-        private compare: left and: right = (
-            left = right ifTrue: [^0].
-            left < right ifTrue: [^-1].
-            left > right ifTrue: [^1].
-
-            /// We say that NaN is smaller than non-NaN.
-            left = left ifTrue: [^1].
-            ^-1
-        )
+  private class Vector2D coordinateX: coordinateX coordinateY: coordinateY = (
+    |
+      public coordinateX = coordinateX.
+      public coordinateY = coordinateY.
+    |
+  ) (
+    public plus: other = (
+      ^Vector2D coordinateX: coordinateX + other coordinateX
+          coordinateY: coordinateY + other coordinateY.
     )
 
-    private class Vector3D coordinateX: coordinateX coordinateY: coordinateY coordinateZ: coordinateZ = (
-        | public coordinateX = coordinateX.
-          public coordinateY = coordinateY.
-          public coordinateZ = coordinateZ. |
-    ) (
-        public plus: other = (
-            ^Vector3D
-                coordinateX: coordinateX + other coordinateX
-                coordinateY: coordinateY + other coordinateY
-                coordinateZ: coordinateZ + other coordinateZ
-        )
-
-        public minus: other = (
-            ^Vector3D
-                coordinateX: coordinateX - other coordinateX
-                coordinateY: coordinateY - other coordinateY
-                coordinateZ: coordinateZ - other coordinateZ
-        )
-
-        public dot: other = (
-            ^(coordinateX * other coordinateX)
-                + (coordinateY * other coordinateY)
-                + (coordinateZ * other coordinateZ)
-        )
-
-        public squaredMagnitude = (
-            ^self dot: self
-        )
-
-        public magnitude = (
-            ^squaredMagnitude sqrt
-        )
-
-        public times: amount = (
-            ^Vector3D
-                coordinateX: coordinateX * amount
-                coordinateY: coordinateY * amount
-                coordinateZ: coordinateZ * amount
-        )
+    public minus: other = (
+      ^Vector2D coordinateX: coordinateX - other coordinateX
+          coordinateY: coordinateY - other coordinateY.
     )
 
-    private class CallSign new: number = (
-        | public value = number. |
-    ) (
-        public compareTo: other = (
-            ^value = other value
-                ifTrue: [0]
-                ifFalse: [value < other value ifTrue: [-1] ifFalse: [1]]
-        )
+    public compareTo: other = (
+      |
+        result
+      |
+      result:: compare: coordinateX and: other coordinateX.
+      (result = 0) not ifTrue: [^result].
+      ^compare: coordinateY and: other coordinateY.
     )
 
-    private class Collision aircraftA: aircraftA aircraftB: aircraftB position: position = (
-        | public aircraftA = aircraftA.
-          public aircraftB = aircraftB.
-          public position = position. |
-    ) ()
+    private compare: left and: right = (
+      left = right ifTrue: [^0].
+      left < right ifTrue: [^-1].
+      left > right ifTrue: [^1].
+      /// We say that NaN is smaller than non-NaN.
+      left = left ifTrue: [^1].
+      ^-1.
+    )
+  )
 
-    private class CollisionDetector = (
-        | private state = RedBlackTree new. |
-    ) (
-        public handleNewFrame: frame = (
-            | motions seen toRemove allReduced collisions |
-            motions:: List new.
-            seen:: RedBlackTree new.
-
-            frame do: [:aircraft |
-                | oldPosition newPosition |
-                oldPosition:: state at: aircraft callsign put: aircraft position.
-                newPosition:: aircraft position.
-                seen at: aircraft callsign put: true.
-
-                oldPosition isNil ifTrue: [
-                    /// Treat newly introduced aircraft as if they were stationary
-                    oldPosition:: newPosition].
-
-                motions add: (Motion new: aircraft callsign old: oldPosition new: newPosition)].
-
-            /// Remove aircraft that are no longer present
-            toRemove:: List new.
-            state do: [:entry |
-                (seen at: entry key) ifFalse: [toRemove add: entry key]].
-
-            toRemove do: [:callsign | state remove: callsign].
-
-            allReduced:: reduceCollisionSet: motions.
-            collisions:: List new.
-            allReduced do: [:reduced |
-                1 to: reduced size do: [:first |
-                    | motionOne |
-                    motionOne:: reduced at: first.
-                    first + 1 to: reduced size do: [:second |
-                        | motionTwo collision |
-                        motionTwo:: reduced at: second.
-                        collision:: motionOne findIntersection: motionTwo.
-                        collision notNil ifTrue: [
-                            collisions add: (Collision
-                                aircraftA: motionOne callsign
-                                aircraftB: motionTwo callsign
-                                position: collision)]]]].
-
-            ^collisions
-        )
-
-        private isInVoxel: voxel motion: motion = (
-            | start finish voxelSize radius voxelX startX deltaX voxelY startY deltaY lowX highX lowY highY |
-            (voxel coordinateX > MaxX or: [
-             voxel coordinateX < MinX or: [
-             voxel coordinateY > MaxY or: [
-             voxel coordinateY < MinY]]]) ifTrue: [^false].
-
-            start:: motion positionOne.
-            finish:: motion positionTwo.
-
-            voxelSize:: GoodVoxelSize.
-            radius:: ProximityRadius / 2.0.
-
-            voxelX:: voxel coordinateX.
-            startX:: start coordinateX.
-            deltaX:: finish coordinateX - start coordinateX.
-
-            voxelY:: voxel coordinateY.
-            startY:: start coordinateY.
-            deltaY:: finish coordinateY - start coordinateY.
-
-            lowX:: (voxelX - radius - startX) / deltaX.
-            highX:: (voxelX + voxelSize + radius - startX) / deltaX.
-
-            deltaX < 0.0 ifTrue: [
-                | temp |
-                temp:: lowX.
-                lowX:: highX.
-                highX:: temp].
-
-            lowY:: (voxelY - radius - startY) / deltaY.
-            highY:: (voxelY + voxelSize + radius - startY) / deltaY.
-
-            deltaY < 0.0 ifTrue: [
-                | temp |
-                temp:: lowY.
-                lowY:: highY.
-                highY:: temp].
-
-            ^(((deltaX = 0.0 and: [voxelX <= (startX + radius) and: [(startX - radius) <= (voxelX + voxelSize)]]) or: [ /// no motion in x
-                (lowX <= 1.0 and: [1.0 <= highX]) or: [
-                (lowX <= 0.0 and: [0.0 <= highX]) or: [
-                (0.0 <= lowX and: [highX <= 1.0])]]]) and: [
-
-                (deltaY = 0.0 and: [voxelY <= (startY + radius) and: [(startY - radius) <= (voxelY + voxelSize)]]) or: [ /// no motion in y
-                  (lowY <= 1.0 and: [1.0 <= highY]) or: [
-                  (lowY <= 0.0 and: [0.0 <= highY]) or: [
-                  (0.0 <= lowY and: [highY <= 1.0])]]]]) and: [
-
-                 deltaX = 0.0 or: [
-                 deltaY = 0.0 or: [ /// no motion in x or y or both
-                 (lowY <= highX and: [highX <= highY]) or: [
-                 (lowY <= lowX and: [lowX <= highY]) or: [
-                 (lowX <= lowY and: [highY <= highX])]]]]]
-        )
-
-        private put: motion and: voxel into: voxelMap = (
-            | array |
-            array:: voxelMap at: voxel.
-            array isNil ifTrue: [
-                array:: List new.
-                voxelMap at: voxel put: array].
-            array add: motion
-        )
-
-        private recurse: voxelMap seen: seen voxel: nextVoxel motion: motion = (
-            (isInVoxel: nextVoxel motion: motion) ifFalse: [^self].
-            (seen at: nextVoxel put: true) = true ifTrue: [^self].
-
-            put: motion and: nextVoxel into: voxelMap.
-
-            recurse: voxelMap seen: seen voxel: (nextVoxel minus: horizontal) motion: motion.
-            recurse: voxelMap seen: seen voxel: (nextVoxel plus: horizontal) motion: motion.
-            recurse: voxelMap seen: seen voxel: (nextVoxel minus: vertical) motion: motion.
-            recurse: voxelMap seen: seen voxel: (nextVoxel plus: vertical) motion: motion.
-            recurse: voxelMap seen: seen voxel: ((nextVoxel minus: horizontal) minus: vertical) motion: motion.
-            recurse: voxelMap seen: seen voxel: ((nextVoxel minus: horizontal) plus: vertical) motion: motion.
-            recurse: voxelMap seen: seen voxel: ((nextVoxel plus: horizontal) minus: vertical) motion: motion.
-            recurse: voxelMap seen: seen voxel: ((nextVoxel plus: horizontal) plus: vertical) motion: motion
-        )
-
-        private reduceCollisionSet: motions = (
-            | voxelMap result |
-            voxelMap:: RedBlackTree new.
-            motions do: [:motion | draw: motion on: voxelMap].
-
-            result:: List new.
-            voxelMap do: [:entry |
-                entry value size > 1 ifTrue: [result add: entry value]].
-            ^result
-        )
-
-        private voxelHash: position = (
-            | quotientX quotientY voxelX voxelY |
-            quotientX:: (position coordinateX / GoodVoxelSize) asInteger.
-            quotientY:: (position coordinateY / GoodVoxelSize) asInteger.
-
-            voxelX:: GoodVoxelSize * quotientX.
-            voxelY:: GoodVoxelSize * quotientY.
-
-            position coordinateX < 0 ifTrue: [voxelX:: voxelX - GoodVoxelSize].
-            position coordinateY < 0 ifTrue: [voxelY:: voxelY - GoodVoxelSize].
-
-            ^Vector2D coordinateX: voxelX coordinateY: voxelY
-        )
-
-        private draw: motion on: voxelMap = (
-            | seen |
-            seen:: RedBlackTree new.
-            recurse: voxelMap seen: seen voxel: (voxelHash: motion positionOne) motion: motion
-        )
+  private class Vector3D coordinateX: coordinateX coordinateY: coordinateY coordinateZ: coordinateZ
+      = (
+    |
+      public coordinateX = coordinateX.
+      public coordinateY = coordinateY.
+      public coordinateZ = coordinateZ.
+    |
+  ) (
+    public plus: other = (
+      ^Vector3D coordinateX: coordinateX + other coordinateX
+          coordinateY: coordinateY + other coordinateY
+          coordinateZ: coordinateZ + other coordinateZ.
     )
 
-    private class Motion new: callsign old: positionOne new: positionTwo = (
-        | public callsign = callsign.
-          public positionOne = positionOne.
-          public positionTwo = positionTwo. |
-    ) (
-        public delta = (
-            ^positionTwo minus: positionOne
-        )
-
-        public findIntersection: other = (
-            | initialOne initialTwo vectorOne vectorTwo radius squaredSpeed distance |
-            initialOne:: positionOne.
-            initialTwo:: other positionOne.
-            vectorOne:: delta.
-            vectorTwo:: other delta.
-            radius:: ProximityRadius.
-
-            /// this test is not geometrical 3-d intersection test, it takes the fact that the aircraft move
-            /// into account ; so it is more like a 4d test
-            /// (it assumes that both of the aircraft have a constant speed over the tested interval)
-            ///
-            /// we thus have two points, each of them moving on its line segment at constant speed ; we are looking
-            /// for times when the distance between these two points is smaller than r
-            ///
-            /// vectorOne is vector of aircraft 1
-            /// vectorTwo is vector of aircraft 2
-            ///
-            /// a = (V2 - V1)^T * (V2 - V1)
-            squaredSpeed:: (vectorTwo minus: vectorOne) squaredMagnitude.
-
-            (squaredSpeed = 0.0) not ifTrue: [
-                | linear constant discriminant timeOne timeTwo |
-                /// we are first looking for instances of time when the planes are exactly r from each other
-                ///   at least one plane is moving ; if the planes are moving in parallel, they do not have constant speed
-                ///
-                ///   if the planes are moving in parallel, then
-                ///     if the faster starts behind the slower, we can have 2, 1, or 0 solutions
-                ///     if the faster plane starts in front of the slower, we can have 0 or 1 solutions
-                ///
-                ///   if the planes are not moving in parallel, then
-                ///
-                ///   point P1 = I1 + vV1
-                ///   point P2 = I2 + vV2
-                ///     - looking for v, such that dist(P1,P2) = || P1 - P2 || = r
-                ///
-                ///   it follows that || P1 - P2 || = sqrt( < P1-P2, P1-P2 > )
-                ///     0 = -r^2 + < P1 - P2, P1 - P2 >
-                ///    from properties of dot product
-                ///     0 = -r^2 + <I1-I2,I1-I2> + v * 2<I1-I2, V1-V2> + v^2 *<V1-V2,V1-V2>
-                ///     so we calculate a, b, c - and solve the quadratic equation
-                ///     0 = c + bv + av^2
-                ///
-                /// b = 2 * <I1-I2, V1-V2>
-                linear:: 2.0 * ((initialOne minus: initialTwo) dot: (vectorOne minus: vectorTwo)).
-
-                /// c = -r^2 + (I2 - I1)^T * (I2 - I1)
-                constant:: ((0.0 - radius) * radius) + ((initialTwo minus: initialOne) squaredMagnitude).
-
-                discriminant:: (linear * linear) - (4.0 * squaredSpeed * constant).
-                discriminant < 0.0 ifTrue: [^nil].
-
-                timeOne:: ((0.0 - linear) - discriminant sqrt) / (2.0 * squaredSpeed).
-                timeTwo:: ((0.0 - linear) + discriminant sqrt) / (2.0 * squaredSpeed).
-
-                (timeOne <= timeTwo and: [((timeOne <= 1.0 and: [1.0 <= timeTwo]) or: [
-                                       (timeOne <= 0.0 and: [0.0 <= timeTwo]) or: [
-                                       (0.0 <= timeOne and: [timeTwo <= 1.0])]])]) ifTrue: [
-                    /// Pick a good "time" at which to report the collision
-                    | time resultOne resultTwo result |
-                    timeOne <= 0.0
-                        ifTrue: [
-                            /// The collision started before this frame. Report it at the start of the frame
-                            time:: 0.0]
-                        ifFalse: [
-                            /// The collision started during this frame. Report it at that moment
-                            time:: timeOne].
-
-                    resultOne:: initialOne plus: (vectorOne times: time).
-                    resultTwo:: initialTwo plus: (vectorTwo times: time).
-
-                    result:: (resultOne plus: resultTwo) times: 0.5.
-
-                    (result coordinateX >= MinX and: [
-                     result coordinateX <= MaxX and: [
-                     result coordinateY >= MinY and: [
-                     result coordinateY <= MaxY and: [
-                     result coordinateZ >= MinZ and: [
-                     result coordinateZ <= MaxZ]]]]]) ifTrue: [^result]].
-
-                ^nil].
-
-            /// the planes have the same speeds and are moving in parallel (or they are not moving at all)
-            /// they  thus have the same distance all the time ; we calculate it from the initial point
-            ///
-            /// dist = || i2 - i1 || = sqrt(  ( i2 - i1 )^T * ( i2 - i1 ) )
-            distance:: (initialTwo minus: initialOne) magnitude.
-            distance <= radius ifTrue: [
-                ^(initialOne plus: initialTwo) times: 0.5].
-
-            ^nil
-        )
+    public minus: other = (
+      ^Vector3D coordinateX: coordinateX - other coordinateX
+          coordinateY: coordinateY - other coordinateY
+          coordinateZ: coordinateZ - other coordinateZ.
     )
 
-    private class Aircraft new: callsign position: position = (
-        | public callsign = callsign.
-          public position = position. |
-    ) ()
-
-    private class Simulator new: aircraftCount = (
-        | private aircrafts = List new. |
-        0 to: aircraftCount - 1 do: [:index |
-            aircrafts add: (CallSign new: index)]
-    ) (
-        public simulate: time = (
-            | frame |
-            frame:: List new.
-            0 to: aircrafts size - 2 by: 2 do: [:index |
-                frame add: (Aircraft
-                    new: (aircrafts at: index + 1)
-                    position: (Vector3D
-                        coordinateX: time
-                        coordinateY: (time cos * 2.0) + (index * 3.0)
-                        coordinateZ: 10.0)).
-                frame add: (Aircraft
-                    new: (aircrafts at: index + 2)
-                    position: (Vector3D
-                        coordinateX: time
-                        coordinateY: (time sin * 2.0) + (index * 3.0)
-                        coordinateZ: 10.0))].
-            ^frame
-        )
+    public dot: other = (
+      ^(coordinateX * other coordinateX)
+          + (coordinateY * other coordinateY)
+          + (coordinateZ * other coordinateZ).
     )
 
-    /// SOMns's RedBlackTree.ns: a red-black tree keyed by objects that
-    /// answer compareTo:.
-    private class Node key: key value: value = (
-        | public key = key.
-          public value ::= value.
-          public left ::= nil.
-          public right ::= nil.
-          public parent ::= nil.
-          public color ::= #red. |
-    ) (
-        public successor = (
-            | node ancestor |
-            node:: self.
-            node right notNil ifTrue: [
-                ^treeMinimum: node right].
-
-            ancestor:: node parent.
-            [ancestor notNil and: [node == ancestor right]] whileTrue: [
-                node:: ancestor.
-                ancestor:: ancestor parent].
-            ^ancestor
-        )
+    public squaredMagnitude = (
+      ^self dot: self.
     )
 
-    private class Entry key: key value: value = (
-        | public key = key.
-          public value = value. |
-    ) ()
-
-    private class InsertResult new: isNewEntry node: newNode value: oldValue = (
-        | public isNewEntry = isNewEntry.
-          public newNode = newNode.
-          public oldValue = oldValue. |
-    ) ()
-
-    private class RedBlackTree = (
-        | private root ::= nil. |
-    ) (
-        /// Answers the value the key held before, or nil when it is new;
-        /// CollisionDetector relies on it.
-        public at: key put: value = (
-            | insertionResult node |
-            insertionResult:: treeAt: key insert: value.
-            insertionResult isNewEntry ifFalse: [
-                ^insertionResult oldValue].
-
-            node:: insertionResult newNode.
-
-            [(node == root) not and: [node parent color = #red]] whileTrue: [
-                node parent == node parent parent left
-                    ifTrue: [
-                        | uncle |
-                        uncle:: node parent parent right.
-                        (uncle notNil and: [uncle color = #red])
-                            ifTrue: [
-                                /// Case 1
-                                node parent color: #black.
-                                uncle color: #black.
-                                node parent parent color: #red.
-                                node:: node parent parent]
-                            ifFalse: [
-                                node == node parent right ifTrue: [
-                                    /// Case 2
-                                    node:: node parent.
-                                    leftRotate: node].
-
-                                /// Case 3
-                                node parent color: #black.
-                                node parent parent color: #red.
-                                rightRotate: node parent parent]]
-                    ifFalse: [
-                        /// Same as "then" clause with "right" and "left" exchanged
-                        | uncle |
-                        uncle:: node parent parent left.
-                        (uncle notNil and: [uncle color = #red])
-                            ifTrue: [
-                                /// Case 1
-                                node parent color: #black.
-                                uncle color: #black.
-                                node parent parent color: #red.
-                                node:: node parent parent]
-                            ifFalse: [
-                                node == node parent left ifTrue: [
-                                    /// Case 2
-                                    node:: node parent.
-                                    rightRotate: node].
-
-                                /// Case 3
-                                node parent color: #black.
-                                node parent parent color: #red.
-                                leftRotate: node parent parent]]].
-
-            root color: #black.
-            ^nil
-        )
-
-        public remove: key = (
-            | child spliced target childParent |
-            target:: findNode: key.
-            target isNil ifTrue: [^nil].
-
-            /// Spliced is the node to be unlinked from the tree.
-            (target left isNil or: [target right isNil])
-                ifTrue: [spliced:: target]
-                ifFalse: [spliced:: target successor].
-
-            /// Spliced is guaranteed to be non-null at this point.
-            spliced left notNil
-                ifTrue: [child:: spliced left]
-                ifFalse: [child:: spliced right].
-
-            /// Child is the child of spliced which might potentially replace
-            /// spliced in the tree. Child might be null at this point.
-            child notNil
-                ifTrue: [
-                    child parent: spliced parent.
-                    childParent:: child parent]
-                ifFalse: [
-                    childParent:: spliced parent].
-
-            spliced parent isNil
-                ifTrue: [root:: child]
-                ifFalse: [
-                    spliced == spliced parent left
-                        ifTrue: [spliced parent left: child]
-                        ifFalse: [spliced parent right: child]].
-
-            (spliced == target) not
-                ifTrue: [
-                    spliced color = #black ifTrue: [
-                        remove: child andFixup: childParent].
-
-                    spliced parent: target parent.
-                    spliced color: target color.
-                    spliced left: target left.
-                    spliced right: target right.
-
-                    target left notNil ifTrue: [
-                        target left parent: spliced].
-                    target right notNil ifTrue: [
-                        target right parent: spliced].
-
-                    target parent notNil
-                        ifTrue: [
-                            target parent left == target
-                                ifTrue: [target parent left: spliced]
-                                ifFalse: [target parent right: spliced]]
-                        ifFalse: [root:: spliced]]
-                ifFalse: [
-                    spliced color = #black ifTrue: [
-                        remove: child andFixup: childParent]].
-
-            ^target value
-        )
-
-        public at: key = (
-            | node |
-            node:: findNode: key.
-            node isNil ifTrue: [^nil].
-            ^node value
-        )
-
-        public contains: key = (
-            ^(findNode: key) notNil
-        )
-
-        public do: block = (
-            | current |
-            root isNil ifTrue: [^self].
-            current:: treeMinimum: root.
-            [current notNil] whileTrue: [
-                block value: (Entry key: current key value: current value).
-                current:: current successor]
-        )
-
-        private findNode: key = (
-            | current |
-            current:: root.
-            [current notNil] whileTrue: [
-                | comparisonResult |
-                comparisonResult:: key compareTo: current key.
-                comparisonResult = 0 ifTrue: [^current].
-                comparisonResult < 0
-                    ifTrue: [current:: current left]
-                    ifFalse: [current:: current right]].
-            ^nil
-        )
-
-        private treeAt: key insert: value = (
-            | current parent newNode |
-            parent:: nil.
-            current:: root.
-
-            [current notNil] whileTrue: [
-                | comparisonResult |
-                parent:: current.
-                comparisonResult:: key compareTo: current key.
-                comparisonResult < 0
-                    ifTrue: [current:: current left]
-                    ifFalse: [
-                        comparisonResult > 0
-                            ifTrue: [current:: current right]
-                            ifFalse: [
-                                | oldValue |
-                                oldValue:: current value.
-                                current value: value.
-                                ^InsertResult new: false node: nil value: oldValue]]].
-
-            newNode:: Node key: key value: value.
-            newNode parent: parent.
-            parent isNil
-                ifTrue: [root:: newNode]
-                ifFalse: [
-                    (key compareTo: parent key) < 0
-                        ifTrue: [parent left: newNode]
-                        ifFalse: [parent right: newNode]].
-
-            ^InsertResult new: true node: newNode value: nil
-        )
-
-        private leftRotate: node = (
-            | pivot |
-            pivot:: node right.
-
-            /// Turn pivot's left subtree into node's right subtree
-            node right: pivot left.
-            pivot left notNil ifTrue: [
-                pivot left parent: node].
-
-            /// Link node's parent to pivot
-            pivot parent: node parent.
-            node parent isNil
-                ifTrue: [root:: pivot]
-                ifFalse: [
-                    node == node parent left
-                        ifTrue: [node parent left: pivot]
-                        ifFalse: [node parent right: pivot]].
-
-            /// Put node on pivot's left
-            pivot left: node.
-            node parent: pivot.
-            ^pivot
-        )
-
-        private rightRotate: node = (
-            | pivot |
-            pivot:: node left.
-
-            /// Turn pivot's right subtree into node's left subtree
-            node left: pivot right.
-            pivot right notNil ifTrue: [pivot right parent: node].
-
-            /// Link node's parent to pivot
-            pivot parent: node parent.
-            node parent isNil
-                ifTrue: [root:: pivot]
-                ifFalse: [
-                    node == node parent left
-                        ifTrue: [node parent left: pivot]
-                        ifFalse: [node parent right: pivot]].
-
-            pivot right: node.
-            node parent: pivot.
-            ^pivot
-        )
-
-        private remove: startChild andFixup: startParent = (
-            | child childParent |
-            child:: startChild.
-            childParent:: startParent.
-
-            [(child == root) not and: [child isNil or: [child color = #black]]] whileTrue: [
-                child == childParent left
-                    ifTrue: [
-                        | sibling |
-                        /// Note: the text points out that sibling cannot be null. The reason is not obvious from
-                        /// simply looking at the code; it comes about from the properties of the red-black
-                        /// tree.
-                        sibling:: childParent right.
-                        sibling color = #red ifTrue: [
-                            /// Case 1
-                            sibling color: #black.
-                            childParent color: #red.
-                            leftRotate: childParent.
-                            sibling:: childParent right].
-
-                        ((sibling left isNil or: [sibling left color = #black]) and: [
-                          sibling right isNil or: [sibling right color = #black]])
-                            ifTrue: [
-                                /// Case 2
-                                sibling color: #red.
-                                child:: childParent.
-                                childParent:: child parent]
-                            ifFalse: [
-                                (sibling right isNil or: [sibling right color = #black]) ifTrue: [
-                                    /// Case 3
-                                    sibling left color: #black.
-                                    sibling color: #red.
-                                    rightRotate: sibling.
-                                    sibling:: childParent right].
-
-                                /// Case 4
-                                sibling color: childParent color.
-                                childParent color: #black.
-                                sibling right notNil ifTrue: [
-                                    sibling right color: #black].
-
-                                leftRotate: childParent.
-                                child:: root.
-                                childParent:: child parent]]
-                    ifFalse: [
-                        | sibling |
-                        /// Same as "then" clause with "right" and "left" exchanged
-                        sibling:: childParent left.
-                        sibling color = #red ifTrue: [
-                            /// Case 1
-                            sibling color: #black.
-                            childParent color: #red.
-                            rightRotate: childParent.
-                            sibling:: childParent left].
-
-                        ((sibling right isNil or: [sibling right color = #black]) and: [
-                         (sibling left isNil or: [sibling left color = #black])])
-                            ifTrue: [
-                                /// Case 2
-                                sibling color: #red.
-                                child:: childParent.
-                                childParent:: child parent]
-                            ifFalse: [
-                                (sibling left isNil or: [sibling left color = #black]) ifTrue: [
-                                    /// Case 3
-                                    sibling right color: #black.
-                                    sibling color: #red.
-                                    leftRotate: sibling.
-                                    sibling:: childParent left].
-
-                                /// Case 4
-                                sibling color: childParent color.
-                                childParent color: #black.
-                                sibling left notNil ifTrue: [
-                                    sibling left color: #black].
-
-                                rightRotate: childParent.
-                                child:: root.
-                                childParent:: child parent]]].
-
-            child notNil ifTrue: [child color: #black]
-        )
+    public magnitude = (
+      ^squaredMagnitude sqrt.
     )
 
-    private treeMinimum: node = (
-        | current |
-        current:: node.
-        [current left notNil] whileTrue: [
-            current:: current left].
-        ^current
+    public times: amount = (
+      ^Vector3D coordinateX: coordinateX * amount
+          coordinateY: coordinateY * amount
+          coordinateZ: coordinateZ * amount.
     )
+  )
+
+  private class CallSign new: number = (
+    |
+      public value = number.
+    |
+  ) (
+    public compareTo: other = (
+      ^value = other value ifTrue: [0] ifFalse: [value < other value ifTrue: [-1] ifFalse: [1]].
+    )
+  )
+
+  private class Collision aircraftA: aircraftA aircraftB: aircraftB position: position = (
+    |
+      public aircraftA = aircraftA.
+      public aircraftB = aircraftB.
+      public position = position.
+    |
+  ) ()
+
+  private class CollisionDetector = (
+    |
+      private state = RedBlackTree new.
+    |
+  ) (
+    public handleNewFrame: frame = (
+      |
+        motions
+        seen
+        toRemove
+        allReduced
+        collisions
+      |
+      motions:: List new.
+      seen:: RedBlackTree new.
+      frame do: [:aircraft |
+        |
+          oldPosition
+          newPosition
+        |
+        oldPosition:: state at: aircraft callsign put: aircraft position.
+        newPosition:: aircraft position.
+        seen at: aircraft callsign put: true.
+        oldPosition isNil ifTrue: [
+          /// Treat newly introduced aircraft as if they were stationary
+          oldPosition:: newPosition.
+        ].
+        motions add: (Motion new: aircraft callsign old: oldPosition new: newPosition).
+      ].
+      /// Remove aircraft that are no longer present
+      toRemove:: List new.
+      state do: [:entry | (seen at: entry key) ifFalse: [toRemove add: entry key]].
+      toRemove do: [:callsign | state remove: callsign].
+      allReduced:: reduceCollisionSet: motions.
+      collisions:: List new.
+      allReduced do: [:reduced |
+        1 to: reduced size do: [:first |
+          |
+            motionOne
+          |
+          motionOne:: reduced at: first.
+          first + 1 to: reduced size do: [:second |
+            |
+              motionTwo
+              collision
+            |
+            motionTwo:: reduced at: second.
+            collision:: motionOne findIntersection: motionTwo.
+            collision notNil ifTrue: [
+              collisions add: (Collision aircraftA: motionOne callsign
+                  aircraftB: motionTwo callsign
+                  position: collision).
+            ].
+          ].
+        ].
+      ].
+      ^collisions.
+    )
+
+    private isInVoxel: voxel motion: motion = (
+      |
+        start
+        finish
+        voxelSize
+        radius
+        voxelX
+        startX
+        deltaX
+        voxelY
+        startY
+        deltaY
+        lowX
+        highX
+        lowY
+        highY
+      |
+      (voxel coordinateX > MaxX or: [
+        voxel coordinateX < MinX or: [voxel coordinateY > MaxY or: [voxel coordinateY < MinY]].
+      ]) ifTrue: [^false].
+      start:: motion positionOne.
+      finish:: motion positionTwo.
+      voxelSize:: GoodVoxelSize.
+      radius:: ProximityRadius / 2.0.
+      voxelX:: voxel coordinateX.
+      startX:: start coordinateX.
+      deltaX:: finish coordinateX - start coordinateX.
+      voxelY:: voxel coordinateY.
+      startY:: start coordinateY.
+      deltaY:: finish coordinateY - start coordinateY.
+      lowX:: (voxelX - radius - startX) / deltaX.
+      highX:: (voxelX + voxelSize + radius - startX) / deltaX.
+      deltaX < 0.0 ifTrue: [
+        |
+          temp
+        |
+        temp:: lowX.
+        lowX:: highX.
+        highX:: temp.
+      ].
+      lowY:: (voxelY - radius - startY) / deltaY.
+      highY:: (voxelY + voxelSize + radius - startY) / deltaY.
+      deltaY < 0.0 ifTrue: [
+        |
+          temp
+        |
+        temp:: lowY.
+        lowY:: highY.
+        highY:: temp.
+      ].
+      ^(((deltaX = 0.0 and: [
+        voxelX <= (startX + radius) and: [(startX - radius) <= (voxelX + voxelSize)].
+      ]) or: [ /// no motion in x
+        (lowX <= 1.0 and: [1.0 <= highX]) or: [
+          (lowX <= 0.0 and: [0.0 <= highX]) or: [(0.0 <= lowX and: [highX <= 1.0])].
+        ].
+      ]) and: [
+        (deltaY = 0.0 and: [
+          voxelY <= (startY + radius) and: [(startY - radius) <= (voxelY + voxelSize)].
+        ]) or: [ /// no motion in y
+          (lowY <= 1.0 and: [1.0 <= highY]) or: [
+            (lowY <= 0.0 and: [0.0 <= highY]) or: [(0.0 <= lowY and: [highY <= 1.0])].
+          ].
+        ].
+      ]) and: [
+        deltaX = 0.0 or: [
+          deltaY = 0.0 or: [ /// no motion in x or y or both
+            (lowY <= highX and: [highX <= highY]) or: [
+              (lowY <= lowX and: [lowX <= highY]) or: [(lowX <= lowY and: [highY <= highX])].
+            ].
+          ].
+        ].
+      ].
+    )
+
+    private put: motion and: voxel into: voxelMap = (
+      |
+        array
+      |
+      array:: voxelMap at: voxel.
+      array isNil ifTrue: [
+        array:: List new.
+        voxelMap at: voxel put: array.
+      ].
+      array add: motion.
+    )
+
+    private recurse: voxelMap seen: seen voxel: nextVoxel motion: motion = (
+      (isInVoxel: nextVoxel motion: motion) ifFalse: [^self].
+      (seen at: nextVoxel put: true) = true ifTrue: [^self].
+      put: motion and: nextVoxel into: voxelMap.
+      recurse: voxelMap seen: seen voxel: (nextVoxel minus: horizontal) motion: motion.
+      recurse: voxelMap seen: seen voxel: (nextVoxel plus: horizontal) motion: motion.
+      recurse: voxelMap seen: seen voxel: (nextVoxel minus: vertical) motion: motion.
+      recurse: voxelMap seen: seen voxel: (nextVoxel plus: vertical) motion: motion.
+      recurse: voxelMap
+          seen: seen
+          voxel: ((nextVoxel minus: horizontal) minus: vertical)
+          motion: motion.
+      recurse: voxelMap
+          seen: seen
+          voxel: ((nextVoxel minus: horizontal) plus: vertical)
+          motion: motion.
+      recurse: voxelMap
+          seen: seen
+          voxel: ((nextVoxel plus: horizontal) minus: vertical)
+          motion: motion.
+      recurse: voxelMap
+          seen: seen
+          voxel: ((nextVoxel plus: horizontal) plus: vertical)
+          motion: motion.
+    )
+
+    private reduceCollisionSet: motions = (
+      |
+        voxelMap
+        result
+      |
+      voxelMap:: RedBlackTree new.
+      motions do: [:motion | draw: motion on: voxelMap].
+      result:: List new.
+      voxelMap do: [:entry | entry value size > 1 ifTrue: [result add: entry value]].
+      ^result.
+    )
+
+    private voxelHash: position = (
+      |
+        quotientX
+        quotientY
+        voxelX
+        voxelY
+      |
+      quotientX:: (position coordinateX / GoodVoxelSize) asInteger.
+      quotientY:: (position coordinateY / GoodVoxelSize) asInteger.
+      voxelX:: GoodVoxelSize * quotientX.
+      voxelY:: GoodVoxelSize * quotientY.
+      position coordinateX < 0 ifTrue: [voxelX:: voxelX - GoodVoxelSize].
+      position coordinateY < 0 ifTrue: [voxelY:: voxelY - GoodVoxelSize].
+      ^Vector2D coordinateX: voxelX coordinateY: voxelY.
+    )
+
+    private draw: motion on: voxelMap = (
+      |
+        seen
+      |
+      seen:: RedBlackTree new.
+      recurse: voxelMap seen: seen voxel: (voxelHash: motion positionOne) motion: motion.
+    )
+  )
+
+  private class Motion new: callsign old: positionOne new: positionTwo = (
+    |
+      public callsign = callsign.
+      public positionOne = positionOne.
+      public positionTwo = positionTwo.
+    |
+  ) (
+    public delta = (
+      ^positionTwo minus: positionOne.
+    )
+
+    public findIntersection: other = (
+      |
+        initialOne
+        initialTwo
+        vectorOne
+        vectorTwo
+        radius
+        squaredSpeed
+        distance
+      |
+      initialOne:: positionOne.
+      initialTwo:: other positionOne.
+      vectorOne:: delta.
+      vectorTwo:: other delta.
+      radius:: ProximityRadius.
+      /// this test is not geometrical 3-d intersection test, it takes the fact that the aircraft move
+      /// into account ; so it is more like a 4d test
+      /// (it assumes that both of the aircraft have a constant speed over the tested interval)
+      ///
+      /// we thus have two points, each of them moving on its line segment at constant speed ; we are looking
+      /// for times when the distance between these two points is smaller than r
+      ///
+      /// vectorOne is vector of aircraft 1
+      /// vectorTwo is vector of aircraft 2
+      ///
+      /// a = (V2 - V1)^T * (V2 - V1)
+      squaredSpeed:: (vectorTwo minus: vectorOne) squaredMagnitude.
+      (squaredSpeed = 0.0) not ifTrue: [
+        |
+          linear
+          constant
+          discriminant
+          timeOne
+          timeTwo
+        |
+        /// we are first looking for instances of time when the planes are exactly r from each other
+        ///   at least one plane is moving ; if the planes are moving in parallel, they do not have constant speed
+        ///
+        ///   if the planes are moving in parallel, then
+        ///     if the faster starts behind the slower, we can have 2, 1, or 0 solutions
+        ///     if the faster plane starts in front of the slower, we can have 0 or 1 solutions
+        ///
+        ///   if the planes are not moving in parallel, then
+        ///
+        ///   point P1 = I1 + vV1
+        ///   point P2 = I2 + vV2
+        ///     - looking for v, such that dist(P1,P2) = || P1 - P2 || = r
+        ///
+        ///   it follows that || P1 - P2 || = sqrt( < P1-P2, P1-P2 > )
+        ///     0 = -r^2 + < P1 - P2, P1 - P2 >
+        ///    from properties of dot product
+        ///     0 = -r^2 + <I1-I2,I1-I2> + v * 2<I1-I2, V1-V2> + v^2 *<V1-V2,V1-V2>
+        ///     so we calculate a, b, c - and solve the quadratic equation
+        ///     0 = c + bv + av^2
+        ///
+        /// b = 2 * <I1-I2, V1-V2>
+        linear:: 2.0 * ((initialOne minus: initialTwo) dot: (vectorOne minus: vectorTwo)).
+        /// c = -r^2 + (I2 - I1)^T * (I2 - I1)
+        constant:: ((0.0 - radius) * radius) + ((initialTwo minus: initialOne) squaredMagnitude).
+        discriminant:: (linear * linear) - (4.0 * squaredSpeed * constant).
+        discriminant < 0.0 ifTrue: [^nil].
+        timeOne:: ((0.0 - linear) - discriminant sqrt) / (2.0 * squaredSpeed).
+        timeTwo:: ((0.0 - linear) + discriminant sqrt) / (2.0 * squaredSpeed).
+        (timeOne <= timeTwo and: [
+          ((timeOne <= 1.0 and: [1.0 <= timeTwo]) or: [
+            (timeOne <= 0.0 and: [0.0 <= timeTwo]) or: [(0.0 <= timeOne and: [timeTwo <= 1.0])].
+          ]).
+        ]) ifTrue: [
+          /// Pick a good "time" at which to report the collision
+          |
+            time
+            resultOne
+            resultTwo
+            result
+          |
+          timeOne <= 0.0 ifTrue: [
+            /// The collision started before this frame. Report it at the start of the frame
+            time:: 0.0.
+          ] ifFalse: [
+            /// The collision started during this frame. Report it at that moment
+            time:: timeOne.
+          ].
+          resultOne:: initialOne plus: (vectorOne times: time).
+          resultTwo:: initialTwo plus: (vectorTwo times: time).
+          result:: (resultOne plus: resultTwo) times: 0.5.
+          (result coordinateX >= MinX and: [
+            result coordinateX <= MaxX and: [
+              result coordinateY >= MinY and: [
+                result coordinateY <= MaxY and: [
+                  result coordinateZ >= MinZ and: [result coordinateZ <= MaxZ].
+                ].
+              ].
+            ].
+          ]) ifTrue: [^result].
+        ].
+        ^nil.
+      ].
+      /// the planes have the same speeds and are moving in parallel (or they are not moving at all)
+      /// they  thus have the same distance all the time ; we calculate it from the initial point
+      ///
+      /// dist = || i2 - i1 || = sqrt(  ( i2 - i1 )^T * ( i2 - i1 ) )
+      distance:: (initialTwo minus: initialOne) magnitude.
+      distance <= radius ifTrue: [^(initialOne plus: initialTwo) times: 0.5].
+      ^nil.
+    )
+  )
+
+  private class Aircraft new: callsign position: position = (
+    |
+      public callsign = callsign.
+      public position = position.
+    |
+  ) ()
+
+  private class Simulator new: aircraftCount = (
+    |
+      private aircrafts = List new.
+    |
+    0 to: aircraftCount - 1 do: [:index | aircrafts add: (CallSign new: index)].
+  ) (
+    public simulate: time = (
+      |
+        frame
+      |
+      frame:: List new.
+      0 to: aircrafts size - 2 by: 2 do: [:index |
+        frame add: (Aircraft new: (aircrafts at: index + 1)
+            position: (Vector3D coordinateX: time
+                coordinateY: (time cos * 2.0) + (index * 3.0)
+                coordinateZ: 10.0)).
+        frame add: (Aircraft new: (aircrafts at: index + 2)
+            position: (Vector3D coordinateX: time
+                coordinateY: (time sin * 2.0) + (index * 3.0)
+                coordinateZ: 10.0)).
+      ].
+      ^frame.
+    )
+  )
+
+  /// SOMns's RedBlackTree.ns: a red-black tree keyed by objects that
+  /// answer compareTo:.
+  private class Node key: key value: value = (
+    |
+      public key = key.
+      public value ::= value.
+      public left ::= nil.
+      public right ::= nil.
+      public parent ::= nil.
+      public color ::= #red.
+    |
+  ) (
+    public successor = (
+      |
+        node
+        ancestor
+      |
+      node:: self.
+      node right notNil ifTrue: [^treeMinimum: node right].
+      ancestor:: node parent.
+      [ancestor notNil and: [node == ancestor right]] whileTrue: [
+        node:: ancestor.
+        ancestor:: ancestor parent.
+      ].
+      ^ancestor.
+    )
+  )
+
+  private class Entry key: key value: value = (
+    |
+      public key = key.
+      public value = value.
+    |
+  ) ()
+
+  private class InsertResult new: isNewEntry node: newNode value: oldValue = (
+    |
+      public isNewEntry = isNewEntry.
+      public newNode = newNode.
+      public oldValue = oldValue.
+    |
+  ) ()
+
+  private class RedBlackTree = (
+    |
+      private root ::= nil.
+    |
+  ) (
+    /// Answers the value the key held before, or nil when it is new;
+    /// CollisionDetector relies on it.
+    public at: key put: value = (
+      |
+        insertionResult
+        node
+      |
+      insertionResult:: treeAt: key insert: value.
+      insertionResult isNewEntry ifFalse: [^insertionResult oldValue].
+      node:: insertionResult newNode.
+      [(node == root) not and: [node parent color = #red]] whileTrue: [
+        node parent == node parent parent left ifTrue: [
+          |
+            uncle
+          |
+          uncle:: node parent parent right.
+          (uncle notNil and: [uncle color = #red]) ifTrue: [
+            /// Case 1
+            node parent color: #black.
+            uncle color: #black.
+            node parent parent color: #red.
+            node:: node parent parent.
+          ] ifFalse: [
+            node == node parent right ifTrue: [
+              /// Case 2
+              node:: node parent.
+              leftRotate: node.
+            ].
+            /// Case 3
+            node parent color: #black.
+            node parent parent color: #red.
+            rightRotate: node parent parent.
+          ].
+        ] ifFalse: [
+          /// Same as "then" clause with "right" and "left" exchanged
+          |
+            uncle
+          |
+          uncle:: node parent parent left.
+          (uncle notNil and: [uncle color = #red]) ifTrue: [
+            /// Case 1
+            node parent color: #black.
+            uncle color: #black.
+            node parent parent color: #red.
+            node:: node parent parent.
+          ] ifFalse: [
+            node == node parent left ifTrue: [
+              /// Case 2
+              node:: node parent.
+              rightRotate: node.
+            ].
+            /// Case 3
+            node parent color: #black.
+            node parent parent color: #red.
+            leftRotate: node parent parent.
+          ].
+        ].
+      ].
+      root color: #black.
+      ^nil.
+    )
+
+    public remove: key = (
+      |
+        child
+        spliced
+        target
+        childParent
+      |
+      target:: findNode: key.
+      target isNil ifTrue: [^nil].
+      /// Spliced is the node to be unlinked from the tree.
+      (target left isNil or: [target right isNil]) ifTrue: [
+        spliced:: target.
+      ] ifFalse: [
+        spliced:: target successor.
+      ].
+      /// Spliced is guaranteed to be non-null at this point.
+      spliced left notNil ifTrue: [child:: spliced left] ifFalse: [child:: spliced right].
+      /// Child is the child of spliced which might potentially replace
+      /// spliced in the tree. Child might be null at this point.
+      child notNil ifTrue: [
+        child parent: spliced parent.
+        childParent:: child parent.
+      ] ifFalse: [
+        childParent:: spliced parent.
+      ].
+      spliced parent isNil ifTrue: [
+        root:: child.
+      ] ifFalse: [
+        spliced == spliced parent left ifTrue: [
+          spliced parent left: child.
+        ] ifFalse: [
+          spliced parent right: child.
+        ].
+      ].
+      (spliced == target) not ifTrue: [
+        spliced color = #black ifTrue: [remove: child andFixup: childParent].
+        spliced parent: target parent.
+        spliced color: target color.
+        spliced left: target left.
+        spliced right: target right.
+        target left notNil ifTrue: [target left parent: spliced].
+        target right notNil ifTrue: [target right parent: spliced].
+        target parent notNil ifTrue: [
+          target parent left == target ifTrue: [
+            target parent left: spliced.
+          ] ifFalse: [
+            target parent right: spliced.
+          ].
+        ] ifFalse: [
+          root:: spliced.
+        ].
+      ] ifFalse: [
+        spliced color = #black ifTrue: [remove: child andFixup: childParent].
+      ].
+      ^target value.
+    )
+
+    public at: key = (
+      |
+        node
+      |
+      node:: findNode: key.
+      node isNil ifTrue: [^nil].
+      ^node value.
+    )
+
+    public contains: key = (
+      ^(findNode: key) notNil.
+    )
+
+    public do: block = (
+      |
+        current
+      |
+      root isNil ifTrue: [^self].
+      current:: treeMinimum: root.
+      [current notNil] whileTrue: [
+        block value: (Entry key: current key value: current value).
+        current:: current successor.
+      ].
+    )
+
+    private findNode: key = (
+      |
+        current
+      |
+      current:: root.
+      [current notNil] whileTrue: [
+        |
+          comparisonResult
+        |
+        comparisonResult:: key compareTo: current key.
+        comparisonResult = 0 ifTrue: [^current].
+        comparisonResult < 0 ifTrue: [current:: current left] ifFalse: [current:: current right].
+      ].
+      ^nil.
+    )
+
+    private treeAt: key insert: value = (
+      |
+        current
+        parent
+        newNode
+      |
+      parent:: nil.
+      current:: root.
+      [current notNil] whileTrue: [
+        |
+          comparisonResult
+        |
+        parent:: current.
+        comparisonResult:: key compareTo: current key.
+        comparisonResult < 0 ifTrue: [
+          current:: current left.
+        ] ifFalse: [
+          comparisonResult > 0 ifTrue: [
+            current:: current right.
+          ] ifFalse: [
+            |
+              oldValue
+            |
+            oldValue:: current value.
+            current value: value.
+            ^InsertResult new: false node: nil value: oldValue.
+          ].
+        ].
+      ].
+      newNode:: Node key: key value: value.
+      newNode parent: parent.
+      parent isNil ifTrue: [
+        root:: newNode.
+      ] ifFalse: [
+        (key compareTo: parent key) < 0 ifTrue: [
+          parent left: newNode.
+        ] ifFalse: [
+          parent right: newNode.
+        ].
+      ].
+      ^InsertResult new: true node: newNode value: nil.
+    )
+
+    private leftRotate: node = (
+      |
+        pivot
+      |
+      pivot:: node right.
+      /// Turn pivot's left subtree into node's right subtree
+      node right: pivot left.
+      pivot left notNil ifTrue: [pivot left parent: node].
+      /// Link node's parent to pivot
+      pivot parent: node parent.
+      node parent isNil ifTrue: [
+        root:: pivot.
+      ] ifFalse: [
+        node == node parent left ifTrue: [
+          node parent left: pivot.
+        ] ifFalse: [
+          node parent right: pivot.
+        ].
+      ].
+      /// Put node on pivot's left
+      pivot left: node.
+      node parent: pivot.
+      ^pivot.
+    )
+
+    private rightRotate: node = (
+      |
+        pivot
+      |
+      pivot:: node left.
+      /// Turn pivot's right subtree into node's left subtree
+      node left: pivot right.
+      pivot right notNil ifTrue: [pivot right parent: node].
+      /// Link node's parent to pivot
+      pivot parent: node parent.
+      node parent isNil ifTrue: [
+        root:: pivot.
+      ] ifFalse: [
+        node == node parent left ifTrue: [
+          node parent left: pivot.
+        ] ifFalse: [
+          node parent right: pivot.
+        ].
+      ].
+      pivot right: node.
+      node parent: pivot.
+      ^pivot.
+    )
+
+    private remove: startChild andFixup: startParent = (
+      |
+        child
+        childParent
+      |
+      child:: startChild.
+      childParent:: startParent.
+      [(child == root) not and: [child isNil or: [child color = #black]]] whileTrue: [
+        child == childParent left ifTrue: [
+          |
+            sibling
+          |
+          /// Note: the text points out that sibling cannot be null. The reason is not obvious from
+          /// simply looking at the code; it comes about from the properties of the red-black
+          /// tree.
+          sibling:: childParent right.
+          sibling color = #red ifTrue: [
+            /// Case 1
+            sibling color: #black.
+            childParent color: #red.
+            leftRotate: childParent.
+            sibling:: childParent right.
+          ].
+          ((sibling left isNil or: [sibling left color = #black]) and: [
+            sibling right isNil or: [sibling right color = #black].
+          ]) ifTrue: [
+            /// Case 2
+            sibling color: #red.
+            child:: childParent.
+            childParent:: child parent.
+          ] ifFalse: [
+            (sibling right isNil or: [sibling right color = #black]) ifTrue: [
+              /// Case 3
+              sibling left color: #black.
+              sibling color: #red.
+              rightRotate: sibling.
+              sibling:: childParent right.
+            ].
+            /// Case 4
+            sibling color: childParent color.
+            childParent color: #black.
+            sibling right notNil ifTrue: [sibling right color: #black].
+            leftRotate: childParent.
+            child:: root.
+            childParent:: child parent.
+          ].
+        ] ifFalse: [
+          |
+            sibling
+          |
+          /// Same as "then" clause with "right" and "left" exchanged
+          sibling:: childParent left.
+          sibling color = #red ifTrue: [
+            /// Case 1
+            sibling color: #black.
+            childParent color: #red.
+            rightRotate: childParent.
+            sibling:: childParent left.
+          ].
+          ((sibling right isNil or: [sibling right color = #black]) and: [
+            (sibling left isNil or: [sibling left color = #black]).
+          ]) ifTrue: [
+            /// Case 2
+            sibling color: #red.
+            child:: childParent.
+            childParent:: child parent.
+          ] ifFalse: [
+            (sibling left isNil or: [sibling left color = #black]) ifTrue: [
+              /// Case 3
+              sibling right color: #black.
+              sibling color: #red.
+              leftRotate: sibling.
+              sibling:: childParent left.
+            ].
+            /// Case 4
+            sibling color: childParent color.
+            childParent color: #black.
+            sibling left notNil ifTrue: [sibling left color: #black].
+            rightRotate: childParent.
+            child:: root.
+            childParent:: child parent.
+          ].
+        ].
+      ].
+      child notNil ifTrue: [child color: #black].
+    )
+  )
+
+  private treeMinimum: node = (
+    |
+      current
+    |
+    current:: node.
+    [current left notNil] whileTrue: [current:: current left].
+    ^current.
+  )
 )

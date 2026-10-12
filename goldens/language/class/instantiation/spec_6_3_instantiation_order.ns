@@ -14,21 +14,38 @@
 /// clause, Derived's statement after its slot clause, and the factory's
 /// answer last. Each of the five orderings is a separate rule, and a
 /// reordering of any pair is silent wrong output at exit status 0.
-class Spec63InstantiationOrder = Object new (| t ::= nil. |) (
-    class Base withArgument: value = Object new (
-        | baseSlot = outer Spec63InstantiationOrder log: 'base slot sees the ', value. |
-        outer Spec63InstantiationOrder log: 'base statement'.
-    ) (
-    ) : ()
-    class Derived new = Base withArgument: (outer Spec63InstantiationOrder log: 'superclass argument') (
-        | derivedSlot = outer Spec63InstantiationOrder log: 'derived slot'. |
-        outer Spec63InstantiationOrder log: 'derived statement'.
-    ) (
-    ) : ()
-    public log: line = ( t show: line; newLine. ^line )
-    public main: platform args: arguments = (
-        t:: platform transcript.
-        Derived new.
-        t show: 'the factory answered'; newLine.
-    )
-) : ()
+class Spec63InstantiationOrder = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  class Base withArgument: value = Object new (
+    |
+      baseSlot = outer Spec63InstantiationOrder log: 'base slot sees the ' , value.
+    |
+    outer Spec63InstantiationOrder log: 'base statement'.
+  ) ()
+
+  class Derived new
+      = Base withArgument: (outer Spec63InstantiationOrder log: 'superclass argument') (
+    |
+      derivedSlot = outer Spec63InstantiationOrder log: 'derived slot'.
+    |
+    outer Spec63InstantiationOrder log: 'derived statement'.
+  ) ()
+
+  public log: line = (
+    t
+        show: line;
+        newLine.
+    ^line.
+  )
+
+  public main: platform args: arguments = (
+    t:: platform transcript.
+    Derived new.
+    t
+        show: 'the factory answered';
+        newLine.
+  )
+)

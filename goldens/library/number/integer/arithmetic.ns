@@ -1,7 +1,11 @@
 class Arithmetic = Object new (
-    | result = 6 * 7. |
+  |
+    result = 6 * 7.
+  |
 ) (
-    public main: p args: a = (
-        p transcript show: result printString; newLine
-    )
-) : ()
+  public main: p args: a = (
+    p transcript
+        show: result printString;
+        newLine.
+  )
+)

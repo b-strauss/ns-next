@@ -11,7 +11,7 @@ pub(crate) use classes::{root_clause_defect, root_shape};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use crate::types::{Binding, EditorResolution, ResolveError, ResolvedModule, SourceOrigin};
@@ -172,11 +172,11 @@ impl Resolver {
             }
         }
 
-        for method in &declaration.instance_side.methods {
+        for method in declaration.instance_side.methods() {
             self.resolve_method(method, &class_chain);
         }
         if let Some(class_side) = &declaration.class_side {
-            for method in &class_side.methods {
+            for method in class_side.methods() {
                 self.resolve_method(method, &class_chain);
             }
         }
@@ -211,7 +211,7 @@ impl Resolver {
         }
         let mut scope = ScopeStack::new();
         scope.push(LocalScope::new(&factory_parameters, &[]));
-        for slot in &declaration.instance_side.slots {
+        for slot in declaration.instance_side.slots() {
             // A lazy slot (§6.3.3) is resolved below, after this scope is
             // popped: its initializer is not part of the instance
             // initializer's activation.
@@ -263,7 +263,7 @@ impl Resolver {
         // with no locals but its own, over the same `class_chain` -- since
         // the compiler (a later task) lowers it as a zero-argument method
         // body.
-        for slot in &declaration.instance_side.slots {
+        for slot in declaration.instance_side.slots() {
             if !slot.lazy {
                 continue;
             }
@@ -274,11 +274,11 @@ impl Resolver {
             }
         }
 
-        for nested in &declaration.instance_side.nested_classes {
+        for nested in declaration.instance_side.nested_classes() {
             self.resolve_class(nested, &class_chain);
         }
         if let Some(class_side) = &declaration.class_side {
-            for nested in &class_side.nested_classes {
+            for nested in class_side.nested_classes() {
                 self.resolve_class(nested, &class_chain);
             }
         }
@@ -376,8 +376,8 @@ impl Resolver {
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
-        match statement {
-            Statement::Expression(expression) | Statement::Return(expression) => {
+        match &statement.kind {
+            StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                 self.resolve_expression(expression, scope, chain)
             }
         }
@@ -389,28 +389,32 @@ impl Resolver {
         scope: &mut ScopeStack,
         chain: &[EnclosingClass],
     ) {
-        match expression {
-            Expression::Identifier(id) => self.resolve_identifier(id, scope, chain),
-            Expression::Literal(_) => {}
-            Expression::Send(send) => self.resolve_send(send, scope, chain),
-            Expression::Cascade(cascade) => {
+        match &expression.kind {
+            ExpressionKind::Identifier(id) => self.resolve_identifier(id, scope, chain),
+            ExpressionKind::Literal(_) => {}
+            ExpressionKind::Send(send) => self.resolve_send(send, scope, chain),
+            ExpressionKind::Cascade(cascade) => {
                 self.resolve_expression(&cascade.receiver, scope, chain);
                 self.resolve_message_send(&cascade.first, scope, chain);
                 for message in &cascade.rest {
                     self.resolve_message_send(message, scope, chain);
                 }
             }
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Assign { target, value, .. } => {
                 self.resolve_setter_target(target, scope, chain);
                 self.resolve_expression(value, scope, chain);
             }
-            Expression::Block(block) => {
-                let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
+            ExpressionKind::Block(block) => {
+                let parameters: Vec<&ast::Identifier> = block
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.name)
+                    .collect();
                 self.check_activation_names(&parameters, &block.body.temporaries, "a block");
                 let parameter_names: Vec<Symbol> = block
                     .parameters
                     .iter()
-                    .map(|parameter| Symbol::intern(&parameter.name))
+                    .map(|parameter| Symbol::intern(&parameter.name.name))
                     .collect();
                 scope.push(LocalScope::new(&parameter_names, &block.body.temporaries));
                 self.resolve_local_initializers(&block.body.temporaries, scope, chain);
@@ -419,7 +423,7 @@ impl Resolver {
                 }
                 scope.pop();
             }
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     self.resolve_expression(element, scope, chain);
                 }
@@ -438,7 +442,7 @@ impl Resolver {
         }
     }
 
-    /// A bare `Expression::Identifier` standing alone (not the receiver of an
+    /// A bare `ExpressionKind::Identifier` standing alone (not the receiver of an
     /// enclosing `Send`, since that case is handled in `resolve_send`
     /// below): try locals first, then the §5.7 depth search treating the
     /// name itself as a zero-argument implicit send. `self`/`super` alone (no
@@ -491,10 +495,10 @@ impl Resolver {
                 self.bindings.insert(link.span, Binding::MirrorSend);
             }
             explicit_receivers.push(link);
-            match &link.receiver {
-                Expression::Send(receiver) => link = receiver,
-                receiver => {
-                    self.resolve_expression(receiver, scope, chain);
+            match &link.receiver.kind {
+                ExpressionKind::Send(receiver) => link = receiver,
+                _ => {
+                    self.resolve_expression(&link.receiver, scope, chain);
                     break;
                 }
             }
@@ -568,7 +572,7 @@ impl Resolver {
         false
     }
 
-    /// The `id` in `id:: e` (`Expression::Assign { target, .. }`) resolves
+    /// The `id` in `id:: e` (`ExpressionKind::Assign { target, .. }`) resolves
     /// exactly like an implicit-receiver keyword send to `id:` -- see
     /// `docs/design/dispatch.md`, "Setter sends", and `newspeak-spec.pdf`
     /// §5.4.3, which makes `id:: e` the send of `id:`. Only a local that
@@ -664,7 +668,7 @@ impl Resolver {
 /// `interpreter::core_library`'s `check_factory_holds_the_mirror`), since
 /// the resolver cannot know what a slot holds.
 fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[EnclosingClass]) -> bool {
-    let Expression::Identifier(identifier) = receiver else {
+    let ExpressionKind::Identifier(identifier) = &receiver.kind else {
         return false;
     };
     if identifier.name != "vmMirror" {
@@ -679,9 +683,9 @@ fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[Enclos
 fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
     match pattern {
         ast::MessagePattern::Unary { .. } => vec![],
-        ast::MessagePattern::Binary { parameter, .. } => vec![parameter],
+        ast::MessagePattern::Binary { parameter, .. } => vec![&parameter.name],
         ast::MessagePattern::Keyword { parts } => {
-            parts.iter().map(|(_, parameter)| parameter).collect()
+            parts.iter().map(|part| &part.parameter.name).collect()
         }
     }
 }
@@ -689,12 +693,11 @@ fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
 /// A pattern's full selector, `at:put:` for a keyword pattern.
 fn selector_of_pattern(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } | ast::MessagePattern::Binary { selector, .. } => {
-            selector.name.clone()
-        }
+        ast::MessagePattern::Unary { selector, .. }
+        | ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }
@@ -702,10 +705,10 @@ fn selector_of_pattern(pattern: &ast::MessagePattern) -> String {
 fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
     match pattern {
         ast::MessagePattern::Unary { .. } => vec![],
-        ast::MessagePattern::Binary { parameter, .. } => vec![Symbol::intern(&parameter.name)],
+        ast::MessagePattern::Binary { parameter, .. } => vec![Symbol::intern(&parameter.name.name)],
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(_, parameter)| Symbol::intern(&parameter.name))
+            .map(|part| Symbol::intern(&part.parameter.name.name))
             .collect(),
     }
 }

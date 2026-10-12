@@ -3,16 +3,39 @@
 /// of range and a negative capacity, a Map's or a Set's, signal an
 /// `ArgumentError`, as an Array's do.
 class AMissingKeySignalsNotFound = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. kernel = platform kernel. map list |
-        map:: collections Map new.
-        map at: #present put: 1.
-        transcript show: ([map at: #missing] on: collections NotFound do: [:error | error element]) printString; newLine.
-        transcript show: ([map at: #missing] on: Error do: [:error | error messageText]); newLine.
-        list:: collections List new.
-        transcript show: ([list at: 2] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([collections Map new: -1] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([collections Set new: -1] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
-        transcript show: ([(collections NotFound element: 3) signal] on: Error do: [:error | error description]); newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+      kernel = platform kernel.
+      map
+      list
+    |
+    map:: collections Map new.
+    map at: #present put: 1.
+    transcript
+        show: ([map at: #missing] on: collections NotFound do: [:error | error element])
+            printString;
+        newLine.
+    transcript
+        show: ([map at: #missing] on: Error do: [:error | error messageText]);
+        newLine.
+    list:: collections List new.
+    transcript
+        show: ([list at: 2] on: kernel ArgumentError do: [:error | error argument]) printString;
+        newLine.
+    transcript
+        show: ([collections Map new: -1] on: kernel ArgumentError do: [:error | error argument])
+            printString;
+        newLine.
+    transcript
+        show: ([collections Set new: -1] on: kernel ArgumentError do: [:error | error argument])
+            printString;
+        newLine.
+    transcript
+        show: ([(collections NotFound element: 3) signal] on: Error do: [:error |
+          error description.
+        ]);
+        newLine.
+  )
+)

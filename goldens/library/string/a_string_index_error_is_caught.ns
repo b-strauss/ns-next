@@ -7,26 +7,62 @@
 /// class is `ArgumentError`, as the leaf refuses an argument, and a
 /// `copyFrom:to:` error's `argument` is the bound out of range, the stop
 /// when the start is valid.
-class AStringIndexErrorIsCaught = Object new (
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. ArgumentError = platform kernel ArgumentError. largest smallest |
-        largest:: 9223372036854775807.
-        smallest:: 0 - largest - 1.
-        transcript show: (['abc' at: 4] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' at: 0] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' at: smallest] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' at: nil] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: 0 to: 2] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: 2 to: 4] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: 3 to: 1] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: smallest to: largest] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' copyFrom: 'a' to: 2] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([String with: -1] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([String with: 55296] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([String with: 1114112] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([String with: nil] on: Error do: [:error | error messageText]); newLine.
-        transcript show: (['abc' at: 4] on: Error do: [:error | error class name]); newLine.
-        transcript show: (['abc' copyFrom: 2 to: 4] on: ArgumentError do: [:error | error argument printString]); newLine
-    )
-) : ()
+class AStringIndexErrorIsCaught = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      ArgumentError = platform kernel ArgumentError.
+      largest
+      smallest
+    |
+    largest:: 9223372036854775807.
+    smallest:: 0 - largest - 1.
+    transcript
+        show: (['abc' at: 4] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' at: 0] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' at: smallest] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' at: nil] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: 0 to: 2] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: 2 to: 4] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: 3 to: 1] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: smallest to: largest] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: 'a' to: 2] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([String with: -1] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([String with: 55296] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([String with: 1114112] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([String with: nil] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: (['abc' at: 4] on: Error do: [:error | error class name]);
+        newLine.
+    transcript
+        show: (['abc' copyFrom: 2 to: 4] on: ArgumentError do: [:error |
+          error argument printString.
+        ]);
+        newLine.
+  )
+)

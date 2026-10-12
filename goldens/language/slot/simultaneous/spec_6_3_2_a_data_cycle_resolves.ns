@@ -3,11 +3,26 @@
 /// `first`'s -- a cycle through data, which only futures can build. After
 /// the clause the elements are the arrays themselves, to any program.
 class Spec632ADataCycle = Object new () (
-    class Probe = Object new (|| public first = {second}. public second = {first}. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. probe = Probe new. |
-        t show: ((probe first at: 1) == probe second) printString; newLine.
-        t show: (probe second == (probe first at: 1)) printString; newLine.
-        t show: (((probe second at: 1) at: 1) == probe second) printString; newLine
-    )
-) : ()
+  class Probe = Object new (
+    ||
+      public first = {second}.
+      public second = {first}.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      probe = Probe new.
+    |
+    t
+        show: ((probe first at: 1) == probe second) printString;
+        newLine.
+    t
+        show: (probe second == (probe first at: 1)) printString;
+        newLine.
+    t
+        show: (((probe second at: 1) at: 1) == probe second) printString;
+        newLine.
+  )
+)

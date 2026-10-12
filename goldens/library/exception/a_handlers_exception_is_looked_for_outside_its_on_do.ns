@@ -5,18 +5,36 @@
 /// and its handler, although those are still on the stack. So the inner
 /// `on: Halt` below is passed by, the outermost one catches the halt, and
 /// without one the halt is unhandled and ends the run -- last.
-class AHandlersExceptionIsLookedForOutsideItsOnDo = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. Halt = platform kernel Halt. |
-        transcript show: ([Error signal: 'one'] on: Error do: [:e |
-                              [self halt. 'not reached'] on: Halt do: [:h | 'the handler''s own']]); newLine.
-        transcript show: ([[[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']]
-                               on: Error do: [:e | self halt. 'outer handler done']]
-                              on: Halt do: [:h | 'outermost']); newLine.
-        transcript show: ([[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']]
-                              on: Error do: [:e | self halt. 'outer handler done']); newLine.
-        transcript show: 'not reached'; newLine.
-    )
-) : ()
+class AHandlersExceptionIsLookedForOutsideItsOnDo = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Halt = platform kernel Halt.
+    |
+    transcript
+        show: ([Error signal: 'one'] on: Error do: [:e |
+          [
+            self halt.
+            'not reached'.
+          ] on: Halt do: [:h | 'the handler''s own'].
+        ]);
+        newLine.
+    transcript
+        show: ([
+          [[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']] on: Error do: [:e |
+            self halt.
+            'outer handler done'.
+          ].
+        ] on: Halt do: [:h | 'outermost']);
+        newLine.
+    transcript
+        show: ([[Error signal: 'one'] on: Halt do: [:h | 'inner halt handler']] on: Error do: [:e |
+          self halt.
+          'outer handler done'.
+        ]);
+        newLine.
+    transcript
+        show: 'not reached';
+        newLine.
+  )
+)

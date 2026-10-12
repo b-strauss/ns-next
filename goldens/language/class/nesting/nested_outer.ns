@@ -1,8 +1,22 @@
-class Outer = Object new (| t ::= nil. |) (
-    public class Inner = Object new () (
-        public shout = ( outer Outer say: 'from inner' )
+class Outer = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  public class Inner = Object new () (
+    public shout = (
+      outer Outer say: 'from inner'.
     )
-    say: s = ( t show: s; newLine )
-    public main: platform args: args = (
-        t:: platform transcript. ^Inner new shout )
+  )
+
+  say: s = (
+    t
+        show: s;
+        newLine.
+  )
+
+  public main: platform args: args = (
+    t:: platform transcript.
+    ^Inner new shout.
+  )
 )

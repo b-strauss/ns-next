@@ -3,31 +3,47 @@
 /// on the normal path, where `ensure:` sends it itself, and on an unwind,
 /// where the unwinder runs it.
 class AnUnwindSendsValue = Object new (
-    | private transcript ::= nil. |
+  |
+    private transcript ::= nil.
+  |
 ) (
-    class Noisy named: text = (
-        | private name = text. |
-    ) (
-        public value = (
-            transcript show: name; newLine.
-            ^99
-        )
+  class Noisy named: text = (
+    |
+      private name = text.
+    |
+  ) (
+    public value = (
+      transcript
+          show: name;
+          newLine.
+      ^99.
     )
-    endsNormally = (
-        ^[1] ensure: (Noisy named: 'ensured')
-    )
-    isUnwound = (
-        [^2] ensure: (Noisy named: 'ensured').
-        ^0
-    )
-    isCurtailed = (
-        [^3] ifCurtailed: (Noisy named: 'curtailed').
-        ^0
-    )
-    public main: platform args: arguments = (
-        transcript:: platform transcript.
-        transcript show: self endsNormally printString; newLine.
-        transcript show: self isUnwound printString; newLine.
-        transcript show: self isCurtailed printString; newLine.
-    )
-) : ()
+  )
+
+  endsNormally = (
+    ^[1] ensure: (Noisy named: 'ensured').
+  )
+
+  isUnwound = (
+    [^2] ensure: (Noisy named: 'ensured').
+    ^0.
+  )
+
+  isCurtailed = (
+    [^3] ifCurtailed: (Noisy named: 'curtailed').
+    ^0.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    transcript
+        show: self endsNormally printString;
+        newLine.
+    transcript
+        show: self isUnwound printString;
+        newLine.
+    transcript
+        show: self isCurtailed printString;
+        newLine.
+  )
+)

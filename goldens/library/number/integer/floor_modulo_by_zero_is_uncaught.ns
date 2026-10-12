@@ -2,7 +2,9 @@
 /// for either representation of the receiver; the first raise ends the
 /// program.
 class FloorModuloByZero = () (
-    public main: platform args: arguments = (
-        platform transcript print: 7 \\ 0; newLine
-    )
+  public main: platform args: arguments = (
+    platform transcript
+        print: 7 \\ 0;
+        newLine.
+  )
 )

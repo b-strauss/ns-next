@@ -7,35 +7,72 @@
 /// blockLocals captures a block's own temporary, one per activation of
 /// that block, each written before the inner block is created.
 class NestedBlocksCarryVariables = Object new (
-    | private List ::= nil. |
+  |
+    private List ::= nil.
+  |
 ) (
-    threeDeep = (
-        | first ::= 1. second ::= 10. outermost ::= nil. |
-        outermost:: [:x | [:y | [:z | first + second + x + y + z]]].
-        second:: 20.
-        ^((outermost value: 100) value: 1000) value: 10000
-    )
-    innerWrites = (
-        | total ::= 0. numbers ::= nil. |
-        numbers:: List new.
-        numbers add: 1; add: 2; add: 3.
-        numbers do: [:each | [:factor | total:: total + (each * factor)] value: 10].
-        ^total
-    )
-    blockLocals = (
-        | numbers ::= nil. makers ::= nil. |
-        numbers:: List new.
-        numbers add: 1; add: 2; add: 3.
-        makers:: List new.
-        numbers do: [:each | | doubled ::= 0. | doubled:: each * 2. makers add: [doubled]].
-        ^makers
-    )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        List:: platform collections List.
-        transcript show: self threeDeep printString; newLine.
-        transcript show: self innerWrites printString; newLine.
-        self blockLocals do: [:each | transcript show: each value printString; show: ' '].
-        transcript newLine
-    )
-) : ()
+  threeDeep = (
+    |
+      first ::= 1.
+      second ::= 10.
+      outermost ::= nil.
+    |
+    outermost:: [:x | [:y | [:z | first + second + x + y + z]]].
+    second:: 20.
+    ^((outermost value: 100) value: 1000) value: 10000.
+  )
+
+  innerWrites = (
+    |
+      total ::= 0.
+      numbers ::= nil.
+    |
+    numbers:: List new.
+    numbers
+        add: 1;
+        add: 2;
+        add: 3.
+    numbers do: [:each | [:factor | total:: total + (each * factor)] value: 10].
+    ^total.
+  )
+
+  blockLocals = (
+    |
+      numbers ::= nil.
+      makers ::= nil.
+    |
+    numbers:: List new.
+    numbers
+        add: 1;
+        add: 2;
+        add: 3.
+    makers:: List new.
+    numbers do: [:each |
+      |
+        doubled ::= 0.
+      |
+      doubled:: each * 2.
+      makers add: [doubled].
+    ].
+    ^makers.
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    List:: platform collections List.
+    transcript
+        show: self threeDeep printString;
+        newLine.
+    transcript
+        show: self innerWrites printString;
+        newLine.
+    self blockLocals do: [:each |
+      transcript
+          show: each value printString;
+          show: ' '.
+    ].
+    transcript newLine.
+  )
+)

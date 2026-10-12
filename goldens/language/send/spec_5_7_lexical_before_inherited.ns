@@ -12,28 +12,55 @@
 /// outer send: 5.9 runs lookupProtected on the class of the enclosing
 /// object, which finds OuterBase's n.
 class Spec57LexicalBeforeInherited = Object new () (
-    class Sup = Object new () (
-        public m = ( ^42 )
+  class Sup = Object new () (
+    public m = (
+      ^42.
     )
-    class Outer = Object new () (
-        public m = ( ^91 )
-        class Inner = Sup new () (
-            public foo = ( ^m )
-        )
-        public test = ( ^Inner new foo )
+  )
+
+  class Outer = Object new () (
+    public m = (
+      ^91.
     )
-    class OuterBase = Object new () (
-        public n = ( ^'inherited by the enclosing class' )
+
+    class Inner = Sup new () (
+      public foo = (
+        ^m.
+      )
     )
-    class Enclosing = OuterBase new () (
-        class Nested = Object new () (
-            public viaOuter = ( ^outer Enclosing n )
-        )
-        public test = ( ^Nested new viaOuter )
+
+    public test = (
+      ^Inner new foo.
     )
-    public main: platform args: args = (
-        | t = platform transcript. |
-        t show: Outer new test printString; newLine.
-        t show: Enclosing new test; newLine.
+  )
+
+  class OuterBase = Object new () (
+    public n = (
+      ^'inherited by the enclosing class'.
     )
-) : ()
+  )
+
+  class Enclosing = OuterBase new () (
+    class Nested = Object new () (
+      public viaOuter = (
+        ^outer Enclosing n.
+      )
+    )
+
+    public test = (
+      ^Nested new viaOuter.
+    )
+  )
+
+  public main: platform args: args = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: Outer new test printString;
+        newLine.
+    t
+        show: Enclosing new test;
+        newLine.
+  )
+)

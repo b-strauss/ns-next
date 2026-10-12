@@ -3,23 +3,38 @@
 /// evaluated to nothing: the slot stays nil and the next read evaluates it
 /// again. The second read's attempt succeeds and is kept.
 class Spec633LazyAbandoned = Object new () (
-    class Holder failing: errorClass = Object new (|
-        public attempts ::= 0.
-        ErrorClass = errorClass.
-    |) (
-        lazy public computed = attempt.
-        attempt = (
-            attempts:: attempts + 1.
-            attempts = 1 ifTrue: [ErrorClass new signal: 'first attempt fails'].
-            ^attempts
-        )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. holder |
-        holder:: Holder failing: Error.
-        t show: ([holder computed] on: Error do: [:error | error return: 0]) printString; newLine.
-        t show: holder computed printString; newLine.
-        t show: holder computed printString; newLine.
-        t show: holder attempts printString; newLine.
+  class Holder failing: errorClass = Object new (
+    |
+      public attempts ::= 0.
+      ErrorClass = errorClass.
+    |
+  ) (
+    lazy public computed = attempt.
+
+    attempt = (
+      attempts:: attempts + 1.
+      attempts = 1 ifTrue: [ErrorClass new signal: 'first attempt fails'].
+      ^attempts.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      holder
+    |
+    holder:: Holder failing: Error.
+    t
+        show: ([holder computed] on: Error do: [:error | error return: 0]) printString;
+        newLine.
+    t
+        show: holder computed printString;
+        newLine.
+    t
+        show: holder computed printString;
+        newLine.
+    t
+        show: holder attempts printString;
+        newLine.
+  )
+)

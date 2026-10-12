@@ -2,10 +2,14 @@
 /// default is protected", and §6.3.2 gives the getter "the same"
 /// accessibility as the slot -- so §5.5's `lookupPublic` finds a protected
 /// method and answers "Undefined".
-class ProtectedSlot = Object new (
-) (
-    class Holder = Object new (| w = 3. |) ()
-    public main: pl args: a = (
-        Holder new w
-    )
-) : ()
+class ProtectedSlot = Object new () (
+  class Holder = Object new (
+    |
+      w = 3.
+    |
+  ) ()
+
+  public main: pl args: a = (
+    Holder new w.
+  )
+)

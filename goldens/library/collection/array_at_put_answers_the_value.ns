@@ -1,12 +1,20 @@
 /// `Array>>at:put:` answers the value it stored, as `List>>at:put:` does,
 /// so a store can be the last expression of a method that answers it.
-class ArrayAtPutAnswersTheValue = Object new (
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. array |
-        array:: Array new: 2.
-        transcript show: (array at: 1 put: 5) printString; newLine.
-        transcript show: (array at: 2 put: 'x'); newLine.
-        transcript show: (array at: 1) printString; newLine
-    )
-) : ()
+class ArrayAtPutAnswersTheValue = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      array
+    |
+    array:: Array new: 2.
+    transcript
+        show: (array at: 1 put: 5) printString;
+        newLine.
+    transcript
+        show: (array at: 2 put: 'x');
+        newLine.
+    transcript
+        show: (array at: 1) printString;
+        newLine.
+  )
+)

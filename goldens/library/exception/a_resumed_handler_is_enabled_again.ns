@@ -4,15 +4,26 @@
 /// here both resumed signals are handled, and answer 1 + 1. After a `pass`
 /// whose outer handler resumes, both handlers are enabled again: the inner
 /// one sees the second exception too, and passes it on as well.
-class AResumedHandlerIsEnabledAgain = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ([(Exception signal: 'one') + (Exception signal: 'two')]
-                              on: Exception do: [:e | e resume: 1]) printString; newLine.
-        transcript show: ([[(Exception signal: 'a') + (Exception signal: 'b')]
-                               on: Exception do: [:e | transcript show: 'inner ' , e messageText; newLine. e pass]]
-                              on: Exception do: [:e | e resume: 10]) printString; newLine.
-    )
-) : ()
+class AResumedHandlerIsEnabledAgain = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([(Exception signal: 'one') + (Exception signal: 'two')] on: Exception do: [:e |
+          e resume: 1.
+        ]) printString;
+        newLine.
+    transcript
+        show: ([
+          [(Exception signal: 'a') + (Exception signal: 'b')] on: Exception do: [:e |
+            transcript
+                show: 'inner ' , e messageText;
+                newLine.
+            e pass.
+          ].
+        ] on: Exception do: [:e | e resume: 10])
+            printString;
+        newLine.
+  )
+)

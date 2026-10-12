@@ -12,22 +12,46 @@
 /// declares a value class, `Text` below `String`, and a value class's
 /// enclosing object must be a value; the transcript is therefore read where
 /// it is used, never held in a slot.
-class Sub = Object <: Value (
-) (
-    class Text = String new () (
-        public viaSelf = ( ^self printString )
-        public viaSuper = ( ^super printString )
-        public viaLexical = ( ^printString )
+class Sub = Object <: Value () (
+  class Text = String new () (
+    public viaSelf = (
+      ^self printString.
     )
-    public main: p args: a = (
-        | t |
-        t:: Text new.
-        p transcript show: (t = t) printString; newLine.
-        p transcript show: t printString; newLine.
-        p transcript show: t viaSelf; newLine.
-        p transcript show: t viaSuper; newLine.
-        p transcript show: t viaLexical; newLine.
-        p transcript show: (p transcript = p transcript) printString; newLine.
-        p transcript show: t size printString; newLine
+
+    public viaSuper = (
+      ^super printString.
     )
-) : ()
+
+    public viaLexical = (
+      ^printString.
+    )
+  )
+
+  public main: p args: a = (
+    |
+      t
+    |
+    t:: Text new.
+    p transcript
+        show: (t = t) printString;
+        newLine.
+    p transcript
+        show: t printString;
+        newLine.
+    p transcript
+        show: t viaSelf;
+        newLine.
+    p transcript
+        show: t viaSuper;
+        newLine.
+    p transcript
+        show: t viaLexical;
+        newLine.
+    p transcript
+        show: (p transcript = p transcript) printString;
+        newLine.
+    p transcript
+        show: t size printString;
+        newLine.
+  )
+)

@@ -113,8 +113,8 @@ impl Collector<'_> {
     fn class(&mut self, class: &ast::ClassDeclaration) {
         let instance = &class.instance_side;
         self.bracketed(instance.delimiters, instance.span.end, "(...)");
-        self.slot_section(instance.slot_delimiters, &instance.slots);
-        for slot in &instance.slots {
+        self.slot_section(instance.slot_delimiters, &instance.header_slots);
+        for slot in instance.slots() {
             self.slot(slot);
         }
         for statement in &instance.initializer_expressions {
@@ -128,15 +128,15 @@ impl Collector<'_> {
                     .for_each(|argument| self.expression(argument));
             }
         }
-        for method in &instance.methods {
+        for method in instance.methods() {
             self.method(method);
         }
-        for nested in &instance.nested_classes {
+        for nested in instance.nested_classes() {
             self.class(nested);
         }
         if let Some(class_side) = &class.class_side {
             self.bracketed(class_side.delimiters, class_side.span.end, "(...)");
-            for method in &class_side.methods {
+            for method in class_side.methods() {
                 self.method(method);
             }
         }
@@ -173,19 +173,19 @@ impl Collector<'_> {
     }
 
     fn statement(&mut self, statement: &ast::Statement) {
-        match statement {
-            ast::Statement::Expression(expression) | ast::Statement::Return(expression) => {
+        match &statement.kind {
+            ast::StatementKind::Expression(expression) | ast::StatementKind::Return(expression) => {
                 self.expression(expression);
             }
         }
     }
 
     fn expression(&mut self, expression: &ast::Expression) {
-        match expression {
-            ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
+        match &expression.kind {
+            ast::ExpressionKind::Identifier(_) | ast::ExpressionKind::Literal(_) => {}
             // A chain of messages is walked link by link: it nests as deep
             // as the source is long.
-            ast::Expression::Send(send) => {
+            ast::ExpressionKind::Send(send) => {
                 let (links, receiver) = send.receiver_chain();
                 self.expression(receiver);
                 for link in links.iter().rev() {
@@ -195,7 +195,7 @@ impl Collector<'_> {
                         .for_each(|argument| self.expression(argument));
                 }
             }
-            ast::Expression::Cascade(cascade) => {
+            ast::ExpressionKind::Cascade(cascade) => {
                 self.expression(&cascade.receiver);
                 for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                     message
@@ -204,22 +204,22 @@ impl Collector<'_> {
                         .for_each(|argument| self.expression(argument));
                 }
             }
-            ast::Expression::Assign { value, .. } => self.expression(value),
-            ast::Expression::Block(block) => {
+            ast::ExpressionKind::Assign { value, .. } => self.expression(value),
+            ast::ExpressionKind::Block(block) => {
                 let collapsed = if block.parameters.is_empty() {
                     "[...]".to_string()
                 } else {
                     let parameters: Vec<String> = block
                         .parameters
                         .iter()
-                        .map(|parameter| format!(":{}", parameter.name))
+                        .map(|parameter| format!(":{}", parameter.name.name))
                         .collect();
                     format!("[{} | ...]", parameters.join(" "))
                 };
                 self.bracketed(block.delimiters, block.span.end, &collapsed);
                 self.body(&block.body);
             }
-            ast::Expression::DynamicArray { elements, .. } => {
+            ast::ExpressionKind::DynamicArray { elements, .. } => {
                 elements.iter().for_each(|element| self.expression(element));
             }
         }

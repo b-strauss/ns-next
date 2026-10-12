@@ -9,16 +9,29 @@
 /// block signals is offered to it once more, and with nothing further out
 /// the run ends with the `#handles:` error rather than the `Error`'s own
 /// text.
-class OnANonClassEndsTheRunWithItsHandlesError = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. MessageNotUnderstood = platform kernel MessageNotUnderstood. |
-        [
-            transcript show: ([Error signal: 'first'] on: MessageNotUnderstood do: [:e | 'caught ' , e message selector printString]); newLine.
-            Error signal: 'second'.
-            transcript show: 'not reached'; newLine.
-        ] on: nil do: [:e | transcript show: 'wrong'; newLine].
-        transcript show: 'not reached either'; newLine.
-    )
-) : ()
+class OnANonClassEndsTheRunWithItsHandlesError = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      MessageNotUnderstood = platform kernel MessageNotUnderstood.
+    |
+    [
+      transcript
+          show: ([Error signal: 'first'] on: MessageNotUnderstood do: [:e |
+            'caught ' , e message selector printString.
+          ]);
+          newLine.
+      Error signal: 'second'.
+      transcript
+          show: 'not reached';
+          newLine.
+    ] on: nil do: [:e |
+      transcript
+          show: 'wrong';
+          newLine.
+    ].
+    transcript
+        show: 'not reached either';
+        newLine.
+  )
+)

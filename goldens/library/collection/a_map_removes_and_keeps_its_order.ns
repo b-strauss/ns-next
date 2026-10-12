@@ -2,24 +2,47 @@
 /// several tables keeps every live key reachable and the order of first
 /// storing: a key stored again after its removal comes last.
 class AMapRemovesAndKeepsItsOrder = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. Map = platform collections Map. map show |
-        show:: [:collection |
-            collection do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
-            transcript newLine].
-        map:: Map new.
-        1 to: 20 do: [:index | map at: index put: index * index].
-        1 to: 20 by: 2 do: [:index | map removeKey: index].
-        map at: 1 put: #one.
-        21 to: 30 do: [:index | map at: index put: index].
-        transcript show: map size printString; newLine.
-        show value: map keys.
-        transcript show: (map at: 20) printString; show: ' '; show: (map at: 1) printString; show: ' ';
-            show: (map includesKey: 3) printString; newLine.
-        transcript show: (map keys allSatisfy: [:key | (map at: key ifAbsent: [nil]) notNil]) printString; newLine.
-        map keys do: [:key | map removeKey: key].
-        transcript show: map size printString; show: ' '; show: map isEmpty printString; newLine.
-        map at: #x put: 1.
-        show value: map keys.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Map = platform collections Map.
+      map
+      show
+    |
+    show:: [:collection |
+      collection do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+    ].
+    map:: Map new.
+    1 to: 20 do: [:index | map at: index put: index * index].
+    1 to: 20 by: 2 do: [:index | map removeKey: index].
+    map at: 1 put: #one.
+    21 to: 30 do: [:index | map at: index put: index].
+    transcript
+        show: map size printString;
+        newLine.
+    show value: map keys.
+    transcript
+        show: (map at: 20) printString;
+        show: ' ';
+        show: (map at: 1) printString;
+        show: ' ';
+        show: (map includesKey: 3) printString;
+        newLine.
+    transcript
+        show: (map keys allSatisfy: [:key | (map at: key ifAbsent: [nil]) notNil]) printString;
+        newLine.
+    map keys do: [:key | map removeKey: key].
+    transcript
+        show: map size printString;
+        show: ' ';
+        show: map isEmpty printString;
+        newLine.
+    map at: #x put: 1.
+    show value: map keys.
+  )
+)

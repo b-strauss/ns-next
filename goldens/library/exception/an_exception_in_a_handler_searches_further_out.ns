@@ -3,14 +3,21 @@
 /// outer handler's value answers from the outer `on:do:`; resumed, the
 /// second exception's value comes back into the inner handler, whose own
 /// value then answers from the inner `on:do:`.
-class AnExceptionInAHandlerSearchesFurtherOut = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ([[Error signal: 'first'] on: Error do: [:e | Error signal: 'second']]
-                              on: Error do: [:e | 'outer caught ' , e messageText]); newLine.
-        transcript show: ([[Exception signal: 'first'] on: Exception do: [:e | (Exception signal: 'second') , ' resumed']]
-                              on: Exception do: [:e | e resume: 'outer']); newLine.
-    )
-) : ()
+class AnExceptionInAHandlerSearchesFurtherOut = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([[Error signal: 'first'] on: Error do: [:e | Error signal: 'second']] on: Error
+            do: [:e | 'outer caught ' , e messageText]);
+        newLine.
+    transcript
+        show: ([
+          [Exception signal: 'first'] on: Exception do: [:e |
+            (Exception signal: 'second') , ' resumed'.
+          ].
+        ] on: Exception do: [:e | e resume: 'outer']);
+        newLine.
+  )
+)

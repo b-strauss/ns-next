@@ -24,17 +24,32 @@
 /// 4. The module otherwise runs as any other: a nested class that is no value
 ///    reads the module's slot through `outer` and answers a String.
 class MixinModuleDeclaresItselfAValue = Object <: Value (
-    | public greeting = 'hello'. |
+  |
+    public greeting = 'hello'.
+  |
 ) (
-    class Greeter = Object new () (
-        public greet: who = ( ^outer MixinModuleDeclaresItselfAValue greeting, ', ', who )
-    ) : ()
-    public main: platform args: arguments = (
-        | twin |
-        twin:: self class new.
-        platform transcript show: (twin = self) printString; newLine.
-        platform transcript show: (twin == self) printString; newLine.
-        platform transcript show: (twin hash = self hash) printString; newLine.
-        platform transcript show: (Greeter new greet: 'value'); newLine
+  class Greeter = Object new () (
+    public greet: who = (
+      ^outer MixinModuleDeclaresItselfAValue greeting , ', ' , who.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      twin
+    |
+    twin:: self class new.
+    platform transcript
+        show: (twin = self) printString;
+        newLine.
+    platform transcript
+        show: (twin == self) printString;
+        newLine.
+    platform transcript
+        show: (twin hash = self hash) printString;
+        newLine.
+    platform transcript
+        show: (Greeter new greet: 'value');
+        newLine.
+  )
+)

@@ -1,17 +1,33 @@
 class ClassSideOuter = Object new () (
-    label = ( ^'top' )
-    public class Widget = Object new () (
-        label = ( ^'widget' )
-        public class Part = Object new () (
-        ) : (
-            public whichOuter = ( ^outer ClassSideOuter label )
-        )
-    ) : (
-        public whichOuter = ( ^outer ClassSideOuter label )
+  label = (
+    ^'top'.
+  )
+
+  public class Widget = Object new () (
+    label = (
+      ^'widget'.
     )
-    public main: platform args: args = (
-        | t ::= platform transcript. |
-        t show: 'class side: ', Widget whichOuter; newLine.
-        t show: 'nested class side: ', Widget new Part whichOuter; newLine.
+
+    public class Part = Object new () () : (
+      public whichOuter = (
+        ^outer ClassSideOuter label.
+      )
     )
+  ) : (
+    public whichOuter = (
+      ^outer ClassSideOuter label.
+    )
+  )
+
+  public main: platform args: args = (
+    |
+      t ::= platform transcript.
+    |
+    t
+        show: 'class side: ' , Widget whichOuter;
+        newLine.
+    t
+        show: 'nested class side: ' , Widget new Part whichOuter;
+        newLine.
+  )
 )

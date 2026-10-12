@@ -52,8 +52,8 @@ pub(crate) enum InlineForm<'a> {
 /// inside a loop body could observe; a register cannot reproduce that, so
 /// such blocks keep their real-send semantics.
 fn as_inlinable_block(expression: &ast::Expression) -> Option<&ast::BlockExpression> {
-    match expression {
-        ast::Expression::Block(block)
+    match &expression.kind {
+        ast::ExpressionKind::Block(block)
             if block.parameters.is_empty() && block.body.temporaries.is_empty() =>
         {
             Some(block)
@@ -179,8 +179,17 @@ mod tests {
             ) : ()
         "};
         let module = ns_syntax::parse(&full).expect("parse");
-        match &module.root_class.instance_side.methods[0].body.statements[0] {
-            ast::Statement::Return(ast::Expression::Send(send)) => (**send).clone(),
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
+        match &method.body.statements[0].kind {
+            ast::StatementKind::Return(ast::Expression {
+                kind: ast::ExpressionKind::Send(send),
+                ..
+            }) => (**send).clone(),
             other => panic!("expected a return-of-send statement, got {other:?}"),
         }
     }
@@ -205,9 +214,26 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        let nested = &resolved.module.root_class.instance_side.nested_classes[0];
-        let send = match &nested.instance_side.methods[0].body.statements[0] {
-            ast::Statement::Return(ast::Expression::Send(send)) => (**send).clone(),
+        let nested = resolved
+            .module
+            .root_class
+            .instance_side
+            .nested_classes()
+            .next()
+            .expect("a nested class");
+        let send = match &nested
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .body
+            .statements[0]
+            .kind
+        {
+            ast::StatementKind::Return(ast::Expression {
+                kind: ast::ExpressionKind::Send(send),
+                ..
+            }) => (**send).clone(),
             other => panic!("expected a return-of-send statement, got {other:?}"),
         };
         (send, resolved.bindings.clone())

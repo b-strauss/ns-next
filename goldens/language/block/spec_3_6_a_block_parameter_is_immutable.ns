@@ -2,8 +2,16 @@
 /// closure activation as for a method activation. Nothing declares value:,
 /// so 5.7 makes the setter send a self send, which nothing answers.
 class Spec36ABlockParameterIsImmutable = Object new () (
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: ([:value | value:: 5. value] value: 1) printString; newLine.
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: ([:value |
+          value:: 5.
+          value.
+        ] value: 1)
+            printString;
+        newLine.
+  )
+)

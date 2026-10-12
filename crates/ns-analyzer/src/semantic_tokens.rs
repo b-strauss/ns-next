@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use lsp_types::{SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend};
 use ns_runtime::Binding;
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::{Span, Token, TokenKind};
 
 use crate::documents::{utf16_length, LineIndex};
@@ -165,7 +165,7 @@ impl ClassMembers {
 impl SideMembers {
     fn of(body: &ast::ClassBody) -> SideMembers {
         let mut members = HashMap::new();
-        for slot in &body.slots {
+        for slot in body.slots() {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
             members
                 .entry(slot.name.name.clone())
@@ -176,12 +176,12 @@ impl SideMembers {
                     .or_insert(MemberKind::SlotSetter);
             }
         }
-        for method in &body.methods {
+        for method in body.methods() {
             members
                 .entry(selector_of(&method.pattern))
                 .or_insert(MemberKind::Method);
         }
-        for nested in &body.nested_classes {
+        for nested in body.nested_classes() {
             members
                 .entry(nested.name.name.clone())
                 .or_insert(MemberKind::NestedClass);
@@ -194,12 +194,11 @@ impl SideMembers {
 /// parts the parser stores without their colon.
 fn selector_of(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } | ast::MessagePattern::Binary { selector, .. } => {
-            selector.name.clone()
-        }
+        ast::MessagePattern::Unary { selector, .. }
+        | ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }
@@ -298,12 +297,7 @@ impl Classifier<'_> {
             .map(pattern_parameters)
             .unwrap_or_default();
         self.enter_scope(&factory_parameters, &[]);
-        for slot in declaration
-            .instance_side
-            .slots
-            .iter()
-            .filter(|slot| !slot.lazy)
-        {
+        for slot in declaration.instance_side.slots().filter(|slot| !slot.lazy) {
             let readonly = slot.mutability == ast::SlotMutability::Immutable;
             self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             if let Some(initializer) = &slot.initializer {
@@ -332,12 +326,7 @@ impl Classifier<'_> {
         // §6: the factory's parameters are not in scope in the class body,
         // where a lazy slot is declared; the resolver resolves its
         // initializer as a unary method's body, and so does this walk.
-        for slot in declaration
-            .instance_side
-            .slots
-            .iter()
-            .filter(|slot| slot.lazy)
-        {
+        for slot in declaration.instance_side.slots().filter(|slot| slot.lazy) {
             if let Some(modifier) = self.lazy_modifier(slot) {
                 self.emit(modifier, TokenCategory::Keyword, false, false);
             }
@@ -351,7 +340,7 @@ impl Classifier<'_> {
         }
 
         if let Some(class_side) = &declaration.class_side {
-            for slot in &class_side.slots {
+            for slot in class_side.slots() {
                 let readonly = slot.mutability == ast::SlotMutability::Immutable;
                 self.emit(slot.name.span, TokenCategory::Property, true, readonly);
             }
@@ -361,12 +350,12 @@ impl Classifier<'_> {
             sides.push((class_side, &class_side_chain));
         }
         for &(body, side_chain) in &sides {
-            for method in &body.methods {
+            for method in body.methods() {
                 self.method(method, side_chain);
             }
         }
         for &(body, side_chain) in &sides {
-            for nested in &body.nested_classes {
+            for nested in body.nested_classes() {
                 self.class(nested, side_chain);
             }
         }
@@ -374,13 +363,13 @@ impl Classifier<'_> {
 
     fn method(&mut self, method: &ast::MethodDeclaration, chain: &[&SideMembers]) {
         match &method.pattern {
-            ast::MessagePattern::Unary { selector }
+            ast::MessagePattern::Unary { selector, .. }
             | ast::MessagePattern::Binary { selector, .. } => {
                 self.emit(selector.span, TokenCategory::Method, true, false);
             }
             ast::MessagePattern::Keyword { parts } => {
-                for (keyword, _) in parts {
-                    self.emit(keyword.span, TokenCategory::Method, true, false);
+                for part in parts {
+                    self.emit(part.keyword.span, TokenCategory::Method, true, false);
                 }
             }
         }
@@ -429,20 +418,20 @@ impl Classifier<'_> {
     }
 
     fn statement(&mut self, statement: &Statement, chain: &[&SideMembers]) {
-        match statement {
-            Statement::Expression(expression) | Statement::Return(expression) => {
+        match &statement.kind {
+            StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                 self.expression(expression, chain)
             }
         }
     }
 
     fn expression(&mut self, expression: &Expression, chain: &[&SideMembers]) {
-        match expression {
-            Expression::Identifier(identifier) => self.identifier(identifier, chain),
-            Expression::Literal(_) => {}
-            Expression::Send(send) => self.send(send, chain),
-            Expression::Cascade(cascade) => {
-                let receiver = expression_span(&cascade.receiver);
+        match &expression.kind {
+            ExpressionKind::Identifier(identifier) => self.identifier(identifier, chain),
+            ExpressionKind::Literal(_) => {}
+            ExpressionKind::Send(send) => self.send(send, chain),
+            ExpressionKind::Cascade(cascade) => {
+                let receiver = cascade.receiver.span;
                 for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                     self.explicit_receiver_selector(&cascade.receiver, receiver, message);
                 }
@@ -453,15 +442,19 @@ impl Classifier<'_> {
                     }
                 }
             }
-            Expression::Assign { target, value, .. } => {
+            ExpressionKind::Assign { target, value, .. } => {
                 self.setter_target(target, chain);
                 self.expression(value, chain);
             }
-            Expression::Block(block) => {
-                let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
+            ExpressionKind::Block(block) => {
+                let parameters: Vec<&ast::Identifier> = block
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.name)
+                    .collect();
                 self.body(&parameters, &block.body, chain);
             }
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     self.expression(element, chain);
                 }
@@ -568,24 +561,15 @@ impl Classifier<'_> {
             Some(Binding::LexicalSend { depth }) => {
                 let (category, readonly) =
                     member_category(chain, depth, selector_name(&send.message.selector));
-                self.selector(
-                    expression_span(&send.receiver),
-                    &send.message,
-                    category,
-                    readonly,
-                );
+                self.selector(send.receiver.span, &send.message, category, readonly);
             }
             Some(Binding::SuperSend) => self.selector(
-                expression_span(&send.receiver),
+                send.receiver.span,
                 &send.message,
                 TokenCategory::Method,
                 false,
             ),
-            _ => self.explicit_receiver_selector(
-                &send.receiver,
-                expression_span(&send.receiver),
-                &send.message,
-            ),
+            _ => self.explicit_receiver_selector(&send.receiver, send.receiver.span, &send.message),
         }
     }
 
@@ -600,7 +584,8 @@ impl Classifier<'_> {
         receiver_span: Span,
         message: &ast::MessageSend,
     ) {
-        if matches!(receiver, Expression::Identifier(identifier) if identifier.name == "outer") {
+        if matches!(&receiver.kind, ExpressionKind::Identifier(identifier) if identifier.name == "outer")
+        {
             return;
         }
         self.selector(receiver_span, message, TokenCategory::Method, false);
@@ -617,7 +602,7 @@ impl Classifier<'_> {
         readonly: bool,
     ) {
         let excluded: Vec<Span> = std::iter::once(receiver)
-            .chain(message.arguments.iter().map(expression_span))
+            .chain(message.arguments.iter().map(|argument| argument.span))
             .collect();
         let message = message.span;
         // The selector follows the receiver, so the search starts past it:
@@ -702,38 +687,15 @@ fn member_category(chain: &[&SideMembers], depth: u16, name: &str) -> (TokenCate
 fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
     match pattern {
         ast::MessagePattern::Unary { .. } => Vec::new(),
-        ast::MessagePattern::Binary { parameter, .. } => vec![parameter],
+        ast::MessagePattern::Binary { parameter, .. } => vec![&parameter.name],
         ast::MessagePattern::Keyword { parts } => {
-            parts.iter().map(|(_, parameter)| parameter).collect()
+            parts.iter().map(|part| &part.parameter.name).collect()
         }
     }
 }
 
 fn contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end && outer.start < outer.end
-}
-
-fn expression_span(expression: &Expression) -> Span {
-    match expression {
-        Expression::Identifier(identifier) => identifier.span,
-        Expression::Literal(literal) => literal_span(literal),
-        Expression::Send(send) => send.span,
-        Expression::Cascade(cascade) => cascade.span,
-        Expression::Assign { span, .. } | Expression::DynamicArray { span, .. } => *span,
-        Expression::Block(block) => block.span,
-    }
-}
-
-fn literal_span(literal: &ast::Literal) -> Span {
-    match literal {
-        ast::Literal::Integer { span, .. }
-        | ast::Literal::Float { span, .. }
-        | ast::Literal::String { span, .. }
-        | ast::Literal::Symbol { span, .. }
-        | ast::Literal::Boolean { span, .. }
-        | ast::Literal::Nil { span }
-        | ast::Literal::Pattern { span, .. } => *span,
-    }
 }
 
 #[cfg(test)]

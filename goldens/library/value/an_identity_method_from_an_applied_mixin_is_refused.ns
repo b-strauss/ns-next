@@ -4,12 +4,20 @@
 /// applies it over `Value`, and this is decided where `Mixed` is created but
 /// refused only where an instance is made -- `Mixed new`.
 class IdentityFromAMixin = Object <: Value () (
-    public class Identity = Object new () (
-        public == other = ( ^true )
+  public class Identity = Object new () (
+    public == other = (
+      ^true.
     )
-    public class Mixed = Value new <: Identity () ()
-    public main: platform args: arguments = (
-        platform transcript show: (Identity new == Identity new) printString; newLine.
-        platform transcript show: Mixed new printString; newLine.
-    )
-) : ()
+  )
+
+  public class Mixed = Value new <: Identity () ()
+
+  public main: platform args: arguments = (
+    platform transcript
+        show: (Identity new == Identity new) printString;
+        newLine.
+    platform transcript
+        show: Mixed new printString;
+        newLine.
+  )
+)

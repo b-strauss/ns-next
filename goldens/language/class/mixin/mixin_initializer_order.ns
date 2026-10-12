@@ -28,36 +28,68 @@
 /// What is applied is First's mixin, not First's superclass (the result "is
 /// a class I with mixin M and superclass S"), so neither First's own
 /// superclass clause nor Noisy's initializer runs: no line mentions them.
-class MixinInitializerOrder = Object new (| t ::= nil. |) (
-    class Root withRoot: value = Object new (
-        | rootSlot = outer MixinInitializerOrder log: 'Root initializer receives ', value. |
-    ) () : ()
-    class Base withBase: value = Root withRoot: (outer MixinInitializerOrder log: 'Base''s own superclass clause message') (
-        | baseSlot = outer MixinInitializerOrder log: 'Base initializer receives ', value. |
-    ) () : ()
-    class Noisy withNoise: value = Object new (
-        | noisySlot = outer MixinInitializerOrder log: 'Noisy initializer receives ', value. |
-    ) () : ()
-    class First withFirst: value = Noisy withNoise: (outer MixinInitializerOrder log: 'First''s own superclass clause message') (
-        | firstSlot = outer MixinInitializerOrder log: 'First initializer receives ', value. |
-    ) () : ()
-    class Second withSecond: value = Object new (
-        | secondSlot = outer MixinInitializerOrder log: 'Second initializer receives ', value. |
-    ) () : ()
-    class Applied from: argument =
-        Base withBase: (outer MixinInitializerOrder evaluated: 'ms' with: argument)
-        <: First withFirst: (outer MixinInitializerOrder evaluated: 'm1' with: argument)
-        <: Second withSecond: (outer MixinInitializerOrder evaluated: 'm2' with: argument) (
-        | appliedSlot = outer MixinInitializerOrder log: 'Applied initializer'. |
-    ) () : ()
-    public log: line = ( t show: line; newLine. ^line )
-    public evaluated: clause with: argument = (
-        log: clause, ' evaluated with ', argument.
-        ^clause, '(', argument, ')'
-    )
-    public main: platform args: arguments = (
-        t:: platform transcript.
-        Applied from: 'x'.
-        log: 'the factory answered'.
-    )
-) : ()
+class MixinInitializerOrder = Object new (
+  |
+    t ::= nil.
+  |
+) (
+  class Root withRoot: value = Object new (
+    |
+      rootSlot = outer MixinInitializerOrder log: 'Root initializer receives ' , value.
+    |
+  ) ()
+
+  class Base withBase: value
+      = Root withRoot: (outer MixinInitializerOrder log: 'Base''s own superclass clause message') (
+    |
+      baseSlot = outer MixinInitializerOrder log: 'Base initializer receives ' , value.
+    |
+  ) ()
+
+  class Noisy withNoise: value = Object new (
+    |
+      noisySlot = outer MixinInitializerOrder log: 'Noisy initializer receives ' , value.
+    |
+  ) ()
+
+  class First withFirst: value
+      = Noisy withNoise: (outer
+          MixinInitializerOrder log: 'First''s own superclass clause message') (
+    |
+      firstSlot = outer MixinInitializerOrder log: 'First initializer receives ' , value.
+    |
+  ) ()
+
+  class Second withSecond: value = Object new (
+    |
+      secondSlot = outer MixinInitializerOrder log: 'Second initializer receives ' , value.
+    |
+  ) ()
+
+  class Applied from: argument
+      = Base withBase: (outer MixinInitializerOrder evaluated: 'ms' with: argument)
+      <: First withFirst: (outer MixinInitializerOrder evaluated: 'm1' with: argument)
+      <: Second withSecond: (outer MixinInitializerOrder evaluated: 'm2' with: argument) (
+    |
+      appliedSlot = outer MixinInitializerOrder log: 'Applied initializer'.
+    |
+  ) ()
+
+  public log: line = (
+    t
+        show: line;
+        newLine.
+    ^line.
+  )
+
+  public evaluated: clause with: argument = (
+    log: clause , ' evaluated with ' , argument.
+    ^clause , '(' , argument , ')'.
+  )
+
+  public main: platform args: arguments = (
+    t:: platform transcript.
+    Applied from: 'x'.
+    log: 'the factory answered'.
+  )
+)

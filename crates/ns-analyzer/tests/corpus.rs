@@ -221,17 +221,17 @@ fn declared_names_of_class(class: &ast::ClassDeclaration, names: &mut Vec<String
         }
     }
     for body in std::iter::once(&class.instance_side).chain(&class.class_side) {
-        for slot in &body.slots {
+        for slot in body.slots() {
             declared_names_of_slot(slot, names);
         }
         for statement in &body.initializer_expressions {
             declared_names_of_statement(statement, names);
         }
-        for method in &body.methods {
+        for method in body.methods() {
             declared_names_of_pattern(&method.pattern, names);
             declared_names_of_body(&method.body, names);
         }
-        for nested in &body.nested_classes {
+        for nested in body.nested_classes() {
             declared_names_of_class(nested, names);
         }
     }
@@ -239,18 +239,18 @@ fn declared_names_of_class(class: &ast::ClassDeclaration, names: &mut Vec<String
 
 fn declared_names_of_pattern(pattern: &ast::MessagePattern, names: &mut Vec<String>) {
     match pattern {
-        ast::MessagePattern::Unary { selector } => names.push(selector.name.clone()),
+        ast::MessagePattern::Unary { selector, .. } => names.push(selector.name.clone()),
         ast::MessagePattern::Binary {
             selector,
             parameter,
         } => {
             names.push(selector.name.clone());
-            names.push(parameter.name.clone());
+            names.push(parameter.name.name.clone());
         }
         ast::MessagePattern::Keyword { parts } => {
-            for (keyword, parameter) in parts {
-                names.push(keyword.name.clone());
-                names.push(parameter.name.clone());
+            for part in parts {
+                names.push(part.keyword.name.clone());
+                names.push(part.parameter.name.name.clone());
             }
         }
     }
@@ -273,24 +273,24 @@ fn declared_names_of_body(body: &ast::CodeBody, names: &mut Vec<String>) {
 }
 
 fn declared_names_of_statement(statement: &ast::Statement, names: &mut Vec<String>) {
-    match statement {
-        ast::Statement::Expression(expression) | ast::Statement::Return(expression) => {
+    match &statement.kind {
+        ast::StatementKind::Expression(expression) | ast::StatementKind::Return(expression) => {
             declared_names_of_expression(expression, names);
         }
     }
 }
 
 fn declared_names_of_expression(expression: &ast::Expression, names: &mut Vec<String>) {
-    match expression {
-        ast::Expression::Identifier(_) | ast::Expression::Literal(_) => {}
-        ast::Expression::Send(send) => {
+    match &expression.kind {
+        ast::ExpressionKind::Identifier(_) | ast::ExpressionKind::Literal(_) => {}
+        ast::ExpressionKind::Send(send) => {
             declared_names_of_expression(&send.receiver, names);
             send.message
                 .arguments
                 .iter()
                 .for_each(|argument| declared_names_of_expression(argument, names));
         }
-        ast::Expression::Cascade(cascade) => {
+        ast::ExpressionKind::Cascade(cascade) => {
             declared_names_of_expression(&cascade.receiver, names);
             for message in std::iter::once(&cascade.first).chain(&cascade.rest) {
                 message
@@ -299,17 +299,17 @@ fn declared_names_of_expression(expression: &ast::Expression, names: &mut Vec<St
                     .for_each(|argument| declared_names_of_expression(argument, names));
             }
         }
-        ast::Expression::Assign { value, .. } => declared_names_of_expression(value, names),
-        ast::Expression::Block(block) => {
+        ast::ExpressionKind::Assign { value, .. } => declared_names_of_expression(value, names),
+        ast::ExpressionKind::Block(block) => {
             names.extend(
                 block
                     .parameters
                     .iter()
-                    .map(|parameter| parameter.name.clone()),
+                    .map(|parameter| parameter.name.name.clone()),
             );
             declared_names_of_body(&block.body, names);
         }
-        ast::Expression::DynamicArray { elements, .. } => {
+        ast::ExpressionKind::DynamicArray { elements, .. } => {
             elements
                 .iter()
                 .for_each(|element| declared_names_of_expression(element, names));

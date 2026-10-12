@@ -4,25 +4,64 @@
 /// reads back as the same Float. Any other text is an ArgumentError
 /// carrying it, the lower-case names and stray characters included.
 class AFloatIsParsedFromItsText = () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. third = 1.0 / 3.0. |
-        transcript print: (Float parse: '3'); newLine.
-        transcript print: (Float parse: '3.'); newLine.
-        transcript print: (Float parse: '-3'); newLine.
-        transcript print: (Float parse: '0003.0000'); newLine.
-        transcript print: (Float parse: '1.5'); newLine.
-        transcript print: (Float parse: '2.5e-3'); newLine.
-        transcript print: (Float parse: '1e+21'); newLine.
-        transcript print: (Float parse: 'NaN'); newLine.
-        transcript print: (Float parse: 'Infinity'); newLine.
-        transcript print: (Float parse: '-Infinity'); newLine.
-        transcript print: (Float parse: third printString) = third; newLine.
-        transcript print: (Float parse: -0.0 printString); newLine.
-        transcript show: ([Float parse: ''] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Float parse: 'nan'] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Float parse: 'inf'] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Float parse: '--9'] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Float parse: '3 '] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Float parse: 3] on: Error do: [:error | error messageText]); newLine
-    )
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      third = 1.0 / 3.0.
+    |
+    transcript
+        print: (Float parse: '3');
+        newLine.
+    transcript
+        print: (Float parse: '3.');
+        newLine.
+    transcript
+        print: (Float parse: '-3');
+        newLine.
+    transcript
+        print: (Float parse: '0003.0000');
+        newLine.
+    transcript
+        print: (Float parse: '1.5');
+        newLine.
+    transcript
+        print: (Float parse: '2.5e-3');
+        newLine.
+    transcript
+        print: (Float parse: '1e+21');
+        newLine.
+    transcript
+        print: (Float parse: 'NaN');
+        newLine.
+    transcript
+        print: (Float parse: 'Infinity');
+        newLine.
+    transcript
+        print: (Float parse: '-Infinity');
+        newLine.
+    transcript
+        print: (Float parse: third printString) = third;
+        newLine.
+    transcript
+        print: (Float parse: -0.0 printString);
+        newLine.
+    transcript
+        show: ([Float parse: ''] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Float parse: 'nan'] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Float parse: 'inf'] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Float parse: '--9'] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Float parse: '3 '] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Float parse: 3] on: Error do: [:error | error messageText]);
+        newLine.
+  )
 )

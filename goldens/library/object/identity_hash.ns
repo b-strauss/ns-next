@@ -1,12 +1,25 @@
 class IdentityHash = Object new () (
-    public class Thing = Object new () ()
-    public main: platform args: args = (
-        | t ::= platform transcript. a b |
-        a:: Thing new.
-        b:: Thing new.
-        t show: b hash printString; newLine.
-        t show: a hash printString; newLine.
-        t show: b hash printString; newLine.
-        t show: (a == b) printString; newLine.
-    )
+  public class Thing = Object new () ()
+
+  public main: platform args: args = (
+    |
+      t ::= platform transcript.
+      a
+      b
+    |
+    a:: Thing new.
+    b:: Thing new.
+    t
+        show: b hash printString;
+        newLine.
+    t
+        show: a hash printString;
+        newLine.
+    t
+        show: b hash printString;
+        newLine.
+    t
+        show: (a == b) printString;
+        newLine.
+  )
 )

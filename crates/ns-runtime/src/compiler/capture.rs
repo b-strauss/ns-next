@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use ns_syntax::ast::{self, Expression, Statement};
+use ns_syntax::ast::{self, Expression, ExpressionKind, Statement, StatementKind};
 use ns_syntax::Span;
 
 use super::control_flow::{self, InlineForm};
@@ -379,8 +379,8 @@ impl<'a> Walker<'a> {
 
     fn statements(&mut self, statements: &[Statement]) {
         for statement in statements {
-            match statement {
-                Statement::Expression(expression) | Statement::Return(expression) => {
+            match &statement.kind {
+                StatementKind::Expression(expression) | StatementKind::Return(expression) => {
                     self.expression(expression)
                 }
             }
@@ -388,15 +388,15 @@ impl<'a> Walker<'a> {
     }
 
     fn expression(&mut self, expression: &Expression) {
-        match expression {
-            Expression::Identifier(identifier) => self.reference(identifier),
-            Expression::Literal(_) => {}
-            Expression::Assign { target, value, .. } => {
+        match &expression.kind {
+            ExpressionKind::Identifier(identifier) => self.reference(identifier),
+            ExpressionKind::Literal(_) => {}
+            ExpressionKind::Assign { target, value, .. } => {
                 self.expression(value);
                 self.assign(target);
             }
-            Expression::Send(send) => self.send(send),
-            Expression::Cascade(cascade) => {
+            ExpressionKind::Send(send) => self.send(send),
+            ExpressionKind::Cascade(cascade) => {
                 self.expression(&cascade.receiver);
                 for message in std::iter::once(&cascade.first).chain(cascade.rest.iter()) {
                     for argument in &message.arguments {
@@ -404,8 +404,8 @@ impl<'a> Walker<'a> {
                     }
                 }
             }
-            Expression::Block(block) => self.real_block(block),
-            Expression::DynamicArray { elements, .. } => {
+            ExpressionKind::Block(block) => self.real_block(block),
+            ExpressionKind::DynamicArray { elements, .. } => {
                 for element in elements {
                     self.expression(element);
                 }
@@ -593,7 +593,14 @@ mod tests {
             crate::SourceOrigin::File(PathBuf::from("t.ns")),
         )
         .expect("resolve");
-        let method = resolved.module.root_class.instance_side.methods[0].clone();
+        let method = resolved
+            .module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method")
+            .clone();
         analyze(
             RootBody {
                 argument_count: 0,
@@ -758,9 +765,17 @@ mod tests {
         ) else {
             panic!("the kernel-shaped module resolves");
         };
-        let method = &resolved.module.root_class.instance_side.nested_classes[0]
+        let method = resolved
+            .module
+            .root_class
             .instance_side
-            .methods[0];
+            .nested_classes()
+            .next()
+            .expect("a nested class")
+            .instance_side
+            .methods()
+            .next()
+            .expect("a method");
         let captures = analyze(
             RootBody {
                 argument_count: 0,

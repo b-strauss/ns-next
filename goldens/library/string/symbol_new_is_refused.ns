@@ -1,8 +1,12 @@
 /// A Symbol is one object per text (§5.1.6), so `Symbol new` is refused.
 class SymbolNewIsRefused = Object new () (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: 'before'; newLine.
-        Symbol new
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: 'before';
+        newLine.
+    Symbol new.
+  )
+)

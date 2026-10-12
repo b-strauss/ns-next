@@ -1,20 +1,43 @@
 class NestedOuterInherited = Object new () (
-    label = ( ^'top' )
-    public class Base = Object new () (
-        public describe = ( ^outer NestedOuterInherited label )
-        public class Deeper = Object new () (
-            public describe = ( ^outer NestedOuterInherited label )
-        )
+  label = (
+    ^'top'.
+  )
+
+  public class Base = Object new () (
+    public describe = (
+      ^outer NestedOuterInherited label.
     )
-    public class Mid = Object new () (
-        label = ( ^'mid' )
-        public class Derived = Base new () ()
+
+    public class Deeper = Object new () (
+      public describe = (
+        ^outer NestedOuterInherited label.
+      )
     )
-    public main: platform args: args = (
-        | t ::= platform transcript. |
-        t show: 'own method: ', Base new describe; newLine.
-        t show: 'inherited method: ', Mid new Derived new describe; newLine.
-        t show: 'own nesting: ', Base new Deeper new describe; newLine.
-        t show: 'inherited nesting: ', Mid new Derived new Deeper new describe; newLine.
+  )
+
+  public class Mid = Object new () (
+    label = (
+      ^'mid'.
     )
+
+    public class Derived = Base new () ()
+  )
+
+  public main: platform args: args = (
+    |
+      t ::= platform transcript.
+    |
+    t
+        show: 'own method: ' , Base new describe;
+        newLine.
+    t
+        show: 'inherited method: ' , Mid new Derived new describe;
+        newLine.
+    t
+        show: 'own nesting: ' , Base new Deeper new describe;
+        newLine.
+    t
+        show: 'inherited nesting: ' , Mid new Derived new Deeper new describe;
+        newLine.
+  )
 )

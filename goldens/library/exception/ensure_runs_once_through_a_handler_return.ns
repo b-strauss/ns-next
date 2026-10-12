@@ -2,14 +2,30 @@
 /// the one unwinder, which runs an `ensure:` block on the way -- once, since
 /// the unwinder marks it run -- and an `ifCurtailed:` block, which runs only
 /// on an unwind; both before the value is printed.
-class EnsureRunsOnceThroughAHandlerReturn = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: ([[Error signal] ensure: [transcript show: 'ensured'; newLine]]
-                              on: Error do: [:e | e return: 1]) printString; newLine.
-        transcript show: ([[Error signal] ifCurtailed: [transcript show: 'curtailed'; newLine]]
-                              on: Error do: [:e | 2]) printString; newLine.
-    )
-) : ()
+class EnsureRunsOnceThroughAHandlerReturn = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: ([
+          [Error signal] ensure: [
+            transcript
+                show: 'ensured';
+                newLine.
+          ].
+        ] on: Error do: [:e | e return: 1])
+            printString;
+        newLine.
+    transcript
+        show: ([
+          [Error signal] ifCurtailed: [
+            transcript
+                show: 'curtailed';
+                newLine.
+          ].
+        ] on: Error do: [:e | 2])
+            printString;
+        newLine.
+  )
+)

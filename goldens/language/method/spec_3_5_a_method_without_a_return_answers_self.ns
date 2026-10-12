@@ -11,17 +11,32 @@
 /// value of the last statement in the closure body" -- the one place a
 /// body's value differs between a method and a closure.
 class Spec35MethodWithoutAReturn = Object new () (
-    class Base = Object new () (
-        public store: value = ( )
-    ) : ()
-    class Derived = Base new () () : ()
-    computes = ( 1 + 1 )
-    empty = ( )
-    public main: platform args: arguments = (
-        | t = platform transcript. derived |
-        t show: (self computes == self) printString; newLine.
-        t show: (self empty == self) printString; newLine.
-        derived:: Derived new.
-        t show: ((derived store: 1) == derived) printString; newLine.
-    )
-) : ()
+  class Base = Object new () (
+    public store: value = ()
+  )
+
+  class Derived = Base new () ()
+
+  computes = (
+    1 + 1.
+  )
+
+  empty = ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      derived
+    |
+    t
+        show: (self computes == self) printString;
+        newLine.
+    t
+        show: (self empty == self) printString;
+        newLine.
+    derived:: Derived new.
+    t
+        show: ((derived store: 1) == derived) printString;
+        newLine.
+  )
+)

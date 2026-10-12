@@ -3,12 +3,26 @@
 /// future, only its value (docs/design/image-format.md), so after a load the
 /// element and the slot are still one object.
 class Spec632ADataCycleSurvivesAnImage = Object new (
-    | probe = Probe new. |
+  |
+    probe = Probe new.
+  |
 ) (
-    class Probe = Object new (|| public first = {second}. public second = {first}. ||) () : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: ((probe first at: 1) == probe second) printString; newLine.
-        t show: (((probe second at: 1) at: 1) == probe second) printString; newLine
-    )
-) : ()
+  class Probe = Object new (
+    ||
+      public first = {second}.
+      public second = {first}.
+    ||
+  ) ()
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: ((probe first at: 1) == probe second) printString;
+        newLine.
+    t
+        show: (((probe second at: 1) at: 1) == probe second) printString;
+        newLine.
+  )
+)

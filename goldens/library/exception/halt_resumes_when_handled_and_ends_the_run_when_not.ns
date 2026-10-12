@@ -2,14 +2,25 @@
 /// value answers from `halt` and execution carries on after it. Unhandled,
 /// its `defaultAction` -- the hook the debugger will replace -- ends the
 /// run, reporting the class name, since it has no text.
-class HaltResumesWhenHandledAndEndsTheRunWhenNot = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. Halt = platform kernel Halt. |
-        transcript show: ([self halt. 3] on: Halt do: [:e | e resume: 7]) printString; newLine.
-        transcript show: ([self halt] on: Halt do: [:e | e resume: 7]) printString; newLine.
-        self halt.
-        transcript show: 'not reached'; newLine.
-    )
-) : ()
+class HaltResumesWhenHandledAndEndsTheRunWhenNot = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      Halt = platform kernel Halt.
+    |
+    transcript
+        show: ([
+          self halt.
+          3.
+        ] on: Halt do: [:e | e resume: 7])
+            printString;
+        newLine.
+    transcript
+        show: ([self halt] on: Halt do: [:e | e resume: 7]) printString;
+        newLine.
+    self halt.
+    transcript
+        show: 'not reached';
+        newLine.
+  )
+)

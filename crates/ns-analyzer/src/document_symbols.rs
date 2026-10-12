@@ -89,7 +89,7 @@ fn class(
     let mut children = vec![factory(declaration)];
     children.extend(instance_members(&declaration.instance_side, value));
     if let Some(class_side) = &declaration.class_side {
-        children.extend(class_side.methods.iter().map(|declaration| Symbol {
+        children.extend(class_side.methods().map(|declaration| Symbol {
             class_side: true,
             ..method(declaration)
         }));
@@ -152,7 +152,7 @@ fn collect_clauses<'a>(
     value: &mut HashSet<Span>,
     named_by: &mut HashMap<Span, Vec<Span>>,
 ) {
-    for nested in &declaring.instance_side.nested_classes {
+    for nested in declaring.instance_side.nested_classes() {
         for clause in nested.superclass.iter().chain(&nested.mixin_applications) {
             match clause_target(clause, bindings, chain) {
                 Some(target) if target.name.name == "Value" => {
@@ -190,8 +190,7 @@ fn clause_target<'a>(
     chain
         .get(depth)?
         .instance_side
-        .nested_classes
-        .iter()
+        .nested_classes()
         .find(|nested| nested.name.name == clause.receiver.name)
 }
 
@@ -220,13 +219,12 @@ fn factory(declaration: &ast::ClassDeclaration) -> Symbol {
 
 /// Header slots, lazy slots, nested classes and methods, in source order.
 fn instance_members(body: &ast::ClassBody, value: &HashSet<Span>) -> Vec<Symbol> {
-    let mut members: Vec<Symbol> = body.slots.iter().map(slot).collect();
+    let mut members: Vec<Symbol> = body.slots().map(slot).collect();
     members.extend(
-        body.nested_classes
-            .iter()
+        body.nested_classes()
             .map(|nested| class(nested, effective(nested.access), value, false)),
     );
-    members.extend(body.methods.iter().map(method));
+    members.extend(body.methods().map(method));
     members.sort_by_key(|member| member.span.start);
     members
 }
@@ -287,16 +285,16 @@ fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Sym
 /// `foo`, `+ other`, `at: index put: value`.
 fn pattern_text(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } => selector.name.clone(),
+        ast::MessagePattern::Unary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Binary {
             selector,
             parameter,
         } => {
-            format!("{} {}", selector.name, parameter.name)
+            format!("{} {}", selector.name, parameter.name.name)
         }
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, parameter)| format!("{}: {}", keyword.name, parameter.name))
+            .map(|part| format!("{}: {}", part.keyword.name, part.parameter.name.name))
             .collect::<Vec<_>>()
             .join(" "),
     }
@@ -307,14 +305,14 @@ fn pattern_text(pattern: &ast::MessagePattern) -> String {
 /// the function total.
 fn pattern_span(pattern: &ast::MessagePattern) -> Span {
     match pattern {
-        ast::MessagePattern::Unary { selector } => selector.span,
+        ast::MessagePattern::Unary { selector, .. } => selector.span,
         ast::MessagePattern::Binary {
             selector,
             parameter,
-        } => selector.span.merge(parameter.span),
+        } => selector.span.merge(parameter.name.span),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, parameter)| keyword.span.merge(parameter.span))
+            .map(|part| part.keyword.span.merge(part.parameter.name.span))
             .reduce(Span::merge)
             .unwrap_or(Span::new(0, 0)),
     }

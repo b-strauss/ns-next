@@ -13,14 +13,15 @@ use lsp_types::notification::{
     Notification as NotificationKind, PublishDiagnostics,
 };
 use lsp_types::request::{
-    DocumentSymbolRequest, FoldingRangeRequest, Request as RequestKind, SemanticTokensFullRequest,
+    DocumentSymbolRequest, FoldingRangeRequest, Formatting, Request as RequestKind,
+    SemanticTokensFullRequest,
 };
 use lsp_types::{
-    Diagnostic, DiagnosticSeverity, DocumentSymbolParams, DocumentSymbolResponse,
-    FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams, MessageType, OneOf,
-    PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
+    Diagnostic, DiagnosticSeverity, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FoldingRangeParams, FoldingRangeProviderCapability, LogMessageParams,
+    MessageType, OneOf, PublishDiagnosticsParams, Range, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensOptions, SemanticTokensParams, SemanticTokensServerCapabilities,
-    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Uri,
 };
 use ns_syntax::Severity;
 
@@ -65,6 +66,7 @@ fn capabilities() -> ServerCapabilities {
         )),
         folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
         document_symbol_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         ..ServerCapabilities::default()
     }
 }
@@ -111,6 +113,7 @@ fn answer(documents: &HashMap<String, Document>, request: Request) -> Response {
         SemanticTokensFullRequest::METHOD => semantic_tokens_of(documents, request),
         FoldingRangeRequest::METHOD => folding_ranges_of(documents, request),
         DocumentSymbolRequest::METHOD => document_symbols_of(documents, request),
+        Formatting::METHOD => formatting_of(documents, request),
         _ => Response::new_err(
             request.id,
             ErrorCode::MethodNotFound as i32,
@@ -145,6 +148,58 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
         })
         .unwrap_or_default();
     Response::new_ok(request.id, ranges)
+}
+
+/// The edit that formats an open document: one replacement of its whole text,
+/// or none when it is formatted already or does not parse (a document with a
+/// syntax error is left as the user wrote it). Like folds and tokens, only an
+/// open editor buffer is formatted, never a file read from disk. The request's
+/// options are ignored: the formatter has one style. A panic in the printer
+/// answers no edit too (`formatted_guarded`).
+fn formatting_of(documents: &HashMap<String, Document>, request: Request) -> Response {
+    let params: DocumentFormattingParams = match serde_json::from_value(request.params) {
+        Ok(params) => params,
+        Err(error) => {
+            return Response::new_err(
+                request.id,
+                ErrorCode::InvalidParams as i32,
+                error.to_string(),
+            )
+        }
+    };
+    let edits: Vec<TextEdit> = documents
+        .get(params.text_document.uri.as_str())
+        .and_then(|document| {
+            let formatted = formatted_guarded(&document.text, ns_syntax::format)?;
+            if formatted == document.text {
+                return None;
+            }
+            let end = document
+                .line_index
+                .position(&document.text, u32::try_from(document.text.len()).ok()?);
+            Some(TextEdit {
+                range: Range::new(lsp_types::Position::new(0, 0), end),
+                new_text: formatted,
+            })
+        })
+        .into_iter()
+        .collect();
+    Response::new_ok(request.id, edits)
+}
+
+/// `text` as `formatter` writes it, or `None` when it does not parse or the
+/// formatter panics. The printer is meant to be total over every module that
+/// parses; a panic is therefore an ns-next defect, and like a panic in the
+/// analysis (`analysis::guarded`) it must not take the server, and the
+/// editor's support for every other file, down with it. The document is
+/// then left as it is.
+fn formatted_guarded<Failure>(
+    text: &str,
+    formatter: impl FnOnce(&str) -> Result<String, Failure>,
+) -> Option<String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| formatter(text)))
+        .ok()?
+        .ok()
 }
 
 /// A document's symbol tree. An open document is answered from its cache: it
@@ -362,7 +417,20 @@ fn diagnostics_of(uri: &Uri, document: Option<&Document>) -> PublishDiagnosticsP
 
 #[cfg(test)]
 mod tests {
-    use super::readable_as_source;
+    use super::{formatted_guarded, readable_as_source};
+
+    #[test]
+    fn a_panic_in_the_printer_answers_no_formatted_text() {
+        let formatted = formatted_guarded("anything", |_| -> Result<String, ()> {
+            panic!("the printer broke")
+        });
+        assert_eq!(formatted, None);
+        assert_eq!(
+            formatted_guarded("text", |text| Ok::<_, ()>(text.to_uppercase())),
+            Some("TEXT".to_string())
+        );
+        assert_eq!(formatted_guarded("text", |_| Err::<String, _>(())), None);
+    }
 
     #[test]
     fn only_a_regular_file_a_source_may_hold_is_read() {

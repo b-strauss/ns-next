@@ -2,18 +2,34 @@
 /// Array>>at:'s text, whatever capacity the List's array has spare: an
 /// empty List's array has three slots, and `at: 1` still fails. An index
 /// that is no Integer is out of range too.
-class AListIndexErrorIsCaughtAsAnError = Object new (
-    
-) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. List = platform collections List. list |
-        list:: List new.
-        list add: 1; add: 2.
-        transcript show: ([list at: 3] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([list at: 0] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([list at: 3 put: 9] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([list at: 'one'] on: Error do: [:e | e messageText]); newLine.
-        transcript show: ([list at: 3] on: Error do: [:e | e class name]); newLine.
-        transcript show: ([List new at: 1] on: Error do: [:e | e messageText]); newLine
-    )
-) : ()
+class AListIndexErrorIsCaughtAsAnError = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      List = platform collections List.
+      list
+    |
+    list:: List new.
+    list
+        add: 1;
+        add: 2.
+    transcript
+        show: ([list at: 3] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([list at: 0] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([list at: 3 put: 9] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([list at: 'one'] on: Error do: [:e | e messageText]);
+        newLine.
+    transcript
+        show: ([list at: 3] on: Error do: [:e | e class name]);
+        newLine.
+    transcript
+        show: ([List new at: 1] on: Error do: [:e | e messageText]);
+        newLine.
+  )
+)

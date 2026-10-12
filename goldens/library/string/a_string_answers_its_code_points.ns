@@ -7,16 +7,54 @@
 /// A copy whose code points all fit Latin-1 is equal to, and hashes like,
 /// the same text written as a literal, whatever width it was cut from.
 class AStringAnswersItsCodePoints = Object new (
-    | wide = '€uro 😀'. |
+  |
+    wide = '€uro 😀'.
+  |
 ) (
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript print: ('abc' at: 1); show: ' '; print: ('café' at: 4); show: ' '; print: (wide at: 1); show: ' '; print: (wide at: 6); newLine.
-        transcript show: ('hello' copyFrom: 2 to: 4); newLine.
-        transcript print: ('hello' copyFrom: 6 to: 5) size; show: ' '; print: ('hello' copyFrom: 1 to: 0) size; show: ' '; print: ('' copyFrom: 1 to: 0) size; newLine.
-        transcript show: (wide copyFrom: 2 to: 4); show: ' '; print: (wide copyFrom: 2 to: 4) = 'uro'; show: ' '; print: (wide copyFrom: 2 to: 4) hash = 'uro' hash; newLine.
-        transcript show: (wide copyFrom: 5 to: 6); show: ' '; print: (wide copyFrom: 5 to: 6) size; newLine.
-        transcript show: (String with: 97); show: (String with: 8364); show: (String with: 128512); newLine.
-        transcript print: (String with: 233) = 'é'; show: ' '; print: (String with: 0) size; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        print: ('abc' at: 1);
+        show: ' ';
+        print: ('café' at: 4);
+        show: ' ';
+        print: (wide at: 1);
+        show: ' ';
+        print: (wide at: 6);
+        newLine.
+    transcript
+        show: ('hello' copyFrom: 2 to: 4);
+        newLine.
+    transcript
+        print: ('hello' copyFrom: 6 to: 5) size;
+        show: ' ';
+        print: ('hello' copyFrom: 1 to: 0) size;
+        show: ' ';
+        print: ('' copyFrom: 1 to: 0) size;
+        newLine.
+    transcript
+        show: (wide copyFrom: 2 to: 4);
+        show: ' ';
+        print: (wide copyFrom: 2 to: 4) = 'uro';
+        show: ' ';
+        print: (wide copyFrom: 2 to: 4) hash = 'uro' hash;
+        newLine.
+    transcript
+        show: (wide copyFrom: 5 to: 6);
+        show: ' ';
+        print: (wide copyFrom: 5 to: 6) size;
+        newLine.
+    transcript
+        show: (String with: 97);
+        show: (String with: 8364);
+        show: (String with: 128512);
+        newLine.
+    transcript
+        print: (String with: 233) = 'é';
+        show: ' ';
+        print: (String with: 0) size;
+        newLine.
+  )
+)

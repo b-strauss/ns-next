@@ -24,26 +24,35 @@
 /// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
-class Sieve usingPlatform: platform = (
-) (
-    public bench = (
-        | result |
-        result:: sieve: (Array new: 5000) size: 5000.
-        result = 669 ifFalse: [Error signal: 'Sieve: expected 669, got ', result printString].
-        ^result
-    )
-    sieve: flags size: size = (
-        | primeCount |
-        primeCount:: 0.
-        1 to: size do: [:index | flags at: index put: true].
-        2 to: size do: [:candidate |
-            (flags at: candidate - 1) ifTrue: [
-                | multiple |
-                primeCount:: primeCount + 1.
-                multiple:: candidate + candidate.
-                [multiple <= size] whileTrue: [
-                    flags at: multiple - 1 put: false.
-                    multiple:: multiple + candidate]]].
-        ^primeCount
-    )
+class Sieve usingPlatform: platform = () (
+  public bench = (
+    |
+      result
+    |
+    result:: sieve: (Array new: 5000) size: 5000.
+    result = 669 ifFalse: [Error signal: 'Sieve: expected 669, got ' , result printString].
+    ^result.
+  )
+
+  sieve: flags size: size = (
+    |
+      primeCount
+    |
+    primeCount:: 0.
+    1 to: size do: [:index | flags at: index put: true].
+    2 to: size do: [:candidate |
+      (flags at: candidate - 1) ifTrue: [
+        |
+          multiple
+        |
+        primeCount:: primeCount + 1.
+        multiple:: candidate + candidate.
+        [multiple <= size] whileTrue: [
+          flags at: multiple - 1 put: false.
+          multiple:: multiple + candidate.
+        ].
+      ].
+    ].
+    ^primeCount.
+  )
 )

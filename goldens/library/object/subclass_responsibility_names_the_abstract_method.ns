@@ -3,25 +3,53 @@
 /// of the receiver that should have implemented it, on a class side too.
 /// It is protected: a send from outside is not understood.
 class SubclassResponsibilityNamesTheAbstractMethod = Object new () (
-    class Shape = Object new () (
-        public area = ( ^self subclassResponsibility )
-        public describe = ( ^'area ', self area printString )
-    ) : (
-        public make = ( ^self subclassResponsibility )
+  class Shape = Object new () (
+    public area = (
+      ^self subclassResponsibility.
     )
-    class Square side: theSide = Shape new (
-        | side = theSide. |
-    ) (
-        public area = ( ^side * side )
+
+    public describe = (
+      ^'area ' , self area printString.
     )
-    class Circle = Shape new () (
+  ) : (
+    public make = (
+      ^self subclassResponsibility.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. kernel = platform kernel. |
-        transcript show: (Square side: 3) describe; newLine.
-        transcript show: ([Circle new describe] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Shape new area] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Shape make] on: Error do: [:error | error messageText]); newLine.
-        transcript show: ([Circle new subclassResponsibility] on: kernel MessageNotUnderstood do: [:error | #protected]) printString; newLine.
+  )
+
+  class Square side: theSide = Shape new (
+    |
+      side = theSide.
+    |
+  ) (
+    public area = (
+      ^side * side.
     )
-) : ()
+  )
+
+  class Circle = Shape new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+    |
+    transcript
+        show: (Square side: 3) describe;
+        newLine.
+    transcript
+        show: ([Circle new describe] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Shape new area] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Shape make] on: Error do: [:error | error messageText]);
+        newLine.
+    transcript
+        show: ([Circle new subclassResponsibility] on: kernel MessageNotUnderstood do: [:error |
+          #protected.
+        ]) printString;
+        newLine.
+  )
+)

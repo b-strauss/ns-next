@@ -1,6 +1,7 @@
-class Hello = Object new (
-) (
-    public main: p args: a = (
-        p transcript show: 'hello'; newLine
-    )
-) : ()
+class Hello = Object new () (
+  public main: p args: a = (
+    p transcript
+        show: 'hello';
+        newLine.
+  )
+)

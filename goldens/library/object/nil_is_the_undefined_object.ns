@@ -2,8 +2,12 @@
 /// UndefinedObject", which Object's accessor names like every other
 /// predefined class (§3.2).
 class Undefined = Object new () (
-    public main: p args: a = (
-        p transcript show: (nil class == UndefinedObject) printString; newLine.
-        p transcript show: (UndefinedObject == self UndefinedObject) printString; newLine
-    )
-) : ()
+  public main: p args: a = (
+    p transcript
+        show: (nil class == UndefinedObject) printString;
+        newLine.
+    p transcript
+        show: (UndefinedObject == self UndefinedObject) printString;
+        newLine.
+  )
+)

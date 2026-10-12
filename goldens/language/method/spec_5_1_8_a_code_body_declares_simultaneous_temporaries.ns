@@ -4,9 +4,17 @@
 /// class header. (`first` and `second` do not refer to each other;
 /// `spec_6_3_2_*` pins what a simultaneous clause does when they do.)
 class Spec518ACodeBodyDeclaresSimultaneousTemporaries = Object new () (
-    public main: platform args: arguments = (
-        || t = platform transcript. first = 3. second = 4. ||
-        t show: (first + second) printString; newLine.
-        t show: ([:x | || x + 1] value: 1) printString; newLine
-    )
-) : ()
+  public main: platform args: arguments = (
+    ||
+      t = platform transcript.
+      first = 3.
+      second = 4.
+    ||
+    t
+        show: (first + second) printString;
+        newLine.
+    t
+        show: ([:x | x + 1] value: 1) printString;
+        newLine.
+  )
+)

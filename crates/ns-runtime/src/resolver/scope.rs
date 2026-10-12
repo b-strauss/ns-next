@@ -128,10 +128,13 @@ mod tests {
                 name: name.to_string(),
                 span: Span::new(0, 0),
             },
+            type_annotation: None,
             mutability,
             initializer: None,
             lazy: false,
+            access_before_lazy: false,
             simultaneous: false,
+            comments: Vec::new(),
             span: Span::new(0, 0),
         }
     }

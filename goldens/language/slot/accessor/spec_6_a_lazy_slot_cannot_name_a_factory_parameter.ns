@@ -3,10 +3,11 @@
 /// lazy slot is declared in the class body. So `seed` in its initializer is
 /// the implicit-receiver send `self seed`, which nothing understands.
 class Spec6LazyFactory = Object new () (
-    class Holder seed: seed = Object new () (
-        lazy public later = seed.
-    ) : ()
-    public main: platform args: arguments = (
-        (Holder seed: 7) later
-    )
-) : ()
+  class Holder seed: seed = Object new () (
+    lazy public later = seed.
+  )
+
+  public main: platform args: arguments = (
+    (Holder seed: 7) later.
+  )
+)

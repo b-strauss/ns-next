@@ -7,30 +7,51 @@
 /// receiver, like any other; the one named class answers #class in place of
 /// the inherited method.
 class Spec41TheUnreservedWordsNameSlots = Object new () (
-    class Holder = Object new (|
-        public public ::= 'a'.
-        public protected ::= 'b'.
-        public private ::= 'c'.
-        public lazy ::= 'd'.
-        public class ::= 'e'.
-    |) (
-        public all = ( ^public, protected, private, lazy, class )
-        public renameAll = (
-            public:: 'A'.
-            protected:: 'B'.
-            private:: 'C'.
-            lazy:: 'D'.
-            class:: 'E'
-        )
-    ) : ()
-    public main: platform args: arguments = (
-        | t = platform transcript. holder |
-        holder:: Holder new.
-        t show: holder all; newLine.
-        t show: holder public, holder protected, holder private, holder lazy, holder class; newLine.
-        holder renameAll.
-        t show: holder all; newLine.
-        holder public: '1'; protected: '2'; private: '3'; lazy: '4'.
-        t show: holder all; newLine
+  class Holder = Object new (
+    |
+      public public ::= 'a'.
+      public protected ::= 'b'.
+      public private ::= 'c'.
+      public lazy ::= 'd'.
+      public class ::= 'e'.
+    |
+  ) (
+    public all = (
+      ^public , protected , private , lazy , class.
     )
-) : ()
+
+    public renameAll = (
+      public:: 'A'.
+      protected:: 'B'.
+      private:: 'C'.
+      lazy:: 'D'.
+      class:: 'E'.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+      holder
+    |
+    holder:: Holder new.
+    t
+        show: holder all;
+        newLine.
+    t
+        show: holder public , holder protected , holder private , holder lazy , holder class;
+        newLine.
+    holder renameAll.
+    t
+        show: holder all;
+        newLine.
+    holder
+        public: '1';
+        protected: '2';
+        private: '3';
+        lazy: '4'.
+    t
+        show: holder all;
+        newLine.
+  )
+)

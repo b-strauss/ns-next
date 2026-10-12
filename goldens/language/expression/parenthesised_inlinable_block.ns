@@ -1,0 +1,13 @@
+/// Parentheses around a conditional's receiver or its block arguments change
+/// nothing: the blocks are still literal blocks, inlined as the bare ones
+/// are, and the conditional answers what they answer.
+class ParenthesisedInlinableBlock = Object new () (
+  public main: p args: a = (
+    p transcript
+        show: (true ifTrue: ([1]) ifFalse: ([2])) printString;
+        newLine.
+    p transcript
+        show: ((true) ifTrue: [3]) printString;
+        newLine.
+  )
+)

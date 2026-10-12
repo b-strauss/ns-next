@@ -3,14 +3,26 @@
 /// description rendered as a value is in an error message, and nothing
 /// after the signal runs.
 class AnUnhandledExceptionWhoseDescriptionIsNoStringEndsTheRun = Object new () (
-    public class Odd = Error new () (
-        public description = ( ^42 )
-        protected hostSelector = ( ^'no symbol' )
+  public class Odd = Error new () (
+    public description = (
+      ^42.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. |
-        transcript show: 'before'; newLine.
-        Odd new signal.
-        transcript show: 'not reached'; newLine.
+
+    protected hostSelector = (
+      ^'no symbol'.
     )
-) : ()
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+    |
+    transcript
+        show: 'before';
+        newLine.
+    Odd new signal.
+    transcript
+        show: 'not reached';
+        newLine.
+  )
+)

@@ -1,22 +1,32 @@
 /// A `^` inside an inlined loop body unwinds out of the whole loop, and a
 /// closure built inside an inlined branch still reaches the enclosing frame.
-class InlinedReturn = Object new (
-) (
-    count: limit = (
-        | i |
-        i:: 0.
-        [true] whileTrue: [
-            i:: i + 1.
-            i > limit ifTrue: [^i]].
-        ^0
-    )
-    capture: x = (
-        | c |
-        x > 0 ifTrue: [c:: [x * 2]] ifFalse: [c:: [x]].
-        ^c value
-    )
-    public main: p args: a = (
-        p transcript show: (self count: 3) printString; newLine.
-        p transcript show: (self capture: 5) printString; newLine
-    )
-) : ()
+class InlinedReturn = Object new () (
+  count: limit = (
+    |
+      i
+    |
+    i:: 0.
+    [true] whileTrue: [
+      i:: i + 1.
+      i > limit ifTrue: [^i].
+    ].
+    ^0.
+  )
+
+  capture: x = (
+    |
+      c
+    |
+    x > 0 ifTrue: [c:: [x * 2]] ifFalse: [c:: [x]].
+    ^c value.
+  )
+
+  public main: p args: a = (
+    p transcript
+        show: (self count: 3) printString;
+        newLine.
+    p transcript
+        show: (self capture: 5) printString;
+        newLine.
+  )
+)

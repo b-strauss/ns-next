@@ -8,78 +8,164 @@
 /// again, and sends no key `=`; a key whose `==` answers true for anything
 /// finds no removed entry in its bucket.
 class ARemovedEntryIsPassedByEveryProbe = Object new (
-    | comparisons ::= 0. |
+  |
+    comparisons ::= 0.
+  |
 ) (
-    class Key named: theName = Object new (
-        | public name = theName. |
-    ) (
-        public = other = (
-            comparisons:: comparisons + 1.
-            ^name = other name
-        )
-        public hash = ( ^7 )
+  class Key named: theName = Object new (
+    |
+      public name = theName.
+    |
+  ) (
+    public = other = (
+      comparisons:: comparisons + 1.
+      ^name = other name.
     )
-    class Anything = Object new () (
-        public = other = ( ^true )
-        public hash = ( ^7 )
+
+    public hash = (
+      ^7.
     )
-    class Colliding = Object new () (
-        public hash = ( ^7 )
-        public identityHash = ( ^7 )
+  )
+
+  class Anything = Object new () (
+    public = other = (
+      ^true.
     )
-    class AnythingIdentical = Object new () (
-        public == other = ( ^true )
-        public identityHash = ( ^7 )
+
+    public hash = (
+      ^7.
     )
-    public main: platform args: arguments = (
-        | transcript = platform transcript. collections = platform collections. names first second identity map anything colliding set |
-        names:: [:keys |
-            keys do: [:each | transcript show: each name] separatedBy: [transcript show: ' '].
-            transcript newLine].
-        first:: Key named: #k.
-        second:: Key named: #k.
-        identity:: collections IdentityMap new.
-        identity at: first put: 1; at: second put: 2.
-        transcript show: (identity removeKey: first) printString; show: ' '; show: identity size printString; show: ' ';
-            show: (identity at: second) printString; show: ' '; show: (identity includesKey: first) printString; newLine.
-        identity at: first put: 3.
-        transcript show: identity size printString; show: ' ';
-            show: ((identity keys at: 1) == second) printString; show: ' ';
-            show: ((identity keys at: 2) == first) printString; show: ' ';
-            show: (identity at: first) printString; show: ' '; show: (identity at: second) printString; newLine.
-        transcript show: comparisons printString; newLine.
-        identity:: collections IdentityMap new.
-        colliding:: Colliding new.
-        identity at: colliding put: 1.
-        identity removeKey: colliding.
-        transcript show: (identity includesKey: AnythingIdentical new) printString; show: ' ';
-            show: (identity at: AnythingIdentical new ifAbsent: [#absent]) printString; newLine.
-        map:: collections Map new.
-        map at: (Key named: #a) put: 1; at: (Key named: #b) put: 2; at: (Key named: #c) put: 3.
-        transcript show: (map removeKey: (Key named: #b)) printString; newLine.
-        transcript show: (map at: (Key named: #c)) printString; show: ' ';
-            show: (map includesKey: (Key named: #b)) printString; newLine.
-        map at: (Key named: #b) put: 20.
-        names value: map keys.
-        transcript show: (map at: (Key named: #b)) printString; show: ' '; show: map size printString; newLine.
-        anything:: collections Map new.
-        colliding:: Colliding new.
-        anything at: colliding put: 1.
-        anything removeKey: colliding.
-        transcript show: (anything includesKey: Anything new) printString; show: ' ';
-            show: (anything at: Anything new ifAbsent: [#absent]) printString; newLine.
-        anything at: Anything new put: 5.
-        transcript show: anything size printString; show: ' '; show: (anything at: Anything new) printString; newLine.
-        set:: collections Set new.
-        set add: (Key named: #a); add: (Key named: #b); add: (Key named: #c).
-        set remove: (Key named: #b).
-        transcript show: (set includes: (Key named: #c)) printString; show: ' ';
-            show: (set includes: (Key named: #b)) printString; newLine.
-        set add: (Key named: #b).
-        names value: set asArray.
-        set:: collections Set new.
-        set add: colliding.
-        set remove: colliding.
-        transcript show: (set includes: Anything new) printString; newLine.
+  )
+
+  class Colliding = Object new () (
+    public hash = (
+      ^7.
     )
-) : ()
+
+    public identityHash = (
+      ^7.
+    )
+  )
+
+  class AnythingIdentical = Object new () (
+    public == other = (
+      ^true.
+    )
+
+    public identityHash = (
+      ^7.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      collections = platform collections.
+      names
+      first
+      second
+      identity
+      map
+      anything
+      colliding
+      set
+    |
+    names:: [:keys |
+      keys do: [:each | transcript show: each name] separatedBy: [transcript show: ' '].
+      transcript newLine.
+    ].
+    first:: Key named: #k.
+    second:: Key named: #k.
+    identity:: collections IdentityMap new.
+    identity
+        at: first put: 1;
+        at: second put: 2.
+    transcript
+        show: (identity removeKey: first) printString;
+        show: ' ';
+        show: identity size printString;
+        show: ' ';
+        show: (identity at: second) printString;
+        show: ' ';
+        show: (identity includesKey: first) printString;
+        newLine.
+    identity at: first put: 3.
+    transcript
+        show: identity size printString;
+        show: ' ';
+        show: ((identity keys at: 1) == second) printString;
+        show: ' ';
+        show: ((identity keys at: 2) == first) printString;
+        show: ' ';
+        show: (identity at: first) printString;
+        show: ' ';
+        show: (identity at: second) printString;
+        newLine.
+    transcript
+        show: comparisons printString;
+        newLine.
+    identity:: collections IdentityMap new.
+    colliding:: Colliding new.
+    identity at: colliding put: 1.
+    identity removeKey: colliding.
+    transcript
+        show: (identity includesKey: AnythingIdentical new) printString;
+        show: ' ';
+        show: (identity at: AnythingIdentical new ifAbsent: [#absent]) printString;
+        newLine.
+    map:: collections Map new.
+    map
+        at: (Key named: #a) put: 1;
+        at: (Key named: #b) put: 2;
+        at: (Key named: #c) put: 3.
+    transcript
+        show: (map removeKey: (Key named: #b)) printString;
+        newLine.
+    transcript
+        show: (map at: (Key named: #c)) printString;
+        show: ' ';
+        show: (map includesKey: (Key named: #b)) printString;
+        newLine.
+    map at: (Key named: #b) put: 20.
+    names value: map keys.
+    transcript
+        show: (map at: (Key named: #b)) printString;
+        show: ' ';
+        show: map size printString;
+        newLine.
+    anything:: collections Map new.
+    colliding:: Colliding new.
+    anything at: colliding put: 1.
+    anything removeKey: colliding.
+    transcript
+        show: (anything includesKey: Anything new) printString;
+        show: ' ';
+        show: (anything at: Anything new ifAbsent: [#absent]) printString;
+        newLine.
+    anything at: Anything new put: 5.
+    transcript
+        show: anything size printString;
+        show: ' ';
+        show: (anything at: Anything new) printString;
+        newLine.
+    set:: collections Set new.
+    set
+        add: (Key named: #a);
+        add: (Key named: #b);
+        add: (Key named: #c).
+    set remove: (Key named: #b).
+    transcript
+        show: (set includes: (Key named: #c)) printString;
+        show: ' ';
+        show: (set includes: (Key named: #b)) printString;
+        newLine.
+    set add: (Key named: #b).
+    names value: set asArray.
+    set:: collections Set new.
+    set add: colliding.
+    set remove: colliding.
+    transcript
+        show: (set includes: Anything new) printString;
+        newLine.
+  )
+)

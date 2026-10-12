@@ -5,12 +5,22 @@
 /// and nothing after it prints. The first line shows the program ran up to
 /// Applied's first use.
 class MixinClauseThatIsNotAClassFails = Object new () (
-    class Applied = Object new <: notAClass () ()
-    notAClass = ( ^7 )
-    public main: platform args: arguments = (
-        | t = platform transcript. |
-        t show: 'before Applied'; newLine.
-        Applied new.
-        t show: 'after Applied'; newLine.
-    )
-) : ()
+  class Applied = Object new <: notAClass () ()
+
+  notAClass = (
+    ^7.
+  )
+
+  public main: platform args: arguments = (
+    |
+      t = platform transcript.
+    |
+    t
+        show: 'before Applied';
+        newLine.
+    Applied new.
+    t
+        show: 'after Applied';
+        newLine.
+  )
+)
