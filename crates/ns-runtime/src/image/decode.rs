@@ -753,7 +753,8 @@ impl std::fmt::Display for DecodeError {
             DecodeError::ShippedNameInStartedImage(name) => write!(
                 f,
                 "a started image names {name}, but before main:args: a program reaches \
-                 nothing of the shipped world but the kernel"
+                 no module's instance and nothing of the shipped world but the \
+                 kernel's classes"
             ),
             DecodeError::ShippedInstanceFieldCount { expected, found } => write!(
                 f,

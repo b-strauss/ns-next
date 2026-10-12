@@ -1556,9 +1556,9 @@ refuses PlatformFactory Platform in a started application: nothing before
 main:args: reaches it"; `package_refuses_an_application_that_reaches_the_platform`,
 `crates/ns-runtime/tests/image.rs`). So is a graph naming a module's
 instance, the kernel's included, which no program reaches. The loader
-refuses such a started image too ("Shipped names" below). An application that reached the
-platform could only have been handed it, and nothing hands one out before
-`main:args:`. `--debug-source` stores every module's source text. An error
+refuses such a started image too ("Shipped names" below). An application
+that reached the platform could only have been handed it, and nothing hands
+one out before `main:args:`. `--debug-source` stores every module's source text. An error
 raised while assembling -- a refused factory, a resolve error, an
 initializer that raises -- fails the build with the status and report `run`
 gives the same error, so a golden whose assembly fails round-trips as that
