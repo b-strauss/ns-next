@@ -4750,7 +4750,7 @@ faster.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the fifth
 sub-project, `ByteArray`, `StringBuilder` and the typed arrays, is next
-("Next") and has no design or plan yet; two corners of a `Float`'s
+("Next"); two corners of a `Float`'s
 rounding divisions; the tower's slow paths, unmeasured on their own; a
 subquadratic gcd for a huge decoded fraction; and the review's missing
 tests and leftovers.

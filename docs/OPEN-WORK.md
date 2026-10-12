@@ -34,7 +34,10 @@ and `StringBuilder`, with typed arrays over a `ByteArray` as an API of our
 own beside them (decided with the user on 2026-10-11); weak references.
 Each has its own design and plan; the fifth sub-project is next --
 `ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
-arrays over a `ByteArray` -- and has no design or plan yet. The decisions
+arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
+[core-library.md](design/core-library.md), "Planned: sub-project 5,
+`ByteArray`, `StringBuilder` and the views") but has no plan yet, so the
+next session starts by writing one. The decisions
 and the scope are
 [core-library.md](design/core-library.md), "Planned: the kernel completed
 to Primordial Soup's core API".
@@ -445,13 +448,26 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   reflection; an embedded compiled kernel image if the kernel grows. What
   Primordial Soup's core API has comes with "Next" above.
   [core-library.md](design/core-library.md).
-- **`String`'s `ByteArray` forms.** `asByteArray`, `copyByteArrayFrom:to:`,
-  and a `ByteArray` as the argument of `indexOf:`, `indexOf:startingAt:`,
-  `lastIndexOf:`, `lastIndexOf:startingAt:`, `startsWith:`, `endsWith:`
-  and `String withAll:` wait for `ByteArray`, the kernel completion's fifth
-  sub-project ("Next" above). The collections and strings sub-project left
-  them out on 2026-10-10. [core-library.md](design/core-library.md), "What
-  exists".
+- **`String`'s UTF-8 forms.** `asUtf8` and `String fromUtf8:`, which
+  replace Primordial Soup's `asByteArray`, `copyByteArrayFrom:to:` and
+  `ByteArray>>asString`, wait for `ByteArray`, the kernel completion's
+  fifth sub-project ("Next" above); a `String`'s methods take no
+  `ByteArray` (decided with the user on 2026-10-12).
+  [core-library.md](design/core-library.md), "Planned: sub-project 5,
+  `ByteArray`, `StringBuilder` and the views".
+- **Beyond sub-project 5's views** (noted with the user on 2026-10-12, none
+  needed yet): `Float16Array`, once Rust has a stable `f16` or with the
+  GPU API; bulk leaves over a typed array -- `add:into:`, `dot:`, and a
+  `byteSwap` that converts a big-endian block once; a reading view with a
+  cursor (`nextUint32` and the like) for parsers; and `List` applying the
+  kernel's sequence mixin. [core-library.md](design/core-library.md),
+  "Planned: sub-project 5, `ByteArray`, `StringBuilder` and the views".
+- **A two-byte string width.** A `String` outside Latin-1 takes four bytes
+  a code point, where Python's PEP 393 keeps a two-byte width for the
+  Basic Multilingual Plane; the width is canonical and private, so a third
+  one would change no program, only the memory of non-Latin text (noted
+  with the user on 2026-10-12). [object-model.md](design/object-model.md),
+  "Strings have two widths".
 - **`ReadOnlyTuple` and value collections.** Neither is built (decided
   with the user on 2026-10-10): tuple literals stay mutable `Array`s, the
   recorded deviation from §5.1.7 ("Deviations from the specification"
