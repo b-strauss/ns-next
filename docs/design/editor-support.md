@@ -634,8 +634,9 @@ platform's native LSP API hands Reformat Code to a server announcing
 `documentFormattingProvider` (since 2023.3), so the plugin needs no code of
 its own; a platform-native formatter (`FormattingModelBuilder`) would need a
 PSI tree, the second parser this design avoids. The format runs on the
-server's one thread, outside the `catch_unwind` the analysis runs under
-("Robustness").
+server's one thread under `catch_unwind`, as the analysis does
+("Robustness"): a panic in the printer answers no edit and leaves the
+document as it is.
 
 ### Robustness
 

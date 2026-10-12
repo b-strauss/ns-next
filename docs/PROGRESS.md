@@ -4833,10 +4833,13 @@ included.
 - `a5bda0fd`, `ee154bb2` -- the repository formatted, and the gate.
 - `0a743f36`, `0457b50c`, `efd39351`, `22f81132` -- where a message
   continues after a broken receiver, and the repository reformatted with it.
-- This commit -- the documents.
+- `fc94d042`, `39243e82` -- the documents.
+- `0b5d2701` -- the formatting request guarded against a printer panic,
+  as the analysis is.
+- This commit -- the rules' reasons and the exact continuation rule.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): range
 formatting and formatting on type; a long tail on a hugged block's `]` line
 and a group breaking where that does not shorten its line; `fmt`'s rename
 over a file's permissions and symlinks; `ClassDeclaration::class_comment`
-on a tree without spans; the formatting request outside `catch_unwind`.
+on a tree without spans.

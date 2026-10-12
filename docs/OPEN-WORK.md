@@ -1114,13 +1114,6 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   so on a position-erased tree (`Module::without_positions`) or one the
   runtime builds, whose spans are zero, it can answer the wrong comment or
   none. Noted 2026-10-12.
-- **The formatting request runs outside `catch_unwind`.** Every analysis
-  the server runs is guarded, so a panic becomes a diagnostic rather than
-  the end of the server ([editor-support.md](design/editor-support.md),
-  "Robustness"); `formatting_of` (`crates/ns-analyzer/src/server.rs`) calls
-  `ns_syntax::format` unguarded, so a printer panic would take the server
-  down. The printer is held total over every repository source and the
-  corpus, so none is known. Noted 2026-10-12.
 
 ## Missing tests
 

@@ -47,15 +47,20 @@ same tree, positions aside.
 
 ## The style rules
 
-Each rule with its reason. `format_rules.rs` pins each rule the printer
-decides with a test of its own, named after the rule.
+Each rule with its reason. `format_rules.rs` pins the rules with tests
+named after them -- every rule but 1, 11 and 22, which the other rules'
+tests exercise (the width and indentation, one statement per line) or which
+asks for nothing to be decided (a long line left long).
 
 1. **Width 100 columns, two spaces per indentation level.** A column is one
-   `char`. Code is never indented with tabs. *Why:* a hundred columns fit
-   a keyword message with two or three arguments on one line on a current
-   screen, and two spaces keep the deep nesting Newspeak's nested classes
-   produce within that width. A tab's width is the reader's setting, so a
-   layout counted in tabs is no fixed layout.
+   `char`. Code is never indented with tabs. *Why:* Newspeak nests deeply by
+   its structure -- the module class, nested classes, method bodies,
+   blocks -- and four spaces per level would spend 16 to 24 columns before
+   any code; languages with deep structural nesting (Dart, Scala, Lisp,
+   Prettier's JavaScript) indent by two. In the opened-up style a method
+   body starts at column 8 to 16, and at 100 columns typical sends fit from
+   there, while 120 is unwieldy in split windows. A tab's width is the
+   reader's setting, so a layout counted in tabs is no fixed layout.
 2. **Prologue as written.** The language id (`Newspeak3`) and the category
    string each stand on their own line before the class when present;
    nothing is added when one is absent, and no blank line follows them.
@@ -108,15 +113,17 @@ decides with a test of its own, named after the rule.
    period after every element, the last included. A one-line block or tuple
    has none after its last element. The header's initializer expressions
    stand one per line at +2 after the closing bar. *Why:* a period after the
-   last line lets a line be added or moved without touching another; on one
-   line the last period is noise.
+   last element lets a line be added or moved without touching another, as
+   the trailing comma does in rustfmt's, Prettier's and dart format's
+   output; it is consistent with slots, which end in a period; a one-line
+   block or tuple has no diff to save.
 7. **Members** in source order, never reordered. Exactly one blank line
    between the members of a class side, and no blank line anywhere else --
    not between `) (` and the first member, not before `) : (`, not inside a
    body. A member's leading comment sits directly above it; the blank line
-   goes above the comment. *Why:* the order of members is the author's
-   (and the slot indices of lazy slots follow it, [frontend.md](frontend.md),
-   "AST"); one blank line is the one separator the eye needs.
+   goes above the comment. *Why:* the slot indices of lazy slots follow
+   the source order ([frontend.md](frontend.md), "AST"), so reordering
+   would change more than layout.
 8. **Empty parts.** An empty header or empty instance side is `()` inline
    (`class Top = () ()`; `class Foo = () (` with members below). An empty
    class side `: ()` is dropped. A part holding only a comment is not empty:
@@ -133,8 +140,8 @@ decides with a test of its own, named after the rule.
          ifAbsent: absentBlock = (
    ```
    A comment on a line of its own between two keywords stands at +4, as the
-   keywords do. *Why:* the selector reads down the left edge, as a keyword
-   message does (rule 13).
+   keywords do. The keywords stand one below the other, as those of a
+   broken keyword message do (rule 13).
 10. **Method body** always multi-line, `= (` … `)`, even for one statement;
     an empty body is `= ()` inline. **Temporaries are always opened up**, in
     methods and blocks alike: each bar on its own line at the body's
@@ -149,8 +156,8 @@ decides with a test of its own, named after the rule.
       )
     ```
     Empty temporaries (`| |`) are dropped unless a comment stands between
-    the bars. *Why:* one shape for every method; temporaries are
-    declarations, laid out like slots.
+    the bars. Temporaries are slot declarations and are laid out like
+    the header's slots (rule 5).
 11. **Statements** one per line; `^count` without a space; a statement
     ending in a multi-line block puts its period right after the `]` (`].`).
 12. **Breaking in general.** Outside in: a statement too long breaks at its
@@ -166,10 +173,25 @@ decides with a test of its own, named after the rule.
           , actual printString.
     ```
     A unary chain likewise, one selector per line at +4. After a receiver
-    that takes more than one line, a message continues on the receiver's
-    last line only when that line ends with a broken block's `]`, or with a
-    multi-line string the receiver ends with (closing parentheses aside);
-    otherwise it goes on a continuation line of its own:
+    that takes more than one line, where its messages go depends on them.
+    A keyword message with an argument that hugs (rule 13) is decided on
+    the receiver's last line, whatever that line ends with: the parts
+    outside the block bodies need only fit there:
+    ```
+        (someReceiver withAVeryLongSelector: argumentNumberOne
+            and: argumentNumberTwo
+            and: argumentThree
+            andMore: yy) ifTrue: [
+          a foo.
+          b bar.
+        ] ifFalse: [
+          c foo.
+        ].
+    ```
+    Any other message continues on the receiver's last line only when that
+    line ends with a broken block's `]`, or with a multi-line string the
+    receiver ends with (closing parentheses aside); otherwise it goes on a
+    continuation line of its own:
     ```
           ] value
               == nil)
@@ -177,12 +199,8 @@ decides with a test of its own, named after the rule.
     ```
     (`value` follows the block's `]`; `== nil` follows `value`, and
     `printString` follows a parenthesis that ends on `nil`, so each takes a
-    line of its own.) *Why:* breaking the
-    outermost level first keeps the structure of the expression visible in
-    its indentation; all or nothing means a reader never has to look for
-    which links share a line; +4 for a continuation tells it apart from a
-    nested body at +2. One rule for every receiver decides where its
-    messages go from how its last line ends.
+    line of its own.) A continuation at +4 is told apart from a nested body
+    at +2.
 13. **Keyword messages.** The first keyword on the receiver's line, every
     further keyword on its own line at +4 when the message breaks. **A block
     argument does not break its message by itself**: a multi-line block
@@ -203,14 +221,11 @@ decides with a test of its own, named after the rule.
     Here `[count:: count + 1]` alone would fit. An argument that is itself a
     message hugging its own blocks hugs as a block does, and so does a
     multi-line string argument: the next keyword follows the string's last
-    line (`bar: y` after `two'`). *Why:* control flow in Newspeak is keyword
-    messages with block arguments, and `ifTrue: [` … `] ifFalse: [` reads as
-    the control structure it is; breaking the keywords apart would push
-    every conditional's body two levels in.
+    line (`bar: y` after `two'`). Control flow in Newspeak is keyword
+    messages with block arguments; breaking the keywords apart instead would
+    put every conditional's body two levels further in.
 14. **Cascades** always broken: the receiver alone on the first line, each
     message on its own line at +4, `;` at the end of each line but the last.
-    *Why:* a cascade sends several messages to one receiver; one per line
-    shows they are siblings.
 15. **Blocks.** No inner spaces: `[x]`, `[:each | each foo]`, `[]`,
     `[:each |]`. One line only with at most one statement, no temporaries,
     and when it fits; otherwise multi-line, the parameters on the `[` line.
@@ -221,7 +236,7 @@ decides with a test of its own, named after the rule.
     a receiver block follow its `]` (`] value: 3.`, `] whileTrue.`). A
     receiver block breaks when it does not fit, whatever follows it.
 16. **Parentheses as written**, redundant ones included; no inner spaces.
-    *Why:* parentheses an author added for the reader are content.
+    The tree records them ([frontend.md](frontend.md), "AST").
 17. **Tuples** like blocks: one line when it fits (`{a. b. c}`, `{}`, no
     period after the last), otherwise `{` at the end of the line, one element
     per line at +2, a period after each, `}` at the statement's indentation.
@@ -229,8 +244,7 @@ decides with a test of its own, named after the rule.
 18. **Literals exactly as written** -- numbers, strings, symbols, characters
     (`16r1F`, `'it''s'`, `"a"`, `#at:put:`). A multi-line string is never
     re-indented, its line breaks kept byte for byte, and a literal is never
-    broken. *Why:* a literal's spelling can be deliberate (a radix, a quote
-    form), and a string's content is its value.
+    broken. A string's line breaks and spaces are its value.
 19. **Setters** `count:: value`, no space before `::`; slot initializers
     `name = value`, `name ::= value`. Never broken right after `::` or `=`:
     a long value breaks inside itself.
@@ -276,9 +290,7 @@ decides with a test of its own, named after the rule.
     line it follows (after a keyword, an operator, `::`, `=` or `^`). An
     inline `(* … *)` between two tokens stays there with one space on each
     side (none next to an opening delimiter) and counts toward the width.
-    *Why:* the formatter may move code but never detach a remark from what
-    it remarks on; a comment's text is the author's, so only its
-    indentation moves.
+    Only a comment's indentation moves; its text is never rewritten.
 22. **An unbreakable long line stays long**, without a message: the gate
     checks only that formatting changes nothing.
 23. **File level.** The line ending is taken from the file: the first line
@@ -287,8 +299,11 @@ decides with a test of its own, named after the rule.
     string literal stay byte for byte. No trailing whitespace on any line,
     comment lines included, never inside a string. Exactly one line ending
     at the end of the file. No tabs in the indentation the printer writes.
-    *Why:* a file keeps the line endings its platform or its repository
-    settings gave it, and a string's line breaks are its value.
+    *Why:* a Windows checkout with `core.autocrlf=true` has CRLF line
+    endings; a fixed LF would make the gate and the editor rewrite every
+    line ending of such a checkout. rustfmt's `Auto`, Black and clang-format
+    take the line ending from the file too. A string's line breaks are its
+    value.
 24. **Other declarations.** A lazy slot is a member like a method, on its
     own line with its period, `lazy` and the access modifier in the order
     written (`lazy public cache`, `public lazy other` -- the parser accepts
@@ -385,7 +400,9 @@ A receiver that breaks by itself (a multi-line block, a multi-line string,
 a parenthesised hugging message) is wrapped in a one-alternative `Choice`
 (`receiver_head`), which keeps its break from breaking the group around it;
 where the messages sent to it go is then decided by where it ends
-(`Follow`).
+(`Follow`). A keyword message with an argument that hugs is the exception:
+it is written after the receiver and decided on the receiver's last line
+however the receiver broke (`keyword_message`; rule 12).
 
 ### Measuring again after a line break
 
@@ -433,7 +450,11 @@ linear in the output.
 - `LineEnding` -- `LineFeed`, `CarriageReturnLineFeed`, `CarriageReturn`.
 - `ns-next-analyzer fmt [--check] [paths…]` -- formats every `.ns` file in
   `paths` (a directory stands for the `.ns` files below it, none for the
-  current directory). A file is rewritten only when it changes, written
+  current directory). It formats exactly what it is given: run at the
+  repository root it would rewrite `corpus/` and `prior-art/`, which stay
+  upstream's copies, so pass the directories the gate covers --
+  `ns-next-analyzer fmt goldens benchmarks crates/ns-runtime/core-library`.
+  A file is rewritten only when it changes, written
   beside the target and renamed over it, so a failure part way never leaves
   a truncated source. With `--check` nothing is written: each file that
   would change is listed on stdout and the exit status is 1. A file with a
@@ -462,7 +483,8 @@ linear in the output.
   around and inside every kind of node, in every placement.
 - **Deterministic.** The output depends on the tree and the line ending
   alone.
-- **The rules.** `format_rules.rs`, one test per rule; `attachment.rs`, the
+- **The rules.** `format_rules.rs`, tests named after the rules (all but
+  1, 11 and 22); `attachment.rs`, the
   attachment rule; `document.rs`'s unit tests, the layout's forms.
 - **The repository.** `formatting_gate.rs` requires `format(file) == file`
   for every `.ns` under `goldens/`, `benchmarks/` and

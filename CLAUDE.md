@@ -361,10 +361,13 @@ decision, made so far only for `num-bigint` and `num-integer`
   by `ns-next-analyzer fmt` (two spaces, `docs/design/formatting.md`) and
   commented with `///` lines, never `(* … *)` (but in
   `goldens/language/syntax/line_comment.ns`, which pins both forms).
-  `crates/ns-analyzer/tests/formatting_gate.rs` holds the layout and
-  `crates/ns-cli/tests/source_formatting.rs` the `///`; `corpus/` stays
-  upstream's verbatim copy. Run `ns-next-analyzer fmt` (`cargo run -p
-  ns-analyzer -- fmt <paths>`) after editing a `.ns` file.
+  `crates/ns-analyzer/tests/formatting_gate.rs` holds the layout of every
+  `.ns` under `goldens/`, `benchmarks/` and `crates/ns-runtime/core-library/`
+  (the directories it walks), and `crates/ns-cli/tests/source_formatting.rs`
+  the `///`; `corpus/` stays upstream's verbatim copy. After editing a `.ns`
+  file run `cargo run -p ns-analyzer -- fmt <paths>`, naming files or those
+  directories: `fmt` formats exactly what it is given, so at the repository
+  root it would rewrite `corpus/` and `prior-art/` too.
 - **Names are written out.** No identifier of one or two characters and no
   truncated word, in every kind of name and every segment of a compound:
   `mutator`, `index`, `error`, `interpreter` (not `interp`), `program_counter`
