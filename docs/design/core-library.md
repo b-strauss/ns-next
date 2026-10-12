@@ -3477,13 +3477,13 @@ content moves into "What exists" and the documents named below.
 
 | Class | Kind | Reached through | Superclass |
 |---|---|---|---|
-| `ByteArray` | builtin, format `AlignedBytes` | `Object>>ByteArray` (§3.2), as `Array` is | `Collection <: IndexedProtocol` |
+| `ByteArray` | builtin, format `AlignedBytes` | `Object>>ByteArray` (§3.2), as `Array` is | `Collection <: IndexedCollection` |
 | `StringBuilder` | Newspeak, over a `ByteArray` of UTF-8 | `platform kernel` | `Object` |
-| `TypedArray` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Collection <: IndexedProtocol` |
+| `TypedArray` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Collection <: IndexedCollection` |
 | `Int8Array`, `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Int64Array`, `Uint64Array`, `Float32Array`, `Float64Array` | Newspeak | `platform kernel` | `TypedArray` |
 | `DataView` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Object` |
 | `LittleEndianDataView`, `BigEndianDataView` | Newspeak, private to the kernel | `DataView`'s factories only | `DataView` |
-| `IndexedProtocol` (name proposed) | a mixin, private to the kernel | applied with `<:` | -- |
+| `IndexedCollection` | a mixin, private to the kernel | applied with `<:` | `Collection`, which its own members build on |
 
 The views and `StringBuilder` are ordinary Newspeak classes whose state is a
 `ByteArray` slot; only `ByteArray` is a builtin. A view's access is one
@@ -3562,13 +3562,16 @@ subclass, as `Array`'s and `String`'s do.
 `collect:`, `select:`, `reject:`, `sort:`, `sortFrom:to:by:` and
 `asArray` -- `Array`'s protocol beyond `Collection`'s -- are written once, over `at:`,
 `at:put:`, `size` and a new instance of the receiver's kind, in a kernel
-mixin -- `IndexedProtocol` is the proposed name -- that `Array`,
+mixin, `IndexedCollection` (named with the user on 2026-10-12), that `Array`,
 `ByteArray` and `TypedArray` apply over `Collection`: `class Array =
-Collection <: IndexedProtocol`. A class overrides what a leaf does faster,
+Collection <: IndexedCollection`. A class overrides what a leaf does faster,
 as `Array`'s and `ByteArray`'s `copyFrom:to:` and
 `replaceFrom:to:with:startingAt:` do.
 Programs see the same selectors; `Array superclass` answers the
-application rather than `Collection`. A mixin rather than an abstract
+application of `IndexedCollection` over `Collection` rather than
+`Collection`. `IndexedCollection` declares `Collection` its own
+superclass, which records that its members build on `Collection`'s
+protocol; applying it with `<:` takes only its own members (§6.2). A mixin rather than an abstract
 class (decided with the user on 2026-10-12): the shipped library uses the
 construct the language has for a protocol shared across classes, compiled
 code lives on the mixin and is shared by every application
