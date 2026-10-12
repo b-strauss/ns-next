@@ -95,14 +95,14 @@ fn class_start(class: &ClassDeclaration) -> usize {
 /// A pattern's selector and the offset of its first token.
 fn selector_of(pattern: &MessagePattern) -> (String, u32) {
     match pattern {
-        MessagePattern::Unary { selector } => (selector.name.clone(), selector.span.start),
+        MessagePattern::Unary { selector, .. } => (selector.name.clone(), selector.span.start),
         MessagePattern::Binary { selector, .. } => (selector.name.clone(), selector.span.start),
         MessagePattern::Keyword { parts } => {
             let selector = parts
                 .iter()
-                .map(|(keyword, _)| format!("{}:", keyword.name))
+                .map(|part| format!("{}:", part.keyword.name))
                 .collect::<String>();
-            let start = parts.first().map_or(0, |(keyword, _)| keyword.span.start);
+            let start = parts.first().map_or(0, |part| part.keyword.span.start);
             (selector, start)
         }
     }

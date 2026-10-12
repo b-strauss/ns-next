@@ -268,14 +268,37 @@ impl<'a> Parser<'a> {
             .push(crate::diagnostic::Diagnostic::error(span, message));
     }
 
-    /// Consume and discard a method pattern's `where { ... }` type-constraint
-    /// clause (`whereClause`, `NewspeakGrammar.ns:443`; the `<:` / `::`
-    /// inference grammar of lines 382-434). This is a large sub-grammar with no
-    /// Milestone 1 AST; the whole `where { ... }` is skipped by balancing
-    /// `{}` / `[]` / `()` until the clause's closing brace. On an unterminated
-    /// clause it pushes a diagnostic and stops at `EndOfInput` (parity with
-    /// [`Parser::skip_type_annotation`] / [`Parser::skip_type_arguments`]).
-    fn skip_where_clause(&mut self) {
+    /// The tokens consumed since `start`, as a type annotation; `None` when
+    /// there are none.
+    fn type_annotation_since(&self, start: usize) -> Option<TypeAnnotation> {
+        let tokens = self.tokens.get(start..self.position)?;
+        let (first, last) = (tokens.first()?, tokens.last()?);
+        Some(TypeAnnotation {
+            tokens: tokens
+                .iter()
+                .map(|token| TypeToken {
+                    kind: token.kind,
+                    text: self.text(*token).to_string(),
+                })
+                .collect(),
+            span: first.span.merge(last.span),
+        })
+    }
+
+    /// A method pattern's `where { ... }` type-constraint clause
+    /// (`whereClause`, `NewspeakGrammar.ns:443`; the `<:` / `::` inference
+    /// grammar of lines 382-434), kept as its tokens: the sub-grammar is large
+    /// and only documents, so the clause is taken by balancing `{}` / `[]` /
+    /// `()` until its closing brace. On an unterminated clause it pushes a
+    /// diagnostic and stops at `EndOfInput` (parity with
+    /// [`Parser::take_type_annotation`] / [`Parser::take_type_arguments`]).
+    fn take_where_clause(&mut self) -> Option<TypeAnnotation> {
+        let start = self.position;
+        self.consume_where_clause();
+        self.type_annotation_since(start)
+    }
+
+    fn consume_where_clause(&mut self) {
         if !(self.at(TokenKind::Identifier)
             && self.text(self.current()) == "where"
             && self.peek2() == TokenKind::LeftBrace)
@@ -309,12 +332,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Consume and discard a balanced `[...]` type-argument / type-parameter
-    /// list (`typeArguments`, `NewspeakGrammar.ns:376`; `typeParameterDecl`,
+    /// A balanced `[...]` type-argument / type-parameter list
+    /// (`typeArguments`, `NewspeakGrammar.ns:376`; `typeParameterDecl`,
     /// `:465`) — e.g. the `[E]` in `class List[E] ...` or `Collection[E] new`,
-    /// or `[K, V]` in `Map[K, V]`. Milestone 1 has no type AST, so the list is
-    /// dropped. Nested `[...]` are balanced; the scan stops at `EndOfInput`.
-    fn skip_type_arguments(&mut self) {
+    /// or `[K, V]` in `Map[K, V]` -- kept as its tokens. Nested `[...]` are
+    /// balanced; the scan stops at `EndOfInput`.
+    fn take_type_arguments(&mut self) -> Option<TypeAnnotation> {
+        let start = self.position;
+        self.consume_type_arguments();
+        self.type_annotation_since(start)
+    }
+
+    fn consume_type_arguments(&mut self) {
         if !self.at(TokenKind::LeftBracket) {
             return;
         }
@@ -344,7 +373,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Consume and discard a declaration-position `<Type>` annotation.
+    /// A declaration-position `<Type>` annotation, kept as its tokens.
     ///
     /// Typed Newspeak3 annotates declarations with `<Type>` — method/block
     /// parameters (`selector: platform <Platform>`, `+ other <Foo>`), slot
@@ -355,10 +384,9 @@ impl<'a> Parser<'a> {
     /// through `<...>` and `[...]` (`<Tuple[String]>`, `<Map[K, V]>`, `<Foo <:
     /// Bar>`).
     ///
-    /// Milestone 1 has no AST type node, so — consistent with the
-    /// `<T>`-as-`Literal::Pattern` stance in expression position
-    /// (`parser::expression::parse_pattern_literal`) — the annotation is parsed and
-    /// dropped here. Nested `<`, `[`, `{` and `(` groups are consumed until
+    /// The specification gives no type grammar, so the annotation is kept as
+    /// the tokens written, not parsed further. Nested `<`, `[`, `{` and `(`
+    /// groups are consumed until
     /// the `>` that closes the annotation, each closer matching the group it
     /// closes; the `<:` bound operator is one token, so it is not a nesting
     /// open. The scan never runs past a declaration boundary (`=`, `::=`, a
@@ -366,7 +394,13 @@ impl<'a> Parser<'a> {
     /// unterminated `<...>` it pushes a diagnostic and returns without
     /// panicking. Every branch consumes a token or returns, so the loop
     /// always terminates.
-    fn skip_type_annotation(&mut self) {
+    fn take_type_annotation(&mut self) -> Option<TypeAnnotation> {
+        let start = self.position;
+        self.consume_type_annotation();
+        self.type_annotation_since(start)
+    }
+
+    fn consume_type_annotation(&mut self) {
         if !self.at(TokenKind::LessThan) {
             return;
         }
@@ -384,7 +418,7 @@ impl<'a> Parser<'a> {
                 }
                 // The bound operator `<:` inside a type body (`<Foo <: Bar>`)
                 // lexes as one token, so it never opens a nesting level; it
-                // falls through to the default arm below and is discarded with
+                // falls through to the default arm below and is taken with
                 // the rest of the annotation.
                 TokenKind::LeftBracket => {
                     expected_closers.push(TokenKind::RightBracket);
@@ -702,9 +736,12 @@ mod tests {
             block
                 .parameters
                 .iter()
-                .map(|parameter| parameter.name.as_str())
+                .map(|parameter| (
+                    parameter.name.name.as_str(),
+                    parameter.type_annotation.is_none()
+                ))
                 .collect::<Vec<_>>(),
-            ["x", "y"]
+            [("x", true), ("y", true)]
         );
         assert_eq!(block.body.temporaries.len(), 1);
         assert_eq!(block.body.statements.len(), 2);
@@ -796,9 +833,15 @@ mod tests {
             block
                 .parameters
                 .iter()
-                .map(|parameter| parameter.name.as_str())
+                .map(|parameter| (
+                    parameter.name.name.as_str(),
+                    parameter.type_annotation.as_ref().map(type_text)
+                ))
                 .collect::<Vec<_>>(),
-            ["x", "y"]
+            [
+                ("x", Some("< Integer >".to_string())),
+                ("y", Some("< { A . B } >".to_string()))
+            ]
         );
     }
 
@@ -951,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn generic_instantiation_drops_type_arguments() {
+    fn generic_instantiation_keeps_type_arguments() {
         // `Array[E] new: n` — `[E]` type arguments on a primary.
         let expression = parse_expression("Array[E] new: 3");
         let ExpressionKind::Send(send) = expression.kind else {
@@ -962,6 +1005,10 @@ mod tests {
             panic!("{:?}", send.receiver)
         };
         assert_eq!(receiver.name, "Array");
+        assert_eq!(
+            type_text(send.receiver.type_arguments.as_ref().expect("[E]")),
+            "[ E ]"
+        );
     }
 
     #[test]
@@ -989,5 +1036,149 @@ mod tests {
         };
         assert!(send.receiver.synthesized);
         assert!(!expression.synthesized);
+    }
+
+    fn type_text(annotation: &TypeAnnotation) -> String {
+        annotation
+            .tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn type_arguments_after_a_unary_selector_are_kept() {
+        let source = "a foo[E] bar";
+        let expression = parse_expression(source);
+        let ExpressionKind::Send(outer) = &expression.kind else {
+            panic!("a send");
+        };
+        assert_eq!(outer.message.selector, Selector::Unary("bar".into()));
+        assert!(outer.message.type_arguments.is_none());
+        let ExpressionKind::Send(inner) = &outer.receiver.kind else {
+            panic!("a foo[E]");
+        };
+        assert_eq!(inner.message.selector, Selector::Unary("foo".into()));
+        let type_arguments = inner.message.type_arguments.as_ref().expect("[E]");
+        assert_eq!(type_text(type_arguments), "[ E ]");
+        assert_eq!(type_arguments.span.text(source), "[E]");
+        assert!(outer.receiver.type_arguments.is_none());
+    }
+
+    #[test]
+    fn type_arguments_after_a_parenthesis_are_kept() {
+        let expression = parse_expression("(Box)[Integer] new");
+        let ExpressionKind::Send(send) = &expression.kind else {
+            panic!("a send");
+        };
+        let receiver = &send.receiver;
+        assert!(receiver.type_arguments.is_none());
+        assert_eq!(receiver.parentheses.len(), 1);
+        assert_eq!(
+            type_text(
+                receiver.parentheses[0]
+                    .type_arguments
+                    .as_ref()
+                    .expect("[Integer]")
+            ),
+            "[ Integer ]"
+        );
+        let expression = parse_expression("(Box[Integer]) new");
+        let ExpressionKind::Send(send) = &expression.kind else {
+            panic!("a send");
+        };
+        assert_eq!(
+            type_text(send.receiver.type_arguments.as_ref().expect("[Integer]")),
+            "[ Integer ]"
+        );
+        assert!(send.receiver.parentheses[0].type_arguments.is_none());
+    }
+
+    #[test]
+    fn every_form_of_eventual_send_is_marked() {
+        for (source, selector) in [
+            ("a <-: foo", Selector::Unary("foo".into())),
+            ("a <-: + 3", Selector::Binary("+".into())),
+            ("a <-: at: 3", Selector::Keyword("at:".into())),
+        ] {
+            let expression = parse_expression(source);
+            let ExpressionKind::Send(send) = &expression.kind else {
+                panic!("{source}: a send");
+            };
+            assert_eq!(send.message.selector, selector, "{source}");
+            assert!(send.message.eventual, "{source}");
+        }
+        for source in ["a foo", "a + 3", "a at: 3"] {
+            let expression = parse_expression(source);
+            let ExpressionKind::Send(send) = &expression.kind else {
+                panic!("{source}: a send");
+            };
+            assert!(!send.message.eventual, "{source}");
+        }
+    }
+
+    #[test]
+    fn every_form_of_eventual_cascade_message_is_marked() {
+        let expression = parse_expression("a foo; <-: bar; <-: + 3; <-: at: 3; baz");
+        let ExpressionKind::Cascade(cascade) = &expression.kind else {
+            panic!("a cascade");
+        };
+        assert!(!cascade.first.eventual);
+        let marks: Vec<(Selector, bool)> = cascade
+            .rest
+            .iter()
+            .map(|message| (message.selector.clone(), message.eventual))
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                (Selector::Unary("bar".into()), true),
+                (Selector::Binary("+".into()), true),
+                (Selector::Keyword("at:".into()), true),
+                (Selector::Unary("baz".into()), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn more_literals_keep_their_spelling() {
+        let ExpressionKind::Literal(Literal::Float { text, .. }) = parse_expression("1.5e3").kind
+        else {
+            panic!("a float");
+        };
+        assert_eq!(text, "1.5e3");
+        for (source, expected) in [("#+", "#+"), ("#'a b'", "#'a b'")] {
+            let ExpressionKind::Literal(Literal::Symbol { text, .. }) =
+                parse_expression(source).kind
+            else {
+                panic!("{source}: a symbol");
+            };
+            assert_eq!(text, expected);
+        }
+    }
+
+    #[test]
+    fn a_split_negative_number_keeps_its_spelling() {
+        // `3 -4` subtracts: the lexer's `-4` is split into the selector and
+        // the number after it.
+        for (source, argument_text) in [("3 -4", "4"), ("3 - -4", "-4")] {
+            let expression = parse_expression(source);
+            let ExpressionKind::Send(send) = &expression.kind else {
+                panic!("{source}: a send");
+            };
+            assert_eq!(
+                send.message.selector,
+                Selector::Binary("-".into()),
+                "{source}"
+            );
+            let ExpressionKind::Literal(Literal::Integer { text, span }) =
+                &send.message.arguments[0].kind
+            else {
+                panic!("{source}: an integer argument");
+            };
+            assert_eq!(text, argument_text, "{source}");
+            assert_eq!(span.text(source), argument_text, "{source}");
+        }
     }
 }

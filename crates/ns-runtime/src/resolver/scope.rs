@@ -128,6 +128,7 @@ mod tests {
                 name: name.to_string(),
                 span: Span::new(0, 0),
             },
+            type_annotation: None,
             mutability,
             initializer: None,
             lazy: false,

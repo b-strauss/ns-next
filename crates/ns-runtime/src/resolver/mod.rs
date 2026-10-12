@@ -405,12 +405,16 @@ impl Resolver {
                 self.resolve_expression(value, scope, chain);
             }
             ExpressionKind::Block(block) => {
-                let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
+                let parameters: Vec<&ast::Identifier> = block
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.name)
+                    .collect();
                 self.check_activation_names(&parameters, &block.body.temporaries, "a block");
                 let parameter_names: Vec<Symbol> = block
                     .parameters
                     .iter()
-                    .map(|parameter| Symbol::intern(&parameter.name))
+                    .map(|parameter| Symbol::intern(&parameter.name.name))
                     .collect();
                 scope.push(LocalScope::new(&parameter_names, &block.body.temporaries));
                 self.resolve_local_initializers(&block.body.temporaries, scope, chain);
@@ -679,9 +683,9 @@ fn is_the_mirror_slot(receiver: &Expression, scope: &ScopeStack, chain: &[Enclos
 fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
     match pattern {
         ast::MessagePattern::Unary { .. } => vec![],
-        ast::MessagePattern::Binary { parameter, .. } => vec![parameter],
+        ast::MessagePattern::Binary { parameter, .. } => vec![&parameter.name],
         ast::MessagePattern::Keyword { parts } => {
-            parts.iter().map(|(_, parameter)| parameter).collect()
+            parts.iter().map(|part| &part.parameter.name).collect()
         }
     }
 }
@@ -689,12 +693,11 @@ fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
 /// A pattern's full selector, `at:put:` for a keyword pattern.
 fn selector_of_pattern(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } | ast::MessagePattern::Binary { selector, .. } => {
-            selector.name.clone()
-        }
+        ast::MessagePattern::Unary { selector, .. }
+        | ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }
@@ -702,10 +705,10 @@ fn selector_of_pattern(pattern: &ast::MessagePattern) -> String {
 fn pattern_parameter_names(pattern: &ast::MessagePattern) -> Vec<Symbol> {
     match pattern {
         ast::MessagePattern::Unary { .. } => vec![],
-        ast::MessagePattern::Binary { parameter, .. } => vec![Symbol::intern(&parameter.name)],
+        ast::MessagePattern::Binary { parameter, .. } => vec![Symbol::intern(&parameter.name.name)],
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(_, parameter)| Symbol::intern(&parameter.name))
+            .map(|part| Symbol::intern(&part.parameter.name.name))
             .collect(),
     }
 }

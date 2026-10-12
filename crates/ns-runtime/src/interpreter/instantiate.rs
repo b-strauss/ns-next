@@ -1596,11 +1596,11 @@ fn factory_selector(application: &crate::mixin::MixinApplication) -> Symbol {
 /// `current_class` (`image::decode::method_declaration`).
 pub(crate) fn method_name(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } => selector.name.clone(),
+        ast::MessagePattern::Unary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }

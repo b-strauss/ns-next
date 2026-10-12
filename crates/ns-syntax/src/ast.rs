@@ -39,7 +39,13 @@ pub enum AccessModifier {
 pub struct ClassDeclaration {
     pub access: Option<AccessModifier>,
     pub name: Identifier,
+    /// The type parameters after the name, `<[K, V]>` or `[E]`, as written.
+    pub type_parameters: Option<TypeAnnotation>,
     pub factory: Option<MessagePattern>, // absent form: `class C = Super (...)`
+    /// The factory's `^<Type>`, the caret left out.
+    pub factory_return_type: Option<TypeAnnotation>,
+    /// The factory's `where { ... }` clause.
+    pub factory_where_clause: Option<TypeAnnotation>,
     pub superclass: Option<SuperclassClause>,
     /// The `<:` clauses of a mixin application (§6.2), in written order; empty
     /// for a declaration with no `<:` at all. Each has the same shape as
@@ -135,7 +141,9 @@ impl ClassBody {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuperclassClause {
     pub prefix: Option<SuperclassPrefix>,
-    pub receiver: Identifier,       // the unaryMsg receiver identifier
+    pub receiver: Identifier, // the unaryMsg receiver identifier
+    /// Type arguments written right after the receiver, `Collection[E]`.
+    pub receiver_type_arguments: Option<TypeAnnotation>,
     pub messages: Vec<MessageSend>, // trailing `message?` (0 or more sends)
     /// Comments attached to the clause (Task 5 fills it).
     pub comments: Vec<AttachedComment>,
@@ -153,6 +161,8 @@ pub enum SuperclassPrefix {
 pub struct SlotDeclaration {
     pub access: Option<AccessModifier>,
     pub name: Identifier,
+    /// The `<Type>` after the name.
+    pub type_annotation: Option<TypeAnnotation>,
     pub mutability: SlotMutability,
     pub initializer: Option<Expression>,
     /// §6.3.3: declared `lazy` in a class body -- initialized on first read
@@ -183,6 +193,10 @@ pub enum SlotMutability {
 pub struct MethodDeclaration {
     pub access: Option<AccessModifier>,
     pub pattern: MessagePattern,
+    /// The `^<Type>` after the pattern, the caret left out.
+    pub return_type: Option<TypeAnnotation>,
+    /// The `where { ... }` clause after the pattern.
+    pub where_clause: Option<TypeAnnotation>,
     pub body: CodeBody,
     /// The body's `( )`.
     pub body_delimiters: Option<Delimiters>,
@@ -195,14 +209,32 @@ pub struct MethodDeclaration {
 pub enum MessagePattern {
     Unary {
         selector: Identifier,
+        /// What follows the selector: the type parameters, `List[E]`, and a
+        /// `<Type>` after them, in one annotation as written.
+        type_parameters: Option<TypeAnnotation>,
     },
     Binary {
         selector: Identifier,
-        parameter: Identifier,
+        parameter: Parameter,
     },
     Keyword {
-        parts: Vec<(Identifier, Identifier)>,
-    }, // (keyword-without-colon, parameter)
+        parts: Vec<KeywordPart>,
+    },
+}
+
+/// A parameter of a message pattern or a block, and the `<Type>` after it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Parameter {
+    pub name: Identifier,
+    pub type_annotation: Option<TypeAnnotation>,
+}
+
+/// One keyword of a keyword pattern and its parameter.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeywordPart {
+    /// The keyword without its colon.
+    pub keyword: Identifier,
+    pub parameter: Parameter,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -260,8 +292,8 @@ pub struct Expression {
     pub kind: ExpressionKind,
     /// The parentheses around the shape, innermost first.
     pub parentheses: Vec<Parenthesis>,
-    /// Value-site type arguments written right after the shape, `Box[Integer]`
-    /// (Task 4 fills it; `None` until then).
+    /// Value-site type arguments written right after the shape, before any
+    /// `)` around it: `Box[Integer]`.
     pub type_arguments: Option<TypeAnnotation>,
     /// The parser made this node up; nothing in the source spells it (the
     /// implicit receiver of a send).
@@ -289,22 +321,26 @@ impl Expression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parenthesis {
     pub delimiters: Delimiters,
-    /// Type arguments written right after this `)` (Task 4 fills it).
+    /// Type arguments written right after this `)`, `(Box)[Integer]`.
     pub type_arguments: Option<TypeAnnotation>,
 }
 
 /// A type annotation, kept as the tokens written: the specification gives
-/// no type grammar and the annotations document only.
+/// no type grammar and the annotations document only (§4.3, "optional type
+/// annotation syntax based on the Strongtalk type system"). Nothing after
+/// the parser reads one: the resolver and the compiler ignore every annotation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeAnnotation {
-    /// Every token from the opening `<`, `[` or `where` through the
-    /// matching closer, in order.
+    /// Every token from the opening `<`, `[` or `where` through the closer
+    /// that ends it, in order; a recovered annotation without its closer
+    /// ends at the last token taken.
     pub tokens: Vec<TypeToken>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeToken {
+    /// The lexer's kind of the token.
     pub kind: TokenKind,
     pub text: String,
 }
@@ -461,7 +497,7 @@ pub struct MessageSend {
     pub arguments: Vec<Expression>,
     /// Sent with `<-:` (§5.6). The runtime runs it as an ordinary send.
     pub eventual: bool,
-    /// Type arguments written after a unary selector, `foo bar[E]`.
+    /// Type arguments written right after a unary selector, `foo bar[E]`.
     pub type_arguments: Option<TypeAnnotation>,
     /// Comments attached to the message (Task 5 fills it).
     pub comments: Vec<AttachedComment>,
@@ -485,7 +521,7 @@ pub enum Selector {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockExpression {
-    pub parameters: Vec<Identifier>,
+    pub parameters: Vec<Parameter>,
     pub body: CodeBody,
     /// The block's `[ ]`; `None` for a block the compiler builds.
     pub delimiters: Option<Delimiters>,

@@ -631,7 +631,7 @@ impl<'a> Body<'a> {
         let parameters: Vec<Symbol> = block
             .parameters
             .iter()
-            .map(|parameter| Symbol::intern(&parameter.name))
+            .map(|parameter| Symbol::intern(&parameter.name.name))
             .collect();
         let mut inner = Body::new(
             CodeKind::Block,

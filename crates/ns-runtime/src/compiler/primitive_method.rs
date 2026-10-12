@@ -314,10 +314,10 @@ fn is_self(expression: &ast::Expression) -> bool {
 fn parameter_names(pattern: &ast::MessagePattern) -> Vec<&str> {
     match pattern {
         ast::MessagePattern::Unary { .. } => Vec::new(),
-        ast::MessagePattern::Binary { parameter, .. } => vec![parameter.name.as_str()],
+        ast::MessagePattern::Binary { parameter, .. } => vec![parameter.name.name.as_str()],
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(_, parameter)| parameter.name.as_str())
+            .map(|part| part.parameter.name.name.as_str())
             .collect(),
     }
 }

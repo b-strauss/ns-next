@@ -6,8 +6,18 @@ use crate::comment::{Comment, CommentKind};
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
+/// The annotations a message pattern carries after it, before its `=`: a
+/// method keeps them on its declaration, a class on its factory.
+#[derive(Default)]
+pub(crate) struct PatternTypes {
+    /// The `^<Type>`, the caret left out.
+    pub(crate) return_type: Option<TypeAnnotation>,
+    /// The `where { ... }` clause.
+    pub(crate) where_clause: Option<TypeAnnotation>,
+}
+
 impl<'a> Parser<'a> {
-    /// `codeBody → [temporaries] statements` (§5.1.8, and §7.2 for the return), where
+    /// `codeBody →[temporaries] statements` (§5.1.8, and §7.2 for the return), where
     /// `statements → returnStatement | statementSequence | empty`,
     /// `statementSequence → expression [dot statements]` and
     /// `returnStatement → hat expression [dot]`: statements separated by
@@ -411,18 +421,21 @@ impl<'a> Parser<'a> {
 
     /// A message pattern, or `None` when its selector or a parameter is
     /// missing: a pattern without one is left out whole, after its tokens
-    /// are consumed as a whole one's would be.
-    pub(crate) fn parse_message_pattern(&mut self) -> Option<MessagePattern> {
+    /// are consumed as a whole one's would be. The pattern's `^<Type>` and
+    /// `where { ... }` clause come with it.
+    pub(crate) fn parse_message_pattern(&mut self) -> (Option<MessagePattern>, PatternTypes) {
         // Declarations may carry `<Type>` annotations after each parameter name,
-        // and a `^<Type>` return annotation before the `=`; Milestone 1 discards
-        // them via `skip_type_annotation` / `skip_return_type_annotation`.
+        // and a `^<Type>` return annotation before the `=`.
         let pattern = if self.at_binary_selector_pattern() {
             let selector = self.identifier_from_bump();
-            let parameter = self.declared_identifier("name a parameter");
-            self.skip_type_annotation();
-            parameter.map(|parameter| MessagePattern::Binary {
+            let name = self.declared_identifier("name a parameter");
+            let type_annotation = self.take_type_annotation();
+            name.map(|name| MessagePattern::Binary {
                 selector,
-                parameter,
+                parameter: Parameter {
+                    name,
+                    type_annotation,
+                },
             })
         } else {
             match self.peek() {
@@ -433,14 +446,20 @@ impl<'a> Parser<'a> {
                     let mut missing = false;
                     while self.at(TokenKind::Keyword) {
                         let keyword = self.bump();
-                        let key = Identifier {
+                        let keyword = Identifier {
                             name: self.text(keyword).trim_end_matches(':').to_string(),
                             span: keyword.span,
                         };
-                        let parameter = self.declared_identifier("name a parameter");
-                        self.skip_type_annotation();
-                        match parameter {
-                            Some(parameter) => parts.push((key, parameter)),
+                        let name = self.declared_identifier("name a parameter");
+                        let type_annotation = self.take_type_annotation();
+                        match name {
+                            Some(name) => parts.push(KeywordPart {
+                                keyword,
+                                parameter: Parameter {
+                                    name,
+                                    type_annotation,
+                                },
+                            }),
                             None => missing = true,
                         }
                     }
@@ -450,21 +469,32 @@ impl<'a> Parser<'a> {
                     let selector = self.declared_identifier("be a message selector");
                     // `selectorTypeParameters` (`NewspeakGrammar.ns:446`):
                     // `public List[E] = (...)` — type parameters on the
-                    // selector itself. Dropped in Milestone 1.
-                    self.skip_type_arguments();
-                    self.skip_type_annotation();
-                    selector.map(|selector| MessagePattern::Unary { selector })
+                    // selector itself.
+                    let start = self.position;
+                    self.consume_type_arguments();
+                    self.consume_type_annotation();
+                    let type_parameters = self.type_annotation_since(start);
+                    selector.map(|selector| MessagePattern::Unary {
+                        selector,
+                        type_parameters,
+                    })
                 }
             }
         };
-        self.skip_return_type_annotation();
-        self.skip_where_clause();
-        pattern
+        let return_type = self.take_return_type();
+        let where_clause = self.take_where_clause();
+        (
+            pattern,
+            PatternTypes {
+                return_type,
+                where_clause,
+            },
+        )
     }
 
     /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
     /// identifier)* rbracket rangleBracket`, the cursor at its `<`: the names
-    /// are checked and dropped, since there is no type AST.
+    /// are checked; the caller keeps the declaration as its tokens.
     fn parse_type_parameter_declaration(&mut self) {
         self.bump(); // `<`
         self.bump(); // `[`
@@ -494,13 +524,26 @@ impl<'a> Parser<'a> {
 
     /// A method/slot return type `^ <Type>` (grammar's `returnType`, e.g.
     /// `storageKey ^<String> = (...)`, `seed: v <Value> ^<FarReference[Value]>
-    /// = (...)`). Milestone 1 drops it. A bare `^` with no following `<` is left
-    /// in place (it is then a syntax error the caller reports).
-    fn skip_return_type_annotation(&mut self) {
+    /// = (...)`), kept without its caret. A bare `^` with no following `<` is
+    /// left in place (it is then a syntax error the caller reports).
+    fn take_return_type(&mut self) -> Option<TypeAnnotation> {
+        let after_caret = self.position + 1;
+        if self.consume_return_type() {
+            self.type_annotation_since(after_caret)
+        } else {
+            None
+        }
+    }
+
+    /// `take_return_type` for a lookahead, which keeps nothing; answers
+    /// whether there was one.
+    fn consume_return_type(&mut self) -> bool {
         if self.at(TokenKind::Caret) && self.peek2() == TokenKind::LessThan {
             self.bump(); // `^`
-            self.skip_type_annotation();
+            self.consume_type_annotation();
+            return true;
         }
+        false
     }
 
     /// A method, parsed whole; `None` when its pattern is missing a name,
@@ -508,7 +551,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_method_declaration(&mut self) -> Option<MethodDeclaration> {
         let start = self.current().span;
         let access = self.parse_access_modifier();
-        let pattern = self.parse_message_pattern();
+        let (pattern, types) = self.parse_message_pattern();
         self.expect(TokenKind::Equals);
         let open = self.expect(TokenKind::LeftParenthesis);
         let body = self.parse_code_body();
@@ -517,6 +560,8 @@ impl<'a> Parser<'a> {
         pattern.map(|pattern| MethodDeclaration {
             access,
             pattern,
+            return_type: types.return_type,
+            where_clause: types.where_clause,
             body,
             body_delimiters: open.map(|open| Delimiters {
                 open: open.span,
@@ -609,8 +654,7 @@ impl<'a> Parser<'a> {
             // A name stands here (`at_name` above).
             let name = self.identifier();
             self.refuse_reserved_word(&name.name, name.span, "name a slot or a temporary");
-            // `slotName <Type>` — the annotation is dropped in Milestone 1.
-            self.skip_type_annotation();
+            let type_annotation = self.take_type_annotation();
             let (mutability, initializer) = match self.peek() {
                 TokenKind::Equals => {
                     self.bump();
@@ -647,6 +691,7 @@ impl<'a> Parser<'a> {
             slots.push(SlotDeclaration {
                 access,
                 name,
+                type_annotation,
                 mutability,
                 initializer,
                 lazy: false,
@@ -809,22 +854,25 @@ impl<'a> Parser<'a> {
                 span: crate::span::Span::new(offset, offset),
             }
         });
-        // A generic class's type parameters, dropped: §6's
-        // `typeParameterDecl`, `class Map <[K, V]> ...`, and the canonical
-        // grammar's `class List[E] ...` (`NewspeakGrammar.ns:465`).
+        // A generic class's type parameters: §6's `typeParameterDecl`,
+        // `class Map <[K, V]> ...`, and the canonical grammar's
+        // `class List[E] ...` (`NewspeakGrammar.ns:465`).
+        let type_parameters_start = self.position;
         if self.at(TokenKind::LessThan) && self.peek2() == TokenKind::LeftBracket {
             self.parse_type_parameter_declaration();
         }
-        self.skip_type_arguments();
+        self.consume_type_arguments();
+        let type_parameters = self.type_annotation_since(type_parameters_start);
         // §6's two alternatives, `messagePattern equalSign ...` before
         // `empty equalSign ...`: an `=` here is the factory's binary selector
         // when a parameter and another `=` follow it (`class Pair = other =
         // Object new () ()`), and otherwise the one that ends the header.
-        let factory = if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
-            None
-        } else {
-            self.parse_message_pattern()
-        };
+        let (factory, factory_types) =
+            if self.at(TokenKind::Equals) && !self.at_binary_equals_factory() {
+                (None, PatternTypes::default())
+            } else {
+                self.parse_message_pattern()
+            };
         self.expect(TokenKind::Equals);
         let superclass = if self.at(TokenKind::LeftParenthesis) {
             None
@@ -862,7 +910,10 @@ impl<'a> Parser<'a> {
             return ClassDeclaration {
                 access,
                 name,
+                type_parameters,
                 factory,
+                factory_return_type: factory_types.return_type,
+                factory_where_clause: factory_types.where_clause,
                 superclass,
                 mixin_applications,
                 class_comment: None,
@@ -939,7 +990,10 @@ impl<'a> Parser<'a> {
         ClassDeclaration {
             access,
             name,
+            type_parameters,
             factory,
+            factory_return_type: factory_types.return_type,
+            factory_where_clause: factory_types.where_clause,
             superclass,
             mixin_applications,
             class_comment,
@@ -1036,7 +1090,7 @@ impl<'a> Parser<'a> {
         // a literal or a reserved word.
         let receiver = self.declared_identifier("name a superclass")?;
         // `Collection[E] new` — type arguments on the superclass receiver.
-        self.skip_type_arguments();
+        let receiver_type_arguments = self.take_type_arguments();
         let mut messages = Vec::new();
         self.parse_trailing_sends(&mut messages);
         let end = messages
@@ -1046,6 +1100,7 @@ impl<'a> Parser<'a> {
         Some(SuperclassClause {
             prefix,
             receiver,
+            receiver_type_arguments,
             messages,
             comments: Vec::new(),
             span: start.merge(end),
@@ -1368,7 +1423,7 @@ impl<'a> Parser<'a> {
             && self.at_name()
             && {
                 self.bump(); // the name
-                self.skip_type_annotation();
+                self.consume_type_annotation();
                 self.eat(TokenKind::Equals) || self.eat(TokenKind::ColonColonEquals)
             }
             && {
@@ -1418,7 +1473,7 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let access = self.lazy_slot_modifiers().flatten();
         let name = self.declared_identifier("name a slot or a temporary");
-        self.skip_type_annotation();
+        let type_annotation = self.take_type_annotation();
         let mutability = if self.eat(TokenKind::ColonColonEquals) {
             SlotMutability::MutableInitialized
         } else {
@@ -1441,6 +1496,7 @@ impl<'a> Parser<'a> {
         name.map(|name| SlotDeclaration {
             access,
             name,
+            type_annotation,
             mutability,
             initializer,
             lazy: true,
@@ -1518,13 +1574,13 @@ impl<'a> Parser<'a> {
     }
 
     fn try_parse_message_pattern(&mut self) -> Option<()> {
-        // Mirror `parse_message_pattern`'s `<Type>` / `^<Type>` skipping and its
+        // Mirror `parse_message_pattern`'s `<Type>` / `^<Type>` consuming and its
         // `= < >`-as-binary-selector handling so the speculative
         // `looks_like_method` lookahead lands on `=` `(`, not `<` / `^`.
         let matched = if self.at_binary_selector_pattern() {
             self.bump(); // selector
             self.bump(); // parameter identifier
-            self.skip_type_annotation();
+            self.consume_type_annotation();
             Some(())
         } else {
             match self.peek() {
@@ -1536,22 +1592,22 @@ impl<'a> Parser<'a> {
                         } else {
                             return None;
                         }
-                        self.skip_type_annotation();
+                        self.consume_type_annotation();
                     }
                     Some(())
                 }
                 kind if super::is_name(kind) => {
                     self.bump();
-                    self.skip_type_arguments();
-                    self.skip_type_annotation();
+                    self.consume_type_arguments();
+                    self.consume_type_annotation();
                     Some(())
                 }
                 _ => None,
             }
         };
         matched?;
-        self.skip_return_type_annotation();
-        self.skip_where_clause();
+        self.consume_return_type();
+        self.consume_where_clause();
         Some(())
     }
 }
@@ -1834,7 +1890,7 @@ mod class_tests {
     /// The name of a unary method's selector.
     fn method_selector(method: &MethodDeclaration) -> &str {
         match &method.pattern {
-            MessagePattern::Unary { selector } => selector.name.as_str(),
+            MessagePattern::Unary { selector, .. } => selector.name.as_str(),
             other => panic!("expected a unary method, found {other:?}"),
         }
     }
@@ -2049,7 +2105,7 @@ mod class_tests {
         let MessagePattern::Keyword { parts } = &module.root_class.factory.as_ref().unwrap() else {
             panic!()
         };
-        assert_eq!(parts[0].0.name, "usingPlatform");
+        assert_eq!(parts[0].keyword.name, "usingPlatform");
         assert!(module.root_class.instance_side.slots().next().is_none());
         assert!(module.root_class.instance_side.methods().next().is_none());
     }
@@ -2555,8 +2611,8 @@ mod method_tests {
             panic!("{:?}", method.pattern)
         };
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].1.name, "k");
-        assert_eq!(parts[1].1.name, "v");
+        assert_eq!(parts[0].parameter.name.name, "k");
+        assert_eq!(parts[1].parameter.name.name, "v");
     }
 
     #[test]
@@ -2570,7 +2626,7 @@ mod method_tests {
             panic!()
         };
         assert_eq!(selector.name, "+");
-        assert_eq!(parameter.name, "other");
+        assert_eq!(parameter.name.name, "other");
     }
 
     #[test]
@@ -2622,7 +2678,7 @@ mod method_tests {
 
     #[test]
     fn unterminated_type_annotation_recovers_without_panic() {
-        // `skip_type_annotation` must push a diagnostic and stop, not run away
+        // `take_type_annotation` must push a diagnostic and stop, not run away
         // or panic, on a malformed `<...>`.
         let tokens = crate::lex("foo: x <Bad = ( ^ nil )").unwrap();
         let mut parser = Parser::new("foo: x <Bad = ( ^ nil )", tokens);
@@ -3024,7 +3080,7 @@ mod unreserved_word_tests {
 
     fn unary_selector(method: &MethodDeclaration) -> &str {
         match &method.pattern {
-            MessagePattern::Unary { selector } => &selector.name,
+            MessagePattern::Unary { selector, .. } => &selector.name,
             other => panic!("{other:?}"),
         }
     }
@@ -3428,7 +3484,7 @@ mod specification_tests {
             matches!(
                 &class.factory,
                 Some(MessagePattern::Binary { selector, parameter })
-                    if selector.name == "=" && parameter.name == "other"
+                    if selector.name == "=" && parameter.name.name == "other"
             ),
             "{:?}",
             class.factory
@@ -3495,7 +3551,7 @@ mod specification_tests {
         let temporaries = |selector_name: &str| -> Vec<bool> {
             body.methods()
                 .find(|method| match &method.pattern {
-                    MessagePattern::Unary { selector } => selector.name == selector_name,
+                    MessagePattern::Unary { selector, .. } => selector.name == selector_name,
                     _ => false,
                 })
                 .map(|method| {
@@ -3514,7 +3570,7 @@ mod specification_tests {
     }
 
     /// §6's `typeParameterDecl → langleBracket lbracket identifier (comma
-    /// identifier)* rbracket rangleBracket`, dropped like every type.
+    /// identifier)* rbracket rangleBracket`, kept as its tokens like every type.
     #[test]
     fn a_class_declares_its_type_parameters_as_the_specification_writes_them() {
         accepted("class Map <[K, V]> new: capacity <Integer> = Object new () ()");
@@ -3552,7 +3608,7 @@ mod recovery_work_tests {
             .instance_side
             .methods()
             .map(|method| match &method.pattern {
-                MessagePattern::Unary { selector } => selector.name.clone(),
+                MessagePattern::Unary { selector, .. } => selector.name.clone(),
                 pattern => format!("{pattern:?}"),
             })
             .collect()
@@ -3705,5 +3761,316 @@ mod recovery_work_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod type_annotation_tests {
+    use super::*;
+    use indoc::indoc;
+
+    fn module(source: &str) -> Module {
+        match crate::parse(source) {
+            Ok(module) => module,
+            Err(diagnostics) => panic!("parse errors: {diagnostics:#?}"),
+        }
+    }
+
+    fn type_text(annotation: &TypeAnnotation) -> String {
+        annotation
+            .tokens
+            .iter()
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn every_type_annotation_is_kept() {
+        let module = module(indoc! {"
+            class Map <[K, V]> new: capacity <Integer> = (
+                |
+                  size <Integer> ::= 0.
+                |
+            ) (
+                public at: key <K> put: value <V> ^<V> = (
+                    | previous <V | Nil> |
+                    ^[:each <K> | each] value: key
+                )
+                public items ^<List[V]> = ( ^Box[Integer] new )
+            )
+        "});
+        let class = &module.root_class;
+        assert_eq!(
+            type_text(class.type_parameters.as_ref().expect("<[K, V]>")),
+            "< [ K , V ] >"
+        );
+        let Some(MessagePattern::Keyword {
+            parts: factory_parts,
+        }) = &class.factory
+        else {
+            panic!("new:");
+        };
+        assert_eq!(factory_parts[0].keyword.name, "new");
+        assert_eq!(factory_parts[0].parameter.name.name, "capacity");
+        assert_eq!(
+            type_text(
+                factory_parts[0]
+                    .parameter
+                    .type_annotation
+                    .as_ref()
+                    .expect("<Integer>")
+            ),
+            "< Integer >"
+        );
+        let header_slot = &class.instance_side.header_slots[0];
+        assert_eq!(
+            type_text(header_slot.type_annotation.as_ref().expect("<Integer>")),
+            "< Integer >"
+        );
+        let methods: Vec<&MethodDeclaration> = class.instance_side.methods().collect();
+        let MessagePattern::Keyword { parts } = &methods[0].pattern else {
+            panic!("at:put:");
+        };
+        assert_eq!(parts[1].keyword.name, "put");
+        assert_eq!(parts[1].parameter.name.name, "value");
+        assert_eq!(
+            type_text(parts[1].parameter.type_annotation.as_ref().expect("<V>")),
+            "< V >"
+        );
+        assert_eq!(
+            type_text(methods[0].return_type.as_ref().expect("^<V>")),
+            "< V >"
+        );
+        assert!(methods[0].where_clause.is_none());
+        let temporary = &methods[0].body.temporaries[0];
+        assert_eq!(
+            type_text(temporary.type_annotation.as_ref().expect("<V | Nil>")),
+            "< V | Nil >"
+        );
+        let StatementKind::Return(returned) = &methods[0].body.statements[0].kind else {
+            panic!("a return");
+        };
+        let ExpressionKind::Send(value_send) = &returned.kind else {
+            panic!("[...] value: key");
+        };
+        let ExpressionKind::Block(block) = &value_send.receiver.kind else {
+            panic!("a block");
+        };
+        assert_eq!(block.parameters[0].name.name, "each");
+        assert_eq!(
+            type_text(block.parameters[0].type_annotation.as_ref().expect("<K>")),
+            "< K >"
+        );
+        assert_eq!(
+            type_text(methods[1].return_type.as_ref().expect("^<List[V]>")),
+            "< List [ V ] >"
+        );
+        let StatementKind::Return(value) = &methods[1].body.statements[0].kind else {
+            panic!("a return");
+        };
+        let ExpressionKind::Send(send) = &value.kind else {
+            panic!("Box[Integer] new");
+        };
+        assert_eq!(
+            type_text(send.receiver.type_arguments.as_ref().expect("[Integer]")),
+            "[ Integer ]"
+        );
+    }
+
+    #[test]
+    fn an_unannotated_declaration_has_no_annotations() {
+        let module = module(indoc! {"
+            class Plain new: capacity = Object new (
+                | size ::= 0. |
+            ) (
+                public at: key = ( | previous | ^[:each | each] value: key )
+                lazy cache = 1.
+            )
+        "});
+        let class = &module.root_class;
+        assert!(class.type_parameters.is_none());
+        assert!(class.factory_return_type.is_none());
+        assert!(class.factory_where_clause.is_none());
+        let superclass = class.superclass.as_ref().expect("Object new");
+        assert!(superclass.receiver_type_arguments.is_none());
+        assert!(class.instance_side.header_slots[0]
+            .type_annotation
+            .is_none());
+        let method = class.instance_side.methods().next().expect("at:");
+        let MessagePattern::Keyword { parts } = &method.pattern else {
+            panic!("at:");
+        };
+        assert!(parts[0].parameter.type_annotation.is_none());
+        assert!(method.return_type.is_none());
+        assert!(method.where_clause.is_none());
+        assert!(method.body.temporaries[0].type_annotation.is_none());
+        let lazy_slot = class.instance_side.lazy_slots().next().expect("cache");
+        assert!(lazy_slot.type_annotation.is_none());
+    }
+
+    #[test]
+    fn a_binary_parameter_keeps_its_type() {
+        let module = module(indoc! {"
+            class Number = () (
+                public + other <Number> = ( ^self )
+            )
+        "});
+        let method = module.root_class.instance_side.methods().next().expect("+");
+        let MessagePattern::Binary {
+            selector,
+            parameter,
+        } = &method.pattern
+        else {
+            panic!("+");
+        };
+        assert_eq!(selector.name, "+");
+        assert_eq!(parameter.name.name, "other");
+        assert_eq!(
+            type_text(parameter.type_annotation.as_ref().expect("<Number>")),
+            "< Number >"
+        );
+    }
+
+    #[test]
+    fn a_unary_pattern_keeps_its_type_parameters() {
+        let source = indoc! {"
+            class Lists = () (
+                public List[E] = ( ^nil )
+                public plain = ( ^nil )
+            )
+        "};
+        let module = module(source);
+        let methods: Vec<&MethodDeclaration> = module.root_class.instance_side.methods().collect();
+        let MessagePattern::Unary {
+            selector,
+            type_parameters,
+        } = &methods[0].pattern
+        else {
+            panic!("List[E]");
+        };
+        assert_eq!(selector.name, "List");
+        let type_parameters = type_parameters.as_ref().expect("[E]");
+        assert_eq!(type_text(type_parameters), "[ E ]");
+        assert_eq!(type_parameters.span.text(source), "[E]");
+        let MessagePattern::Unary {
+            type_parameters, ..
+        } = &methods[1].pattern
+        else {
+            panic!("plain");
+        };
+        assert!(type_parameters.is_none());
+    }
+
+    #[test]
+    fn a_where_clause_is_kept() {
+        let source = indoc! {"
+            class Reducer = () (
+                public reduce: function <[:RE :RE | RE]> ^<RE> where { C <: RE :: nil } = ( ^nil )
+            )
+        "};
+        let module = module(source);
+        let method = module
+            .root_class
+            .instance_side
+            .methods()
+            .next()
+            .expect("reduce:");
+        let where_clause = method.where_clause.as_ref().expect("where { ... }");
+        assert_eq!(where_clause.span.text(source), "where { C <: RE :: nil }");
+        assert_eq!(
+            where_clause.tokens.first().map(|token| token.text.as_str()),
+            Some("where")
+        );
+        assert_eq!(
+            where_clause.tokens.last().map(|token| token.kind),
+            Some(TokenKind::RightBrace)
+        );
+        assert_eq!(
+            type_text(method.return_type.as_ref().expect("^<RE>")),
+            "< RE >"
+        );
+        let MessagePattern::Keyword { parts } = &method.pattern else {
+            panic!("reduce:");
+        };
+        assert_eq!(
+            type_text(
+                parts[0]
+                    .parameter
+                    .type_annotation
+                    .as_ref()
+                    .expect("<[:RE :RE | RE]>")
+            ),
+            "< [ : RE : RE | RE ] >"
+        );
+    }
+
+    #[test]
+    fn a_factory_keeps_its_return_type_and_where_clause() {
+        let source = indoc! {"
+            class Box new: value <E> ^<Box[E]> where { E <: Object :: nil } = () ()
+        "};
+        let module = module(source);
+        let class = &module.root_class;
+        assert_eq!(
+            type_text(class.factory_return_type.as_ref().expect("^<Box[E]>")),
+            "< Box [ E ] >"
+        );
+        assert_eq!(
+            class
+                .factory_where_clause
+                .as_ref()
+                .expect("where { ... }")
+                .span
+                .text(source),
+            "where { E <: Object :: nil }"
+        );
+    }
+
+    #[test]
+    fn a_lazy_slot_keeps_its_type() {
+        let module = module(indoc! {"
+            class Cache = () (
+                lazy public count <Integer> = 0.
+            )
+        "});
+        let slot = module
+            .root_class
+            .instance_side
+            .lazy_slots()
+            .next()
+            .expect("count");
+        assert_eq!(
+            type_text(slot.type_annotation.as_ref().expect("<Integer>")),
+            "< Integer >"
+        );
+    }
+
+    #[test]
+    fn a_superclass_receiver_keeps_its_type_arguments() {
+        let module = module(indoc! {"
+            class List = Collection[E] new () ()
+        "});
+        let superclass = module
+            .root_class
+            .superclass
+            .as_ref()
+            .expect("Collection[E] new");
+        assert_eq!(superclass.receiver.name, "Collection");
+        assert_eq!(
+            type_text(superclass.receiver_type_arguments.as_ref().expect("[E]")),
+            "[ E ]"
+        );
+    }
+
+    #[test]
+    fn a_class_keeps_its_bracketed_type_parameters() {
+        let module = module(indoc! {"
+            class List[E] = () ()
+        "});
+        assert_eq!(
+            type_text(module.root_class.type_parameters.as_ref().expect("[E]")),
+            "[ E ]"
+        );
     }
 }

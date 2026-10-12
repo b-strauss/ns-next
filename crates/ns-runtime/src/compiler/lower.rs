@@ -838,7 +838,7 @@ impl<'a> Lowerer<'a> {
         let parameters: Vec<crate::Symbol> = block
             .parameters
             .iter()
-            .map(|parameter| crate::Symbol::intern(&parameter.name))
+            .map(|parameter| crate::Symbol::intern(&parameter.name.name))
             .collect();
         let key = BodyKey::Block(block.span);
         // A fallback closure's block, and everything nested in one, keeps the

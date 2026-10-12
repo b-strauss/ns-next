@@ -17,12 +17,12 @@ fn recovered(source: &str) -> (Module, Vec<String>) {
 
 fn selector(pattern: &MessagePattern) -> String {
     match pattern {
-        MessagePattern::Unary { selector } | MessagePattern::Binary { selector, .. } => {
+        MessagePattern::Unary { selector, .. } | MessagePattern::Binary { selector, .. } => {
             selector.name.clone()
         }
         MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }

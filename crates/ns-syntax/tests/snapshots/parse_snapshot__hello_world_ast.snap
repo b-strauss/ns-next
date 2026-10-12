@@ -14,28 +14,34 @@ Module {
                 end: 11,
             },
         },
+        type_parameters: None,
         factory: Some(
             Keyword {
                 parts: [
-                    (
-                        Identifier {
+                    KeywordPart {
+                        keyword: Identifier {
                             name: "usingPlatform",
                             span: Span {
                                 start: 12,
                                 end: 26,
                             },
                         },
-                        Identifier {
-                            name: "platform",
-                            span: Span {
-                                start: 27,
-                                end: 35,
+                        parameter: Parameter {
+                            name: Identifier {
+                                name: "platform",
+                                span: Span {
+                                    start: 27,
+                                    end: 35,
+                                },
                             },
+                            type_annotation: None,
                         },
-                    ),
+                    },
                 ],
             },
         ),
+        factory_return_type: None,
+        factory_where_clause: None,
         superclass: None,
         mixin_applications: [],
         class_comment: None,
@@ -52,6 +58,7 @@ Module {
                             end: 64,
                         },
                     },
+                    type_annotation: None,
                     mutability: Immutable,
                     initializer: Some(
                         Expression {
@@ -123,24 +130,29 @@ Module {
                         ),
                         pattern: Keyword {
                             parts: [
-                                (
-                                    Identifier {
+                                KeywordPart {
+                                    keyword: Identifier {
                                         name: "main",
                                         span: Span {
                                             start: 105,
                                             end: 110,
                                         },
                                     },
-                                    Identifier {
-                                        name: "args",
-                                        span: Span {
-                                            start: 111,
-                                            end: 115,
+                                    parameter: Parameter {
+                                        name: Identifier {
+                                            name: "args",
+                                            span: Span {
+                                                start: 111,
+                                                end: 115,
+                                            },
                                         },
+                                        type_annotation: None,
                                     },
-                                ),
+                                },
                             ],
                         },
+                        return_type: None,
+                        where_clause: None,
                         body: CodeBody {
                             temporaries: [],
                             temporaries_delimiters: None,

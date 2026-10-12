@@ -194,12 +194,11 @@ impl SideMembers {
 /// parts the parser stores without their colon.
 fn selector_of(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } | ast::MessagePattern::Binary { selector, .. } => {
-            selector.name.clone()
-        }
+        ast::MessagePattern::Unary { selector, .. }
+        | ast::MessagePattern::Binary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, _)| format!("{}:", keyword.name))
+            .map(|part| format!("{}:", part.keyword.name))
             .collect(),
     }
 }
@@ -364,13 +363,13 @@ impl Classifier<'_> {
 
     fn method(&mut self, method: &ast::MethodDeclaration, chain: &[&SideMembers]) {
         match &method.pattern {
-            ast::MessagePattern::Unary { selector }
+            ast::MessagePattern::Unary { selector, .. }
             | ast::MessagePattern::Binary { selector, .. } => {
                 self.emit(selector.span, TokenCategory::Method, true, false);
             }
             ast::MessagePattern::Keyword { parts } => {
-                for (keyword, _) in parts {
-                    self.emit(keyword.span, TokenCategory::Method, true, false);
+                for part in parts {
+                    self.emit(part.keyword.span, TokenCategory::Method, true, false);
                 }
             }
         }
@@ -448,7 +447,11 @@ impl Classifier<'_> {
                 self.expression(value, chain);
             }
             ExpressionKind::Block(block) => {
-                let parameters: Vec<&ast::Identifier> = block.parameters.iter().collect();
+                let parameters: Vec<&ast::Identifier> = block
+                    .parameters
+                    .iter()
+                    .map(|parameter| &parameter.name)
+                    .collect();
                 self.body(&parameters, &block.body, chain);
             }
             ExpressionKind::DynamicArray { elements, .. } => {
@@ -684,9 +687,9 @@ fn member_category(chain: &[&SideMembers], depth: u16, name: &str) -> (TokenCate
 fn pattern_parameters(pattern: &ast::MessagePattern) -> Vec<&ast::Identifier> {
     match pattern {
         ast::MessagePattern::Unary { .. } => Vec::new(),
-        ast::MessagePattern::Binary { parameter, .. } => vec![parameter],
+        ast::MessagePattern::Binary { parameter, .. } => vec![&parameter.name],
         ast::MessagePattern::Keyword { parts } => {
-            parts.iter().map(|(_, parameter)| parameter).collect()
+            parts.iter().map(|part| &part.parameter.name).collect()
         }
     }
 }

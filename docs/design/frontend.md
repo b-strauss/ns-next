@@ -111,7 +111,7 @@ The productions, and what the parser does with each:
   takes no access modifier -- only `nestedClassDecl → [accessModifier]
   classDeclaration` has one.
 - `classDeclaration` (§6): `class`, a name, an optional `typeParameterDecl`
-  (`<[K, V]>`, dropped, "What is parsed and dropped"), then the factory's
+  (`<[K, V]>`, kept and ignored, "What is parsed and dropped"), then the factory's
   `messagePattern` and `=`, or `=` alone -- tried in that order, so
   `class Pair = other = Object new () ()` has the binary factory `=`.
 - `inheritanceClause → [inheritancePrefix] unarySelector [message]` (§6.1):
@@ -126,7 +126,7 @@ The productions, and what the parser does with each:
   in written order, in `ClassDeclaration::mixin_applications`. What the
   runtime builds from it is [object-model.md](object-model.md), "Mixin
   application". Inside a `<...>` type body or a `where { ... }` clause `<:`
-  is the bound operator (`<Foo <: Bar>`) and is dropped with it.
+  is the bound operator (`<Foo <: Bar>`), one of the annotation's tokens.
 - `classBody → classHeader sideDecl [classSideDecl]` (§6.3): the instance
   side is required, however empty -- `class C = () ()` -- and the class side
   optional. `classHeader → lparen [classComment] [slotDecls] initExprs
@@ -361,11 +361,13 @@ builds). Nothing in the runtime reads them.
 
 ## What is parsed and dropped
 
-Typed-Newspeak declaration syntax parses and is discarded, because there is no
-type AST: `<Type>` annotations on parameters and slots, `^<Type>` return
-annotations, `[T]` type parameters on class names and selectors and type
-arguments on a superclass or `<:` clause's receiver (`<: Collection[E]`), and
-`where { ... }` constraint clauses. §4.3 acknowledges this "built-in optional
+Typed-Newspeak declaration syntax parses and is kept in the syntax tree as
+the tokens written (`ast::TypeAnnotation`), not as a type AST, and nothing
+after the parser reads it: `<Type>` annotations on parameters and slots,
+`^<Type>` return annotations, `[T]` type parameters on class names and
+selectors, type arguments on a superclass or `<:` clause's receiver
+(`<: Collection[E]`) and at a value site (`Box[Integer] new`, `a foo[E]`,
+`(Box)[Integer]`), and `where { ... }` constraint clauses. §4.3 acknowledges this "built-in optional
 type annotation syntax based on the Strongtalk type system" without giving it
 a grammar, so the canonical grammar's is followed, and §6's own
 `typeParameterDecl`, `class Map <[K, V]> new: capacity <Integer>`, is

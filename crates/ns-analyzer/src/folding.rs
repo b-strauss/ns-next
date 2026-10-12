@@ -212,7 +212,7 @@ impl Collector<'_> {
                     let parameters: Vec<String> = block
                         .parameters
                         .iter()
-                        .map(|parameter| format!(":{}", parameter.name))
+                        .map(|parameter| format!(":{}", parameter.name.name))
                         .collect();
                     format!("[{} | ...]", parameters.join(" "))
                 };

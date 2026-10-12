@@ -285,16 +285,16 @@ fn variable(declaration: &ast::SlotDeclaration, category: SymbolCategory) -> Sym
 /// `foo`, `+ other`, `at: index put: value`.
 fn pattern_text(pattern: &ast::MessagePattern) -> String {
     match pattern {
-        ast::MessagePattern::Unary { selector } => selector.name.clone(),
+        ast::MessagePattern::Unary { selector, .. } => selector.name.clone(),
         ast::MessagePattern::Binary {
             selector,
             parameter,
         } => {
-            format!("{} {}", selector.name, parameter.name)
+            format!("{} {}", selector.name, parameter.name.name)
         }
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, parameter)| format!("{}: {}", keyword.name, parameter.name))
+            .map(|part| format!("{}: {}", part.keyword.name, part.parameter.name.name))
             .collect::<Vec<_>>()
             .join(" "),
     }
@@ -305,14 +305,14 @@ fn pattern_text(pattern: &ast::MessagePattern) -> String {
 /// the function total.
 fn pattern_span(pattern: &ast::MessagePattern) -> Span {
     match pattern {
-        ast::MessagePattern::Unary { selector } => selector.span,
+        ast::MessagePattern::Unary { selector, .. } => selector.span,
         ast::MessagePattern::Binary {
             selector,
             parameter,
-        } => selector.span.merge(parameter.span),
+        } => selector.span.merge(parameter.name.span),
         ast::MessagePattern::Keyword { parts } => parts
             .iter()
-            .map(|(keyword, parameter)| keyword.span.merge(parameter.span))
+            .map(|part| part.keyword.span.merge(part.parameter.name.span))
             .reduce(Span::merge)
             .unwrap_or(Span::new(0, 0)),
     }

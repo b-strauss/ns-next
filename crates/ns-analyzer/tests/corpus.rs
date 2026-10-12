@@ -239,18 +239,18 @@ fn declared_names_of_class(class: &ast::ClassDeclaration, names: &mut Vec<String
 
 fn declared_names_of_pattern(pattern: &ast::MessagePattern, names: &mut Vec<String>) {
     match pattern {
-        ast::MessagePattern::Unary { selector } => names.push(selector.name.clone()),
+        ast::MessagePattern::Unary { selector, .. } => names.push(selector.name.clone()),
         ast::MessagePattern::Binary {
             selector,
             parameter,
         } => {
             names.push(selector.name.clone());
-            names.push(parameter.name.clone());
+            names.push(parameter.name.name.clone());
         }
         ast::MessagePattern::Keyword { parts } => {
-            for (keyword, parameter) in parts {
-                names.push(keyword.name.clone());
-                names.push(parameter.name.clone());
+            for part in parts {
+                names.push(part.keyword.name.clone());
+                names.push(part.parameter.name.name.clone());
             }
         }
     }
@@ -305,7 +305,7 @@ fn declared_names_of_expression(expression: &ast::Expression, names: &mut Vec<St
                 block
                     .parameters
                     .iter()
-                    .map(|parameter| parameter.name.clone()),
+                    .map(|parameter| parameter.name.name.clone()),
             );
             declared_names_of_body(&block.body, names);
         }

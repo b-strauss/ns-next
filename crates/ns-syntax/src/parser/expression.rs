@@ -363,10 +363,14 @@ impl<'a> Parser<'a> {
         while self.at(TokenKind::Colon) {
             self.bump();
             has_parameters = true;
-            parameters.extend(self.declared_identifier("name a block parameter"));
+            let name = self.declared_identifier("name a block parameter");
             // `[:x <T> :y <T> | ...]` — block parameters carry the same
             // declaration-position `<Type>` annotations as method parameters.
-            self.skip_type_annotation();
+            let type_annotation = self.take_type_annotation();
+            parameters.extend(name.map(|name| Parameter {
+                name,
+                type_annotation,
+            }));
         }
         if has_parameters {
             self.expect(TokenKind::Bar);
@@ -533,10 +537,15 @@ impl<'a> Parser<'a> {
     }
 
     /// A primary and the type arguments of the canonical grammar's generic
-    /// instantiation, `Array[E] new: n` (`NewspeakGrammar.ns:376`), dropped.
+    /// instantiation, `Array[E] new: n` (`NewspeakGrammar.ns:376`): after a
+    /// `)` they are its parenthesis's, otherwise the primary's own.
     fn parse_primary_operand(&mut self) -> Expression {
-        let primary = self.parse_primary();
-        self.skip_type_arguments();
+        let mut primary = self.parse_primary();
+        let type_arguments = self.take_type_arguments();
+        match primary.parentheses.last_mut() {
+            Some(outermost) => outermost.type_arguments = type_arguments,
+            None => primary.type_arguments = type_arguments,
+        }
         primary
     }
 
@@ -578,6 +587,8 @@ impl<'a> Parser<'a> {
             let selector_token = self.bump();
             let selector_name = self.text(selector_token).to_string();
             self.refuse_reserved_word(&selector_name, selector_token.span, "be a message selector");
+            // `foo bar[E]` — type arguments on a unary send result.
+            let type_arguments = self.take_type_arguments();
             let span = expression_span(&receiver).merge(selector_token.span);
             receiver = bare(ExpressionKind::Send(Box::new(Send {
                 span,
@@ -586,13 +597,11 @@ impl<'a> Parser<'a> {
                     selector: Selector::Unary(selector_name),
                     arguments: Vec::new(),
                     eventual,
-                    type_arguments: None,
+                    type_arguments,
                     comments: Vec::new(),
                     span,
                 },
             })));
-            // `foo bar[E]` — type arguments on a unary send result.
-            self.skip_type_arguments();
         }
     }
 
