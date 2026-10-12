@@ -486,3 +486,20 @@ fn anchors_survive_reformatting() {
         );
     }
 }
+
+/// A comment beside a cascade's `;`, before or after it, trails the message
+/// the `;` ends, as one beside a statement's `.` trails the statement.
+#[test]
+fn a_comment_beside_a_cascades_semicolon_trails_the_message_before_it() {
+    let before = parsed("class A = () ( m = ( ^x foo (* c *); bar ) )");
+    let after = parsed("class A = () ( m = ( ^x foo; (* c *) bar ) )");
+    for module in [&before, &after] {
+        let ExpressionKind::Cascade(cascade) = &returned_expression(module).kind else {
+            panic!("a cascade");
+        };
+        assert_eq!(cascade.first.comments.len(), 1);
+        assert_eq!(cascade.first.comments[0].anchor, Anchor::After);
+        assert!(cascade.rest[0].comments.is_empty());
+    }
+    assert_eq!(before.without_positions(), after.without_positions());
+}

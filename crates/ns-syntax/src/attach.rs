@@ -65,7 +65,10 @@
 //!
 //! A `.` right after a child goes with that child: it is an own token of
 //! the node around it, but one `Inner(n)` does not count, and as `P` below
-//! it stands for the child. A reprint writes the period after a statement,
+//! it stands for the child. A cascade's `;` right after a message stands
+//! for that message as `P` too, though `Inner(n)` counts it: a reprint
+//! writes each `;` right after its message, so a comment beside it, before
+//! or after, trails that message wherever the reprint puts the next. A reprint writes the period after a statement,
 //! a slot, an initializer expression or a tuple's element by rules of its
 //! own, so whether the source had one, and whether a comment stands
 //! before or after it, must move no comment: `^1 (* c *).` and
@@ -87,8 +90,8 @@
 //! `N` with an own token or a child's token on each side of it (the module
 //! holds every comment). Among `N`'s commentable children and own tokens,
 //! let `P` be the last one ending before the comment and `Q` the first one
-//! starting after it; a `.` right after a child stands for that child as
-//! `P`.
+//! starting after it; a `.` or a cascade's `;` right after a child stands
+//! for that child as `P`.
 //!
 //! 1. `P` is a child and no line break lies between the token before the
 //!    comment and the comment → `After` on `P` (trailing).
@@ -366,10 +369,16 @@ impl<'tree> Tree<'tree> {
             .checked_sub(1)
             .map(|index| match self.child_ending_at(holder, index) {
                 Some(child) => Neighbour::Child(child),
-                None if self.tokens.kinds[index] == TokenKind::Dot => index
-                    .checked_sub(1)
-                    .and_then(|before| self.child_ending_at(holder, before))
-                    .map_or(Neighbour::Token(index), Neighbour::Child),
+                None if matches!(
+                    self.tokens.kinds[index],
+                    TokenKind::Dot | TokenKind::Semicolon
+                ) =>
+                {
+                    index
+                        .checked_sub(1)
+                        .and_then(|before| self.child_ending_at(holder, before))
+                        .map_or(Neighbour::Token(index), Neighbour::Child)
+                }
                 None => Neighbour::Token(index),
             });
         let next = (gap < self.tokens.len()).then(|| {

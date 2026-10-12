@@ -1114,15 +1114,6 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   so on a position-erased tree (`Module::without_positions`) or one the
   runtime builds, whose spans are zero, it can answer the wrong comment or
   none. Noted 2026-10-12.
-- **Formatter: a `;` alone on its line after a `///` trailing a cascade's
-  message.** `^x foo /// c` followed by `; bar` prints `foo /// c`, then
-  `;` on a line of its own, then `bar`: the `;` is the cascade's own token,
-  written after the message's trailing comment. Keeping it on the
-  message's line needs `attach.rs` to give the `;` to the message before
-  it, as it gives a `.` to a child, and `cascaded`
-  (`crates/ns-syntax/src/printer/expressions.rs`) to write the `;` before
-  that message's trailing comments. Idempotent and preserving.
-  Noted 2026-10-12.
 - **Formatter: a comment on its own line before a chain's receiver or an
   operand breaks every level around it.** `^x +` then `(* c *)` then `y`
   prints `^x`, `+` alone on a continuation line, and the comment and `y`

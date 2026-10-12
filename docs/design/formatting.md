@@ -233,6 +233,9 @@ asks for nothing to be decided (a long line left long).
     put every conditional's body two levels further in.
 14. **Cascades** always broken: the receiver alone on the first line, each
     message on its own line at +4, `;` at the end of each line but the last.
+    A comment beside a `;`, before it or after it on its line, trails the
+    message the `;` ends and is written after the `;` (`foo; /// why`);
+    one on a line of its own between two messages stays there.
 15. **Blocks.** No inner spaces: `[x]`, `[:each | each foo]`, `[]`,
     `[:each |]`. One line only with at most one statement, no temporaries,
     and when it fits; otherwise multi-line, the parameters on the `[` line.

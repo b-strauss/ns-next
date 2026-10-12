@@ -200,3 +200,52 @@ fn a_long_chain_formats_on_a_small_stack() {
         .join()
         .expect("formatting a long chain stays on a small stack");
 }
+
+/// A comment added at the end of a line, in each form, to every few lines
+/// of a few sources with every kind of statement: wherever the attachment
+/// puts it, formatting is a fixed point after one pass and keeps it. A
+/// variant that no longer parses (the comment inside a string) is skipped.
+#[test]
+fn a_comment_added_at_a_line_end_formats_to_a_fixed_point() {
+    const STRIDE: usize = 3;
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let sources = [
+        "goldens/library/number/fraction/a_fraction_is_made_in_normal_form.ns",
+        "goldens/language/syntax/line_comment.ns",
+        "benchmarks/are-we-fast-yet/Richards.ns",
+    ];
+    let mut variants = 0;
+    for name in sources {
+        let source = std::fs::read_to_string(root.join(name)).expect("a readable source");
+        let lines: Vec<&str> = source.lines().collect();
+        for comment in [" /// zq", " (* zq *)"] {
+            for index in (0..lines.len()).step_by(STRIDE) {
+                let mut variant = lines
+                    .clone()
+                    .into_iter()
+                    .map(String::from)
+                    .collect::<Vec<_>>();
+                variant[index].push_str(comment);
+                let variant = variant.join("\n") + "\n";
+                let Ok(once) = ns_syntax::format(&variant) else {
+                    continue;
+                };
+                variants += 1;
+                let twice = ns_syntax::format(&once)
+                    .unwrap_or_else(|diagnostics| panic!("{once:?} reparses: {diagnostics:?}"));
+                assert!(
+                    once == twice,
+                    "{name}, line {} with `{comment}`, is not a fixed point:\n{}",
+                    index + 1,
+                    first_difference(&once, &twice)
+                );
+                assert!(
+                    once.contains("zq"),
+                    "{name}, line {}: the comment is lost",
+                    index + 1
+                );
+            }
+        }
+    }
+    assert!(variants > 100, "only {variants} variants parsed");
+}

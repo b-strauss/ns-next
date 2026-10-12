@@ -1495,3 +1495,42 @@ fn rule_21_a_keyword_after_a_comment_on_its_line_stands_at_the_continuation() {
         formats_to_a_fixed_point(&in_method(statement), &method_text(lines));
     }
 }
+
+/// A comment beside a cascade's `;`, before or after it, trails the message
+/// the `;` ends and is written after the `;`; one on a line of its own
+/// between two messages stays there. Each is where it was after any number
+/// of formats.
+#[test]
+fn rule_14_a_comment_beside_a_cascades_semicolon_stays_with_its_message() {
+    let cases = [
+        (
+            "^x foo; /// c\nbar; baz",
+            "^x\n    foo; /// c\n    bar;\n    baz.\n",
+        ),
+        ("^x foo /// c\n; bar", "^x\n    foo; /// c\n    bar.\n"),
+        ("^x foo; (* c *) bar", "^x\n    foo; (* c *)\n    bar.\n"),
+        ("^x foo (* c *); bar", "^x\n    foo; (* c *)\n    bar.\n"),
+        ("^x foo;\n/// c\nbar", "^x\n    foo;\n    /// c\n    bar.\n"),
+        (
+            "^x foo\n(* c *)\n; bar",
+            "^x\n    foo;\n    (* c *)\n    bar.\n",
+        ),
+        (
+            "^x at: 1 put: 2; /// c\nyourself",
+            "^x\n    at: 1 put: 2; /// c\n    yourself.\n",
+        ),
+        (
+            "transcript print: a; /// c\nshow: ' '; print: b; newLine",
+            indoc! {"
+                transcript
+                    print: a; /// c
+                    show: ' ';
+                    print: b;
+                    newLine.
+            "},
+        ),
+    ];
+    for (statement, lines) in cases {
+        formats_to_a_fixed_point(&in_method(statement), &method_text(lines));
+    }
+}

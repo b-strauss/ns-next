@@ -347,27 +347,37 @@ fn receiver_head(receiver: Document) -> Document {
 
 /// `receiver msg1; msg2; …`, always broken: the receiver alone on the first
 /// line, each message on its own continuation line. `tokens` are the
-/// cascade expression's, its `;`s among them.
+/// cascade expression's, its `;`s among them. The comments trailing a
+/// message followed by a `;` are written after the `;`, which the
+/// attachment counts as the message's (`attach.rs`): before it, one that
+/// ends its line would leave the `;` alone on the next.
 fn cascaded(cascade: &Cascade, tokens: &mut OwnTokens) -> Document {
     let mut parts = Vec::new();
     let mut continued = Vec::new();
     let implicit = cascade.receiver.synthesized;
-    // An implicit receiver prints nothing: the first message takes the
-    // first line.
-    if implicit {
-        parts.push(message(&cascade.first));
-    } else {
-        parts.push(expression(&cascade.receiver));
-        continued.push(hard_line());
-        continued.push(message(&cascade.first));
-    }
-    tokens.child();
-    for each in &cascade.rest {
-        continued.push(tokens.next());
-        continued.push(text(";"));
-        continued.push(hard_line());
-        continued.push(message(each));
+    let messages: Vec<&MessageSend> = std::iter::once(&cascade.first)
+        .chain(&cascade.rest)
+        .collect();
+    let last = messages.len() - 1;
+    for (index, each) in messages.into_iter().enumerate() {
+        let written = sent_message(each, index == last);
+        // An implicit receiver prints nothing: the first message takes the
+        // first line.
+        if index == 0 && implicit {
+            parts.push(written);
+        } else {
+            if index == 0 {
+                parts.push(expression(&cascade.receiver));
+            }
+            continued.push(hard_line());
+            continued.push(written);
+        }
         tokens.child();
+        if index < last {
+            continued.push(tokens.next());
+            continued.push(text(";"));
+            continued.push(after(&each.comments));
+        }
     }
     parts.push(indent(CONTINUATION, concat(continued)));
     concat(parts)
@@ -375,6 +385,13 @@ fn cascaded(cascade: &Cascade, tokens: &mut OwnTokens) -> Document {
 
 /// A message without the receiver it is sent to, with its comments.
 pub(super) fn message(message: &MessageSend) -> Document {
+    sent_message(message, true)
+}
+
+/// A message without the receiver it is sent to, with the comments leading
+/// it, and with those trailing it when `with_trailing` (else the caller
+/// writes them).
+fn sent_message(message: &MessageSend, with_trailing: bool) -> Document {
     let mut tokens = OwnTokens::new(&message.comments);
     let mut parts = vec![before(&message.comments)];
     parts.extend(eventual_prefix(message, &mut tokens));
@@ -397,10 +414,14 @@ pub(super) fn message(message: &MessageSend) -> Document {
             parts.extend(message.arguments.iter().map(expression));
             tokens.child();
         }
-        Selector::Keyword(_) => return keyword_message(None, message),
+        Selector::Keyword(selector) => {
+            return keyword_message_sent(None, message, selector, with_trailing)
+        }
     }
     parts.push(tokens.end());
-    parts.push(after(&message.comments));
+    if with_trailing {
+        parts.push(after(&message.comments));
+    }
     concat(parts)
 }
 
@@ -478,7 +499,9 @@ struct KeywordParts {
 }
 
 impl KeywordParts {
-    fn new(message: &MessageSend, selector: &str) -> KeywordParts {
+    /// `with_trailing`: the comments trailing the message are written
+    /// after its last argument, else by the caller.
+    fn new(message: &MessageSend, selector: &str, with_trailing: bool) -> KeywordParts {
         let mut tokens = OwnTokens::new(&message.comments);
         let mut lead = vec![before(&message.comments)];
         lead.extend(eventual_prefix(message, &mut tokens));
@@ -495,7 +518,12 @@ impl KeywordParts {
             let due = if index + 1 < keywords.len() {
                 tokens.next()
             } else {
-                concat(vec![tokens.end(), after(&message.comments)])
+                let trailing = if with_trailing {
+                    after(&message.comments)
+                } else {
+                    text("")
+                };
+                concat(vec![tokens.end(), trailing])
             };
             between.push(Rc::new(due));
         }
@@ -543,7 +571,18 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
     let Selector::Keyword(selector) = &message.selector else {
         return self::message(message);
     };
-    let parts = KeywordParts::new(message, selector);
+    keyword_message_sent(receiver, message, selector, true)
+}
+
+/// `keyword_message`, the comments trailing the message written only when
+/// `with_trailing`.
+fn keyword_message_sent(
+    receiver: Option<Document>,
+    message: &MessageSend,
+    selector: &str,
+    with_trailing: bool,
+) -> Document {
+    let parts = KeywordParts::new(message, selector, with_trailing);
     let arguments: Vec<Argument> = message
         .arguments
         .iter()
