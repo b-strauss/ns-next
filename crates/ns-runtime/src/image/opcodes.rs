@@ -216,6 +216,8 @@ pub const VALUE_FRACTION: u8 = 10;
 /// module instance. It stands only as a frame record's receiver or
 /// register: a module instance holds the core library's state, so no other
 /// value of a graph may name it, and only a frame of shipped code holds one.
+/// A started image names none at all, since its frames are read by the
+/// closures the program holds.
 pub const VALUE_SHIPPED_MODULE: u8 = 11;
 
 /// Value tags that no longer name anything and are never reused: 7 was
@@ -303,12 +305,14 @@ pub const RETIRED_MIXIN_TAGS: [u8; 1] = [1];
 /// shipped-name section (`image::shipped_names`), whose entry must be a
 /// class, a metaclass or a level -- never a module instance -- allowed where
 /// the reference stands (`docs/design/image-format.md`, "Shipped names"): as a
-/// value, a shipped class that is public or that
-/// a public class accessor answers, and its metaclass; as a superclass, such
-/// a class but `Behavior`, `Class` and `Metaclass`; as a record's class, any
-/// shipped class but a module's root, `Activation` only on a frame record
-/// and `FutureImplementation` only on a future's; as a frame's class or a
-/// class record's declaring class, any shipped class, metaclass or level.
+/// value, a shipped class that is public, that a public class accessor of its
+/// module answers, or whose instances the VM signals as a VM error
+/// (`ErrorClass::is_signalled`), and its metaclass; as a superclass, such a
+/// class, not its metaclass, but `Behavior`, `Class` and `Metaclass`; as a
+/// record's class, any shipped class but a module's root and `Top`,
+/// `Activation` only on a frame record and `FutureImplementation` only on a
+/// future's; as a frame's class or a class record's declaring class, any
+/// shipped class, metaclass or level.
 /// Next free number: 9.
 pub const CLASS_RECORD: u8 = 2;
 pub const CLASS_SHIPPED: u8 = 8;

@@ -439,8 +439,10 @@ pub enum DecodeError {
         position: &'static str,
     },
     /// A started image names a shipped object of a module other than the
-    /// kernel. Before `main:args:` a program reaches nothing of the others,
-    /// so no encoder writes such an image.
+    /// kernel, or a module's instance, the kernel's included. Before
+    /// `main:args:` a program reaches nothing of the other modules, and no
+    /// program reaches a module's instance, so no encoder writes such an
+    /// image.
     ShippedNameInStartedImage(String),
     /// An `OBJECT_INSTANCE` record of a shipped class that is no builtin
     /// carries a field count other than that class's layout. The layout
@@ -3925,11 +3927,21 @@ pub fn decode_tag_named_hashes<'gc>(
         MIN_TAG_NAMED_HASH_BYTES,
         reader,
     )?;
-    let mut restored: Vec<ObjectReference> = Vec::new();
+    // One flag per section entry: `resolve` refuses a name listed twice, and
+    // the shipped world names each object once
+    // (`an_object_and_a_mixin_lead_back_to_their_entry`), so a section index
+    // is an object, and a repeat is found without comparing objects.
+    let mut restored = vec![false; shipped.len()];
     let mut max = 0;
     for _ in 0..count {
-        let target = match reader.read_u8()? {
-            HASHED_SHIPPED => read_shipped_entry(reader, shipped)?.object,
+        let index = match reader.read_u8()? {
+            HASHED_SHIPPED => {
+                let index = reader.read_u32()?;
+                if shipped.get(index as usize).is_none() {
+                    return Err(DecodeError::BadShippedName(index));
+                }
+                index as usize
+            }
             tag => {
                 return Err(DecodeError::InvalidTag {
                     what: "tag-named hash",
@@ -3944,11 +3956,12 @@ pub fn decode_tag_named_hashes<'gc>(
         if hash >= IDENTITY_HASH_LIMIT {
             return Err(DecodeError::IdentityHashTooWide(hash));
         }
-        if restored.iter().any(|seen| seen.same(target)) {
+        if std::mem::replace(&mut restored[index], true) {
             return Err(DecodeError::DuplicateTagNamedHash);
         }
-        restored.push(target);
-        mutator.heap.object_set_identity_hash(target, hash);
+        mutator
+            .heap
+            .object_set_identity_hash(shipped[index].object, hash);
         max = max.max(hash);
     }
     Ok(max)

@@ -157,8 +157,9 @@ pub fn snapshot<'gc>(
 ///
 /// No platform exists for it yet, and before `main:args:` a program reaches
 /// nothing of the shipped world but the kernel, so a graph naming anything
-/// of `PlatformFactory` or `CollectionsFactory` is refused: the loader
-/// refuses such a started image too.
+/// of `PlatformFactory` or `CollectionsFactory` is refused, and so is one
+/// naming a module's instance, the kernel's included, which no program
+/// reaches: the loader refuses such a started image too.
 pub fn package<'gc>(
     mutator: &Mutator<'gc>,
     modules: &[ModuleSource<'_, 'gc>],
@@ -210,15 +211,15 @@ fn write_image<'gc>(
     )?;
     encode::encode_tag_named_hashes(mutator, &mut graph_writer, &mut used);
     // Before `main:args:` nothing hands a program the platform, so nothing
-    // of the shipped world but the kernel can be in its graph; the loader
-    // refuses a started image naming more, so none is written.
+    // of the shipped world but the kernel can be in its graph, and no
+    // module's instance, the kernel's included, since a frame the graph
+    // holds would hand it to the program; the loader refuses a started
+    // image naming more, so none is written.
     if flags & encode::FLAG_START != 0 {
         let kernel = crate::Symbol::intern("Kernel");
-        if let Some(name) = used
-            .names(mutator)
-            .into_iter()
-            .find(|name| name.module != kernel)
-        {
+        if let Some(name) = used.names(mutator).into_iter().find(|name| {
+            name.module != kernel || name.kind == shipped_names::ShippedKind::ModuleInstance
+        }) {
             return Err(format!(
                 "image encoding refuses {} in a started application: nothing before \
                  main:args: reaches it",

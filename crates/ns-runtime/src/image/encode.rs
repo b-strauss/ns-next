@@ -1686,8 +1686,9 @@ pub fn encode_graph_section<'gc>(
             Some(super::modules::RootRecordDefect::NotItsRecord) => {
                 return Err(format!(
                     "image encoding cannot serialize {} as a module's root class: it is a \
-                     metaclass, a level, or a class with an enclosing object or a declaring \
-                     class, such as a nested class",
+                     metaclass, a level, a class applying another declaration's mixin, or a \
+                     class with an enclosing object or a declaring class, such as a nested \
+                     class",
                     heap.class_display_name(*class)
                 ))
             }

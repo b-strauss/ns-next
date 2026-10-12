@@ -2762,8 +2762,9 @@ image can carry:
   class object.
 - **A module's root and its instance stay out of every value.** The root
   class, its metaclass and its levels may stand only as a frame's class, and
-  the instance only as a frame record's receiver or register: it holds what
-  the factory was handed, the mirror or the kernel.
+  the instance only as a frame record's receiver or register, and a started
+  image, whose frames a program's closures read, names no module instance
+  at all: it holds what the factory was handed, the mirror or the kernel.
 - **An instance of a shipped class that is no builtin is a plain instance
   with slots**, held on load to the slot count the loading binary lays the
   class out with. An object holding external state -- an open file or

@@ -662,8 +662,9 @@ clause index at or past `CLAUSE_INDEX_LIMIT`, which no class object can
 number (`UnknownShippedName`); it asks no world, so `inspect` reads the
 section the same way. How the loader resolves the names, and what a name
 may stand for where, is "Shipped names" below. A started image names only
-the kernel; an image `image::snapshot` writes names whatever its graph
-reaches of the shipped world, the module instances only in a frame.
+the kernel's classes and levels, never a module instance; an image
+`image::snapshot` writes names whatever its graph reaches of the shipped
+world, the module instances only in a frame.
 
 **Object table.** Every heap object reachable from the roots — instances,
 strings, symbols, arrays, closures, class and metaclass records, reified
@@ -946,9 +947,10 @@ and `build` refuse such a project alike, before anything runs, whether or not
 the application would instantiate the module; the encoder's refusal guards a
 `ResolvedModule` a host assembled past `resolve`. Before the walk the
 encoder also holds each module's root class to `modules::root_record_defect`
-("root object is not a class", "… is a metaclass, a level, or a class with
-an enclosing object or a declaring class, such as a nested class", "… does
-not inherit what the root rule allows"), and refuses a root
+("root object is not a class", "… is a metaclass, a level, a class applying
+another declaration's mixin, or a class with an enclosing object or a
+declaring class, such as a nested class", "… does not inherit what the root
+rule allows"), and refuses a root
 that is shipped. The loader holds the record the module section names to the
 same check and refuses what the encoder cannot write: a record that is not
 the module's own root class, as `ModuleRootNotItsRecord`, and a superclass
@@ -1297,7 +1299,8 @@ asked for the debug variant: the one tool that prints bytecode would
 otherwise require the thing the artifact was built to do without. It also
 makes checkable against the artifact itself what could otherwise be
 verified only by reading the encoder -- that a started image holds no
-platform and names nothing of the shipped world but the kernel.
+platform, no module instance and names nothing of the shipped world but
+the kernel.
 
 **One-way only. There is no text format that can be loaded back.** That would
 be a second encoder and decoder pair to keep in step with the binary one — the
@@ -1551,8 +1554,9 @@ shipped world but the kernel, so a graph naming anything of
 `PlatformFactory` or `CollectionsFactory` is refused ("image encoding
 refuses PlatformFactory Platform in a started application: nothing before
 main:args: reaches it"; `package_refuses_an_application_that_reaches_the_platform`,
-`crates/ns-runtime/tests/image.rs`), and the loader refuses such a started
-image too ("Shipped names" below). An application that reached the
+`crates/ns-runtime/tests/image.rs`). So is a graph naming a module's
+instance, the kernel's included, which no program reaches. The loader
+refuses such a started image too ("Shipped names" below). An application that reached the
 platform could only have been handed it, and nothing hands one out before
 `main:args:`. `--debug-source` stores every module's source text. An error
 raised while assembling -- a refused factory, a resolve error, an
@@ -1789,7 +1793,7 @@ checked per position by the encoder and the decoder alike
 | a superclass, `MIXIN_SHIPPED` | such a class, not its metaclass, but `Behavior`, `Class` and `Metaclass` |
 | a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
 | a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
-| `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only |
+| `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only, and never in a started image |
 
 It keeps every capability out of a value -- `Top`, `Activation`,
 `FutureImplementation`, the module roots and their instances are no value,
@@ -1805,15 +1809,20 @@ counts wherever it is declared in the module, by the class name it answers
 (`shipped_world.rs`, `accessed_classes`), which is right while every shipped
 class is declared directly in its root ([OPEN-WORK.md](../OPEN-WORK.md)).
 
-**A started image names only the kernel.** Before `main:args:` a program can
-reach nothing of `PlatformFactory` or `CollectionsFactory`, so the decoder
-refuses an image with `FLAG_START` whose shipped-name section names another
-module (`ShippedNameInStartedImage`,
-`a_started_image_naming_another_module_is_refused`), and the encoder refuses
-to package one ("Packaging" above).
+**A started image names only the kernel, and no module instance.** Before
+`main:args:` a program can reach nothing of `PlatformFactory` or
+`CollectionsFactory`, so the decoder refuses an image with `FLAG_START`
+whose shipped-name section names another module
+(`ShippedNameInStartedImage`,
+`a_started_image_naming_another_module_is_refused`). No program reaches a
+module's instance either, the kernel's included, and a started image may
+hold frames -- a block in a slot brings its frame along -- whose registers
+a closure reads, so the decoder refuses a started image naming any module
+instance the same way (`a_started_image_names_no_module_instance`). The
+encoder refuses to package either ("Packaging" above).
 
-**A running world's image is trusted.** A started image has neither frames
-nor module instances and stays untrusted input. An image of a running world
+**A running world's image is trusted.** A started image holds no module
+instance and stays untrusted input. An image of a running world
 -- a snapshot today, a suspended one later ("Planned: suspend and resume")
 -- may hold frames of shipped code whose registers legitimately hold the
 kernel, a module instance or an `Activation`, and a crafted frame could pass

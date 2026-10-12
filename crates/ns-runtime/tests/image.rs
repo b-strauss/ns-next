@@ -7487,7 +7487,8 @@ fn a_root_class_with_a_declaring_class_is_not_written() {
     });
     assert!(
         error.contains(
-            "a metaclass, a level, or a class with an enclosing object or a declaring class"
+            "a metaclass, a level, a class applying another declaration's mixin, or a class \
+             with an enclosing object or a declaring class"
         ),
         "unexpected error: {error}"
     );
@@ -13065,6 +13066,26 @@ fn a_started_image_naming_another_module_is_refused() {
         load_error(&crafted),
         decode::DecodeError::ShippedNameInStartedImage("PlatformFactory Platform".to_string())
             .to_string()
+    );
+}
+
+/// A started image names no module instance, not even the kernel's: a frame
+/// it holds through a block in a slot would hand the instance to the
+/// program, and no program reaches a shipped root's instance. The packaged
+/// image with its section rewritten to name `Kernel instance` -- which no
+/// encoder writes into a started image -- is refused before its graph is
+/// read.
+#[test]
+fn a_started_image_names_no_module_instance() {
+    let bytes = packaged_application();
+    image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let crafted = with_shipped_name_section(&bytes, |intern, writer| {
+        writer.write_u32(1);
+        write_shipped_entry(writer, intern, ("Kernel", "Kernel", 0), None);
+    });
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::ShippedNameInStartedImage("Kernel instance".to_string()).to_string()
     );
 }
 

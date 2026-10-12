@@ -1673,10 +1673,11 @@ impl<'gc> Mutator<'gc> {
 
     /// The `platform` object (`docs/design/core-library.md`, "The
     /// platform"): the instance of `PlatformFactory.ns`'s nested `Platform`
-    /// the bootstrap built (`Interpreter::install_shipped_modules`) from the module
-    /// instance it made with the VM mirror and the kernel instance, the same
-    /// one for every reference within one interpreter. Asking for it, at
-    /// bootstrap or in `image::load`, runs no Newspeak and fills no cache.
+    /// the bootstrap built (`Interpreter::install_shipped_modules`) from the
+    /// module instance it made with the VM mirror and the kernel instance,
+    /// the same one for every reference within one interpreter. Asking for
+    /// it, at bootstrap or in `image::load`, runs no Newspeak and fills no
+    /// cache.
     pub(crate) fn platform_value(&self) -> Value<'gc> {
         self.platform_singleton
             .expect("internal: the platform is booted at bootstrap")

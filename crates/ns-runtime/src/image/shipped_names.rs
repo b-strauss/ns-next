@@ -41,8 +41,8 @@ const KIND_LEVEL: u8 = 3;
 const KIND_LEVEL_METACLASS: u8 = 4;
 
 /// Where a reference in the graph stands, which decides what it may name
-/// (`Positions`; the rule of `docs/design/image-format.md`, "Planned:
-/// shipped names in the image").
+/// (`Positions`; the rule of `docs/design/image-format.md`, "Shipped
+/// names").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NamePosition {
     /// A slot's, an element's, a root's or a copied value's, or a class as
@@ -199,8 +199,10 @@ fn read_clause(
 /// Every name of a section, in section order, resolved against `world` by
 /// table lookup alone: a name the world does not have, and a name listed
 /// twice, are refused, and so, in a started image (`started`), is a name of
-/// any module but `Kernel`, since before `main:args:` a program reaches
-/// nothing of the others.
+/// any module but `Kernel` and any module's instance, the kernel's
+/// included, since before `main:args:` a program reaches nothing of the
+/// other modules and no program reaches a module's instance -- a frame the
+/// started image holds, through a block in a slot, would hand one over.
 pub(crate) fn resolve<'gc>(
     names: &[ShippedName],
     world: &ShippedWorld<'gc>,
@@ -216,7 +218,7 @@ pub(crate) fn resolve<'gc>(
         if !seen.insert(index) {
             return Err(DecodeError::DuplicateShippedName(name.describe()));
         }
-        if started && name.module != kernel {
+        if started && (name.module != kernel || name.kind == ShippedKind::ModuleInstance) {
             return Err(DecodeError::ShippedNameInStartedImage(name.describe()));
         }
         let entry = &world.entries()[index];
@@ -441,6 +443,19 @@ mod tests {
                 true
             ),
             DecodeError::ShippedNameInStartedImage("PlatformFactory Platform".to_string())
+        );
+    }
+
+    /// Not even the kernel's module instance: no program reaches a shipped
+    /// root's instance, and a started image's frames would hand it over.
+    #[test]
+    fn a_started_image_names_no_module_instance() {
+        assert_eq!(
+            resolve_error(
+                &[name("Kernel", "Kernel", ShippedKind::ModuleInstance)],
+                true
+            ),
+            DecodeError::ShippedNameInStartedImage("Kernel instance".to_string())
         );
     }
 }

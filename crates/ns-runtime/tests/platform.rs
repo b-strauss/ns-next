@@ -181,11 +181,24 @@ fn platform_collections_answers_the_collections_modules_list() {
 }
 
 /// Every shipped module has one instance, built at boot: the collections
-/// facet's module is the same object before and after a second platform
-/// is made, and is there before any program asked for `platform collections`.
+/// module's instance is in the shipped world before anything asked for
+/// `platform collections` or for the platform at all, and both platforms'
+/// facets are of that very instance.
 #[test]
 fn the_collections_module_is_built_once_at_boot() {
     let mut interpreter = Interpreter::bootstrap();
+    let at_boot = interpreter.enter(|mutator| {
+        let name = ShippedName {
+            module: Symbol::intern("CollectionsFactory"),
+            declaration: Symbol::intern("CollectionsFactory"),
+            kind: ShippedKind::ModuleInstance,
+        };
+        let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
+            Ok(resolved) => resolved,
+            Err(error) => panic!("the collections module is built at boot: {error}"),
+        };
+        mutator.stash(Value::object(resolved[0].object))
+    });
     let platform = interpreter.platform();
     let first = expect_ok(
         interpreter.send(&platform, Symbol::intern("collections"), &[]),
@@ -213,7 +226,12 @@ fn the_collections_module_is_built_once_at_boot() {
             heap.class_enclosing(heap.object_class(facet))
                 .expect("a facet's class is nested")
         };
-        assert!(module_of(&first).same(module_of(&second)));
+        let at_boot = mutator
+            .fetch(&at_boot)
+            .as_object()
+            .expect("a module instance is an object");
+        assert!(module_of(&first).same(at_boot));
+        assert!(module_of(&second).same(at_boot));
     });
 }
 
