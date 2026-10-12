@@ -154,7 +154,8 @@ fn folding_ranges_of(documents: &HashMap<String, Document>, request: Request) ->
 /// or none when it is formatted already or does not parse (a document with a
 /// syntax error is left as the user wrote it). Like folds and tokens, only an
 /// open editor buffer is formatted, never a file read from disk. The request's
-/// options are ignored: the formatter has one style.
+/// options are ignored: the formatter has one style. A panic in the printer
+/// answers no edit too (`formatted_guarded`).
 fn formatting_of(documents: &HashMap<String, Document>, request: Request) -> Response {
     let params: DocumentFormattingParams = match serde_json::from_value(request.params) {
         Ok(params) => params,
@@ -169,7 +170,7 @@ fn formatting_of(documents: &HashMap<String, Document>, request: Request) -> Res
     let edits: Vec<TextEdit> = documents
         .get(params.text_document.uri.as_str())
         .and_then(|document| {
-            let formatted = ns_syntax::format(&document.text).ok()?;
+            let formatted = formatted_guarded(&document.text, ns_syntax::format)?;
             if formatted == document.text {
                 return None;
             }
@@ -184,6 +185,21 @@ fn formatting_of(documents: &HashMap<String, Document>, request: Request) -> Res
         .into_iter()
         .collect();
     Response::new_ok(request.id, edits)
+}
+
+/// `text` as `formatter` writes it, or `None` when it does not parse or the
+/// formatter panics. The printer is meant to be total over every module that
+/// parses; a panic is therefore an ns-next defect, and like a panic in the
+/// analysis (`analysis::guarded`) it must not take the server, and the
+/// editor's support for every other file, down with it. The document is
+/// then left as it is.
+fn formatted_guarded<Failure>(
+    text: &str,
+    formatter: impl FnOnce(&str) -> Result<String, Failure>,
+) -> Option<String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| formatter(text)))
+        .ok()?
+        .ok()
 }
 
 /// A document's symbol tree. An open document is answered from its cache: it
@@ -401,7 +417,20 @@ fn diagnostics_of(uri: &Uri, document: Option<&Document>) -> PublishDiagnosticsP
 
 #[cfg(test)]
 mod tests {
-    use super::readable_as_source;
+    use super::{formatted_guarded, readable_as_source};
+
+    #[test]
+    fn a_panic_in_the_printer_answers_no_formatted_text() {
+        let formatted = formatted_guarded("anything", |_| -> Result<String, ()> {
+            panic!("the printer broke")
+        });
+        assert_eq!(formatted, None);
+        assert_eq!(
+            formatted_guarded("text", |text| Ok::<_, ()>(text.to_uppercase())),
+            Some("TEXT".to_string())
+        );
+        assert_eq!(formatted_guarded("text", |_| Err::<String, _>(())), None);
+    }
 
     #[test]
     fn only_a_regular_file_a_source_may_hold_is_read() {
