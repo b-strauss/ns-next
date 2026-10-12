@@ -1,6 +1,7 @@
 package io.github.bstrauss.newspeak.lsp
 
 import com.intellij.icons.AllIcons
+import com.intellij.testFramework.LightVirtualFile
 import org.eclipse.lsp4j.SymbolKind
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -33,5 +34,12 @@ class NewspeakSymbolKindsTest {
         // The platform's structure view could not show a member's access; its breadcrumbs stay.
         assertFalse(documentSymbols.structureViewSupport)
         assertTrue(documentSymbols.breadcrumbsSupport)
+    }
+
+    @Test fun reformatCodeGoesToTheServerThoughItsFormattingIsAnnouncedStatically() {
+        assertSame(NewspeakFormatting, NewspeakLspCustomization.formattingCustomizer)
+        // The server never registers formatting dynamically, so the platform's
+        // default, which waits for that, would never ask it.
+        assertTrue(NewspeakFormatting.shouldFormatThisFileExclusivelyByServer(LightVirtualFile("Test.ns"), false, false))
     }
 }
