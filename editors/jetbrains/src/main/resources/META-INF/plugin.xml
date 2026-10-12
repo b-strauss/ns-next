@@ -14,7 +14,8 @@
       <li>Semantic colouring from ns-next's resolver: parameters, locals, slots, nested classes
           and sends.</li>
       <li>Code folding from ns-next's parser: comments, class bodies and class sides, method
-          bodies, closures and slot sections — kept while a file has syntax errors.</li>
+          bodies, closures and slot sections — kept while a file has syntax errors. A method whose
+          body is one line shows on one line, as Java's one-line methods do.</li>
       <li>A structure view and breadcrumbs from ns-next's parser: each class with its factory,
           its slots and methods with their access shown as in Java, its class-side methods
           marked static as in Java, and sticky lines — kept while a file has syntax errors.</li>
@@ -70,6 +71,9 @@
                         implementationClass="io.github.bstrauss.newspeak.editor.NewspeakCommenter"/>
         <lang.quoteHandler language="Newspeak"
                            implementationClass="io.github.bstrauss.newspeak.editor.NewspeakQuoteHandler"/>
+        <lang.foldingBuilder language="Newspeak"
+                             implementationClass="io.github.bstrauss.newspeak.editor.NewspeakOneLineMethodFolding"/>
+        <codeFoldingOptionsProvider instance="io.github.bstrauss.newspeak.settings.NewspeakCodeFoldingOptionsProvider"/>
         <indexPatternBuilder implementation="io.github.bstrauss.newspeak.editor.NewspeakIndexPatternBuilder"/>
         <applicationConfigurable parentId="language"
                                  instance="io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable"

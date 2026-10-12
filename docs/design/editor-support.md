@@ -38,7 +38,8 @@ runs a single module from its `main:args:`.
    the message `ns-next` itself produces.
 3. **Folding** — comments, class bodies, class sides, method bodies, closures
    and slot sections collapse and expand, from fold ranges the server
-   computes from the AST ("Folding").
+   computes from the AST; a method whose body is one line shows on one line,
+   as Java's one-line methods do ("Folding").
 4. **Structure** — the Structure tool window, the File Structure popup, the
    breadcrumbs and the sticky lines show a file's classes and their members,
    each with its access, from document symbols the server computes from the
@@ -357,6 +358,30 @@ the methods after it. Were the platform ever to need folding enabled for a
 language with a parser definition of its own, as semantic tokens do
 (`shouldAskServerForSemanticTokens`, below), it would go into
 `NewspeakLspClientDescriptor`'s `lspCustomization`.
+
+**One-line methods.** A method whose body is one line shows on its
+header's line, as IntelliJ's "One-line methods" does for Java: the
+formatter writes every body on lines of its own ([formatting.md](formatting.md),
+rule 10), and `public size = (`, `^size_.`, `)` reads as
+`public size = ( ^size_. )`. This is the plugin's, not the server's
+(`editor/NewspeakOneLineMethodFolding.kt`, a `lang.foldingBuilder` for
+Newspeak beside the platform's): the platform's `LspFoldingBuilder` starts
+a range collapsed only for the `imports` and `region` kinds, so no fold
+range of the server's can open folded. Two folds per method, the line break
+and indentation before the body and those after it, each shown as one space
+and in one `FoldingGroup`, so they open and close together; both lie inside
+the server's method fold. They open collapsed unless *Settings | Editor |
+General | Code Folding | Newspeak | One-line methods* is off
+(`NewspeakCodeFoldingOptionsProvider`, the `codeFoldingOptionsProvider`
+Java's options use; the value in `NewspeakSettings`, application-level).
+The file is never changed. The plugin has no Newspeak parser, so the method
+is found in the tokens: `= (` ending a line, one line of body, and a `)`
+alone on the next. A class header has the same shape but its `)` is followed
+on its line by the instance side's `(`, and a parenthesised slot initializer
+by its `.`; a `)` that does not end its line is therefore no method's. A
+body with a `///` (it would hide the `)` shown after it), a body that is
+only a comment, one whose brackets do not balance, and one longer folded
+than the formatter's 100 columns stay open.
 
 ### Structure
 
@@ -1140,7 +1165,9 @@ The server's own tests are described under its section, above ("Testing").
 - restart (`LexerRestartTest`) — lexing from any token boundary answers the
   same tokens, the platform test framework's standard check;
 - plugin tests on `BasePlatformTestCase` (`NewspeakEditorTest`) — file type,
-  brace matching, commenting; `NewspeakColorSettingsPageTest` is plain JUnit,
+  brace matching, commenting; `NewspeakOneLineMethodFoldingTest`, the
+  one-line methods' folds (which bodies fold and which stay open, the width,
+  the setting); `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
