@@ -162,6 +162,10 @@ fn first_line(content: &str) -> Option<&str> {
 
 /// `line` moved `shift` columns: spaces put in front, or up to that many
 /// leading whitespace characters taken away. An empty line stays empty.
+/// A continuation line's own leading whitespace, tabs included, is the
+/// comment's text, never expanded: the rule against tabs governs only
+/// the indentation the printer writes itself, and a tab counts as one
+/// column here as in `AttachedComment::column`.
 fn shifted(line: &str, shift: i64) -> String {
     if line.is_empty() {
         return String::new();
@@ -352,6 +356,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
             }
         }
     }
+    writer.trim_trailing_spaces();
     writer.flush_line_suffixes();
     writer.trim_trailing_spaces();
     writer.output
@@ -476,6 +481,9 @@ impl Writer<'_> {
     fn break_line(&mut self, indentation: u32) {
         self.remeasure = true;
         self.fresh_line = false;
+        // Each suffix brings its one space: the spaces before it are the
+        // line's own, and go.
+        self.trim_trailing_spaces();
         self.flush_line_suffixes();
         self.trim_trailing_spaces();
         self.output.push_str(self.line_ending);

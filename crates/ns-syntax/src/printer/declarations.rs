@@ -115,7 +115,7 @@ fn class_header(class: &ClassDeclaration, tokens: &mut OwnTokens) -> Document {
     }
     let factory = match &class.factory {
         Some(pattern) => {
-            let (before_first, parts) = pattern_parts(pattern, tokens);
+            let (before_first, parts) = pattern_parts(pattern, tokens, true);
             lead.push(before_first);
             parts
         }
@@ -372,7 +372,7 @@ fn method_declaration(method: &MethodDeclaration) -> Document {
         first.push(text(access_word(access)));
         first.push(text(" "));
     }
-    let (before_first, parts) = pattern_parts(&method.pattern, &mut tokens);
+    let (before_first, parts) = pattern_parts(&method.pattern, &mut tokens, false);
     // The comments before the pattern follow the access modifier, before
     // the space.
     if method.access.is_some() {
@@ -501,8 +501,14 @@ pub(super) fn code_body(body: &CodeBody, in_block: bool) -> BodyLines {
 /// The parts of a pattern a broken header puts on lines of their own: each
 /// keyword with its parameter, or the whole of a unary or binary pattern;
 /// and before them, the comments that precede the pattern's first token.
-/// The comments before a later part's first token close the part before.
-fn pattern_parts(pattern: &MessagePattern, tokens: &mut OwnTokens) -> (Document, Vec<Document>) {
+/// The comments before a later part's first token close the part before;
+/// `first_part_indented`: the layout puts the first part at the
+/// continuation indent too (a factory broken at every keyword).
+fn pattern_parts(
+    pattern: &MessagePattern,
+    tokens: &mut OwnTokens,
+    first_part_indented: bool,
+) -> (Document, Vec<Document>) {
     let before_first = tokens.next();
     let parts = match pattern {
         MessagePattern::Unary {
@@ -531,7 +537,12 @@ fn pattern_parts(pattern: &MessagePattern, tokens: &mut OwnTokens) -> (Document,
             let mut written: Vec<Vec<Document>> = Vec::new();
             for (index, part) in parts.iter().enumerate() {
                 if index > 0 {
-                    let before_keyword = tokens.next();
+                    let mut before_keyword = tokens.next();
+                    // A comment on a line of its own there stands at the
+                    // continuation indent, as the keywords after the first do.
+                    if index == 1 && !first_part_indented {
+                        before_keyword = indent(CONTINUATION, before_keyword);
+                    }
                     if let Some(previous) = written.last_mut() {
                         previous.push(before_keyword);
                     }

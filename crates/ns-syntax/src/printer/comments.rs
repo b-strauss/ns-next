@@ -220,9 +220,15 @@ fn leading_one(comment: &AttachedComment) -> Document {
 fn between(comments: &[AttachedComment], count: u32, place: Between) -> Document {
     concat(
         anchored(comments, Anchor::Inner(count))
-            .map(|comment| match (comment.placement, place) {
+            .enumerate()
+            .map(|(index, comment)| match (comment.placement, place) {
                 (Placement::Inline, Between::Tokens) => trailing(comment),
                 (Placement::Inline, Between::AfterOpener) => concat(vec![body(comment), text(" ")]),
+                // Between delimiters, one space separates each from the one
+                // before.
+                (Placement::Inline, Between::Alone) if index > 0 => {
+                    concat(vec![text(" "), body(comment)])
+                }
                 (Placement::Inline, Between::Alone) => body(comment),
                 (Placement::EndOfLine, _) => ending_the_line(comment, false),
                 (Placement::OwnLine, _) | (Placement::Inline, Between::Lines) => {

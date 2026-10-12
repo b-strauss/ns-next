@@ -36,13 +36,26 @@ pub(super) fn statement(statement: &Statement) -> Document {
     concat(parts)
 }
 
-/// An expression with the comments leading and trailing it.
+/// An expression with the comments leading and trailing it. A leading
+/// comment that ends its line, or stands on one of its own, puts the
+/// expression on the next line: it continues the line it follows (after a
+/// keyword, an operator, `::`, `=` or `^`), so it goes at +4, not at the
+/// column a new statement would take.
 pub(super) fn expression(expression: &Expression) -> Document {
-    concat(vec![
+    let written = concat(vec![
         before(&expression.comments),
         expression_alone(expression),
         after(&expression.comments),
-    ])
+    ]);
+    let breaks_before = expression.comments.iter().any(|comment| {
+        comment.anchor == crate::ast::Anchor::Before
+            && comment.placement != crate::ast::Placement::Inline
+    });
+    if breaks_before {
+        indent(CONTINUATION, written)
+    } else {
+        written
+    }
 }
 
 /// An expression without the comments leading and trailing it.

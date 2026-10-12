@@ -1135,3 +1135,55 @@ fn rule_21_a_comment_between_receiver_and_message_keeps_its_line() {
     "});
     assert_eq!(formatted(&input), expected);
 }
+
+#[test]
+fn rule_21_a_comment_ending_the_line_before_a_value_continues_it_at_four() {
+    let cases = [
+        (
+            "x foo: /// c\n1 bar: 2",
+            "x foo: /// c\n    1\n    bar: 2.\n",
+        ),
+        // The comment breaks the binary level it stands in (rule 21).
+        ("^3 + /// c\n4", "^3\n    + /// c\n        4.\n"),
+        ("y:: /// c\n1", "y:: /// c\n    1.\n"),
+        ("^ /// c\n1", "^ /// c\n    1.\n"),
+    ];
+    for (statement, lines) in cases {
+        assert_eq!(formatted(&in_method(statement)), method_text(lines));
+    }
+}
+
+#[test]
+fn rule_21_a_comment_ending_the_line_before_a_slot_value_continues_it_at_four() {
+    let input = "class A = ( | a = /// c\n 1. | ) ()";
+    let expected = indoc! {"
+        class A = (
+          |
+            a = /// c
+                1.
+          |
+        ) ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_21_two_comments_between_delimiters_are_one_space_apart() {
+    assert_eq!(
+        formatted(&in_method("^[ (* a *) (* b *) ]")),
+        method_text("^[(* a *) (* b *)].\n")
+    );
+}
+
+#[test]
+fn rule_21_a_comment_between_pattern_keywords_stands_at_the_continuation() {
+    let input = "class A = () ( m: x\n/// c\n n: y = () )";
+    let expected = indoc! {"
+        class A = () (
+          m: x
+              /// c
+              n: y = ()
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
