@@ -1890,6 +1890,22 @@ mod class_tests {
         assert_eq!(statement.span.text(source), "^3");
     }
 
+    /// An expression statement spans its expression, a leading `(`
+    /// included, and not the period after it.
+    #[test]
+    fn an_expression_statement_spans_its_expression_without_the_period() {
+        let source = indoc! {"
+            class Outer = () (
+                public m = ( (3 + 4) printString. ^nil )
+            )
+        "};
+        let module = module(source);
+        let method = module.root_class.instance_side.methods().next().expect("m");
+        let statement = &method.body.statements[0];
+        assert!(matches!(statement.kind, StatementKind::Expression(_)));
+        assert_eq!(statement.span.text(source), "(3 + 4) printString");
+    }
+
     /// The editor folds from an opening token to its closing one, so the
     /// AST records both for every construct that folds.
     #[test]

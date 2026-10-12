@@ -155,3 +155,21 @@ fn a_file_with_crlf_line_endings_stays_crlf() {
     assert!(text.contains("\r\n"));
     assert!(!text.replace("\r\n", "").contains('\n'));
 }
+
+/// A byte-order mark is kept: the text after it is formatted, and the mark
+/// written back in front of it.
+#[test]
+fn a_file_with_a_byte_order_mark_is_formatted_and_keeps_it() {
+    let directory = TemporaryDirectory::new("byte-order-mark");
+    let file = directory.write("Sample.ns", &format!("\u{feff}{UNFORMATTED}"));
+
+    let output = run(&directory.path, &[&file], false);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        format!("\u{feff}{}", formatted(UNFORMATTED))
+    );
+    let check = run(&directory.path, &[&file], true);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+}

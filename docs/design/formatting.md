@@ -468,7 +468,8 @@ linear in the output.
   a truncated source. With `--check` nothing is written: each file that
   would change is listed on stdout and the exit status is 1. A file with a
   syntax error is left alone, its diagnostics printed, the exit status 1,
-  and the other files are still formatted.
+  and the other files are still formatted. A UTF-8 byte-order mark is
+  kept: the text after it is formatted and the mark written back in front.
 - `textDocument/formatting` -- the server announces
   `documentFormattingProvider` and answers one `TextEdit` replacing the open
   document's whole text, or none when it is formatted already or does not

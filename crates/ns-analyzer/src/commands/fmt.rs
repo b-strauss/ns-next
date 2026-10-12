@@ -37,6 +37,8 @@ pub(crate) fn execute(paths: &[PathBuf], check: bool) -> ExitCode {
     }
 }
 
+const BYTE_ORDER_MARK: &str = "\u{feff}";
+
 /// Whether `file` is formatted afterwards (or, with `check`, already is).
 fn format_file(file: &Path, check: bool) -> bool {
     let source = match std::fs::read_to_string(file) {
@@ -46,10 +48,17 @@ fn format_file(file: &Path, check: bool) -> bool {
             return false;
         }
     };
-    let formatted = match ns_syntax::format(&source) {
-        Ok(formatted) => formatted,
+    // A byte-order mark is no Newspeak character, but an editor saving
+    // "UTF-8 with BOM" writes one: the text after it is formatted, and the
+    // mark is written back, so the file keeps its encoding.
+    let (mark, text) = match source.strip_prefix(BYTE_ORDER_MARK) {
+        Some(text) => (BYTE_ORDER_MARK, text),
+        None => ("", source.as_str()),
+    };
+    let formatted = match ns_syntax::format(text) {
+        Ok(formatted) => format!("{mark}{formatted}"),
         Err(diagnostics) => {
-            print_diagnostics(file, &source, &diagnostics);
+            print_diagnostics(file, text, &diagnostics);
             return false;
         }
     };
