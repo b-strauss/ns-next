@@ -188,10 +188,13 @@ asks for nothing to be decided (a long line left long).
           c foo.
         ].
     ```
-    Any other message continues on the receiver's last line only when that
-    line ends with a broken block's `]`, or with a multi-line string the
-    receiver ends with (closing parentheses aside); otherwise it goes on a
-    continuation line of its own:
+    Any other message sent to a receiver that takes more than one line by
+    itself -- a multi-line block, a multi-line string, a message hugging
+    its blocks, or a parenthesised expression holding one -- continues on
+    the receiver's last line only when that line ends with a broken block's
+    `]`, or with a multi-line string the receiver ends with (closing
+    parentheses aside); otherwise it goes on a continuation line of its
+    own:
     ```
           ] value
               == nil)
@@ -199,8 +202,12 @@ asks for nothing to be decided (a long line left long).
     ```
     (`value` follows the block's `]`; `== nil` follows `value`, and
     `printString` follows a parenthesis that ends on `nil`, so each takes a
-    line of its own.) A continuation at +4 is told apart from a nested body
-    at +2.
+    line of its own.) A receiver that is a unary or binary run broken for
+    width is a level of the same chain, not such a receiver: outside in,
+    the message after it follows its last link (`^aaaa…`, `foo`,
+    `bar baz: 1.`, each on its own line). A receiver whose line ends with a
+    comment leaves no room on that line: its messages are broken (rule
+    21). A continuation at +4 is told apart from a nested body at +2.
 13. **Keyword messages.** The first keyword on the receiver's line, every
     further keyword on its own line at +4 when the message breaks. **A block
     argument does not break its message by itself**: a multi-line block
@@ -284,6 +291,22 @@ asks for nothing to be decided (a long line left long).
         ^a
             + b /// why
             + c.
+    ```
+    So does one trailing the chain's receiver, every link then on a
+    continuation line of its own (`^a /// why`, `+ b`, `+ c.`). A keyword
+    message after a receiver whose line ends with a comment, or led by a
+    comment on a line of its own, starts a continuation line at +4 as well,
+    its further keywords at +4 and its blocks indented from that line: at
+    the statement's indentation it would read as a new statement sending
+    to the implicit receiver. A comment trailing the first argument of a
+    broken keyword message stands with the keywords after it, at +4.
+    ```
+        current = 16r5C /// \
+            ifTrue: [
+              pauseCapture.
+            ] ifFalse: [
+              read.
+            ].
     ```
     A comment that leads an expression and ends its line, or stands on one
     of its own, puts the expression on the next line at +4: it continues the
@@ -403,6 +426,14 @@ where the messages sent to it go is then decided by where it ends
 (`Follow`). A keyword message with an argument that hugs is the exception:
 it is written after the receiver and decided on the receiver's last line
 however the receiver broke (`keyword_message`; rule 12).
+
+A receiver that ends its line with a comment leaves a `FreshLine` waiting
+rather than a line break written. `Follow` counts that as a break and lays
+its messages out broken, and the keyword parts written after a receiver
+stand in `IndentAfterFreshLine`: an indentation taken only when a fresh
+line waits where it starts, so on the receiver's own line they continue it
+unchanged, and after a comment they start a continuation line with what
+they hold indented from it.
 
 ### Measuring again after a line break
 

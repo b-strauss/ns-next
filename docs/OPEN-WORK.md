@@ -1114,9 +1114,47 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   so on a position-erased tree (`Module::without_positions`) or one the
   runtime builds, whose spans are zero, it can answer the wrong comment or
   none. Noted 2026-10-12.
+- **Formatter: a `;` alone on its line after a `///` trailing a cascade's
+  message.** `^x foo /// c` followed by `; bar` prints `foo /// c`, then
+  `;` on a line of its own, then `bar`: the `;` is the cascade's own token,
+  written after the message's trailing comment. Keeping it on the
+  message's line needs `attach.rs` to give the `;` to the message before
+  it, as it gives a `.` to a child, and `cascaded`
+  (`crates/ns-syntax/src/printer/expressions.rs`) to write the `;` before
+  that message's trailing comments. Idempotent and preserving.
+  Noted 2026-10-12.
+- **Formatter: a comment on its own line before a chain's receiver or an
+  operand breaks every level around it.** `^x +` then `(* c *)` then `y`
+  prints `^x`, `+` alone on a continuation line, and the comment and `y`
+  at +8; `^(` then `/// c` then `a foo) bar` puts `^(`, the comment, `a`,
+  `foo)` and `bar` each on a line of its own. The comment's `FreshLine`
+  marks every group around it broken, and `expression` puts the operand
+  at +4 after it, so rule 21's "the level it stands in" is taken
+  literally for each level out to the statement. Idempotent and
+  preserving, but it reads badly; the comment's break should end at the
+  operand. [formatting.md](design/formatting.md), rule 21.
+  Noted 2026-10-12.
+- **Comment attachment: a super-linear corner, and its cost at every
+  start.** `own_tokens_before` (`crates/ns-syntax/src/attach.rs`) walks
+  every child of the holder for each `Inner` comment, so a cascade with a
+  comment before each `;` attaches in quadratic time; no real source
+  reaches it, and the attachment is linear on every module of the
+  repository. The runtime pays for the attachment and discards the
+  comments: `parse` of `Kernel.ns` takes 2.50 ms with its comments and
+  1.06 ms with its `///` lines stripped (0.14 ms of the difference is
+  lexing them), about 2 ms per start for the three shipped modules
+  (`interpreter/kernel.rs`, `interpreter/core_library.rs` call
+  `ns_syntax::parse`). A `parse` that skips the attachment for the runtime
+  would recover it. Noted 2026-10-12.
 
 ## Missing tests
 
+- That a parenthesised literal block is still inlined (`true ifTrue:
+  ([1])`) is pinned only by the printed answer of its golden, not by a
+  `disasm`-level check that it lowers inline.
+- The end position of the language server's formatting edit for a document
+  ending with a line break, LF and CRLF (`LineIndex::new` records a line
+  start after the last break; no test fixes the position the edit ends at).
 - `ns_syntax::parse_for_editor`'s answer to a source too long for a span --
   an empty module and the one `source_too_long` diagnostic -- has no test,
   since it needs a source past 4 GiB.
