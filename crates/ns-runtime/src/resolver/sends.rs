@@ -56,20 +56,20 @@ pub(super) fn depth_of_named_outer(chain: &[EnclosingClass], name: Symbol) -> Op
         .map(|depth| depth as u16)
 }
 
-/// Recognizes whether `send.receiver` is the parser's implicit-keyword-send
-/// marker: `Identifier { name: "self", span }` with a **zero-width** span
-/// (`span.start == span.end`), synthesized by `parse_keyword_message` in
-/// `crates/ns-syntax/src/parser/expression.rs`. A real, non-zero-width
-/// `self` is a genuine explicit self send (§5.8, always depth 0, no search).
+/// Recognizes whether `send.receiver` is the parser's implicit receiver:
+/// `Identifier { name: "self" }` marked `synthesized` by
+/// `parse_keyword_message` in `crates/ns-syntax/src/parser/expression.rs`.
+/// A written `self` is a genuine explicit self send (§5.8, always depth 0,
+/// no search). The flag, not the span, decides: a tree without positions
+/// has an empty span on every node.
 pub(super) fn is_synthesized_implicit_receiver(receiver: &Expression) -> bool {
-    matches!(
-        &receiver.kind,
-        ExpressionKind::Identifier(id) if id.name == "self" && id.span.start == id.span.end
-    )
+    receiver.synthesized
+        && matches!(&receiver.kind, ExpressionKind::Identifier(id) if id.name == "self")
 }
 
 pub(super) fn is_explicit_self(receiver: &Expression) -> bool {
-    matches!(&receiver.kind, ExpressionKind::Identifier(id) if id.name == "self" && id.span.start != id.span.end)
+    !receiver.synthesized
+        && matches!(&receiver.kind, ExpressionKind::Identifier(id) if id.name == "self")
 }
 
 pub(super) fn is_explicit_super(receiver: &Expression) -> bool {

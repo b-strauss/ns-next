@@ -760,12 +760,15 @@ fn a_parenthesised_outer_reference_resolves_as_the_bare_one() {
         )
     "};
     let bare = parenthesised.replace("(outer Outer)", "outer Outer");
-    let parenthesised_binding = receiver_binding_of_yourself(parenthesised);
+    let parenthesised_binding = bindings_of_yourself_and_its_receiver(parenthesised);
     assert!(
         parenthesised_binding.contains("LexicalSend { depth: 1 }"),
         "{parenthesised_binding}"
     );
-    assert_eq!(parenthesised_binding, receiver_binding_of_yourself(&bare));
+    assert_eq!(
+        parenthesised_binding,
+        bindings_of_yourself_and_its_receiver(&bare)
+    );
 }
 
 /// What the resolution of `source` records for the `yourself` send in
@@ -773,7 +776,7 @@ fn a_parenthesised_outer_reference_resolves_as_the_bare_one() {
 /// The resolver binds the two-hop `outer N m` on the send itself and nothing
 /// on its receiver, so both are answered; the `Debug` text holds no span, so
 /// two sources whose spans differ compare equal.
-fn receiver_binding_of_yourself(source: &str) -> String {
+fn bindings_of_yourself_and_its_receiver(source: &str) -> String {
     let resolved = resolve_source(source);
     let inner = resolved
         .module
@@ -805,4 +808,30 @@ fn receiver_binding_of_yourself(source: &str) -> String {
         resolved.bindings.get(&returned.kind.span()),
         resolved.bindings.get(&send.receiver.kind.span())
     )
+}
+
+/// The parser's `synthesized` flag tells the implicit receiver from a
+/// written `self`, not its span: on a tree without positions every span is
+/// empty, and a written `self foo: 1` still sends to `self` (§5.8) rather
+/// than searching the enclosing classes for `foo:`.
+#[test]
+fn an_explicit_self_send_stays_explicit_on_a_tree_without_positions() {
+    let source = indoc! {"
+        class Outer = () (
+            public foo: x = ( )
+            class Inner = () (
+                public answer = ( self foo: 1 )
+            )
+        )
+    "};
+    let module = ns_syntax::parse(source).expect("parse").without_positions();
+    let resolved =
+        resolve(module, source.into(), SourceOrigin::File("test.ns".into())).expect("resolve");
+    let sends: Vec<String> = resolved
+        .bindings
+        .values()
+        .filter(|binding| matches!(binding, Binding::LexicalSend { .. }))
+        .map(|binding| format!("{binding:?}"))
+        .collect();
+    assert_eq!(sends, ["LexicalSend { depth: 0 }"]);
 }

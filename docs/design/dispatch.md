@@ -276,11 +276,13 @@ The parser normalizes several forms, and the resolver keys off those shapes:
   gets the full Local → OuterLocal → §5.7 resolution, unless it is literally
   `self` or `super`.
 - **An implicit-receiver keyword send** has its receiver synthesized by the
-  parser as `Identifier{"self"}` with a **zero-width span** at the selector's start,
+  parser as `Identifier{"self"}` with a zero-width span at the selector's start,
   its envelope marked `synthesized`.
-  That is the discriminator: a zero-width span means a true implicit send and the
-  depth search runs; a real span means a genuine explicit `self` send, where §5.8
-  fixes the depth at 0 with no search. Binary sends are never implicit, so no
+  The flag is the discriminator, for the resolver as for the printer: a
+  `synthesized` receiver means a true implicit send and the depth search
+  runs; a written `self` is a genuine explicit `self` send, where §5.8
+  fixes the depth at 0 with no search. The span is no key: a tree without
+  positions has an empty span on every node. Binary sends are never implicit, so no
   equivalent synthesis exists for them.
 - **Parentheses** change no shape. They are kept on the expression's envelope
   (`Expression::parentheses`), and the resolver and both lowerings match
