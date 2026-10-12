@@ -25,7 +25,8 @@ class AnArrayRangeErrorIsAnArgumentError = Object new () (
         newLine.
     transcript
         show: ([array replaceFrom: 1 to: 2 with: {1} startingAt: 1] on: kernel ArgumentError
-            do: [:error | error argument]) printString;
+            do: [:error | error argument])
+            printString;
         newLine.
     transcript
         show: ([array replaceFrom: 1 to: 2 with: {1} startingAt: 1] on: Error do: [:error |
@@ -34,7 +35,8 @@ class AnArrayRangeErrorIsAnArgumentError = Object new () (
         newLine.
     transcript
         show: ([array replaceFrom: 4 to: 5 with: {1. 2} startingAt: 1] on: kernel ArgumentError
-            do: [:error | error argument]) printString;
+            do: [:error | error argument])
+            printString;
         newLine.
     transcript
         show: ([(Array new: 0) first] on: kernel ArgumentError do: [:error | error argument])

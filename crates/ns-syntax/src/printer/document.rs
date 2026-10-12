@@ -50,6 +50,19 @@ pub(crate) enum Document {
     LineSuffix(String),
     /// Breaks every group around it and writes nothing.
     BreakParent,
+    /// Writes nothing; stands right after a block's `]`. When its group is
+    /// broken, the `]` ends a block opened at a line end, and a message sent
+    /// to what ends there may follow it on its line (`Follow`).
+    BlockEnd,
+    /// A receiver, then the messages sent to it, `rest`, a `Group`. When the
+    /// receiver ends on a broken block's `]` (only `)` after it), or did not
+    /// break, the group is decided where the receiver ends; when the
+    /// receiver broke otherwise, the outer level breaks first: the group is
+    /// broken.
+    Follow {
+        receiver: Box<Document>,
+        rest: Box<Document>,
+    },
     /// Line breaks inside start `columns` further in.
     Indent(u32, Box<Document>),
     /// Flat if it fits on the line and holds nothing that forces a break,
@@ -124,6 +137,13 @@ fn take_children(document: &mut Document, pending: &mut Vec<Document>) {
             ));
         }
         Document::Choice(parts) | Document::Concat(parts) => pending.append(parts),
+        Document::Follow { receiver, rest } => {
+            pending.push(std::mem::replace(
+                &mut **receiver,
+                Document::Concat(Vec::new()),
+            ));
+            pending.push(std::mem::replace(&mut **rest, Document::Concat(Vec::new())));
+        }
         // Only the last holder takes the content apart, leaving an empty
         // `Concat` behind; the others drop their count.
         Document::Shared(content) => {
@@ -143,7 +163,8 @@ fn take_children(document: &mut Document, pending: &mut Vec<Document>) {
         | Document::HardLine
         | Document::IfBreak { .. }
         | Document::LineSuffix(_)
-        | Document::BreakParent => {}
+        | Document::BreakParent
+        | Document::BlockEnd => {}
     }
 }
 
@@ -204,6 +225,9 @@ struct Command<'document> {
     indentation: u32,
     mode: Mode,
     document: &'document Document,
+    /// Set on the command that decides a `Follow`'s `rest` once its receiver
+    /// is written: the count of line breaks written before the receiver.
+    follows: Option<usize>,
 }
 
 /// The groups that must break whatever the width, by address: those holding
@@ -230,6 +254,8 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
         fresh_line: false,
         leading_starts_line: false,
         remeasure: false,
+        line_breaks: 0,
+        block_end: None,
         line_suffixes: Vec::new(),
         line_ending,
     };
@@ -237,13 +263,41 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
         indentation: 0,
         mode: Mode::Break,
         document,
+        follows: None,
     }];
     while let Some(command) = commands.pop() {
         let Command {
             indentation,
             mode,
             document,
+            follows,
         } = command;
+        if let (Some(breaks_before), Document::Follow { rest, .. }) = (follows, document) {
+            let broke = writer.line_breaks != breaks_before;
+            let decided = if broke && !writer.ends_after_block() {
+                // The receiver broke by the rules of its own messages: the
+                // messages sent to it are the outer level, broken first.
+                let content = match &**rest {
+                    Document::Group(content) => &**content,
+                    other => other,
+                };
+                Command {
+                    indentation,
+                    mode: Mode::Break,
+                    document: content,
+                    follows: None,
+                }
+            } else {
+                Command {
+                    indentation,
+                    mode,
+                    document: rest,
+                    follows: None,
+                }
+            };
+            commands.push(decided);
+            continue;
+        }
         match document {
             Document::Text(content) => writer.write(content, indentation),
             Document::Verbatim(content) => writer.write_verbatim(content, indentation),
@@ -281,21 +335,43 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
             ),
             Document::LineSuffix(content) => writer.line_suffixes.push(content),
             Document::BreakParent => {}
+            Document::BlockEnd => {
+                if mode == Mode::Break {
+                    writer.block_end = Some(writer.output.len());
+                }
+            }
+            Document::Follow { receiver, .. } => {
+                commands.push(Command {
+                    indentation,
+                    mode,
+                    document,
+                    follows: Some(writer.line_breaks),
+                });
+                commands.push(Command {
+                    indentation,
+                    mode,
+                    document: receiver,
+                    follows: None,
+                });
+            }
             Document::Indent(columns, content) => commands.push(Command {
                 indentation: indentation.saturating_add(*columns),
                 mode,
                 document: content,
+                follows: None,
             }),
             Document::Shared(content) => commands.push(Command {
                 indentation,
                 mode,
                 document: content,
+                follows: None,
             }),
             Document::Group(content) => {
                 let flat = Command {
                     indentation,
                     mode: Mode::Flat,
                     document: content,
+                    follows: None,
                 };
                 let marked = broken_groups.contains(&std::ptr::from_ref(document));
                 let group_mode = if mode == Mode::Flat && !writer.remeasure {
@@ -326,6 +402,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                         indentation,
                         mode: Mode::Flat,
                         document: alternatives.first().unwrap_or(last),
+                        follows: None,
                     }
                 } else {
                     writer.remeasure = false;
@@ -335,6 +412,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                             indentation,
                             mode: Mode::Flat,
                             document: alternative,
+                            follows: None,
                         })
                         .find(|candidate| {
                             fits(*candidate, &commands, writer.start(width), &broken_groups)
@@ -343,6 +421,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                             indentation,
                             mode: Mode::Break,
                             document: last,
+                            follows: None,
                         })
                 };
                 commands.push(chosen);
@@ -352,6 +431,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                     indentation,
                     mode,
                     document: part,
+                    follows: None,
                 }));
             }
         }
@@ -385,11 +465,23 @@ struct Writer<'text> {
     /// written, what follows on the new line was never measured, so the next
     /// group or `Choice` met in flat content is decided as in broken content.
     remeasure: bool,
+    /// How many line breaks have been written.
+    line_breaks: usize,
+    /// Where the `]` of the last broken block ended in `output`.
+    block_end: Option<usize>,
     line_suffixes: Vec<&'text str>,
     line_ending: &'text str,
 }
 
 impl Writer<'_> {
+    /// Whether the output ends on a broken block's `]`, closing parentheses
+    /// aside.
+    fn ends_after_block(&self) -> bool {
+        self.block_end
+            .and_then(|end| self.output.get(end..))
+            .is_some_and(|after| after.chars().all(|character| character == ')'))
+    }
+
     /// Where a measurement made now starts.
     fn start(&self, width: usize) -> Start {
         Start {
@@ -452,6 +544,7 @@ impl Writer<'_> {
         self.column = match after_last_line_break(content) {
             Some(last_line) => {
                 self.remeasure = true;
+                self.line_breaks += 1;
                 content[last_line..].chars().count()
             }
             None => self.column + content.chars().count(),
@@ -475,11 +568,13 @@ impl Writer<'_> {
             self.column = moved.chars().count();
             self.output.push_str(&moved);
             self.remeasure = true;
+            self.line_breaks += 1;
         }
     }
 
     fn break_line(&mut self, indentation: u32) {
         self.remeasure = true;
+        self.line_breaks += 1;
         self.fresh_line = false;
         // Each suffix brings its one space: the spaces before it are the
         // line's own, and go.
@@ -554,7 +649,13 @@ fn fits(
                 rest_index = below;
                 in_rest = true;
                 let command = rest[below];
-                (command.indentation, command.mode, command.document)
+                // A `Follow` waiting for its receiver: what is left of it
+                // is its messages.
+                let document = match (command.follows, command.document) {
+                    (Some(_), Document::Follow { rest, .. }) => &**rest,
+                    (_, document) => document,
+                };
+                (command.indentation, command.mode, document)
             }
         };
         let measured = match document {
@@ -589,7 +690,12 @@ fn fits(
                 Mode::Flat => flat,
                 Mode::Break => broken,
             },
-            Document::LineSuffix(_) | Document::BreakParent => "",
+            Document::LineSuffix(_) | Document::BreakParent | Document::BlockEnd => "",
+            Document::Follow { receiver, rest } => {
+                pending.push((indentation, mode, &**rest));
+                pending.push((indentation, mode, &**receiver));
+                ""
+            }
             Document::Indent(columns, content) => {
                 pending.push((indentation.saturating_add(*columns), mode, content));
                 ""
@@ -752,7 +858,13 @@ fn broken_groups(document: &Document) -> BrokenGroups {
                 visits.extend(parts.iter().map(Visit::Enter));
                 false
             }
+            Document::Follow { receiver, rest } => {
+                visits.push(Visit::Enter(receiver));
+                visits.push(Visit::Enter(rest));
+                false
+            }
             Document::Text(_)
+            | Document::BlockEnd
             | Document::Line
             | Document::SoftLine
             | Document::IfBreak { .. }

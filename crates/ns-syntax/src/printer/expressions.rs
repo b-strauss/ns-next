@@ -269,15 +269,15 @@ fn finish_run(receiver: Option<Document>, run: Option<Run>) -> Option<Document> 
         return receiver;
     }
     let Some(last_breaking) = run.links.iter().rposition(forces_break) else {
-        let receiver_breaks = receiver.as_ref().is_some_and(breaks_by_itself);
-        let mut parts = Vec::new();
-        parts.extend(receiver);
-        return Some(if receiver_breaks {
-            parts.push(group(continued(run.links)));
-            concat(parts)
-        } else {
-            parts.push(continued(run.links));
-            group(concat(parts))
+        let links = continued(run.links);
+        return Some(match receiver {
+            Some(receiver) if forces_break(&receiver) => concat(vec![receiver, group(links)]),
+            Some(receiver) if may_end_on_a_block(&receiver) => Document::Follow {
+                receiver: Box::new(receiver),
+                rest: Box::new(group(links)),
+            },
+            Some(receiver) => group(concat(vec![receiver, links])),
+            None => group(links),
         });
     };
     let receiver = receiver.map(Rc::new);
@@ -516,12 +516,23 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
             }
         })
         .collect();
+    let hugs = arguments.iter().any(Argument::hugs);
+    // A message hugging its blocks is decided on the receiver's last line,
+    // however the receiver broke: rule 13 asks only that the parts outside
+    // the block bodies fit there. A message without one follows a receiver
+    // that may end on a block's `]` there, and breaks first after any other.
     let (written_first, head) = match receiver {
-        Some(receiver) if breaks_by_itself(&receiver) => (Some(receiver), Head::AfterReceiver),
+        Some(receiver) if hugs || forces_break(&receiver) => (Some(receiver), Head::AfterReceiver),
+        Some(receiver) if may_end_on_a_block(&receiver) => {
+            return Document::Follow {
+                receiver: Box::new(receiver),
+                rest: Box::new(standard(&Head::AfterReceiver, &parts, &arguments, false)),
+            };
+        }
         Some(receiver) => (None, Head::Receiver(Rc::new(receiver))),
         None => (None, Head::Nothing),
     };
-    let sent = if arguments.iter().any(Argument::hugs) {
+    let sent = if hugs {
         let mut alternatives = Vec::new();
         let one_line = standard(&head, &parts, &arguments, false);
         if !forces_break(&one_line) {
@@ -718,6 +729,7 @@ fn block_frame(parts: &BlockParts, forced: bool) -> Document {
     ));
     frame.push(soft_line());
     frame.push(text("]"));
+    frame.push(Document::BlockEnd);
     group(concat(frame))
 }
 
@@ -775,16 +787,12 @@ fn is_text(document: &Document) -> bool {
     true
 }
 
-/// Whether `document`, sent a message, may end on a line of its own: it
-/// holds a line break whatever the width, or a message that hugs its blocks
-/// when it does not fit. Its messages are then decided on its last line, as
-/// rule 13 decides the keywords after a `]`; measured as part of one line
-/// with them, it would count as written flat and push them onto continuation
-/// lines while it hugs anyway.
-fn breaks_by_itself(document: &Document) -> bool {
-    if forces_break(document) {
-        return true;
-    }
+/// Whether `document`, laid out, may end on a block's `]` that it opens at
+/// a line end when it does not fit: it holds a receiver block or a message
+/// hugging its blocks, each behind a `Choice`. A message sent to it is then
+/// decided where it ends (`Document::Follow`); measured as one line with
+/// it, the message would count it as written flat.
+fn may_end_on_a_block(document: &Document) -> bool {
     let mut pending = vec![document];
     while let Some(document) = pending.pop() {
         match document {
@@ -792,6 +800,10 @@ fn breaks_by_itself(document: &Document) -> bool {
             Document::Indent(_, content) | Document::Group(content) => pending.push(content),
             Document::Shared(content) => pending.push(content),
             Document::Concat(parts) => pending.extend(parts),
+            Document::Follow { receiver, rest } => {
+                pending.push(receiver);
+                pending.push(rest);
+            }
             _ => {}
         }
     }
@@ -812,7 +824,12 @@ fn forces_break(document: &Document) -> bool {
             Document::Shared(content) => pending.push(content),
             Document::Concat(parts) => pending.extend(parts),
             Document::Choice(alternatives) => pending.extend(alternatives.first()),
+            Document::Follow { receiver, rest } => {
+                pending.push(receiver);
+                pending.push(rest);
+            }
             Document::Text(_)
+            | Document::BlockEnd
             | Document::Verbatim(_)
             | Document::Shifted { .. }
             | Document::Line

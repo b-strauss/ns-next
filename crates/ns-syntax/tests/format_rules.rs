@@ -424,6 +424,66 @@ fn rule_13_blocks_hug_after_a_receiver_that_hugs_its_own() {
     assert_eq!(formatted(&input), expected);
 }
 
+/// A message follows its receiver's last line only when that line ends on
+/// a block's `]` the receiver opened at a line end: after a receiver broken
+/// by the keyword rule, the outer level breaks first, whether or not an
+/// argument of the receiver holds a block.
+#[test]
+fn rule_12_a_message_follows_only_a_receiver_that_ends_on_a_broken_block() {
+    let input = in_method(indoc! {"
+        (someReceiver withAVeryLongSelector: argumentNumberOne and: argumentNumberTwo and: (x ifTrue: [1] ifFalse: [2]) andMore: yy) printString.
+        (someReceiver withAVeryLongSelector: argumentNumberOne and: argumentNumberTwo and: argumentThree andMore: yyyyyy) printString.
+        transcript show: ([array replaceFrom: 1 to: 2 with: {1} startingAt: 1] on: kernel ArgumentError do: [:error | error argument]) printString; newLine.
+        transcript show: ([array replaceFrom: 1 to: 2 with: {1} startingAt: 1] on: kernel ArgumentError do: [:error | error argument. error foo]) printString; newLine
+    "});
+    let expected = method_text(indoc! {"
+        (someReceiver withAVeryLongSelector: argumentNumberOne
+            and: argumentNumberTwo
+            and: (x ifTrue: [1] ifFalse: [2])
+            andMore: yy)
+            printString.
+        (someReceiver withAVeryLongSelector: argumentNumberOne
+            and: argumentNumberTwo
+            and: argumentThree
+            andMore: yyyyyy)
+            printString.
+        transcript
+            show: ([array replaceFrom: 1 to: 2 with: {1} startingAt: 1] on: kernel ArgumentError
+                do: [:error | error argument])
+                printString;
+            newLine.
+        transcript
+            show: ([array replaceFrom: 1 to: 2 with: {1} startingAt: 1] on: kernel ArgumentError
+                do: [:error |
+                  error argument.
+                  error foo.
+                ]) printString;
+            newLine.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// Block arguments hug after a receiver broken by the keyword rule, as
+/// after any other: only the parts outside the block bodies must fit.
+#[test]
+fn rule_13_blocks_hug_after_a_receiver_broken_by_the_keyword_rule() {
+    let input = in_method(
+        "(someReceiver withAVeryLongSelector: argumentNumberOne and: argumentNumberTwo and: argumentThree andMore: yy) ifTrue: [a foo. b bar] ifFalse: [c foo]",
+    );
+    let expected = method_text(indoc! {"
+        (someReceiver withAVeryLongSelector: argumentNumberOne
+            and: argumentNumberTwo
+            and: argumentThree
+            andMore: yy) ifTrue: [
+          a foo.
+          b bar.
+        ] ifFalse: [
+          c foo.
+        ].
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
 /// A receiver block too long for one line opens at the line end even with
 /// one statement, and its messages follow its `]` (rule 15), the blocks of
 /// a keyword message hugging there.
