@@ -132,6 +132,7 @@ mod tests {
             mutability,
             initializer: None,
             lazy: false,
+            access_before_lazy: false,
             simultaneous: false,
             comments: Vec::new(),
             span: Span::new(0, 0),

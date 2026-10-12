@@ -32,17 +32,6 @@ pub(super) fn module(module: &Module) -> Document {
 
 fn class_declaration(class: &ClassDeclaration) -> Document {
     let mut parts = vec![class_header(class)];
-    // The `<:` chain stands outside the header's alternatives: whichever
-    // the header takes, the chain breaks on its own when it is too long.
-    if !class.mixin_applications.is_empty() {
-        let mut chain = Vec::new();
-        for clause in &class.mixin_applications {
-            chain.push(line());
-            chain.push(text("<: "));
-            chain.push(superclass_clause(clause));
-        }
-        parts.push(group(indent(CONTINUATION, concat(chain))));
-    }
     let instance_side = &class.instance_side;
     if instance_side.delimiters.is_none() {
         // A mixin application ended by `.` has no body at all.
@@ -65,9 +54,11 @@ fn class_declaration(class: &ClassDeclaration) -> Document {
     concat(parts)
 }
 
-/// `[access] class Name [type parameters] [factory] = [superclass]`, in
-/// the first of three layouts whose first line fits: all on one line;
-/// broken before `=`; every factory keyword on its own line as well.
+/// `[access] class Name [type parameters] [factory] = [superclass] [<: …]`,
+/// broken outside in: in the first of three layouts whose first line fits
+/// -- all on one line; broken before `=`; every factory keyword on its own
+/// line as well -- and, once broken before `=`, the `<:` chain on the `=`
+/// line while that fits, else before each `<:`.
 fn class_header(class: &ClassDeclaration) -> Document {
     let mut lead = format!("{}class {}", access(class.access), class.name.name);
     if let Some(type_parameters) = &class.type_parameters {
@@ -91,6 +82,15 @@ fn class_header(class: &ClassDeclaration) -> Document {
             parts.push(text(" "));
             parts.push(superclass_clause(superclass));
         }
+        if !class.mixin_applications.is_empty() {
+            let mut chain = Vec::new();
+            for clause in &class.mixin_applications {
+                chain.push(line());
+                chain.push(text("<: "));
+                chain.push(superclass_clause(clause));
+            }
+            parts.push(group(concat(chain)));
+        }
         concat(parts)
     };
     let mut pattern_line = lead.clone();
@@ -110,7 +110,7 @@ fn class_header(class: &ClassDeclaration) -> Document {
         indent(CONTINUATION, concat(vec![hard_line(), equals_superclass()])),
     ]);
     let mut alternatives = vec![one_line, broken_before_equals];
-    if factory.len() > 1 {
+    if matches!(class.factory, Some(MessagePattern::Keyword { .. })) {
         let mut keywords = Vec::new();
         for part in &factory {
             keywords.push(hard_line());
@@ -301,11 +301,12 @@ pub(super) fn parameter(parameter: &Parameter) -> String {
 
 /// A slot without its period: `[lazy] [access] name [<Type>] [= value]`.
 pub(super) fn slot(slot: &SlotDeclaration) -> Document {
-    let mut head = String::new();
-    if slot.lazy {
-        head.push_str("lazy ");
-    }
-    head.push_str(access(slot.access));
+    let head_modifiers = match (slot.lazy, slot.access_before_lazy) {
+        (true, true) => format!("{}lazy ", access(slot.access)),
+        (true, false) => format!("lazy {}", access(slot.access)),
+        (false, _) => access(slot.access).to_string(),
+    };
+    let mut head = head_modifiers;
     head.push_str(&slot.name.name);
     if let Some(type_annotation) = &slot.type_annotation {
         head.push_str(&after_name(type_annotation));
@@ -381,13 +382,14 @@ pub(super) fn type_text(annotation: &TypeAnnotation) -> String {
     written
 }
 
-/// Whether one space separates `previous` from `next` inside a type: after
-/// a `,` and a keyword; around `|`, `<:` and every other binary operator
-/// (`::` in a `where` clause); inside a `where` clause's braces and before
-/// them and a `(`; before the `<` of a group that follows a name or a `]`;
-/// before a block type's second `:`; around a `where` clause's `::`, two
-/// `:` tokens kept together -- and wherever the two written together would
-/// lex as something else (`> >` is not `>>`).
+/// Whether one space separates `previous` from `next` inside a type. The
+/// annotation keeps no whitespace, so the spacing is decided here, from
+/// the tokens alone: rule 20's spaces, the spacing expressions have (after
+/// a keyword, around a binary operator, a `where` clause's `::` and its
+/// braces), and a space wherever the two written together would lex as
+/// something else, so a reprinted type always reads back the same. The
+/// token before `previous` tells the second `:` of `::` from a block
+/// type's `:`.
 fn spaced(before_previous: Option<&TypeToken>, previous: &TypeToken, next: &TypeToken) -> bool {
     use TokenKind::{
         Bar, BinarySelector, Colon, DoubleBar, Identifier, Keyword, LeftBrace, LeftBracket,

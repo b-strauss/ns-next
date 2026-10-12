@@ -329,7 +329,8 @@ fn rule_24_a_mixin_application_without_a_body_is_one_line() {
 fn rule_24_a_long_mixin_application_breaks_before_each_mixin_operator() {
     let input = "class Combined = SomeRatherLongSuperclassName <: FirstMixinWithAVeryLongName <: SecondMixinWithAnEvenLongerName.";
     let expected = indoc! {"
-        class Combined = SomeRatherLongSuperclassName
+        class Combined
+            = SomeRatherLongSuperclassName
             <: FirstMixinWithAVeryLongName
             <: SecondMixinWithAnEvenLongerName.
     "};
@@ -366,11 +367,14 @@ fn rule_23_the_first_line_ending_decides_every_line_ending() {
         formatted(input),
         "class A = () (\r\n  public one = (\r\n    ^1.\r\n  )\r\n)\r\n"
     );
-    assert_eq!(LineEnding::of("a\rb\r\n"), LineEnding::Cr);
-    assert_eq!(LineEnding::of("a\r\nb\n"), LineEnding::CrLf);
-    assert_eq!(LineEnding::of("a\nb\r\n"), LineEnding::Lf);
-    assert_eq!(LineEnding::of("a"), LineEnding::Lf);
-    assert_eq!(LineEnding::Cr.as_str(), "\r");
+    assert_eq!(LineEnding::of("a\rb\r\n"), LineEnding::CarriageReturn);
+    assert_eq!(
+        LineEnding::of("a\r\nb\n"),
+        LineEnding::CarriageReturnLineFeed
+    );
+    assert_eq!(LineEnding::of("a\nb\r\n"), LineEnding::LineFeed);
+    assert_eq!(LineEnding::of("a"), LineEnding::LineFeed);
+    assert_eq!(LineEnding::CarriageReturn.as_str(), "\r");
 }
 
 #[test]
@@ -379,7 +383,119 @@ fn print_module_ends_with_one_line_ending() {
         panic!("parses");
     };
     assert_eq!(
-        ns_syntax::print_module(&module, LineEnding::CrLf),
+        ns_syntax::print_module(&module, LineEnding::CarriageReturnLineFeed),
         "class A = () ()\r\n"
     );
+}
+
+#[test]
+fn rule_3_a_single_factory_keyword_goes_on_its_own_line() {
+    let input = "class AVeryLongClassNameThatTakesUpQuiteSomeSpaceInTheHeader usingPlatformWithAVeryLongKeyword: platformParameterName = Object ()()";
+    let expected = indoc! {"
+        class AVeryLongClassNameThatTakesUpQuiteSomeSpaceInTheHeader
+            usingPlatformWithAVeryLongKeyword: platformParameterName
+            = Object () ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_3_a_mixin_chain_stays_on_the_equals_line_while_it_fits() {
+    let input = "class Combined usingPlatform: platform ast: astModule = SomeRatherLongSuperclassName <: FirstMixin <: SecondMixin ()()";
+    let expected = indoc! {"
+        class Combined usingPlatform: platform ast: astModule
+            = SomeRatherLongSuperclassName <: FirstMixin <: SecondMixin () ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_3_a_mixin_chain_too_long_for_the_equals_line_breaks_before_each_operator() {
+    let input = "class Combined usingPlatform: platform = SomeRatherLongSuperclassName new <: FirstMixinWithAVeryLongName <: SecondMixinWithAnEvenLongerName ( | x = 1. | ) ()";
+    let expected = indoc! {"
+        class Combined usingPlatform: platform
+            = SomeRatherLongSuperclassName new
+            <: FirstMixinWithAVeryLongName
+            <: SecondMixinWithAnEvenLongerName (
+          |
+            x = 1.
+          |
+        ) ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_3_a_factory_keeps_its_return_type_and_where_clause() {
+    assert_eq!(
+        formatted("class Box new: value<E> ^<Box[E]> where {E <: Object :: nil} = () ()"),
+        "class Box new: value <E> ^<Box[E]> where { E <: Object :: nil } = () ()\n"
+    );
+    let input = "class BoxWithALongerName new: initialValueWithAVeryLongParameterName <E> ^<Box[E]> where { E <: Object :: nil } = Object new ()()";
+    let expected = indoc! {"
+        class BoxWithALongerName
+            new: initialValueWithAVeryLongParameterName <E> ^<Box[E]> where { E <: Object :: nil }
+            = Object new () ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_3_a_nested_class_header_breaks_at_its_indentation() {
+    let input = "class Outer = () ( class NewspeakPrettyPrinter usingPlatform: platform ast: astModule parser: commonParser metadata: mdModule = Object new ()() )";
+    let expected = indoc! {"
+        class Outer = () (
+          class NewspeakPrettyPrinter
+              usingPlatform: platform
+              ast: astModule
+              parser: commonParser
+              metadata: mdModule
+              = Object new () ()
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_5_an_explicit_protected_slot_keeps_its_modifier() {
+    let input = "class A = ( | protected count = 0. private name. | ) ()";
+    let expected = indoc! {"
+        class A = (
+          |
+            protected count = 0.
+            private name.
+          |
+        ) ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_24_a_lazy_slot_keeps_its_modifiers_in_written_order() {
+    let input = "class A = () ( public lazy first = 1. lazy private second = 2. lazy third = 3. )";
+    let expected = indoc! {"
+        class A = () (
+          public lazy first = 1.
+
+          lazy private second = 2.
+
+          lazy third = 3.
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_25_an_eventual_send_and_type_arguments_as_written() {
+    let input = "class A = () ( public m = ( target <-: ping. target <-: at: 1 put: 2. ^(Box)[Integer] new: Box[Integer] new ) )";
+    let expected = indoc! {"
+        class A = () (
+          public m = (
+            target <-: ping.
+            target <-: at: 1 put: 2.
+            ^(Box)[Integer] new: Box[Integer] new.
+          )
+        )
+    "};
+    assert_eq!(formatted(input), expected);
 }

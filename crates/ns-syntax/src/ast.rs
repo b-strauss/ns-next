@@ -207,6 +207,11 @@ pub struct SlotDeclaration {
     /// of its getter, not by the instance initializer. Never set on a header
     /// slot or a temporary, which the grammar gives no `lazy` form.
     pub lazy: bool,
+    /// A lazy slot's access modifier was written before `lazy` (`public
+    /// lazy x`), not after it (`lazy public x`): the written order, which
+    /// means nothing. `false` without an access modifier and on every slot
+    /// that is not lazy.
+    pub access_before_lazy: bool,
     /// §6.3.2: declared in a simultaneous slot clause, `|| ... ||`, whose
     /// initializers run as futures resolved at the clause's end
     /// (`docs/design/object-model.md`, "Simultaneous slots"). Never set on a

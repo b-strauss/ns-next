@@ -112,6 +112,7 @@ Module {
                         },
                     ),
                     lazy: false,
+                    access_before_lazy: false,
                     simultaneous: false,
                     comments: [],
                     span: Span {

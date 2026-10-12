@@ -693,6 +693,7 @@ impl<'a> Parser<'a> {
                 mutability,
                 initializer,
                 lazy: false,
+                access_before_lazy: false,
                 simultaneous: close == TokenKind::DoubleBar,
                 comments: Vec::new(),
                 span: start.merge(end),
@@ -1386,11 +1387,12 @@ impl<'a> Parser<'a> {
     }
 
     /// Consumes `lazy [accessModifier]` or `accessModifier lazy` and answers
-    /// the access modifier; the outer `None` means neither is there.
-    fn lazy_slot_modifiers(&mut self) -> Option<Option<AccessModifier>> {
+    /// the access modifier and whether it came first; `None` means neither
+    /// is there.
+    fn lazy_slot_modifiers(&mut self) -> Option<(Option<AccessModifier>, bool)> {
         if self.at_lazy_word(self.position) {
             self.bump(); // `lazy`
-            return Some(self.parse_access_modifier());
+            return Some((self.parse_access_modifier(), false));
         }
         if matches!(
             self.peek(),
@@ -1399,7 +1401,7 @@ impl<'a> Parser<'a> {
         {
             let access = self.parse_access_modifier();
             self.bump(); // `lazy`
-            return Some(access);
+            return Some((access, true));
         }
         None
     }
@@ -1410,7 +1412,7 @@ impl<'a> Parser<'a> {
     /// missing: the slot is left out, after its initializer is parsed.
     fn parse_lazy_slot_declaration(&mut self) -> Option<SlotDeclaration> {
         let start = self.current().span;
-        let access = self.lazy_slot_modifiers().flatten();
+        let (access, access_before_lazy) = self.lazy_slot_modifiers().unwrap_or((None, false));
         let name = self.declared_identifier("name a slot or a temporary");
         let type_annotation = self.take_type_annotation();
         let mutability = if self.eat(TokenKind::ColonColonEquals) {
@@ -1439,6 +1441,7 @@ impl<'a> Parser<'a> {
             mutability,
             initializer,
             lazy: true,
+            access_before_lazy,
             simultaneous: false,
             comments: Vec::new(),
             span: start.merge(end),

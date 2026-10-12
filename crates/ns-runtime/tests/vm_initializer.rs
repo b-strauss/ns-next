@@ -177,6 +177,7 @@ fn raw_slot_declaration(name: &str) -> Rc<ns_syntax::ast::SlotDeclaration> {
         mutability: ns_syntax::ast::SlotMutability::Immutable,
         initializer: None,
         lazy: false,
+        access_before_lazy: false,
         simultaneous: false,
         comments: Vec::new(),
         span: Span::new(0, 0),

@@ -17,34 +17,32 @@ const WIDTH: u32 = 100;
 
 /// How the printer ends its lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    clippy::min_ident_chars,
-    reason = "`Lf` and `Cr` are the names line endings go by"
-)]
 pub enum LineEnding {
-    Lf,
-    CrLf,
-    Cr,
+    LineFeed,
+    CarriageReturnLineFeed,
+    CarriageReturn,
 }
 
 impl LineEnding {
-    /// The first line ending of `source`, `Lf` when it has none.
+    /// The first line ending of `source`, `LineFeed` when it has none.
     pub fn of(source: &str) -> LineEnding {
         let bytes = source.as_bytes();
         match bytes.iter().position(|byte| matches!(byte, b'\n' | b'\r')) {
-            Some(index) if bytes[index] == b'\n' => LineEnding::Lf,
-            Some(index) if bytes.get(index + 1) == Some(&b'\n') => LineEnding::CrLf,
-            Some(_) => LineEnding::Cr,
-            None => LineEnding::Lf,
+            Some(index) if bytes[index] == b'\n' => LineEnding::LineFeed,
+            Some(index) if bytes.get(index + 1) == Some(&b'\n') => {
+                LineEnding::CarriageReturnLineFeed
+            }
+            Some(_) => LineEnding::CarriageReturn,
+            None => LineEnding::LineFeed,
         }
     }
 
     /// The characters that end a line.
     pub fn as_str(self) -> &'static str {
         match self {
-            LineEnding::Lf => "\n",
-            LineEnding::CrLf => "\r\n",
-            LineEnding::Cr => "\r",
+            LineEnding::LineFeed => "\n",
+            LineEnding::CarriageReturnLineFeed => "\r\n",
+            LineEnding::CarriageReturn => "\r",
         }
     }
 }
