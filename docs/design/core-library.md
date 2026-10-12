@@ -3489,11 +3489,14 @@ The views and `StringBuilder` are ordinary Newspeak classes whose state is a
 `ByteArray` slot; only `ByteArray` is a builtin. A view's access is one
 mirror leaf on its `ByteArray`, the width, the signedness and the byte
 order in the selector, so no access branches on them, and nothing outside
-`ByteArray` needs a heap format, an image tag or a mover's attention
-(decided with the user on 2026-10-12, against typed arrays as builtin heap
-objects, which would forbid a view over an existing `ByteArray`, and
-against leaves that take the view itself, which would give Rust the layout
-of a Newspeak class).
+`ByteArray` needs a heap format or a mover's attention (decided with the
+user on 2026-10-12, against typed arrays as builtin heap objects, which
+would forbid a view over an existing `ByteArray`, and against leaves that
+take the view itself, which would give Rust the layout of a Newspeak
+class). They are no builtins either: an image names them, their private
+classes and the levels `IndexedCollection` adds by where they are
+declared, through the shipped-class naming that is built first ("What the
+plan must handle" below).
 
 #### `ByteArray` in the heap, the movers and the image
 
@@ -3546,7 +3549,9 @@ own bytes -- the length bounded by `bounded_count` and by the bytes left
 the decoder places the data at its own address's alignment. `inspect`
 reads the record, a truncated or overlong one is a `DecodeError`, and
 `tests/opcode_tags.rs` pins both tags (`image-format.md`). A view or a
-`StringBuilder` is an ordinary instance whose slot holds the record.
+`StringBuilder` is an ordinary instance whose slot holds the record, its
+class named as every shipped class is ("What the plan must handle"
+below).
 
 **As a builtin class** `BuiltinClass::ByteArray` is appended to `ALL` and
 reaches the list `types.rs` keeps: `kernel_class_name`, the hierarchy
@@ -3771,6 +3776,68 @@ bytes through a scavenge, a compaction and the move stress mode in all four
 positions; `tests/image.rs` round-trips a `ByteArray` and refuses a
 truncated or overlong record without a panic. The documentation, the
 formatting and the accessor tests cover the new members as they stand.
+
+#### What the plan must handle
+
+Found on 2026-10-12 while the plan was being prepared, in the code as it
+stands; the plan is written after the shipped-class naming below is built.
+
+- **An image names every shipped class by where it is declared** (decided
+  with the user on 2026-10-12): a new class reference names the shipped
+  module and the chain of nested class names, and a level a `<:` clause
+  adds by its position, which the loader resolves before the graph is
+  decoded, as it resolves platform paths, so the decoder still runs no
+  code. It replaces the builtin class tags, `MIXIN_BUILTIN`,
+  `HASHED_BUILTIN_CLASS` and the platform paths of classes on the wire;
+  platform paths stay for the shipped instances, the program's own classes
+  stay `CLASS_MODULE` and `CLASS_MODULE_LEVEL`, and `Top` is refused by
+  name. It is its own design and plan, built before this sub-project
+  ([image-format.md](image-format.md); [OPEN-WORK.md](../OPEN-WORK.md),
+  "Next"). Without it a program holding a `Float32Array`, a `DataView` or
+  a `StringBuilder` could not be written to an image: a shipped class is
+  named by a builtin tag or by a platform path over public members, and a
+  plain kernel class has neither, a private one never. Making the sixteen
+  classes builtins was rejected: a builtin is a class Rust needs a handle
+  on, not a class the image needs a name for.
+- **The bootstrap takes only builtins today.** `check_kernel_shape`
+  (`interpreter/kernel.rs`) asserts one nested class per builtin and a
+  superclass clause that is a bare kernel name; the plan lets `Kernel.ns`
+  declare ordinary classes beside them (`IndexedCollection`,
+  `StringBuilder`, `TypedArray` and its ten classes, `DataView` and its
+  two), built lazily by their nested-class accessors as any class is, and
+  lets a builtin's clause carry `<:` clauses naming a kernel mixin.
+  `fill_builtin_classes` then builds each such level as
+  `nested::build_applied_levels` builds one -- the mixin's application
+  over the level below, a class object made with `new_applied_level` --
+  applies the builtin's own mixin over the topmost level, links the
+  superclass to it, passes the levels to
+  `give_existing_class_objects_metaclasses`, and `wire_kernel_in` gives
+  each level and its metaclass the kernel's lexical context, as it does
+  for the kernel's own `Value` level. The hierarchy test walks through the
+  level.
+- **`Primitive` stays two bytes** (`resolve.rs`'s
+  `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
+  generic element access of the typed arrays and `DataView` is one
+  family whose payload packs the element kind, the byte order, the
+  indexing (element or byte position) and read or write into one `u8`,
+  not an enum of four fields.
+- **The movers realign by word index.** An allocation's fields are a range
+  of word indices into the space, whose base is page-aligned, so the data
+  begin at the first field index rounded up to a multiple of four; the
+  scavenger's `copy` and the compaction's slide know the old and the new
+  header index of each object, and the move stress mode shifts a whole
+  region by one distance, so after its bulk copy it walks the region and
+  realigns each `AlignedBytes` object from its old index, the new one less
+  the shift.
+- **An image's slots are untrusted.** A crafted record can give a view a
+  `bytes` slot that holds no `ByteArray`, or a `StringBuilder` counts that
+  disagree with its data: a leaf that meets one declines, and the failure
+  block signals an `ArgumentError`, never a panic.
+- **Overrides keep the failure paths.** `Array`'s and `ByteArray`'s leaf
+  methods fall back to `super`, which now reaches `IndexedCollection`
+  before `Collection`, so the mixin declares none of `at:`, `at:put:`,
+  `size`, `do:`, `=`, `hash` and `printString`, and
+  `goldens/library/builtin-subclass/` keeps its output.
 
 ## Decisions
 

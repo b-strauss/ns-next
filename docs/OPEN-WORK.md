@@ -36,8 +36,16 @@ Each has its own design and plan; the fifth sub-project is next --
 `ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
 arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
 [core-library.md](design/core-library.md), "Planned: sub-project 5,
-`ByteArray`, `StringBuilder` and the views") but has no plan yet, so the
-next session starts by writing one. The decisions
+`ByteArray`, `StringBuilder` and the views") but has no plan yet. It
+waits for **the naming of shipped classes in the image** (decided with the
+user on 2026-10-12): an image names every shipped class -- builtin,
+kernel or shipped-module class, and each level a `<:` clause adds -- by
+its module and its chain of nested class names, resolved by the loader
+before the graph is decoded, in place of the builtin class tags,
+`MIXIN_BUILTIN`, `HASHED_BUILTIN_CLASS` and the platform paths of classes
+(core-library.md, "What the plan must handle"). It has neither design nor
+plan yet, so the next session designs it, plans it and builds it, and
+then writes sub-project 5's plan. The decisions
 and the scope are
 [core-library.md](design/core-library.md), "Planned: the kernel completed
 to Primordial Soup's core API".
