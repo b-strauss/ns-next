@@ -803,8 +803,9 @@ impl<'a> Parser<'a> {
     /// the caller that parses its kind when it is another, and reported when
     /// no message follows at all. The send is parsed as an ordinary one: there
     /// are no actors to send it to (`docs/design/frontend.md`, "What is
-    /// parsed and dropped"). Answers whether the operator was consumed for a
-    /// message of this kind, which then records `eventual`.
+    /// kept but ignored, and what a reprint drops"). Answers whether the
+    /// operator was consumed for a message of this kind, which then records
+    /// `eventual`.
     fn eat_eventual_send_operator(&mut self, message_follows: impl Fn(&Self) -> bool) -> bool {
         if !self.at(TokenKind::EventualSendOperator) {
             return false;
