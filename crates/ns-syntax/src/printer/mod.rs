@@ -46,6 +46,17 @@ impl LineEnding {
 
 /// `module` printed in the one layout this printer has
 /// (`docs/design/formatting.md`), ending with one line ending.
+///
+/// It needs no source, but it writes each comment where its `anchor` and
+/// `placement` say, so a tree the parser did not make reads back the same
+/// only when they are what the attachment would answer for the printed
+/// text (`attach.rs`). An `After` comment keeps its owner only as
+/// `EndOfLine` or `Inline`: as `OwnLine` (every placement on a
+/// `Module::without_positions` tree) it is printed on a line of its own
+/// and read back `Before` the next node. Two `OwnLine` `///` comments on
+/// consecutive nodes with no token between them are read back as one
+/// block. A tree `parse` answered reads back with every comment where it
+/// was.
 pub fn print_module(module: &Module, line_ending: LineEnding) -> String {
     let document = declarations::module(module);
     let mut printed = layout(&document, WIDTH, line_ending.as_str());

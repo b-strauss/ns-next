@@ -375,9 +375,6 @@ fn cascaded(cascade: &Cascade, tokens: &mut OwnTokens) -> Document {
 
 /// A message without the receiver it is sent to, with its comments.
 pub(super) fn message(message: &MessageSend) -> Document {
-    if matches!(message.selector, Selector::Keyword(_)) {
-        return keyword_message(None, message);
-    }
     let mut tokens = OwnTokens::new(&message.comments);
     let mut parts = vec![before(&message.comments)];
     parts.extend(eventual_prefix(message, &mut tokens));
@@ -394,12 +391,13 @@ pub(super) fn message(message: &MessageSend) -> Document {
                 ));
             }
         }
-        Selector::Binary(selector) | Selector::Keyword(selector) => {
+        Selector::Binary(selector) => {
             parts.push(tokens.next());
             parts.push(text(format!("{space}{selector} ")));
             parts.extend(message.arguments.iter().map(expression));
             tokens.child();
         }
+        Selector::Keyword(_) => return keyword_message(None, message),
     }
     parts.push(tokens.end());
     parts.push(after(&message.comments));

@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 /// What the printer lowers a module to before it decides where lines break.
-#[derive(Debug, Clone, PartialEq)]
+/// It is as deep as the source it is lowered from, so it derives no
+/// `Clone`, `PartialEq` or `Debug`, each of which would recurse per level.
 pub(crate) enum Document {
     /// Text without a line break.
     Text(String),
@@ -684,9 +685,15 @@ fn fits(
                 (command.indentation, command.mode, document)
             }
         };
+        // Lines written one below the other end the measured line at their
+        // first, as a line break inside a `Verbatim` does.
+        let mut ends_after = false;
         let measured = match document {
             Document::Text(content) | Document::Verbatim(content) => content.as_str(),
-            Document::Shifted { lines, .. } => lines.first().map_or("", String::as_str),
+            Document::Shifted { lines, .. } => {
+                ends_after = lines.len() > 1;
+                lines.first().map_or("", String::as_str)
+            }
             Document::Trailing(content) if placed && !fresh_line => {
                 deferred += content.chars().count();
                 continue;
@@ -781,7 +788,7 @@ fn fits(
         }
         let (line, ends) = match first_line(measured) {
             Some(line) => (line, true),
-            None => (measured, false),
+            None => (measured, ends_after),
         };
         let mut width = line.chars().count();
         if !line.trim().is_empty() {
@@ -1113,6 +1120,26 @@ mod tests {
             },
         ]));
         assert_eq!(layout(&document, 100, "\n"), "a\n(* b\nc *)");
+    }
+
+    /// Lines written one below the other end the measured line at the
+    /// first: what follows them stands on their last line, not on the
+    /// group's.
+    #[test]
+    fn a_measurement_ends_at_the_first_line_of_shifted_lines() {
+        let document = concat(vec![
+            group(concat(vec![text("a"), line(), text("b")])),
+            text(" "),
+            Document::Shifted {
+                lines: vec!["(* x".to_string(), "y *)".to_string()],
+                column: 0,
+            },
+            text("z".repeat(20)),
+        ]);
+        assert_eq!(
+            layout(&document, 12, "\n"),
+            format!("a b (* x\n    y *){}", "z".repeat(20))
+        );
     }
 
     /// A fresh line starts the next text on a line of its own: a line

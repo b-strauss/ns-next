@@ -408,6 +408,9 @@ pub struct AttachedComment {
     /// difference to where it prints `(*`. `Line`: 0.
     pub column: u32,
     pub anchor: Anchor,
+    /// Where the comment stood on its line, which the printer keeps: an
+    /// `After` comment printed on a line of its own (`OwnLine`) is read
+    /// back as leading the next node (`print_module`).
     pub placement: Placement,
     pub span: Span,
 }

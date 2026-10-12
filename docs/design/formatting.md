@@ -442,7 +442,16 @@ linear in the output.
 
 - `ns_syntax::print_module(&Module, LineEnding) -> String` -- a module
   printed in the one layout, ending with one line ending. It needs no
-  source: the entry the runtime uses for a tree it built.
+  source: the entry the runtime uses for a tree it built. Such a tree reads
+  back the same only when each comment's `anchor` and `placement` are what
+  `attach.rs` would answer for the printed text: an `After` comment keeps
+  its owner only as `EndOfLine` or `Inline` -- as `OwnLine`, the placement
+  `Module::without_positions` gives every comment, it is printed on a line
+  of its own and read back `Before` the next node -- and two `OwnLine`
+  `///` comments on consecutive nodes with no token between them are read
+  back as one block. `ClassDeclaration::class_comment` compares spans, so
+  it can miss the class comment of a tree without positions. A tree
+  `parse` answered reads back with every comment where it was.
 - `ns_syntax::format(&str) -> Result<String, Vec<Diagnostic>>` -- parse,
   take the line ending from the source (`LineEnding::of`), print. A source
   with any error is refused with its diagnostics and never printed; a

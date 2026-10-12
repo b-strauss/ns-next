@@ -10,7 +10,7 @@ use super::comments::{
 use super::document::{concat, group, hard_line, indent, line, text, Document};
 use super::expressions::{as_written, expression, message, statement};
 use crate::ast::{
-    AccessModifier, ClassBody, ClassDeclaration, CodeBody, Member, MessagePattern,
+    AccessModifier, AttachedComment, ClassBody, ClassDeclaration, CodeBody, Member, MessagePattern,
     MethodDeclaration, Module, Parameter, SlotDeclaration, SlotMutability, SuperclassClause,
     SuperclassPrefix, TypeAnnotation, TypeToken,
 };
@@ -361,7 +361,7 @@ fn is_empty(document: &Document) -> bool {
     true
 }
 
-fn member_comments(member: &Member) -> &[crate::ast::AttachedComment] {
+fn member_comments(member: &Member) -> &[AttachedComment] {
     match member {
         Member::Class(class) => &class.comments,
         Member::LazySlot(lazy_slot) => &lazy_slot.comments,
