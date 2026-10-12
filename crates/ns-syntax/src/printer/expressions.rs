@@ -167,7 +167,16 @@ struct Run {
 /// breaks first.
 fn send_chain(send: &Send) -> Document {
     let (links, start) = send.receiver_chain();
-    let mut receiver = (!start.synthesized).then(|| receiver_head(expression(start)));
+    let mut receiver = (!start.synthesized).then(|| {
+        let written = expression(start);
+        // A receiver block breaks when it does not fit, whatever follows
+        // it: its messages are decided on its `]` line (rule 15).
+        if matches!(start.kind, ExpressionKind::Block(_)) {
+            Document::Choice(vec![written])
+        } else {
+            receiver_head(written)
+        }
+    });
     let mut run: Option<Run> = None;
     for index in (0..links.len()).rev() {
         let message = &links[index].message;
@@ -260,7 +269,7 @@ fn finish_run(receiver: Option<Document>, run: Option<Run>) -> Option<Document> 
         return receiver;
     }
     let Some(last_breaking) = run.links.iter().rposition(forces_break) else {
-        let receiver_breaks = receiver.as_ref().is_some_and(forces_break);
+        let receiver_breaks = receiver.as_ref().is_some_and(breaks_by_itself);
         let mut parts = Vec::new();
         parts.extend(receiver);
         return Some(if receiver_breaks {
@@ -508,7 +517,7 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
         })
         .collect();
     let (written_first, head) = match receiver {
-        Some(receiver) if forces_break(&receiver) => (Some(receiver), Head::AfterReceiver),
+        Some(receiver) if breaks_by_itself(&receiver) => (Some(receiver), Head::AfterReceiver),
         Some(receiver) => (None, Head::Receiver(Rc::new(receiver))),
         None => (None, Head::Nothing),
     };
@@ -764,6 +773,29 @@ fn is_text(document: &Document) -> bool {
         }
     }
     true
+}
+
+/// Whether `document`, sent a message, may end on a line of its own: it
+/// holds a line break whatever the width, or a message that hugs its blocks
+/// when it does not fit. Its messages are then decided on its last line, as
+/// rule 13 decides the keywords after a `]`; measured as part of one line
+/// with them, it would count as written flat and push them onto continuation
+/// lines while it hugs anyway.
+fn breaks_by_itself(document: &Document) -> bool {
+    if forces_break(document) {
+        return true;
+    }
+    let mut pending = vec![document];
+    while let Some(document) = pending.pop() {
+        match document {
+            Document::Choice(_) => return true,
+            Document::Indent(_, content) | Document::Group(content) => pending.push(content),
+            Document::Shared(content) => pending.push(content),
+            Document::Concat(parts) => pending.extend(parts),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether `document` holds a line break whatever the width, outside any

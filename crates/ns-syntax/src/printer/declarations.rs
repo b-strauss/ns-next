@@ -175,7 +175,10 @@ fn class_header(class: &ClassDeclaration, tokens: &mut OwnTokens) -> Document {
     Document::Choice(alternatives)
 }
 
-/// `= [superclass] [<: mixin …]`, the `=` counted already.
+/// `= [superclass] [<: mixin …]`, the `=` counted already. The `<:` chain is
+/// the outer level: it stays on the `=` line when all of it fits there, else
+/// every `<:` starts a line of its own, and only then is a clause's message
+/// that is still too long for its line broken.
 fn equals_superclass(class: &ClassDeclaration, tokens: &mut OwnTokens) -> Document {
     let mut parts = vec![text("=")];
     if let Some(superclass) = &class.superclass {
@@ -183,18 +186,31 @@ fn equals_superclass(class: &ClassDeclaration, tokens: &mut OwnTokens) -> Docume
         parts.push(clause(superclass));
         tokens.child();
     }
-    if !class.mixin_applications.is_empty() {
-        let mut chain = Vec::new();
-        for mixin in &class.mixin_applications {
-            chain.push(tokens.next());
-            chain.push(line());
-            chain.push(text("<: "));
-            chain.push(clause(mixin));
-            tokens.child();
-        }
-        parts.push(group(concat(chain)));
+    if class.mixin_applications.is_empty() {
+        return concat(parts);
     }
-    concat(parts)
+    let mut links = Vec::new();
+    for mixin in &class.mixin_applications {
+        let comments = tokens.next();
+        let written = Rc::new(concat(vec![text("<: "), clause(mixin)]));
+        links.push((Rc::new(comments), written));
+        tokens.child();
+    }
+    let shared = |document: &Rc<Document>| Document::Shared(Rc::clone(document));
+    let mut on_the_line = Vec::new();
+    let mut broken = Vec::new();
+    for (comments, written) in &links {
+        on_the_line.extend([shared(comments), line(), shared(written)]);
+        broken.extend([shared(comments), hard_line(), shared(written)]);
+    }
+    let head = Rc::new(concat(parts));
+    // Measured flat, the first alternative is the whole `=` line; a comment
+    // that forces a break still breaks its group, which then reads as the
+    // second.
+    Document::Choice(vec![
+        concat(vec![shared(&head), group(concat(on_the_line))]),
+        concat(vec![shared(&head), concat(broken)]),
+    ])
 }
 
 /// A superclass or mixin clause with its comments.

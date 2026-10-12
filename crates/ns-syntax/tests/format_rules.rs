@@ -394,6 +394,61 @@ fn rule_13_a_message_after_a_hugged_block_is_measured_again() {
     assert_eq!(formatted(&input), expected);
 }
 
+/// A receiver that hugs a block of its own because it does not fit ends on
+/// its `]` line, and the messages sent to it are decided there: the blocks
+/// of a keyword message hug after `])`, a unary message follows it.
+#[test]
+fn rule_13_blocks_hug_after_a_receiver_that_hugs_its_own() {
+    let input = in_method(indoc! {"
+        ((rightCursor > right) or: [(leftCursor <= middle) and: [lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor)]]) ifTrue: [target at: targetCursor put: (source at: leftCursor). leftCursor:: leftCursor + 1] ifFalse: [target at: targetCursor put: (source at: rightCursor). rightCursor:: rightCursor + 1].
+        ((rightCursor > right) or: [(leftCursor <= middle) and: [lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor)]]) not
+    "});
+    let expected = method_text(indoc! {"
+        ((rightCursor > right) or: [
+          (leftCursor <= middle) and: [
+            lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor).
+          ].
+        ]) ifTrue: [
+          target at: targetCursor put: (source at: leftCursor).
+          leftCursor:: leftCursor + 1.
+        ] ifFalse: [
+          target at: targetCursor put: (source at: rightCursor).
+          rightCursor:: rightCursor + 1.
+        ].
+        ((rightCursor > right) or: [
+          (leftCursor <= middle) and: [
+            lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor).
+          ].
+        ]) not.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// A receiver block too long for one line opens at the line end even with
+/// one statement, and its messages follow its `]` (rule 15), the blocks of
+/// a keyword message hugging there.
+#[test]
+fn rule_15_messages_follow_a_receiver_block_that_does_not_fit() {
+    let input = in_method(indoc! {"
+        [someObject withAVeryLongSelector: argumentNumberOne and: argumentNumberTwo and: argumentThreeee] value.
+        [:each | each withAVeryLongSelector: argumentNumberOne and: argumentNumberTwo and: argumentThree] value: 3 value: [a foo. b bar]
+    "});
+    let expected = method_text(indoc! {"
+        [
+          someObject withAVeryLongSelector: argumentNumberOne
+              and: argumentNumberTwo
+              and: argumentThreeee.
+        ] value.
+        [:each |
+          each withAVeryLongSelector: argumentNumberOne and: argumentNumberTwo and: argumentThree.
+        ] value: 3 value: [
+          a foo.
+          b bar.
+        ].
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
 /// Every alternative of a message with block arguments holds the blocks'
 /// bodies; nesting such messages must not multiply them.
 #[test]
@@ -837,6 +892,37 @@ fn rule_3_a_mixin_chain_stays_on_the_equals_line_while_it_fits() {
             = SomeRatherLongSuperclassName <: FirstMixin <: SecondMixin () ()
     "};
     assert_eq!(formatted(input), expected);
+}
+
+/// Outside in: the `<:` chain breaks before the superclass message does,
+/// and that message breaks only when its own line is still too long -- a
+/// continuation line of exactly 100 columns stays whole.
+#[test]
+fn rule_3_the_mixin_chain_breaks_before_the_superclass_message() {
+    let input = indoc! {"
+        class Outer = () (
+        class Applied from: argument = Base withBase: (outer Outer evaluated: 'the superclass clause message here!' with: argument) <: First withFirst: (outer Outer evaluated: 'first' with: argument) () ()
+        class Wider from: argument = Base withBase: (outer Outer evaluated: 'the superclass clause message here!!' with: argument) <: First withFirst: (outer Outer evaluated: 'first' with: argument) () ()
+        )
+    "};
+    let expected = indoc! {"
+        class Outer = () (
+          class Applied from: argument
+              = Base withBase: (outer Outer evaluated: 'the superclass clause message here!' with: argument)
+              <: First withFirst: (outer Outer evaluated: 'first' with: argument) () ()
+
+          class Wider from: argument
+              = Base withBase: (outer Outer evaluated: 'the superclass clause message here!!'
+                  with: argument)
+              <: First withFirst: (outer Outer evaluated: 'first' with: argument) () ()
+        )
+    "};
+    let output = formatted(input);
+    assert_eq!(output, expected);
+    assert_eq!(
+        output.lines().nth(2).map(|line| line.chars().count()),
+        Some(100)
+    );
 }
 
 #[test]
