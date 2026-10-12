@@ -1,10 +1,7 @@
 //! The pretty printer: a module lowered to a [`Document`], then laid out.
 
+mod comments;
 mod declarations;
-#[expect(
-    dead_code,
-    reason = "the parts for comments wait for comments to be printed"
-)]
 mod document;
 mod expressions;
 

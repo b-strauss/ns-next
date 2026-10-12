@@ -358,7 +358,10 @@ fn erase_delimiters(delimiters: &mut Option<Delimiters>) {
 
 /// Whether one of `comments` stands between `delimiters`; a part that was
 /// never closed holds whatever the recovery gave it.
-fn holds_a_comment(delimiters: Option<Delimiters>, comments: &[AttachedComment]) -> bool {
+pub(crate) fn holds_a_comment(
+    delimiters: Option<Delimiters>,
+    comments: &[AttachedComment],
+) -> bool {
     let Some(Delimiters { open, close }) = delimiters else {
         return false;
     };

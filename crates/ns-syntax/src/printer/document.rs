@@ -9,17 +9,37 @@ pub(crate) enum Document {
     /// Text without a line break.
     Text(String),
     /// Text that may hold line breaks (a multi-line string literal), written
-    /// byte for byte; never trimmed.
+    /// byte for byte; never trimmed. A `\r` is a line break whether or not a
+    /// `\n` follows it.
     Verbatim(String),
+    /// Lines written one below the other (a block comment's): the first
+    /// where the layout stands, each further one shifted right by as many
+    /// columns as the first stands right of `column`, or left by as many as
+    /// it stands left of it, never further left than column 0.
+    Shifted {
+        lines: Vec<String>,
+        column: u32,
+    },
+    /// Writes nothing, but the next text starts a line of its own: a line
+    /// break before it unless its line holds nothing yet, which is then
+    /// indented as that text is (a comment that must stand alone on its
+    /// line, or that ends its line).
+    FreshLine,
+    /// Text after something on its line (a comment trailing a token):
+    /// counted toward the width only when more text follows it on the
+    /// line, since at the end of a line it stands where nothing else would.
+    Trailing(String),
+    /// Marks where a comment leading the text after it starts.
+    LeadingStart,
+    /// Ends a comment leading the text after it: a space, or a `FreshLine`
+    /// when the comment started its line, where it stays alone.
+    LeadingEnd,
     /// A space when its group is flat, a line break when it is broken.
     Line,
     /// Nothing when flat, a line break when broken.
     SoftLine,
     /// Always a line break; breaks every group around it.
     HardLine,
-    /// A line break to column 0, whatever the indentation (a block comment's
-    /// continuation line, which carries its own indentation).
-    LiteralLine,
     /// `broken` when the enclosing group is broken, else `flat`.
     IfBreak {
         broken: String,
@@ -113,14 +133,58 @@ fn take_children(document: &mut Document, pending: &mut Vec<Document>) {
         }
         Document::Text(_)
         | Document::Verbatim(_)
+        | Document::Shifted { .. }
+        | Document::FreshLine
+        | Document::Trailing(_)
+        | Document::LeadingStart
+        | Document::LeadingEnd
         | Document::Line
         | Document::SoftLine
         | Document::HardLine
-        | Document::LiteralLine
         | Document::IfBreak { .. }
         | Document::LineSuffix(_)
         | Document::BreakParent => {}
     }
+}
+
+/// Where the last line break in `content` ends, `\r\n`, `\r` and `\n` each
+/// one break.
+fn after_last_line_break(content: &str) -> Option<usize> {
+    content.rfind(['\n', '\r']).map(|index| index + 1)
+}
+
+/// `content`'s first line, up to its first line break of any kind.
+fn first_line(content: &str) -> Option<&str> {
+    content
+        .find(['\n', '\r'])
+        .map(|line_break| &content[..line_break])
+}
+
+/// `line` moved `shift` columns: spaces put in front, or up to that many
+/// leading whitespace characters taken away. An empty line stays empty.
+fn shifted(line: &str, shift: i64) -> String {
+    if line.is_empty() {
+        return String::new();
+    }
+    if shift >= 0 {
+        let added = usize::try_from(shift).unwrap_or(usize::MAX);
+        let mut moved = " ".repeat(added);
+        moved.push_str(line);
+        return moved;
+    }
+    let mut removable = usize::try_from(shift.unsigned_abs()).unwrap_or(usize::MAX);
+    let mut rest = line;
+    while removable > 0 {
+        let mut characters = rest.chars();
+        match characters.next() {
+            Some(character) if character.is_whitespace() => {
+                rest = characters.as_str();
+                removable -= 1;
+            }
+            _ => break,
+        }
+    }
+    rest.to_string()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -139,8 +203,8 @@ struct Command<'document> {
 }
 
 /// The groups that must break whatever the width, by address: those holding
-/// a `HardLine`, a `LiteralLine`, a `BreakParent` or a `Verbatim` with a
-/// line break.
+/// a `HardLine`, a `BreakParent`, a `FreshLine`, or a
+/// `Verbatim` or `Shifted` with a line break.
 type BrokenGroups = HashSet<*const Document>;
 
 /// Lays `document` out within `width` columns, each line break written as
@@ -157,6 +221,10 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
         output: String::new(),
         column: 0,
         protected_end: 0,
+        line_start: 0,
+        line_has_content: false,
+        fresh_line: false,
+        leading_starts_line: false,
         remeasure: false,
         line_suffixes: Vec::new(),
         line_ending,
@@ -173,10 +241,25 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
             document,
         } = command;
         match document {
-            Document::Text(content) => writer.write(content),
-            Document::Verbatim(content) => writer.write_verbatim(content),
+            Document::Text(content) => writer.write(content, indentation),
+            Document::Verbatim(content) => writer.write_verbatim(content, indentation),
+            Document::Shifted { lines, column } => {
+                writer.write_shifted(lines, *column, indentation)
+            }
+            Document::FreshLine => writer.fresh_line = true,
+            Document::Trailing(content) => writer.write(content, indentation),
+            Document::LeadingStart => {
+                writer.leading_starts_line = writer.fresh_line || !writer.line_has_content;
+            }
+            Document::LeadingEnd => {
+                if writer.leading_starts_line {
+                    writer.fresh_line = true;
+                } else {
+                    writer.write(" ", indentation);
+                }
+            }
             Document::Line => match mode {
-                Mode::Flat => writer.write(" "),
+                Mode::Flat => writer.write(" ", indentation),
                 Mode::Break => writer.break_line(indentation),
             },
             Document::SoftLine => {
@@ -185,11 +268,13 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                 }
             }
             Document::HardLine => writer.break_line(indentation),
-            Document::LiteralLine => writer.break_line(0),
-            Document::IfBreak { broken, flat } => writer.write(match mode {
-                Mode::Flat => flat,
-                Mode::Break => broken,
-            }),
+            Document::IfBreak { broken, flat } => writer.write(
+                match mode {
+                    Mode::Flat => flat,
+                    Mode::Break => broken,
+                },
+                indentation,
+            ),
             Document::LineSuffix(content) => writer.line_suffixes.push(content),
             Document::BreakParent => {}
             Document::Indent(columns, content) => commands.push(Command {
@@ -217,14 +302,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                     }
                 } else {
                     writer.remeasure = false;
-                    if !marked
-                        && fits(
-                            flat,
-                            &commands,
-                            width.saturating_sub(writer.column),
-                            &broken_groups,
-                        )
-                    {
+                    if !marked && fits(flat, &commands, writer.start(width), &broken_groups) {
                         Mode::Flat
                     } else {
                         Mode::Break
@@ -255,12 +333,7 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
                             document: alternative,
                         })
                         .find(|candidate| {
-                            fits(
-                                *candidate,
-                                &commands,
-                                width.saturating_sub(writer.column),
-                                &broken_groups,
-                            )
+                            fits(*candidate, &commands, writer.start(width), &broken_groups)
                         })
                         .unwrap_or(Command {
                             indentation,
@@ -293,6 +366,15 @@ struct Writer<'text> {
     /// spaces at its end are a string literal's own. An empty one holds
     /// nothing to protect and leaves the spaces before it trimmable.
     protected_end: usize,
+    /// Where the current line starts in `output`, after its indentation's
+    /// line break.
+    line_start: usize,
+    /// Whether anything but indentation stands on the current line.
+    line_has_content: bool,
+    /// A `FreshLine` waits for the next text.
+    fresh_line: bool,
+    /// The leading comment being written started its line.
+    leading_starts_line: bool,
     /// Set by every line break written. A group or `Choice` was taken flat
     /// on a measurement that ended at the first line break; once one is
     /// written, what follows on the new line was never measured, so the next
@@ -303,30 +385,102 @@ struct Writer<'text> {
 }
 
 impl Writer<'_> {
-    fn write(&mut self, content: &str) {
-        self.output.push_str(content);
-        self.column += content.chars().count();
+    /// Where a measurement made now starts.
+    fn start(&self, width: usize) -> Start {
+        Start {
+            width,
+            column: self.column,
+            fresh_line: self.fresh_line,
+        }
     }
 
-    fn write_verbatim(&mut self, content: &str) {
+    /// `content` as it is written: a waiting `FreshLine` drops it while it
+    /// is blank, and starts its line before it otherwise, without the
+    /// spaces that would have led it on the old line.
+    fn begin<'content>(
+        &mut self,
+        content: &'content str,
+        indentation: u32,
+    ) -> Option<&'content str> {
+        if !self.fresh_line {
+            return Some(content);
+        }
+        let content = content.trim_start_matches(' ');
+        if content.is_empty() {
+            return None;
+        }
+        self.fresh_line = false;
+        if self.line_has_content {
+            self.break_line(indentation);
+        } else {
+            // The line holds only indentation: it is indented anew rather
+            // than followed by a blank line.
+            self.output
+                .truncate(self.line_start.max(self.protected_end));
+            let indentation = usize::try_from(indentation).unwrap_or(usize::MAX);
+            self.output.extend(std::iter::repeat_n(' ', indentation));
+            self.column = indentation;
+        }
+        Some(content)
+    }
+
+    fn write(&mut self, content: &str, indentation: u32) {
+        let Some(content) = self.begin(content, indentation) else {
+            return;
+        };
+        self.output.push_str(content);
+        self.column += content.chars().count();
+        if !content.trim().is_empty() {
+            self.line_has_content = true;
+        }
+    }
+
+    fn write_verbatim(&mut self, content: &str, indentation: u32) {
+        let Some(content) = self.begin(content, indentation) else {
+            return;
+        };
         self.output.push_str(content);
         if !content.is_empty() {
             self.protected_end = self.output.len();
+            self.line_has_content = true;
         }
-        self.column = match content.rfind('\n') {
-            Some(last_break) => {
+        self.column = match after_last_line_break(content) {
+            Some(last_line) => {
                 self.remeasure = true;
-                content[last_break + 1..].chars().count()
+                content[last_line..].chars().count()
             }
             None => self.column + content.chars().count(),
         };
     }
 
+    fn write_shifted(&mut self, lines: &[String], column: u32, indentation: u32) {
+        let Some((first, rest)) = lines.split_first() else {
+            return;
+        };
+        let Some(first) = self.begin(first, indentation) else {
+            return;
+        };
+        let shift = i64::try_from(self.column).unwrap_or(i64::MAX) - i64::from(column);
+        self.write(first, indentation);
+        for line in rest {
+            self.trim_trailing_spaces();
+            self.output.push_str(self.line_ending);
+            self.line_start = self.output.len();
+            let moved = shifted(line, shift);
+            self.column = moved.chars().count();
+            self.output.push_str(&moved);
+            self.remeasure = true;
+        }
+    }
+
     fn break_line(&mut self, indentation: u32) {
         self.remeasure = true;
+        self.fresh_line = false;
         self.flush_line_suffixes();
         self.trim_trailing_spaces();
         self.output.push_str(self.line_ending);
+        self.line_start = self.output.len();
+        self.line_has_content = false;
         let indentation = usize::try_from(indentation).unwrap_or(usize::MAX);
         self.output.extend(std::iter::repeat_n(' ', indentation));
         self.column = indentation;
@@ -346,36 +500,74 @@ impl Writer<'_> {
     }
 }
 
+/// Where a measurement starts: the width, the column the writer stands at,
+/// and whether a `FreshLine` waits, which puts the first text measured at
+/// the start of a line of its own.
+#[derive(Clone, Copy)]
+struct Start {
+    width: usize,
+    column: usize,
+    fresh_line: bool,
+}
+
 /// Whether `next`, followed by the `rest` of the stack in its own modes,
-/// fits in `remaining` columns up to the first line break.
+/// fits in the line from `start` up to the first line break. Text in `next`
+/// after a `FreshLine` on a line that already holds text does not fit: it
+/// would stand on a line no layout asked for, after a comment that must end
+/// its line.
 fn fits(
     next: Command<'_>,
     rest: &[Command<'_>],
-    remaining: usize,
+    start: Start,
     broken_groups: &BrokenGroups,
 ) -> bool {
-    let mut remaining = remaining;
-    let mut pending = vec![(next.mode, next.document)];
+    let mut remaining = start.width.saturating_sub(start.column);
+    // With a `FreshLine` waiting, the first text is still to be placed at
+    // the start of a line, at its own indentation.
+    let mut placed = !start.fresh_line;
+    let mut fresh_line = false;
+    let mut pending = vec![(next.indentation, next.mode, next.document)];
     let mut rest_index = rest.len();
+    let mut in_rest = false;
+    // The width of trailing text not yet known to be followed on its line.
+    let mut deferred = 0;
     loop {
-        let (mode, document) = match pending.pop() {
+        let (indentation, mode, document) = match pending.pop() {
             Some(part) => part,
             None => {
+                // What is being decided ends its line with a comment: what
+                // follows it is another line's.
+                if fresh_line {
+                    return true;
+                }
                 let Some(below) = rest_index.checked_sub(1) else {
                     return true;
                 };
                 rest_index = below;
-                (rest[below].mode, rest[below].document)
+                in_rest = true;
+                let command = rest[below];
+                (command.indentation, command.mode, command.document)
             }
         };
         let measured = match document {
-            Document::Text(content) => content,
-            Document::Verbatim(content) => match content.split_once('\n') {
-                Some((first_line, _)) => {
-                    return first_line.trim_end_matches('\r').chars().count() <= remaining;
+            Document::Text(content) | Document::Verbatim(content) => content.as_str(),
+            Document::Shifted { lines, .. } => lines.first().map_or("", String::as_str),
+            Document::Trailing(content) if placed && !fresh_line => {
+                deferred += content.chars().count();
+                continue;
+            }
+            Document::Trailing(content) => content.as_str(),
+            Document::LeadingStart => "",
+            Document::LeadingEnd => " ",
+            Document::FreshLine => {
+                // Past what is being decided, a comment that must end its
+                // line ends the measured line like a line break.
+                if in_rest && placed {
+                    return true;
                 }
-                None => content,
-            },
+                fresh_line = placed;
+                ""
+            }
             Document::Line => match mode {
                 Mode::Flat => " ",
                 Mode::Break => return true,
@@ -384,18 +576,18 @@ fn fits(
                 Mode::Flat => "",
                 Mode::Break => return true,
             },
-            Document::HardLine | Document::LiteralLine => return true,
+            Document::HardLine => return true,
             Document::IfBreak { broken, flat } => match mode {
                 Mode::Flat => flat,
                 Mode::Break => broken,
             },
             Document::LineSuffix(_) | Document::BreakParent => "",
-            Document::Indent(_, content) => {
-                pending.push((mode, content));
+            Document::Indent(columns, content) => {
+                pending.push((indentation.saturating_add(*columns), mode, content));
                 ""
             }
             Document::Shared(content) => {
-                pending.push((mode, &**content));
+                pending.push((indentation, mode, &**content));
                 ""
             }
             Document::Group(content) => {
@@ -404,7 +596,7 @@ fn fits(
                 } else {
                     mode
                 };
-                pending.push((group_mode, content));
+                pending.push((indentation, group_mode, content));
                 ""
             }
             // What the layout would write: the first alternative when flat;
@@ -414,17 +606,41 @@ fn fits(
                     Mode::Flat => alternatives.first(),
                     Mode::Break => alternatives.last(),
                 };
-                pending.extend(alternative.map(|alternative| (mode, alternative)));
+                pending.extend(alternative.map(|alternative| (indentation, mode, alternative)));
                 ""
             }
             Document::Concat(parts) => {
-                pending.extend(parts.iter().rev().map(|part| (mode, part)));
+                pending.extend(parts.iter().rev().map(|part| (indentation, mode, part)));
                 ""
             }
         };
-        let width = measured.chars().count();
+        let mut measured = measured;
+        if !placed || fresh_line {
+            measured = measured.trim_start_matches(' ');
+            if measured.is_empty() {
+                continue;
+            }
+            if fresh_line {
+                return false;
+            }
+            placed = true;
+            let indentation = usize::try_from(indentation).unwrap_or(usize::MAX);
+            remaining = start.width.saturating_sub(indentation);
+        }
+        let (line, ends) = match first_line(measured) {
+            Some(line) => (line, true),
+            None => (measured, false),
+        };
+        let mut width = line.chars().count();
+        if !line.trim().is_empty() {
+            width += deferred;
+            deferred = 0;
+        }
         if width > remaining {
             return false;
+        }
+        if ends {
+            return true;
         }
         remaining -= width;
     }
@@ -490,8 +706,9 @@ fn broken_groups(document: &Document) -> BrokenGroups {
             }
         };
         let forces_break = match document {
-            Document::HardLine | Document::LiteralLine | Document::BreakParent => true,
-            Document::Verbatim(content) => content.contains('\n'),
+            Document::HardLine | Document::BreakParent | Document::FreshLine => true,
+            Document::Verbatim(content) => content.contains(['\n', '\r']),
+            Document::Shifted { lines, .. } => lines.len() > 1,
             Document::Indent(_, content) => {
                 visits.push(Visit::Enter(content));
                 false
@@ -531,7 +748,10 @@ fn broken_groups(document: &Document) -> BrokenGroups {
             | Document::Line
             | Document::SoftLine
             | Document::IfBreak { .. }
-            | Document::LineSuffix(_) => false,
+            | Document::LineSuffix(_)
+            | Document::Trailing(_)
+            | Document::LeadingStart
+            | Document::LeadingEnd => false,
         };
         if forces_break {
             mark(&mut enclosing, &mut broken);
@@ -700,27 +920,127 @@ mod tests {
         assert_eq!(layout(&document, 100, "\r\n"), "a\r\n'x  \ny'\r\nb");
     }
 
+    /// A block comment written further left than it stood moves its
+    /// continuation lines left by as much, none past column 0; written
+    /// further right, right by as much. An empty line stays empty.
     #[test]
-    fn a_literal_line_returns_to_column_zero() {
-        let document = indent(
-            4,
-            concat(vec![text("(* a"), Document::LiteralLine, text("   b *)")]),
+    fn shifted_lines_move_with_the_first() {
+        let comment = |column: u32| Document::Shifted {
+            lines: vec![
+                "(* one".to_string(),
+                "     two".to_string(),
+                String::new(),
+                "  three *)".to_string(),
+            ],
+            column,
+        };
+        let left = indent(2, concat(vec![hard_line(), comment(4)]));
+        assert_eq!(layout(&left, 100, "\n"), "\n  (* one\n   two\n\nthree *)");
+        let right = indent(6, concat(vec![hard_line(), comment(2)]));
+        assert_eq!(
+            layout(&right, 100, "\n"),
+            "\n      (* one\n         two\n\n      three *)"
         );
-        assert_eq!(layout(&document, 100, "\n"), "(* a\n   b *)");
     }
 
-    /// A literal line is a line break whatever the width, so its group's
-    /// lines break too, as around a `HardLine`.
+    /// Lines written one below the other break every group around them.
     #[test]
-    fn a_literal_line_breaks_every_group_around_it() {
+    fn shifted_lines_break_every_group_around_them() {
         let document = group(concat(vec![
             text("a"),
             line(),
-            text("(* b"),
-            Document::LiteralLine,
-            text("c *)"),
+            Document::Shifted {
+                lines: vec!["(* b".to_string(), "c *)".to_string()],
+                column: 0,
+            },
         ]));
         assert_eq!(layout(&document, 100, "\n"), "a\n(* b\nc *)");
+    }
+
+    /// A fresh line starts the next text on a line of its own: a line
+    /// break when its line holds text, only the text's indentation when it
+    /// is blank, and spaces in between are dropped.
+    #[test]
+    fn a_fresh_line_starts_the_next_text_on_a_line_of_its_own() {
+        let document = concat(vec![
+            text("a"),
+            Document::FreshLine,
+            text(" b"),
+            Document::FreshLine,
+            indent(2, concat(vec![hard_line(), Document::FreshLine, text("c")])),
+        ]);
+        assert_eq!(layout(&document, 100, "\n"), "a\nb\n  c");
+    }
+
+    /// A fresh line is broken by the next line break rather than doubled.
+    #[test]
+    fn a_line_break_after_a_fresh_line_is_the_only_one() {
+        let document = concat(vec![
+            text("(* note *)"),
+            Document::FreshLine,
+            hard_line(),
+            text("next"),
+        ]);
+        assert_eq!(layout(&document, 100, "\n"), "(* note *)\nnext");
+    }
+
+    /// Text after a fresh line on a line holding text never fits, so a
+    /// `Choice` takes an alternative that breaks there itself; a measurement
+    /// that starts with a fresh line waiting measures from the next line.
+    #[test]
+    fn text_after_a_fresh_line_does_not_fit() {
+        let trailing = || {
+            concat(vec![
+                text("key"),
+                Document::LineSuffix(" /// note".into()),
+                Document::FreshLine,
+            ])
+        };
+        let document = Document::Choice(vec![
+            concat(vec![trailing(), text(" next: [")]),
+            concat(vec![
+                trailing(),
+                indent(4, concat(vec![hard_line(), text("next: [")])),
+            ]),
+        ]);
+        assert_eq!(layout(&document, 100, "\n"), "key /// note\n    next: [");
+        let waiting = concat(vec![
+            trailing(),
+            group(indent(4, concat(vec![line(), text("x".repeat(90))]))),
+        ]);
+        assert_eq!(
+            layout(&waiting, 100, "\n"),
+            format!("key /// note\n    {}", "x".repeat(90))
+        );
+    }
+
+    /// A `\r` alone is a line break: the column restarts after it, and the
+    /// measurement of what follows stops at it.
+    #[test]
+    fn a_carriage_return_alone_breaks_a_verbatim() {
+        let string = format!("'{}\r{}'", "a".repeat(8), "b");
+        let document = concat(vec![
+            Document::Verbatim(string.clone()),
+            group(concat(vec![line(), text("c")])),
+        ]);
+        assert_eq!(layout(&document, 8, "\n"), format!("{string} c"));
+        let leading = group(concat(vec![
+            text("x"),
+            line(),
+            Document::Verbatim(string.clone()),
+        ]));
+        assert_eq!(layout(&leading, 100, "\n"), format!("x\n{string}"));
+    }
+
+    /// Spaces before a `\r` inside a string are the string's own.
+    #[test]
+    fn trimming_never_cuts_into_a_verbatim_ending_after_a_carriage_return() {
+        let document = concat(vec![
+            Document::Verbatim("'a\rb  ".into()),
+            hard_line(),
+            text("c"),
+        ]);
+        assert_eq!(layout(&document, 100, "\n"), "'a\rb  \nc");
     }
 
     #[test]

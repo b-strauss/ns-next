@@ -1,5 +1,5 @@
 //! The style rules of `docs/design/formatting.md`, one test per rule the
-//! printer decides, for declarations and expressions.
+//! printer decides, for declarations, expressions and comments.
 
 use indoc::indoc;
 use ns_syntax::LineEnding;
@@ -787,6 +787,7 @@ fn rule_25_sends_in_superclass_clauses_and_statements() {
 #[test]
 fn a_source_with_an_error_is_refused() {
     assert!(ns_syntax::format("class A = (").is_err());
+    assert!(ns_syntax::format("class A = ( public m = ( ^").is_err());
 }
 
 #[test]
@@ -927,4 +928,210 @@ fn rule_25_an_eventual_send_and_type_arguments_as_written() {
         )
     "};
     assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_21_a_line_block_is_reindented_and_its_text_kept() {
+    let input = indoc! {"
+        class A = () (
+                ///   indented text
+                /// second
+                public m = ()
+        )
+    "};
+    let expected = indoc! {"
+        class A = () (
+          ///   indented text
+          /// second
+          public m = ()
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_21_a_block_comment_moves_its_continuation_lines_with_it() {
+    let input = indoc! {"
+        class A = () (
+                (* one
+                   two *)
+                public m = ()
+        )
+    "};
+    let expected = indoc! {"
+        class A = () (
+          (* one
+             two *)
+          public m = ()
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_21_a_trailing_comment_does_not_count_toward_the_width() {
+    let statement = "x:: someReceiverWithAName at: firstArgumentValue put: secondArgumentValue.";
+    let input = in_method(&format!(
+        "{statement} /// a remark that pushes the line well past one hundred columns"
+    ));
+    let expected = method_text(&format!(
+        "{statement} /// a remark that pushes the line well past one hundred columns\n"
+    ));
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_21_a_line_comment_inside_an_expression_breaks_its_level() {
+    let input = in_method(
+        "result:: dictionary at: key /// the caller guarantees presence\n ifAbsent: [nil]",
+    );
+    let expected = method_text(indoc! {"
+        result:: dictionary at: key /// the caller guarantees presence
+            ifAbsent: [nil].
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_21_an_inline_comment_stays_between_its_tokens() {
+    assert_eq!(
+        formatted(&in_method("self foo: (* unused *) nil bar: 3")),
+        method_text("self foo: (* unused *) nil bar: 3.\n")
+    );
+}
+
+#[test]
+fn rule_21_an_inline_comment_after_an_opening_delimiter_has_no_space_before_it() {
+    assert_eq!(
+        formatted(&in_method("^( (* x *) a)")),
+        method_text("^((* x *) a).\n")
+    );
+}
+
+#[test]
+fn rule_21_metadata_stays_between_pattern_and_equals() {
+    let input = "class A = () ( public foo: x (* :exemplar: A new foo: 3 *) = ( ^x ) )";
+    let expected = indoc! {"
+        class A = () (
+          public foo: x (* :exemplar: A new foo: 3 *) = (
+            ^x.
+          )
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_21_a_trailing_comment_after_the_last_statement_follows_its_period() {
+    let input = in_method("x foo.\n^x bar /// done");
+    let expected = method_text(indoc! {"
+        x foo.
+        ^x bar. /// done
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_21_a_comment_dangling_before_a_closer_stays_inside() {
+    let input = in_method("^x foo.\n(* nothing more *)");
+    let expected = method_text(indoc! {"
+        ^x foo.
+        (* nothing more *)
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_4_the_class_comment_follows_the_open_parenthesis() {
+    let input = "class Foo = Object new ( (* A counter. *) | private count ::= 0. | ) ()";
+    let expected = indoc! {"
+        class Foo = Object new (
+          (* A counter. *)
+          |
+            private count ::= 0.
+          |
+        ) ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_4_a_comment_above_the_class_stays_directly_above_it() {
+    let input = "(* The module. *)\n\nclass A = () ()";
+    assert_eq!(formatted(input), "(* The module. *)\nclass A = () ()\n");
+}
+
+#[test]
+fn rule_7_a_members_leading_comment_sits_below_the_blank_line() {
+    let input = "class A = () ( one = ()\n /// The second.\n two = () )";
+    let expected = indoc! {"
+        class A = () (
+          one = ()
+
+          /// The second.
+          two = ()
+        )
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_8_a_part_with_only_a_comment_is_opened_up() {
+    assert_eq!(
+        formatted("class A = () () : ( (* nothing yet *) )"),
+        "class A = () () : (\n  (* nothing yet *)\n)\n"
+    );
+}
+
+#[test]
+fn rule_8_an_empty_slot_list_holding_a_comment_is_kept() {
+    let input = "class A = ( | (* none yet *) | ) ()";
+    let expected = indoc! {"
+        class A = (
+          |
+            (* none yet *)
+          |
+        ) ()
+    "};
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_23_the_first_line_ending_decides() {
+    assert_eq!(
+        formatted("class A = () (\r\npublic m = ( ^1 ) )"),
+        "class A = () (\r\n  public m = (\r\n    ^1.\r\n  )\r\n)\r\n"
+    );
+}
+
+#[test]
+fn rule_23_a_string_keeps_its_own_line_breaks() {
+    let input = "class A = () (\r\npublic m = ( ^'a\nb' ) )";
+    let expected = "class A = () (\r\n  public m = (\r\n    ^'a\nb'.\r\n  )\r\n)\r\n";
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_23_a_string_with_carriage_returns_alone_is_multi_line() {
+    // Measured as one line, the string would push `, suffix` onto a line
+    // of its own; its last line leaves room for it.
+    let string = format!("'{}\r{}'", "a".repeat(60), "b".repeat(60));
+    let input = in_method(&format!("^{string} , suffix"));
+    assert_eq!(
+        formatted(&input),
+        method_text(&format!("^{string} , suffix.\n"))
+    );
+}
+
+#[test]
+fn rule_21_a_comment_between_receiver_and_message_keeps_its_line() {
+    // Leading the message, after its receiver, it stood on a line of its
+    // own: on the receiver's line, it would trail the receiver.
+    let input = in_method("^receiver\n(* then *) message");
+    let expected = method_text(indoc! {"
+        ^receiver
+            (* then *)
+            message.
+    "});
+    assert_eq!(formatted(&input), expected);
 }
