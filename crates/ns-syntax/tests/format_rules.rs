@@ -316,6 +316,64 @@ fn rule_15_and_17_content_that_breaks_by_itself_opens_its_block_or_tuple() {
     );
 }
 
+/// A block hugged by a message inside a later keyword argument, a binary
+/// operand or a cascade's message opens its body two columns in from the
+/// line the hugging starts on and closes at that line's indentation.
+#[test]
+fn rule_13_a_block_hugged_inside_an_argument_is_indented_from_its_line() {
+    let expected = method_text(indoc! {"
+        target at: 1 put: (items collect: [:each |
+          each foo.
+          each bar.
+        ]).
+        mapping
+            at: #first put: 1;
+            at: #button put: (chatButton: [
+              toggle.
+              refresh.
+            ]).
+        ^prefix , (items collect: [:each |
+          each foo.
+          each bar.
+        ]).
+    "});
+    assert_eq!(
+        formatted(&in_method(
+            "target at: 1 put: (items collect: [:each | each foo. each bar]). mapping at: #first put: 1; at: #button put: (chatButton: [toggle. refresh]). ^prefix , (items collect: [:each | each foo. each bar])"
+        )),
+        expected
+    );
+}
+
+/// The messages sent to a receiver that breaks by itself are decided again
+/// on its last line, outside in: the keyword level breaks before its
+/// binary argument, a unary run breaks when it does not fit.
+#[test]
+fn rule_12_the_messages_after_a_receiver_that_breaks_break_outside_in() {
+    let expected = method_text(indoc! {"
+        [
+          self step.
+          self other.
+        ] on: SomeVeryLongExceptionClassName , AnotherLongExceptionClassName
+            do: handlerWithAVeryLongNameIndeedAndMore.
+        (target foo: [
+          step.
+          step.
+        ])
+            firstUnaryMessageName
+            secondUnaryMessageName
+            thirdUnaryMessageName
+            fourthUnaryMessageName
+            fifthUnaryMessageName.
+    "});
+    assert_eq!(
+        formatted(&in_method(
+            "[self step. self other] on: SomeVeryLongExceptionClassName, AnotherLongExceptionClassName do: handlerWithAVeryLongNameIndeedAndMore. (target foo: [step. step]) firstUnaryMessageName secondUnaryMessageName thirdUnaryMessageName fourthUnaryMessageName fifthUnaryMessageName"
+        )),
+        expected
+    );
+}
+
 /// What follows a hugged block's `]` is measured again: a bare argument
 /// there leaves the measuring to the next message that can break.
 #[test]

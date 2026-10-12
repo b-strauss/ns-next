@@ -75,8 +75,8 @@ enum Level {
     Binary,
 }
 
-/// The messages of one level sent to the same receiver, each after a
-/// `Line`: the level breaks as a whole, every link on its own line.
+/// The messages of one level sent to the same receiver: the level breaks
+/// as a whole, every link on its own line.
 struct Run {
     level: Level,
     links: Vec<Document>,
@@ -105,7 +105,7 @@ fn send_chain(send: &Send) -> Document {
                 }
                 let sent = self::message(message);
                 match (&mut run, &receiver) {
-                    (Some(current), _) => current.links.extend([line(), sent]),
+                    (Some(current), _) => current.links.push(sent),
                     // An implicit receiver prints nothing: the first
                     // selector heads the run.
                     (None, None) => {
@@ -118,7 +118,7 @@ fn send_chain(send: &Send) -> Document {
                     (None, Some(_)) => {
                         run = Some(Run {
                             level,
-                            links: vec![line(), sent],
+                            links: vec![sent],
                         });
                     }
                 }
@@ -142,17 +142,63 @@ fn send_chain(send: &Send) -> Document {
 }
 
 /// `receiver` with the messages of `run` sent to it, the continuation
-/// lines one step in.
+/// lines one step in. A receiver that breaks by itself ends on a line of its
+/// own (`]`), so the messages after it are a group of their own, decided on
+/// that line. A link that breaks by itself (an operand hugging its blocks)
+/// hugs as a block argument does: the links up to it stay on the line,
+/// outside any continuation indent, so its body is indented from the line
+/// it opens on, and the links after it are again a group of their own.
 fn finish_run(receiver: Option<Document>, run: Option<Run>) -> Option<Document> {
     let Some(run) = run else {
         return receiver;
     };
-    let mut parts = Vec::new();
-    parts.extend(receiver);
-    if !run.links.is_empty() {
-        parts.push(indent(CONTINUATION, concat(run.links)));
+    if run.links.is_empty() {
+        return receiver;
     }
-    Some(group(concat(parts)))
+    let Some(last_breaking) = run.links.iter().rposition(forces_break) else {
+        let receiver_breaks = receiver.as_ref().is_some_and(forces_break);
+        let mut parts = Vec::new();
+        parts.extend(receiver);
+        return Some(if receiver_breaks {
+            parts.push(group(continued(run.links)));
+            concat(parts)
+        } else {
+            parts.push(continued(run.links));
+            group(concat(parts))
+        });
+    };
+    let receiver = receiver.map(Rc::new);
+    let links: Vec<Rc<Document>> = run.links.into_iter().map(Rc::new).collect();
+    let shared = |link: &Rc<Document>| Document::Shared(Rc::clone(link));
+    let mut hugged = Vec::new();
+    hugged.extend(receiver.as_ref().map(shared));
+    for link in &links[..=last_breaking] {
+        hugged.push(text(" "));
+        hugged.push(shared(link));
+    }
+    let after = &links[last_breaking + 1..];
+    if !after.is_empty() {
+        hugged.push(group(continued(after.iter().map(shared).collect())));
+    }
+    let mut broken = Vec::new();
+    broken.extend(receiver.as_ref().map(shared));
+    let mut lines = Vec::new();
+    for link in &links {
+        lines.push(hard_line());
+        lines.push(shared(link));
+    }
+    broken.push(indent(CONTINUATION, concat(lines)));
+    Some(Document::Choice(vec![concat(hugged), concat(broken)]))
+}
+
+/// `links`, each on a continuation line of its own when broken.
+fn continued(links: Vec<Document>) -> Document {
+    let mut lines = Vec::new();
+    for link in links {
+        lines.push(line());
+        lines.push(link);
+    }
+    indent(CONTINUATION, concat(lines))
 }
 
 /// A receiver that breaks by itself (a multi-line block, a multi-line
@@ -223,22 +269,60 @@ fn eventual_prefix(message: &MessageSend) -> &'static str {
 }
 
 /// An argument of a keyword message as the alternatives of its layout use
-/// it: a block that can open at the line end, in parts, or anything else,
-/// whole. Each is lowered once and shared by every alternative.
+/// it: a block that can open at the line end, in parts; anything else
+/// whole, with whether it breaks by itself (a message hugging its own
+/// blocks), which then hugs as a block does. Each is lowered once and
+/// shared by every alternative.
 enum Argument {
     Block(BlockParts),
-    Other(Rc<Document>),
+    Other {
+        document: Rc<Document>,
+        breaks: bool,
+    },
 }
 
-/// `receiver kw1: arg1 kw2: arg2 …`. Without a block argument that can
-/// break, one group: the first keyword on the receiver's line, every
-/// further one on its own continuation line when it breaks. With one, the
-/// first of these whose first line fits: the whole message on one line
-/// (left out when a part of it breaks by itself, since a group that must
-/// break would "fit" on its first line); hugged, the keyword parts joined
-/// by spaces and every block argument opened at the line end, the blocks
-/// of one message breaking together; the group broken, each block on one
-/// line where it fits.
+impl Argument {
+    fn hugs(&self) -> bool {
+        match self {
+            Argument::Block(_) => true,
+            Argument::Other { breaks, .. } => *breaks,
+        }
+    }
+}
+
+/// What stands before the first keyword.
+enum Head {
+    /// Nothing: the receiver is implicit, or the message is a cascade's.
+    Nothing,
+    Receiver(Rc<Document>),
+    /// A receiver that broke by itself, written before the message, which
+    /// follows on its last line after a space.
+    AfterReceiver,
+}
+
+impl Head {
+    fn lead(&self, parts: &mut Vec<Document>) {
+        match self {
+            Head::Nothing => {}
+            Head::Receiver(receiver) => {
+                parts.push(Document::Shared(Rc::clone(receiver)));
+                parts.push(text(" "));
+            }
+            Head::AfterReceiver => parts.push(text(" ")),
+        }
+    }
+}
+
+/// `receiver kw1: arg1 kw2: arg2 …`. Without an argument that hugs, one
+/// group: the first keyword on the receiver's line, every further one on
+/// its own continuation line when it breaks. With one, the first of these
+/// whose first line fits: the whole message on one line (left out when a
+/// part of it breaks by itself, since a group that must break would "fit"
+/// on its first line); hugged, the keyword parts joined by spaces outside
+/// any continuation indent and every block argument opened at the line
+/// end, the blocks of one message breaking together; the group broken,
+/// each block on one line where it fits. A receiver that breaks by itself
+/// comes first, and the message is decided on its last line.
 fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Document {
     let Selector::Keyword(selector) = &message.selector else {
         return self::message(message);
@@ -249,51 +333,59 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
         .iter()
         .map(|argument| match huggable_block(argument) {
             Some(parts) => Argument::Block(parts),
-            None => Argument::Other(Rc::new(expression(argument))),
+            None => {
+                let document = expression(argument);
+                Argument::Other {
+                    breaks: forces_break(&document),
+                    document: Rc::new(document),
+                }
+            }
         })
         .collect();
     let eventual = eventual_prefix(message);
-    if !arguments
-        .iter()
-        .any(|argument| matches!(argument, Argument::Block(_)))
-    {
-        let receiver = receiver.map(Rc::new);
-        return standard(&receiver, eventual, &keywords, &arguments, false);
+    let (written_first, head) = match receiver {
+        Some(receiver) if forces_break(&receiver) => (Some(receiver), Head::AfterReceiver),
+        Some(receiver) => (None, Head::Receiver(Rc::new(receiver))),
+        None => (None, Head::Nothing),
+    };
+    let sent = if arguments.iter().any(Argument::hugs) {
+        let mut alternatives = Vec::new();
+        let one_line = standard(&head, eventual, &keywords, &arguments, false);
+        if !forces_break(&one_line) {
+            alternatives.push(one_line);
+        }
+        alternatives.push(hugged(&head, eventual, &keywords, &arguments));
+        alternatives.push(standard(&head, eventual, &keywords, &arguments, true));
+        Document::Choice(alternatives)
+    } else {
+        standard(&head, eventual, &keywords, &arguments, false)
+    };
+    match written_first {
+        Some(receiver) => concat(vec![receiver, sent]),
+        None => sent,
     }
-    let receiver = receiver.map(Rc::new);
-    let mut alternatives = Vec::new();
-    let one_line = standard(&receiver, eventual, &keywords, &arguments, false);
-    if !forces_break(&one_line) {
-        alternatives.push(one_line);
-    }
-    alternatives.push(hugged(&receiver, eventual, &keywords, &arguments));
-    alternatives.push(standard(&receiver, eventual, &keywords, &arguments, true));
-    Document::Choice(alternatives)
 }
 
 /// The keyword parts after the first on continuation lines: a group that
 /// breaks only when it does not fit, or, `broken`, the form already broken.
 fn standard(
-    receiver: &Option<Rc<Document>>,
+    head: &Head,
     eventual: &str,
     keywords: &[&str],
     arguments: &[Argument],
     broken: bool,
 ) -> Document {
-    let mut head = Vec::new();
-    if let Some(receiver) = receiver {
-        head.push(Document::Shared(Rc::clone(receiver)));
-        head.push(text(" "));
-    }
+    let mut first = Vec::new();
+    head.lead(&mut first);
     let mut rest = Vec::new();
     for (index, (keyword, argument)) in keywords.iter().zip(arguments).enumerate() {
         let argument = match argument {
             Argument::Block(parts) => block_frame(parts, false),
-            Argument::Other(document) => Document::Shared(Rc::clone(document)),
+            Argument::Other { document, .. } => Document::Shared(Rc::clone(document)),
         };
         if index == 0 {
-            head.push(text(format!("{eventual}{keyword}: ")));
-            head.push(argument);
+            first.push(text(format!("{eventual}{keyword}: ")));
+            first.push(argument);
         } else {
             rest.push(if broken { hard_line() } else { line() });
             rest.push(text(format!("{keyword}: ")));
@@ -301,9 +393,9 @@ fn standard(
         }
     }
     if !rest.is_empty() {
-        head.push(indent(CONTINUATION, concat(rest)));
+        first.push(indent(CONTINUATION, concat(rest)));
     }
-    let message = concat(head);
+    let message = concat(first);
     if broken {
         message
     } else {
@@ -313,20 +405,13 @@ fn standard(
 
 /// Every block argument opened at the line end and broken, the keyword
 /// parts joined by spaces. Another argument that can break is a group of
-/// its own, so it is measured again on the `]` line; one that cannot is
-/// left bare, since a group around it would use up the measuring again that
-/// something breakable after it needs.
-fn hugged(
-    receiver: &Option<Rc<Document>>,
-    eventual: &str,
-    keywords: &[&str],
-    arguments: &[Argument],
-) -> Document {
+/// its own, so it is measured again on the `]` line; one that cannot, or
+/// one that breaks by itself anyway, is left bare, since a group around it
+/// would use up the measuring again that something breakable after it
+/// needs.
+fn hugged(head: &Head, eventual: &str, keywords: &[&str], arguments: &[Argument]) -> Document {
     let mut parts = Vec::new();
-    if let Some(receiver) = receiver {
-        parts.push(Document::Shared(Rc::clone(receiver)));
-        parts.push(text(" "));
-    }
+    head.lead(&mut parts);
     for (index, (keyword, argument)) in keywords.iter().zip(arguments).enumerate() {
         if index == 0 {
             parts.push(text(format!("{eventual}{keyword}: ")));
@@ -335,8 +420,10 @@ fn hugged(
         }
         parts.push(match argument {
             Argument::Block(block) => block_frame(block, true),
-            Argument::Other(document) if is_text(document) => Document::Shared(Rc::clone(document)),
-            Argument::Other(document) => group(Document::Shared(Rc::clone(document))),
+            Argument::Other { document, breaks } if *breaks || is_text(document) => {
+                Document::Shared(Rc::clone(document))
+            }
+            Argument::Other { document, .. } => group(Document::Shared(Rc::clone(document))),
         });
     }
     concat(parts)

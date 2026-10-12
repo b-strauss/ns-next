@@ -104,11 +104,12 @@ fn take_children(document: &mut Document, pending: &mut Vec<Document>) {
             ));
         }
         Document::Choice(parts) | Document::Concat(parts) => pending.append(parts),
-        // Only the last holder takes the content apart; the others drop
-        // their count.
+        // Only the last holder takes the content apart, leaving an empty
+        // `Concat` behind; the others drop their count.
         Document::Shared(content) => {
-            let held = std::mem::replace(content, Rc::new(Document::Concat(Vec::new())));
-            pending.extend(Rc::into_inner(held));
+            if let Some(content) = Rc::get_mut(content) {
+                pending.push(std::mem::replace(content, Document::Concat(Vec::new())));
+            }
         }
         Document::Text(_)
         | Document::Verbatim(_)
