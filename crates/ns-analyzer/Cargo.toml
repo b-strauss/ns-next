@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Tooling that looks at Newspeak without running it (language server, token dump, parse, disassembly, image inspection), on ns-next's front end, resolver and compiler"
+description = "Tooling that looks at Newspeak without running it (language server, token dump, parse, disassembly, image inspection, formatting), on ns-next's front end, resolver and compiler"
 
 # A binary of its own, so that the LSP transport and JSON never reach the
 # `ns-next` binary: the editor pays for them, the runtime does not.

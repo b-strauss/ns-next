@@ -10,9 +10,9 @@ mod commands;
 
 /// Looks at Newspeak without running it: the language server (`lsp`), the
 /// token dump (`dump-tokens`), parsing (`parse`, `parse-corpus`), a compiled
-/// body's bytecode (`disasm`), an image's structure (`inspect`) and the one
-/// layout of a source (`fmt`). Running
-/// a program is `ns-next`'s.
+/// body's bytecode (`disasm`) and an image's structure (`inspect`). Its one
+/// command that writes is `fmt`, which rewrites sources in the formatter's
+/// layout. Running a program is `ns-next`'s.
 #[derive(Parser)]
 #[command(name = "ns-next-analyzer", version)]
 struct Cli {
