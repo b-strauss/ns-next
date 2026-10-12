@@ -11,6 +11,7 @@ import com.intellij.platform.lsp.util.getOffsetInDocument
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiManager
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.lexer.NewspeakTokenTypes
 import io.github.bstrauss.newspeak.lsp.DocumentSymbolCache
 
@@ -44,7 +45,7 @@ class NewspeakModuleRunLineMarkerContributor : RunLineMarkerContributor(), DumbA
         return Info(
             AllIcons.RunConfigurations.TestState.Run,
             arrayOf(NewspeakRunAction(file, null, NewspeakCommand.RUN), NewspeakRunAction(file, null, NewspeakCommand.BENCH)),
-        ) { _ -> "Run module '$className'" }
+        ) { _ -> NewspeakBundle.message("run.marker.tooltip.module", className) }
     }
 
     private fun restartDaemon(project: Project, file: VirtualFile) {

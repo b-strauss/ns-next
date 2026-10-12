@@ -11,11 +11,12 @@ import com.intellij.platform.lsp.api.customization.LspFormattingCustomizer
 import com.intellij.platform.lsp.api.customization.LspFormattingSupport
 import com.intellij.platform.lsp.api.customization.LspSemanticTokensCustomizer
 import com.intellij.platform.lsp.api.customization.LspSymbolKindCustomizer
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakFileType
 import java.nio.file.Path
 
 class NewspeakLspClientDescriptor(project: Project, private val server: Path) :
-    ProjectWideLspClientDescriptor(project, "Newspeak") {
+    ProjectWideLspClientDescriptor(project, NewspeakBundle.message("lsp.client.name")) {
     override fun isSupportedFile(file: VirtualFile): Boolean = file.fileType == NewspeakFileType
 
     override fun createCommandLine(): GeneralCommandLine = GeneralCommandLine(server.toString(), "lsp")

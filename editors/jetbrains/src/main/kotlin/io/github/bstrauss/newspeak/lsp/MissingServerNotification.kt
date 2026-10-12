@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -16,19 +17,20 @@ object MissingServerNotification {
         if (!shown.compareAndSet(false, true)) return
         val content = when (location) {
             is ServerLocation.ConfiguredPathMissing ->
-                "The configured language server does not exist: ${location.path}"
+                NewspeakBundle.message("notification.server.missing.configured.path", location.path)
             is ServerLocation.NotBundledForPlatform ->
-                "No ns-next-analyzer is bundled for ${location.platform ?: "this platform"}. Build it with " +
-                    "<code>cargo build -p ns-analyzer --release</code> and set its path."
+                NewspeakBundle.message(
+                    "notification.server.missing.not.bundled",
+                    location.platform ?: NewspeakBundle.message("notification.server.missing.not.bundled.this.platform"),
+                )
             is ServerLocation.PluginDirectoryUnknown ->
-                "The plugin could not locate its own installation directory, so it cannot find its bundled " +
-                    "language server. Set the server path in the Newspeak settings."
+                NewspeakBundle.message("notification.server.missing.plugin.directory")
             is ServerLocation.Found -> return
         }
         NotificationGroupManager.getInstance()
             .getNotificationGroup("Newspeak")
-            .createNotification("Newspeak: errors and semantic colours are off", content, NotificationType.WARNING)
-            .addAction(NotificationAction.createSimpleExpiring("Configure…") {
+            .createNotification(NewspeakBundle.message("notification.server.missing.title"), content, NotificationType.WARNING)
+            .addAction(NotificationAction.createSimpleExpiring(NewspeakBundle.message("notification.server.configure")) {
                 ShowSettingsUtil.getInstance().showSettingsDialog(project, NewspeakSettingsConfigurable::class.java)
             })
             .notify(project)

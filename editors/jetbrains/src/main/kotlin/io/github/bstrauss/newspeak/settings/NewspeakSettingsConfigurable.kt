@@ -6,33 +6,28 @@ import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.dsl.builder.AlignX
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.panel
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.lsp.restartNewspeakServers
 
-class NewspeakSettingsConfigurable : BoundConfigurable("Newspeak") {
+class NewspeakSettingsConfigurable : BoundConfigurable(NewspeakBundle.message("settings.display.name")) {
     override fun createPanel(): DialogPanel {
         val settings = NewspeakSettings.getInstance().state
         return panel {
-            row("ns-next-analyzer path:") {
+            row(NewspeakBundle.message("settings.server.path.label")) {
                 textFieldWithBrowseButton(
-                    FileChooserDescriptorFactory.singleFile().withTitle("Choose the ns-next-analyzer Executable"),
+                    FileChooserDescriptorFactory.singleFile().withTitle(NewspeakBundle.message("settings.server.path.chooser.title")),
                 )
                     .bindText({ settings.serverPath.orEmpty() }, { text -> settings.serverPath = text.trim().ifEmpty { null } })
                     .align(AlignX.FILL)
-                    .comment(
-                        "Leave empty to use the ns-next-analyzer bundled with the plugin. Point it at a locally built " +
-                            "target/debug/ns-next-analyzer to see changes to ns-next's parser or resolver at once."
-                    )
+                    .comment(NewspeakBundle.message("settings.server.path.comment"))
             }
-            row("ns-next path:") {
+            row(NewspeakBundle.message("settings.runtime.path.label")) {
                 textFieldWithBrowseButton(
-                    FileChooserDescriptorFactory.singleFile().withTitle("Choose the ns-next Executable"),
+                    FileChooserDescriptorFactory.singleFile().withTitle(NewspeakBundle.message("settings.runtime.path.chooser.title")),
                 )
                     .bindText({ settings.runtimePath.orEmpty() }, { text -> settings.runtimePath = text.trim().ifEmpty { null } })
                     .align(AlignX.FILL)
-                    .comment(
-                        "The ns-next runtime that Newspeak run configurations start; build it with " +
-                            "cargo build -p ns-cli --release. It is not bundled with the plugin."
-                    )
+                    .comment(NewspeakBundle.message("settings.runtime.path.comment"))
             }
         }
     }

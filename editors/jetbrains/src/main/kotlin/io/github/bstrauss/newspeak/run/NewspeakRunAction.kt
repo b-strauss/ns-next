@@ -10,6 +10,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
+import io.github.bstrauss.newspeak.NewspeakBundle
 
 /** One entry of the play button's menu: runs or benchmarks a project, one of its scripts, or a module. */
 class NewspeakRunAction(
@@ -18,8 +19,8 @@ class NewspeakRunAction(
     val command: NewspeakCommand,
 ) : AnAction(
     when (command) {
-        NewspeakCommand.RUN -> "Run"
-        NewspeakCommand.BENCH -> "Benchmark"
+        NewspeakCommand.RUN -> NewspeakBundle.message("run.command.run")
+        NewspeakCommand.BENCH -> NewspeakBundle.message("run.command.benchmark")
     },
     null,
     when (command) {
@@ -40,9 +41,13 @@ class NewspeakRunAction(
 /** What the gutter names a configuration: a project by its directory, a module by its file; the script; whether it benchmarks. */
 fun gutterConfigurationName(programFile: VirtualFile, script: String?, command: NewspeakCommand): String {
     val programName = if (programFile.name == PROJECT_FILE_NAME) programFile.parent?.name ?: programFile.name else programFile.name
-    val scriptPart = script?.let { name -> " [$name]" }.orEmpty()
-    val benchmarkPart = if (command == NewspeakCommand.BENCH) " (benchmark)" else ""
-    return programName + scriptPart + benchmarkPart
+    val benchmark = command == NewspeakCommand.BENCH
+    return when {
+        script != null && benchmark -> NewspeakBundle.message("run.configuration.name.script.benchmark", programName, script)
+        script != null -> NewspeakBundle.message("run.configuration.name.script", programName, script)
+        benchmark -> NewspeakBundle.message("run.configuration.name.benchmark", programName)
+        else -> programName
+    }
 }
 
 /**

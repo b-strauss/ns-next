@@ -5,6 +5,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.jetbrains.jsonSchema.extension.JsonSchemaFileProvider
 import com.jetbrains.jsonSchema.extension.JsonSchemaProviderFactory
 import com.jetbrains.jsonSchema.extension.SchemaType
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.run.PROJECT_FILE_NAME
 
 /**
@@ -18,7 +19,7 @@ class NewspeakJsonSchemaProviderFactory : JsonSchemaProviderFactory {
     private object Provider : JsonSchemaFileProvider {
         override fun isAvailable(file: VirtualFile): Boolean = file.name == PROJECT_FILE_NAME
 
-        override fun getName(): String = "ns-next project"
+        override fun getName(): String = NewspeakBundle.message("json.schema.name")
 
         override fun getSchemaFile(): VirtualFile? =
             JsonSchemaProviderFactory.getResourceFile(

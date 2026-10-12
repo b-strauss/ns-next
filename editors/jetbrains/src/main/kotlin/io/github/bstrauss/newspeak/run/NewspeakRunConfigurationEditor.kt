@@ -15,6 +15,7 @@ import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.ui.layout.ComponentPredicate
 import com.intellij.ui.layout.selectedValueIs
 import com.intellij.util.execution.ParametersListUtil
+import io.github.bstrauss.newspeak.NewspeakBundle
 import javax.swing.JComponent
 import javax.swing.event.DocumentEvent
 
@@ -39,40 +40,40 @@ class NewspeakRunConfigurationEditor : SettingsEditor<NewspeakRunConfiguration>(
 
     // Built at construction rather than in createEditor, so resetEditorFrom finds the fields whatever the order.
     private val form = panel {
-        row("Program:") {
+        row(NewspeakBundle.message("run.configuration.editor.program.label")) {
             programField = textFieldWithBrowseButton(
                 FileChooserDescriptorFactory.singleFile()
-                    .withTitle("Choose a Project's newspeak.json or a .ns Module")
+                    .withTitle(NewspeakBundle.message("run.configuration.editor.program.chooser.title"))
                     .withFileFilter { file -> file.name == PROJECT_FILE_NAME || file.extension == "ns" },
             )
                 .align(AlignX.FILL)
                 .component
         }
-        row("Command:") {
+        row(NewspeakBundle.message("run.configuration.editor.command.label")) {
             commandBox = comboBox(
                 NewspeakCommand.entries,
                 textListCellRenderer { command ->
                     when (command) {
-                        NewspeakCommand.RUN -> "Run"
-                        NewspeakCommand.BENCH -> "Benchmark"
+                        NewspeakCommand.RUN -> NewspeakBundle.message("run.command.run")
+                        NewspeakCommand.BENCH -> NewspeakBundle.message("run.command.benchmark")
                         null -> null
                     }
                 },
             ).component
         }
-        row("Script:") {
+        row(NewspeakBundle.message("run.configuration.editor.script.label")) {
             scriptField = textField()
                 .align(AlignX.FILL)
-                .comment("Empty for none; a project's only")
+                .comment(NewspeakBundle.message("run.configuration.editor.script.comment"))
                 .component
         }.enabledIf(programIsAProject)
-        row("Arguments:") {
+        row(NewspeakBundle.message("run.configuration.editor.arguments.label")) {
             // The same splitting the command line applies, so what the expanded editor shows is what ns-next gets.
             argumentsField = expandableTextField(ParametersListUtil.DEFAULT_LINE_PARSER, ParametersListUtil.DEFAULT_LINE_JOINER)
                 .align(AlignX.FILL)
                 .component
         }
-        row("Iterations:") {
+        row(NewspeakBundle.message("run.configuration.editor.iterations.label")) {
             iterationsSpinner = spinner(1..Int.MAX_VALUE).component
         }.enabledIf(commandBox.selectedValueIs(NewspeakCommand.BENCH))
     }

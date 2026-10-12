@@ -5,43 +5,44 @@ import com.intellij.openapi.fileTypes.SyntaxHighlighter
 import com.intellij.openapi.options.colors.AttributesDescriptor
 import com.intellij.openapi.options.colors.ColorDescriptor
 import com.intellij.openapi.options.colors.ColorSettingsPage
+import io.github.bstrauss.newspeak.NewspeakBundle
 import io.github.bstrauss.newspeak.NewspeakIcons
 import javax.swing.Icon
 
 class NewspeakColorSettingsPage : ColorSettingsPage {
-    override fun getDisplayName(): String = "Newspeak"
+    override fun getDisplayName(): String = NewspeakBundle.message("color.settings.display.name")
     override fun getIcon(): Icon = NewspeakIcons.FILE
     override fun getHighlighter(): SyntaxHighlighter = NewspeakSyntaxHighlighter()
     override fun getColorDescriptors(): Array<ColorDescriptor> = ColorDescriptor.EMPTY_ARRAY
 
     override fun getAttributeDescriptors(): Array<AttributesDescriptor> = arrayOf(
-        AttributesDescriptor("Keywords//class, access modifiers and lazy", NewspeakColors.KEYWORD),
-        AttributesDescriptor("Keywords//Reserved words (self, super, outer, true, false, nil)", NewspeakColors.RESERVED_WORD),
-        AttributesDescriptor("Keywords//Return (^)", NewspeakColors.RETURN),
-        AttributesDescriptor("Identifier", NewspeakColors.IDENTIFIER),
-        AttributesDescriptor("Selectors//Keyword selector", NewspeakColors.KEYWORD_SELECTOR),
-        AttributesDescriptor("Selectors//Setter (name::)", NewspeakColors.SETTER_KEYWORD),
-        AttributesDescriptor("Selectors//Binary selector", NewspeakColors.BINARY_SELECTOR),
-        AttributesDescriptor("Selectors//Angle brackets (< and >)", NewspeakColors.ANGLE_BRACKET),
-        AttributesDescriptor("Operators//Assignment, mixin application and eventual send (=, ::=, <:, <-:)", NewspeakColors.ASSIGNMENT),
-        AttributesDescriptor("Literals//Number", NewspeakColors.NUMBER),
-        AttributesDescriptor("Literals//String", NewspeakColors.STRING),
-        AttributesDescriptor("Literals//Symbol", NewspeakColors.SYMBOL),
-        AttributesDescriptor("Comment", NewspeakColors.COMMENT),
-        AttributesDescriptor("Braces//Parentheses", NewspeakColors.PARENTHESES),
-        AttributesDescriptor("Braces//Brackets", NewspeakColors.BRACKETS),
-        AttributesDescriptor("Braces//Braces", NewspeakColors.BRACES),
-        AttributesDescriptor("Braces//Slot bars", NewspeakColors.SLOT_BARS),
-        AttributesDescriptor("Punctuation//Dot", NewspeakColors.DOT),
-        AttributesDescriptor("Punctuation//Semicolon", NewspeakColors.SEMICOLON),
-        AttributesDescriptor("Bad character", NewspeakColors.BAD_CHARACTER),
-        AttributesDescriptor("Semantic//Parameter", NewspeakColors.PARAMETER),
-        AttributesDescriptor("Semantic//Local variable", NewspeakColors.LOCAL_VARIABLE),
-        AttributesDescriptor("Semantic//Slot", NewspeakColors.SLOT),
-        AttributesDescriptor("Semantic//Immutable slot", NewspeakColors.IMMUTABLE_SLOT),
-        AttributesDescriptor("Semantic//Class", NewspeakColors.CLASS_NAME),
-        AttributesDescriptor("Semantic//Method declaration", NewspeakColors.METHOD_DECLARATION),
-        AttributesDescriptor("Semantic//Send", NewspeakColors.SEND),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.keywords.keyword"), NewspeakColors.KEYWORD),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.keywords.reserved"), NewspeakColors.RESERVED_WORD),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.keywords.return"), NewspeakColors.RETURN),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.identifier"), NewspeakColors.IDENTIFIER),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.selectors.keyword"), NewspeakColors.KEYWORD_SELECTOR),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.selectors.setter"), NewspeakColors.SETTER_KEYWORD),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.selectors.binary"), NewspeakColors.BINARY_SELECTOR),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.selectors.angle.brackets"), NewspeakColors.ANGLE_BRACKET),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.operators.assignment"), NewspeakColors.ASSIGNMENT),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.literals.number"), NewspeakColors.NUMBER),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.literals.string"), NewspeakColors.STRING),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.literals.symbol"), NewspeakColors.SYMBOL),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.comment"), NewspeakColors.COMMENT),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.parentheses"), NewspeakColors.PARENTHESES),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.brackets"), NewspeakColors.BRACKETS),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.braces"), NewspeakColors.BRACES),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.braces.slot.bars"), NewspeakColors.SLOT_BARS),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.punctuation.dot"), NewspeakColors.DOT),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.punctuation.semicolon"), NewspeakColors.SEMICOLON),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.bad.character"), NewspeakColors.BAD_CHARACTER),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.parameter"), NewspeakColors.PARAMETER),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.local.variable"), NewspeakColors.LOCAL_VARIABLE),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.slot"), NewspeakColors.SLOT),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.immutable.slot"), NewspeakColors.IMMUTABLE_SLOT),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.class"), NewspeakColors.CLASS_NAME),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.method.declaration"), NewspeakColors.METHOD_DECLARATION),
+        AttributesDescriptor(NewspeakBundle.lazyMessage("color.settings.semantic.send"), NewspeakColors.SEND),
     )
 
     override fun getAdditionalHighlightingTagToDescriptorMap(): Map<String, TextAttributesKey> = mapOf(
