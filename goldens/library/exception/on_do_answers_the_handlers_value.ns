@@ -19,7 +19,8 @@ class OnDoAnswersTheHandlersValue = Object new () (
         show: ([
           Error signal.
           5.
-        ] on: Error do: [6]) printString;
+        ] on: Error do: [6])
+            printString;
         newLine.
   )
 )

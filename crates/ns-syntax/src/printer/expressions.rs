@@ -255,9 +255,9 @@ fn send_chain(send: &Send) -> Document {
 }
 
 /// `receiver` with the messages of `run` sent to it, the continuation
-/// lines one step in. A receiver that breaks by itself ends on a line of its
-/// own (`]`), so the messages after it are a group of their own, decided on
-/// that line. A link that breaks by itself (an operand hugging its blocks)
+/// lines one step in. After a receiver that may take more than one line,
+/// the messages are a group of their own, decided once it is written: on
+/// its last line when that ends on a broken block's `]`, else broken. A link that breaks by itself (an operand hugging its blocks)
 /// hugs as a block argument does: the links up to it stay on the line,
 /// outside any continuation indent, so its body is indented from the line
 /// it opens on, and the links after it are again a group of their own.
@@ -271,8 +271,7 @@ fn finish_run(receiver: Option<Document>, run: Option<Run>) -> Option<Document> 
     let Some(last_breaking) = run.links.iter().rposition(forces_break) else {
         let links = continued(run.links);
         return Some(match receiver {
-            Some(receiver) if forces_break(&receiver) => concat(vec![receiver, group(links)]),
-            Some(receiver) if may_end_on_a_block(&receiver) => Document::Follow {
+            Some(receiver) if may_end_on_a_line_of_its_own(&receiver) => Document::Follow {
                 receiver: Box::new(receiver),
                 rest: Box::new(group(links)),
             },
@@ -315,9 +314,9 @@ fn continued(links: Vec<Document>) -> Document {
 }
 
 /// A receiver that breaks by itself (a multi-line block, a multi-line
-/// string) opens at the line end and its messages follow its last line, as
-/// rule 15 asks of a receiver block: its break is kept from forcing the
-/// messages sent to it onto lines of their own.
+/// string) opens at the line end, as rule 15 asks of a receiver block: its
+/// break is kept from breaking the group around it, so where the messages
+/// sent to it go is decided by where it ends (`Document::Follow`).
 fn receiver_head(receiver: Document) -> Document {
     if forces_break(&receiver) {
         Document::Choice(vec![receiver])
@@ -519,11 +518,11 @@ fn keyword_message(receiver: Option<Document>, message: &MessageSend) -> Documen
     let hugs = arguments.iter().any(Argument::hugs);
     // A message hugging its blocks is decided on the receiver's last line,
     // however the receiver broke: rule 13 asks only that the parts outside
-    // the block bodies fit there. A message without one follows a receiver
-    // that may end on a block's `]` there, and breaks first after any other.
+    // the block bodies fit there. A message without one is decided once the
+    // receiver is written, by where its last line ends.
     let (written_first, head) = match receiver {
-        Some(receiver) if hugs || forces_break(&receiver) => (Some(receiver), Head::AfterReceiver),
-        Some(receiver) if may_end_on_a_block(&receiver) => {
+        Some(receiver) if hugs => (Some(receiver), Head::AfterReceiver),
+        Some(receiver) if may_end_on_a_line_of_its_own(&receiver) => {
             return Document::Follow {
                 receiver: Box::new(receiver),
                 rest: Box::new(standard(&Head::AfterReceiver, &parts, &arguments, false)),
@@ -787,12 +786,17 @@ fn is_text(document: &Document) -> bool {
     true
 }
 
-/// Whether `document`, laid out, may end on a block's `]` that it opens at
-/// a line end when it does not fit: it holds a receiver block or a message
-/// hugging its blocks, each behind a `Choice`. A message sent to it is then
-/// decided where it ends (`Document::Follow`); measured as one line with
-/// it, the message would count it as written flat.
-fn may_end_on_a_block(document: &Document) -> bool {
+/// Whether `document`, laid out, may take more than one line: it holds a
+/// line break whatever the width, or a receiver block or a message hugging
+/// its blocks, each behind a `Choice`. A message sent to it is then decided
+/// once it is written (`Document::Follow`): on its last line when that ends
+/// on a broken block's `]` or a multi-line string, else on a line of its
+/// own. Measured as one line with it, the message would count it as written
+/// flat.
+fn may_end_on_a_line_of_its_own(document: &Document) -> bool {
+    if forces_break(document) {
+        return true;
+    }
     let mut pending = vec![document];
     while let Some(document) = pending.pop() {
         match document {

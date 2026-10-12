@@ -48,7 +48,8 @@ class SendToIsAPublicSend = Object new () (
     transcript
         show: ((Message new
             selector: #at:;
-            arguments: {2}) sendTo: {7. 8}) printString;
+            arguments: {2}) sendTo: {7. 8})
+            printString;
         newLine.
     transcript
         show: ((Message new selector: #open) sendTo: holder);

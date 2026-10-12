@@ -12,7 +12,8 @@ class HaltResumesWhenHandledAndEndsTheRunWhenNot = Object new () (
         show: ([
           self halt.
           3.
-        ] on: Halt do: [:e | e resume: 7]) printString;
+        ] on: Halt do: [:e | e resume: 7])
+            printString;
         newLine.
     transcript
         show: ([self halt] on: Halt do: [:e | e resume: 7]) printString;

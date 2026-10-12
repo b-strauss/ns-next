@@ -33,7 +33,8 @@ class ASetChangedWhileIteratedSignals = Object new () (
             set add: each + 10.
             false.
           ].
-        ] on: Modified do: [:error | #removeAllSuchThat]) printString;
+        ] on: Modified do: [:error | #removeAllSuchThat])
+            printString;
         newLine.
   )
 )

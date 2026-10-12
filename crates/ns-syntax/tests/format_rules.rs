@@ -463,6 +463,39 @@ fn rule_12_a_message_follows_only_a_receiver_that_ends_on_a_broken_block() {
     assert_eq!(formatted(&input), expected);
 }
 
+/// Whether a block in the receiver breaks for width or has to break (two
+/// statements), the message after it is decided by the receiver's last
+/// line alone: here `yy)`, so it goes on a continuation line of its own.
+/// After a broken block's `]` or a multi-line string it follows on the line.
+#[test]
+fn rule_12_a_receiver_that_must_break_is_followed_like_one_that_breaks_for_width() {
+    let input = in_method(indoc! {"
+        (someReceiver withAVeryLongSelector: argumentNumberOne and: [someOtherObject doSomethingRatherLongWith: argumentNumberTwo] andMore: yy) printString.
+        (someReceiver withAVeryLongSelector: argumentNumberOne and: [someOtherObject doSomething. argumentNumberTwo] andMore: yy) printString.
+        (target foo: [step. step]) bar.
+        'one
+        two' size
+    "});
+    let expected = method_text(indoc! {"
+        (someReceiver withAVeryLongSelector: argumentNumberOne and: [
+          someOtherObject doSomethingRatherLongWith: argumentNumberTwo.
+        ] andMore: yy)
+            printString.
+        (someReceiver withAVeryLongSelector: argumentNumberOne and: [
+          someOtherObject doSomething.
+          argumentNumberTwo.
+        ] andMore: yy)
+            printString.
+        (target foo: [
+          step.
+          step.
+        ]) bar.
+    "});
+    // The string's second line stays at column 0, as written.
+    let expected = expected.replace("  )\n", "    'one\ntwo' size.\n  )\n");
+    assert_eq!(formatted(&input), expected);
+}
+
 /// Block arguments hug after a receiver broken by the keyword rule, as
 /// after any other: only the parts outside the block bodies must fit.
 #[test]

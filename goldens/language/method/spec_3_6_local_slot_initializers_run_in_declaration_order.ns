@@ -40,7 +40,9 @@ class Spec36LocalSlotInitializersRunInDeclarationOrder = Object new () (
           |
             only = 1.
           |
-        ] value == nil) printString;
+        ] value
+            == nil)
+            printString;
         newLine.
   )
 )

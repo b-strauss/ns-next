@@ -50,7 +50,8 @@ class AnIdentityMapComparesKeysByIdentity = Object new () (
     transcript
         show: (identity
             at: 'abc' put: 3;
-            at: 'ab' , 'c') printString;
+            at: 'ab' , 'c')
+            printString;
         newLine.
     transcript
         show: (identity at: first putReplace: 10) printString;

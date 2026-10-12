@@ -22,7 +22,8 @@ class AResumedHandlerIsEnabledAgain = Object new () (
                 newLine.
             e pass.
           ].
-        ] on: Exception do: [:e | e resume: 10]) printString;
+        ] on: Exception do: [:e | e resume: 10])
+            printString;
         newLine.
   )
 )

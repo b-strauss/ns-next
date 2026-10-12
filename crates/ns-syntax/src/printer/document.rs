@@ -55,8 +55,8 @@ pub(crate) enum Document {
     /// to what ends there may follow it on its line (`Follow`).
     BlockEnd,
     /// A receiver, then the messages sent to it, `rest`, a `Group`. When the
-    /// receiver ends on a broken block's `]` (only `)` after it), or did not
-    /// break, the group is decided where the receiver ends; when the
+    /// receiver ends on a broken block's `]` or a multi-line string (only `)`
+    /// after it), or did not break, the group is decided where the receiver ends; when the
     /// receiver broke otherwise, the outer level breaks first: the group is
     /// broken.
     Follow {
@@ -467,15 +467,16 @@ struct Writer<'text> {
     remeasure: bool,
     /// How many line breaks have been written.
     line_breaks: usize,
-    /// Where the `]` of the last broken block ended in `output`.
+    /// Where the `]` of the last broken block, or the last multi-line string,
+    /// ended in `output`.
     block_end: Option<usize>,
     line_suffixes: Vec<&'text str>,
     line_ending: &'text str,
 }
 
 impl Writer<'_> {
-    /// Whether the output ends on a broken block's `]`, closing parentheses
-    /// aside.
+    /// Whether the output ends on a broken block's `]` or a multi-line
+    /// string, closing parentheses aside.
     fn ends_after_block(&self) -> bool {
         self.block_end
             .and_then(|end| self.output.get(end..))
@@ -545,6 +546,9 @@ impl Writer<'_> {
             Some(last_line) => {
                 self.remeasure = true;
                 self.line_breaks += 1;
+                // A message may follow a multi-line string on its last line,
+                // as it follows a broken block's `]`.
+                self.block_end = Some(self.output.len());
                 content[last_line..].chars().count()
             }
             None => self.column + content.chars().count(),

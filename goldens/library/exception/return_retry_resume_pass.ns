@@ -17,20 +17,23 @@ class ReturnRetryResumePass = Object new (
         show: ([
           Error signal.
           1.
-        ] on: Error do: [:e | e return: 5]) printString;
+        ] on: Error do: [:e | e return: 5])
+            printString;
         newLine.
     transcript
         show: ([
           Error signal.
           1.
-        ] on: Error do: [:e | e return]) printString;
+        ] on: Error do: [:e | e return])
+            printString;
         newLine.
     transcript
         show: ([
           attempts:: attempts + 1.
           attempts < 3 ifTrue: [Error signal].
           attempts.
-        ] on: Error do: [:e | e retry]) printString;
+        ] on: Error do: [:e | e retry])
+            printString;
         newLine.
     transcript
         show: ([Exception signal] on: Exception do: [:e | e resume: 7]) printString;
@@ -47,7 +50,8 @@ class ReturnRetryResumePass = Object new (
         show: ([
           Error signal.
           1.
-        ] on: Error do: [:e | e resume: 7]) printString;
+        ] on: Error do: [:e | e resume: 7])
+            printString;
         newLine.
     transcript
         show: 'not reached';

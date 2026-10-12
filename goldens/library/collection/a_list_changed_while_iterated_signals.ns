@@ -34,7 +34,8 @@ class AListChangedWhileIteratedSignals = Object new () (
         show: ([
           list do: [:each | list removeFirst].
           #finished.
-        ] on: Modified do: [:error | #signalled]) printString;
+        ] on: Modified do: [:error | #signalled])
+            printString;
         newLine.
     list:: List withAll: {3. 1. 2}.
     list do: [:each | list at: 1 put: each].
@@ -60,7 +61,8 @@ class AListChangedWhileIteratedSignals = Object new () (
             list add: 0.
             false.
           ].
-        ] on: Modified do: [:error | #anySatisfy]) printString;
+        ] on: Modified do: [:error | #anySatisfy])
+            printString;
         newLine.
     transcript
         show: ([
@@ -68,7 +70,8 @@ class AListChangedWhileIteratedSignals = Object new () (
             list add: 0.
             false.
           ].
-        ] on: Modified do: [:error | #removeAllSuchThat]) printString;
+        ] on: Modified do: [:error | #removeAllSuchThat])
+            printString;
         newLine.
     list:: List withAll: {3. 1. 2}.
     transcript
@@ -77,7 +80,8 @@ class AListChangedWhileIteratedSignals = Object new () (
             list size = 3 ifTrue: [list removeLast].
             left <= right.
           ].
-        ] on: Modified do: [:error | error collection == list]) printString;
+        ] on: Modified do: [:error | error collection == list])
+            printString;
         newLine.
     list do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
     transcript newLine.
@@ -88,7 +92,8 @@ class AListChangedWhileIteratedSignals = Object new () (
             list add: 0.
             left <= right.
           ].
-        ] on: Modified do: [:error | #sortAdded]) printString;
+        ] on: Modified do: [:error | #sortAdded])
+            printString;
         newLine.
     (list copyFrom: 1 to: 4) do: [:each |
       transcript show: each printString.

@@ -11,22 +11,26 @@ class Spec544ACascadeTakesEveryBinarySelector = Object new () (
     t
         show: (3
             printString;
-            = 3) printString;
+            = 3)
+            printString;
         newLine.
     t
         show: (3
             + 1;
-            < 4) printString;
+            < 4)
+            printString;
         newLine.
     t
         show: (3
             + 1;
-            > 4) printString;
+            > 4)
+            printString;
         newLine.
     t
         show: ({7. 8}
             size;
-            at: 2) printString;
+            at: 2)
+            printString;
         newLine.
   )
 )

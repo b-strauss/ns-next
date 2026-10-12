@@ -10,7 +10,8 @@ class Spec36ABlockParameterIsImmutable = Object new () (
         show: ([:value |
           value:: 5.
           value.
-        ] value: 1) printString;
+        ] value: 1)
+            printString;
         newLine.
   )
 )
