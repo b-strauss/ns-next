@@ -1,5 +1,5 @@
 //! The style rules of `docs/design/formatting.md`, one test per rule the
-//! printer of declarations decides.
+//! printer decides, for declarations and expressions.
 
 use indoc::indoc;
 use ns_syntax::LineEnding;
@@ -9,6 +9,377 @@ fn formatted(source: &str) -> String {
         Ok(text) => text,
         Err(diagnostics) => panic!("{diagnostics:?}"),
     }
+}
+
+/// `statements` as the body of a method `m` of a class `A`, unformatted.
+fn in_method(statements: &str) -> String {
+    format!("class A = () (\npublic m = (\n{statements}\n)\n)\n")
+}
+
+/// What `in_method` formats to when the body formats to `lines` (each line
+/// ending with a line break, indented from column 0).
+fn method_text(lines: &str) -> String {
+    let body: String = lines
+        .lines()
+        .map(|line| {
+            if line.is_empty() {
+                "\n".to_string()
+            } else {
+                format!("    {line}\n")
+            }
+        })
+        .collect();
+    format!("class A = () (\n  public m = (\n{body}  )\n)\n")
+}
+
+#[test]
+fn rule_12_a_long_binary_chain_breaks_before_each_operator() {
+    let input = in_method(
+        "message:: 'expected ' , expected printString , ' but got ' , actual printString , ' instead of it'",
+    );
+    let expected = method_text(indoc! {"
+        message:: 'expected '
+            , expected printString
+            , ' but got '
+            , actual printString
+            , ' instead of it'.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_13_block_arguments_hug_their_keywords() {
+    let input =
+        in_method("count > limit ifTrue: [ self reset. ^nil ] ifFalse: [ count:: count + 1 ]");
+    let expected = method_text(indoc! {"
+        count > limit ifTrue: [
+          self reset.
+          ^nil.
+        ] ifFalse: [
+          count:: count + 1.
+        ].
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_13_a_keyword_message_that_does_not_fit_breaks_after_the_first_keyword() {
+    let input = in_method(
+        "result:: dictionary at: someRatherLongKeyName ifAbsent: someRatherLongDefaultValue ifPresent: transformation",
+    );
+    let expected = method_text(indoc! {"
+        result:: dictionary at: someRatherLongKeyName
+            ifAbsent: someRatherLongDefaultValue
+            ifPresent: transformation.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_14_cascades_always_break() {
+    let input = in_method("stream nextPutAll: 'a'; print: 3; yourself");
+    let expected = method_text(indoc! {"
+        stream
+            nextPutAll: 'a';
+            print: 3;
+            yourself.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn rule_15_blocks_are_tight_and_one_line_only_with_one_statement() {
+    assert_eq!(
+        formatted(&in_method("items do: [ :each | each reset ]")),
+        method_text("items do: [:each | each reset].\n")
+    );
+    let expected = method_text(indoc! {"
+        items do: [:each |
+          each reset.
+          each start.
+        ].
+    "});
+    assert_eq!(
+        formatted(&in_method("items do: [:each | each reset. each start]")),
+        expected
+    );
+    assert_eq!(
+        formatted(&in_method("x:: [ ]. y:: [ :each | ]")),
+        method_text("x:: [].\ny:: [:each |].\n")
+    );
+}
+
+#[test]
+fn rule_15_a_block_with_temporaries_is_multi_line() {
+    let expected = method_text(indoc! {"
+        items do: [:each |
+          |
+            sum
+          |
+          sum:: each * 2.
+          total:: total + sum.
+        ].
+    "});
+    assert_eq!(
+        formatted(&in_method(
+            "items do: [:each | | sum | sum:: each * 2. total:: total + sum]"
+        )),
+        expected
+    );
+}
+
+#[test]
+fn rule_15_a_receiver_block_opens_at_the_line_end() {
+    let expected = method_text(indoc! {"
+        [
+          self step.
+          self isDone not.
+        ] whileTrue.
+    "});
+    assert_eq!(
+        formatted(&in_method("[self step. self isDone not] whileTrue")),
+        expected
+    );
+}
+
+#[test]
+fn rule_16_parentheses_are_kept() {
+    assert_eq!(
+        formatted(&in_method("^( ( a foo ) bar )")),
+        method_text("^((a foo) bar).\n")
+    );
+}
+
+#[test]
+fn rule_17_tuples_are_blocks_of_elements() {
+    assert_eq!(
+        formatted(&in_method("x:: { 1 . 2 . 3 . }")),
+        method_text("x:: {1. 2. 3}.\n")
+    );
+    let expected = method_text(indoc! {"
+        expected:: {
+          'first element of a tuple that is long enough'.
+          'second element of a tuple that is long enough'.
+        }.
+    "});
+    assert_eq!(
+        formatted(&in_method(
+            "expected:: {'first element of a tuple that is long enough'. 'second element of a tuple that is long enough'}"
+        )),
+        expected
+    );
+}
+
+#[test]
+fn rule_18_literals_are_kept_as_written() {
+    assert_eq!(
+        formatted(&in_method("^{16r1F. #'foo'. 'it''s'. \"c\". 1.5e3}")),
+        method_text("^{16r1F. #'foo'. 'it''s'. \"c\". 1.5e3}.\n")
+    );
+}
+
+#[test]
+fn rule_18_a_multi_line_string_is_not_reindented() {
+    let input = "class A = () (\n        public m = ( ^'one\n  two' )\n)\n";
+    let expected = "class A = () (\n  public m = (\n    ^'one\n  two'.\n  )\n)\n";
+    assert_eq!(formatted(input), expected);
+}
+
+#[test]
+fn rule_19_and_25_spacing() {
+    assert_eq!(
+        formatted(&in_method("count::count+1. a   <-:   foo. ^ x at:1")),
+        method_text("count:: count + 1.\na <-: foo.\n^x at: 1.\n")
+    );
+}
+
+#[test]
+fn rule_12_a_long_unary_chain_puts_each_selector_on_its_own_line() {
+    let input = in_method(
+        "result:: someCollectionWithAVeryLongName asSortedCollection reversed asArray asOrderedCollection asSet",
+    );
+    let expected = method_text(indoc! {"
+        result:: someCollectionWithAVeryLongName
+            asSortedCollection
+            reversed
+            asArray
+            asOrderedCollection
+            asSet.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+#[test]
+fn value_site_type_arguments_follow_their_receiver() {
+    assert_eq!(
+        formatted(&in_method("^Box[Integer]   new")),
+        method_text("^Box[Integer] new.\n")
+    );
+}
+
+#[test]
+fn an_implicit_receiver_prints_nothing_and_an_explicit_self_is_kept() {
+    assert_eq!(
+        formatted(&in_method("foo:3. self   foo. bar baz")),
+        method_text("foo: 3.\nself foo.\nbar baz.\n")
+    );
+}
+
+#[test]
+fn rule_19_a_setter_breaks_inside_its_value_never_after_the_colons() {
+    let input = in_method(
+        "someRatherLongVariableName:: firstOperandWithALongName + secondOperandWithALongName + thirdOperandName",
+    );
+    let expected = method_text(indoc! {"
+        someRatherLongVariableName:: firstOperandWithALongName
+            + secondOperandWithALongName
+            + thirdOperandName.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// Outside in: the binary level breaks first and every operand that then
+/// fits stays whole; only an operand still too long breaks its own chain.
+#[test]
+fn rule_12_an_operand_breaks_its_unary_chain_only_after_the_binary_level() {
+    let input = in_method(
+        "total:: firstValueWithALongName asFloat + anotherValueWithAVeryLongName asSortedCollection asOrderedCollection asArray reversed first asFloat + thirdValueWithAnEvenLongerName asFloat",
+    );
+    let expected = method_text(indoc! {"
+        total:: firstValueWithALongName asFloat
+            + anotherValueWithAVeryLongName
+                asSortedCollection
+                asOrderedCollection
+                asArray
+                reversed
+                first
+                asFloat
+            + thirdValueWithAnEvenLongerName asFloat.
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// A keyword message whose first line ends at a block's `[` keeps a
+/// non-block argument after it on the `]` line.
+#[test]
+fn rule_13_a_short_block_hugs_when_the_message_does_not_fit_on_one_line() {
+    let input = in_method(
+        "collection inject: initialValueWithAVeryLongName into: [:accumulated :each | accumulated + each weightedValue]",
+    );
+    let expected = method_text(indoc! {"
+        collection inject: initialValueWithAVeryLongName into: [:accumulated :each |
+          accumulated + each weightedValue.
+        ].
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// When even the line up to the first `[` does not fit, the message breaks
+/// by the keyword rule and each block is one line again where it fits.
+#[test]
+fn rule_13_a_message_too_long_to_hug_breaks_at_every_keyword() {
+    let input = in_method(
+        "someReceiverWithAVeryLongNameIndeed computeSomethingFrom: anArgumentWithAnotherLongName ifAbsent: [nil] ifPresent: [:found | found]",
+    );
+    let expected = method_text(indoc! {"
+        someReceiverWithAVeryLongNameIndeed computeSomethingFrom: anArgumentWithAnotherLongName
+            ifAbsent: [nil]
+            ifPresent: [:found | found].
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// A block or a tuple whose one statement or element breaks by itself has
+/// no one-line form, though that statement hugs blocks of its own.
+#[test]
+fn rule_15_and_17_content_that_breaks_by_itself_opens_its_block_or_tuple() {
+    let expected = method_text(indoc! {"
+        action:: [:each |
+          each isEmpty ifTrue: [
+            each reset.
+            each start.
+          ].
+        ].
+        ^{
+          items.
+          condition ifTrue: [
+            step.
+            step.
+          ].
+        }.
+    "});
+    assert_eq!(
+        formatted(&in_method(
+            "action:: [:each | each isEmpty ifTrue: [each reset. each start]]. ^{items. condition ifTrue: [step. step]}"
+        )),
+        expected
+    );
+}
+
+/// What follows a hugged block's `]` is measured again: a bare argument
+/// there leaves the measuring to the next message that can break.
+#[test]
+fn rule_13_a_message_after_a_hugged_block_is_measured_again() {
+    let input = in_method(
+        "(button: icon action: [toggle. refresh] size: buttonSize) toolTip: (isFocused ifTrue: ['a rather long tool tip when focused'] ifFalse: ['another rather long tool tip'])",
+    );
+    let expected = method_text(indoc! {"
+        (button: icon action: [
+          toggle.
+          refresh.
+        ] size: buttonSize) toolTip: (isFocused ifTrue: [
+          'a rather long tool tip when focused'.
+        ] ifFalse: [
+          'another rather long tool tip'.
+        ]).
+    "});
+    assert_eq!(formatted(&input), expected);
+}
+
+/// Every alternative of a message with block arguments holds the blocks'
+/// bodies; nesting such messages must not multiply them.
+#[test]
+fn deeply_nested_block_arguments_format_in_linear_time() {
+    const LEVELS: usize = 30;
+    let mut source = "step. step".to_string();
+    for _ in 0..LEVELS {
+        source = format!("condition ifTrue: [step. {source}]");
+    }
+    let mut lines = String::new();
+    for level in 0..LEVELS {
+        lines.push_str(&format!("{}condition ifTrue: [\n", "  ".repeat(level)));
+        lines.push_str(&format!("{}step.\n", "  ".repeat(level + 1)));
+    }
+    lines.push_str(&format!("{}step.\n", "  ".repeat(LEVELS)));
+    lines.push_str(&format!("{}step.\n", "  ".repeat(LEVELS)));
+    for level in (0..LEVELS).rev() {
+        lines.push_str(&format!("{}].\n", "  ".repeat(level)));
+    }
+    assert_eq!(formatted(&in_method(&source)), method_text(&lines));
+}
+
+/// A chain is lowered and laid out link by link: 100,000 links of a binary
+/// and of a unary chain format on a 256 KiB stack.
+#[test]
+fn a_long_chain_formats_on_a_small_stack() {
+    const LINKS: usize = 100_000;
+    const STACK_BYTES: usize = 256 * 1024;
+    std::thread::Builder::new()
+        .stack_size(STACK_BYTES)
+        .spawn(|| {
+            for (link, continuation) in [(" + 1", "+ 1"), (" next", "next")] {
+                let source = in_method(&format!("^1{}", link.repeat(LINKS)));
+                let mut lines = String::from("^1\n");
+                for _ in 1..LINKS {
+                    lines.push_str(&format!("    {continuation}\n"));
+                }
+                lines.push_str(&format!("    {continuation}.\n"));
+                assert!(formatted(&source) == method_text(&lines));
+            }
+        })
+        .expect("spawn the formatting thread")
+        .join()
+        .expect("a long chain formats on a small stack");
 }
 
 #[test]

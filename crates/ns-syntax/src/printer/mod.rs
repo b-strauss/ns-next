@@ -3,7 +3,7 @@
 mod declarations;
 #[expect(
     dead_code,
-    reason = "the parts for comments and for breaking expressions wait for those to be printed"
+    reason = "the parts for comments wait for comments to be printed"
 )]
 mod document;
 mod expressions;

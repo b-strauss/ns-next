@@ -1,6 +1,7 @@
 //! A Wadler/Prettier document and its layout.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// What the printer lowers a module to before it decides where lines break.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +45,11 @@ pub(crate) enum Document {
     /// decided: then its alternatives are measured again.
     Choice(Vec<Document>),
     Concat(Vec<Document>),
+    /// A document that stands in several alternatives of `Choice`s, held
+    /// once: written and measured as its content. Each alternative of a
+    /// message with block arguments holds the same arguments, so without
+    /// sharing, nested messages would multiply them exponentially.
+    Shared(Rc<Document>),
 }
 
 pub(crate) fn text(content: impl Into<String>) -> Document {
@@ -98,6 +104,12 @@ fn take_children(document: &mut Document, pending: &mut Vec<Document>) {
             ));
         }
         Document::Choice(parts) | Document::Concat(parts) => pending.append(parts),
+        // Only the last holder takes the content apart; the others drop
+        // their count.
+        Document::Shared(content) => {
+            let held = std::mem::replace(content, Rc::new(Document::Concat(Vec::new())));
+            pending.extend(Rc::into_inner(held));
+        }
         Document::Text(_)
         | Document::Verbatim(_)
         | Document::Line
@@ -181,6 +193,11 @@ pub(crate) fn layout(document: &Document, width: u32, line_ending: &str) -> Stri
             Document::BreakParent => {}
             Document::Indent(columns, content) => commands.push(Command {
                 indentation: indentation.saturating_add(*columns),
+                mode,
+                document: content,
+            }),
+            Document::Shared(content) => commands.push(Command {
+                indentation,
                 mode,
                 document: content,
             }),
@@ -376,6 +393,10 @@ fn fits(
                 pending.push((mode, content));
                 ""
             }
+            Document::Shared(content) => {
+                pending.push((mode, &**content));
+                ""
+            }
             Document::Group(content) => {
                 let group_mode = if broken_groups.contains(&std::ptr::from_ref(document)) {
                     Mode::Break
@@ -411,23 +432,59 @@ fn fits(
 /// Marks every group that holds something forcing a line break, and every
 /// group around it, up to the nearest `Choice`: an alternative's line break
 /// is the alternative's, and choosing among alternatives is how the
-/// enclosing line avoids breaking.
+/// enclosing line avoids breaking. A `Shared` document is walked once; where
+/// it stands again, whether a forced break leaves it is remembered rather
+/// than found again, which keeps the pass linear in the distinct documents.
 fn broken_groups(document: &Document) -> BrokenGroups {
     enum Visit<'document> {
         Enter(&'document Document),
-        /// Leaves the innermost group or `Choice` of `enclosing`.
+        /// Leaves the innermost entry of `enclosing`.
         Leave,
     }
+    /// What stands around the visited part.
+    enum Enclosing {
+        Group(*const Document),
+        /// Where breaking stops.
+        Choice,
+        /// A shared document walked for the first time, and whether a
+        /// forced break inside it has reached its edge.
+        Shared {
+            content: *const Document,
+            breaks_out: bool,
+        },
+    }
+    /// Marks the groups around a forced break, innermost first.
+    fn mark(enclosing: &mut [Enclosing], broken: &mut BrokenGroups) {
+        for around in enclosing.iter_mut().rev() {
+            match around {
+                // A group already marked had every group around it marked
+                // then, on the same path: only a `Shared` content is reached
+                // by two paths, and it is walked only once.
+                Enclosing::Group(group) => {
+                    if !broken.insert(*group) {
+                        break;
+                    }
+                }
+                Enclosing::Choice => break,
+                Enclosing::Shared { breaks_out, .. } => *breaks_out = true,
+            }
+        }
+    }
     let mut broken = BrokenGroups::new();
-    // The groups around the visited part, innermost last; `None` for a
-    // `Choice`, where breaking stops.
-    let mut enclosing: Vec<Option<*const Document>> = Vec::new();
+    let mut shared_breaks_out: HashMap<*const Document, bool> = HashMap::new();
+    let mut enclosing: Vec<Enclosing> = Vec::new();
     let mut visits = vec![Visit::Enter(document)];
     while let Some(visit) = visits.pop() {
         let document = match visit {
             Visit::Enter(document) => document,
             Visit::Leave => {
-                enclosing.pop();
+                if let Some(Enclosing::Shared {
+                    content,
+                    breaks_out,
+                }) = enclosing.pop()
+                {
+                    shared_breaks_out.insert(content, breaks_out);
+                }
                 continue;
             }
         };
@@ -439,16 +496,31 @@ fn broken_groups(document: &Document) -> BrokenGroups {
                 false
             }
             Document::Group(content) => {
-                enclosing.push(Some(std::ptr::from_ref(document)));
+                enclosing.push(Enclosing::Group(std::ptr::from_ref(document)));
                 visits.push(Visit::Leave);
                 visits.push(Visit::Enter(content));
                 false
             }
             Document::Choice(alternatives) => {
-                enclosing.push(None);
+                enclosing.push(Enclosing::Choice);
                 visits.push(Visit::Leave);
                 visits.extend(alternatives.iter().map(Visit::Enter));
                 false
+            }
+            Document::Shared(content) => {
+                let content_address = Rc::as_ptr(content);
+                match shared_breaks_out.get(&content_address) {
+                    Some(breaks_out) => *breaks_out,
+                    None => {
+                        enclosing.push(Enclosing::Shared {
+                            content: content_address,
+                            breaks_out: false,
+                        });
+                        visits.push(Visit::Leave);
+                        visits.push(Visit::Enter(content));
+                        false
+                    }
+                }
             }
             Document::Concat(parts) => {
                 visits.extend(parts.iter().map(Visit::Enter));
@@ -461,13 +533,7 @@ fn broken_groups(document: &Document) -> BrokenGroups {
             | Document::LineSuffix(_) => false,
         };
         if forces_break {
-            // A group already marked had every group around it marked then.
-            for group in enclosing.iter().rev() {
-                match group {
-                    Some(group) if broken.insert(*group) => {}
-                    _ => break,
-                }
-            }
+            mark(&mut enclosing, &mut broken);
         }
     }
     broken
@@ -823,6 +889,65 @@ mod tests {
             group(concat(vec![text("also"), line(), text("long")])),
         ]);
         assert_eq!(layout(&document, 5, "\n"), "also\nlong");
+    }
+
+    /// A shared document is written as its content wherever it stands, and
+    /// its forced break breaks the groups around each place, the second
+    /// found from what the first walk remembered.
+    #[test]
+    fn a_shared_document_breaks_the_groups_around_every_place_it_stands() {
+        let body = Rc::new(concat(vec![text("a"), hard_line(), text("b")]));
+        let around = |body: &Rc<Document>| {
+            group(concat(vec![
+                text("x"),
+                line(),
+                Document::Shared(Rc::clone(body)),
+            ]))
+        };
+        let document = concat(vec![around(&body), hard_line(), around(&body)]);
+        assert_eq!(layout(&document, 100, "\n"), "x\na\nb\nx\na\nb");
+    }
+
+    /// A `Choice` whose alternatives share their content takes the first
+    /// whose first line fits, as with content of their own.
+    #[test]
+    fn alternatives_sharing_their_content_are_chosen_as_without_sharing() {
+        let argument = Rc::new(text("argument"));
+        let document = |width: u32| {
+            let choice = Document::Choice(vec![
+                concat(vec![
+                    text("message: "),
+                    Document::Shared(Rc::clone(&argument)),
+                ]),
+                concat(vec![
+                    text("message:"),
+                    indent(
+                        4,
+                        concat(vec![hard_line(), Document::Shared(Rc::clone(&argument))]),
+                    ),
+                ]),
+            ]);
+            layout(&choice, width, "\n")
+        };
+        assert_eq!(document(20), "message: argument");
+        assert_eq!(document(10), "message:\n    argument");
+    }
+
+    /// Sharing at every level of a deep nesting doubles the paths per level
+    /// but not the work: the marking pass walks each shared content once.
+    #[test]
+    fn nested_sharing_is_walked_once() {
+        const LEVELS: usize = 200;
+        let mut inner = Rc::new(concat(vec![text("core"), hard_line()]));
+        for _ in 0..LEVELS {
+            let both = Document::Choice(vec![
+                group(Document::Shared(Rc::clone(&inner))),
+                group(Document::Shared(Rc::clone(&inner))),
+            ]);
+            inner = Rc::new(both);
+        }
+        let document = group(Document::Shared(inner));
+        assert_eq!(layout(&document, 100, "\n"), "core\n");
     }
 
     #[test]
