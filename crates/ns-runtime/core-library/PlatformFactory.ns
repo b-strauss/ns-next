@@ -41,10 +41,11 @@
 /// mirror send, as in `Kernel.ns`: this module is resolved with
 /// `resolve_kernel`, which only shipped source is.
 ///
-/// Everything here but `Stopwatch` is a value (§3.1.1), as SOMns's
-/// `Platform` is: stateless but for what the host hands the root and the
-/// collections module it builds once. A `Stopwatch` keeps its reading in
-/// slots, so it is an object, as `CollectionsFactory.ns`'s `List` is.
+/// Everything here but `Stopwatch` is a value (§3.1.1): stateless but for
+/// what the host hands the root and the collections module the boot built,
+/// which the root reaches through the mirror. A `Stopwatch` keeps its
+/// reading in slots, so it is an object, as `CollectionsFactory.ns`'s
+/// `List` is.
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
   |
     /// The VM mirror the factory was given: the one object through which

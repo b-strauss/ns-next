@@ -134,7 +134,9 @@ impl crate::interpreter::Interpreter {
     /// objects and the loader runs nothing the image chooses
     /// (`docs/design/image-format.md`, "Planned: shipped names in the
     /// image"); the mirror's `moduleInstanceNamed:` answers these
-    /// instances and builds nothing.
+    /// instances and builds nothing. Then `complete_shipped_world` builds
+    /// every class the roots declare and records every shipped object
+    /// under its name.
     ///
     /// Last, `PlatformFactory`'s instance is sent `newPlatform`, its one
     /// public member, as an ordinary host send -- runs like the kernel's
@@ -185,6 +187,7 @@ impl crate::interpreter::Interpreter {
                     .add_module_instance(Symbol::intern(name), instance);
             });
         }
+        self.complete_shipped_world();
         let platform_factory = self.enter(|mutator| {
             let factory = mutator
                 .shipped_world
@@ -205,7 +208,7 @@ impl crate::interpreter::Interpreter {
 
 /// What a boot step answered. A shipped module that fails to boot is a
 /// defect in the binary, not in a program, so it panics, naming the step.
-fn booted(result: HostResult, step: &str) -> Root {
+pub(super) fn booted(result: HostResult, step: &str) -> Root {
     match result {
         Ok(answer) => answer,
         Err(HostSignal::Error(error)) => {
