@@ -9,6 +9,9 @@ pub mod diagnostic;
 pub mod lexer;
 mod parser;
 mod positions;
+// Only its tests lay documents out until the printer lowers modules to them.
+#[allow(dead_code, unused_imports)]
+mod printer;
 pub mod span;
 pub mod token;
 
