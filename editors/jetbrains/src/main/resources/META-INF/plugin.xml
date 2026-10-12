@@ -89,6 +89,8 @@
         <enterBetweenBracesDelegate language="Newspeak"
                                     implementationClass="io.github.bstrauss.newspeak.editor.NewspeakEnterBetweenBracketsDelegate"/>
         <typedHandler implementation="io.github.bstrauss.newspeak.editor.NewspeakClosingBracketTypedHandler"/>
+        <enterHandlerDelegate order="first"
+                              implementation="io.github.bstrauss.newspeak.editor.NewspeakLineCommentEnter"/>
         <applicationConfigurable parentId="language"
                                  instance="io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable"
                                  id="io.github.bstrauss.newspeak.settings"

@@ -962,6 +962,19 @@ typed closer: the platform does it for `)` and `}` through a formatter only,
 and for `]` not at all. All of them read the editor's highlighter, which is
 up to date while typing, without a document commit.
 
+**Enter in a `///` comment continues it** (`editor/NewspeakLineCommentEnter.kt`,
+an `EnterHandlerDelegate` asked before the platform's): the new line starts
+with `///` and the spacing after this line's `///` (one space after a bare
+`///`), at the end of the line as well as in its middle, the text after the
+caret carried on and the spaces around the split dropped. `///` is the
+comment form ns-next's sources are written in, and its comments run over
+several lines, as Rust's `///` do, where Enter continues them too; the
+platform's own handler continues a line comment only when text follows the
+caret, Java's choice for `//`. A `///` after code on its line continues
+only when Enter splits its text, which would otherwise fall out of the
+comment into code; at its end Enter starts a plain line. Enter before the
+slashes, and in a `(* … *)`, is a plain Enter.
+
 ### Which binary runs
 
 1. The path from the settings, when set — for working on `ns-syntax` or the
@@ -1265,7 +1278,10 @@ The server's own tests are described under its section, above ("Testing").
   lines; Enter inside a string not re-indented; Tab inserting two spaces,
   also under settings of eight and tabs; smart Backspace in the
   indentation; and the editor's right margin at 100 where the project's is
-  120; `NewspeakColorSettingsPageTest` is plain JUnit,
+  120; `NewspeakLineCommentEnterTest`, Enter in a `///` comment (at its end,
+  in its middle, after a bare `///`, with wider spacing, in a body, after
+  code at its end and in its middle, before the slashes, and in a block
+  comment); `NewspeakColorSettingsPageTest` is plain JUnit,
   over the colour settings page directly, with no platform test case needed
   either — like `ServerBinaryLocatorTest` and `NewspeakSemanticTokensTest`,
   which cover the binary lookup order and the semantic-token classification;
