@@ -2,8 +2,6 @@
 
 use super::Parser;
 use crate::ast::*;
-use crate::comment::{Comment, CommentKind};
-use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
 /// The annotations a message pattern carries after it, before its `=`: a
@@ -17,7 +15,7 @@ pub(crate) struct PatternTypes {
 }
 
 impl<'a> Parser<'a> {
-    /// `codeBody →[temporaries] statements` (§5.1.8, and §7.2 for the return), where
+    /// `codeBody → [temporaries] statements` (§5.1.8, and §7.2 for the return), where
     /// `statements → returnStatement | statementSequence | empty`,
     /// `statementSequence → expression [dot statements]` and
     /// `returnStatement → hat expression [dot]`: statements separated by
@@ -916,7 +914,6 @@ impl<'a> Parser<'a> {
                 factory_where_clause: factory_types.where_clause,
                 superclass,
                 mixin_applications,
-                class_comment: None,
                 instance_side: ClassBody {
                     header_slots: Vec::new(),
                     initializer_expressions: Vec::new(),
@@ -934,7 +931,6 @@ impl<'a> Parser<'a> {
 
         // --- G1: classHeader body `( classComment? slotDecls? initExprs )` ---
         let instance_open = self.expect(TokenKind::LeftParenthesis);
-        let class_comment = self.take_class_comment();
         let (header_slots, slot_delimiters, initializer_expressions, g1_span) =
             self.parse_header_body();
         let g1_end = self.end_of_group();
@@ -973,8 +969,6 @@ impl<'a> Parser<'a> {
         // --- G3: classSideDecl body `: ( methodDecl* )` ---
         let class_side = if self.eat(TokenKind::Colon) {
             let open = self.expect(TokenKind::LeftParenthesis);
-            // A class-side comment is allowed but not retained.
-            let _ = self.take_class_comment();
             let mut body = self.parse_class_side_body();
             let close = self.expect(TokenKind::RightParenthesis);
             body.delimiters = open.map(|open| Delimiters {
@@ -996,67 +990,11 @@ impl<'a> Parser<'a> {
             factory_where_clause: factory_types.where_clause,
             superclass,
             mixin_applications,
-            class_comment,
             instance_side,
             class_side,
             comments: Vec::new(),
             span: start.merge(end),
         }
-    }
-
-    /// A class body may open with a class comment. Per the vendored grammar
-    /// (`corpus/reference/NewspeakGrammar.ns:196`,
-    /// `classComment = whitespace opt , comment`, where `comment` is a
-    /// `(* ... *)` block form — `beginNSComment`/`endNSComment`, grammar
-    /// lines 152-153) it is *exclusively* a block comment, which the lexer
-    /// drops as trivia; that form is recovered here from the source gap
-    /// between the opening `(` and the next token.
-    ///
-    /// A leading `'...'` string in the header body is NOT a class comment: per
-    /// grammar line 165 it is the first `initExprs` expression (e.g. its
-    /// receiver in `'hello' printLine.`). Consuming it here silently dropped a
-    /// valid initializer expression, so that branch was removed.
-    ///
-    /// The comment is kept as its form and the source it spans, markers and
-    /// layout included, so that a formatter can write it back as it was;
-    /// `Comment::text` answers its text for a reader. A block of ns-next's
-    /// `///` lines in the same place is the class comment too: the block
-    /// the whole source's lexer forms, so a remark after the `(` on its
-    /// line is no part of it.
-    fn take_class_comment(&mut self) -> Option<Comment> {
-        let previous_end = self.tokens.get(self.position.checked_sub(1)?)?.span.end as usize;
-        let current_start = self.current().span.start as usize;
-        let gap = self.source.get(previous_end..current_start)?;
-        let trimmed = gap.trim();
-        if trimmed.starts_with("(*") && trimmed.ends_with("*)") {
-            let start = previous_end + (gap.len() - gap.trim_start().len());
-            return Some(Comment {
-                kind: CommentKind::Block,
-                span: Span::new(start as u32, (start + trimmed.len()) as u32),
-            });
-        }
-        // Lexed alone, the gap starts a line, so a `///` after the `(` would
-        // seem to start its line and take the lines below into its block,
-        // where the whole source's lexer (and with it the editor's folds)
-        // keeps it a remark on the `(`'s line. That line is cut off first;
-        // the class comment is the block the rest holds, as the whole
-        // source forms it.
-        let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
-        let mut rest_start = 0;
-        if let Some(first) = lexed.comments.first() {
-            let first_start = first.span.start as usize;
-            if first.kind == CommentKind::Line
-                && !crate::comment::starts_its_line(self.source, previous_end + first_start)
-            {
-                rest_start = gap[first_start..].find(['\n', '\r'])? + first_start;
-            }
-        }
-        let comment = lone_line_block(&gap[rest_start..])?;
-        let offset = (previous_end + rest_start) as u32;
-        Some(Comment {
-            kind: comment.kind,
-            span: Span::new(comment.span.start + offset, comment.span.end + offset),
-        })
     }
 
     /// `[inheritancePrefix] unarySelector [message]` (§6.1) — the receiver's
@@ -1169,11 +1107,12 @@ impl<'a> Parser<'a> {
     }
 
     /// **G1** — `classHeader` body (`NewspeakGrammar.ns:208`):
-    /// `classComment? , slotDecls? , initExprs`. The class comment is consumed
-    /// by the caller via [`Parser::take_class_comment`] right after the `(`.
-    /// Here: an optional single slot section (`| .. |` or `|| .. ||`), then
-    /// zero or more `Dot`-separated/terminated initializer expressions, until `)` or
-    /// end of input. Methods, nested classes and a second slot section are NOT
+    /// `classComment? , slotDecls? , initExprs`. The class comment is a
+    /// comment like any other, attached after the parse
+    /// (`ClassDeclaration::class_comment`). Here: an optional single slot
+    /// section (`| .. |` or `|| .. ||`), then zero or more
+    /// `Dot`-separated/terminated initializer expressions, until `)` or end
+    /// of input. Methods, nested classes and a second slot section are NOT
     /// accepted here — they belong to G2.
     fn parse_header_body(
         &mut self,
@@ -1776,21 +1715,6 @@ fn string_lexeme_body(raw: &str) -> String {
     super::lexeme_body(raw).replace("''", "'")
 }
 
-/// The one `///` block `gap` holds when it holds nothing else: no token
-/// but the end of input and no other comment. Two blocks, or a `(* ... *)`
-/// beside one, make no class comment.
-fn lone_line_block(gap: &str) -> Option<crate::comment::Comment> {
-    let lexed = crate::lexer::Lexer::new(gap).run_keeping_comments();
-    match lexed.comments.as_slice() {
-        [comment]
-            if comment.kind == crate::comment::CommentKind::Line && lexed.tokens.len() == 1 =>
-        {
-            Some(*comment)
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 impl<'a> Parser<'a> {
     pub(crate) fn parse_method_declaration_for_test(&mut self) -> Option<MethodDeclaration> {
@@ -2182,7 +2106,7 @@ mod class_tests {
         assert_eq!(body.initializer_expressions.len(), 1);
         assert_eq!(body.methods().count(), 1);
         assert_eq!(body.nested_classes().count(), 1);
-        let comment = module.root_class.class_comment.expect("a class comment");
+        let comment = module.root_class.class_comment().expect("a class comment");
         assert_eq!(comment.span.text(source), "(* a comment *)");
     }
 
@@ -2362,7 +2286,7 @@ mod class_tests {
         let module = module(indoc! {"
             class C = ( 'hello' printLine. ) ()
         "});
-        assert_eq!(module.root_class.class_comment, None);
+        assert_eq!(module.root_class.class_comment(), None);
         let body = &module.root_class.instance_side;
         assert_eq!(body.initializer_expressions.len(), 1);
         let StatementKind::Expression(Expression {
@@ -2383,21 +2307,19 @@ mod class_tests {
         );
     }
 
-    /// The class comment of `source`'s root class as a formatter reads it,
-    /// its form and the exact source it spans, and as a reader shows it,
-    /// its text.
-    fn class_comment_of(source: &str) -> Option<(CommentKind, &str, String)> {
-        let comment = module(source).root_class.class_comment?;
-        Some((
-            comment.kind,
-            comment.span.text(source),
-            comment.text(source),
-        ))
+    /// The class comment of `source`'s root class: its form, the exact
+    /// source it spans, and its lines as the tree keeps them.
+    fn class_comment_of(source: &str) -> Option<(CommentKind, &str, Vec<String>)> {
+        let comment = module(source).root_class.class_comment()?.clone();
+        Some((comment.kind, comment.span.text(source), comment.lines))
     }
 
-    // `(* ... *)` in G1 is the class comment. The AST keeps where it stands,
-    // markers and layout included, so a formatter can write it back as it
-    // was; its text is the reader's.
+    fn lines(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|line| line.to_string()).collect()
+    }
+
+    // `(* ... *)` in G1 is the class comment, kept with its markers and
+    // layout so a formatter can write it back as it was.
     #[test]
     fn block_comment_in_header_is_still_the_class_comment() {
         assert_eq!(
@@ -2407,7 +2329,7 @@ mod class_tests {
             Some((
                 CommentKind::Block,
                 "(* a comment *)",
-                "a comment".to_string()
+                lines(&["(* a comment *)"])
             ))
         );
         assert_eq!(
@@ -2419,8 +2341,9 @@ mod class_tests {
             "}),
             Some((
                 CommentKind::Block,
-                "(* a comment\n       on two lines *)",
-                "a comment\non two lines".to_string()
+                "(* a comment
+       on two lines *)",
+                lines(&["(* a comment", "       on two lines *)"])
             ))
         );
     }
@@ -2438,8 +2361,9 @@ mod class_tests {
             "}),
             Some((
                 CommentKind::Line,
-                "/// a comment\n    /// on two lines",
-                "a comment\non two lines".to_string()
+                "/// a comment
+    /// on two lines",
+                lines(&[" a comment", " on two lines"])
             ))
         );
     }
@@ -2464,7 +2388,7 @@ mod class_tests {
         assert_eq!(texts, ["a", "b"]);
         assert_eq!(
             class_comment_of(source),
-            Some((CommentKind::Line, "/// b", "b".to_string()))
+            Some((CommentKind::Line, "/// b", lines(&[" b"])))
         );
     }
 
@@ -2480,7 +2404,7 @@ mod class_tests {
         "};
         assert_eq!(
             class_comment_of(source),
-            Some((CommentKind::Line, "/// b", "b".to_string()))
+            Some((CommentKind::Line, "/// b", lines(&[" b"])))
         );
     }
 

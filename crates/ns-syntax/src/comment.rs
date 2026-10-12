@@ -40,7 +40,7 @@ impl Comment {
 
 /// `text` with each of `\r\n`, `\r` and `\n` read as one line break, so a
 /// source's line endings never reach the text.
-fn lines_of(text: &str) -> Vec<String> {
+pub(crate) fn lines_of(text: &str) -> Vec<String> {
     text.replace("\r\n", "\n")
         .replace('\r', "\n")
         .split('\n')

@@ -479,9 +479,12 @@ impl<'a> Parser<'a> {
         self.diagnostics.truncate(checkpoint.1);
     }
 
-    /// Consume the parser and return the diagnostics it accumulated.
-    pub(crate) fn into_diagnostics(self) -> Vec<Diagnostic> {
-        self.diagnostics
+    /// The tokens as the parser ended with them (after it split `-4` and
+    /// `>>`), and its diagnostics. Comments are attached against these
+    /// tokens, so a reader that prints `-` and `4` apart counts as the
+    /// attachment did.
+    pub(crate) fn into_parts(self) -> (Vec<Token>, Vec<Diagnostic>) {
+        (self.tokens, self.diagnostics)
     }
 
     // `parse_expression` and the full precedence ladder live in

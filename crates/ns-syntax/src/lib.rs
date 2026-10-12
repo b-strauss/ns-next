@@ -3,10 +3,12 @@
 //! Lexer, AST, and parser for the Newspeak3 textual syntax.
 
 pub mod ast;
+mod attach;
 pub mod comment;
 pub mod diagnostic;
 pub mod lexer;
 mod parser;
+mod positions;
 pub mod span;
 pub mod token;
 
@@ -23,35 +25,41 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Vec<Diagnostic>> {
         return Err(vec![diagnostic]);
     }
     let (tokens, diagnostics) = lexer::Lexer::new(source).run();
-    if diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == Severity::Error)
-    {
+    if has_error(&diagnostics) {
         Err(diagnostics)
     } else {
         Ok(tokens)
     }
 }
 
-/// Parse `source` into a [`Module`]. Returns `Err` on any error-severity
-/// diagnostic (from either the lexer or the parser), or if `source` is longer
-/// than a `Span` can address.
+/// Parse `source` into a [`Module`], every comment attached to the node it
+/// belongs to (`ast::AttachedComment`). Returns `Err` on any error-severity
+/// diagnostic (from either the lexer or the parser), or if `source` is
+/// longer than a `Span` can address.
 pub fn parse(source: &str) -> Result<Module, Vec<Diagnostic>> {
+    if let Some(diagnostic) = source_too_long(source.len()) {
+        return Err(vec![diagnostic]);
+    }
     // Lexer-error gate: the parser assumes well-formed string/symbol lexemes,
-    // so a token stream that carried lexer errors must not reach it. `lex`
-    // also refuses a source too long to address.
-    let tokens = lex(source)?;
-    let mut parser = parser::Parser::new(source, tokens);
-    let module = parser.parse_module();
-    let diagnostics = parser.into_diagnostics();
-    if diagnostics
+    // so a token stream that carried lexer errors must not reach it.
+    let lexed = lexer::Lexer::new(source).run_keeping_comments();
+    if has_error(&lexed.diagnostics) {
+        return Err(lexed.diagnostics);
+    }
+    let mut parser = parser::Parser::new(source, lexed.tokens);
+    let mut module = parser.parse_module();
+    let (tokens, diagnostics) = parser.into_parts();
+    if has_error(&diagnostics) {
+        return Err(diagnostics);
+    }
+    attach::attach_comments(&mut module, &tokens, &lexed.comments, source);
+    Ok(module)
+}
+
+fn has_error(diagnostics: &[Diagnostic]) -> bool {
+    diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity == Severity::Error)
-    {
-        Err(diagnostics)
-    } else {
-        Ok(module)
-    }
 }
 
 /// What [`parse_for_editor`] answers: a module for every source, recovered
@@ -68,7 +76,8 @@ pub struct EditorParse {
 
 /// Parse `source` for an editor, which shows a file while it is typed: a
 /// lexer error does not stop the parse, and the module is answered even
-/// when the source has errors. Nothing compiles such a module; [`parse`]
+/// when the source has errors, its comments attached as [`parse`] attaches
+/// them. Nothing compiles such a module; [`parse`]
 /// is the entry for that.
 pub fn parse_for_editor(source: &str) -> EditorParse {
     if let Some(diagnostic) = source_too_long(source.len()) {
@@ -81,9 +90,11 @@ pub fn parse_for_editor(source: &str) -> EditorParse {
     }
     let lexed = lexer::Lexer::new(source).run_keeping_comments();
     let mut parser = parser::Parser::new(source, lexed.tokens.clone());
-    let module = parser.parse_module();
+    let mut module = parser.parse_module();
+    let (tokens, parser_diagnostics) = parser.into_parts();
+    attach::attach_comments(&mut module, &tokens, &lexed.comments, source);
     let mut diagnostics = lexed.diagnostics;
-    diagnostics.extend(parser.into_diagnostics());
+    diagnostics.extend(parser_diagnostics);
     EditorParse {
         tokens: lexed.tokens,
         module,
@@ -120,7 +131,6 @@ fn empty_module() -> Module {
             factory_where_clause: None,
             superclass: None,
             mixin_applications: Vec::new(),
-            class_comment: None,
             instance_side: body,
             class_side: None,
             comments: Vec::new(),

@@ -13,7 +13,8 @@ pub struct Module {
     /// leaves it out.
     pub category: Option<Category>,
     pub root_class: ClassDeclaration,
-    /// Comments attached to the module (Task 5 fills it).
+    /// The comments attached to the module, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -52,16 +53,50 @@ pub struct ClassDeclaration {
     /// `superclass`, because §6.2's suffix is `(mixinOperator inheritanceClause)+`
     /// over §6.1's very production.
     pub mixin_applications: Vec<SuperclassClause>,
-    /// The comment standing first in the class header, `(* … *)` or a
-    /// block of `///` lines, kept as its form and the source it spans so a
-    /// formatter can write it back as it was; `Comment::text` answers its
-    /// text.
-    pub class_comment: Option<crate::comment::Comment>,
     pub instance_side: ClassBody,
     pub class_side: Option<ClassBody>, // the `: ( ... )` block
-    /// Comments attached to the declaration (Task 5 fills it).
+    /// The comments attached to the declaration, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
+}
+
+impl ClassDeclaration {
+    /// The class comment: the first comment in the header, before any slot
+    /// or initializer expression -- one right after the header's `(`
+    /// (`Inner(1)` on the instance side, before the slot section's bar and
+    /// before the first initializer expression), else one leading the first
+    /// header slot, else, the slot section declaring none, one leading the
+    /// first initializer expression. A `///` after the `(` on its line is a
+    /// remark on that line, not the class comment. `None` for a mixin
+    /// application ended by `.`, which has no header.
+    pub fn class_comment(&self) -> Option<&AttachedComment> {
+        let side = &self.instance_side;
+        side.delimiters?;
+        let first_initializer = side.initializer_expressions.first();
+        // `Inner(1)` follows the initializer expressions when no slot bar
+        // stands between them and the `(`.
+        let after_open = side.comments.iter().filter(|comment| {
+            comment.anchor == Anchor::Inner(1)
+                && first_initializer
+                    .is_none_or(|statement| comment.span.end <= statement.span.start)
+        });
+        let leading_the_first_slot = side
+            .header_slots
+            .first()
+            .map_or(&[][..], |slot| slot.comments.as_slice());
+        let leading_the_first_initializer = match first_initializer {
+            Some(statement) if side.header_slots.is_empty() => statement.comments.as_slice(),
+            _ => &[],
+        };
+        let leading = leading_the_first_slot
+            .iter()
+            .chain(leading_the_first_initializer)
+            .filter(|comment| comment.anchor == Anchor::Before);
+        after_open.chain(leading).find(|comment| {
+            !(comment.kind == CommentKind::Line && comment.placement == Placement::EndOfLine)
+        })
+    }
 }
 
 /// The opening and closing token of a bracketed construct, which an
@@ -101,7 +136,8 @@ pub struct ClassBody {
     /// The header's slot section, `| |` or `|| ||`; `None` without one and
     /// on a class side.
     pub slot_delimiters: Option<Delimiters>,
-    /// Comments attached to the side (Task 5 fills it).
+    /// The comments attached to the side, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -145,7 +181,8 @@ pub struct SuperclassClause {
     /// Type arguments written right after the receiver, `Collection[E]`.
     pub receiver_type_arguments: Option<TypeAnnotation>,
     pub messages: Vec<MessageSend>, // trailing `message?` (0 or more sends)
-    /// Comments attached to the clause (Task 5 fills it).
+    /// The comments attached to the clause, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -174,7 +211,8 @@ pub struct SlotDeclaration {
     /// (`docs/design/object-model.md`, "Simultaneous slots"). Never set on a
     /// lazy slot, which stands in no clause.
     pub simultaneous: bool,
-    /// Comments attached to the slot (Task 5 fills it).
+    /// The comments attached to the slot, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -200,7 +238,8 @@ pub struct MethodDeclaration {
     pub body: CodeBody,
     /// The body's `( )`.
     pub body_delimiters: Option<Delimiters>,
-    /// Comments attached to the method (Task 5 fills it).
+    /// The comments attached to the method, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -243,7 +282,8 @@ pub struct CodeBody {
     /// The temporaries' `| |`; `None` without any.
     pub temporaries_delimiters: Option<Delimiters>,
     pub statements: Vec<Statement>,
-    /// Comments attached to the body (Task 5 fills it).
+    /// The comments attached to the body, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -251,7 +291,8 @@ pub struct CodeBody {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Statement {
     pub kind: StatementKind,
-    /// Comments attached to the statement (Task 5 fills it).
+    /// The comments attached to the statement, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     /// From the statement's first token (`^` for a return) to its last,
     /// the separating period excluded.
@@ -298,7 +339,8 @@ pub struct Expression {
     /// The parser made this node up; nothing in the source spells it (the
     /// implicit receiver of a send).
     pub synthesized: bool,
-    /// Comments attached to this expression (Task 5 fills it).
+    /// The comments attached to this expression, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     /// The shape's span, widened over the parentheses.
     pub span: Span,
@@ -369,15 +411,19 @@ pub enum Anchor {
     Before,
     /// After the node, before whatever follows it.
     After,
-    /// Inside the node, after its `n`-th own token.
+    /// Inside the node, after its `n`-th own token and the commentable
+    /// children that follow that token, before its next own token
+    /// (`attach.rs` lists each node's own tokens).
     Inner(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
-    /// Nothing but whitespace before it on its line.
+    /// Nothing but whitespace before it on its line (comments beside it
+    /// count as nothing).
     OwnLine,
-    /// Code before it on its line, a line break (or the end) after it.
+    /// Code before it on its line, a line break (or the end) after it
+    /// (comments beside it count as nothing).
     EndOfLine,
     /// Code, or a delimiter, on both sides on the same line.
     Inline,
@@ -432,7 +478,7 @@ impl ExpressionKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Send {
     pub receiver: Expression,
     pub message: MessageSend,
@@ -450,6 +496,39 @@ impl Drop for Send {
         let mut receiver = std::mem::replace(&mut self.receiver, placeholder(self.span));
         while let ExpressionKind::Send(mut link) = receiver.kind {
             receiver = std::mem::replace(&mut link.receiver, placeholder(link.span));
+        }
+    }
+}
+
+/// A chain of messages is cloned link by link, for the reason it is
+/// dropped so (see the `Drop` impl).
+impl Clone for Send {
+    fn clone(&self) -> Send {
+        let (links, start) = self.receiver_chain();
+        let mut receiver = start.clone();
+        let mut index = links.len();
+        loop {
+            index -= 1;
+            let link = links[index];
+            let send = Send {
+                receiver,
+                message: link.message.clone(),
+                span: link.span,
+            };
+            let Some(outer) = index.checked_sub(1) else {
+                return send;
+            };
+            // The envelope around this link is the receiver of the link
+            // outside it.
+            let envelope = &links[outer].receiver;
+            receiver = Expression {
+                kind: ExpressionKind::Send(Box::new(send)),
+                parentheses: envelope.parentheses.clone(),
+                type_arguments: envelope.type_arguments.clone(),
+                synthesized: envelope.synthesized,
+                comments: envelope.comments.clone(),
+                span: envelope.span,
+            };
         }
     }
 }
@@ -499,7 +578,8 @@ pub struct MessageSend {
     pub eventual: bool,
     /// Type arguments written right after a unary selector, `foo bar[E]`.
     pub type_arguments: Option<TypeAnnotation>,
-    /// Comments attached to the message (Task 5 fills it).
+    /// The comments attached to the message, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }
@@ -525,7 +605,8 @@ pub struct BlockExpression {
     pub body: CodeBody,
     /// The block's `[ ]`; `None` for a block the compiler builds.
     pub delimiters: Option<Delimiters>,
-    /// Comments attached to the block (Task 5 fills it).
+    /// The comments attached to the block, in source order (the rule is
+    /// `attach.rs`'s).
     pub comments: Vec<AttachedComment>,
     pub span: Span,
 }

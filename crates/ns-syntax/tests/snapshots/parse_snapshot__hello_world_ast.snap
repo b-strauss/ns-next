@@ -44,7 +44,6 @@ Module {
         factory_where_clause: None,
         superclass: None,
         mixin_applications: [],
-        class_comment: None,
         instance_side: ClassBody {
             header_slots: [
                 SlotDeclaration {

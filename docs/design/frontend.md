@@ -310,19 +310,31 @@ lose the indentation they share and their trailing whitespace, and leading
 and trailing blank lines are dropped. It renders nothing (no Markdown);
 that is the reader's business.
 
-The class comment (`ClassDeclaration::class_comment`), the comment standing
-first in a class header, is taken from either form (`take_class_comment`)
-and kept as a `Comment`, its form and the source it spans, markers and
-layout included: the AST holds what a formatter needs to write the comment
-back as it was, and `Comment::text` answers its text for a reader. The
-block is the one the whole source's lexer forms, so the parser and an
-editor agree on it: a `///` after the header's `(` on
-its line is a remark there, no part of the class comment, and the block
-below it, if it is all that stands before the header's first token, is the
-class comment.
+`parse` and `parse_for_editor` attach every comment to the node of the
+syntax tree it belongs to (`attach.rs`, whose module documentation states
+the rule and, for each node, which tokens are its own). Each commentable
+node -- the module, a class, a class side, a slot, a method, a code body,
+a statement, an expression, a message, a block, a superclass clause --
+keeps its `comments`, each an `AttachedComment`: its form, its lines
+(a `///` block's text after each `///`; a `(* ... *)`'s lines as written),
+the column its `(*` stood at, its `Anchor` and its `Placement` (on its own
+line, at the end of a line, or inline). A comment above a member leads it
+(`Before`), one after code on its line trails that code's construct
+(`After`), and one after the last element before a closer dangles in the
+container (`Inner(n)`, after the container's `n`-th own token). The
+anchors count the parser's final tokens, `3 -4` as three, and leave out
+the tokens of an empty slot section, empty temporaries and an empty class
+side, which a reprint drops; a comment inside a pattern literal stays in
+the literal's text. The class comment (`ClassDeclaration::class_comment`)
+is the first comment in a class header, before any slot or initializer
+expression, in either form; a `///` after the header's `(` on its line is
+a remark there, not the class comment. `Module::without_positions` erases
+every position -- spans, and a block comment's column, its continuation
+lines moved with it -- and reads an empty part as absent, so two parses
+that say the same compare equal however they are laid out.
 
-`run`, and with it `lex` and `parse`, drops the list, and the token stream
-is the same either way.
+`run`, and with it `lex`, drops the list; the token stream is the same
+either way.
 
 ## AST
 
@@ -367,12 +379,13 @@ after the parser reads it: `<Type>` annotations on parameters and slots,
 `^<Type>` return annotations, `[T]` type parameters on class names and
 selectors, type arguments on a superclass or `<:` clause's receiver
 (`<: Collection[E]`) and at a value site (`Box[Integer] new`, `a foo[E]`,
-`(Box)[Integer]`), and `where { ... }` constraint clauses. §4.3 acknowledges this "built-in optional
-type annotation syntax based on the Strongtalk type system" without giving it
-a grammar, so the canonical grammar's is followed, and §6's own
-`typeParameterDecl`, `class Map <[K, V]> new: capacity <Integer>`, is
-accepted beside the canonical `class List[E]` (decided with the user on
-2026-09-27). The eventual-send operator `<-:` is likewise
+`(Box)[Integer]`), and `where { ... }` constraint clauses. §4.3
+acknowledges this "built-in optional type annotation syntax based on the
+Strongtalk type system" without giving it a grammar, so the canonical
+grammar's is followed, and §6's own `typeParameterDecl`,
+`class Map <[K, V]> new: capacity <Integer>`, is accepted beside the
+canonical `class List[E]` (decided with the user on 2026-09-27). The
+eventual-send operator `<-:` is likewise
 accepted and recorded in the syntax tree (`MessageSend::eventual`), but the
 runtime ignores it, which makes an asynchronous send (§5.6) run as an
 ordinary synchronous one and answer the value where the specification gives a
@@ -554,15 +567,17 @@ them.
   so nothing compiled ever sees a recovered module.
 - `ns_syntax::parse_for_editor` always answers an `EditorParse`: `tokens`,
   the lexer's, before the parser splits any; `module`, recovered where the
-  source has errors; `comments`, every comment in source order,
-  consecutive `///` lines as one ("Comments"); and `diagnostics`, the lexer's, then the parser's. A lexer
-  error does not stop the parse: the lexer answers a complete token stream
-  beside its errors, an unterminated string or comment running to the end
-  of the file. A source longer than a span can address answers a root class
-  with an empty name and nothing in it, and the one `source_too_long`
-  diagnostic. On a source without errors both entries answer the same
-  module, which `ns-analyzer`'s `the_editor_parse_agrees_with_parse` checks over
-  every corpus module, golden and the kernel.
+  source has errors, its comments attached as `parse` attaches them;
+  `comments`, every comment in source order, consecutive `///` lines as
+  one ("Comments"), for the folds; and `diagnostics`, the lexer's, then
+  the parser's. A lexer error does not stop the parse: the lexer answers a
+  complete token stream beside its errors, an unterminated string or
+  comment running to the end of the file. A source longer than a span can
+  address answers a root class with an empty name and nothing in it, and
+  the one `source_too_long` diagnostic. On a source without errors both
+  entries answer the same module, which `ns-analyzer`'s
+  `the_editor_parse_agrees_with_parse` checks over every corpus module,
+  golden and the kernel.
 
 **Resynchronisation.** Two means:
 
