@@ -10,7 +10,8 @@ mod commands;
 
 /// Looks at Newspeak without running it: the language server (`lsp`), the
 /// token dump (`dump-tokens`), parsing (`parse`, `parse-corpus`), a compiled
-/// body's bytecode (`disasm`) and an image's structure (`inspect`). Running
+/// body's bytecode (`disasm`), an image's structure (`inspect`) and the one
+/// layout of a source (`fmt`). Running
 /// a program is `ns-next`'s.
 #[derive(Parser)]
 #[command(name = "ns-next-analyzer", version)]
@@ -79,6 +80,17 @@ enum Command {
         #[arg(long, value_enum)]
         lowering: Option<LoweringArgument>,
     },
+    /// Formats Newspeak sources in the one layout ns-next has. A directory
+    /// stands for the `.ns` files below it; with no path, the current
+    /// directory is formatted. A file with a syntax error is reported and
+    /// left as it is.
+    Fmt {
+        /// Write nothing; list each file that would change and fail if any
+        /// does.
+        #[arg(long)]
+        check: bool,
+        paths: Vec<PathBuf>,
+    },
     /// Print an artifact's structure: header flags, section offsets, the
     /// symbol table, the code table with every body named, the mixin table,
     /// and -- for an image -- its object graph, read record by record.
@@ -131,6 +143,7 @@ fn execute(command: Command) -> ExitCode {
             class.as_deref(),
             lowering.map(Into::into),
         ),
+        Command::Fmt { check, paths } => commands::fmt::execute(&paths, check),
         Command::Inspect { artifact, full } => commands::inspect::execute(&artifact, full),
     }
 }
