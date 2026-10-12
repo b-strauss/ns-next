@@ -1,33 +1,34 @@
 # Editor support — the language server and the JetBrains plugin
 
 > **Status:** **Built:** the language server (`crates/ns-analyzer/`: `analysis.rs`,
-> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`; on
+> `semantic_tokens.rs`, `folding.rs`, `document_symbols.rs`, the formatting
+> answer in `server.rs`; on
 > `ns_syntax::parse_for_editor` and `resolve_for_editor` in
 > `crates/ns-runtime/src/resolver/mod.rs`) and the JetBrains plugin
 > (`editors/jetbrains/`, its structure view in the `structure` package and
 > `lsp/NewspeakSymbolKinds.kt`, the document symbols the structure view and
 > the run markers share in `lsp/DocumentSymbolCache.kt`) both exist: highlighting, errors as you
-> type, code folding and a structure view with breadcrumbs, in every
-> commercial JetBrains IDE from 2026.1.4, kept while a file has syntax
-> errors. For a project's `newspeak.json`, completion and validation from
-> the project file's schema, and play buttons that run or benchmark the
+> type, code folding, a structure view with breadcrumbs and Reformat Code,
+> in every commercial JetBrains IDE from 2026.1.4, kept while a file has
+> syntax errors (Reformat Code leaves such a file alone). For a project's
+> `newspeak.json`, completion and validation from the project file's schema, and play buttons that run or benchmark the
 > project with the `ns-next` the settings name; for a module `ns-next` can
 > run from its source, a play button beside its `main:args:` that runs or
 > benchmarks the module ("The project file and running projects").
-> Formatting, go to definition, find usages and further platforms are
-> planned ("Planned later").
+> Range formatting, formatting on type, go to definition, find usages and
+> further platforms are planned ("Planned later").
 
 Without a plugin, editing `.ns` files in a JetBrains IDE means editing plain
 text. This document describes the editor support that replaces it: syntax
 highlighting as you type, the errors `ns-next` would report before running a
-module, shown in the editor at the place they occur, code folding, and a
-structure view of each file's classes and members. Beside the `.ns` files,
-it knows a project's `newspeak.json`: its schema, and how to run it; and it
+module, shown in the editor at the place they occur, code folding, a
+structure view of each file's classes and members, and Reformat Code.
+Beside the `.ns` files, it knows a project's `newspeak.json`: its schema, and how to run it; and it
 runs a single module from its `main:args:`.
 
 ## Scope
 
-**In scope.** Four capabilities, in every commercial JetBrains IDE:
+**In scope.** Five capabilities, in every commercial JetBrains IDE:
 
 1. **Highlighting** — keywords, strings, symbols, numbers, comments,
    selectors, and, once the server has analysed the file, what the resolver
@@ -42,6 +43,8 @@ runs a single module from its `main:args:`.
    breadcrumbs and the sticky lines show a file's classes and their members,
    each with its access, from document symbols the server computes from the
    AST ("Structure").
+5. **Formatting** — Reformat Code rewrites the file in the formatter's one
+   layout ("Formatting"; [formatting.md](formatting.md)).
 
 Beside them, for a project's `newspeak.json`: completion and validation from
 the project file's schema, and running and benchmarking the project from the
@@ -57,19 +60,21 @@ one user: complete metadata, a verifier-clean build, third-party notices, and
 no machine-specific paths.
 
 **Out of scope, for now.** Navigation (go to definition, find usages),
-completion and formatting. Each is described under
+completion, and formatting a range or as you type. Each is described under
 "Planned later", with what it would need.
 
 ## Architecture
 
 ```
 crates/ns-analyzer/     binary `ns-next-analyzer`: its `lsp` command serves
-                        diagnostics, semantic tokens, fold ranges and document
-                        symbols over LSP; `dump-tokens` is for the lexer
-                        comparison; `parse`, `parse-corpus`, `disasm` and
-                        `inspect` look at a module or an image from the shell
+                        diagnostics, semantic tokens, fold ranges, document
+                        symbols and formatting over LSP; `dump-tokens` is for
+                        the lexer comparison; `parse`, `parse-corpus`, `disasm`
+                        and `inspect` look at a module or an image from the
+                        shell; `fmt` formats sources
 crates/ns-syntax/       + an editor entry, `parse_for_editor`: a module for
-                        every source, recovered, with its comments
+                        every source, recovered, with its comments; the
+                        printer, `format`
 crates/ns-runtime/      + a resolver entry answering bindings and errors together
 editors/jetbrains/      Gradle project: file type, Kotlin lexer, highlighter,
                         LSP client, structure view, settings, the project
@@ -90,7 +95,8 @@ Colour comes in two layers:
 
 Errors travel separately, pushed by the server as `publishDiagnostics` after
 every change. The IDE asks for fold ranges and document symbols, as it asks
-for semantic tokens.
+for semantic tokens, and for the formatting edit when the user runs Reformat
+Code.
 
 ### Why a Kotlin lexer, when the rest avoids a second implementation
 
@@ -137,10 +143,12 @@ The editor tooling is a crate of its own with a binary of its own,
 `ns-next-analyzer`: everything that looks at Newspeak without running it. Its
 commands are `lsp`, the language server; `dump-tokens`, for the lexer
 comparison; `parse` and `parse-corpus` ([frontend.md](frontend.md)); `disasm`,
-which prints one compiled body ([compiler.md](compiler.md)); and `inspect`,
+which prints one compiled body ([compiler.md](compiler.md)); `inspect`,
 which prints an image's structure ([image-format.md](image-format.md),
-"Reading an artifact"). It never runs a program: `disasm` compiles a module or
-decodes an image, `inspect` reads an image without loading it, and neither
+"Reading an artifact"); and `fmt`, the one command that writes, which
+rewrites `.ns` files in the formatter's layout
+([formatting.md](formatting.md), "Entry points"). It never runs a program:
+`disasm` compiles a module or decodes an image, `inspect` reads an image without loading it, and neither
 runs the program's code -- the only Newspeak that runs is the shipped core
 library's instantiation in the interpreter `disasm` bootstraps, and no other
 command starts an interpreter. Running is the `ns-next` binary's. Being a
@@ -205,7 +213,9 @@ the platform since 2023.2), `textDocument/semanticTokens/full`,
 `textDocument/foldingRange` (the `foldingRangeProvider` capability,
 announced as `true`), `textDocument/documentSymbol` (the
 `documentSymbolProvider` capability, announced as `true`; answered also for a
-`file` URI never opened, read from disk), `shutdown` and `exit`. Nothing
+`file` URI never opened, read from disk), `textDocument/formatting` (the
+`documentFormattingProvider` capability, announced as `true`; "Formatting"),
+`shutdown` and `exit`. Nothing
 else. A request the server does not implement is answered
 `MethodNotFound`. A document notification whose params do not match the
 schema has no response to carry an error, so the server writes it to stderr
@@ -609,6 +619,24 @@ breadcrumbs show the class and method at the caret, and IntelliJ's sticky
 lines follow; the tree survives a half-typed method; and it fills on first
 open.
 
+### Formatting
+
+`textDocument/formatting` formats the open document's text with
+`ns_syntax::format` ([formatting.md](formatting.md)) and answers one
+`TextEdit` that replaces the whole document, from its start to its end in
+UTF-16 positions, with the formatted text. It answers no edit when the text
+is formatted already, when it does not parse -- a document with a syntax
+error is left as the user wrote it -- and for a document the client has not
+opened: like folds and tokens, only an open editor buffer is formatted,
+never a file read from disk. The request's options (`tabSize`,
+`insertSpaces`) are ignored, since the formatter has one style. The
+platform's native LSP API hands Reformat Code to a server announcing
+`documentFormattingProvider` (since 2023.3), so the plugin needs no code of
+its own; a platform-native formatter (`FormattingModelBuilder`) would need a
+PSI tree, the second parser this design avoids. The format runs on the
+server's one thread, outside the `catch_unwind` the analysis runs under
+("Robustness").
+
 ### Robustness
 
 An editor sends invalid text all the time. `ns-syntax`'s contract is that
@@ -683,9 +711,9 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   recovered module has an empty name but the root class's, which recovery
   keeps ([frontend.md](frontend.md), "Recovery");
 - protocol — one end-to-end test over an in-memory `lsp-server` connection:
-  `initialize` and its announced capabilities, `foldingRangeProvider` and
-  `documentSymbolProvider` included, `didOpen`, the expected
-  `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
+  `initialize` and its announced capabilities, `foldingRangeProvider`,
+  `documentSymbolProvider` and `documentFormattingProvider` included,
+  `didOpen`, the expected `publishDiagnostics`, `semanticTokens/full`, `textDocument/foldingRange`,
   `textDocument/documentSymbol` (the class, its three children, and `[]` for
   a document never opened and no file on disk), `shutdown`; a malformed
   notification, reported as a `window/logMessage` error while the next
@@ -697,7 +725,9 @@ tests of the commands `parse`, `parse-corpus`, `disasm` (with its snapshots) and
   document with other text than the file on disk (the open text wins, the
   file again once closed), and for a missing file, a directory, an
   `untitled:` and an `https:` URI (`[]`), and on POSIX for a FIFO (`[]`,
-  without blocking);
+  without blocking); `textDocument/formatting` answering one edit over the
+  whole document whatever options it is sent, and no edit for a formatted
+  document, a document with a syntax error and one never opened;
 - `server.rs`'s unit test — only a regular file no longer than a source may
   be is read, tested on the predicate the metadata feeds, since no test
   writes a four-gigabyte file;
@@ -1196,7 +1226,8 @@ and resolves cleanly in a JetBrains IDE today.
   platform's `LspFoldingBuilder` reaching a `.ns` file, or the structure
   view against a running server: its asking again until the server has
   opened the file, navigation, the breadcrumbs and the sticky lines
-  ("Structure"). The sandbox
+  ("Structure"), and Reformat Code reaching the server's formatting and
+  applying its edit ("Formatting"). The sandbox
   also disables the ultimate marker plugin for `runIde`, not only for tests.
 - **Untested paths:** `dump-tokens` on an unreadable file (exit status 1); a
   block comment over a whole-line selection; TODO markers through the
@@ -1208,20 +1239,12 @@ and resolves cleanly in a JetBrains IDE today.
 
 ## Planned later
 
-- **Formatting.** The native LSP API supports `textDocument/formatting` since
-  2023.3; once the server announces it, the IDE's Reformat Code uses it with no
-  change to the plugin. A platform-native formatter (`FormattingModelBuilder`)
-  would need a PSI tree, which is the second parser this design avoids. The
-  work is in Rust. A formatter must keep each comment where it was; the
-  comments exist (`parse_for_editor`'s `comments`, beside the AST),
-  and what remains is attaching each to the nodes around it, and the
-  formatter itself: one module that an `ns-next-analyzer fmt` command shares,
-  so the editor, the command line and any later formatting gate use one
-  formatter.
-  It would not touch a file with a syntax error. It is a full pretty
-  printer, not a re-indenter that keeps the author's line breaks, and has
-  fixed rules and no options, so every formatted module looks the same
-  (decided by the user); the rules themselves are not yet decided.
+- **Range formatting and formatting on type.** `textDocument/rangeFormatting`
+  and `textDocument/onTypeFormatting`, for the selection or the line just
+  typed. The printer lays out a whole module from its tree, so a range
+  needs the enclosing members printed and only their edit answered, and a
+  half-typed line does not parse at all, which the printer refuses
+  ([formatting.md](formatting.md), "What is deliberately not done").
 - **Navigation.** Go to definition and find usages need an AST for a file
   that does not parse, while it is typed; the fault-tolerant parse exists
   ([frontend.md](frontend.md), "Recovery"). What remains is `definition` and

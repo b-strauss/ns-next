@@ -509,13 +509,12 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 
 ## Planned: editor support and the analyzer
 
-- **Formatting**, through `textDocument/formatting`, and an
-  `ns-next-analyzer fmt` command sharing the formatter. Decided by the user
-  on 2026-10-11: a full pretty printer, not a re-indenter that keeps the
-  author's line breaks, with fixed rules and no options. The style rules
-  themselves are still to be decided. Its comments are kept beside the AST
-  (`parse_for_editor`) and still have to be placed in the output
-  ([editor-support.md](design/editor-support.md), "Planned later").
+- **Range formatting (`textDocument/rangeFormatting`) and formatting on
+  type** (`textDocument/onTypeFormatting`). The server formats a whole
+  open document only; the printer lays out a module from its tree and
+  refuses a source that does not parse, which a line being typed usually
+  is ([editor-support.md](design/editor-support.md), "Planned later";
+  [formatting.md](design/formatting.md), "What is deliberately not done").
 - **Navigation** — go to definition, find usages —
   `definition` and `references` in the server, on the
   fault-tolerant parse that exists ([frontend.md](design/frontend.md),
@@ -535,8 +534,9 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
 - **A hover with the comment above a declaration.** `textDocument/hover` on
   a class, slot or method shows the `Comment::text` of the `///` block (or
   `(* ... *)`) directly above its declaration, rendered as Markdown.
-  `ns_syntax::Comment` answers the text; nothing yet maps a declaration to
-  its comment ([frontend.md](design/frontend.md), "Comments";
+  `ns_syntax::Comment` answers the text, and the attachment puts the
+  comment above a declaration on it (`Before`); what is missing is the
+  request in the server ([frontend.md](design/frontend.md), "Comments";
   [editor-support.md](design/editor-support.md)).
 - **More platforms**: a CI build for the other five `bin/<os>-<arch>/`
   binaries of the language server; the repository has no CI.
@@ -613,8 +613,9 @@ activation.
   (raised with the user on 2026-10-11).
 - **The resolver as a crate of its own.** It lives in `ns-runtime`
   (`resolver/`). A crate of its own would separate the front end from the VM
-  and let a tool that needs only bindings — a lighter language server, the
-  formatter — leave the runtime unlinked. It is not worth it yet: the
+  and let a tool that needs only bindings — a lighter language server —
+  leave the runtime unlinked (the formatter needs none: it is
+  `ns-syntax`'s). It is not worth it yet: the
   resolver uses the runtime's symbol interner, `Binding`, `ResolvedModule`,
   `SourceOrigin`, `instantiate::method_name`, `mixin`'s `RootClauseDefect`
   and `CLAUSE_INDEX_LIMIT`, and `nested::superclass_clause_message`, which
@@ -869,12 +870,10 @@ activation.
   language server does, would close it. [frontend.md](design/frontend.md),
   "Recovery", rule 7; [execution.md](design/execution.md), "What the
   trampoline moved". Noted 2026-10-04.
-- **The AST's derived `Clone`, `PartialEq` and `Debug` recurse along a
-  chain of messages** (`crates/ns-syntax/src/ast.rs`), as the compiler
-  does: only `Send`'s `Drop` and `Send::receiver_chain` take a chain link by
-  link. The compiler clones a slot's initializer for a simultaneous slot's
-  future (`compiler/simultaneous.rs`, `future_block`), so a long chain there
-  overflows in the clone too. `ns-analyzer`'s `the_editor_parse_agrees_with_parse`
+- **The AST's derived `PartialEq` and `Debug` recurse along a chain of
+  messages** (`crates/ns-syntax/src/ast.rs`), as the compiler does: only
+  `Send`'s `Drop` and `Clone` and `Send::receiver_chain` take a chain link
+  by link. `ns-analyzer`'s `the_editor_parse_agrees_with_parse`
   compares modules with `==`, and the snapshot tests print them with
   `{:?}`; both are safe only because no fixture holds such a chain.
   Hand-written impls that take the chain link by link would close it.
@@ -1085,6 +1084,43 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 - **Editor parse: `the_editor_parse_agrees_with_parse`**
   (`crates/ns-analyzer/tests/corpus.rs`) assumes `parse` accepts no module with
   a warning; it is to filter by severity once a warning exists. Noted 2026-10-04.
+- **Formatter: a long tail on a hugged block's `]` line can pass 100
+  columns.** A `Choice` is decided by the first line of each alternative,
+  so of the hugged form only the line up to the first `[` is measured; what
+  follows the last `]` is measured again only when it is a group of its own
+  (`crates/ns-syntax/src/printer/document.rs`, `layout`), and a long run of
+  plain links there -- `(a foo: [ … ]) bar baz qux …`, `] on: Error do:
+  handler` -- stays on the line. [formatting.md](design/formatting.md),
+  "Measuring again after a line break". Noted 2026-10-12.
+- **Formatter: a group may break where breaking does not shorten the
+  line.** A group is measured up to the next place a line may break, the
+  text after it included, so a short inner group breaks when what follows
+  it is what makes the line too long; its own part gets no shorter, the
+  line still overflows, and the break reads as one for nothing -- `(outer`
+  and `MixinInitializerOrder` split apart in
+  `goldens/language/class/mixin/mixin_initializer_order.ns`, and two nested
+  levels continuing at the same +4 column. [formatting.md](design/formatting.md),
+  "Outside in, all or nothing". Noted 2026-10-12.
+- **`ns-next-analyzer fmt`'s rename over the target drops the file's
+  permissions and replaces a symlink with a file.** The formatted text is
+  written beside the target and renamed over it
+  (`crates/ns-analyzer/src/commands/fmt.rs`, `write_replacing`), so the
+  result has the new file's default permissions, and a symlink named on the
+  command line becomes a regular file while its target stays unformatted.
+  Noted 2026-10-12.
+- **`ClassDeclaration::class_comment()` relies on spans**
+  (`crates/ns-syntax/src/ast.rs`): it tells a comment after the header's `(`
+  from one after the first initializer expression by comparing their spans,
+  so on a position-erased tree (`Module::without_positions`) or one the
+  runtime builds, whose spans are zero, it can answer the wrong comment or
+  none. Noted 2026-10-12.
+- **The formatting request runs outside `catch_unwind`.** Every analysis
+  the server runs is guarded, so a panic becomes a diagnostic rather than
+  the end of the server ([editor-support.md](design/editor-support.md),
+  "Robustness"); `formatting_of` (`crates/ns-analyzer/src/server.rs`) calls
+  `ns_syntax::format` unguarded, so a printer panic would take the server
+  down. The printer is held total over every repository source and the
+  corpus, so none is known. Noted 2026-10-12.
 
 ## Missing tests
 

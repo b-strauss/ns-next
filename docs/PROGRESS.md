@@ -4785,3 +4785,58 @@ golden that pins both forms.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): a hover
 showing the comment above a declaration.
+
+## The lossless AST and the formatter (2026-10-12)
+
+Plan: [ns-next-formatter](superpowers/plans/2026-10-12-0112-ns-next-formatter.md);
+[formatting.md](design/formatting.md); [frontend.md](design/frontend.md),
+"AST", "Comments", "What is kept but ignored, and what a reprint drops";
+[editor-support.md](design/editor-support.md), "Formatting".
+
+The syntax tree is lossless except for layout: an expression is an envelope
+around its shape (`ExpressionKind`) that records its parentheses, its type
+arguments, whether the parser made it up and its comments; statements keep
+their spans, members their source order, literals their spelling, the
+prologue its parts, a send its `<-:`, every type annotation its tokens, and
+a lazy slot its modifier order; every comment is attached to the node it
+belongs to (`attach.rs`), and `Module::without_positions` compares two
+trees with their layout erased. On it, a printer in `ns-syntax`
+(`print_module`, `format`) writes a module in one layout of twenty-five
+fixed rules, without options: 100 columns, two spaces, breaking outside in
+and all or nothing, block arguments hugged, comments kept with their
+owners, the file's line ending kept. It lowers the module to a document of
+groups and alternatives and lays that out in one linear pass on an
+explicit stack. `ns-next-analyzer fmt [--check]` and the server's
+`textDocument/formatting` run it, so the JetBrains plugin's Reformat Code
+works with no change to the plugin. Every Newspeak source of the
+repository outside `corpus/` and `prior-art/` is reformatted to the two-space
+layout, every golden keeping its outcome, and `formatting_gate.rs` holds
+each to be the formatter's fixed point; `format_properties.rs` holds the
+printer idempotent and preserving over more than 590 sources, the corpus
+included.
+
+- `de3f4f50` -- the plan.
+- `8333b785`, `aa2e8baf`, `c6a803ed`, `617fa412` -- the expression
+  envelope, statements' spans and members in source order, literal
+  spellings, the prologue and eventual sends, type annotations.
+- `1872f9af`, `8fb5eeb2` -- every comment attached to its node, and the
+  comparison without positions.
+- `540e5c9b`, `71d65e88` -- the document and its layout, measured again
+  after a line break in flat content.
+- `de0635b4`, `2d050010` -- declarations: class headers broken outside in,
+  the lazy modifier order kept.
+- `66100c8a`, `eb9b5bbe` -- expressions: chains, keyword messages hugging
+  their blocks, cascades, blocks, tuples.
+- `69cda1ac`, `0509312d` -- comments, and the printer held to every source.
+- `206d71a8`, `199cb4ce` -- `ns-next-analyzer fmt`.
+- `5b29cc75` -- `textDocument/formatting`.
+- `a5bda0fd`, `ee154bb2` -- the repository formatted, and the gate.
+- `0a743f36`, `0457b50c`, `efd39351`, `22f81132` -- where a message
+  continues after a broken receiver, and the repository reformatted with it.
+- This commit -- the documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): range
+formatting and formatting on type; a long tail on a hugged block's `]` line
+and a group breaking where that does not shorten its line; `fmt`'s rename
+over a file's permissions and symlinks; `ClassDeclaration::class_comment`
+on a tree without spans; the formatting request outside `catch_unwind`.

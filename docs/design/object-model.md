@@ -1070,7 +1070,9 @@ in written order, and the declaration's `Mixin::mixin_applications` one
 selector and whether it has arguments, the same record `Mixin::superclass`
 holds for the superclass clause) and that message's compiled body. Type
 arguments on a clause's receiver (`<: Collection[E]`) are kept in the syntax
-tree and ignored, as they are on a superclass clause ([frontend.md](frontend.md), "What is parsed and dropped").
+tree and ignored, as they are on a superclass clause
+([frontend.md](frontend.md), "What is kept but ignored, and what a reprint
+drops").
 
 **Each clause adds one class level between the declaration and its
 superclass**, lowest first, so the last clause's mixin is the nearest to `C`.
