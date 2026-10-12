@@ -10,6 +10,8 @@
     <ul>
       <li>Syntax highlighting as you type, with brace matching, line and block comments, TODO markers
           and spell checking in comments and strings.</li>
+      <li>Typing indents as the formatter does: two spaces, Enter after an opening bracket and before
+          a closing one, and the margin at 100 columns.</li>
       <li>Errors as you type: every lexer, parser and resolver error ns-next reports before
           running a module, with ns-next's own message.</li>
       <li>Semantic colouring from ns-next's resolver: parameters, locals, slots, nested classes
@@ -76,6 +78,19 @@
                              implementationClass="io.github.bstrauss.newspeak.editor.NewspeakOneLineMethodFolding"/>
         <codeFoldingOptionsProvider instance="io.github.bstrauss.newspeak.settings.NewspeakCodeFoldingOptionsProvider"/>
         <indexPatternBuilder implementation="io.github.bstrauss.newspeak.editor.NewspeakIndexPatternBuilder"/>
+        <!-- The formatter's style, fixed (NewspeakCodeStyle): first, so that no detected indent or
+             .editorconfig answers for a Newspeak file before these. -->
+        <fileIndentOptionsProvider order="first"
+                                   implementation="io.github.bstrauss.newspeak.editor.NewspeakIndentOptionsProvider"/>
+        <codeStyleSettingsModifier order="first"
+                                   implementation="io.github.bstrauss.newspeak.editor.NewspeakCodeStyleModifier"/>
+        <lineIndentProvider order="first"
+                            implementation="io.github.bstrauss.newspeak.editor.NewspeakLineIndentProvider"/>
+        <enterBetweenBracesDelegate language="Newspeak"
+                                    implementationClass="io.github.bstrauss.newspeak.editor.NewspeakEnterBetweenBracketsDelegate"/>
+        <typedHandler implementation="io.github.bstrauss.newspeak.editor.NewspeakClosingBracketTypedHandler"/>
+        <enterHandlerDelegate order="first"
+                              implementation="io.github.bstrauss.newspeak.editor.NewspeakLineCommentEnter"/>
         <applicationConfigurable parentId="language"
                                  instance="io.github.bstrauss.newspeak.settings.NewspeakSettingsConfigurable"
                                  id="io.github.bstrauss.newspeak.settings"
