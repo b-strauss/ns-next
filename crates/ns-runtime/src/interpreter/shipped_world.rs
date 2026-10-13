@@ -252,11 +252,28 @@ fn root_application<'gc>(
         .expect("internal: a shipped module instance's class is a class object")
 }
 
+/// The kernel classes that are public only so that another shipped
+/// module's root, which holds the kernel instance, may send `kernel <Name>`
+/// for them -- `TypedArraysFactory.ns` applies `IndexedCollection` -- and
+/// that neither `Object`'s class accessors nor `KernelNamespace`'s hand
+/// out. No program reaches one by running, so an image may name it only as
+/// a private class without an accessor stands: as a record's class or a
+/// frame's, never as a value or a superclass.
+///
+/// A named list, because the two facets' accessors are not data the boot
+/// reads here: `Object`'s are recognized as `MethodFastPath::BuiltinClass`,
+/// not as class accessors of a declaration, and `KernelNamespace`'s answer
+/// `PlatformFactory`'s slots, which hold what the kernel answered.
+/// `tests::the_kernel_classes_for_shipped_modules_are_exactly_those_no_facet_hands_out`
+/// holds the list to the two facets.
+const KERNEL_CLASSES_FOR_SHIPPED_MODULES: &[&str] = &["IndexedCollection"];
+
 /// Every shipped object under its name, in the order of
 /// `ShippedWorld::entries`' field comment. Every class a root declares has
 /// been built, so each cache slot holds its class.
 fn shipped_entries<'gc>(mutator: &Mutator<'gc>) -> Vec<ShippedEntry<'gc>> {
     let heap = mutator.heap();
+    let kernel = Symbol::intern("Kernel");
     let mut entries = Vec::new();
     for &(module, instance) in mutator.shipped_world.module_instances() {
         let root_class = heap.object_class(instance);
@@ -295,7 +312,10 @@ fn shipped_entries<'gc>(mutator: &Mutator<'gc>) -> Vec<ShippedEntry<'gc>> {
                         nested.name.as_str()
                     )
                 });
-            let value = nested.access == AccessModifier::Public || accessed.contains(&nested.name);
+            let public = nested.access == AccessModifier::Public
+                && !(module == kernel
+                    && KERNEL_CLASSES_FOR_SHIPPED_MODULES.contains(&nested.name.as_str()));
+            let value = public || accessed.contains(&nested.name);
             // A class object is made only by evaluating a declaration, so
             // nothing may inherit from what every class object inherits.
             let superclass = value
@@ -497,14 +517,8 @@ mod tests {
                 );
             }
             // The byte storage, its builder and its view are public
-            // classes a program names, subclasses and keeps instances of;
-            // so is `IndexedCollection`, which a shipped module applies.
-            for public in [
-                "IndexedCollection",
-                "ByteArray",
-                "StringBuilder",
-                "DataView",
-            ] {
+            // classes a program names, subclasses and keeps instances of.
+            for public in ["ByteArray", "StringBuilder", "DataView"] {
                 let positions = positions_of(world, name("Kernel", public, ShippedKind::Class));
                 assert!(
                     positions.value && positions.superclass && positions.header,
@@ -512,9 +526,14 @@ mod tests {
                 );
             }
             // `DataView on:byteOrder:` answers instances of the two byte
-            // orders: no public accessor answers the classes, so a
-            // record's class only.
-            for private in ["LittleEndianDataView", "BigEndianDataView"] {
+            // orders and `IndexedCollection`, public only for the shipped
+            // module that applies it, is only mixed in: no facet hands the
+            // classes out, so a record's class only.
+            for private in [
+                "LittleEndianDataView",
+                "BigEndianDataView",
+                "IndexedCollection",
+            ] {
                 let positions = positions_of(world, name("Kernel", private, ShippedKind::Class));
                 assert!(
                     !positions.value && !positions.superclass && positions.header,
@@ -552,8 +571,8 @@ mod tests {
             );
             assert!(list.value && list.superclass && list.header);
             // The platform hands out none of its module's classes and the
-            // collections and typed arrays facets not their own: a program holds their
-            // instances, records of them, but never the classes.
+            // collections and typed arrays facets not their own: a program
+            // holds their instances, records of them, but never the classes.
             for (module, declaration) in [
                 ("PlatformFactory", "Platform"),
                 ("TranscriptFactory", "Transcript"),
@@ -592,6 +611,74 @@ mod tests {
                     }
                 );
             }
+        });
+    }
+
+    /// `KERNEL_CLASSES_FOR_SHIPPED_MODULES` is exactly the public kernel
+    /// classes that are no builtin and that neither an accessor of `Object`
+    /// nor one of `KernelNamespace` answers: a kernel class made public
+    /// for a shipped module joins it, and one a facet starts handing out
+    /// leaves it.
+    #[test]
+    fn the_kernel_classes_for_shipped_modules_are_exactly_those_no_facet_hands_out() {
+        let mut interpreter = crate::Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let heap = mutator.heap();
+            let world = &mutator.shipped_world;
+            let root_mixin = |module: &str| {
+                let instance = world
+                    .module_instance(Symbol::intern(module))
+                    .unwrap_or_else(|| panic!("{module} is a shipped module"));
+                root_application(heap, instance).mixin.clone()
+            };
+            // The mirror's class has no declaration, so no name.
+            let builtins: HashSet<&str> = BuiltinClass::ALL
+                .iter()
+                .filter(|kind| **kind != BuiltinClass::VmMirror)
+                .map(|kind| super::super::kernel::kernel_class_name(*kind))
+                .collect();
+            let object = mutator.builtin_class(BuiltinClass::Object);
+            let object_mixin = heap
+                .class_application(object)
+                .expect("Object has an application")
+                .mixin
+                .clone();
+            let mut handed_out: HashSet<String> = HashSet::new();
+            for entry in object_mixin.methods.values() {
+                if let MethodEntry::Compiled(method) = entry {
+                    if let Some(crate::mixin::MethodFastPath::BuiltinClass(kind)) = method.fast_path
+                    {
+                        handed_out.insert(super::super::kernel::kernel_class_name(kind).into());
+                    }
+                }
+            }
+            let platform = root_mixin("PlatformFactory");
+            let kernel_namespace = platform
+                .nested
+                .iter()
+                .find(|nested| nested.name.as_str() == "KernelNamespace")
+                .expect("PlatformFactory declares KernelNamespace");
+            for entry in kernel_namespace.methods.values() {
+                if let MethodEntry::Compiled(method) = entry {
+                    if method.access == AccessModifier::Public {
+                        handed_out.insert(method.selector.as_str().to_string());
+                    }
+                }
+            }
+            let mut for_shipped_modules: Vec<String> = root_mixin("Kernel")
+                .nested
+                .iter()
+                .filter(|nested| nested.access == AccessModifier::Public)
+                .map(|nested| nested.name.as_str().to_string())
+                .filter(|name| !builtins.contains(name.as_str()) && !handed_out.contains(name))
+                .collect();
+            for_shipped_modules.sort();
+            let mut listed: Vec<String> = KERNEL_CLASSES_FOR_SHIPPED_MODULES
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect();
+            listed.sort();
+            assert_eq!(for_shipped_modules, listed);
         });
     }
 

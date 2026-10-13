@@ -3368,6 +3368,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("TypedArraysFactory", "Int16Array", 1), // INT16_ARRAY_NAME = 22
     ("Kernel", "BigEndianDataView", 1),      // BIG_ENDIAN_DATA_VIEW_NAME = 23
     ("Kernel", "StringBuilder", 1),          // STRING_BUILDER_NAME = 24
+    ("Kernel", "IndexedCollection", 1),      // INDEXED_COLLECTION_NAME = 25
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3394,6 +3395,7 @@ const BYTE_ARRAY_NAME: u32 = 21;
 const INT16_ARRAY_NAME: u32 = 22;
 const BIG_ENDIAN_DATA_VIEW_NAME: u32 = 23;
 const STRING_BUILDER_NAME: u32 = 24;
+const INDEXED_COLLECTION_NAME: u32 = 25;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -13485,6 +13487,69 @@ fn a_second_collections_facet_is_a_record_of_its_shipped_class() {
     );
 }
 
+/// A second typed arrays facet is an ordinary record of
+/// `TypedArraysFactory TypedArrays`, its enclosing object the module
+/// instance, and after a load it is equal to the loading platform's facet:
+/// a value. No program makes one, so the host stores a second platform's.
+#[test]
+fn a_second_typed_arrays_facet_is_a_record_of_its_shipped_class() {
+    let source = indoc! {"
+        class Holder usingPlatform: platform = Object new (
+            | public facet ::= nil. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module_holding(source, "facet:", |interpreter, platform| {
+        let second = a_second_platform(interpreter, platform);
+        expect_ok(
+            interpreter.send(&second, Symbol::intern("typedArrays"), &[]),
+            "second typedArrays",
+        )
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .shipped_names
+            .contains(&"TypedArraysFactory TypedArrays".to_string()),
+        "the facet's class is named by its declaration: {:?}",
+        report.shipped_names
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let facet = send_to(&mut loaded, &instance, "facet");
+    let int16_array = send_to(&mut loaded, &facet, "Int16Array");
+    let platform = loaded.interpreter.platform();
+    let typed_arrays = send_to(&mut loaded, &platform, "typedArrays");
+    let fresh_int16_array = send_to(&mut loaded, &typed_arrays, "Int16Array");
+    assert!(
+        same_object(&mut loaded, &int16_array, &fresh_int16_array),
+        "the loaded facet hands out the loading platform's Int16Array"
+    );
+    assert!(
+        equal(&mut loaded, &facet, &typed_arrays),
+        "the loaded facet equals the loading platform's facet"
+    );
+    loaded.interpreter.enter(|mutator| {
+        let module = ShippedName {
+            module: Symbol::intern("TypedArraysFactory"),
+            declaration: Symbol::intern("TypedArraysFactory"),
+            kind: ShippedKind::ModuleInstance,
+        };
+        let Ok(resolved) = image::shipped_names::resolve_in(mutator, &[module], false) else {
+            panic!("the typed arrays module is a shipped name");
+        };
+        let heap = mutator.heap();
+        let facet = object(mutator.fetch(&facet));
+        let enclosing = heap
+            .class_enclosing(heap.object_class(facet))
+            .expect("the facet's class is nested");
+        assert!(
+            enclosing.same(resolved[0].object),
+            "the loaded facet is enclosed by the loading boot's module instance"
+        );
+    });
+}
+
 /// A crafted section entry: a module, a declaration and a kind byte, and a
 /// level's clause index.
 type CraftedEntry = ((&'static str, &'static str, u8), Option<u32>);
@@ -14079,6 +14144,69 @@ fn non_boolean_receiver_as_a_value_is_refused() {
         assert_eq!(
             message,
             "image encoding refuses Kernel NonBooleanReceiver as a value: no program may name \
+             it there, and the loader refuses an image that does"
+        );
+    });
+}
+
+/// `Kernel IndexedCollection` is public only so that `TypedArraysFactory.ns`
+/// may apply it, and no facet hands it out, so no program reaches it by
+/// running: a crafted image naming it as a value, as a class record's
+/// superclass or as the mixin a level applies is refused on load, and the
+/// encoder refuses a graph holding it as a value rather than write an image
+/// nothing loads.
+#[test]
+fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
+    let not_allowed = |position: &'static str| decode::DecodeError::ShippedNameNotAllowed {
+        name: "Kernel IndexedCollection".to_string(),
+        position,
+    };
+    assert_eq!(
+        GraphFixture::new().decode_error(&shipped_class_value(INDEXED_COLLECTION_NAME)),
+        not_allowed("a value")
+    );
+    let over_indexed_collection = one_class_object(0, |writer| {
+        writer.write_boolean(true);
+        writer.write_shipped(INDEXED_COLLECTION_NAME); // superclass
+        writer.write_boolean(false); // no enclosing object
+        writer.write_boolean(false); // no declaring class
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&over_indexed_collection),
+        not_allowed("a superclass or an applied mixin")
+    );
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let applied = row_named(&fixture, "Applied");
+    assert_eq!(
+        fixture.decode_error(&shipped_mixin_record(INDEXED_COLLECTION_NAME, (applied, 0))),
+        not_allowed("a superclass or an applied mixin")
+    );
+    let (mut interpreter, class) = load(indoc! {"
+        class Root = Object new () ()
+    "});
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let name = ShippedName {
+            module: Symbol::intern("Kernel"),
+            declaration: Symbol::intern("IndexedCollection"),
+            kind: ShippedKind::Class,
+        };
+        let Ok(resolved) = image::shipped_names::resolve_in(mutator, &[name], false) else {
+            panic!("Kernel IndexedCollection is a shipped name");
+        };
+        let refused = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            &[Value::object(resolved[0].object)],
+        );
+        let Err(message) = refused else {
+            panic!("a graph holding Kernel IndexedCollection as a value was encoded");
+        };
+        assert_eq!(
+            message,
+            "image encoding refuses Kernel IndexedCollection as a value: no program may name \
              it there, and the loader refuses an image that does"
         );
     });

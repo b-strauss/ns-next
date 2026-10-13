@@ -1838,7 +1838,7 @@ checked per position by the encoder and the decoder alike
 
 | Position | Allowed |
 |---|---|
-| a value (slot, register, element, root), a class as a value | a shipped class that is public or that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), and its metaclass |
+| a value (slot, register, element, root), a class as a value | a shipped class that is public or that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), and its metaclass -- but a kernel class public only for another shipped module (`IndexedCollection`) |
 | a superclass, `MIXIN_SHIPPED` | such a class, not its metaclass, but `Behavior`, `Class` and `Metaclass` |
 | a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
 | a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
@@ -1861,10 +1861,18 @@ So `ByteArray`, `StringBuilder` and `DataView`, and `TypedArray` and the ten
 typed arrays, named by their module, `TypedArraysFactory TypedArray`,
 `TypedArraysFactory Int16Array` and so on, stand as values, superclasses and
 records' classes; the private `LittleEndianDataView` and
-`BigEndianDataView`, and `IndexedCollection`, public but handed out by no
-facet, as a record's class or a frame's only; and the levels
-`IndexedCollection` adds as a frame's class only (`a_view_and_a_builder_round_trip_through_a_package`,
-`crates/ns-runtime/tests/image.rs`).
+`BigEndianDataView` as a record's class or a frame's only; and the levels
+`IndexedCollection` adds as a frame's class only
+(`a_view_and_a_builder_round_trip_through_a_package`,
+`crates/ns-runtime/tests/image.rs`). `IndexedCollection` itself is public
+only so that `TypedArraysFactory.ns`'s root, which holds the kernel, may
+send `kernel IndexedCollection`; neither `Object`'s accessors nor
+`KernelNamespace`'s hand it out, so no program reaches it by running, and
+it stands where a private class without an accessor does: as a record's
+class or a frame's, never as a value or a superclass
+(`shipped_world.rs`, `KERNEL_CLASSES_FOR_SHIPPED_MODULES`, a named list
+because neither facet's accessors are recognized as class accessors of a
+declaration; `indexed_collection_as_a_value_or_a_superclass_is_refused`).
 
 **A started image names only the kernel, and no module instance.** Before
 `main:args:` a program can reach nothing of `PlatformFactory` or the
