@@ -163,7 +163,7 @@ pub enum BuiltinClass {
     /// builtin because its instances have their own format,
     /// `AlignedBytes`, whose data lie at a 32-byte address
     /// (`docs/design/core-library.md`, "`ByteArray` in the heap, the
-    /// movers and the image"). No value: §3.1.1 lists it among none.
+    /// movers and the image"). Not a value class (§3.1.1).
     ByteArray,
 }
 

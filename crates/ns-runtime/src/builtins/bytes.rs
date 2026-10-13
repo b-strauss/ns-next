@@ -130,9 +130,11 @@ fn element_at_put<'gc>(
 /// `ByteArray new: size`: a `ByteArray` of `size` zero bytes. Its subject
 /// is the class the forwarder runs in, which is only ever `ByteArray`
 /// itself -- §3.2's metaclasses are flat, so no subclass inherits `new:`
-/// -- and anything else declines. A size the object space can never hold
-/// is an error, found before anything is allocated, never an abort: the
-/// size is the program's, and an abort is not catchable.
+/// -- and anything else declines. A size that cannot be allocated -- past
+/// the reservation, or more than the operating system grants
+/// (`Heap::byte_array_fits`) -- is an error, found before anything is
+/// allocated, never an abort: the size is the program's, and an abort is
+/// not catchable.
 fn allocate<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,

@@ -1003,20 +1003,30 @@ impl<'gc> Heap<'gc> {
         object
     }
 
-    /// Whether a `ByteArray` of `size` bytes fits the old space at all, its
-    /// reserve and its block's words included. Asked before a size the
-    /// program chose is allocated: one past the reservation would abort
-    /// the process as running out of memory, which no handler can catch.
+    /// Whether a `ByteArray` of `size` bytes can be allocated, asked before
+    /// a size the program chose is: a failed allocation aborts the process
+    /// as running out of memory, which no handler can catch. Two halves.
+    /// The block, its reserve and overflow word included, must fit the old
+    /// space of the reservation, which no commit can enlarge. And the
+    /// operating system must grant memory of the object's size, probed as
+    /// `Array new:` probes it, with `try_reserve_exact` of its field words
+    /// dropped at once: a size inside the reservation can still be one a
+    /// host that does not overcommit refuses to commit.
     pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
-        let words = record_size::block_words(object::byte_array_field_count(size));
+        let field_count = object::byte_array_field_count(size);
+        let words = record_size::block_words(field_count);
         let old = self.space.region(RegionName::Old);
-        words
+        let inside_the_reservation = words
             .checked_mul(8)
-            .is_some_and(|bytes| bytes <= old.end - old.base)
+            .is_some_and(|bytes| bytes <= old.end - old.base);
+        inside_the_reservation && Vec::<u64>::new().try_reserve_exact(field_count).is_ok()
     }
 
-    /// A `ByteArray` of `class` holding `bytes`, in order.
-    pub fn allocate_byte_array(
+    /// A `ByteArray` of `class` holding `bytes`, in order. Crate-private: a
+    /// host makes one through `Mutator::new_byte_array`, of `ByteArray`'s
+    /// class, since an `AlignedBytes` object of another class is one the
+    /// image decoder refuses.
+    pub(crate) fn allocate_byte_array(
         &mut self,
         class: ClassReference<'gc>,
         bytes: &[u8],

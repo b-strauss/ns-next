@@ -91,8 +91,8 @@ fn objects_byte_array_accessor_is_protected_and_answers_the_class() {
     }
 }
 
-/// One of 32 KiB or more is allocated old, as every object is, and a new
-/// one holds zeros whichever generation it lies in.
+/// One of 32 KiB or more is allocated old, as every object of 32 KiB or
+/// more is, and a new one holds zeros whichever generation it lies in.
 #[test]
 fn a_large_byte_array_is_allocated_old_and_holds_zeros() {
     let source = indoc! {"
