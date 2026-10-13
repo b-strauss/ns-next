@@ -12,12 +12,12 @@ from: 0 to: 1 out of range: valid ranges lie within 1..3, an empty range ends ju
 fromUtf8:from:to: requires an Integer index, got the Symbol #b
 fromUtf8: requires a ByteArray, got 'abc'
 fromUtf8:from:to: requires a ByteArray, got the String "abc"
-addCodePoint: requires a Unicode scalar value, got 55296
-addCodePoint: requires a Unicode scalar value, got 1114112
-addCodePoint: requires a Unicode scalar value, got -1
-addCodePoint: requires a Unicode scalar value, got the String "a"
+at:putCodePoint: requires a Unicode scalar value, got 55296
+at:putCodePoint: requires a Unicode scalar value, got 1114112
+at:putCodePoint: requires a Unicode scalar value, got -1
+at:putCodePoint: requires a Unicode scalar value, got the String "a"
 index 4 out of range: valid indices are 1..3 (size 3)
 index 4 out of range: valid indices are 1..3 (size 3)
-addCodePoint: requires an Integer index, got the String "x"
+at:putCodePoint: requires an Integer index, got the String "x"
 123
 '''

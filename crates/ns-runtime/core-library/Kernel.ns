@@ -4210,14 +4210,13 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `index`: 'index … out of
     /// range: valid indices are 1..size (size …)' for an index outside 1
     /// to `size`, a LargeInteger included, or one whose last byte would
-    /// pass the end, naming that byte's index; and 'addCodePoint:
+    /// pass the end, naming that byte's index; and 'at:putCodePoint:
     /// requires an Integer index, got …' for an index that is no
     /// Integer. Signals an ArgumentError carrying `codePoint`,
-    /// 'addCodePoint: requires a Unicode scalar value, got …', for any
-    /// other code point. A refused store leaves every byte as it was.
+    /// 'at:putCodePoint: requires a Unicode scalar value, got …', for
+    /// any other code point. A refused store leaves every byte as it was.
     ///
-    /// `StringBuilder>>addCodePoint:` writes through it, and its errors
-    /// name that message.
+    /// `StringBuilder>>addCodePoint:` writes through it.
     public at: index putCodePoint: codePoint = (
       ^vmMirror byteArray: self at: index putCodePoint: codePoint ifFail: [
         ^super at: index putCodePoint: codePoint.

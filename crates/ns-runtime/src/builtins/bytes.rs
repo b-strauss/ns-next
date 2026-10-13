@@ -34,7 +34,7 @@ pub(crate) fn execute<'gc>(
         BytePrimitive::LastIndexOf => search(mutator, receiver, selector, arguments, true),
         BytePrimitive::StartsWith => affix(mutator, receiver, selector, arguments, false),
         BytePrimitive::EndsWith => affix(mutator, receiver, selector, arguments, true),
-        BytePrimitive::WriteCodePoint => write_code_point(mutator, receiver, arguments),
+        BytePrimitive::WriteCodePoint => write_code_point(mutator, receiver, selector, arguments),
     }
 }
 
@@ -485,19 +485,13 @@ fn element_at_put<'gc>(
 /// ByteArray -- refused with the index of that byte, the first the
 /// ByteArray lacks -- and nothing is written until all three pass, so a
 /// refused store leaves the bytes as they were.
-///
-/// Its errors name `addCodePoint:`, the message of `StringBuilder`, for
-/// which the leaf is made, however it is reached: run as the primitive
-/// method `ByteArray>>at:putCodePoint:` a leaf is handed the send's own
-/// selector, and through the mirror send the row's reported one, and a
-/// text that depended on which would change with the lowering.
 fn write_code_point<'gc>(
     mutator: &mut Mutator<'gc>,
     receiver: Value<'gc>,
+    selector: Symbol,
     arguments: &[Value<'gc>],
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let (object, size) = byte_array(mutator, receiver)?;
-    let selector = Symbol::intern("addCodePoint:");
     let position = match position(mutator, receiver, selector, arguments, size) {
         Ok(position) => position,
         Err(error) => return Some(Err(error)),

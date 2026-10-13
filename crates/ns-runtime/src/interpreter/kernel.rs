@@ -1246,17 +1246,13 @@ mod tests {
     /// §3.1.1 asks a value's identity method to answer what its `=` answers,
     /// and the one leaf is what makes them agree. The reported selector only
     /// ever names an error text, and that row raises none -- it answers or
-    /// declines. `ByteArray>>at:putCodePoint:` forwards to a row reported
-    /// as `StringBuilder`'s `addCodePoint:`, the message it is made for;
-    /// its leaf names that message itself, so its texts are the same
-    /// whichever selector reaches it.
+    /// declines.
     const REPORTED_UNDER_ANOTHER_SELECTOR: &[(BuiltinClass, &str, &str)] = &[
         (BuiltinClass::Behavior, "==", "="),
         (BuiltinClass::Metaclass, "==", "="),
         // `objectHash:ifFail:` reports `hash`, the selector `identityHash`
         // asks for an object without an `=` of its own.
         (BuiltinClass::Object, "identityHash", "hash"),
-        (BuiltinClass::ByteArray, "at:putCodePoint:", "addCodePoint:"),
     ];
 
     /// The kernel's quick methods: `True`'s and `False`'s, the nil

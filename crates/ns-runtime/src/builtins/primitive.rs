@@ -612,10 +612,7 @@ impl MirrorPrimitive {
 
 /// One leaf, as the VM mirror answers it. The mirror selector's arguments
 /// are the subject (the kernel method's `self`), the leaf's own arguments,
-/// and the failure block, so it takes two more than the leaf does --
-/// and two more than `reported`, but for a leaf made for a sender of
-/// another shape (`byteArray:at:putCodePoint:ifFail:`, which reports
-/// `StringBuilder`'s `addCodePoint:`).
+/// and the failure block, so it takes two more than `reported` does.
 #[derive(Debug, Clone, Copy)]
 pub struct MirrorEntry {
     /// What `Kernel.ns` sends to the mirror.
@@ -626,25 +623,23 @@ pub struct MirrorEntry {
     pub reported: &'static str,
     /// The leaf itself; never a `Primitive::Mirror`.
     pub primitive: Primitive,
-    /// How many arguments the leaf takes, counted once when the table is
+    /// How many arguments `reported` takes, counted once when the table is
     /// built rather than on every mirror send that checks its arguments.
     leaf_arity: usize,
 }
 
 impl MirrorEntry {
-    /// How many arguments the leaf takes: the mirror selector's, less the
-    /// subject and the failure block.
+    /// How many arguments the reported selector takes: one for a binary
+    /// selector, one per colon for a keyword selector, none for a unary one.
     pub fn leaf_arity(&self) -> usize {
         self.leaf_arity
     }
 }
 
-/// How many arguments `selector` takes -- one for a binary selector, one
-/// per colon for a keyword selector, none for a unary one -- as a byte
-/// scan so the table can run it at compile time. Every selector of the
-/// table is ASCII, so a byte that is not an ASCII letter opens a binary
-/// selector.
-pub(crate) const fn selector_arity(selector: &str) -> usize {
+/// `MirrorEntry::leaf_arity`'s count, as a byte scan so the table can run it
+/// at compile time. Every reported selector is ASCII, so a byte that is not
+/// an ASCII letter opens a binary selector.
+const fn selector_arity(selector: &str) -> usize {
     let bytes = selector.as_bytes();
     if bytes.is_empty() || !bytes[0].is_ascii_alphabetic() {
         return 1;
@@ -669,10 +664,7 @@ const fn mirror(
         selector,
         reported,
         primitive,
-        // Every mirror selector takes the subject and ends in `ifFail:`, so
-        // the subtraction cannot underflow; if it did, the table would not
-        // compile.
-        leaf_arity: selector_arity(selector) - 2,
+        leaf_arity: selector_arity(reported),
     }
 }
 
@@ -1583,9 +1575,7 @@ pub const MIRROR: &[MirrorEntry] = &[
     ),
     mirror(
         "byteArray:at:putCodePoint:ifFail:",
-        // `StringBuilder>>addCodePoint:` is the one sender the leaf is
-        // made for, so its refusals name what the program sent.
-        "addCodePoint:",
+        "at:putCodePoint:",
         Primitive::Bytes(BytePrimitive::WriteCodePoint),
     ),
 ];
