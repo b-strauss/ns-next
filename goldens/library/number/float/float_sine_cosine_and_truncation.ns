@@ -41,15 +41,11 @@ class FloatSineCosineAndTruncation = Object new () (
         newLine.
     transcript
         print: 100000000000000000000 asFloat asInteger;
-        show: ' ';
-        print: 100000000000000000000 asFloat asInteger class;
         newLine.
     transcript
         print: 9223372036854775808 asFloat asInteger;
         show: ' ';
         print: (0 - 9223372036854775808) asFloat asInteger;
-        show: ' ';
-        print: (0 - 9223372036854775808) asFloat asInteger class;
         newLine.
     transcript
         show: ([(0.0 / 0.0) asInteger] on: Error do: [:error | error messageText]);

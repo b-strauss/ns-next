@@ -1,8 +1,8 @@
 stdout = '''
-(3/4) 3 4 Fraction
+(3/4) 3 4 true
 (-1/2) (1/2)
-2 Integer 0
-(1180591620717411303424/3) LargeInteger
+2 true 0
+(1180591620717411303424/3)
 (3/4) (-3/4)
 true true false false
 numerator:denominator: requires a non-zero denominator

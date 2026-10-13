@@ -1,8 +1,13 @@
 /// A class prints as its name and a metaclass as its class's name followed
 /// by ` class`, as Primordial Soup's `Class>>printString` and
-/// `Metaclass>>printString` do. `Metaclass` itself is a class.
+/// `Metaclass>>printString` do.
 class AClassAndItsMetaclassPrint = Object new () (
-  class Foo = Object new () ()
+  class Foo = Object new () () : (
+    /// Answers Foo's metaclass, which only Foo's class side can ask for.
+    public metaclass = (
+      ^self class.
+    )
+  )
 
   public main: platform args: args = (
     |
@@ -12,19 +17,7 @@ class AClassAndItsMetaclassPrint = Object new () (
         show: Foo printString;
         newLine.
     transcript
-        show: Foo class printString;
-        newLine.
-    transcript
-        show: Foo class class printString;
-        newLine.
-    transcript
-        show: Foo class class class printString;
-        newLine.
-    transcript
-        show: 3 class printString;
-        newLine.
-    transcript
-        show: 3 class class printString;
+        show: Foo metaclass printString;
         newLine.
     transcript
         show: Foo new printString;

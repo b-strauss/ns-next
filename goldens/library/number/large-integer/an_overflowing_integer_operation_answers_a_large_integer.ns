@@ -2,7 +2,9 @@
 /// result does not fit becomes a `LargeInteger`, and one whose result fits
 /// again is an `Integer`, so each integer has one representation. Where a
 /// `SmallInteger` ends is the representation's choice: the `i64` edges are
-/// `LargeInteger`s already, and the last lines cross the 61-bit edges. Their
+/// `LargeInteger`s already, and the last lines cross the 61-bit edges. Which
+/// class a result has only the representation shows, so
+/// `crates/ns-runtime/tests/representation.rs` checks it. The last lines'
 /// operands are literal small integers, so the inlined `IntegerBinary` runs,
 /// declines a result beyond 61 bits, and the ordinary send promotes: inlining
 /// must not take the promotion away from the primitive.
@@ -34,12 +36,6 @@ class Overflow = Object new () (
         show: (min // -1) printString;
         newLine.
     big:: max + 1.
-    p transcript
-        show: big class printString;
-        newLine.
-    p transcript
-        show: max class printString;
-        newLine.
     p transcript
         show: (big = (max + 1)) printString;
         newLine.
@@ -75,9 +71,6 @@ class Overflow = Object new () (
         newLine.
     p transcript
         show: (1152921504606846975 * 2) printString;
-        newLine.
-    p transcript
-        show: (1152921504606846975 + 1 - 1) class printString;
         newLine.
   )
 )

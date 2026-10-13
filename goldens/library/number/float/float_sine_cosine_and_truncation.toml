@@ -3,8 +3,8 @@ stdout = '''
 true true
 NaN NaN
 3 -3 0 0
-100000000000000000000 LargeInteger
-9223372036854775808 -9223372036854775808 LargeInteger
+100000000000000000000
+9223372036854775808 -9223372036854775808
 asInteger requires a finite Float, got NaN
 asInteger requires a finite Float, got -Infinity
 '''

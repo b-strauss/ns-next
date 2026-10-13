@@ -1,7 +1,8 @@
 /// §5.1.1 bounds no literal: "integers are not limited in size". A decimal
-/// and a radix literal beyond `i64`, a negative one, the two `i64` edges, and
-/// the two 61-bit edges of an `Integer`, beyond which a literal is a
-/// `LargeInteger`.
+/// and a radix literal beyond `i64` and a negative one. Which literals are a
+/// `LargeInteger` only the representation shows, so
+/// `crates/ns-runtime/tests/representation.rs` checks the `i64` and 61-bit
+/// edges.
 class Literals = Object new () (
   public main: p args: a = (
     p transcript
@@ -15,30 +16,6 @@ class Literals = Object new () (
         newLine.
     p transcript
         show: 2r10000000000000000000000000000000000000000000000000000000000000000000000 printString;
-        newLine.
-    p transcript
-        show: 9223372036854775808 class printString;
-        newLine.
-    p transcript
-        show: 9223372036854775807 class printString;
-        newLine.
-    p transcript
-        show: -9223372036854775808 class printString;
-        newLine.
-    p transcript
-        show: -9223372036854775809 class printString;
-        newLine.
-    p transcript
-        show: 1152921504606846975 class printString;
-        newLine.
-    p transcript
-        show: 1152921504606846976 class printString;
-        newLine.
-    p transcript
-        show: -1152921504606846976 class printString;
-        newLine.
-    p transcript
-        show: -1152921504606846977 class printString;
         newLine.
     p transcript
         show: (99999999999999999999 = 99999999999999999999) printString;

@@ -21,11 +21,11 @@ class ArithmeticIsExactWithoutAFloat = () (
         show: ' ';
         print: 6 / 3;
         show: ' ';
-        print: (6 / 3) class;
+        print: (6 / 3) isKindOfInteger;
         show: ' ';
         print: -6 / 4;
         show: ' ';
-        print: (7 / 2) class;
+        print: (7 / 2) isKindOfFraction;
         newLine.
     transcript
         print: half + third;
@@ -38,7 +38,7 @@ class ArithmeticIsExactWithoutAFloat = () (
         show: ' ';
         print: half + half;
         show: ' ';
-        print: (half + half) class;
+        print: (half + half) isKindOfInteger;
         newLine.
     transcript
         print: 3 + half;

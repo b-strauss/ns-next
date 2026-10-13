@@ -18,7 +18,7 @@ class AFractionIsMadeInNormalForm = () (
         show: ' ';
         print: threeQuarters denominator;
         show: ' ';
-        print: threeQuarters class;
+        print: threeQuarters isKindOfFraction;
         newLine.
     transcript
         print: (Fraction numerator: 1 denominator: -2);
@@ -28,14 +28,12 @@ class AFractionIsMadeInNormalForm = () (
     transcript
         print: (Fraction numerator: 6 denominator: 3);
         show: ' ';
-        print: (Fraction numerator: 6 denominator: 3) class;
+        print: (Fraction numerator: 6 denominator: 3) isKindOfInteger;
         show: ' ';
         print: (Fraction numerator: 0 denominator: 5);
         newLine.
     transcript
         print: (Fraction numerator: 1180591620717411303424 denominator: 3);
-        show: ' ';
-        print: (Fraction numerator: 1 denominator: 1180591620717411303424) denominator class;
         newLine.
     transcript
         print: (Fraction reducedNumerator: 3 denominator: 4);
