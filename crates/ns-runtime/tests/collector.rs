@@ -491,7 +491,7 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
               box float = (1.0e300 * box integer) ifFalse: [^'a float changed'].
               box empty isNil ifFalse: [^'a nil field changed']].
             last:: boxes at: boxes size.
-            ^sum printString, ' ', last float class name, ' ', (last float = 1.0e303) printString,
+            ^sum printString, ' ', (last float isKindOfFloat ifTrue: ['Float'] ifFalse: ['no Float']), ' ', (last float = 1.0e303) printString,
               ' ', last large printString,
               ' ', last empty printString, ' ', last next integer printString
           )

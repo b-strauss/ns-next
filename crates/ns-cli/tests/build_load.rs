@@ -372,15 +372,17 @@ fn a_hash_given_to_a_tag_named_object_survives_build_and_load() {
         &source,
         indoc! {"
             class Hashes = Object new (
-                | integer = Integer hash. module = self class hash. meta = self class class hash. stamp = Object new hash. |
+                | integer = Integer hash. module = self class hash. meta = self class metaclass hash. stamp = Object new hash. |
             ) (
                 public main: platform args: arguments = (
                     platform transcript
                         show: (integer = Integer hash) printString; show: ' ';
                         show: (module = self class hash) printString; show: ' ';
-                        show: (meta = self class class hash) printString; newLine
+                        show: (meta = self class metaclass hash) printString; newLine
                 )
-            ) : ()
+            ) : (
+                public metaclass = ( ^self class )
+            )
         "},
     )
     .expect("write source");

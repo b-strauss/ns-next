@@ -64,7 +64,8 @@ fn copy_from_to_answers_a_new_array_of_the_range() {
                 empty:: array copyFrom: 4 to: 3.
                 ^(copy == array) printString, ' ', copy size printString, ' ',
                     (copy at: 1) printString, ' ', (copy at: 2) printString, ' ',
-                    empty size printString, ' ', empty class printString
+                    empty size printString, ' ',
+                    (empty isKindOfArray ifTrue: ['Array'] ifFalse: ['no Array'])
             )
         ) : ()
     "};

@@ -1468,11 +1468,10 @@ mod tests {
         let time = class_named("Time");
         let stopwatch = class_named("Stopwatch");
         let collections = class_named("collections");
-        let collections = match interpreter.send(&collections, crate::Symbol::intern("class"), &[])
-        {
-            Ok(class) => class,
-            Err(_) => panic!("platform collections class failed"),
-        };
+        let collections = interpreter.enter(|mutator| {
+            let class = mutator.class_of(mutator.fetch(&collections));
+            mutator.stash(crate::Value::object(class))
+        });
         interpreter.enter(|mutator| {
             let fast_path = |class: &crate::Root, selector: &str| {
                 let Some(class) = mutator.fetch(class).as_object() else {
@@ -1575,15 +1574,8 @@ mod tests {
                 Ok(collections) => collections,
                 Err(_) => panic!("platform collections failed"),
             };
-        let collections_class =
-            match interpreter.send(&collections, crate::Symbol::intern("class"), &[]) {
-                Ok(class) => class,
-                Err(_) => panic!("platform collections class failed"),
-            };
         interpreter.enter(|mutator| {
-            let Some(collections_class) = mutator.fetch(&collections_class).as_object() else {
-                panic!("the facet's class is an object");
-            };
+            let collections_class = mutator.class_of(mutator.fetch(&collections));
             let facet_application = mutator
                 .heap()
                 .class_application(collections_class)

@@ -805,7 +805,10 @@ mod tests {
     /// still a value, so a slot may hold one -- and which takes the leaf
     /// out of the decision, since the leaf recognizes `Value`'s method by
     /// identity. `Boxed` is the one class whose instances therefore reach
-    /// both paths, depending on what their slot holds.
+    /// both paths, depending on what their slot holds. A `Tag` equals
+    /// every `Tag` and nothing else; it asks the other object
+    /// `isKindOfTag`, which any other object answers false, rather than
+    /// for its class, which no program can read.
     ///
     /// `Outer`'s `Inner` is a class object per `Outer` instance, and a value
     /// because its enclosing `Outer` is. `Looped` holds its own `Inner` in a
@@ -818,8 +821,9 @@ mod tests {
                     | public x = xValue. public y = yValue. |
                 ) ()
                 class Tag = Value new () (
-                    public = other = ( ^self class == other class )
+                    public = other = ( ^other isKindOfTag )
                     public hash = ( ^7 )
+                    public isKindOfTag = ( ^true )
                     public class Inner = Value new () ()
                 )
                 class Boxed on: contents = Value new (
@@ -873,6 +877,15 @@ mod tests {
             interpreter.send(receiver, Symbol::intern(selector), arguments),
             selector,
         )
+    }
+
+    /// The class of `subject`, read on the host side, since `class` is
+    /// answered only to its receiver's own sends.
+    fn class_of(interpreter: &mut Interpreter, subject: &Root) -> Root {
+        interpreter.enter(|mutator| {
+            let class = mutator.class_of(mutator.fetch(subject));
+            mutator.stash(Value::object(class))
+        })
     }
 
     fn a_string(interpreter: &mut Interpreter, text: &str) -> Root {
@@ -1406,12 +1419,12 @@ mod tests {
     #[test]
     fn a_class_object_that_is_no_value_compares_by_identity() {
         let (mut interpreter, fixture) = a_fixture();
-        let fixture_class = send(&mut interpreter, &fixture, "class", &[]);
+        let fixture_class = class_of(&mut interpreter, &fixture);
         let other_fixture = send(&mut interpreter, &fixture_class, "new", &[]);
         let marker = send(&mut interpreter, &fixture, "marker", &[]);
-        let marker_class = send(&mut interpreter, &marker, "class", &[]);
+        let marker_class = class_of(&mut interpreter, &marker);
         let other_marker = send(&mut interpreter, &other_fixture, "marker", &[]);
-        let other_marker_class = send(&mut interpreter, &other_marker, "class", &[]);
+        let other_marker_class = class_of(&mut interpreter, &other_marker);
         for (argument, expected, what) in [
             (
                 &marker_class,
@@ -1478,8 +1491,8 @@ mod tests {
             "a value class object's hash is decided"
         );
         assert_eq!(first_hash, second_hash);
-        let first_metaclass = send(&mut interpreter, &first, "class", &[]);
-        let second_metaclass = send(&mut interpreter, &second, "class", &[]);
+        let first_metaclass = class_of(&mut interpreter, &first);
+        let second_metaclass = class_of(&mut interpreter, &second);
         let equal = send(
             &mut interpreter,
             &first_metaclass,
@@ -1564,10 +1577,10 @@ mod tests {
         };
         let string = builtin(&mut interpreter, crate::BuiltinClass::String);
         let symbol = builtin(&mut interpreter, crate::BuiltinClass::Symbol);
-        let string_metaclass = send(&mut interpreter, &string, "class", &[]);
-        let symbol_metaclass = send(&mut interpreter, &symbol, "class", &[]);
+        let string_metaclass = class_of(&mut interpreter, &string);
+        let symbol_metaclass = class_of(&mut interpreter, &symbol);
         let marker = send(&mut interpreter, &fixture, "marker", &[]);
-        let marker_class = send(&mut interpreter, &marker, "class", &[]);
+        let marker_class = class_of(&mut interpreter, &marker);
         for (first, second, expected, what) in [
             (&string, &string, true, "a value class object and itself"),
             (

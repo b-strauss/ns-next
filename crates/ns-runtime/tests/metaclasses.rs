@@ -33,6 +33,15 @@ fn expect_ok(result: HostResult, what: &str) -> Root {
     }
 }
 
+/// The class of `subject`, read on the host side, since `class` is
+/// answered only to its receiver's own sends.
+fn class_of(interpreter: &mut Interpreter, subject: &Root) -> Root {
+    interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(subject));
+        mutator.stash(Value::object(class))
+    })
+}
+
 /// §3.2 and §6: a class's metaclass is its class side applied to `Class`,
 /// so a class-side message it does not declare falls to `Class`, and a
 /// metaclass links back to the class it belongs to.
@@ -84,23 +93,10 @@ fn the_class_of_a_class_is_its_metaclass() {
         )
     "};
     let (mut interpreter, class) = load(source);
-    let class_selector = Symbol::intern("class");
-    let metaclass = expect_ok(
-        interpreter.send(&class, class_selector, &[]),
-        "Subject class",
-    );
-    let metaclass_class = expect_ok(
-        interpreter.send(&metaclass, class_selector, &[]),
-        "Subject class class",
-    );
-    let metaclass_metaclass = expect_ok(
-        interpreter.send(&metaclass_class, class_selector, &[]),
-        "Metaclass class",
-    );
-    let metaclass_metaclass_class = expect_ok(
-        interpreter.send(&metaclass_metaclass, class_selector, &[]),
-        "Metaclass class class",
-    );
+    let metaclass = class_of(&mut interpreter, &class);
+    let metaclass_class = class_of(&mut interpreter, &metaclass);
+    let metaclass_metaclass = class_of(&mut interpreter, &metaclass_class);
+    let metaclass_metaclass_class = class_of(&mut interpreter, &metaclass_metaclass);
     interpreter.enter(|mutator| {
         let Some(class_object) = mutator.fetch(&class).as_object() else {
             panic!("a loaded module is a class object");
