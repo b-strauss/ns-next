@@ -18,7 +18,7 @@ class ASubclassOfATypedArrayTakesTheSequenceProtocol = Object new (
       mine
       show
     |
-    Int16Array:: platform kernel Int16Array.
+    Int16Array:: platform typedArrays Int16Array.
     mine:: MyHalves on: (Int16Array withAll: {1. -2. 300. -4000}) bytes.
     show:: [:sequence |
       transcript

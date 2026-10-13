@@ -12,9 +12,9 @@ class ViewsOverOneByteArrayShareIt = Object new () (
       halves
     |
     bytes:: ByteArray new: 8.
-    words:: platform kernel Int32Array on: bytes.
-    octets:: platform kernel Uint8Array on: bytes.
-    halves:: platform kernel Int16Array on: bytes.
+    words:: platform typedArrays Int32Array on: bytes.
+    octets:: platform typedArrays Uint8Array on: bytes.
+    halves:: platform typedArrays Int16Array on: bytes.
     transcript
         print: words bytes == bytes;
         show: ' ';
@@ -47,11 +47,11 @@ class ViewsOverOneByteArrayShareIt = Object new () (
         print: (octets at: 1);
         newLine.
     transcript
-        print: (platform kernel Int16Array new: 3) bytes size;
+        print: (platform typedArrays Int16Array new: 3) bytes size;
         show: ' ';
-        print: (platform kernel Float64Array new: 2) bytes size;
+        print: (platform typedArrays Float64Array new: 2) bytes size;
         show: ' ';
-        print: (platform kernel Int8Array on: bytes) size;
+        print: (platform typedArrays Int8Array on: bytes) size;
         newLine.
   )
 )

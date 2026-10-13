@@ -2844,12 +2844,13 @@ const VIEWS_AND_A_BUILDER: &str = indoc! {"
       public fill: platform = (
         |
           kernel = platform kernel.
+          typedArrays = platform typedArrays.
           bytes = ByteArray new: 8.
           other = ByteArray new: 8.
         |
-        halves:: kernel Int16Array on: bytes.
-        floats:: kernel Float32Array on: bytes.
-        octets:: kernel Uint8Array on: bytes.
+        halves:: typedArrays Int16Array on: bytes.
+        floats:: typedArrays Float32Array on: bytes.
+        octets:: typedArrays Uint8Array on: bytes.
         view:: kernel DataView on: other byteOrder: #bigEndian.
         builder:: kernel StringBuilder new: 2.
         halves at: 1 put: -2.
@@ -3342,31 +3343,31 @@ fn the_graph_section_encoding_is_deterministic() {
 /// declaration and a kind byte as the section writes it (0 a module
 /// instance, 1 a class, 2 a metaclass).
 const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
-    ("Kernel", "Object", 1),               // OBJECT_NAME = 0
-    ("Kernel", "Array", 1),                // ARRAY_NAME = 1
-    ("Kernel", "Activation", 1),           // ACTIVATION_NAME = 2
-    ("Kernel", "Metaclass", 1),            // METACLASS_NAME = 3
-    ("Kernel", "String", 1),               // STRING_NAME = 4
-    ("Kernel", "Symbol", 1),               // SYMBOL_NAME = 5
-    ("Kernel", "Integer", 1),              // INTEGER_NAME = 6
-    ("Kernel", "Fraction", 1),             // FRACTION_NAME = 7
-    ("Kernel", "FutureImplementation", 1), // FUTURE_IMPLEMENTATION_NAME = 8
-    ("Kernel", "Value", 1),                // VALUE_NAME = 9
-    ("Kernel", "Top", 1),                  // TOP_NAME = 10
-    ("Kernel", "Integer", 2),              // INTEGER_CLASS_NAME = 11
-    ("Kernel", "Kernel", 0),               // KERNEL_INSTANCE_NAME = 12
-    ("Kernel", "Kernel", 1),               // KERNEL_ROOT_NAME = 13
-    ("TimeFactory", "Stopwatch", 1),       // STOPWATCH_NAME = 14
-    ("Kernel", "Behavior", 1),             // BEHAVIOR_NAME = 15
-    ("Kernel", "Closure", 1),              // CLOSURE_NAME = 16
-    ("Kernel", "Class", 1),                // CLASS_NAME = 17
-    ("Kernel", "Activation", 2),           // ACTIVATION_CLASS_NAME = 18
-    ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
-    ("Kernel", "NonBooleanReceiver", 1),   // NON_BOOLEAN_RECEIVER_NAME = 20
-    ("Kernel", "ByteArray", 1),            // BYTE_ARRAY_NAME = 21
-    ("Kernel", "Int16Array", 1),           // INT16_ARRAY_NAME = 22
-    ("Kernel", "BigEndianDataView", 1),    // BIG_ENDIAN_DATA_VIEW_NAME = 23
-    ("Kernel", "StringBuilder", 1),        // STRING_BUILDER_NAME = 24
+    ("Kernel", "Object", 1),                 // OBJECT_NAME = 0
+    ("Kernel", "Array", 1),                  // ARRAY_NAME = 1
+    ("Kernel", "Activation", 1),             // ACTIVATION_NAME = 2
+    ("Kernel", "Metaclass", 1),              // METACLASS_NAME = 3
+    ("Kernel", "String", 1),                 // STRING_NAME = 4
+    ("Kernel", "Symbol", 1),                 // SYMBOL_NAME = 5
+    ("Kernel", "Integer", 1),                // INTEGER_NAME = 6
+    ("Kernel", "Fraction", 1),               // FRACTION_NAME = 7
+    ("Kernel", "FutureImplementation", 1),   // FUTURE_IMPLEMENTATION_NAME = 8
+    ("Kernel", "Value", 1),                  // VALUE_NAME = 9
+    ("Kernel", "Top", 1),                    // TOP_NAME = 10
+    ("Kernel", "Integer", 2),                // INTEGER_CLASS_NAME = 11
+    ("Kernel", "Kernel", 0),                 // KERNEL_INSTANCE_NAME = 12
+    ("Kernel", "Kernel", 1),                 // KERNEL_ROOT_NAME = 13
+    ("TimeFactory", "Stopwatch", 1),         // STOPWATCH_NAME = 14
+    ("Kernel", "Behavior", 1),               // BEHAVIOR_NAME = 15
+    ("Kernel", "Closure", 1),                // CLOSURE_NAME = 16
+    ("Kernel", "Class", 1),                  // CLASS_NAME = 17
+    ("Kernel", "Activation", 2),             // ACTIVATION_CLASS_NAME = 18
+    ("Kernel", "FutureImplementation", 2),   // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
+    ("Kernel", "NonBooleanReceiver", 1),     // NON_BOOLEAN_RECEIVER_NAME = 20
+    ("Kernel", "ByteArray", 1),              // BYTE_ARRAY_NAME = 21
+    ("TypedArraysFactory", "Int16Array", 1), // INT16_ARRAY_NAME = 22
+    ("Kernel", "BigEndianDataView", 1),      // BIG_ENDIAN_DATA_VIEW_NAME = 23
+    ("Kernel", "StringBuilder", 1),          // STRING_BUILDER_NAME = 24
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;

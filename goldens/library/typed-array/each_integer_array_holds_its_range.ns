@@ -8,7 +8,7 @@ class EachIntegerArrayHoldsItsRange = Object new (
   |
     transcript ::= nil.
     ArgumentError ::= nil.
-    kernel ::= nil.
+    typedArrays ::= nil.
   |
 ) (
   refusal: action = (
@@ -43,16 +43,16 @@ class EachIntegerArrayHoldsItsRange = Object new (
     |
     transcript:: platform transcript.
     ArgumentError:: platform kernel ArgumentError.
-    kernel:: platform kernel.
-    check: (kernel Int8Array new: 2) from: -128 to: 127.
-    check: (kernel Uint8Array new: 2) from: 0 to: 255.
-    check: (kernel Int16Array new: 2) from: -32768 to: 32767.
-    check: (kernel Uint16Array new: 2) from: 0 to: 65535.
-    check: (kernel Int32Array new: 2) from: -2147483648 to: 2147483647.
-    check: (kernel Uint32Array new: 2) from: 0 to: 4294967295.
-    wide:: kernel Int64Array new: 2.
+    typedArrays:: platform typedArrays.
+    check: (typedArrays Int8Array new: 2) from: -128 to: 127.
+    check: (typedArrays Uint8Array new: 2) from: 0 to: 255.
+    check: (typedArrays Int16Array new: 2) from: -32768 to: 32767.
+    check: (typedArrays Uint16Array new: 2) from: 0 to: 65535.
+    check: (typedArrays Int32Array new: 2) from: -2147483648 to: 2147483647.
+    check: (typedArrays Uint32Array new: 2) from: 0 to: 4294967295.
+    wide:: typedArrays Int64Array new: 2.
     check: wide from: (2 raisedTo: 63) negated to: (2 raisedTo: 63) - 1.
-    unsigned:: kernel Uint64Array new: 2.
+    unsigned:: typedArrays Uint64Array new: 2.
     check: unsigned from: 0 to: (2 raisedTo: 64) - 1.
     transcript
         print: (wide at: 1) = (2 raisedTo: 63) negated;
@@ -71,13 +71,13 @@ class EachIntegerArrayHoldsItsRange = Object new (
         print: (unsigned at: 1) = (unsigned at: 2);
         newLine.
     transcript
-        show: (refusal: [(kernel Int16Array new: 1) at: 1 put: 1.5]);
+        show: (refusal: [(typedArrays Int16Array new: 1) at: 1 put: 1.5]);
         newLine;
-        show: (refusal: [(kernel Uint32Array new: 1) at: 1 put: nil]);
+        show: (refusal: [(typedArrays Uint32Array new: 1) at: 1 put: nil]);
         newLine;
-        show: (refusal: [(kernel Int64Array new: 1) at: 1 put: 2.5]);
+        show: (refusal: [(typedArrays Int64Array new: 1) at: 1 put: 2.5]);
         newLine;
-        show: (refusal: [(kernel Uint64Array new: 1) at: 1 put: -1]);
+        show: (refusal: [(typedArrays Uint64Array new: 1) at: 1 put: -1]);
         newLine.
   )
 )

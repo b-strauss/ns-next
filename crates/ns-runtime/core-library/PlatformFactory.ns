@@ -1,7 +1,7 @@
 /// The platform's module: answers, to `build`, the platform the
 /// host hands every program, whose members are the program's standard
-/// output, the collections, the kernel classes a program may name and a
-/// stopwatch. The host instantiates it once, at boot.
+/// output, the collections, the kernel classes a program may name, a
+/// stopwatch and the typed arrays. The host instantiates it once, at boot.
 ///
 /// mirror: the VM mirror, which the host alone holds.
 /// kernel: the kernel module's instance, whose classes `KernelNamespace`
@@ -25,9 +25,10 @@
 /// classes are private, so even
 /// a holder of this root's instance could send it nothing but
 /// `build`: a second line of defence behind the instance being
-/// unreachable. The transcript, the clock and the collections are each a
-/// module of their own, another such root (`platform/TranscriptFactory.ns`,
-/// `platform/TimeFactory.ns`, `platform/CollectionsFactory.ns`), whose one
+/// unreachable. The transcript, the clock, the collections and the typed
+/// arrays are each a module of their own, another such root
+/// (`platform/TranscriptFactory.ns`, `platform/TimeFactory.ns`,
+/// `platform/CollectionsFactory.ns`, `platform/TypedArraysFactory.ns`), whose one
 /// instance the host builds at boot and this root reaches through the
 /// mirror's `moduleInstanceNamed:`, keeping it in a private lazy slot
 /// here; the platform hands out only the facets their `build` answers. Nothing a program can name answers this root's
@@ -78,28 +79,6 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private Collection = kernel Collection.
     /// The kernel's `StringBuilder`, which `KernelNamespace` hands out.
     private StringBuilder = kernel StringBuilder.
-    /// The kernel's `TypedArray`, which `KernelNamespace` hands out.
-    private TypedArray = kernel TypedArray.
-    /// The kernel's `Int8Array`, which `KernelNamespace` hands out.
-    private Int8Array = kernel Int8Array.
-    /// The kernel's `Uint8Array`, which `KernelNamespace` hands out.
-    private Uint8Array = kernel Uint8Array.
-    /// The kernel's `Int16Array`, which `KernelNamespace` hands out.
-    private Int16Array = kernel Int16Array.
-    /// The kernel's `Uint16Array`, which `KernelNamespace` hands out.
-    private Uint16Array = kernel Uint16Array.
-    /// The kernel's `Int32Array`, which `KernelNamespace` hands out.
-    private Int32Array = kernel Int32Array.
-    /// The kernel's `Uint32Array`, which `KernelNamespace` hands out.
-    private Uint32Array = kernel Uint32Array.
-    /// The kernel's `Int64Array`, which `KernelNamespace` hands out.
-    private Int64Array = kernel Int64Array.
-    /// The kernel's `Uint64Array`, which `KernelNamespace` hands out.
-    private Uint64Array = kernel Uint64Array.
-    /// The kernel's `Float32Array`, which `KernelNamespace` hands out.
-    private Float32Array = kernel Float32Array.
-    /// The kernel's `Float64Array`, which `KernelNamespace` hands out.
-    private Float64Array = kernel Float64Array.
     /// The kernel's `DataView`, which `KernelNamespace` hands out.
     private DataView = kernel DataView.
   |
@@ -123,6 +102,11 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// `build` answers leave this module.
   lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [nil].
 
+  /// The one typed arrays module, the instance the boot built over the
+  /// mirror and the kernel, and the same object on every use. Only the
+  /// `TypedArrays` namespaces its `build` answers leave this module.
+  lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [nil].
+
   /// The platform a program is handed: the namespace of what it may use
   /// beyond the kernel, each member built on first use.
   ///
@@ -132,8 +116,9 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// this module's classes: a program holds the instances its members
   /// answer, and since `class` is protected it reaches no class of
   /// theirs, so it can make no second platform or transcript. `Time`
-  /// hands out `Stopwatch`, which a program instantiates itself, and the
-  /// collections facet the collections module's classes.
+  /// hands out `Stopwatch`, which a program instantiates itself, the
+  /// collections facet the collections module's classes, and the typed
+  /// arrays facet the typed arrays module's classes.
   private class Platform = Value () (
     /// The program's standard output, a `Transcript`, written as UTF-8.
     /// Built on first use; every later send answers the same one.
@@ -153,6 +138,16 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// The namespace of `Stopwatch`, a `Time`. Built on first use;
     /// every later send answers the same one.
     lazy public time = timeModule build.
+
+    /// The namespace of the typed arrays module's classes -- `TypedArray`
+    /// and the ten typed arrays, `Int8Array` to `Float64Array` -- a
+    /// `TypedArrays`. Built on first use; every later send answers the
+    /// same one.
+    ///
+    /// Exempt from the rule that an accessor here exists only because a
+    /// program needs it, as `kernel` is: it hands out a whole module of
+    /// the core library's classes, not a piece of the platform's services.
+    lazy public typedArrays = typedArraysModule build.
   )
 
   /// `platform kernel`: the kernel classes a program may name that
@@ -227,74 +222,6 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// instantiates with `new` or `new:` to build a String from pieces.
     public StringBuilder = (
       ^outer PlatformFactory StringBuilder.
-    )
-
-    /// Answers the kernel's `TypedArray` class, the abstract superclass
-    /// of the ten typed arrays, which a program tests a typed array
-    /// against or subclasses; a subclass defines `bytesPerElement`, `at:`,
-    /// `at:put:` and the protected `newOfSize:` its copies are made by.
-    public TypedArray = (
-      ^outer PlatformFactory TypedArray.
-    )
-
-    /// Answers the kernel's class `Int8Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Int8Array = (
-      ^outer PlatformFactory Int8Array.
-    )
-
-    /// Answers the kernel's class `Uint8Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Uint8Array = (
-      ^outer PlatformFactory Uint8Array.
-    )
-
-    /// Answers the kernel's class `Int16Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Int16Array = (
-      ^outer PlatformFactory Int16Array.
-    )
-
-    /// Answers the kernel's class `Uint16Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Uint16Array = (
-      ^outer PlatformFactory Uint16Array.
-    )
-
-    /// Answers the kernel's class `Int32Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Int32Array = (
-      ^outer PlatformFactory Int32Array.
-    )
-
-    /// Answers the kernel's class `Uint32Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Uint32Array = (
-      ^outer PlatformFactory Uint32Array.
-    )
-
-    /// Answers the kernel's class `Int64Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Int64Array = (
-      ^outer PlatformFactory Int64Array.
-    )
-
-    /// Answers the kernel's class `Uint64Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Uint64Array = (
-      ^outer PlatformFactory Uint64Array.
-    )
-
-    /// Answers the kernel's class `Float32Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Float32Array = (
-      ^outer PlatformFactory Float32Array.
-    )
-
-    /// Answers the kernel's class `Float64Array`, which a program instantiates
-    /// with `new:`, `withAll:` or `on:` a ByteArray.
-    public Float64Array = (
-      ^outer PlatformFactory Float64Array.
     )
 
     /// Answers the kernel's class `DataView`, which a program instantiates

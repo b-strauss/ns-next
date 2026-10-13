@@ -496,15 +496,13 @@ mod tests {
                     "{meta} is no superclass"
                 );
             }
-            // The byte storage, its builder and its views are public
+            // The byte storage, its builder and its view are public
             // classes a program names, subclasses and keeps instances of;
             // so is `IndexedCollection`, which a shipped module applies.
             for public in [
                 "IndexedCollection",
                 "ByteArray",
                 "StringBuilder",
-                "TypedArray",
-                "Int16Array",
                 "DataView",
             ] {
                 let positions = positions_of(world, name("Kernel", public, ShippedKind::Class));
@@ -523,13 +521,29 @@ mod tests {
                     "{private} is a record's class only"
                 );
             }
+            // The typed arrays are private classes of their module whose
+            // facet's class accessors answer them: a program names,
+            // subclasses and keeps instances of them as of a public class.
+            for typed_array in ["TypedArray", "Int16Array"] {
+                let positions = positions_of(
+                    world,
+                    name("TypedArraysFactory", typed_array, ShippedKind::Class),
+                );
+                assert!(
+                    positions.value && positions.superclass && positions.header,
+                    "TypedArraysFactory {typed_array} is a value, a superclass and a record's class"
+                );
+            }
             // The level `<: IndexedCollection` adds is where a frame of its
             // methods runs, and nothing else.
-            for applying in ["TypedArray", "ByteArray"] {
+            for (module, applying) in [
+                ("TypedArraysFactory", "TypedArray"),
+                ("Kernel", "ByteArray"),
+            ] {
                 assert_eq!(
-                    positions_of(world, name("Kernel", applying, ShippedKind::Level(0))),
+                    positions_of(world, name(module, applying, ShippedKind::Level(0))),
                     Positions::FRAME_CLASS_ONLY,
-                    "{applying} level 0 is a frame's class only"
+                    "{module} {applying} level 0 is a frame's class only"
                 );
             }
             let list = positions_of(
@@ -538,7 +552,7 @@ mod tests {
             );
             assert!(list.value && list.superclass && list.header);
             // The platform hands out none of its module's classes and the
-            // collections facet not its own: a program holds their
+            // collections and typed arrays facets not their own: a program holds their
             // instances, records of them, but never the classes.
             for (module, declaration) in [
                 ("PlatformFactory", "Platform"),
@@ -546,6 +560,7 @@ mod tests {
                 ("PlatformFactory", "KernelNamespace"),
                 ("TimeFactory", "Time"),
                 ("CollectionsFactory", "Collections"),
+                ("TypedArraysFactory", "TypedArrays"),
             ] {
                 let positions = positions_of(world, name(module, declaration, ShippedKind::Class));
                 assert!(
@@ -559,6 +574,7 @@ mod tests {
                 "TranscriptFactory",
                 "TimeFactory",
                 "CollectionsFactory",
+                "TypedArraysFactory",
             ] {
                 let positions = positions_of(world, name(root, root, ShippedKind::Class));
                 assert!(!positions.value && !positions.header && positions.frame_class);

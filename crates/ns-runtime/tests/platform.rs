@@ -651,7 +651,7 @@ fn the_collections_factory_answers_only_build() {
 }
 
 /// The platform hands out none of its module's classes, and the
-/// collections facet not its own: an outside send of the class's name finds
+/// collections and typed arrays facets not their own: an outside send of the class's name finds
 /// nothing, and none of them may stand as a value in an image, since no
 /// program reaches one.
 #[test]
@@ -662,6 +662,10 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
         interpreter.send(&platform, Symbol::intern("collections"), &[]),
         "platform collections",
     );
+    let typed_arrays = expect_ok(
+        interpreter.send(&platform, Symbol::intern("typedArrays"), &[]),
+        "platform typedArrays",
+    );
     for (receiver, module, name) in [
         (&platform, "PlatformFactory", "Platform"),
         (&platform, "TranscriptFactory", "Transcript"),
@@ -669,6 +673,7 @@ fn the_platform_hands_out_none_of_its_modules_classes() {
         (&platform, "TimeFactory", "Time"),
         (&platform, "TimeFactory", "Stopwatch"),
         (&collections, "CollectionsFactory", "Collections"),
+        (&typed_arrays, "TypedArraysFactory", "TypedArrays"),
     ] {
         let message = refusal(
             interpreter.send(receiver, Symbol::intern(name), &[]),

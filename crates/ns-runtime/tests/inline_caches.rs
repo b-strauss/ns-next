@@ -750,24 +750,28 @@ ns_runtime::for_each_lowering! {
 }
 
 /// What the bootstrap leaves in the caches. `PlatformFactory`'s
-/// instantiation runs its twenty-five eager slot initializers, `kernel
+/// instantiation runs its fourteen eager slot initializers, `kernel
 /// Exception` to `kernel DataView`, each a send to the kernel instance
 /// that takes a site and fills a global entry, but for `ArgumentError` and
 /// `Collection`, whose entries `CollectionsFactory`'s two initializers,
-/// `kernel ArgumentError` and `kernel Collection`, fill too; the platform's
+/// `kernel ArgumentError` and `kernel Collection`, fill too, and
+/// `TypedArraysFactory`'s three, `kernel ArgumentError`, `kernel
+/// Collection` and `kernel IndexedCollection`, take three sites and fill
+/// one entry more, `IndexedCollection`'s; the platform's
 /// boot sends `PlatformFactory`'s `build`, `^Platform new`, whose
 /// family takes two sites and fills two global entries (the lexical
 /// `Platform`, and `new` to the class), and `Platform`'s superclass clause,
 /// `Value`, whose family takes two more and whose lexical `Value` fills
 /// another. The boot builds every class the shipped roots declare, so the
 /// superclass clause of every one that is no builtin runs too --
-/// `StringBuilder` in the kernel, `TypedArray`'s `Collection <:
-/// IndexedCollection` and the ten typed arrays' `TypedArray`, whose ten
-/// sites share one global entry, `DataView`'s `Object` and its two byte
-/// orders' `DataView`,
+/// `StringBuilder` and `DataView`'s `Object` and its two byte orders'
+/// `DataView` in the kernel,
 /// `KernelNamespace` in `PlatformFactory`, `Transcript` in
-/// `TranscriptFactory`, `Time` and `Stopwatch` in `TimeFactory`, and the
-/// seven classes of `CollectionsFactory`, whose two Errors name `Error` bare
+/// `TranscriptFactory`, `Time` and `Stopwatch` in `TimeFactory`, the
+/// seven classes of `CollectionsFactory`, whose two Errors name `Error` bare,
+/// and in `TypedArraysFactory` the facet's `Value`, `TypedArray`'s
+/// `Collection <: IndexedCollection` and the ten typed arrays'
+/// `TypedArray`, whose ten sites share one global entry
 /// -- and their families take the remaining sites and fill the remaining
 /// global entries, a lexical send keyed by the module it is sent in. Pinned so that the boot
 /// growing -- more shipped code run at every start -- is noticed rather
@@ -776,12 +780,12 @@ ns_runtime::for_each_lowering! {
 /// entries, so those are counted only without it; the sites stay either
 /// way.
 #[test]
-fn a_fresh_bootstrap_leaves_sixty_sites_and_forty_global_entries() {
+fn a_fresh_bootstrap_leaves_fifty_three_sites_and_thirty_one_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
-    assert_eq!(statistics.site_entries, 60);
+    assert_eq!(statistics.site_entries, 53);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 40);
+        assert_eq!(statistics.filled_global_entries, 31);
     }
 }

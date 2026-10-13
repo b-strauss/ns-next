@@ -23,6 +23,9 @@ pub(crate) const TIME_FACTORY_SOURCE: &str =
 pub(crate) const COLLECTIONS_FACTORY_SOURCE: &str =
     include_str!("../../core-library/platform/CollectionsFactory.ns");
 
+pub(crate) const TYPED_ARRAYS_FACTORY_SOURCE: &str =
+    include_str!("../../core-library/platform/TypedArraysFactory.ns");
+
 /// Not one of the shipped modules above, and never in their table: the
 /// manifest a project's root receives is compiled into the program like a
 /// user module, holds no mirror, and may be carried by an image.
@@ -37,8 +40,9 @@ pub(crate) struct ShippedModule {
     pub(crate) factory: ShippedFactory,
 }
 
-/// What a shipped module's factory takes: `PlatformFactory` the mirror
-/// and the kernel (`usingVmMirror:kernel:`), `TranscriptFactory` and
+/// What a shipped module's factory takes: `PlatformFactory` and
+/// `TypedArraysFactory` the mirror and the kernel
+/// (`usingVmMirror:kernel:`), `TranscriptFactory` and
 /// `TimeFactory` the mirror alone (`usingVmMirror:`), since they need none
 /// of the kernel's classes, and `CollectionsFactory` the kernel alone
 /// (`usingKernel:`), since it reaches no leaf and so is given no mirror.
@@ -68,6 +72,11 @@ pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
         name: "CollectionsFactory",
         source: COLLECTIONS_FACTORY_SOURCE,
         factory: ShippedFactory::Kernel,
+    },
+    ShippedModule {
+        name: "TypedArraysFactory",
+        source: TYPED_ARRAYS_FACTORY_SOURCE,
+        factory: ShippedFactory::MirrorAndKernel,
     },
 ];
 
@@ -108,7 +117,9 @@ pub(crate) fn resolved_shipped_module(name: &str) -> Rc<ResolvedModule> {
 
 /// A shipped module that does not parse or resolve is a defect in the
 /// binary, not in a program, so it panics, as the kernel's does
-/// (`interpreter::kernel::resolve_kernel_source`).
+/// (`interpreter::kernel::resolve_kernel_source`); so does one whose mirror
+/// send passes a literal block before its failure block, as the kernel's
+/// may not either (`interpreter::kernel::check_mirror_send_arguments`).
 fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
     let name = shipped.name;
     let module = match ns_syntax::parse(shipped.source) {
@@ -127,7 +138,10 @@ fn resolve_shipped_source(shipped: &ShippedModule) -> ResolvedModule {
         Rc::from(shipped.source),
         SourceOrigin::File(std::path::PathBuf::from(format!("{name}.ns"))),
     ) {
-        Ok(resolved) => resolved,
+        Ok(resolved) => {
+            super::kernel::check_mirror_send_arguments(&resolved, name);
+            resolved
+        }
         Err(errors) => panic!(
             "internal: {name}.ns does not resolve: {}",
             errors
@@ -144,10 +158,10 @@ impl crate::interpreter::Interpreter {
     /// (`docs/design/core-library.md`, "The factory pattern"). It records
     /// the kernel's instance as the first shipped module's, then compiles
     /// every `SHIPPED_MODULES` entry in table order and instantiates its
-    /// root through the ordinary `instantiate` -- `PlatformFactory` with
-    /// the VM mirror and the kernel instance, `TranscriptFactory` and
-    /// `TimeFactory` with the mirror alone, `CollectionsFactory` with the
-    /// kernel instance alone -- and records each instance as that module's
+    /// root through the ordinary `instantiate` -- `PlatformFactory` and
+    /// `TypedArraysFactory` with the VM mirror and the kernel instance,
+    /// `TranscriptFactory` and `TimeFactory` with the mirror alone,
+    /// `CollectionsFactory` with the kernel instance alone -- and records each instance as that module's
     /// one instance (`interpreter::shipped_world`). Every shipped module is
     /// built at every boot, because an image names the shipped world's
     /// objects and the loader runs nothing the image chooses

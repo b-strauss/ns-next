@@ -29,15 +29,15 @@ class ATypedArrayRefusesWhatIsOutOfRange = Object new (
     |
     transcript:: platform transcript.
     ArgumentError:: platform kernel ArgumentError.
-    Int32Array:: platform kernel Int32Array.
+    Int32Array:: platform typedArrays Int32Array.
     words:: Int32Array new: 3.
     words at: 1 put: 5.
     odd:: ByteArray new: 6.
     refusal: [Int32Array on: (ByteArray new: 6)].
     refusal: [Int32Array on: 'abc'].
     refusal: [Int32Array on: nil].
-    refusal: [platform kernel Uint8Array on: 'abc'].
-    refusal: [platform kernel Float64Array on: (ByteArray new: 12)].
+    refusal: [platform typedArrays Uint8Array on: 'abc'].
+    refusal: [platform typedArrays Float64Array on: (ByteArray new: 12)].
     refusal: [Int32Array new: -1].
     refusal: [Int32Array new: 'x'].
     refusal: [Int32Array withAll: {1. 2147483648}].
@@ -46,8 +46,8 @@ class ATypedArrayRefusesWhatIsOutOfRange = Object new (
     refusal: [words at: 'one'].
     refusal: [words at: 0 put: 1].
     refusal: [words at: 4 put: 'x'].
-    refusal: [(platform kernel Uint8Array new: 2) at: 3].
-    refusal: [(platform kernel Float32Array new: 2) at: 3 put: 1.0].
+    refusal: [(platform typedArrays Uint8Array new: 2) at: 3].
+    refusal: [(platform typedArrays Float32Array new: 2) at: 3 put: 1.0].
     transcript
         print: ([Int32Array on: odd] on: ArgumentError do: [:error | error argument == odd]);
         newLine.

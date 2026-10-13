@@ -44,7 +44,7 @@ class TheFloatArraysKeepInfinitiesAndNan = Object new (
   public main: platform args: arguments = (
     transcript:: platform transcript.
     ArgumentError:: platform kernel ArgumentError.
-    fill: (platform kernel Float32Array new: 6).
-    fill: (platform kernel Float64Array new: 6).
+    fill: (platform typedArrays Float32Array new: 6).
+    fill: (platform typedArrays Float64Array new: 6).
   )
 )

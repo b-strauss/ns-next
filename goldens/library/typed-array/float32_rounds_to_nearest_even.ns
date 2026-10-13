@@ -11,8 +11,8 @@ class Float32RoundsToNearestEven = Object new () (
       single
       double
     |
-    single:: platform kernel Float32Array new: 4.
-    double:: platform kernel Float64Array new: 2.
+    single:: platform typedArrays Float32Array new: 4.
+    double:: platform typedArrays Float64Array new: 2.
     transcript
         print: (single at: 1 put: 0.1);
         show: ' ';

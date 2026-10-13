@@ -1,0 +1,1245 @@
+/// The typed arrays' module: `TypedArray` and its ten subclasses,
+/// `Int8Array` to `Float64Array`, fixed-size sequences of numbers of one
+/// kind stored in a ByteArray, reached through `platform typedArrays`.
+/// Built once, at boot, over the VM mirror and the kernel, from which it
+/// takes `Collection`, `IndexedCollection` and `ArgumentError`; `Array`
+/// and `ByteArray` it names bare, through `Object`'s accessors.
+///
+/// mirror: the VM mirror, through which a typed array reads and writes
+///     the elements in its ByteArray.
+/// kernel: the kernel module instance; its `Collection` is `TypedArray`'s
+///     superclass, its `IndexedCollection` the mixin that gives it the
+///     sequence protocol, its `ArgumentError` what a typed array signals
+///     for a ByteArray it cannot view.
+///
+/// The factory pattern `PlatformFactory.ns` is written in: this root holds
+/// the VM mirror, which the host hands it at boot, and of the kernel only
+/// the three classes it needs, never the kernel instance; nothing hands
+/// its instance to a program. The platform's root reaches it through the
+/// mirror's `moduleInstanceNamed:` and keeps it in a private lazy slot,
+/// and each platform's `typedArrays` getter sends it `build`, its one
+/// public member. What a program gets is the `TypedArrays` facet `build`
+/// answers, which hands out this module's classes by class accessors,
+/// each exactly `^outer TypedArraysFactory <Name>` -- a lexical send,
+/// which reaches the root's private classes (§5.9), and which lets an
+/// image name the class by its declaration
+/// (`docs/design/image-format.md`, "Shipped names"). Its nested classes
+/// are private and reach the mirror lexically, as members of this root,
+/// never through a slot of their own. Nothing a program can name answers
+/// this root's instance or its class, so no program can build one over
+/// something that is not the mirror. Keep it so: no code whose receiver
+/// is this root's instance may send it anything it does not understand,
+/// since a `MessageNotUnderstood` hands its receiver to whoever catches
+/// it.
+///
+/// The factory's parameters are copied into slots because neither a lazy
+/// slot nor a method may name them (§6). A send to `vmMirror` here is a
+/// mirror send, as in `Kernel.ns`: this module is resolved with
+/// `resolve_kernel`, which only shipped source is.
+///
+/// A value (§3.1.1), so that every platform shares the one module and its
+/// classes -- `platform typedArrays Int16Array` is one class however many
+/// platforms a program makes; a typed array keeps its elements in a
+/// ByteArray, so it is an object.
+class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
+  |
+    /// The VM mirror the factory was given: the one object through which
+    /// a typed array reads and writes its elements. Never handed out.
+    private vmMirror = mirror.
+    /// The kernel's `ArgumentError`, which a typed array signals for a
+    /// ByteArray it cannot view.
+    private ArgumentError = kernel ArgumentError.
+    /// The kernel's `Collection`, the superclass of `TypedArray`.
+    private Collection = kernel Collection.
+    /// The kernel's `IndexedCollection`, the mixin `TypedArray` applies
+    /// over `Collection` for the sequence protocol.
+    private IndexedCollection = kernel IndexedCollection.
+  |
+) (
+  /// `platform typedArrays`: the namespace of this module's classes,
+  /// `TypedArray` and the ten typed arrays, one accessor each; nothing
+  /// else. Its own class is not among them, so a program makes no second
+  /// namespace.
+  private class TypedArrays = Value () (
+    /// Answers this module's `TypedArray` class, the abstract superclass
+    /// of the ten typed arrays, which a program tests a typed array
+    /// against or subclasses; a subclass defines `bytesPerElement`, `at:`,
+    /// `at:put:` and the protected `newOfSize:` its copies are made by.
+    public TypedArray = (
+      ^outer TypedArraysFactory TypedArray.
+    )
+
+    /// Answers this module's class `Int8Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int8Array = (
+      ^outer TypedArraysFactory Int8Array.
+    )
+
+    /// Answers this module's class `Uint8Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint8Array = (
+      ^outer TypedArraysFactory Uint8Array.
+    )
+
+    /// Answers this module's class `Int16Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int16Array = (
+      ^outer TypedArraysFactory Int16Array.
+    )
+
+    /// Answers this module's class `Uint16Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint16Array = (
+      ^outer TypedArraysFactory Uint16Array.
+    )
+
+    /// Answers this module's class `Int32Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int32Array = (
+      ^outer TypedArraysFactory Int32Array.
+    )
+
+    /// Answers this module's class `Uint32Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint32Array = (
+      ^outer TypedArraysFactory Uint32Array.
+    )
+
+    /// Answers this module's class `Int64Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int64Array = (
+      ^outer TypedArraysFactory Int64Array.
+    )
+
+    /// Answers this module's class `Uint64Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint64Array = (
+      ^outer TypedArraysFactory Uint64Array.
+    )
+
+    /// Answers this module's class `Float32Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Float32Array = (
+      ^outer TypedArraysFactory Float32Array.
+    )
+
+    /// Answers this module's class `Float64Array`, which a program
+    /// instantiates with `new:`, `withAll:` or `on:` a ByteArray.
+    public Float64Array = (
+      ^outer TypedArraysFactory Float64Array.
+    )
+  )
+
+  /// A fixed-size sequence of numbers of one kind -- Integers of one width
+  /// and signedness, or Floats -- indexed from 1 and stored little-endian
+  /// in a ByteArray, and a Collection: the abstract superclass of the ten
+  /// typed arrays, `Int8Array` to `Float64Array`. A typed array is a view:
+  /// `bytes` answers the ByteArray it reads and writes, itself and not a
+  /// copy, so views over one ByteArray see each other's writes and the
+  /// ByteArray's own. The sequence protocol comes from `IndexedCollection`:
+  /// its copies are of the receiver's shipped class over a new ByteArray,
+  /// a subclass's included, since each typed array's `newOfSize:` names
+  /// its own class rather than asking a flat class side (§3.2) for `new:`;
+  /// `collect:` answers an Array, and `indexOf:` compares with `=`, so 3
+  /// finds 3.0. No value: `=` and `hash` are identity, since a hash of the
+  /// elements would change under a Map's key as they are stored.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of the subclass's
+  ///     `bytesPerElement`.
+  ///
+  /// Signals an ArgumentError carrying `aByteArray`: 'on: requires a
+  /// ByteArray, got …' and its `printString` for anything that is no
+  /// ByteArray, and 'on: requires a ByteArray whose size is a multiple of
+  /// …, got a ByteArray of …' for one whose size is not.
+  ///
+  /// Little-endian always, every target's own order, so that an access
+  /// costs no swap and a ByteArray reads the same on every target; a
+  /// big-endian block is read through `DataView`.
+  private class TypedArray on: aByteArray = Collection <: IndexedCollection (
+    |
+      /// The ByteArray the elements are stored in: the one `on:` was given,
+      /// never a copy.
+      public bytes = viewable: aByteArray.
+    |
+  ) (
+    /// Answers true: the receiver is a typed array.
+    public isKindOfTypedArray = (
+      ^true.
+    )
+
+    /// Answers the number of bytes an element takes, an Integer from 1 to
+    /// 8.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`: every typed
+    /// array defines it.
+    public bytesPerElement = (
+      ^self subclassResponsibility.
+    )
+
+    /// Answers the number of elements: the size of `bytes` over
+    /// `bytesPerElement`, fixed when the view was made.
+    ///
+    /// Signals the ArgumentError of `noByteArray:` when `bytes` holds no
+    /// ByteArray.
+    public size = (
+      bytes isKindOfByteArray ifFalse: [^self noByteArray: #size].
+      ^bytes size // self bytesPerElement.
+    )
+
+    /// Evaluates `action` with each element in turn, from the first,
+    /// reading each element only when it reaches it, so that a store ahead
+    /// of the walk is seen; answers the receiver.
+    ///
+    /// action: a block of one argument, or anything understanding `value:`;
+    ///     sent `value:` with each element.
+    ///
+    /// Signals what `action`'s `value:` signals.
+    public do: action = (
+      1 to: self size do: [:index | action value: (self at: index)].
+    )
+
+    /// Answers the element at `index`.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`: every typed
+    /// array defines it.
+    public at: index = (
+      ^self subclassResponsibility.
+    )
+
+    /// Stores `value` at `index` and answers `value`.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`: every typed
+    /// array defines it.
+    public at: index put: value = (
+      ^self subclassResponsibility.
+    )
+
+    /// Answers a new typed array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`: every typed
+    /// array defines it, naming its own class, since a class side is flat
+    /// (§3.2) and a subclass's need not answer `new:`.
+    protected newOfSize: size = (
+      ^self subclassResponsibility.
+    )
+
+    /// Signals an ArgumentError carrying `bytes`, '<selector> found no
+    /// ByteArray under the view, got …' and its `printString`: what an
+    /// access signals when `bytes` holds anything else, which only a
+    /// crafted image can make.
+    ///
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Protected rather than private, since each typed array's own
+    /// accessors signal it.
+    protected noByteArray: selector = (
+      ^(outer TypedArraysFactory ArgumentError value: bytes) signal: selector asString
+          , ' found no ByteArray under the view, got '
+          , bytes printString.
+    )
+
+    /// Answers `aByteArray` when the receiver can view it: a ByteArray
+    /// whose size is a multiple of `bytesPerElement`.
+    ///
+    /// Signals the ArgumentErrors of `on:` for anything else.
+    private viewable: aByteArray = (
+      aByteArray isKindOfByteArray ifFalse: [
+        ^(outer
+            TypedArraysFactory
+            ArgumentError value: aByteArray) signal: 'on: requires a ByteArray, got '
+            , aByteArray printString.
+      ].
+      aByteArray size \\ self bytesPerElement = 0 ifFalse: [
+        ^(outer
+            TypedArraysFactory
+            ArgumentError value: aByteArray) signal: 'on: requires a ByteArray whose size is a multiple of '
+            , self bytesPerElement printString
+            , ', got a ByteArray of '
+            , aByteArray size printString.
+      ].
+      ^aByteArray.
+    )
+  ) : (
+    /// Answers a new ByteArray of `size` × `width` bytes, each 0: what a
+    /// typed array's `new:` views.
+    ///
+    /// size: an Integer, at least 0.
+    /// width: the typed array's `bytesPerElement`.
+    ///
+    /// Signals an ArgumentError carrying `size`: 'new: requires an Integer
+    /// size, got …' for a size that is no Integer and 'new: requires a size
+    /// of at least 0, got …' for a negative one; and 'new: cannot allocate
+    /// a ByteArray of … bytes', counting the bytes, for one too large to
+    /// allocate.
+    ///
+    /// A size `Array new:` refuses is refused by that leaf on the size
+    /// itself, so that the texts are Array's, the description of an
+    /// arbitrary object the leaf's to give.
+    public bytesFor: size width: width = (
+      (size isKindOfInteger and: [size >= 0]) ifFalse: [^Array new: size].
+      ^ByteArray new: size * width.
+    )
+
+    /// Stores `collection`'s elements into `array` from its first index on,
+    /// in `collection`'s `do:` order, and answers `array`: what a typed
+    /// array's `withAll:` fills its new array with.
+    ///
+    /// array: a typed array of at least `collection size` elements.
+    /// collection: anything answering `do:` whose elements `array`'s
+    ///     `at:put:` takes.
+    ///
+    /// Signals what `array`'s `at:put:` signals for an element it cannot
+    /// hold.
+    public fill: array from: collection = (
+      |
+        index
+      |
+      index:: 0.
+      collection do: [:element |
+        index:: index + 1.
+        array at: index put: element.
+      ].
+      ^array.
+    )
+  )
+
+  /// A typed array of signed bytes, each element an Integer from -128 to
+  /// 127 in 1 byte. `TypedArray` describes the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 1.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Int8Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 1, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^1.
+    )
+
+    /// Answers the element at `index`, an Integer from -128 to 127.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes int8ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from -128 to 127.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from
+    /// -128 to 127, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the element as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes int8ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Int8Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- an Int8Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Int8Array new: size.
+    )
+  ) : (
+    /// Answers a new Int8Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 1 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 1).
+    )
+
+    /// Answers a new, empty Int8Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Int8Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from -128 to 127 -- an Array, a List, a typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 1, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^1.
+    )
+  )
+
+  /// A typed array of unsigned bytes, each element an Integer from 0 to 255
+  /// in 1 byte. `TypedArray` describes the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 1.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Uint8Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 1, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^1.
+    )
+
+    /// Answers the element at `index`, an Integer from 0 to 255.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    ///
+    /// An element is a byte of `bytes`, so the ByteArray's own `at:`
+    /// answers it.
+    public at: index = (
+      bytes isKindOfByteArray ifFalse: [^self noByteArray: #at:].
+      ^bytes at: index.
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from 0
+    /// to 255, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the element as it was.
+    ///
+    /// An element is a byte of `bytes`, so the ByteArray's own `at:put:`
+    /// stores it.
+    public at: index put: value = (
+      bytes isKindOfByteArray ifFalse: [^self noByteArray: #at:put:].
+      ^bytes at: index put: value.
+    )
+
+    /// Answers a new Uint8Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- a Uint8Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Uint8Array new: size.
+    )
+  ) : (
+    /// Answers a new Uint8Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 1 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 1).
+    )
+
+    /// Answers a new, empty Uint8Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Uint8Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from 0 to 255 -- an Array, a List, a typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 1, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^1.
+    )
+  )
+
+  /// A typed array of signed 16-bit Integers, each element an Integer from
+  /// -32768 to 32767 in 2 bytes, little-endian. `TypedArray` describes the
+  /// rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 2.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Int16Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 2, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^2.
+    )
+
+    /// Answers the element at `index`, an Integer from -32768 to 32767.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes int16ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from -32768 to 32767.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from
+    /// -32768 to 32767, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the element as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes int16ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Int16Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- an Int16Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Int16Array new: size.
+    )
+  ) : (
+    /// Answers a new Int16Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 2 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 2).
+    )
+
+    /// Answers a new, empty Int16Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Int16Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from -32768 to 32767 -- an Array, a List, a typed
+    ///     array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 2, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^2.
+    )
+  )
+
+  /// A typed array of unsigned 16-bit Integers, each element an Integer
+  /// from 0 to 65535 in 2 bytes, little-endian. `TypedArray` describes the
+  /// rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 2.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Uint16Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 2, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^2.
+    )
+
+    /// Answers the element at `index`, an Integer from 0 to 65535.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes uint16ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 65535.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from 0
+    /// to 65535, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the element as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes uint16ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Uint16Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- a Uint16Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Uint16Array new: size.
+    )
+  ) : (
+    /// Answers a new Uint16Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 2 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 2).
+    )
+
+    /// Answers a new, empty Uint16Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Uint16Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from 0 to 65535 -- an Array, a List, a typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 2, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^2.
+    )
+  )
+
+  /// A typed array of signed 32-bit Integers, each element an Integer from
+  /// -2147483648 to 2147483647 in 4 bytes, little-endian. `TypedArray`
+  /// describes the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 4.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Int32Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 4, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^4.
+    )
+
+    /// Answers the element at `index`, an Integer from -2147483648 to
+    /// 2147483647.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes int32ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from -2147483648 to 2147483647.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from
+    /// -2147483648 to 2147483647, got …', for a value outside that range or
+    /// no Integer. A refused store leaves the element as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes int32ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Int32Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- an Int32Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Int32Array new: size.
+    )
+  ) : (
+    /// Answers a new Int32Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 4 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 4).
+    )
+
+    /// Answers a new, empty Int32Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Int32Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from -2147483648 to 2147483647 -- an Array, a List, a
+    ///     typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 4, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^4.
+    )
+  )
+
+  /// A typed array of unsigned 32-bit Integers, each element an Integer
+  /// from 0 to 4294967295 in 4 bytes, little-endian. `TypedArray` describes
+  /// the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 4.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Uint32Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 4, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^4.
+    )
+
+    /// Answers the element at `index`, an Integer from 0 to 4294967295.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes uint32ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 4294967295.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from 0
+    /// to 4294967295, got …', for a value outside that range or no Integer.
+    /// A refused store leaves the element as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes uint32ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Uint32Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- a Uint32Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Uint32Array new: size.
+    )
+  ) : (
+    /// Answers a new Uint32Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 4 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 4).
+    )
+
+    /// Answers a new, empty Uint32Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Uint32Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from 0 to 4294967295 -- an Array, a List, a typed
+    ///     array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 4, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^4.
+    )
+  )
+
+  /// A typed array of signed 64-bit Integers, each element an Integer from
+  /// -9223372036854775808 to 9223372036854775807 in 8 bytes, little-endian.
+  /// `TypedArray` describes the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 8.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Int64Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 8, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^8.
+    )
+
+    /// Answers the element at `index`, an Integer from -9223372036854775808
+    /// to 9223372036854775807.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes int64ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from -9223372036854775808 to 9223372036854775807.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from
+    /// -9223372036854775808 to 9223372036854775807, got …', for a value
+    /// outside that range or no Integer. A refused store leaves the element
+    /// as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes int64ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Int64Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- an Int64Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Int64Array new: size.
+    )
+  ) : (
+    /// Answers a new Int64Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 8 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 8).
+    )
+
+    /// Answers a new, empty Int64Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Int64Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from -9223372036854775808 to 9223372036854775807 -- an
+    ///     Array, a List, a typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 8, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^8.
+    )
+  )
+
+  /// A typed array of unsigned 64-bit Integers, each element an Integer
+  /// from 0 to 18446744073709551615 in 8 bytes, little-endian. `TypedArray`
+  /// describes the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 8.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Uint64Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 8, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^8.
+    )
+
+    /// Answers the element at `index`, an Integer from 0 to
+    /// 18446744073709551615.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes uint64ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index` and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 18446744073709551615.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from 0
+    /// to 18446744073709551615, got …', for a value outside that range or
+    /// no Integer. A refused store leaves the element as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: bytes uint64ElementAt: index put: value ifFail: [
+        ^self noByteArray: #at:put:.
+      ].
+    )
+
+    /// Answers a new Uint64Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- a Uint64Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Uint64Array new: size.
+    )
+  ) : (
+    /// Answers a new Uint64Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 8 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 8).
+    )
+
+    /// Answers a new, empty Uint64Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Uint64Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Integers from 0 to 18446744073709551615 -- an Array, a List, a
+    ///     typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 8, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^8.
+    )
+  )
+
+  /// A typed array of binary32 floats, each element a Float in 4 bytes,
+  /// little-endian. `at:put:` takes any Number, converted as `asFloat`
+  /// converts it and then rounded to the nearest binary32, a tie to the one
+  /// whose last bit is even, a finite value past binary32's range becoming
+  /// an infinity of its sign and a NaN staying a NaN; `at:` answers the
+  /// binary32 widened exactly. `TypedArray` describes the rest of the
+  /// protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 4.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Float32Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 4, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^4.
+    )
+
+    /// Answers the element at `index`, a Float.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes float32ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index`, converted as `asFloat` converts it and
+    /// rounded to binary32, and answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires a Number, got …',
+    /// for a value that is no Number. A refused store leaves the element as
+    /// it was.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the index is
+    /// checked first and the refusal names the value given.
+    public at: index put: value = (
+      vmMirror byteArray: bytes
+          float32ElementAt: index
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #at:put:].
+      ^value.
+    )
+
+    /// Answers a new Float32Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- a Float32Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Float32Array new: size.
+    )
+  ) : (
+    /// Answers a new Float32Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 4 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 4).
+    )
+
+    /// Answers a new, empty Float32Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Float32Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Numbers -- an Array, a List, a typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 4, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^4.
+    )
+  )
+
+  /// A typed array of binary64 floats, each element a Float in 8 bytes,
+  /// little-endian. `at:put:` takes any Number, converted as `asFloat`
+  /// converts it. `TypedArray` describes the rest of the protocol.
+  ///
+  /// aByteArray: a ByteArray whose size is a multiple of 8.
+  ///
+  /// Signals the ArgumentErrors of `TypedArray`'s `on:`.
+  private class Float64Array on: aByteArray = TypedArray on: aByteArray () (
+    /// Answers 8, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^8.
+    )
+
+    /// Answers the element at `index`, a Float.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at: requires an Integer index,
+    /// got …' for an index that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public at: index = (
+      ^vmMirror byteArray: bytes float64ElementAt: index ifFail: [^self noByteArray: #at:].
+    )
+
+    /// Stores `value` at `index`, converted as `asFloat` converts it, and
+    /// answers `value` itself.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of range:
+    /// valid indices are 1..size (size …)' for an Integer outside 1 to
+    /// `size`, a LargeInteger included, and 'at:put: requires an Integer
+    /// index, got …' for an index that is no Integer; and the ArgumentError
+    /// of `noByteArray:` when `bytes` holds no ByteArray; and an
+    /// ArgumentError carrying `value`, 'at:put: requires a Number, got …',
+    /// for a value that is no Number. A refused store leaves the element as
+    /// it was.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the index is
+    /// checked first and the refusal names the value given.
+    public at: index put: value = (
+      vmMirror byteArray: bytes
+          float64ElementAt: index
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #at:put:].
+      ^value.
+    )
+
+    /// Answers a new Float64Array of `size` elements, each 0, over a new
+    /// ByteArray: the new instance the sequence protocol builds its
+    /// answers in -- a Float64Array even for a receiver of a subclass, whose
+    /// class side, flat (§3.2), need not answer `new:`.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:` for a
+    /// `size` that is negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer TypedArraysFactory Float64Array new: size.
+    )
+  ) : (
+    /// Answers a new Float64Array of `size` elements, each 0, over a new
+    /// ByteArray of `size` × 8 bytes.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `TypedArray bytesFor:width:`.
+    public new: size = (
+      ^self on: (outer TypedArraysFactory TypedArray bytesFor: size width: 8).
+    )
+
+    /// Answers a new, empty Float64Array.
+    public new = (
+      ^self new: 0.
+    )
+
+    /// Answers a new Float64Array of `collection`'s elements, in its `do:`
+    /// order.
+    ///
+    /// collection: anything answering `size` and `do:` whose elements are
+    ///     Numbers -- an Array, a List, a typed array.
+    ///
+    /// Signals what `at:put:` signals for the first element it cannot hold.
+    public withAll: collection = (
+      ^outer TypedArraysFactory TypedArray fill: (self new: collection size) from: collection.
+    )
+
+    /// Answers 8, the number of bytes an element takes.
+    public bytesPerElement = (
+      ^8.
+    )
+  )
+
+  /// Answers a new `TypedArrays` namespace: the facet `platform
+  /// typedArrays` answers, and the one public member of the module, named
+  /// `build` like every shipped factory's.
+  public build = (
+    ^TypedArrays new.
+  )
+)

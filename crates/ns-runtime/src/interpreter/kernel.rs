@@ -634,7 +634,7 @@ pub(crate) fn kernel_kind_named(name: &str) -> Option<BuiltinClass> {
 /// clause, as any class's does. And every mirror send passes a literal
 /// block only as its failure block (`check_mirror_send_arguments`).
 fn check_kernel_shape(root: &Rc<Mixin>, resolved: &ResolvedModule) {
-    check_mirror_send_arguments(resolved);
+    check_mirror_send_arguments(resolved, "Kernel");
     let kinds: Vec<BuiltinClass> = BuiltinClass::ALL
         .into_iter()
         .filter(|kind| *kind != BuiltinClass::VmMirror)
@@ -836,8 +836,9 @@ fn kernel_application<'gc>(
         .expect("internal: the kernel's class is a class object")
 }
 
-/// A mirror send in the kernel passes a literal block only as its final,
-/// `ifFail:` argument. A literal block anywhere before it would be a block
+/// A mirror send in shipped source -- the kernel's and every shipped
+/// module's, `module` naming it in the panic -- passes a literal block
+/// only as its final, `ifFail:` argument. A literal block anywhere before it would be a block
 /// the leaf itself activates (as `whileTrue:`'s would be, were it passed
 /// as a literal), and the reference lowering, which marks the whole send
 /// `SendInlinable` because its failure block is inlined by the optimized
@@ -847,7 +848,7 @@ fn kernel_application<'gc>(
 /// shape is refused rather than the count special-cased. Such a block is
 /// passed through a local or an argument instead, which neither lowering
 /// marks.
-fn check_mirror_send_arguments(resolved: &ResolvedModule) {
+pub(super) fn check_mirror_send_arguments(resolved: &ResolvedModule, module: &str) {
     for_each_send(resolved, |send| {
         if !matches!(resolved.bindings.get(&send.span), Some(Binding::MirrorSend)) {
             return;
@@ -859,7 +860,7 @@ fn check_mirror_send_arguments(resolved: &ResolvedModule) {
             .any(|argument| matches!(argument.kind, ast::ExpressionKind::Block(_)))
         {
             panic!(
-                "internal: Kernel.ns passes a literal block to the mirror's {} before its \
+                "internal: {module}.ns passes a literal block to the mirror's {} before its \
                  failure block; only the final ifFail: argument may be a literal block, since \
                  the reference lowering would exempt that block's activation from the depth \
                  count and the optimized lowering would count it \
@@ -1192,21 +1193,6 @@ mod tests {
         ("StringBuilder", "ensureRoom:"),
         ("StringBuilder", "checkState:"),
         ("StringBuilder", "new"),
-        // `TypedArray` is Newspeak over its subclasses' accessors: its
-        // abstract members send `subclassResponsibility`, `size` and `do:`
-        // send, the slot's validation and the crafted-slot refusal signal,
-        // and its class side's helpers allocate and fill. Each of the ten
-        // typed arrays' own members is on `TYPED_ARRAY_MEMBERS`.
-        ("TypedArray", "bytesPerElement"),
-        ("TypedArray", "size"),
-        ("TypedArray", "do:"),
-        ("TypedArray", "at:"),
-        ("TypedArray", "at:put:"),
-        ("TypedArray", "newOfSize:"),
-        ("TypedArray", "noByteArray:"),
-        ("TypedArray", "viewable:"),
-        ("TypedArray", "bytesFor:width:"),
-        ("TypedArray", "fill:from:"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
         ("MessageNotUnderstood", "hostSelector"),
@@ -1268,7 +1254,28 @@ mod tests {
         ("Future", "computing:"),
     ];
 
-    /// The ten typed arrays, whose members are the same in each.
+    /// What `TypedArray` declares, none a forwarder but
+    /// `isKindOfTypedArray`, a quick method answering true: it is Newspeak
+    /// over its subclasses' accessors -- its abstract members send
+    /// `subclassResponsibility`, `size` and `do:` send, the slot's
+    /// validation and the crafted-slot refusal signal, and its class side's
+    /// helpers allocate and fill. Each of the ten typed arrays' own members
+    /// is on `TYPED_ARRAY_MEMBERS`.
+    const TYPED_ARRAY_ROOT_MEMBERS: &[&str] = &[
+        "bytesPerElement",
+        "size",
+        "do:",
+        "at:",
+        "at:put:",
+        "newOfSize:",
+        "noByteArray:",
+        "viewable:",
+        "bytesFor:width:",
+        "fill:from:",
+    ];
+
+    /// The ten typed arrays of `TypedArraysFactory.ns`, whose members are
+    /// the same in each.
     const TYPED_ARRAYS: &[&str] = &[
         "Int8Array",
         "Uint8Array",
@@ -1617,11 +1624,6 @@ mod tests {
             MethodFastPath::Constant(QuickConstant::True),
         ),
         (
-            "TypedArray",
-            "isKindOfTypedArray",
-            MethodFastPath::Constant(QuickConstant::True),
-        ),
-        (
             "DataView",
             "isKindOfDataView",
             MethodFastPath::Constant(QuickConstant::True),
@@ -1695,13 +1697,9 @@ mod tests {
                     .flat_map(|side| side.compiled_methods());
                 for method in mixin.compiled_methods().chain(class_side) {
                     let selector = method.selector.as_str();
-                    let typed_array_member = TYPED_ARRAYS.contains(&class_name)
-                        && TYPED_ARRAY_MEMBERS.contains(&selector);
                     let data_view_member =
                         DATA_VIEWS.contains(&class_name) && selector != "isKindOfDataView";
-                    if typed_array_member
-                        || data_view_member
-                        || NOT_FORWARDERS.contains(&(class_name, selector)) {
+                    if data_view_member || NOT_FORWARDERS.contains(&(class_name, selector)) {
                         assert!(
                             method.fast_path.is_none(),
                             "{class_name}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
@@ -1806,9 +1804,12 @@ mod tests {
     /// slot initializer, not in a loop. `Transcript`'s two and `Stopwatch`'s
     /// clock reading are mirror forwarders like the kernel's:
     /// `PlatformFactory.ns` is resolved with `resolve_kernel`. `Time`'s
-    /// `Stopwatch` is a class accessor. The classes are read on the host
-    /// side, off the members the platform answers, since the platform hands
-    /// out none of its module's classes.
+    /// `Stopwatch` is a class accessor, as is each of `TypedArrays`'
+    /// accessors. The typed arrays' own members reach no leaf through a
+    /// forwarder (`TYPED_ARRAY_ROOT_MEMBERS`, `TYPED_ARRAY_MEMBERS`), but
+    /// `TypedArray>>isKindOfTypedArray`, a quick method. The classes are
+    /// read on the host side, off the members the platform answers, since
+    /// the platform hands out none of its module's classes.
     #[test]
     fn the_platform_modules_members_have_the_fast_path_they_should() {
         let mut interpreter = Interpreter::bootstrap();
@@ -1826,6 +1827,11 @@ mod tests {
         let time = member(&platform, "time");
         let stopwatch = member(&time, "Stopwatch");
         let collections = member(&platform, "collections");
+        let typed_arrays = member(&platform, "typedArrays");
+        let typed_array_classes: Vec<(&str, crate::Root)> = std::iter::once("TypedArray")
+            .chain(TYPED_ARRAYS.iter().copied())
+            .map(|name| (name, member(&typed_arrays, name)))
+            .collect();
         let class_of = |interpreter: &mut Interpreter, subject: &crate::Root| {
             interpreter.enter(|mutator| {
                 let class = mutator.class_of(mutator.fetch(subject));
@@ -1836,6 +1842,7 @@ mod tests {
         let transcript = class_of(&mut interpreter, &transcript);
         let time = class_of(&mut interpreter, &time);
         let collections = class_of(&mut interpreter, &collections);
+        let typed_arrays = class_of(&mut interpreter, &typed_arrays);
         interpreter.enter(|mutator| {
             let fast_path = |class: &crate::Root, selector: &str| {
                 let Some(class) = mutator.fetch(class).as_object() else {
@@ -1866,12 +1873,8 @@ mod tests {
                 "Future",
                 "Proxy",
                 "StringBuilder",
-                "TypedArray",
                 "DataView",
-            ]
-            .into_iter()
-            .chain(TYPED_ARRAYS.iter().copied())
-            {
+            ] {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),
                     None,
@@ -1895,6 +1898,45 @@ mod tests {
                 "Stopwatch>>currentMonotonicNanoseconds is not recognized as a primitive method"
             );
             assert_eq!(fast_path(&time, "Stopwatch"), None, "Time>>Stopwatch");
+            for (name, class) in &typed_array_classes {
+                assert_eq!(fast_path(&typed_arrays, name), None, "TypedArrays>>{name}");
+                let Some(class) = mutator.fetch(class).as_object() else {
+                    panic!("TypedArrays>>{name} answers a class object");
+                };
+                let application = mutator
+                    .heap()
+                    .class_application(class)
+                    .expect("a class object has an application");
+                let members = if *name == "TypedArray" {
+                    TYPED_ARRAY_ROOT_MEMBERS
+                } else {
+                    TYPED_ARRAY_MEMBERS
+                };
+                let class_side = application
+                    .mixin
+                    .class_side
+                    .iter()
+                    .flat_map(|side| side.compiled_methods());
+                for method in application.mixin.compiled_methods().chain(class_side) {
+                    let selector = method.selector.as_str();
+                    if *name == "TypedArray" && selector == "isKindOfTypedArray" {
+                        assert_eq!(
+                            method.fast_path,
+                            Some(MethodFastPath::Constant(QuickConstant::True)),
+                            "TypedArray>>isKindOfTypedArray is not the quick method it should be"
+                        );
+                        continue;
+                    }
+                    assert!(
+                        members.contains(&selector),
+                        "{name}>>{selector} is no member the test knows; list it"
+                    );
+                    assert!(
+                        method.fast_path.is_none(),
+                        "{name}>>{selector} reaches a leaf after all; take it off the members"
+                    );
+                }
+            }
         });
     }
 
@@ -2248,6 +2290,8 @@ mod tests {
                 "Transcript",
                 "Collections",
                 "CollectionsFactory",
+                "TypedArrays",
+                "TypedArraysFactory",
                 "OrderedCollection",
                 "List",
                 "VmMirror",
@@ -2675,7 +2719,7 @@ mod tests {
               )
             ) : ()
         "});
-        super::check_mirror_send_arguments(&resolved);
+        super::check_mirror_send_arguments(&resolved, "Kernel");
     }
 
     /// A literal block before the failure block would be exempt from the
@@ -2693,7 +2737,7 @@ mod tests {
               )
             ) : ()
         "});
-        super::check_mirror_send_arguments(&resolved);
+        super::check_mirror_send_arguments(&resolved, "Kernel");
     }
 
     /// `Kernel.ns` resolves in kernel mode, and every send to `vmMirror` in
