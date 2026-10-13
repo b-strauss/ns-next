@@ -95,6 +95,9 @@ fn a_manifest_does_not_understand_a_name_it_does_not_hold() {
     }
 }
 
+/// A public member of `Object` answers on the manifest before its
+/// `doesNotUnderstand:` can look a module up; a class accessor of
+/// `Object` is protected, so it does not.
 #[test]
 fn an_object_member_answers_before_the_manifest_can() {
     let mut interpreter = Interpreter::bootstrap();
@@ -105,6 +108,6 @@ fn an_object_member_answers_before_the_manifest_can() {
     );
     let manifest = manifest_over(&mut interpreter, "Sieve", &module);
     assert!(!interpreter.responds_publicly(&manifest, Symbol::intern("Sieve")));
-    assert!(interpreter.responds_publicly(&manifest, Symbol::intern("Array")));
+    assert!(!interpreter.responds_publicly(&manifest, Symbol::intern("Array")));
     assert!(interpreter.responds_publicly(&manifest, Symbol::intern("printString")));
 }

@@ -3010,6 +3010,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "Class", 1),                // CLASS_NAME = 17
     ("Kernel", "Activation", 2),           // ACTIVATION_CLASS_NAME = 18
     ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
+    ("Kernel", "NonBooleanReceiver", 1),   // NON_BOOLEAN_RECEIVER_NAME = 20
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3031,6 +3032,7 @@ const CLOSURE_NAME: u32 = 16;
 const CLASS_NAME: u32 = 17;
 const ACTIVATION_CLASS_NAME: u32 = 18;
 const FUTURE_IMPLEMENTATION_CLASS_NAME: u32 = 19;
+const NON_BOOLEAN_RECEIVER_NAME: u32 = 20;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -13147,14 +13149,14 @@ fn a_started_image_names_no_module_instance() {
 }
 
 /// A program that catches the error a non-Boolean loop condition signals
-/// and keeps its class builds and loads: the VM hands it the private
-/// `Kernel NonBooleanReceiver`, so the class is a value an image names, and
-/// the loaded slot holds the loading boot's own class.
+/// and keeps the error itself builds and loads: the error is a record of
+/// the private `Kernel NonBooleanReceiver`, which a record's class may be,
+/// and the loaded slot holds an instance of the loading boot's own class.
 #[test]
-fn a_caught_non_boolean_receivers_class_round_trips_through_a_package() {
+fn a_caught_non_boolean_receiver_round_trips_through_a_package() {
     let (mut interpreter, class) = load(indoc! {"
         class App = Object new (
-          | public held = [[4] whileFalse: [nil]] on: Error do: [:error | error class]. |
+          | public held = [[4] whileFalse: [nil]] on: Error do: [:error | error]. |
         ) (
           public main: platform args: arguments = ( ^held )
         ) : ()
@@ -13185,7 +13187,45 @@ fn a_caught_non_boolean_receivers_class_round_trips_through_a_package() {
     loaded.interpreter.enter(|mutator| {
         let held = mutator.fetch(&held);
         let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
-        assert!(object(held).same(signalled));
+        assert!(mutator.class_of(held).same(signalled));
+    });
+}
+
+/// No program reaches the private `Kernel NonBooleanReceiver` as a value:
+/// `class` is protected, so a caught instance does not hand it out. A
+/// crafted image naming it as a value is refused on load, and the encoder
+/// refuses a graph holding it as one rather than write an image nothing
+/// loads.
+#[test]
+fn non_boolean_receiver_as_a_value_is_refused() {
+    assert_eq!(
+        GraphFixture::new().decode_error(&shipped_class_value(NON_BOOLEAN_RECEIVER_NAME)),
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel NonBooleanReceiver".to_string(),
+            position: "a value",
+        }
+    );
+    let (mut interpreter, class) = load(indoc! {"
+        class Root = Object new () ()
+    "});
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
+        let refused = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            &[Value::object(signalled)],
+        );
+        let Err(message) = refused else {
+            panic!("a graph holding Kernel NonBooleanReceiver as a value was encoded");
+        };
+        assert_eq!(
+            message,
+            "image encoding refuses Kernel NonBooleanReceiver as a value: no program may name \
+             it there, and the loader refuses an image that does"
+        );
     });
 }
 

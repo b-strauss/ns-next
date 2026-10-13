@@ -1833,6 +1833,11 @@ mod tests {
                     Some(crate::mixin::MethodFastPath::BuiltinClass(kind)),
                     "{kind:?}"
                 );
+                assert_eq!(
+                    method.access,
+                    ns_syntax::ast::AccessModifier::Protected,
+                    "{kind:?}: an object hands out no class through another's accessor"
+                );
             }
             for absent in [
                 "Top",

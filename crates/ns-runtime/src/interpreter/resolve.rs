@@ -650,17 +650,26 @@ mod tests {
     }
 
     /// §3.2's accessor on `Object` is answered by `act` itself: the
-    /// resolution is the ordinary `Method`, and the builtin class comes back
-    /// as a value with nothing activated.
+    /// resolution of the bare name, an implicit-receiver send, is the
+    /// ordinary `Method`, and the builtin class comes back as a value with
+    /// nothing activated. The accessor is protected, so the same selector
+    /// sent to the object from outside reaches `doesNotUnderstand:`.
     #[test]
     fn act_answers_a_class_accessor_without_an_activation() {
         let mut interpreter = Interpreter::bootstrap();
         interpreter.enter(|mutator| {
             let receiver = Value::small_integer(3);
             let selector = Symbol::intern("String");
-            let resolved = mutator.resolve_public(receiver, selector);
+            assert!(
+                matches!(
+                    mutator.resolve_public(receiver, selector).chain(),
+                    Some(Chain::DoesNotUnderstand)
+                ),
+                "`3 String` from outside must reach doesNotUnderstand:"
+            );
+            let resolved = mutator.resolve_lexical(receiver, None, selector);
             let Resolved::Method { ref method, .. } = resolved else {
-                panic!("`3 String` must resolve to Object's accessor");
+                panic!("a bare `String` must resolve to Object's accessor");
             };
             assert_eq!(
                 method.fast_path,

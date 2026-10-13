@@ -305,9 +305,8 @@ pub const RETIRED_MIXIN_TAGS: [u8; 1] = [1];
 /// shipped-name section (`image::shipped_names`), whose entry must be a
 /// class, a metaclass or a level -- never a module instance -- allowed where
 /// the reference stands (`docs/design/image-format.md`, "Shipped names"): as a
-/// value, a shipped class that is public, that a public class accessor of its
-/// module answers, or whose instances the VM signals as a VM error
-/// (`ErrorClass::is_signalled`), and its metaclass; as a superclass, such a
+/// value, a shipped class that is public or that a public class accessor of
+/// its module answers, and its metaclass; as a superclass, such a
 /// class, not its metaclass, but `Behavior`, `Class` and `Metaclass`; as a
 /// record's class, any shipped class but a module's root and `Top`,
 /// `Activation` only on a frame record and `FutureImplementation` only on a
