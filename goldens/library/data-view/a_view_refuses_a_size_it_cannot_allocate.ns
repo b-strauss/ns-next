@@ -1,0 +1,27 @@
+/// `new:byteOrder:` allocates the bytes of its view, so a size that is no
+/// Integer, a negative one and one too large to allocate are refused with
+/// the ArgumentErrors that sizing a new collection signals.
+class AViewRefusesASizeItCannotAllocate = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      DataView
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    DataView:: platform kernel DataView.
+    refusal: [DataView new: 'four' byteOrder: #littleEndian].
+    refusal: [DataView new: -1 byteOrder: #bigEndian].
+    refusal: [DataView new: 1 << 62 byteOrder: #littleEndian].
+  )
+)

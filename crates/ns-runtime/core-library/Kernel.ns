@@ -5916,11 +5916,24 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// Signals the ArgumentError of `on:byteOrder:` for `order`, with the
     /// selector 'new:byteOrder:', before it allocates anything; and the
-    /// ArgumentErrors of `ByteArray new:` for a `size` that is negative,
-    /// no Integer or too large to allocate.
+    /// ArgumentErrors of `Array new:` for a `size` that is negative or no
+    /// Integer, and of `ByteArray new:` for one too large to allocate.
     public new: size byteOrder: order = (
       self checkByteOrder: order selector: #new:byteOrder:.
-      ^self on: (outer Kernel ByteArray new: size) byteOrder: order.
+      ^self on: (self bytesOfSize: size) byteOrder: order.
+    )
+
+    /// Answers a new ByteArray of `size` bytes, each 0.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals the ArgumentErrors of `Array new:` for a `size` that is
+    /// negative or no Integer, so that the texts are Array's, the
+    /// description of an arbitrary object the leaf's to give; and those of
+    /// `ByteArray new:` for one too large to allocate.
+    private bytesOfSize: size = (
+      (size isKindOfInteger and: [size >= 0]) ifFalse: [^outer Kernel Array new: size].
+      ^outer Kernel ByteArray new: size.
     )
 
     /// Answers the receiver when `order` is #littleEndian or #bigEndian and

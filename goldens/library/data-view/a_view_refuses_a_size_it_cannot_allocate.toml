@@ -1,0 +1,5 @@
+stdout = '''
+new: requires an Integer size, got the String "four"
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 4611686018427387904 bytes
+'''
