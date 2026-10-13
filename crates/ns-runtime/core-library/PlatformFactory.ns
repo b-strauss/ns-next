@@ -231,7 +231,8 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
 
     /// Answers the kernel's `TypedArray` class, the abstract superclass
     /// of the ten typed arrays, which a program tests a typed array
-    /// against or subclasses.
+    /// against or subclasses; a subclass defines `bytesPerElement`, `at:`,
+    /// `at:put:` and the protected `newOfSize:` its copies are made by.
     public TypedArray = (
       ^outer PlatformFactory TypedArray.
     )

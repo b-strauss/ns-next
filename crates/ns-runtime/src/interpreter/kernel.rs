@@ -1286,12 +1286,13 @@ mod tests {
     /// `at:put:` send to the mirror with the `bytes` slot as the subject,
     /// not `self` -- or, in `Uint8Array`, to the ByteArray itself -- so a
     /// view stays an ordinary object over its ByteArray; `bytesPerElement`
-    /// answers a literal on both sides; the class side's `new`, `new:` and
-    /// `withAll:` send.
+    /// answers a literal on both sides; `newOfSize:` and the class side's
+    /// `new`, `new:` and `withAll:` send.
     const TYPED_ARRAY_MEMBERS: &[&str] = &[
         "bytesPerElement",
         "at:",
         "at:put:",
+        "newOfSize:",
         "new",
         "new:",
         "withAll:",

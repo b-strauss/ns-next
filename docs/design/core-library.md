@@ -1874,9 +1874,16 @@ Decided with the user on 2026-10-12:
   widened exactly; an `Int64Array`'s or `Uint64Array`'s element may read as
   a `LargeInteger`.
 - **The sequence protocol** from the mixin, copies being of the
-  receiver's class over a new `ByteArray`; `collect:` answers an `Array`,
-  `select:` and `reject:` the receiver's class; `indexOf:` compares with
-  `=`, so `3` finds `3.0`. `size` is the bytes' size over the width.
+  receiver's kernel class over a new `ByteArray`; `collect:` answers an
+  `Array`, `select:` and `reject:` the receiver's kernel class; `indexOf:`
+  compares with `=`, so `3` finds `3.0`. Each typed array's protected
+  `newOfSize:` names its own class, `outer Kernel Int16Array new: size`,
+  as `Array`'s and `ByteArray`'s do, and `TypedArray`'s is abstract: a
+  class side is flat (§3.2), so a program's subclass of `Int16Array` has
+  only the `on:` of its own factory, and asking the receiver's class for
+  `new:` would leave every copy of it a `doesNotUnderstand:`. A
+  subclass's copies are therefore `Int16Array`s, as an `Array`
+  subclass's are `Array`s (`goldens/library/builtin-subclass/`). `size` is the bytes' size over the width.
   `=` and `hash` are identity; `isKindOfTypedArray` and
   `isKindOfCollection` answer `true`.
 - **One leaf per width for `at:` and one for `at:put:`**, on the
@@ -1917,8 +1924,11 @@ accessors on `ByteArray`:
   the user on 2026-10-12; Primordial Soup's count from 0), not necessarily
   aligned: `uint32At: 3` is allowed. A position below 1, or one whose last
   byte lies past `bytes size`, is an `ArgumentError` carrying the position,
-  "uint32At: position 0 out of range: valid positions are 1..… (size …)";
-  a position that is no `Integer` is one too, "uint32At: requires an
+  "uint32At: position 0 out of range: valid positions are 1..… (size …)",
+  or, when the bytes are fewer than the width, so that no position fits,
+  "uint32At: position 1 out of range: no position holds 4 bytes (size 3)"
+  rather than an empty range `1..0`; a position that is no `Integer` is one
+  too, "uint32At: requires an
   Integer position, got …". The values follow the typed arrays' rules:
   integers checked against their range, floats taking any number, `put:`
   answering the value.

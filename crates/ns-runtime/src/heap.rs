@@ -992,7 +992,8 @@ impl<'gc> Heap<'gc> {
         class: ClassReference<'gc>,
         size: usize,
     ) -> ObjectReference<'gc> {
-        // Below 8.
+        // The unused bytes of the last word, 0 to 7, so the cast cannot
+        // truncate.
         let unused = ((8 - size % 8) % 8) as u8;
         let (object, fields) = self.allocate_object(
             class,
@@ -1438,7 +1439,8 @@ impl<'gc> Heap<'gc> {
             return false;
         }
         fields.fill(0);
-        // Below 8.
+        // The unused bytes of the last word, 0 to 7, so the cast cannot
+        // truncate.
         let unused = ((8 - bytes.len() % 8) % 8) as u8;
         self.rewrite_placeholder_header(object, class, identity_hash, Format::AlignedBytes, unused);
         let written = self.with_byte_array_mut(object, |mut data| data.write(0, bytes));
@@ -2393,12 +2395,7 @@ impl<'gc> Heap<'gc> {
         let data_words = block_length.checked_sub(FIELDS + object::ALIGNMENT_RESERVE)?;
         let data_start = object::aligned_data_start(header);
         debug_assert_eq!(data_start % object::ALIGNMENT_WORDS, 0);
-        let start = data_start - header;
-        debug_assert!(
-            start + data_words <= block_length,
-            "a ByteArray's data end inside its block"
-        );
-        Some((start, data_words))
+        Some((data_start - header, data_words))
     }
 
     /// Lends a `ByteArray`'s data to `read` and answers what it answers;

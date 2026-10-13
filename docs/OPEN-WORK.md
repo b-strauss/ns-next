@@ -1239,8 +1239,8 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   byte-array body a class record's header (a program's class) rather than
   a shipped one; `ByteArray new:`'s refusal of a size the operating
   system will not commit has no test, since no portable one can provoke
-  it; no golden appends `''` to a builder whose data are full, or makes a
-  builder with `new: 0`; `a_typed_array_has_the_sequence_protocol` cannot
+  it; no golden appends `''` to a builder whose data are full;
+  `a_typed_array_has_the_sequence_protocol` cannot
   tell an `Int16Array`'s copy from a `Uint16Array`'s; a typed array's
   `new:` too large to allocate and a `LargeInteger` index are not pinned
   by a golden; and the crafted-slot tests cover a `BigEndianDataView` and

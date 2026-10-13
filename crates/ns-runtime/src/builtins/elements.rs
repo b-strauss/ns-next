@@ -84,16 +84,20 @@ fn offset<'gc>(
     let argument = arguments.first().copied();
     let refusal = |index: &dyn std::fmt::Display| {
         if access.byte_position() {
-            // The last position at which a whole element fits; 0 -- no
-            // position at all -- when the bytes are fewer than its width.
+            // The last position at which a whole element fits. Bytes fewer
+            // than the width leave none, said as such rather than as `1..0`.
             let last = (size + 1).saturating_sub(width);
+            let valid = if last == 0 {
+                let unit = if width == 1 { "byte" } else { "bytes" };
+                format!("no position holds {width} {unit}")
+            } else {
+                format!("valid positions are 1..{last}")
+            };
             NewspeakError::argument_error(
                 selector,
                 receiver,
                 first_argument(arguments),
-                format!(
-                    "{selector} position {index} out of range: valid positions are 1..{last} (size {size})"
-                ),
+                format!("{selector} position {index} out of range: {valid} (size {size})"),
             )
         } else {
             crate::builtins::collections::out_of_range(
