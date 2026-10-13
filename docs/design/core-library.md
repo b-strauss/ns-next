@@ -749,13 +749,14 @@ as the first shipped module's, then takes each entry of the table of
 shipped modules in order ("Where the library source lives, and how modules
 are found" below), compiles it and instantiates its root through the
 ordinary `Interpreter::instantiate` -- `PlatformFactory` with
-`usingVmMirror: mirror kernel: kernel`, `CollectionsFactory` with
-`usingKernel: kernel` -- checks that `PlatformFactory`'s `vmMirror` is an
-immutable, eager slot holding the mirror (`interpreter::core_library`'s
+`usingVmMirror: mirror kernel: kernel`, `TranscriptFactory` and
+`TimeFactory` with `usingVmMirror: mirror`, `CollectionsFactory` with
+`usingKernel: kernel` -- checks that every factory given the mirror holds it
+in an immutable, eager slot `vmMirror` (`interpreter::core_library`'s
 `check_factory_holds_the_mirror`, as `interpreter::kernel` checks the
 kernel's), and records each instance as its module's one instance
 (`interpreter/shipped_world.rs`). `complete_shipped_world` then builds every
-class the three roots declare and records every shipped object under its
+class the roots declare and records every shipped object under its
 name, which is what an image names ("Shipped names in the image" below).
 Last, it sends `PlatformFactory`'s instance `build` as an ordinary
 host send and keeps the answer as the platform
@@ -781,7 +782,7 @@ names exists once the boot is done, and the loader finds it by table lookup.
 
 **The transcript leaf does not check its receiver.** `Transcript`'s `show:`
 and `newLine` are mirror forwarders like the kernel's —
-`PlatformFactory.ns` is resolved with `resolve_kernel`, and `vmMirror` is a
+`TranscriptFactory.ns` is resolved with `resolve_kernel`, and `vmMirror` is a
 member of its root, so their `vmMirror` sends are mirror sends and the two
 methods are primitive methods — and their leaf (`platform.rs`) reads
 nothing off the receiver, only the string argument. The capability is the
@@ -2003,9 +2004,10 @@ application in its manifest ("The manifest" below).
 by `interpreter/kernel.rs`; every other shipped module is an entry of
 `interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
 embedded with `include_str!` from `crates/ns-runtime/core-library/` like
-the kernel. Today it has two entries, `PlatformFactory` and
-`CollectionsFactory`, whose source is `platform/CollectionsFactory.ns`: the
-modules the platform hands out a facet of live under `platform/`. Where a
+the kernel. Today it has four entries, `PlatformFactory`,
+`TranscriptFactory`, `TimeFactory` and `CollectionsFactory`, the last three
+under `platform/`: the modules the platform hands out a facet of live
+there. Where a
 module's file lies decides nothing: the table names it, and `moduleInstanceNamed:`
 finds it by that name. The table parses and resolves an entry once per
 thread, on the first request for it, with `resolve_kernel`, because the
@@ -2702,6 +2704,7 @@ boot built. The design as decided:
 - **The boot.** After `install_kernel` the host records the kernel
   instance, takes each entry from the table in order and instantiates it --
   `PlatformFactory` with `usingVmMirror: mirror kernel: kernel`,
+  `TranscriptFactory` and `TimeFactory` with `usingVmMirror: mirror`,
   `CollectionsFactory` with `usingKernel: kernel`, since it reaches no leaf
   and so is given no mirror -- each an ordinary run, as the kernel's
   instantiation is, so the stress modes see it; builds every class the roots

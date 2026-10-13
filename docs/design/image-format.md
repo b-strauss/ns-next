@@ -1710,10 +1710,11 @@ would no longer reach a deployed artifact ([core-library.md](core-library.md),
 whole and in a fixed order, running only the binary's own code
 (`Interpreter::install_shipped_modules`, `interpreter/core_library.rs`):
 after the kernel's phase it records the kernel instance, instantiates
-`PlatformFactory` (`usingVmMirror:kernel:`) and `CollectionsFactory`
-(`usingKernel:`, since it needs no mirror and so is given none), and then
+`PlatformFactory` (`usingVmMirror:kernel:`), `TranscriptFactory` and
+`TimeFactory` (`usingVmMirror:`) and `CollectionsFactory` (`usingKernel:`,
+since it needs no mirror and so is given none), and then
 `complete_shipped_world` (`interpreter/shipped_world.rs`) builds every class
-the three roots declare, in declaration order, metaclasses and levels
+the roots declare, in declaration order, metaclasses and levels
 included, before the platform is made. The world keeps two tables, traced
 as roots (`ShippedWorld`, in the step roots beside the kernel): the module
 instances, the kernel first, which the mirror's `moduleInstanceNamed:`
