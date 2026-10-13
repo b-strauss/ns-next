@@ -29,6 +29,11 @@ pub enum Primitive {
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
     Collection(CollectionPrimitive),
+    /// `ByteArray`'s leaves (`builtins::bytes`).
+    Bytes(BytePrimitive),
+    /// An element of a kind read or written on a `ByteArray`: the typed
+    /// arrays' and `DataView`'s accessors (`builtins::elements`).
+    Element(ElementAccess),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
     Activation(ActivationPrimitive),
@@ -207,7 +212,10 @@ impl Primitive {
                 | StringPrimitive::IndexOf
                 | StringPrimitive::LastIndexOf
                 | StringPrimitive::FromCodePoints
-                | StringPrimitive::PrintString,
+                | StringPrimitive::PrintString
+                | StringPrimitive::AsUtf8
+                | StringPrimitive::FromUtf8
+                | StringPrimitive::Utf8Size,
             ) => false,
             Primitive::Symbol(SymbolPrimitive::Equal) => true,
             Primitive::Symbol(
@@ -222,6 +230,24 @@ impl Primitive {
                 | CollectionPrimitive::CopyRange
                 | CollectionPrimitive::Replace,
             ) => false,
+            Primitive::Bytes(
+                BytePrimitive::Allocate
+                | BytePrimitive::Fits
+                | BytePrimitive::Size
+                | BytePrimitive::ElementAt
+                | BytePrimitive::ElementAtPut
+                | BytePrimitive::CopyRange
+                | BytePrimitive::Replace
+                | BytePrimitive::Concatenate
+                | BytePrimitive::IndexOf
+                | BytePrimitive::LastIndexOf
+                | BytePrimitive::StartsWith
+                | BytePrimitive::EndsWith
+                | BytePrimitive::WriteCodePoint,
+            ) => false,
+            // A write stores its element, and a value of the wrong kind is
+            // an error rather than `false`.
+            Primitive::Element(_) => false,
             Primitive::Block(
                 BlockPrimitive::Value
                 | BlockPrimitive::ArgumentCount
@@ -457,6 +483,13 @@ pub enum StringPrimitive {
     /// is the class.
     FromCodePoints,
     PrintString,
+    /// `asUtf8`: a new ByteArray of the UTF-8 bytes.
+    AsUtf8,
+    /// `String fromUtf8: bytes from: start to: stop`, on `String`'s class
+    /// side: its subject is the class.
+    FromUtf8,
+    /// `utf8Size`: the number of UTF-8 bytes.
+    Utf8Size,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,6 +513,152 @@ pub enum CollectionPrimitive {
     CopyRange,
     /// `replaceFrom:to:with:startingAt:` from another Array, or the same.
     Replace,
+}
+
+/// `ByteArray`'s primitives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BytePrimitive {
+    /// `ByteArray new: size`, on `ByteArray`'s class side.
+    Allocate,
+    /// Whether `ByteArray new: size` would allocate: what a shipped
+    /// module that sizes a ByteArray for a message of its own asks before
+    /// it allocates, so that it refuses a size too large under the
+    /// selector the program sent.
+    Fits,
+    Size,
+    ElementAt,
+    ElementAtPut,
+    /// `copyFrom:to:`: a new ByteArray of a range.
+    CopyRange,
+    /// `replaceFrom:to:with:startingAt:` from a ByteArray, the same one
+    /// included, or a String's UTF-8 bytes.
+    Replace,
+    /// `,` with a ByteArray or a String's UTF-8 bytes.
+    Concatenate,
+    /// `indexOf:startingAt:` of a byte or a subsequence.
+    IndexOf,
+    /// `lastIndexOf:startingAt:` of a byte or a subsequence.
+    LastIndexOf,
+    StartsWith,
+    EndsWith,
+    /// `at:putCodePoint:`: one code point's UTF-8 bytes, stored from an
+    /// index.
+    WriteCodePoint,
+}
+
+/// The ten element kinds of the typed arrays and `DataView`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum ElementKind {
+    Int8,
+    Uint8,
+    Int16,
+    Uint16,
+    Int32,
+    Uint32,
+    Int64,
+    Uint64,
+    Float32,
+    Float64,
+}
+
+impl ElementKind {
+    /// The number of bytes an element of the kind takes.
+    pub const fn width(self) -> usize {
+        match self {
+            ElementKind::Int8 | ElementKind::Uint8 => 1,
+            ElementKind::Int16 | ElementKind::Uint16 => 2,
+            ElementKind::Int32 | ElementKind::Uint32 | ElementKind::Float32 => 4,
+            ElementKind::Int64 | ElementKind::Uint64 | ElementKind::Float64 => 8,
+        }
+    }
+
+    /// The least and the greatest Integer an element of an integer kind
+    /// holds; `None` for a float kind.
+    pub const fn integer_range(self) -> Option<(i128, i128)> {
+        match self {
+            ElementKind::Int8 => Some((i8::MIN as i128, i8::MAX as i128)),
+            ElementKind::Uint8 => Some((0, u8::MAX as i128)),
+            ElementKind::Int16 => Some((i16::MIN as i128, i16::MAX as i128)),
+            ElementKind::Uint16 => Some((0, u16::MAX as i128)),
+            ElementKind::Int32 => Some((i32::MIN as i128, i32::MAX as i128)),
+            ElementKind::Uint32 => Some((0, u32::MAX as i128)),
+            ElementKind::Int64 => Some((i64::MIN as i128, i64::MAX as i128)),
+            ElementKind::Uint64 => Some((0, u64::MAX as i128)),
+            ElementKind::Float32 | ElementKind::Float64 => None,
+        }
+    }
+
+    /// The kind whose discriminant is `discriminant`; `None` past the ten.
+    const fn from_discriminant(discriminant: u8) -> Option<ElementKind> {
+        Some(match discriminant {
+            0 => ElementKind::Int8,
+            1 => ElementKind::Uint8,
+            2 => ElementKind::Int16,
+            3 => ElementKind::Uint16,
+            4 => ElementKind::Int32,
+            5 => ElementKind::Uint32,
+            6 => ElementKind::Int64,
+            7 => ElementKind::Uint64,
+            8 => ElementKind::Float32,
+            9 => ElementKind::Float64,
+            _ => return None,
+        })
+    }
+}
+
+/// One access to a `ByteArray` at a width: bits 0-3 the kind, bit 4
+/// big-endian, bit 5 a 1-based byte position (else a 1-based element
+/// index), bit 6 a write. One byte, so that `Primitive` stays two
+/// (`resolve.rs`): the typed arrays' and `DataView`'s 54 rows are one leaf
+/// over these four choices rather than a variant each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ElementAccess(u8);
+
+impl ElementAccess {
+    const KIND: u8 = 0b1111;
+    const BIG_ENDIAN: u8 = 1 << 4;
+    const BYTE_POSITION: u8 = 1 << 5;
+    const WRITE: u8 = 1 << 6;
+
+    pub const fn new(
+        kind: ElementKind,
+        big_endian: bool,
+        byte_position: bool,
+        write: bool,
+    ) -> ElementAccess {
+        let mut bits = kind as u8;
+        if big_endian {
+            bits |= ElementAccess::BIG_ENDIAN;
+        }
+        if byte_position {
+            bits |= ElementAccess::BYTE_POSITION;
+        }
+        if write {
+            bits |= ElementAccess::WRITE;
+        }
+        ElementAccess(bits)
+    }
+
+    pub fn kind(self) -> ElementKind {
+        match ElementKind::from_discriminant(self.0 & ElementAccess::KIND) {
+            Some(kind) => kind,
+            // `new` is the only way to make one, and it stores a kind.
+            None => unreachable!("an ElementAccess holds one of the ten kinds"),
+        }
+    }
+
+    pub fn big_endian(self) -> bool {
+        self.0 & ElementAccess::BIG_ENDIAN != 0
+    }
+
+    pub fn byte_position(self) -> bool {
+        self.0 & ElementAccess::BYTE_POSITION != 0
+    }
+
+    pub fn write(self) -> bool {
+        self.0 & ElementAccess::WRITE != 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1450,6 +1629,372 @@ pub const MIRROR: &[MirrorEntry] = &[
         // what the program sent.
         "computing",
         Primitive::Future(FuturePrimitive::Made),
+    ),
+    mirror(
+        "byteArrayClass:new:ifFail:",
+        "new:",
+        Primitive::Bytes(BytePrimitive::Allocate),
+    ),
+    mirror(
+        "byteArrayClass:fits:ifFail:",
+        // It never fails -- it answers a Boolean or declines -- so the
+        // selector names the message whose allocation it answers for.
+        "new:",
+        Primitive::Bytes(BytePrimitive::Fits),
+    ),
+    mirror(
+        "byteArraySize:ifFail:",
+        "size",
+        Primitive::Bytes(BytePrimitive::Size),
+    ),
+    mirror(
+        "byteArray:at:ifFail:",
+        "at:",
+        Primitive::Bytes(BytePrimitive::ElementAt),
+    ),
+    mirror(
+        "byteArray:at:put:ifFail:",
+        "at:put:",
+        Primitive::Bytes(BytePrimitive::ElementAtPut),
+    ),
+    mirror(
+        "byteArray:copyFrom:to:ifFail:",
+        "copyFrom:to:",
+        Primitive::Bytes(BytePrimitive::CopyRange),
+    ),
+    mirror(
+        "byteArray:replaceFrom:to:with:startingAt:ifFail:",
+        "replaceFrom:to:with:startingAt:",
+        Primitive::Bytes(BytePrimitive::Replace),
+    ),
+    mirror(
+        "byteArray:concatenate:ifFail:",
+        ",",
+        Primitive::Bytes(BytePrimitive::Concatenate),
+    ),
+    mirror(
+        "byteArray:indexOf:startingAt:ifFail:",
+        "indexOf:startingAt:",
+        Primitive::Bytes(BytePrimitive::IndexOf),
+    ),
+    mirror(
+        "byteArray:lastIndexOf:startingAt:ifFail:",
+        "lastIndexOf:startingAt:",
+        Primitive::Bytes(BytePrimitive::LastIndexOf),
+    ),
+    mirror(
+        "byteArray:startsWith:ifFail:",
+        "startsWith:",
+        Primitive::Bytes(BytePrimitive::StartsWith),
+    ),
+    mirror(
+        "byteArray:endsWith:ifFail:",
+        "endsWith:",
+        Primitive::Bytes(BytePrimitive::EndsWith),
+    ),
+    mirror(
+        "stringAsUtf8:ifFail:",
+        "asUtf8",
+        Primitive::String(StringPrimitive::AsUtf8),
+    ),
+    mirror(
+        "stringClass:fromUtf8:from:to:ifFail:",
+        "fromUtf8:from:to:",
+        Primitive::String(StringPrimitive::FromUtf8),
+    ),
+    mirror(
+        "stringUtf8Size:ifFail:",
+        "utf8Size",
+        Primitive::String(StringPrimitive::Utf8Size),
+    ),
+    mirror(
+        "byteArray:at:putCodePoint:ifFail:",
+        "at:putCodePoint:",
+        Primitive::Bytes(BytePrimitive::WriteCodePoint),
+    ),
+    // The typed arrays' elements, little-endian at a 1-based element
+    // index; `Uint8Array` uses `ByteArray`'s own `at:` and `at:put:`.
+    mirror(
+        "byteArray:int8ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int8, false, false, false)),
+    ),
+    mirror(
+        "byteArray:int8ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int8, false, false, true)),
+    ),
+    mirror(
+        "byteArray:int16ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, false, false, false)),
+    ),
+    mirror(
+        "byteArray:int16ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, false, false, true)),
+    ),
+    mirror(
+        "byteArray:uint16ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, false, false)),
+    ),
+    mirror(
+        "byteArray:uint16ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, false, true)),
+    ),
+    mirror(
+        "byteArray:int32ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, false, false, false)),
+    ),
+    mirror(
+        "byteArray:int32ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, false, false, true)),
+    ),
+    mirror(
+        "byteArray:uint32ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, false, false)),
+    ),
+    mirror(
+        "byteArray:uint32ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, false, true)),
+    ),
+    mirror(
+        "byteArray:int64ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, false, false, false)),
+    ),
+    mirror(
+        "byteArray:int64ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, false, false, true)),
+    ),
+    mirror(
+        "byteArray:uint64ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, false, false)),
+    ),
+    mirror(
+        "byteArray:uint64ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, false, true)),
+    ),
+    mirror(
+        "byteArray:float32ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(
+            ElementKind::Float32,
+            false,
+            false,
+            false,
+        )),
+    ),
+    mirror(
+        "byteArray:float32ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, false, false, true)),
+    ),
+    mirror(
+        "byteArray:float64ElementAt:ifFail:",
+        "at:",
+        Primitive::Element(ElementAccess::new(
+            ElementKind::Float64,
+            false,
+            false,
+            false,
+        )),
+    ),
+    mirror(
+        "byteArray:float64ElementAt:put:ifFail:",
+        "at:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, false, false, true)),
+    ),
+    // `DataView`'s accessors at a 1-based byte position: a single byte
+    // has no order, every wider kind a row for each.
+    mirror(
+        "byteArray:int8At:ifFail:",
+        "int8At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int8, false, true, false)),
+    ),
+    mirror(
+        "byteArray:int8At:put:ifFail:",
+        "int8At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int8, false, true, true)),
+    ),
+    mirror(
+        "byteArray:uint8At:ifFail:",
+        "uint8At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint8, false, true, false)),
+    ),
+    mirror(
+        "byteArray:uint8At:put:ifFail:",
+        "uint8At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint8, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt16At:ifFail:",
+        "int16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt16At:put:ifFail:",
+        "int16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint16At:ifFail:",
+        "uint16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint16At:put:ifFail:",
+        "uint16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt32At:ifFail:",
+        "int32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt32At:put:ifFail:",
+        "int32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint32At:ifFail:",
+        "uint32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint32At:put:ifFail:",
+        "uint32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt64At:ifFail:",
+        "int64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianInt64At:put:ifFail:",
+        "int64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint64At:ifFail:",
+        "uint64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianUint64At:put:ifFail:",
+        "uint64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat32At:ifFail:",
+        "float32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat32At:put:ifFail:",
+        "float32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, false, true, true)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat64At:ifFail:",
+        "float64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, false, true, false)),
+    ),
+    mirror(
+        "byteArray:littleEndianFloat64At:put:ifFail:",
+        "float64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, false, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt16At:ifFail:",
+        "int16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt16At:put:ifFail:",
+        "int16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int16, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint16At:ifFail:",
+        "uint16At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint16At:put:ifFail:",
+        "uint16At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint16, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt32At:ifFail:",
+        "int32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt32At:put:ifFail:",
+        "int32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int32, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint32At:ifFail:",
+        "uint32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint32At:put:ifFail:",
+        "uint32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint32, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt64At:ifFail:",
+        "int64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianInt64At:put:ifFail:",
+        "int64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Int64, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint64At:ifFail:",
+        "uint64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianUint64At:put:ifFail:",
+        "uint64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Uint64, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat32At:ifFail:",
+        "float32At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat32At:put:ifFail:",
+        "float32At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float32, true, true, true)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat64At:ifFail:",
+        "float64At:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, false)),
+    ),
+    mirror(
+        "byteArray:bigEndianFloat64At:put:ifFail:",
+        "float64At:put:",
+        Primitive::Element(ElementAccess::new(ElementKind::Float64, true, true, true)),
     ),
 ];
 

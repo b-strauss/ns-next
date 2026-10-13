@@ -1,0 +1,66 @@
+/// `asUtf8` answers a new ByteArray of a String's UTF-8 bytes -- one byte
+/// below 128, two for `é`, three for `€`, four for `😀` -- and `utf8Size`
+/// counts them. `String fromUtf8:` decodes a whole ByteArray back, and
+/// `fromUtf8:from:to:` a range of it, the empty range included. A
+/// byte-order mark stays U+FEFF. `String withAll:` of a ByteArray decodes
+/// nothing: each byte is one code point, Latin-1. `at:putCodePoint:`
+/// writes one code point's UTF-8 bytes and answers how many it wrote.
+class AStringConvertsToAndFromUtf8 = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      show
+      text
+      bytes
+      target
+    |
+    show:: [:collection |
+      collection do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+    ].
+    text:: 'aé€😀'.
+    bytes:: text asUtf8.
+    show value: bytes.
+    show value: {
+      bytes isKindOfByteArray.
+      bytes size.
+      text utf8Size.
+      #abc utf8Size.
+      text asUtf8 == bytes.
+    }.
+    show value: {
+      (String fromUtf8: bytes) = text.
+      (String fromUtf8: bytes) size.
+      String fromUtf8: bytes from: 2 to: 6.
+      String fromUtf8: bytes from: 7 to: 10.
+    }.
+    show value: {
+      (String fromUtf8: (ByteArray withAll: {239. 187. 191})) first.
+      (String fromUtf8: (ByteArray withAll: {239. 187. 191. 104})) size.
+    }.
+    show value: {
+      String withAll: (ByteArray withAll: {104. 233}).
+      (String withAll: (ByteArray withAll: {104. 233})) = 'hé'.
+    }.
+    show value: {
+      '' asUtf8 size.
+      '' utf8Size.
+      String fromUtf8: (ByteArray new: 0).
+      String fromUtf8: bytes from: 3 to: 2.
+      String fromUtf8: bytes from: 11 to: 10.
+    }.
+    target:: ByteArray new: 7.
+    show value: {
+      target at: 1 putCodePoint: 97.
+      target at: 2 putCodePoint: 8364.
+      target at: 5 putCodePoint: 233.
+      target at: 7 putCodePoint: 0.
+    }.
+    show value: target.
+    show value: {String fromUtf8: target from: 1 to: 6}.
+  )
+)

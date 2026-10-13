@@ -1,0 +1,56 @@
+/// `new:byteOrder:` allocates the bytes of its view, so it refuses a size
+/// that is no Integer, a negative one and one too large to allocate, each
+/// with an ArgumentError of its own that names `new:byteOrder:` and
+/// carries the size, before it allocates anything. An object that only
+/// claims to be an Integer is a size that is no Integer.
+class AViewRefusesASizeItCannotAllocate = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  /// An object that claims to be an Integer of at least 0 without being
+  /// one, so that only the VM can tell.
+  class PretendedSize = () (
+    public isKindOfInteger = (
+      ^true.
+    )
+
+    public < other = (
+      ^false.
+    )
+
+    public * other = (
+      ^self.
+    )
+  )
+
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  carried: action = (
+    transcript
+        print: (action on: ArgumentError do: [:error | error argument]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      DataView
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    DataView:: platform kernel DataView.
+    refusal: [DataView new: 'four' byteOrder: #littleEndian].
+    refusal: [DataView new: -1 byteOrder: #bigEndian].
+    refusal: [DataView new: 1 << 62 byteOrder: #littleEndian].
+    refusal: [DataView new: 1 << 64 byteOrder: #bigEndian].
+    refusal: [DataView new: 1 << 50 byteOrder: #bigEndian].
+    refusal: [DataView new: PretendedSize new byteOrder: #bigEndian].
+    carried: [DataView new: 'four' byteOrder: #littleEndian].
+    carried: [DataView new: 1 << 62 byteOrder: #littleEndian].
+  )
+)

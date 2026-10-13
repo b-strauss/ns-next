@@ -408,6 +408,14 @@ pub enum DecodeError {
     /// would be a second Symbol of its text, outside the canonical table,
     /// and two Symbols of one text would not be identical (§5.1.6).
     StringOfSymbolClass,
+    /// An `OBJECT_BYTE_ARRAY` record under a header whose class is not the
+    /// builtin `ByteArray`, or a record of any other body, `body`, under
+    /// `ByteArray`'s. A record carries exactly its class's layout: the
+    /// first would answer that class's methods over bytes they do not
+    /// read, the second `ByteArray`'s leaves over an object holding none.
+    ByteArrayRecordMismatch {
+        body: u8,
+    },
     /// Bytes remain after the last section. Refused rather than ignored:
     /// silently accepting a tail means a padded image loads as something its
     /// author did not write.
@@ -728,6 +736,14 @@ impl std::fmt::Display for DecodeError {
             DecodeError::StringOfSymbolClass => f.write_str(
                 "a string record has the class Symbol, which only a symbol record may have",
             ),
+            DecodeError::ByteArrayRecordMismatch { body } if *body == OBJECT_BYTE_ARRAY => {
+                f.write_str("a byte-array record has a class other than ByteArray")
+            }
+            DecodeError::ByteArrayRecordMismatch { body } => write!(
+                f,
+                "a record of the class ByteArray has object body {body}, but a ByteArray is a \
+                 byte-array record"
+            ),
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
@@ -893,6 +909,15 @@ impl<'a> Reader<'a> {
     pub(crate) fn read_text(&mut self) -> Result<&'a str, DecodeError> {
         let length = self.read_u32()? as usize;
         std::str::from_utf8(self.read_raw(length)?).map_err(|_| DecodeError::InvalidUtf8)
+    }
+
+    /// A `ByteArray` record's bytes, lent out of the buffer: nothing is
+    /// allocated for them, and a length past the bytes left is refused
+    /// before anything is, so the decoder copies them straight into the
+    /// placeholder the first pass sized (`Heap::fill_placeholder_byte_array`).
+    pub(crate) fn read_byte_slice(&mut self) -> Result<&'a [u8], DecodeError> {
+        let length = self.read_u32()? as usize;
+        self.read_raw(length)
     }
 }
 
@@ -2404,8 +2429,9 @@ fn read_shipped_module<'gc>(
 /// `LargeInteger` and a `Fraction` -- and that is the one thing the second
 /// pass allocates beyond the placeholders the first pass sized: every
 /// record is filled into its placeholder in place, each value stored as it
-/// is read, a string packed straight from the buffer (`Heap::shape_placeholder`,
-/// `fill_placeholder_string`, `fill_placeholder_closure`,
+/// is read, a string packed and a byte array's bytes copied straight from
+/// the buffer (`Heap::shape_placeholder`, `fill_placeholder_string`,
+/// `fill_placeholder_byte_array`, `fill_placeholder_closure`,
 /// `fill_frame_fields`), so no record is ever built beside its placeholder.
 ///
 /// The transient peak of a rejected load, against the bytes of the graph
@@ -2428,7 +2454,10 @@ fn read_shipped_module<'gc>(
 ///   kind, the program counter's 4, four one-byte flags and fields and the
 ///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
 ///   string or symbol record at least 11 for 2 words, 16 bytes, 1.5x; a
-///   closure record at least 17 for 5 words, 40 bytes, 2.4x.
+///   closure record at least 17 for 5 words, 40 bytes, 2.4x; a byte-array
+///   record of `n` bytes is `14 + n` (a five-byte header, the hash, the
+///   body tag, the length's 4) for `5 + ⌈n/8⌉` words -- its alignment
+///   reserve is not on the wire -- at most 40 bytes for 14, 2.9x.
 /// - The decoder's own tables, per record: the placeholder table (a handle,
 ///   8 or 16 bytes), the first pass's sizes (8 bytes, freed once the
 ///   placeholders exist) and, in the second pass, a metaclass record's
@@ -3449,6 +3478,13 @@ impl Sizing<'_, '_, '_> {
         if fraction && body != OBJECT_INSTANCE {
             return Err(DecodeError::FractionRecord);
         }
+        // Only `ByteArray`'s header carries a byte-array record, and it
+        // carries no other. A header that names a record of the graph is
+        // a program's class, never `ByteArray`, so the header is known
+        // here whatever it names.
+        if (header == Some(BuiltinClass::ByteArray)) != (body == OBJECT_BYTE_ARRAY) {
+            return Err(DecodeError::ByteArrayRecordMismatch { body });
+        }
         let (fields, frame) = match body {
             // A future has exactly its two fields; a record under its header
             // claiming any other count is refused here, before it is
@@ -3472,6 +3508,10 @@ impl Sizing<'_, '_, '_> {
                 let text = reader.read_text()?;
                 (record_size::string_fields(text), false)
             }
+            OBJECT_BYTE_ARRAY => (
+                record_size::byte_array_fields(reader.read_byte_slice()?.len()),
+                false,
+            ),
             OBJECT_SYMBOL => {
                 let id = reader.read_u32()?;
                 let symbol = self.symbols.get(id)?;
@@ -3655,6 +3695,14 @@ pub fn decode_graph_section<'gc>(
         if shipped_non_builtin && body != OBJECT_INSTANCE {
             return Err(DecodeError::ShippedInstanceBody { body });
         }
+        // Refused by the first pass too; restated here as what filling a
+        // byte-array record, and every other record under `ByteArray`'s
+        // header, rests on.
+        if (context.mutator.heap.class_builtin(class) == Some(BuiltinClass::ByteArray))
+            != (body == OBJECT_BYTE_ARRAY)
+        {
+            return Err(DecodeError::ByteArrayRecordMismatch { body });
+        }
         if body == OBJECT_FRAME {
             if !activation_header {
                 return Err(DecodeError::FrameRecordUnderAnotherClass);
@@ -3763,6 +3811,20 @@ pub fn decode_graph_section<'gc>(
                     class,
                     identity_hash,
                     text,
+                ) {
+                    return Err(DecodeError::UnexpectedEndOfFile);
+                }
+                None
+            }
+            OBJECT_BYTE_ARRAY => {
+                let bytes = reader.read_byte_slice()?;
+                // The first pass sized the placeholder from these bytes; a
+                // placeholder of another size is refused, as a string's is.
+                if !context.mutator.heap.fill_placeholder_byte_array(
+                    *object,
+                    class,
+                    identity_hash,
+                    bytes,
                 ) {
                     return Err(DecodeError::UnexpectedEndOfFile);
                 }

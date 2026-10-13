@@ -143,6 +143,29 @@ impl CodePoints {
         }
     }
 
+    /// The code points UTF-8 `bytes` encode, decoded strictly; on failure,
+    /// the 0-based offset of the first byte of the first bad sequence. As
+    /// strict as Rust's `str::from_utf8`, because it is that: a truncated
+    /// sequence, a stray continuation byte, an overlong encoding, a
+    /// surrogate and anything past U+10FFFF are refused, so nothing is
+    /// lost silently, and a byte-order mark stays U+FEFF.
+    pub fn from_utf8_strict(bytes: &[u8]) -> Result<CodePoints, usize> {
+        std::str::from_utf8(bytes)
+            .map(CodePoints::from)
+            .map_err(|error| error.valid_up_to())
+    }
+
+    /// The number of bytes the text takes as UTF-8.
+    pub fn utf8_size(&self) -> usize {
+        match &self.0 {
+            // A Latin-1 code point is one byte below 128 and two above.
+            Representation::Narrow(bytes) => {
+                bytes.len() + bytes.iter().filter(|byte| !byte.is_ascii()).count()
+            }
+            Representation::Wide(_) => self.characters().map(char::len_utf8).sum(),
+        }
+    }
+
     /// The text as UTF-8. ASCII is its own UTF-8, so a narrow ASCII string
     /// hands its bytes over in one copy; any other string is encoded
     /// character by character.
@@ -249,6 +272,12 @@ mod tests {
         for text in TEXTS {
             assert_eq!(CodePoints::from(text).to_string(), text);
             assert_eq!(CodePoints::from(text).to_utf8(), text, "{text}");
+            assert_eq!(CodePoints::from(text).utf8_size(), text.len(), "{text}");
+            assert_eq!(
+                CodePoints::from_utf8_strict(text.as_bytes()),
+                Ok(CodePoints::from(text)),
+                "{text}"
+            );
             assert_eq!(CodePoints::from(text.to_string()).to_string(), text);
             assert_eq!(
                 CodePoints::from(text).size(),

@@ -1,0 +1,62 @@
+/// A ByteArray is a fixed-size sequence of bytes, indexed from 1, each an
+/// Integer from 0 to 255: `new` answers an empty one, `new:` one of zeros,
+/// `at:put:` answers the value it stores, and `do:` walks the bytes in
+/// order. `first`, `last` and `isEmpty` come from the sequence protocol
+/// it shares with Array. It is a Collection and no value: `=` and `hash`
+/// are identity, so two byte arrays of equal bytes are not equal, and it
+/// prints as Object does, as an Array does.
+class AByteArrayHoldsBytes = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      bytes = ByteArray new: 3.
+      empty = ByteArray new: 0.
+    |
+    transcript
+        show: ByteArray new size printString;
+        newLine.
+    transcript
+        show: (bytes at: 2) printString;
+        newLine.
+    transcript
+        show: (bytes at: 1 put: 255) printString;
+        newLine.
+    bytes at: 2 put: 7.
+    bytes at: 3 put: 42.
+    bytes do: [:byte |
+      transcript
+          show: byte printString;
+          show: ';'.
+    ].
+    transcript newLine.
+    transcript
+        show: bytes isKindOfByteArray printString;
+        show: ' ';
+        show: bytes isKindOfCollection printString;
+        show: ' ';
+        show: bytes isKindOfArray printString;
+        newLine.
+    transcript
+        show: bytes printString;
+        newLine.
+    transcript
+        show: (bytes = bytes) printString;
+        show: ' ';
+        show: ((ByteArray new: 2) = (ByteArray new: 2)) printString;
+        show: ' ';
+        show: (bytes hash = bytes hash) printString;
+        newLine.
+    transcript
+        show: bytes first printString;
+        show: ' ';
+        show: bytes last printString;
+        show: ' ';
+        show: bytes isEmpty printString;
+        newLine.
+    transcript
+        show: empty size printString;
+        show: ' ';
+        show: empty isEmpty printString;
+        newLine.
+  )
+)

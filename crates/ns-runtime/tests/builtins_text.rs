@@ -2,7 +2,7 @@
 //! methods, found as primitives by the ordinary lookup via
 //! `Interpreter::send`.
 
-use indoc::indoc;
+use indoc::{formatdoc, indoc};
 use ns_runtime::{Heap, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind};
 
 fn expect_ok(result: HostResult, what: &str) -> Root {
@@ -399,5 +399,103 @@ fn with_all_of_a_latin_one_array_makes_a_narrow_string() {
                 "{selector}"
             );
         });
+    }
+}
+
+/// The byte sequences `String fromUtf8:` must refuse, one of each kind
+/// the design names, and some it must take: `from_utf8_strict` is
+/// exactly as strict as Rust's `str::from_utf8`.
+const UTF8_CASES: &[&[u8]] = &[
+    // Truncated at the end, after a valid prefix.
+    &[104, 226, 130],
+    &[240, 159, 152],
+    // A stray continuation byte.
+    &[97, 128, 98],
+    &[191],
+    // Overlong encodings.
+    &[192, 128],
+    &[224, 128, 175],
+    &[240, 130, 130, 172],
+    // A surrogate, high and low.
+    &[237, 160, 128],
+    &[237, 191, 191],
+    // Past U+10FFFF, and bytes no sequence begins with.
+    &[244, 144, 128, 128],
+    &[245, 128, 128, 128],
+    &[97, 98, 255],
+    // A lead byte followed by one that does not continue it.
+    &[195, 40],
+    // Valid: ASCII, Latin-1, wide, a byte-order mark, the empty sequence.
+    &[104, 105],
+    &[195, 169],
+    &[226, 130, 172, 240, 159, 152, 128],
+    &[239, 187, 191],
+    &[],
+];
+
+#[test]
+fn from_utf8_strict_refuses_what_rust_refuses_at_the_same_byte() {
+    for bytes in UTF8_CASES {
+        let expected = std::str::from_utf8(bytes)
+            .map(ns_runtime::CodePoints::from)
+            .map_err(|error| error.valid_up_to());
+        assert_eq!(
+            ns_runtime::CodePoints::from_utf8_strict(bytes),
+            expected,
+            "{bytes:?}"
+        );
+    }
+    assert_eq!(
+        ns_runtime::CodePoints::from_utf8_strict(&[239, 187, 191])
+            .map(|code_points| code_points.code_point_at(0)),
+        Ok(Some(0xFEFF)),
+        "a byte-order mark is kept"
+    );
+}
+
+/// `String fromUtf8:from:to:` names the first byte of the bad sequence by
+/// its 1-based index in the ByteArray, not in the range: the offset Rust's
+/// `Utf8Error::valid_up_to` gives within the range, plus the range's
+/// start.
+#[test]
+fn an_invalid_sequence_is_named_by_its_index_in_the_byte_array() {
+    for bytes in UTF8_CASES {
+        let Err(error) = std::str::from_utf8(bytes) else {
+            continue;
+        };
+        // The same bytes behind a two-byte prefix the range leaves out.
+        let elements: Vec<String> = [120, 121]
+            .iter()
+            .chain(bytes.iter())
+            .map(u8::to_string)
+            .collect();
+        let source = formatdoc! {"
+            class Decode usingPlatform: p = Object new () (
+                public decode = (
+                    ^String fromUtf8: (ByteArray withAll: {{{elements}}}) from: 3 to: {stop}
+                )
+            ) : ()
+            ",
+            elements = elements.join(". "),
+            stop = bytes.len() + 2,
+        };
+        let (mut interpreter, class) = load(&source);
+        let platform = interpreter.platform();
+        let instance = expect_ok(
+            interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
+            "usingPlatform:",
+        );
+        match interpreter.send(&instance, Symbol::intern("decode"), &[]) {
+            Err(HostSignal::Error(refusal)) => assert_eq!(
+                refusal.message,
+                format!(
+                    "fromUtf8: invalid UTF-8 at byte {}",
+                    error.valid_up_to() + 3
+                ),
+                "{bytes:?}"
+            ),
+            Ok(_) => panic!("{bytes:?}: decoded"),
+            Err(HostSignal::Return) => panic!("{bytes:?}: a non-local return escaped"),
+        }
     }
 }

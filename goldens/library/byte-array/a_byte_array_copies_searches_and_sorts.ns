@@ -1,0 +1,121 @@
+/// A ByteArray's own protocol: copying, concatenating, searching, sorting
+/// and replacing a range, itself included with overlapping ranges in
+/// either direction. `copyFrom:to:`, `,`, `copyWith:`, `copyWithSize:`,
+/// `select:` and `reject:` answer ByteArrays, `collect:` and `asArray`
+/// Arrays. A search takes an Integer as an element and a ByteArray as a
+/// subsequence -- one byte means the same either way -- from a start of 1
+/// to `size + 1`; an empty subsequence is found at the start, and an
+/// argument of any other kind is compared element by element with `=` by
+/// a search, and refused by `startsWith:` and `endsWith:`.
+class AByteArrayCopiesSearchesAndSorts = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      bytes
+      empty
+      show
+      shifted
+    |
+    show:: [:collection |
+      collection do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+    ].
+    bytes:: ByteArray withAll: {5. 3. 8. 1. 3}.
+    empty:: ByteArray new: 0.
+    show value: (bytes copyFrom: 2 to: 3).
+    show value: (bytes copyFrom: 3 to: 2).
+    show value: bytes , (ByteArray withAll: {9. 7}).
+    show value: bytes , {2. 4}.
+    show value: (bytes copyWith: 0).
+    show value: (bytes copyWithSize: 2).
+    show value: (bytes copyWithSize: 7).
+    show value: (bytes collect: [:each | each * 100]).
+    show value: (bytes collect: [:each | each printString]).
+    show value: (bytes select: [:each | each > 3]).
+    show value: (bytes reject: [:each | each > 3]).
+    show value: {
+      (bytes copyFrom: 2 to: 3) isKindOfByteArray.
+      (bytes , {2}) isKindOfByteArray.
+      (bytes copyWith: 0) isKindOfByteArray.
+      (bytes copyWithSize: 2) isKindOfByteArray.
+      (bytes select: [:each | true]) isKindOfByteArray.
+      (bytes collect: [:each | each]) isKindOfArray.
+      bytes asArray isKindOfArray.
+    }.
+    show value: ((ByteArray withAll: bytes) sort: [:left :right | left <= right]).
+    show value: bytes.
+    show value: ((ByteArray withAll: {4. 3. 2. 1}) sortFrom: 2 to: 3 by: [:left :right |
+      left <= right.
+    ]).
+    show value: bytes asArray.
+    bytes keysAndValuesDo: [:index :each |
+      transcript
+          show: index printString;
+          show: '=';
+          show: each printString;
+          show: ' '.
+    ].
+    transcript newLine.
+    show value: {
+      (ByteArray withAll: bytes) == bytes.
+      (ByteArray withAll: bytes) isKindOfByteArray.
+      (ByteArray withAll: bytes) size.
+    }.
+    show value: {bytes first. bytes last. bytes isEmpty. empty isEmpty}.
+    show value: {
+      bytes indexOf: 3.
+      bytes indexOf: 4.
+      bytes indexOf: 300.
+      bytes indexOf: 3 startingAt: 3.
+      bytes lastIndexOf: 3.
+      bytes lastIndexOf: 3 startingAt: 4.
+    }.
+    show value: {
+      bytes indexOf: (ByteArray withAll: {8. 1}).
+      bytes indexOf: (ByteArray withAll: {1. 8}).
+      bytes indexOf: (ByteArray withAll: {3}).
+      bytes indexOf: (ByteArray withAll: {3}) startingAt: 3.
+      bytes lastIndexOf: (ByteArray withAll: {3}).
+      bytes lastIndexOf: (ByteArray withAll: {3}) startingAt: 4.
+      bytes lastIndexOf: (ByteArray withAll: {3. 8}) startingAt: 1.
+    }.
+    show value: {
+      bytes startsWith: (ByteArray withAll: {5. 3}).
+      bytes startsWith: (ByteArray withAll: {3}).
+      bytes startsWith: 5.
+      bytes endsWith: (ByteArray withAll: {1. 3}).
+      bytes endsWith: bytes , {0}.
+      bytes endsWith: bytes.
+      bytes endsWith: 3.
+      empty startsWith: 0.
+    }.
+    show value: {
+      bytes indexOf: empty.
+      bytes indexOf: empty startingAt: 4.
+      bytes lastIndexOf: empty.
+      bytes startsWith: empty.
+      bytes endsWith: empty.
+      empty indexOf: empty.
+      empty startsWith: empty.
+    }.
+    show value: {
+      bytes indexOf: 3 startingAt: 6.
+      bytes lastIndexOf: 3 startingAt: 6.
+      bytes indexOf: empty startingAt: 6.
+      bytes indexOf: nil.
+      bytes lastIndexOf: nil.
+    }.
+    show value: ((ByteArray new: 4) replaceFrom: 2 to: 3 with: bytes startingAt: 3).
+    show value: ((ByteArray new: 3) replaceFrom: 1 to: 2 with: {7. 9} startingAt: 1).
+    shifted:: ByteArray withAll: {1. 2. 3. 4. 5}.
+    shifted replaceFrom: 2 to: 5 with: shifted startingAt: 1.
+    show value: shifted.
+    shifted:: ByteArray withAll: {1. 2. 3. 4. 5}.
+    shifted replaceFrom: 1 to: 4 with: shifted startingAt: 2.
+    show value: shifted.
+  )
+)

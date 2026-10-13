@@ -22,8 +22,8 @@ Rust 1.98.0, edition 2021, six crates:
   in `resolve.rs`, the one unwinder in `unwind.rs`, the VM mirror in
   `mirror.rs` and its leaves in `builtins/`), the core library
   (`core-library/Kernel.ns`, `PlatformFactory.ns` and, under `platform/`,
-  `TranscriptFactory.ns`, `TimeFactory.ns` and `CollectionsFactory.ns`,
-  every root `= Value`, booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
+  `TranscriptFactory.ns`, `TimeFactory.ns`, `CollectionsFactory.ns` and
+  `TypedArraysFactory.ns`, every root `= Value`, booted by `interpreter/kernel.rs` and `interpreter/core_library.rs`),
   `LargeInteger` arithmetic (`arbitrary_integer/`, adapted
   from `num-bigint` and `num-integer`), the heap (`heap.rs`, one object space
   of variably sized objects in `ns-memory`'s reservation (`heap/space.rs`),
@@ -149,7 +149,9 @@ transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one (`memory.md`, "The
 amplification bound of a rejected load", has the breakdown and what is not
-counted; `decode_value`'s doc comment the derivation). The guarantee
+counted; `decode_value`'s doc comment the derivation; both count a class
+tag at two bytes where every live one is five, so the figures are upper
+bounds). The guarantee
 covers decoding only: `ns-next load` runs the packaged application's code,
 recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
 (`execution.md`, "The depth limit"), and an image that names the shipped
@@ -169,6 +171,16 @@ empties the nursery, write words without it.
 `NS_NEXT_STRESS_SCAVENGE`'s verification of the remembered set, and a
 debug build's poison over the nursery a scavenge vacated, are what find a
 breach (`memory.md`, "Generations").
+
+**Every mover realigns an `AlignedBytes` object's data.** A `ByteArray`'s
+data begin at the first 32-byte address in its block, an offset computed
+from the block's address and never stored, so whoever copies such an
+object to another address -- the scavenger's `copy`, the compaction's
+slide, the move stress mode's shift -- moves its data to the new block's
+alignment (`heap/object.rs`'s `realign`). A mover that skips it leaves the
+data at the old offset within the block: wrong bytes at exit status 0. A
+new mover, or a new format with data aligned the same way, takes the same
+fix-up (`memory.md`, "Every mover realigns a `ByteArray`'s data").
 
 **A wire tag is assigned once and never renumbered or reused.** Every tag lives in
 `crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`; a new
@@ -250,7 +262,8 @@ and never add a way for a program to obtain the mirror, its class or a
 `MirrorSend` binding: (1) only `resolver::resolve_kernel` records
 `Binding::MirrorSend`, and only the shipped modules are resolved with it; (2)
 the bootstrap checks the mirror slot of `Kernel` and of every shipped module
-it hands the mirror (`PlatformFactory`, `TranscriptFactory`, `TimeFactory`),
+it hands the mirror (`PlatformFactory`, `TranscriptFactory`, `TimeFactory`,
+`TypedArraysFactory`),
 and no program reaches a shipped root (the factory pattern); (3) the encoder names a
 shipped object by its declaration and refuses one the rule of what may be
 named where does not allow (`image/shipped_names.rs`); (4) no program can name
@@ -331,8 +344,9 @@ runs end to end belongs in `corpus/runnable.toml` with the unary selector its
 generated application sends it (`send`) and its output. `PlatformFactory.ns`,
 `TranscriptFactory.ns` and `TimeFactory.ns` are widened only on demand: an accessor exists because a `runnable.toml`
 module or a program under `benchmarks/` needs it, named in the accessor's
-comment; the kernel facet (`platform kernel`), which only hands out
-`Kernel.ns`'s classes, is exempt. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
+comment; the kernel facet (`platform kernel`) and the typed arrays facet
+(`platform typedArrays`), which only hand out the classes of `Kernel.ns` and
+`TypedArraysFactory.ns`, are exempt. `Kernel.ns` and `CollectionsFactory.ns` take Primordial Soup's whole
 core API instead, its selectors and behaviour adopted, every body written
 here and no other project named in their comments (`core-library.md`,
 "Planned: the kernel completed to Primordial Soup's core API").
@@ -397,8 +411,8 @@ decision, made so far only for `num-bigint` and `num-integer`
 - Comments explain the decision — what a check prevents — not the mechanics.
 - **Every member of a shipped core-library module is documented** to the
   standard of Javadoc. Every method, slot and class of `Kernel.ns`,
-  `PlatformFactory.ns`, `TranscriptFactory.ns`, `TimeFactory.ns` and
-  `CollectionsFactory.ns` -- public, protected and
+  `PlatformFactory.ns`, `TranscriptFactory.ns`, `TimeFactory.ns`,
+  `CollectionsFactory.ns` and `TypedArraysFactory.ns` -- public, protected and
   private -- has a `///` comment directly above it that says what it
   does and what it answers, each argument and what it must be, every Error
   it signals and when, and what it guarantees about order, identity,

@@ -157,7 +157,8 @@ pub fn snapshot<'gc>(
 ///
 /// No platform exists for it yet, and before `main:args:` a program reaches
 /// nothing of the shipped world but the kernel, so a graph naming anything
-/// of `PlatformFactory` or `CollectionsFactory` is refused, and so is one
+/// of another shipped module -- `PlatformFactory`, `CollectionsFactory`,
+/// `TypedArraysFactory` and the rest -- is refused, and so is one
 /// naming a module's instance, the kernel's included, which no program
 /// reaches: the loader refuses such a started image too.
 pub fn package<'gc>(

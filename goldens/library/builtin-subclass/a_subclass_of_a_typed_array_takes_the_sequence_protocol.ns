@@ -1,0 +1,41 @@
+/// A user subclass of Int16Array inherits its accessors and the sequence
+/// protocol the `<:` clause of TypedArray applies (§6.2), and its class
+/// side, flat (§3.2), answers only `on:`. Each copy the protocol makes --
+/// `copyFrom:to:`, `select:`, `,` -- is built by Int16Array's
+/// `newOfSize:`, which names Int16Array itself rather than asking the
+/// receiver's class for `new:`, so each copy is an Int16Array: a typed
+/// array of 2-byte elements, the elements the receiver held.
+class ASubclassOfATypedArrayTakesTheSequenceProtocol = Object new (
+  |
+    Int16Array ::= nil.
+  |
+) (
+  class MyHalves on: aByteArray = Int16Array on: aByteArray () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      mine
+      show
+    |
+    Int16Array:: platform typedArrays Int16Array.
+    mine:: MyHalves on: (Int16Array withAll: {1. -2. 300. -4000}) bytes.
+    show:: [:sequence |
+      transcript
+          show: sequence isKindOfTypedArray printString;
+          show: ' ';
+          show: sequence bytesPerElement printString;
+          show: ':'.
+      sequence do: [:element |
+        transcript
+            show: ' ';
+            show: element printString.
+      ].
+      transcript newLine.
+    ].
+    show value: mine.
+    show value: (mine copyFrom: 2 to: 3).
+    show value: (mine select: [:element | element < 0]).
+    show value: mine , (Int16Array withAll: {5. 6}).
+  )
+)

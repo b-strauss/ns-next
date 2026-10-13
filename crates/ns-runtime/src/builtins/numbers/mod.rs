@@ -191,7 +191,7 @@ pub(super) fn shift_left<'gc>(
 /// An integer operand of either representation, for the slow path: a
 /// `SmallInteger` widened, or a `LargeInteger`'s payload. `None` for
 /// anything else, which each leaf turns into its own type mismatch.
-pub(super) fn integer_operand<'gc>(
+pub(crate) fn integer_operand<'gc>(
     heap: &Heap<'gc>,
     value: Option<Value<'gc>>,
 ) -> Option<ArbitraryInteger> {

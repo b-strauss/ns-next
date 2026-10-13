@@ -431,6 +431,23 @@ fn read_closure_record(
     ))
 }
 
+/// An `OBJECT_BYTE_ARRAY` body: its size and its first 16 bytes in hex,
+/// enough to tell two apart without printing a large one whole.
+fn read_byte_array_record(reader: &mut decode::Reader) -> Result<String, decode::DecodeError> {
+    let bytes = reader.read_byte_slice()?;
+    let shown: Vec<String> = bytes
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let more = if bytes.len() > 16 { " ..." } else { "" };
+    Ok(format!(
+        "byte array of {} bytes [{}{more}]",
+        bytes.len(),
+        shown.join(" ")
+    ))
+}
+
 fn walk_graph(
     reader: &mut decode::Reader,
     symbols: &symbols::Table,
@@ -451,6 +468,7 @@ fn walk_graph(
                 format!("instance {{{}}}", read_values(reader, targets)?.join(", "))
             }
             opcodes::OBJECT_STRING => format!("string {:?}", reader.read_str()?),
+            opcodes::OBJECT_BYTE_ARRAY => read_byte_array_record(reader)?,
             opcodes::OBJECT_SYMBOL => format!("symbol #{}", symbols.get(reader.read_u32()?)?),
             opcodes::OBJECT_ARRAY => {
                 format!("array [{}]", read_values(reader, targets)?.join(", "))

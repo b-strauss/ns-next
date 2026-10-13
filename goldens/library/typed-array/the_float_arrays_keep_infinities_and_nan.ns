@@ -1,0 +1,50 @@
+/// The float arrays keep what IEEE 754 keeps: both infinities and NaN are
+/// stored and read back as themselves, and a finite value past binary32's
+/// range becomes an infinity of its sign in a `Float32Array`, while a
+/// `Float64Array` keeps it. A NaN read back is a NaN, and equals itself
+/// (docs/design/core-library.md, "A NaN equals a NaN"). A value that is no
+/// Number is an ArgumentError carrying it, the element unchanged.
+class TheFloatArraysKeepInfinitiesAndNan = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  show: array = (
+    array do: [:element | transcript print: element] separatedBy: [transcript show: ' '].
+    transcript newLine.
+  )
+
+  fill: array = (
+    array at: 1 put: 1.0e39.
+    array at: 2 put: -1.0e39.
+    array at: 3 put: 1.0 / 0.0.
+    array at: 4 put: -1.0 / 0.0.
+    array at: 5 put: 0.0 / 0.0.
+    array at: 6 put: (10 raisedTo: 400).
+    show: array.
+    transcript
+        print: (array at: 5) isNaN;
+        show: ' ';
+        print: (array at: 5) = (array at: 5);
+        show: ' ';
+        print: (array at: 3) isInfinite;
+        show: ' ';
+        print: (array at: 1) = (array at: 3);
+        newLine.
+    transcript
+        show: ([array at: 1 put: 'x'] on: ArgumentError do: [:error | error messageText]);
+        show: ' / ';
+        show: ([array at: 2 put: nil] on: ArgumentError do: [:error | error argument printString]);
+        show: ' / ';
+        print: (array at: 1);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    fill: (platform typedArrays Float32Array new: 6).
+    fill: (platform typedArrays Float64Array new: 6).
+  )
+)

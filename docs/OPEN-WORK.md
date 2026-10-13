@@ -30,20 +30,22 @@ the kernel with `Array` under it, the whole protocol of `Array`, `List`,
 protocol in code points, every member of the shipped modules documented);
 numbers, which is built too (`Float`'s mathematics and texts, `Integer`'s
 and `Number`'s protocol, `Fraction`, and the symmetric tower); `ByteArray`
-and `StringBuilder`, with typed arrays over a `ByteArray` as an API of our
-own beside them (decided with the user on 2026-10-11); weak references.
-Each has its own design and plan; the fifth sub-project is next --
-`ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
-arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
-[core-library.md](design/core-library.md), "Planned: sub-project 5,
-`ByteArray`, `StringBuilder` and the views") but has no plan yet, so the
-next session starts by writing it; the section's "What the plan must
-handle" lists what the code as it stands asks of it, and the shipped names
-in the image it waited for are built ([image-format.md](design/image-format.md),
-"Shipped names"). The decisions
-and the scope are
-[core-library.md](design/core-library.md), "Planned: the kernel completed
-to Primordial Soup's core API".
+and `StringBuilder`, which is built too, with typed arrays and `DataView`
+over a `ByteArray` as an API of our own beside them (the UTF-8
+conversions, the kernel mixin `IndexedCollection`, the `AlignedBytes`
+format every mover realigns, the image record `OBJECT_BYTE_ARRAY`;
+[core-library.md](design/core-library.md), "`ByteArray`, `StringBuilder`
+and the views"); weak references. Each has its own design and plan; the
+sixth and last sub-project is next -- **weak references**: `WeakArray`,
+`WeakMap` and `Ephemeron`, in the scavenger and the compaction, the image
+and the stress modes, a weak collection refusing a value as a key -- and
+it has no design yet, so the next session starts by designing it with the
+user, from the specification and `prior-art/`, and then writes its plan. Today the canonical symbol table is
+the one weak structure ([memory.md](design/memory.md), "Weak
+references"), and the corpus asks `platform collections` for `WeakArray`
+([core-library.md](design/core-library.md), "The platform"). The
+decisions and the scope are [core-library.md](design/core-library.md),
+"Planned: the kernel completed to Primordial Soup's core API".
 
 **Then road step 5, mirrors and atomic installation** ("Step 5, mirrors and
 atomic installation" below; decided with the user on 2026-10-05). Its
@@ -412,6 +414,32 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   code points in place, in either width, would remove the copy. Unmeasured;
   found by the collections and strings sub-project's review, 2026-10-10.
   [core-library.md](design/core-library.md), "What exists".
+- **A `ByteArray`'s bulk operations move one byte at a time.**
+  `ByteArrayDataMut::copy_within` and `write` (`heap/object.rs`), behind
+  the leaves that copy into or replace within a `ByteArray`, read and
+  write each byte through `data_byte` and `set_data_byte`, and
+  `read_element` and `write_element`, behind a typed array's and a
+  `DataView`'s accessors, assemble the value byte by byte too. The
+  data are whole words at a 32-byte address, so a word-wise path for the
+  aligned middle of a range, and a whole-word load for an aligned element,
+  are open; they matter for the bulk work the alignment exists for.
+  Unmeasured; noted by the `ByteArray` sub-project, 2026-10-13.
+  [core-library.md](design/core-library.md), "`ByteArray` in the heap,
+  the movers and the image".
+- **A `String` needle is encoded again at every candidate position.**
+  `ByteArray`'s `indexOf:startingAt:`, `lastIndexOf:startingAt:`,
+  `startsWith:` and `endsWith:` with a `String` argument
+  (`builtins/bytes.rs`) compare it as its UTF-8 bytes by encoding it while
+  they compare, allocating nothing, but anew at each position they try:
+  O(n·m) with an encoder's constant per byte, where encoding a non-ASCII
+  needle once into a buffer would cost one allocation. Unmeasured; noted
+  2026-10-13. [core-library.md](design/core-library.md), "`ByteArray`'s
+  protocol".
+- **`StringBuilder>>addCodePoint:` grows for four bytes even for ASCII.**
+  It reserves a code point's longest encoding before it writes, so a
+  builder whose data are full grows one append early. A builder costs at
+  most one early growth; noted 2026-10-13.
+  [core-library.md](design/core-library.md), "`StringBuilder`".
 
 ## Planned: language and library
 
@@ -456,20 +484,14 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   reflection; an embedded compiled kernel image if the kernel grows. What
   Primordial Soup's core API has comes with "Next" above.
   [core-library.md](design/core-library.md).
-- **`String`'s UTF-8 forms.** `asUtf8` and `String fromUtf8:`, which
-  replace Primordial Soup's `asByteArray`, `copyByteArrayFrom:to:` and
-  `ByteArray>>asString`, wait for `ByteArray`, the kernel completion's
-  fifth sub-project ("Next" above); a `String`'s methods take no
-  `ByteArray` (decided with the user on 2026-10-12).
-  [core-library.md](design/core-library.md), "Planned: sub-project 5,
-  `ByteArray`, `StringBuilder` and the views".
-- **Beyond sub-project 5's views** (noted with the user on 2026-10-12, none
-  needed yet): `Float16Array`, once Rust has a stable `f16` or with the
-  GPU API; bulk leaves over a typed array -- `add:into:`, `dot:`, and a
-  `byteSwap` that converts a big-endian block once; a reading view with a
-  cursor (`nextUint32` and the like) for parsers; and `List` applying the
-  kernel's sequence mixin. [core-library.md](design/core-library.md),
-  "Planned: sub-project 5, `ByteArray`, `StringBuilder` and the views".
+- **Beyond the typed arrays and `DataView`** (noted with the user on
+  2026-10-12, none needed yet): `Float16Array`, once Rust has a stable
+  `f16` or with the GPU API; bulk leaves over a typed array --
+  `add:into:`, `dot:`, and a `byteSwap` that converts a big-endian block
+  once; a reading view with a cursor (`nextUint32` and the like) for
+  parsers; and `List` applying the kernel's sequence mixin.
+  [core-library.md](design/core-library.md), "`ByteArray`, `StringBuilder`
+  and the views".
 - **A two-byte string width.** A `String` outside Latin-1 takes four bytes
   a code point, where Python's PEP 393 keeps a two-byte width for the
   Basic Multilingual Plane; the width is canonical and private, so a third
@@ -506,17 +528,26 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   started image, is undesigned. [image-format.md](design/image-format.md),
   "Shipped names".
 - **The cost of building the shipped world at boot** (measured
-  2026-10-12): every boot compiles and instantiates every shipped module
+  2026-10-13): every boot compiles and instantiates every shipped module
   and builds every class its root declares, since an image names them and
   the loader runs nothing the image chooses. A hello program's median
-  start in a release build went from about 12.3 ms to about 16.0 ms on the
-  measuring workstation (Windows 11), +3.7 ms, almost all of it compiling
-  `CollectionsFactory.ns`'s 1,710 lines; building the classes and naming
-  the world add nothing measurable. Two ways back exist, neither touching
-  the format: building a shipped module on first demand, when the mirror's
-  `moduleInstanceNamed:` or a load first names it, and a base image of the
-  shipped world embedded at build time and decoded at boot, names kept on
-  the wire. Which, if either, is open, for the user to decide.
+  start in a release build was about 20.1 ms on the measuring workstation
+  (Windows 11) at `1906a81d`, against about 15.4 ms at `b9149044`, before
+  `ByteArray`, `StringBuilder`, the typed arrays and `DataView` grew
+  `Kernel.ns` from 4,089 lines to 6,586: +4.6 ms. The typed arrays have
+  since moved out of `Kernel.ns` into the module `TypedArraysFactory.ns`,
+  still built at every boot; being a module of their own, they are what
+  building a module on first demand would spare a program that does not use
+  them, unmeasured. The head's `Kernel.ns`
+  has 53 lines more (`cc2aaebe`, `StringBuilder`'s state checks), not
+  measured on their own. Compiling `CollectionsFactory.ns`'s 1,710
+  lines had added about 3.7 ms before that (2026-10-12); building the
+  classes and naming the world add nothing measurable. Two ways back
+  exist, neither touching the format: building a shipped module on first
+  demand, when the mirror's `moduleInstanceNamed:` or a load first names
+  it, and a base image of the shipped world embedded at build time and
+  decoded at boot, names kept on the wire. Which, if either, is open, for
+  the user to decide.
   [execution.md](design/execution.md), "What the collections module cost";
   [image-format.md](design/image-format.md), "Shipped names".
 - **A second class record applying a module's root row** (2026-10-13),
@@ -531,7 +562,8 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   module, at any depth, answers a class of its name. That is right while
   every shipped class is declared directly in its module's root, which a
   name requires; it is to be revisited when a shipped module nests a class
-  deeper (sub-project 5 adds none, a later module may).
+  deeper (the kernel's views and `StringBuilder` are declared directly in
+  its root; a later module may nest one).
   [image-format.md](design/image-format.md), "Shipped names".
 - **The debugger**: suspend, inspect, edit-and-continue at statement
   boundaries, restart frame, breakpoints; `defaultAction` is where it plugs in
@@ -872,6 +904,12 @@ activation.
   getter send, and an inlined `to:do:` ("Inlining `to:do:` and
   `to:by:do:`" above). [core-library.md](design/core-library.md), "What is
   measured".
+- **`StringBuilder`'s state check on every member is unmeasured.** Every
+  member that reads a builder's slots sends the private `checkState:`
+  first, `size` and `isEmpty` included, so that a builder an image crafted
+  is refused with an `ArgumentError` (`cc2aaebe`); what that costs a
+  program that appends in a loop is not measured. Noted 2026-10-13.
+  [core-library.md](design/core-library.md), "`StringBuilder`".
 
 ## Defects that change a correct program's output
 
@@ -921,13 +959,15 @@ text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
 that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 `hash` that is no Integer.
 
-- **`<<` and `Array new:` reserve a program-chosen size with
+- **`<<`, `Array new:` and `ByteArray new:` probe a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
   system that overcommits (Linux) can succeed**, and the process is then
   OOM-killed while the zeros are written, where a program-chosen size is
-  meant never to abort the process. Neither leaf can tell an affordable size
+  meant never to abort the process. No such leaf can tell an affordable size
   from one the system will accept and then kill for.
-  `crates/ns-runtime/src/builtins/collections.rs`, `allocate`, and
+  `crates/ns-runtime/src/builtins/collections.rs`, `allocate`;
+  `heap.rs`, `Heap::byte_array_fits`, behind every leaf that makes a
+  `ByteArray` of a size the program chose; and
   `builtins/numbers/mod.rs`, `shift_left`, which reaches
   `ArbitraryInteger::shift_left`
   (`crates/ns-runtime/src/arbitrary_integer/mod.rs`), where the digits are
@@ -1023,7 +1063,28 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   (`crates/ns-runtime/src/builtins/object_class.rs`, `PrintString`) reads
   nothing off the receiver, where Primordial Soup's answers `'instance of
   '` followed by the class's name. A program that prints its own objects
-  cannot tell them apart. Noted 2026-10-01.
+  cannot tell them apart. Noted 2026-10-01. `Array` and `ByteArray` take
+  it too, so a refusal text the kernel builds in Newspeak, with the
+  argument's `printString`, says "got an Object" for an `Array` or a
+  `ByteArray` (`StringBuilder>>add: (ByteArray new: 2)`, "add: requires a
+  String, got an Object"), where a leaf's, built with `Heap::describe`,
+  says "a ByteArray of 2"; a `printString` of their own for the two, or
+  the refusals routed through `describe`, would close it (noted
+  2026-10-13; [core-library.md](design/core-library.md), "Errors and
+  tests").
+- **`IndexedCollection`'s range checks refuse a non-Integer bound with
+  another receiver.** `copyFrom:to:` and `replaceFrom:to:with:startingAt:`
+  in the kernel mixin, which `TypedArray` and a source of another kind
+  reach, check a bound that is no `Integer` by sending the same message
+  to an empty `Array` made for the purpose, so that the text is `Array`'s
+  leaf's; the `ArgumentError`'s text is right, but the receiver it
+  records, which an unhandled error reports to the host
+  (`Exception>>hostReceiver`), is that `Array`, not the collection the
+  program sent to (`Kernel.ns`,
+  `IndexedCollection`, `checkRangeFrom:to:keyword:ifNoInteger:`). A text
+  built in Newspeak would end the detour. Noted 2026-10-13.
+  [core-library.md](design/core-library.md), "The sequence protocol is a
+  mixin".
 - **`Number>>to:by:do:` with a step of 0 never ends from a receiver at
   most `stop`**: `Kernel.ns`'s body, Primordial Soup's, counts up for any
   step that is not negative and has no guard against 0, so `1 to: 5 by: 0
@@ -1172,19 +1233,22 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 
 ## Missing tests
 
-- **No shipped class applies a mixin, so the image's shipped levels have
-  no live example.** Every module root under `crates/ns-runtime/core-library/`
-  is `= Value` (decided with the user on 2026-10-13), so no shipped
-  declaration has a `<:` clause and `ShippedKind::Level` and
-  `LevelMetaclass` name nothing a boot builds. The code stays; the tests
-  in `image/shipped_names.rs` and `interpreter/shipped_world.rs` check
-  only that such a level is unknown. When the core library first applies
-  a mixin -- sub-project 5's sequence protocol shared by `Array`,
-  `ByteArray` and `TypedArray` is planned as one -- a test must again
-  resolve a shipped level to the boot's own object, find it by its class
-  object in `index_by_object`, and round-trip its identity hash.
-  [image-format.md](design/image-format.md), "Shipped names".
-
+- The `ByteArray` sub-project's (noted 2026-10-13): the movers' test
+  (`heap.rs`,
+  `an_aligned_byte_array_keeps_its_bytes_through_every_mover_at_every_position`)
+  has no `ByteArray` of size 0 and none large enough for an overflow word;
+  the integration round trip (`tests/image.rs`) does not assert the
+  decoded data's alignment, which only the unit test checks; `inspect`
+  is not run over every cut of a byte-array image; no image test gives a
+  byte-array body a class record's header (a program's class) rather than
+  a shipped one; `ByteArray new:`'s refusal of a size the operating
+  system will not commit has no test, since no portable one can provoke
+  it; no golden appends `''` to a builder whose data are full;
+  `a_typed_array_has_the_sequence_protocol` cannot
+  tell an `Int16Array`'s copy from a `Uint16Array`'s; a `LargeInteger`
+  index is not pinned by a golden; and the crafted-slot tests cover a `BigEndianDataView` and
+  one typed array, not `LittleEndianDataView` or the other kinds.
+  [core-library.md](design/core-library.md), "Errors and tests".
 - That a parenthesised literal block is still inlined (`true ifTrue:
   ([1])`) is pinned only by the printed answer of its golden, not by a
   `disasm`-level check that it lowers inline.
@@ -1280,6 +1344,16 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
 
 Small, deliberately left, none affecting an outcome.
 
+- Leftovers of the `ByteArray` sub-project's reviews (noted 2026-10-13):
+  `Heap::byte_array_words` and `byte_array_words_mut` repeat the format
+  check and the size computation; a string's UTF-8 size is computed twice,
+  by `CodePoints::utf8_size` and by `argument_bytes` (`builtins/bytes.rs`);
+  `builtins/bytes.rs` and `builtins/text.rs` convert sizes with `as i64`
+  where a checked conversion would say why it cannot fail; `Element` and
+  `Heap::byte_array_element` are public only for the tests; and
+  `DecodeError::ByteArrayRecordMismatch` carries two meanings, told apart
+  by its `body`, where two variants would name each.
+
 - A fallback closure (an inlined conditional's, sent to a non-Boolean)
   reloads its scope's indirection vector (`LoadOuterLocal`, then
   `LoadVector`/`StoreVector`) on every access. The vector register is
@@ -1358,6 +1432,18 @@ Small, deliberately left, none affecting an outcome.
   precondition lines lack a blank `///` before them.
 
 ## Goldens and documentation
+
+- **The amplification bound of a rejected load is counted with two-byte
+  class tags.** `decode_value`'s doc comment (`image/decode.rs`), the
+  table in [memory.md](design/memory.md), "The amplification bound of a
+  rejected load", and `CLAUDE.md`'s image invariant take a class tag at
+  two bytes, the builtin class tag's size, where every live tag is five
+  (`CLASS_RECORD`, `CLASS_SHIPPED`); only the byte-array record is counted
+  at five. The figures are safe upper bounds, not tight ones: the
+  smallest metaclass record is 15 bytes, not 9, and the release peak
+  about 8x, not 10.7x. Redoing the derivation and the three statements
+  together, in one commit that runs the gates, would make them tight.
+  Noted 2026-10-13.
 
 - `goldens/language/class/class-side/spec_6_3_factory_is_a_class_side_member.ns` has no rationale
   comment citing §6.3.

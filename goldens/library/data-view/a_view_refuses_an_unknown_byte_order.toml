@@ -1,0 +1,15 @@
+stdout = '''
+on:byteOrder: requires #littleEndian or #bigEndian, got #middleEndian
+on:byteOrder: requires #littleEndian or #bigEndian, got 'littleEndian'
+on:byteOrder: requires #littleEndian or #bigEndian, got nil
+new:byteOrder: requires #littleEndian or #bigEndian, got #LittleEndian
+new:byteOrder: requires #littleEndian or #bigEndian, got 'bigEndian'
+on:byteOrder: requires a ByteArray, got 'abc'
+on:byteOrder: requires a ByteArray, got nil
+over: requires a ByteArray, got 'abc'
+#middleEndian
+'littleEndian'
+'abc'
+new:byteOrder: requires a size of at least 0, got -1
+#littleEndian #bigEndian
+'''

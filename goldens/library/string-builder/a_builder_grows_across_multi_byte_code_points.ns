@@ -1,0 +1,45 @@
+/// A StringBuilder of capacity 1 grows as it is filled: a thousand appends
+/// of a String of an accented letter and an emoji, two and four bytes in
+/// UTF-8, leave it with 2000 code points and 6000 bytes, none lost or cut
+/// in two by a growth.
+class ABuilderGrowsAcrossMultiByteCodePoints = Object new (
+  |
+    transcript ::= nil.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      builder
+      text
+    |
+    transcript:: platform transcript.
+    builder:: platform kernel StringBuilder new: 1.
+    1 to: 1000 do: [:count | builder add: 'é😀'].
+    text:: builder asString.
+    transcript
+        show: builder size printString;
+        show: ' ';
+        show: text size printString;
+        show: ' ';
+        show: builder asUtf8 size printString;
+        show: ' ';
+        show: (text at: 1) printString;
+        show: ' ';
+        show: (text at: 2) printString;
+        show: ' ';
+        show: (text at: 1999) printString;
+        show: ' ';
+        show: (text at: 2000) printString;
+        newLine.
+    1 to: 100 do: [:count | builder addCodePoint: 128512].
+    transcript
+        show: builder size printString;
+        show: ' ';
+        show: builder asUtf8 size printString;
+        show: ' ';
+        show: (builder asString at: 2100) printString;
+        show: ' ';
+        show: ((builder asString copyFrom: 1 to: 2000) = text) printString;
+        newLine.
+  )
+)

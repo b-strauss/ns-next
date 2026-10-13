@@ -1,0 +1,47 @@
+/// A ByteArray holds only bytes: `at:put:` refuses a value outside 0 to
+/// 255, or one that is no Integer, with an ArgumentError carrying the
+/// value, and leaves the byte as it was. An index outside 1 to `size` is
+/// refused in Array's words, and `new:` refuses a size as `Array new:`
+/// does, a size too large to allocate counted in bytes -- each an Error a
+/// handler catches, never an abort of the process.
+class AByteArrayRefusesWhatIsNoByte = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+    bytes ::= nil.
+  |
+) (
+  store: value = (
+    transcript
+        show: ([bytes at: 1 put: value] on: ArgumentError do: [:error | error messageText]);
+        show: ' / ';
+        show: (bytes at: 1) printString;
+        newLine.
+  )
+
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    bytes:: ByteArray new: 3.
+    bytes at: 1 put: 9.
+    store: 256.
+    store: -1.
+    store: 'a'.
+    store: 1.0.
+    store: (2 raisedTo: 70).
+    refusal: [bytes at: 0].
+    refusal: [bytes at: 4].
+    refusal: [bytes at: 4 put: 1].
+    refusal: [bytes at: 'one'].
+    refusal: [ByteArray new: -1].
+    refusal: [ByteArray new: 'x'].
+    refusal: [ByteArray new: (2 raisedTo: 60) - 1].
+    refusal: [ByteArray new: 9223372036854775807].
+  )
+)

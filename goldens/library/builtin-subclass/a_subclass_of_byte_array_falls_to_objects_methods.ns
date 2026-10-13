@@ -1,0 +1,24 @@
+/// A user subclass of ByteArray inherits its kernel methods but holds no
+/// bytes, so each leaf those methods forward to declines and the failure
+/// block's `super` send reaches the method above: `=` is identity and
+/// `printString` Object's. `size` falls to Collection's, which counts
+/// through `do:`; ByteArray's `do:` asks the size leaf first, which
+/// declines, and its failure block reaches Collection's abstract `do:`.
+class ASubclassOfByteArrayFallsToObjectsMethods = Object new () (
+  class MyByteArray = ByteArray new () ()
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      instance = MyByteArray new.
+    |
+    transcript
+        show: (instance = instance) printString;
+        show: ' ';
+        show: instance printString;
+        newLine.
+    transcript
+        show: MyByteArray new size printString;
+        newLine.
+  )
+)

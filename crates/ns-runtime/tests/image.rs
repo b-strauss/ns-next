@@ -2692,6 +2692,359 @@ fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
     });
 }
 
+/// The bytes of a `ByteArray` of `size` for the image tests: every value a
+/// byte takes, so that a byte read from the wrong place or the wrong word
+/// shows.
+fn byte_array_contents(size: usize) -> Vec<u8> {
+    (0..size).map(|index| (index * 7 + 3) as u8).collect()
+}
+
+#[test]
+fn a_byte_array_round_trips_with_its_bytes_and_identity_hash() {
+    let sizes = [0, 5, 4_000];
+    let (mut interpreter, _class, original, decoded, _max) =
+        round_trip_graph(EMPTY, |interpreter, _| {
+            interpreter.enter(|mutator| {
+                let arrays: Vec<Value> = sizes
+                    .iter()
+                    .map(|size| {
+                        let bytes = byte_array_contents(*size);
+                        let array = mutator.new_byte_array(&bytes);
+                        mutator.heap_mut().object_ensure_identity_hash(array);
+                        Value::object(array)
+                    })
+                    .collect();
+                // The five-byte one twice, so that its identity is kept.
+                let holder = mutator.new_array(vec![arrays[0], arrays[1], arrays[2], arrays[1]]);
+                vec![mutator.stash(Value::object(holder))]
+            })
+        });
+    interpreter.enter(|mutator| {
+        let original = mutator.fetch(&original[0]);
+        let decoded = mutator.fetch(&decoded[0]);
+        let byte_array_class = mutator.builtin_class(BuiltinClass::ByteArray);
+        let heap = mutator.heap();
+        let originals = heap
+            .array_elements(object(original))
+            .expect("expected an array");
+        let elements = heap
+            .array_elements(object(decoded))
+            .expect("expected an array");
+        assert!(
+            object(elements[1]).same(object(elements[3])),
+            "shared identity preserved"
+        );
+        for (index, size) in sizes.iter().enumerate() {
+            let decoded = object(elements[index]);
+            let original = object(originals[index]);
+            assert!(!decoded.same(original), "the decoded one is a new object");
+            assert!(heap.is_byte_array(decoded));
+            assert_eq!(heap.byte_array_size(decoded), Some(*size));
+            assert_eq!(
+                heap.byte_array_bytes(decoded),
+                Some(byte_array_contents(*size))
+            );
+            assert_eq!(
+                heap.object_identity_hash(decoded),
+                heap.object_identity_hash(original)
+            );
+            assert!(heap.object_class(decoded).same(byte_array_class));
+        }
+    });
+}
+
+/// A `ByteArray` a program made, held in a slot, round-trips as the
+/// kernel's class with its bytes.
+#[test]
+fn a_byte_array_a_program_made_round_trips() {
+    let source = indoc! {"
+        class X = Object new (
+          | bytes = ByteArray new: 3. |
+        ) (
+          public fill = (
+            bytes at: 1 put: 1.
+            bytes at: 3 put: 255.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, _class, _original, decoded, _max) =
+        round_trip_graph(source, |interpreter, class| {
+            let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("fill"), &[]),
+                "fill",
+            );
+            vec![instance]
+        });
+    interpreter.enter(|mutator| {
+        let decoded = mutator.fetch(&decoded[0]);
+        let byte_array_class = mutator.builtin_class(BuiltinClass::ByteArray);
+        let heap = mutator.heap();
+        let bytes = object(
+            heap.instance_field(object(decoded), 0)
+                .expect("expected an instance"),
+        );
+        assert!(heap.object_class(bytes).same(byte_array_class));
+        assert_eq!(heap.byte_array_bytes(bytes), Some(vec![1, 0, 255]));
+    });
+}
+
+/// `inspect` reads a `ByteArray` record as the loader does and shows its
+/// size and its first 16 bytes, never a large one whole.
+#[test]
+fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
+    let (mut interpreter, class) = load(EMPTY);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let small = mutator.new_byte_array(&[0x00, 0x7f, 0xff]);
+        let large = mutator.new_byte_array(&byte_array_contents(20));
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance, Value::object(small), Value::object(large)],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let shown = |expected: &str| {
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.ends_with(expected))
+    };
+    assert!(
+        shown("byte array of 3 bytes [00 7f ff]"),
+        "{:?}",
+        report.graph_objects
+    );
+    assert!(
+        shown("byte array of 20 bytes [03 0a 11 18 1f 26 2d 34 3b 42 49 50 57 5e 65 6c ...]"),
+        "{:?}",
+        report.graph_objects
+    );
+}
+
+/// Three typed arrays over one `ByteArray`, a big-endian `DataView` over
+/// another, and a `StringBuilder` holding code points of two, three and
+/// four bytes, each in a slot; `report` prints what they answer.
+const VIEWS_AND_A_BUILDER: &str = indoc! {"
+    class X = Object new (
+      |
+        public halves
+        public floats
+        public octets
+        public view
+        public builder
+      |
+    ) (
+      public fill: platform = (
+        |
+          kernel = platform kernel.
+          typedArrays = platform typedArrays.
+          bytes = ByteArray new: 8.
+          other = ByteArray new: 8.
+        |
+        halves:: typedArrays Int16Array on: bytes.
+        floats:: typedArrays Float32Array on: bytes.
+        octets:: typedArrays Uint8Array on: bytes.
+        view:: kernel DataView on: other byteOrder: #bigEndian.
+        builder:: kernel StringBuilder new: 2.
+        halves at: 1 put: -2.
+        floats at: 2 put: 1.5.
+        view int32At: 1 put: -123456789.
+        view int32At: 5 put: 16909060.
+        builder add: 'grüße '.
+        builder addCodePoint: 8364.
+        builder addCodePoint: 128512.
+      )
+
+      public report = (
+        |
+          text ::= ''.
+        |
+        {
+          halves at: 1.
+          halves size.
+          floats at: 2.
+          floats size.
+          octets at: 1.
+          octets at: 8.
+          octets size.
+          view int32At: 1.
+          view int32At: 5.
+          view uint8At: 5.
+          view size.
+          view byteOrder.
+          builder asString.
+          builder size.
+        } do: [:each | text:: text , each printString , ' '].
+        ^text
+      )
+    ) : ()
+"};
+
+/// What `VIEWS_AND_A_BUILDER`'s `report` answers once `fill:` has run: -2
+/// is the bytes 254 255, 1.5 in single precision ends in the byte 63, and
+/// 16909060 is the bytes 1 2 3 4 in big-endian order.
+const VIEWS_AND_A_BUILDER_REPORT: &str = "-2 4 1.5 2 254 63 8 -123456789 16909060 1 8 #bigEndian \
+    'grüße €😀' 8 ";
+
+/// The `printString` of what `selector` answers when sent to `receiver`
+/// with `arguments`.
+fn printed(
+    interpreter: &mut Interpreter,
+    receiver: &Root,
+    selector: &str,
+    arguments: &[Root],
+) -> String {
+    let answer = expect_ok(
+        interpreter.send(receiver, Symbol::intern(selector), arguments),
+        selector,
+    );
+    let text = expect_ok(
+        interpreter.send(&answer, Symbol::intern("printString"), &[]),
+        "printString",
+    );
+    interpreter.enter(|mutator| text_or_class_name(mutator, mutator.fetch(&text)))
+}
+
+/// What `receiver`'s unary `selector` answers, rooted.
+fn answer_of(interpreter: &mut Interpreter, receiver: &Root, selector: &str) -> Root {
+    expect_ok(
+        interpreter.send(receiver, Symbol::intern(selector), &[]),
+        selector,
+    )
+}
+
+/// The integer `integer`, rooted, as an argument of a host's send.
+fn integer_root(interpreter: &mut Interpreter, integer: i64) -> Root {
+    interpreter.enter(|mutator| mutator.stash(Value::small_integer(integer)))
+}
+
+/// A new String of `text`, rooted, as an argument of a host's send.
+fn string_root(interpreter: &mut Interpreter, text: &str) -> Root {
+    interpreter.enter(|mutator| {
+        let string = mutator.new_string(text.to_string());
+        mutator.stash(Value::object(string))
+    })
+}
+
+/// A view keeps the very `ByteArray` it was made over, and a builder its
+/// bytes and counts, as plain slots: a snapshot carries them as records of
+/// the shipped classes, and the loaded views still share their storage.
+#[test]
+fn a_view_and_a_builder_round_trip_through_a_package() {
+    let (mut interpreter, class) = load(VIEWS_AND_A_BUILDER);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let platform = interpreter.platform();
+    expect_ok(
+        interpreter.send(
+            &instance,
+            Symbol::intern("fill:"),
+            std::slice::from_ref(&platform),
+        ),
+        "fill:",
+    );
+    let before = answer_of(&mut interpreter, &instance, "report");
+    let before = interpreter.enter(|mutator| text_or_class_name(mutator, mutator.fetch(&before)));
+    assert_eq!(before, VIEWS_AND_A_BUILDER_REPORT);
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        snapshot_one(
+            mutator,
+            Some(VIEWS_AND_A_BUILDER),
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    });
+
+    let mut loaded = image::load(&bytes).expect("load");
+    let root = loaded.roots[0].clone();
+    let interpreter = &mut loaded.interpreter;
+    let after = answer_of(interpreter, &root, "report");
+    let after = interpreter.enter(|mutator| text_or_class_name(mutator, mutator.fetch(&after)));
+    assert_eq!(after, before);
+
+    let halves = answer_of(interpreter, &root, "halves");
+    let floats = answer_of(interpreter, &root, "floats");
+    let octets = answer_of(interpreter, &root, "octets");
+    let view = answer_of(interpreter, &root, "view");
+    let builder = answer_of(interpreter, &root, "builder");
+    let one = integer_root(interpreter, 1);
+    let two = integer_root(interpreter, 2);
+    let five = integer_root(interpreter, 5);
+    assert_eq!(
+        printed(interpreter, &halves, "at:", std::slice::from_ref(&one)),
+        "-2"
+    );
+    assert_eq!(printed(interpreter, &halves, "size", &[]), "4");
+    assert_eq!(
+        printed(interpreter, &view, "int32At:", std::slice::from_ref(&one)),
+        "-123456789"
+    );
+    assert_eq!(
+        printed(interpreter, &view, "int32At:", std::slice::from_ref(&five)),
+        "16909060"
+    );
+    assert_eq!(printed(interpreter, &view, "size", &[]), "8");
+    assert_eq!(
+        printed(interpreter, &builder, "asString", &[]),
+        "'grüße €😀'"
+    );
+    assert_eq!(printed(interpreter, &builder, "size", &[]), "8");
+
+    // A write through one decoded view is a write to the one ByteArray the
+    // others read: 258 is the bytes 2 1, and 64 as the last byte makes the
+    // second float 6.0.
+    let two_hundred_fifty_eight = integer_root(interpreter, 258);
+    printed(
+        interpreter,
+        &halves,
+        "at:put:",
+        &[one.clone(), two_hundred_fifty_eight],
+    );
+    assert_eq!(
+        printed(interpreter, &octets, "at:", std::slice::from_ref(&one)),
+        "2"
+    );
+    assert_eq!(
+        printed(interpreter, &octets, "at:", std::slice::from_ref(&two)),
+        "1"
+    );
+    let eight = integer_root(interpreter, 8);
+    let sixty_four = integer_root(interpreter, 64);
+    printed(interpreter, &octets, "at:put:", &[eight, sixty_four]);
+    assert_eq!(
+        printed(interpreter, &floats, "at:", std::slice::from_ref(&two)),
+        "6.0"
+    );
+    let under_halves = answer_of(interpreter, &halves, "bytes");
+    let under_octets = answer_of(interpreter, &octets, "bytes");
+    let under_floats = answer_of(interpreter, &floats, "bytes");
+    let shared = interpreter.enter(|mutator| {
+        let under_halves = object(mutator.fetch(&under_halves));
+        object(mutator.fetch(&under_octets)).same(under_halves)
+            && object(mutator.fetch(&under_floats)).same(under_halves)
+    });
+    assert!(shared, "the three views share one decoded ByteArray");
+
+    // The decoded builder carries on where it stopped.
+    let more = string_root(interpreter, "ö");
+    printed(interpreter, &builder, "add:", std::slice::from_ref(&more));
+    assert_eq!(
+        printed(interpreter, &builder, "asString", &[]),
+        "'grüße €😀ö'"
+    );
+    assert_eq!(printed(interpreter, &builder, "size", &[]), "9");
+}
+
 #[test]
 fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // Two objects, the higher hash first: the object table is walked in
@@ -2990,27 +3343,32 @@ fn the_graph_section_encoding_is_deterministic() {
 /// declaration and a kind byte as the section writes it (0 a module
 /// instance, 1 a class, 2 a metaclass).
 const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
-    ("Kernel", "Object", 1),               // OBJECT_NAME = 0
-    ("Kernel", "Array", 1),                // ARRAY_NAME = 1
-    ("Kernel", "Activation", 1),           // ACTIVATION_NAME = 2
-    ("Kernel", "Metaclass", 1),            // METACLASS_NAME = 3
-    ("Kernel", "String", 1),               // STRING_NAME = 4
-    ("Kernel", "Symbol", 1),               // SYMBOL_NAME = 5
-    ("Kernel", "Integer", 1),              // INTEGER_NAME = 6
-    ("Kernel", "Fraction", 1),             // FRACTION_NAME = 7
-    ("Kernel", "FutureImplementation", 1), // FUTURE_IMPLEMENTATION_NAME = 8
-    ("Kernel", "Value", 1),                // VALUE_NAME = 9
-    ("Kernel", "Top", 1),                  // TOP_NAME = 10
-    ("Kernel", "Integer", 2),              // INTEGER_CLASS_NAME = 11
-    ("Kernel", "Kernel", 0),               // KERNEL_INSTANCE_NAME = 12
-    ("Kernel", "Kernel", 1),               // KERNEL_ROOT_NAME = 13
-    ("TimeFactory", "Stopwatch", 1),       // STOPWATCH_NAME = 14
-    ("Kernel", "Behavior", 1),             // BEHAVIOR_NAME = 15
-    ("Kernel", "Closure", 1),              // CLOSURE_NAME = 16
-    ("Kernel", "Class", 1),                // CLASS_NAME = 17
-    ("Kernel", "Activation", 2),           // ACTIVATION_CLASS_NAME = 18
-    ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
-    ("Kernel", "NonBooleanReceiver", 1),   // NON_BOOLEAN_RECEIVER_NAME = 20
+    ("Kernel", "Object", 1),                 // OBJECT_NAME = 0
+    ("Kernel", "Array", 1),                  // ARRAY_NAME = 1
+    ("Kernel", "Activation", 1),             // ACTIVATION_NAME = 2
+    ("Kernel", "Metaclass", 1),              // METACLASS_NAME = 3
+    ("Kernel", "String", 1),                 // STRING_NAME = 4
+    ("Kernel", "Symbol", 1),                 // SYMBOL_NAME = 5
+    ("Kernel", "Integer", 1),                // INTEGER_NAME = 6
+    ("Kernel", "Fraction", 1),               // FRACTION_NAME = 7
+    ("Kernel", "FutureImplementation", 1),   // FUTURE_IMPLEMENTATION_NAME = 8
+    ("Kernel", "Value", 1),                  // VALUE_NAME = 9
+    ("Kernel", "Top", 1),                    // TOP_NAME = 10
+    ("Kernel", "Integer", 2),                // INTEGER_CLASS_NAME = 11
+    ("Kernel", "Kernel", 0),                 // KERNEL_INSTANCE_NAME = 12
+    ("Kernel", "Kernel", 1),                 // KERNEL_ROOT_NAME = 13
+    ("TimeFactory", "Stopwatch", 1),         // STOPWATCH_NAME = 14
+    ("Kernel", "Behavior", 1),               // BEHAVIOR_NAME = 15
+    ("Kernel", "Closure", 1),                // CLOSURE_NAME = 16
+    ("Kernel", "Class", 1),                  // CLASS_NAME = 17
+    ("Kernel", "Activation", 2),             // ACTIVATION_CLASS_NAME = 18
+    ("Kernel", "FutureImplementation", 2),   // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
+    ("Kernel", "NonBooleanReceiver", 1),     // NON_BOOLEAN_RECEIVER_NAME = 20
+    ("Kernel", "ByteArray", 1),              // BYTE_ARRAY_NAME = 21
+    ("TypedArraysFactory", "Int16Array", 1), // INT16_ARRAY_NAME = 22
+    ("Kernel", "BigEndianDataView", 1),      // BIG_ENDIAN_DATA_VIEW_NAME = 23
+    ("Kernel", "StringBuilder", 1),          // STRING_BUILDER_NAME = 24
+    ("Kernel", "IndexedCollection", 1),      // INDEXED_COLLECTION_NAME = 25
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3033,6 +3391,11 @@ const CLASS_NAME: u32 = 17;
 const ACTIVATION_CLASS_NAME: u32 = 18;
 const FUTURE_IMPLEMENTATION_CLASS_NAME: u32 = 19;
 const NON_BOOLEAN_RECEIVER_NAME: u32 = 20;
+const BYTE_ARRAY_NAME: u32 = 21;
+const INT16_ARRAY_NAME: u32 = 22;
+const BIG_ENDIAN_DATA_VIEW_NAME: u32 = 23;
+const STRING_BUILDER_NAME: u32 = 24;
+const INDEXED_COLLECTION_NAME: u32 = 25;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -3356,6 +3719,381 @@ fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
         fixture.interpreter.heap_statistics().live_objects,
         before,
         "nothing was allocated"
+    );
+}
+
+/// A one-record graph section: a `ByteArray` record whose length field
+/// says `length` and after which only `written` bytes follow.
+fn one_byte_array_record(length: u32, written: usize) -> Vec<u8> {
+    class_records(1, |writer| {
+        writer.write_shipped(BYTE_ARRAY_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_BYTE_ARRAY); // object body: ByteArray
+        writer.write_u32(length);
+        for byte in 0..written {
+            writer.write_u8(byte as u8);
+        }
+    })
+}
+
+#[test]
+fn a_truncated_byte_array_record_is_refused_before_allocating() {
+    let bytes = one_byte_array_record(1_000_000, 8); // a million bytes, eight written
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
+#[test]
+fn an_overlong_byte_array_length_is_refused() {
+    let bytes = one_byte_array_record(u32::MAX, 16);
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
+#[test]
+fn a_crafted_byte_array_record_decodes_to_its_bytes() {
+    let bytes = one_byte_array_record(11, 11);
+    GraphFixture::new().decoded(&bytes, "a ByteArray record", |heap, graph| {
+        let decoded = graph.objects[0];
+        assert!(heap.is_byte_array(decoded));
+        assert_eq!(heap.byte_array_bytes(decoded), Some((0..11).collect()));
+        assert_eq!(heap.object_identity_hash(decoded), 1);
+    });
+}
+
+/// A record carries exactly its class's layout: a byte-array record under
+/// any class but `ByteArray` would be an object of that class whose
+/// methods read fields it does not have, and a record of another body
+/// under `ByteArray`'s header one whose leaves find no bytes. Both are
+/// refused by the first pass, before anything is allocated.
+#[test]
+fn a_byte_array_record_and_the_byte_array_class_go_together() {
+    let byte_array_under = |header: u32| {
+        class_records(1, |writer| {
+            writer.write_shipped(header);
+            writer.write_u32(1); // identity hash
+            writer.write_u8(OBJECT_BYTE_ARRAY);
+            writer.write_u32(2); // two bytes
+            writer.write_u8(7);
+            writer.write_u8(9);
+        })
+    };
+    let array_under_byte_array = class_records(1, |writer| {
+        writer.write_shipped(BYTE_ARRAY_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_ARRAY);
+        writer.write_u32(0); // no elements
+    });
+    let under_another_class = "a byte-array record has a class other than ByteArray".to_string();
+    for (bytes, body, text) in [
+        (
+            byte_array_under(ARRAY_NAME),
+            OBJECT_BYTE_ARRAY,
+            under_another_class.clone(),
+        ),
+        (
+            byte_array_under(OBJECT_NAME),
+            OBJECT_BYTE_ARRAY,
+            under_another_class,
+        ),
+        (
+            array_under_byte_array,
+            OBJECT_ARRAY,
+            format!(
+                "a record of the class ByteArray has object body {OBJECT_ARRAY}, but a \
+                 ByteArray is a byte-array record"
+            ),
+        ),
+    ] {
+        let mut fixture = GraphFixture::new();
+        let before = fixture.interpreter.heap_statistics().live_objects;
+        let error = fixture.decode_error(&bytes);
+        assert_eq!(error, decode::DecodeError::ByteArrayRecordMismatch { body });
+        assert_eq!(error.to_string(), text);
+        assert_eq!(
+            fixture.interpreter.heap_statistics().live_objects,
+            before,
+            "nothing was allocated"
+        );
+    }
+}
+
+/// The root class of the images below: each probe sends a view or a
+/// builder the messages a program would and answers, for each, the
+/// `description` of the `ArgumentError` it signalled -- of any other
+/// Error, after 'not an ArgumentError: ', and what it answered, after
+/// 'answered ', so that a refusal of the wrong class shows as one.
+const REFUSALS_PROBE: &str = indoc! {"
+    class X usingPlatform: platform = Object new (
+      |
+        ArgumentError = platform kernel ArgumentError.
+      |
+    ) (
+      refused: action = (
+        ^[
+          [
+            'answered ' , action value printString.
+          ] on: ArgumentError do: [:error | error description].
+        ] on: Error do: [:error | 'not an ArgumentError: ' , error description].
+      )
+
+      public typedArray: view = (
+        ^{refused: [view at: 1]. refused: [view at: 1 put: 2]. refused: [view size]}
+      )
+
+      public dataView: view = (
+        ^{refused: [view int32At: 1]. refused: [view int32At: 1 put: 2]. refused: [view size]}
+      )
+
+      public builder: builder = (
+        ^{
+          refused: [builder asString].
+          refused: [builder add: 'x'].
+          refused: [builder size].
+          refused: [builder isEmpty].
+          refused: [builder asUtf8 size].
+          refused: [builder addCodePoint: 233].
+          refused: [(builder writeln: 'y') size].
+        }
+      )
+    ) : ()
+"};
+
+/// A complete image of `REFUSALS_PROBE` whose graph is the `records` that
+/// `write` writes, then the probe's class: its roots are record 0 and the
+/// class.
+fn probe_image(records: u32, write: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, records + 2);
+    write(&mut writer);
+    root_class_records(&mut writer, records);
+    writer.write_u32(2); // two roots
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(0);
+    writer.write_u8(VALUE_OBJECT_ID);
+    writer.write_u32(records);
+    writer.write_u32(0); // no tag-named hashes
+    image_with_graph_section_of(REFUSALS_PROBE, &writer.into_bytes(), records)
+}
+
+/// Loads `image`, a `probe_image`, and answers what its probe `selector`
+/// answers for the image's first root, each element as text.
+fn refusals(image: &[u8], selector: &str) -> Vec<String> {
+    let mut loaded = image::load(image).expect("load");
+    let subject = loaded.roots[0].clone();
+    let class = loaded.roots[1].clone();
+    let interpreter = &mut loaded.interpreter;
+    let platform = interpreter.platform();
+    let probe = expect_ok(
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    let answer = expect_ok(
+        interpreter.send(&probe, Symbol::intern(selector), &[subject]),
+        selector,
+    );
+    interpreter.enter(|mutator| {
+        let answer = object(mutator.fetch(&answer));
+        mutator
+            .heap()
+            .array_elements(answer)
+            .expect("a probe answers an Array")
+            .into_iter()
+            .map(|element| text_or_class_name(mutator, element))
+            .collect()
+    })
+}
+
+/// An instance record of a shipped class, its identity hash `hash` and its
+/// fields written by `fields`, which writes `count` of them.
+fn shipped_instance(
+    writer: &mut encode::Writer,
+    header: u32,
+    hash: u32,
+    count: u32,
+    fields: impl FnOnce(&mut encode::Writer),
+) {
+    writer.write_shipped(header);
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_INSTANCE);
+    writer.write_u32(count);
+    fields(writer);
+}
+
+/// A String record of `text`.
+fn string_record(writer: &mut encode::Writer, hash: u32, text: &str) {
+    writer.write_shipped(STRING_NAME);
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_STRING);
+    writer.write_str(text);
+}
+
+/// A ByteArray record of `bytes`.
+fn byte_array_record(writer: &mut encode::Writer, hash: u32, bytes: &[u8]) {
+    writer.write_shipped(BYTE_ARRAY_NAME);
+    writer.write_u32(hash);
+    writer.write_u8(OBJECT_BYTE_ARRAY);
+    writer.write_u32(u32::try_from(bytes.len()).expect("a length fits a u32"));
+    for byte in bytes {
+        writer.write_u8(*byte);
+    }
+}
+
+/// A view's `bytes` is an ordinary slot, so an image can put anything in
+/// it, and nothing about the record's structure is wrong: the image loads,
+/// and every access of the view refuses with an `ArgumentError` that names
+/// the selector sent, never reading through what is no ByteArray.
+#[test]
+fn a_view_over_what_is_no_byte_array_loads_and_refuses_every_access() {
+    let typed_array = probe_image(1, |writer| {
+        shipped_instance(writer, INT16_ARRAY_NAME, 3, 1, |writer| {
+            writer.write_u8(VALUE_SMALL_INTEGER); // bytes
+            writer.write_i64(7);
+        });
+    });
+    assert_eq!(
+        refusals(&typed_array, "typedArray:"),
+        ["at:", "at:put:", "size"]
+            .map(|selector| format!("{selector} found no ByteArray under the view, got 7"))
+    );
+    let data_view = probe_image(2, |writer| {
+        shipped_instance(writer, BIG_ENDIAN_DATA_VIEW_NAME, 3, 1, |writer| {
+            writer.write_u8(VALUE_OBJECT_ID); // bytes
+            writer.write_u32(1);
+        });
+        string_record(writer, 4, "not bytes");
+    });
+    assert_eq!(
+        refusals(&data_view, "dataView:"),
+        ["int32At:", "int32At:put:", "size"].map(|selector| format!(
+            "{selector} found no ByteArray under the view, got 'not bytes'"
+        ))
+    );
+}
+
+/// A field of a crafted StringBuilder record: a small integer, or the
+/// record at an object id.
+enum BuilderField {
+    Integer(i64),
+    Record(u32),
+}
+
+/// A probe image whose root is a StringBuilder of `fields` -- `data`,
+/// `byteCount`, `codePointCount` -- followed by a ByteArray of two bytes
+/// (record 1) and a String (record 2) for the fields to name.
+fn crafted_builder(fields: [BuilderField; 3]) -> Vec<u8> {
+    probe_image(3, |writer| {
+        shipped_instance(writer, STRING_BUILDER_NAME, 3, 3, |writer| {
+            for field in fields {
+                match field {
+                    BuilderField::Integer(integer) => {
+                        writer.write_u8(VALUE_SMALL_INTEGER);
+                        writer.write_i64(integer);
+                    }
+                    BuilderField::Record(id) => {
+                        writer.write_u8(VALUE_OBJECT_ID);
+                        writer.write_u32(id);
+                    }
+                }
+            }
+        });
+        byte_array_record(writer, 4, b"ab");
+        string_record(writer, 5, "two");
+    })
+}
+
+/// A builder's slots are ordinary slots too, which an image can fill with
+/// a state no builder's own members leave: a count past its data or below
+/// 0, more code points than bytes, or something that is no Integer or no
+/// ByteArray. Each loads, and every member refuses with an `ArgumentError`
+/// naming the selector sent, before it reads past the bytes the builder
+/// has or sends anything to the wrong object; `writeln:` refuses through
+/// `add:`.
+#[test]
+fn a_builder_whose_state_is_not_its_own_loads_and_refuses() {
+    use BuilderField::{Integer, Record};
+    let data = || Record(1);
+    let a_string = || Record(2);
+    for (fields, described) in [
+        (
+            [data(), Integer(5), Integer(5)],
+            "a byte count past its data",
+        ),
+        ([data(), Integer(-1), Integer(0)], "a negative byte count"),
+        (
+            [data(), Integer(2), Integer(3)],
+            "more code points than bytes",
+        ),
+        (
+            [data(), Integer(0), Integer(-1)],
+            "a negative code point count",
+        ),
+        (
+            [data(), a_string(), Integer(0)],
+            "a byte count that is a String",
+        ),
+        (
+            [data(), Integer(0), a_string()],
+            "a code point count that is a String",
+        ),
+        (
+            [a_string(), Integer(0), Integer(0)],
+            "data that is a String",
+        ),
+        (
+            [Integer(7), Integer(0), Integer(0)],
+            "data that is an Integer",
+        ),
+    ] {
+        assert_eq!(
+            refusals(&crafted_builder(fields), "builder:"),
+            [
+                "asString",
+                "add:",
+                "size",
+                "isEmpty",
+                "asUtf8",
+                "addCodePoint:",
+                "add:",
+            ]
+            .map(|selector| format!("{selector} found a StringBuilder whose state is not its own")),
+            "{described}"
+        );
+    }
+    // The same records, the state a builder's own members leave: two bytes
+    // of one code point each.
+    assert_eq!(
+        refusals(
+            &crafted_builder([data(), Integer(2), Integer(2)]),
+            "builder:"
+        ),
+        [
+            "answered 'ab'",
+            "answered 'x'",
+            "answered 3",
+            "answered false",
+            "answered 3",
+            "answered 233",
+            "answered 6",
+        ],
     );
 }
 
@@ -3826,7 +4564,8 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     // nothing.
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let roots = vec![mutator.fetch(&instance)];
+        let byte_array = mutator.new_byte_array(&byte_array_contents(13));
+        let roots = vec![mutator.fetch(&instance), Value::object(byte_array)];
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
         let ids = encode::encode_code_table(
@@ -4777,13 +5516,15 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);
+        let byte_array = mutator.new_byte_array(&byte_array_contents(13));
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
             source: Some(source),
         }];
         (
-            image::snapshot(mutator, &modules, &[instance]).expect("snapshot"),
+            image::snapshot(mutator, &modules, &[instance, Value::object(byte_array)])
+                .expect("snapshot"),
             image::package(mutator, &modules, instance).expect("package"),
         )
     });
@@ -6152,6 +6893,73 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         assert!(
             heap.object_ensure_identity_hash(loaded_string) > largest,
             "the counter is advanced past the tag-named hashes too"
+        );
+    });
+}
+
+/// A shipped level is named, not carried, like a builtin class: the hash the
+/// level `Array`'s `<:` clause adds was given, and its metaclass's, travel in
+/// the closing table and land on the loading world's own level.
+#[test]
+fn the_hash_of_a_shipped_level_survives_a_snapshot() {
+    let source = indoc! {"
+        class X = Object new (
+        ) (
+        ) : ()
+    "};
+    let (mut interpreter, class) = load(source);
+    let (bytes, level_hash, metaclass_hash) = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        let level = mutator
+            .heap()
+            .class_superclass(array)
+            .expect("Array has a superclass");
+        let metaclass = mutator
+            .heap()
+            .class_metaclass(level)
+            .expect("a level has a metaclass");
+        let level_hash = mutator.heap_mut().object_ensure_identity_hash(level);
+        let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
+        let bytes = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[],
+        )
+        .expect("snapshot");
+        (bytes, level_hash, metaclass_hash)
+    });
+
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_tag_named_hashes
+            .contains(&format!("Kernel Array level 0 hash {level_hash}")),
+        "the level is named in the table: {:?}",
+        report.graph_tag_named_hashes
+    );
+    assert!(report
+        .graph_tag_named_hashes
+        .contains(&format!("Kernel Array level 0 class hash {metaclass_hash}")));
+
+    let mut loaded = image::load(&bytes).expect("load");
+    loaded.interpreter.enter(|mutator| {
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        let level = mutator
+            .heap()
+            .class_superclass(array)
+            .expect("Array has a superclass");
+        let metaclass = mutator
+            .heap()
+            .class_metaclass(level)
+            .expect("a level has a metaclass");
+        assert!(mutator.heap().class_is_applied_level(level));
+        assert_eq!(mutator.heap().object_identity_hash(level), level_hash);
+        assert_eq!(
+            mutator.heap().object_identity_hash(metaclass),
+            metaclass_hash
         );
     });
 }
@@ -8621,7 +9429,13 @@ fn instance_chain_depth<'gc>(heap: &Heap<'gc>, head: Value<'gc>) -> u32 {
 /// the fixture's indices. The splice point is found by structure, where
 /// `inspect` says the graph section starts, not by a hardcoded offset.
 fn image_with_graph_section(graph: &[u8], root: u32) -> Vec<u8> {
-    let mut bytes = with_fixture_names(&snapshot_of(EMPTY));
+    image_with_graph_section_of(EMPTY, graph, root)
+}
+
+/// `image_with_graph_section` for a module of `source`'s one declaration,
+/// so that the graph's root class has its methods.
+fn image_with_graph_section_of(source: &str, graph: &[u8], root: u32) -> Vec<u8> {
+    let mut bytes = with_fixture_names(&snapshot_of(source));
     let root_id_at = module_root_id_at(&bytes, 0);
     bytes[root_id_at..root_id_at + 4].copy_from_slice(&root.to_le_bytes());
     bytes.truncate(graph_section_start(&bytes));
@@ -12673,6 +13487,69 @@ fn a_second_collections_facet_is_a_record_of_its_shipped_class() {
     );
 }
 
+/// A second typed arrays facet is an ordinary record of
+/// `TypedArraysFactory TypedArrays`, its enclosing object the module
+/// instance, and after a load it is equal to the loading platform's facet:
+/// a value. No program makes one, so the host stores a second platform's.
+#[test]
+fn a_second_typed_arrays_facet_is_a_record_of_its_shipped_class() {
+    let source = indoc! {"
+        class Holder usingPlatform: platform = Object new (
+            | public facet ::= nil. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module_holding(source, "facet:", |interpreter, platform| {
+        let second = a_second_platform(interpreter, platform);
+        expect_ok(
+            interpreter.send(&second, Symbol::intern("typedArrays"), &[]),
+            "second typedArrays",
+        )
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .shipped_names
+            .contains(&"TypedArraysFactory TypedArrays".to_string()),
+        "the facet's class is named by its declaration: {:?}",
+        report.shipped_names
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let facet = send_to(&mut loaded, &instance, "facet");
+    let int16_array = send_to(&mut loaded, &facet, "Int16Array");
+    let platform = loaded.interpreter.platform();
+    let typed_arrays = send_to(&mut loaded, &platform, "typedArrays");
+    let fresh_int16_array = send_to(&mut loaded, &typed_arrays, "Int16Array");
+    assert!(
+        same_object(&mut loaded, &int16_array, &fresh_int16_array),
+        "the loaded facet hands out the loading platform's Int16Array"
+    );
+    assert!(
+        equal(&mut loaded, &facet, &typed_arrays),
+        "the loaded facet equals the loading platform's facet"
+    );
+    loaded.interpreter.enter(|mutator| {
+        let module = ShippedName {
+            module: Symbol::intern("TypedArraysFactory"),
+            declaration: Symbol::intern("TypedArraysFactory"),
+            kind: ShippedKind::ModuleInstance,
+        };
+        let Ok(resolved) = image::shipped_names::resolve_in(mutator, &[module], false) else {
+            panic!("the typed arrays module is a shipped name");
+        };
+        let heap = mutator.heap();
+        let facet = object(mutator.fetch(&facet));
+        let enclosing = heap
+            .class_enclosing(heap.object_class(facet))
+            .expect("the facet's class is nested");
+        assert!(
+            enclosing.same(resolved[0].object),
+            "the loaded facet is enclosed by the loading boot's module instance"
+        );
+    });
+}
+
 /// A crafted section entry: a module, a declaration and a kind byte, and a
 /// level's clause index.
 type CraftedEntry = ((&'static str, &'static str, u8), Option<u32>);
@@ -12849,12 +13726,13 @@ fn a_record_of_top_is_refused() {
 /// before anything is allocated.
 #[test]
 fn a_record_of_a_shipped_class_with_another_body_is_refused() {
-    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME] {
+    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME, OBJECT_BYTE_ARRAY] {
         let bytes = class_records(1, |writer| {
             writer.write_shipped(STOPWATCH_NAME);
             writer.write_u32(5); // identity hash
             writer.write_u8(body);
-            writer.write_u32(0); // no elements, an empty text or a program counter
+            // No elements, an empty text, a program counter or no bytes.
+            writer.write_u32(0);
         });
         let error = GraphFixture::new().decode_error(&bytes);
         assert_eq!(error, decode::DecodeError::ShippedInstanceBody { body });
@@ -13266,6 +14144,69 @@ fn non_boolean_receiver_as_a_value_is_refused() {
         assert_eq!(
             message,
             "image encoding refuses Kernel NonBooleanReceiver as a value: no program may name \
+             it there, and the loader refuses an image that does"
+        );
+    });
+}
+
+/// `Kernel IndexedCollection` is public only so that `TypedArraysFactory.ns`
+/// may apply it, and no facet hands it out, so no program reaches it by
+/// running: a crafted image naming it as a value, as a class record's
+/// superclass or as the mixin a level applies is refused on load, and the
+/// encoder refuses a graph holding it as a value rather than write an image
+/// nothing loads.
+#[test]
+fn indexed_collection_as_a_value_or_a_superclass_is_refused() {
+    let not_allowed = |position: &'static str| decode::DecodeError::ShippedNameNotAllowed {
+        name: "Kernel IndexedCollection".to_string(),
+        position,
+    };
+    assert_eq!(
+        GraphFixture::new().decode_error(&shipped_class_value(INDEXED_COLLECTION_NAME)),
+        not_allowed("a value")
+    );
+    let over_indexed_collection = one_class_object(0, |writer| {
+        writer.write_boolean(true);
+        writer.write_shipped(INDEXED_COLLECTION_NAME); // superclass
+        writer.write_boolean(false); // no enclosing object
+        writer.write_boolean(false); // no declaring class
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&over_indexed_collection),
+        not_allowed("a superclass or an applied mixin")
+    );
+    let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
+    let applied = row_named(&fixture, "Applied");
+    assert_eq!(
+        fixture.decode_error(&shipped_mixin_record(INDEXED_COLLECTION_NAME, (applied, 0))),
+        not_allowed("a superclass or an applied mixin")
+    );
+    let (mut interpreter, class) = load(indoc! {"
+        class Root = Object new () ()
+    "});
+    interpreter.enter(|mutator| {
+        let root_class = class_reference(mutator, &class);
+        let name = ShippedName {
+            module: Symbol::intern("Kernel"),
+            declaration: Symbol::intern("IndexedCollection"),
+            kind: ShippedKind::Class,
+        };
+        let Ok(resolved) = image::shipped_names::resolve_in(mutator, &[name], false) else {
+            panic!("Kernel IndexedCollection is a shipped name");
+        };
+        let refused = snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            root_class,
+            &[Value::object(resolved[0].object)],
+        );
+        let Err(message) = refused else {
+            panic!("a graph holding Kernel IndexedCollection as a value was encoded");
+        };
+        assert_eq!(
+            message,
+            "image encoding refuses Kernel IndexedCollection as a value: no program may name \
              it there, and the loader refuses an image that does"
         );
     });

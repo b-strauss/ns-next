@@ -1,0 +1,47 @@
+/// `String fromUtf8:` decodes strictly: a truncated sequence, a stray
+/// continuation byte, an overlong encoding, a surrogate and a code point
+/// past U+10FFFF are each an ArgumentError naming the 1-based index, in
+/// the ByteArray, of the first byte of the bad sequence -- also when only
+/// a range is decoded, and when the range ends inside a character. A range
+/// the ByteArray does not hold is refused in `copyFrom:to:`'s words, and
+/// a source that is no ByteArray is refused. `at:putCodePoint:` refuses
+/// what is no Unicode scalar value, and a position whose bytes would pass
+/// the end, and writes nothing then.
+class InvalidUtf8IsRefusedAtItsByte = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      refusal
+      target
+    |
+    refusal:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error | error messageText]);
+          newLine.
+    ].
+    refusal value: [String fromUtf8: (ByteArray withAll: {104. 226. 130})].
+    refusal value: [String fromUtf8: (ByteArray withAll: {97. 128. 98})].
+    refusal value: [String fromUtf8: (ByteArray withAll: {192. 128})].
+    refusal value: [String fromUtf8: (ByteArray withAll: {237. 160. 128})].
+    refusal value: [String fromUtf8: (ByteArray withAll: {244. 144. 128. 128})].
+    refusal value: [String fromUtf8: (ByteArray withAll: {97. 98. 99. 255}) from: 2 to: 4].
+    refusal value: [String fromUtf8: 'é' asUtf8 from: 1 to: 1].
+    refusal value: [String fromUtf8: 'aé' asUtf8 from: 2 to: 2].
+    refusal value: [String fromUtf8: (ByteArray new: 3) from: 2 to: 5].
+    refusal value: [String fromUtf8: (ByteArray new: 3) from: 0 to: 1].
+    refusal value: [String fromUtf8: (ByteArray new: 3) from: 1 to: #b].
+    refusal value: [String fromUtf8: 'abc'].
+    refusal value: [String fromUtf8: 'abc' from: 1 to: 3].
+    target:: ByteArray withAll: {1. 2. 3}.
+    refusal value: [target at: 1 putCodePoint: 55296].
+    refusal value: [target at: 1 putCodePoint: 1114112].
+    refusal value: [target at: 1 putCodePoint: -1].
+    refusal value: [target at: 1 putCodePoint: 'a'].
+    refusal value: [target at: 2 putCodePoint: 8364].
+    refusal value: [target at: 4 putCodePoint: 97].
+    refusal value: [target at: 'x' putCodePoint: 97].
+    target do: [:each | transcript show: each printString].
+    transcript newLine.
+  )
+)

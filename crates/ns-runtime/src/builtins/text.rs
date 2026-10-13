@@ -177,6 +177,52 @@ fn from_code_points<'gc>(
     )))
 }
 
+/// The zero-based position a search's `startingAt:` argument names in a
+/// sequence of `size` elements -- a String's code points, a ByteArray's
+/// bytes -- or the `ArgumentError` carrying it: the start must lie in
+/// 1..size + 1, one past the end being where only an empty argument is
+/// found.
+pub(crate) fn search_start<'gc>(
+    heap: &Heap<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    start_argument: Option<Value<'gc>>,
+    size: usize,
+) -> Result<usize, NewspeakError<'gc>> {
+    // A `LargeInteger` start lies outside every sequence, so it takes the
+    // out-of-range error, described as it is written.
+    let start = match collections::integer_argument(heap, start_argument) {
+        Some(IntegerArgument::Small(start)) => Some(start),
+        Some(IntegerArgument::Large { .. }) => None,
+        None => {
+            return Err(collections::not_an_integer(
+                heap,
+                receiver,
+                selector,
+                start_argument,
+            ))
+        }
+    };
+    match start.map(usize::try_from) {
+        Some(Ok(start)) if (1..=size + 1).contains(&start) => Ok(start - 1),
+        _ => {
+            let described = match start {
+                Some(number) => number.to_string(),
+                None => heap.describe_argument(start_argument),
+            };
+            Err(NewspeakError::argument_error(
+                selector,
+                receiver,
+                start_argument.unwrap_or(Value::nil()),
+                format!(
+                    "{selector} {described} out of range: valid starts are 1..{} (size {size})",
+                    size + 1
+                ),
+            ))
+        }
+    }
+}
+
 /// `indexOf:startingAt:` and `lastIndexOf:startingAt:` over code points:
 /// the 1-based index of the first occurrence of the argument that starts
 /// at or after the start, or of the last that starts at or before it, or
@@ -207,39 +253,7 @@ fn search<'gc>(
             ),
         ));
     };
-    let start_argument = arguments.get(1).copied();
-    // A `LargeInteger` start lies outside every string, so it takes the
-    // out-of-range error, described as it is written.
-    let start = match collections::integer_argument(heap, start_argument) {
-        Some(IntegerArgument::Small(start)) => Some(start),
-        Some(IntegerArgument::Large { .. }) => None,
-        None => {
-            return Err(collections::not_an_integer(
-                heap,
-                receiver,
-                selector,
-                start_argument,
-            ))
-        }
-    };
-    let position = match start.map(usize::try_from) {
-        Some(Ok(start)) if (1..=size + 1).contains(&start) => start - 1,
-        _ => {
-            let described = match start {
-                Some(number) => number.to_string(),
-                None => heap.describe_argument(start_argument),
-            };
-            return Err(NewspeakError::argument_error(
-                selector,
-                receiver,
-                start_argument.unwrap_or(Value::nil()),
-                format!(
-                    "{selector} {described} out of range: valid starts are 1..{} (size {size})",
-                    size + 1
-                ),
-            ));
-        }
-    };
+    let position = search_start(heap, receiver, selector, arguments.get(1).copied(), size)?;
     let needle: Vec<u32> = needle.elements().collect();
     let Some(last_position) = size.checked_sub(needle.len()) else {
         return Ok(Value::small_integer(0));
@@ -293,6 +307,96 @@ fn copy_range<'gc>(
     )))
 }
 
+/// `String fromUtf8: bytes from: start to: stop`: a new String of the
+/// code points the bytes in the range encode, decoded strictly
+/// (`CodePoints::from_utf8_strict`). A `bytes` that is no ByteArray is
+/// refused before the range, which `copyFrom:to:`'s texts check, its
+/// keyword `from:`; invalid UTF-8 is refused naming the first byte of the
+/// bad sequence by its 1-based index in the ByteArray, not in the range,
+/// so that `bytes at: position` is the bad byte. Declines for a subject
+/// other than `String` itself, as `String with:` does.
+fn from_utf8<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let class = receiver.as_object()?;
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::String) {
+        return None;
+    }
+    let heap = &mutator.heap;
+    let source = arguments.first().copied();
+    let Some((bytes, size)) = source
+        .and_then(|value| value.as_object())
+        .and_then(|object| Some((object, heap.byte_array_size(object)?)))
+    else {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!(
+                "{selector} requires a ByteArray, got {}",
+                heap.describe_argument(source)
+            ),
+        )));
+    };
+    let range = match collections::checked_range(
+        heap,
+        receiver,
+        selector,
+        "from:",
+        arguments.get(1).copied(),
+        arguments.get(2).copied(),
+        size,
+    ) {
+        Ok(range) => range,
+        Err(error) => return Some(Err(error)),
+    };
+    let start = range.start;
+    let decoded = heap
+        .with_byte_array(bytes, |data| {
+            data.bytes(range)
+                .map(|slice| crate::CodePoints::from_utf8_strict(&slice))
+        })
+        .flatten()?;
+    Some(match decoded {
+        Ok(code_points) => Ok(Value::object(
+            mutator.new_string_from_code_points(code_points),
+        )),
+        Err(offset) => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!("fromUtf8: invalid UTF-8 at byte {}", start + offset + 1),
+        )),
+    })
+}
+
+/// `asUtf8`: a new ByteArray of the receiver's UTF-8 bytes. Encoding a
+/// String never fails; only a ByteArray the heap cannot commit is refused,
+/// before anything is allocated, as `,` refuses one, since a failed
+/// allocation would abort the process.
+fn as_utf8<'gc>(
+    mutator: &mut Mutator<'gc>,
+    object: ObjectReference<'gc>,
+    receiver: Value<'gc>,
+    selector: Symbol,
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let code_points = mutator.heap.string_code_points(object)?;
+    let size = code_points.utf8_size();
+    if !mutator.heap.byte_array_fits(size) {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            receiver,
+            format!("{selector} cannot allocate a ByteArray of {size} bytes"),
+        )));
+    }
+    let bytes = code_points.to_utf8().into_bytes();
+    Some(Ok(Value::object(mutator.new_byte_array(&bytes))))
+}
+
 pub(crate) fn execute_string<'gc>(
     mutator: &mut Mutator<'gc>,
     primitive: StringPrimitive,
@@ -308,6 +412,7 @@ pub(crate) fn execute_string<'gc>(
         StringPrimitive::FromCodePoints => {
             return from_code_points(mutator, receiver, selector, arguments)
         }
+        StringPrimitive::FromUtf8 => return from_utf8(mutator, receiver, selector, arguments),
         _ => {}
     }
     let object = receiver.as_object()?;
@@ -316,7 +421,16 @@ pub(crate) fn execute_string<'gc>(
     match primitive {
         // Unreachable: the early return above handles them; the arm keeps
         // the match exhaustive.
-        StringPrimitive::FromCodePoint | StringPrimitive::FromCodePoints => None,
+        StringPrimitive::FromCodePoint
+        | StringPrimitive::FromCodePoints
+        | StringPrimitive::FromUtf8 => None,
+        StringPrimitive::AsUtf8 => as_utf8(mutator, object, receiver, selector),
+        // Counted in place, as a String argument's bytes are, so that a
+        // `StringBuilder`'s append copies nothing out to measure it.
+        StringPrimitive::Utf8Size => {
+            crate::builtins::bytes::argument_bytes(&mutator.heap, receiver)
+                .map(|bytes| Ok(Value::small_integer(bytes.size() as i64)))
+        }
         StringPrimitive::IndexOf | StringPrimitive::LastIndexOf => Some(search(
             mutator,
             object,

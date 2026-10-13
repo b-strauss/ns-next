@@ -1,0 +1,55 @@
+/// A `Float32Array` stores a binary32: a value is rounded to the nearest
+/// one, a tie to the one whose last bit is even, and read back widened
+/// exactly, so `0.1` reads as the binary32 nearest it. Any number is taken,
+/// converted as `asFloat` converts it -- an Integer, a Fraction -- and
+/// `at:put:` answers the value given, not the one stored. A
+/// `Float64Array` stores the double itself.
+class Float32RoundsToNearestEven = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      single
+      double
+    |
+    single:: platform typedArrays Float32Array new: 4.
+    double:: platform typedArrays Float64Array new: 2.
+    transcript
+        print: (single at: 1 put: 0.1);
+        show: ' ';
+        print: (single at: 1);
+        show: ' ';
+        print: (double at: 1 put: 0.1);
+        show: ' ';
+        print: (double at: 1);
+        newLine.
+    single at: 2 put: 1.0 + (1.0 / 16777216.0).
+    single at: 3 put: 1.0 + (3.0 / 16777216.0).
+    transcript
+        print: (single at: 2);
+        show: ' ';
+        print: (single at: 3);
+        newLine.
+    transcript
+        print: (single at: 4 put: 3);
+        show: ' ';
+        print: (single at: 4);
+        show: ' ';
+        print: (single at: 4 put: 1 / 3);
+        show: ' ';
+        print: (single at: 4);
+        show: ' ';
+        print: (double at: 2 put: 1 / 3);
+        show: ' ';
+        print: (double at: 2);
+        newLine.
+    single at: 4 put: 16777217.
+    double at: 2 put: (2 raisedTo: 70).
+    transcript
+        print: (single at: 4);
+        show: ' ';
+        print: (double at: 2) = (2 raisedTo: 70) asFloat;
+        show: ' ';
+        print: (single at: 4) isKindOfFloat;
+        newLine.
+  )
+)

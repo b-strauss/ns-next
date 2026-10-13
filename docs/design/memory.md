@@ -43,7 +43,8 @@
 > scavenger and the tenuring threshold), `heap/compaction.rs` (the
 > live-word bitmap a collection forwards through, and the move's shift),
 > `heap/object.rs` (the block of words an object is, `pointer_ranges`,
-> which names its pointer words by its format, and `trace_block`),
+> which names its pointer words by its format, `trace_block`, and
+> `realign`, which moves a `ByteArray`'s data to its block's alignment),
 > `heap/header.rs` (the header word),
 > `heap/records.rs` (the seam's value types), `heap/tables.rs` (the per-heap
 > tables of mixins, applications and code),
@@ -724,9 +725,9 @@ check").
   sender, home, receiver, current class, the kind's operand among them, the
   rest numbers or constants the tracer passes over -- and its registers. A
   married frame's registers are its entry's, traced with the stack, so its
-  own are skipped. The digits of a `LargeInteger`, a boxed `Float`'s bits and
-  a string's code points are never handed to the tracer, since they would
-  read as handles.
+  own are skipped. The digits of a `LargeInteger`, a boxed `Float`'s bits,
+  a string's code points and a `ByteArray`'s reserve and bytes are never
+  handed to the tracer, since they would read as handles.
 - The host root table.
 - The kernel-private `Activation` class, every frame object's class, which
   the heap holds (`Heap::activation_class`).
@@ -848,7 +849,10 @@ moves do not all shift alike, and otherwise back down to the first offset,
 so no object keeps its offset at any move, young stays young, and no region
 creeps upward (`compaction::Shift`); each nursery region keeps 264 bytes
 free past what it fills (`REGION_SLACK`), so a shift of up to 256 bytes
-never pushes an object out of it. The remembered set holds raw offsets that
+never pushes an object out of it. A shift changes an object's address
+modulo 32, so after copying a region the move walks it and realigns every
+`ByteArray`'s data ("Every mover realigns a `ByteArray`'s data"); the
+varied shifts put each at all four positions over a run. The remembered set holds raw offsets that
 no tracer reaches, so the move relocates each through the same shift
 before the next scavenge reads it as a header. Every `ObjectReference` and
 `FrameReference` carries, in a debug build and beside the origin it already carries,
@@ -1113,9 +1117,13 @@ layout a release build runs, and an object costs the same in both:
 | a `LargeInteger` of d digits | 2 + d | 16 + 8d |
 | a boxed `Float` | 2 + 1 | 24 |
 | a string or symbol of n code points | 2 + ⌈n/8⌉, or 2 + ⌈n/2⌉ when wide | 16 + 8⌈n/8⌉, or 16 + 8⌈n/2⌉ |
+| a `ByteArray` of n bytes | 2 + 3 + ⌈n/8⌉ | 40 + 8⌈n/8⌉ |
 
 Each adds 8 bytes, its overflow word, once its words after the header pass
-254: an `Array` of 254 elements or more, a frame of 244 registers or more.
+254: an `Array` of 254 elements or more, a frame of 244 registers or more,
+a `ByteArray` of 2,001 bytes or more. A `ByteArray`'s three reserve words
+let its data begin at a 32-byte address wherever the block lies ("Every
+mover realigns a `ByteArray`'s data").
 The handles the Rust side holds are larger in a debug
 build -- 16 bytes against 8, a `Value` 16 against 8 -- because a debug handle
 carries the id of the heap that minted it and the move epoch the stress mode
@@ -1170,8 +1178,22 @@ The other record kinds stay below the metaclass record: a class record is at
 least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
 tables), a frame record at least 21 for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
-closure record at least 17 for 40 (2.4x). A placeholder is filled in place,
-so no record's fields are laid out beside it.
+closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
+`14 + n` for `8 × (5 + ⌈n/8⌉)`, its alignment reserve not on the wire, at
+most 40 for 14 (2.9x; 4.0x and 4.6x with the decoder's tables). A
+placeholder is filled in place, so no record's fields are laid out beside
+it.
+
+**The record figures count a class tag as two bytes**, as the derivation
+in `decode_value`'s doc comment does; every class tag the encoder writes
+is five, a tag byte and a `u32` (`CLASS_RECORD`, `CLASS_SHIPPED`), and the
+byte-array record alone is counted at that. So every other record is at
+least three bytes longer per class it names than counted, each record's
+ratio above is an upper bound, and so is the 10.7x: a metaclass record is
+at least 15 bytes for its 80, 5.3x, and 6.4x and 6.9x with the decoder's
+tables, below the 8x of a value's word, which then sets the release
+build's figure. The bounds stay safe; tightening them in the doc comment,
+here and in `CLAUDE.md` together is open ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 **So the transient peak of a rejected load is about 10.7x of the graph
 section's bytes in a release build (a graph of metaclass records) and about
@@ -1364,7 +1386,9 @@ copying down never overwrites an allocation the walk has yet to read --
 and then copies the nursery's survivors, the past survivor space's and
 then eden's in address order, above the last old one: a copy reads below
 `NURSERY_END` and writes above it, so the two never overlap. Each survivor's
-mark bit and age are cleared as it lands. The remembered bits are cleared
+mark bit and age are cleared as it lands, and a `ByteArray`'s data are
+moved to its new block's alignment ("Every mover realigns a `ByteArray`'s
+data"). The remembered bits are cleared
 first, at the offsets the remembered set holds, and the set emptied: once
 everything is old nothing needs remembering. The new top is `NURSERY_END`
 plus the live words, the nursery is empty, and a pending scavenge request
@@ -2184,7 +2208,8 @@ A Cheney copy of the nursery's survivors (`heap/scavenge.rs`), as Spur's
   `isReallyYoungObject:` test at `:43316-43322`). Since the bulk forward
   leaves no forwarder behind, every chain a scavenge meets is one link of
   its own. The copy takes the whole allocation, its overflow word
-  included.
+  included, and moves a `ByteArray`'s data to the copy's alignment
+  ("Every mover realigns a `ByteArray`'s data" below).
 - **Where a survivor goes.** To the future survivor space, its age one
   higher, or to the old space, its age 0, when the scavenge tenures
   everything, when its age is at least the tenuring threshold, or when the
@@ -2211,6 +2236,46 @@ roots (`World::check_quiescent_state`), lends the heap and `StepRoots` side
 by side, and times the scavenge as `World::collect` times a collection;
 `--collector-statistics` reports the scavenges and their pauses beside the
 full collections ("The gates the collector needs").
+
+### Every mover realigns a `ByteArray`'s data
+
+A `ByteArray` is an object of the format `AlignedBytes`
+([object-model.md](object-model.md), "The object layout"): its header,
+its class word, three reserve words, then its data words, the data
+beginning at the first 32-byte address at or after the first field word
+-- 0, 8, 16 or 24 bytes in -- so that a later leaf over a whole typed array
+can load it with AVX2's width and no load crosses a cache line
+([core-library.md](core-library.md), "`ByteArray` in the heap, the movers
+and the image"). Where the data begin is computed from the header's word
+index, never stored (`heap/object.rs`'s `aligned_data_start`, the first
+field index rounded up to a multiple of four; the space's base is
+page-aligned, so a word index that is a multiple of four is a 32-byte
+address), so no header bit records it and the object's size never changes
+when it moves: the compaction's forwarding counts words.
+
+The price is that **every mover that copies an `AlignedBytes` object to
+another address moves its data within the new block to the new block's
+aligned position** (`object::realign`, a `copy_within`, since the old and
+the new offset can overlap): the scavenger's `copy` (`heap/scavenge.rs`),
+which knows the old and the new header index; the compaction's slide
+(`heap.rs`), likewise, the slide copying downward so the words inside the
+new block are all in place when it realigns; and the move stress mode
+(`Heap::move_everything`), which shifts a whole region by one distance and
+then walks it, realigning each `AlignedBytes` object from its old header
+index, the new one less the shift. A mover that skips it leaves the data
+at the old offset within the block, and every read answers wrong bytes at
+exit status 0 -- an invariant of `CLAUDE.md`'s. It is the first format
+that needs a per-object fix-up in the movers; slack inside the object
+touches the fewest invariants, where an aligned bump with `Free` fillers
+would break the compaction's dense forwarding. The image decoder places a
+`ByteArray`'s data at its own placeholder's alignment as it fills it.
+
+The heap's readers `debug_assert!` the alignment, and
+`an_aligned_byte_array_keeps_its_bytes_through_every_mover_at_every_position`
+(`heap.rs`) holds the bytes through a scavenge, a compaction and the move
+stress mode at each of the four positions; the move stress mode's varied
+shifts reach all four in the suite too. Bytes are no handles: the tracer
+never sees them, and storing a byte takes no write barrier.
 
 ### The age table and the tenuring threshold
 
@@ -2612,3 +2677,15 @@ the groundwork the JIT tiers take over, as Cogit's `genPrimitiveNew` and
   with the user on 2026-10-03). Allocation stays infallible, so no hot path
   carries a `Result`; a Newspeak-level out-of-memory error is open
   ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **A `ByteArray`'s data lie at a 32-byte address, through a reserve of
+  three words that every mover realigns** (decided with the user on
+  2026-10-12, built on 2026-10-13): AVX2's width, so no 32-byte load
+  crosses a cache line, where 16 would let one in four do so and 64 would
+  cost seven words an object; computed from the object's address and never
+  stored, so the object's size stays the same wherever it moves; slack
+  inside the object, where an aligned bump with `Free` fillers would break
+  the compaction's dense forwarding ("Every mover realigns a `ByteArray`'s
+  data"). A size the program chose is asked first whether the reservation
+  and the operating system can hold it (`Heap::byte_array_fits`), so that
+  `ByteArray new:` refuses with an `ArgumentError` what would otherwise
+  abort the process.

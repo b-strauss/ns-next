@@ -475,8 +475,11 @@ kernel's.
   platform"). `Number` is the place §3.1.1 names, and holds what the four
   numeric classes share, the numeric tower's rows among it
   ([core-library.md](core-library.md), "The numeric tower").
-  `Array` and `Closure` stay directly under `Object`,
-  since their instances are not values, and so does `Behavior`, with `Class`
+  `Array` and `ByteArray`, whose instances are not values, stay under
+  `Object`, below `Collection` and the level the kernel mixin
+  `IndexedCollection` adds for each (`Collection <: IndexedCollection`;
+  [core-library.md](core-library.md), "The sequence protocol is a mixin");
+  `Closure` stays directly under `Object`, and so does `Behavior`, with `Class`
   and `Metaclass` below it ("Class sides and metaclasses" below), and so do
   `Proxy`, with the runtime's `FutureImplementation` below it, and the
   public `Future`, which has no instances ("Simultaneous slots" below). The
@@ -484,9 +487,14 @@ kernel's.
   `CannotInstantiate` are below `Error` ([core-library.md](core-library.md),
   "Exceptions"). The VM mirror's class,
   which `Kernel.ns` does not declare, sits below `Value`, so the mirror is a
-  value ("A value object's four conditions" below). The clause is read by name
-  at bootstrap, never run, and the class object's `superclass` link is set to
-  match its application's.
+  value ("A value object's four conditions" below). The clause, `<:`
+  clauses included, is read by name at bootstrap, never run, and the class
+  object's `superclass` link is set to match its application's. The
+  kernel's other classes -- `StringBuilder` and `DataView` -- are no
+  builtins but ordinary classes of `Kernel.ns`, and the typed arrays are
+  ordinary classes of the shipped module `TypedArraysFactory.ns`
+  ([core-library.md](core-library.md), "`ByteArray`, `StringBuilder` and
+  the views").
 - **A program reaches a builtin class through `Object`'s accessors** (§3.2):
   `Kernel.ns`'s `Object` declares one protected method per nameable builtin,
   `protected String = ( ^outer Kernel String )`, and a bare `String` is
@@ -496,7 +504,8 @@ kernel's.
   predefined classes are accessors on `Object`", "`class` and the class
   accessors are protected").
 - **`Top` is not nameable.** It is declared private in `Kernel.ns`, as
-  only `Activation`, `NonBooleanReceiver` and `FutureImplementation` are
+  only `Activation`, `NonBooleanReceiver`, `FutureImplementation`,
+  `IndexedCollection`, `LittleEndianDataView` and `BigEndianDataView` are
   besides it, so §6.3.1 keeps it out of every other module's reach; `Object`
   declares no accessor for it among §3.2's accessors for the predefined
   classes, so a bare `Top` is `self Top` and ends in `doesNotUnderstand:`
@@ -1783,9 +1792,13 @@ either layout open.
 | 7 | class | a class object: eight fixed fields |
 | 8-9 | 32-bit-indexed | a wide string or symbol |
 | 16-23 | byte-indexed | a one-byte string or symbol |
+| 24-31 | aligned bytes (`AlignedBytes`) | a `ByteArray`: three reserve words, then its bytes, which begin at the first 32-byte address in the block ([memory.md](memory.md), "Every mover realigns a `ByteArray`'s data") |
 
-The byte and 32-bit formats carry the number of unused units at the end in
-their low bits, as Spur's do, so an exact length needs no length field. A
+The byte, aligned-byte and 32-bit formats carry the number of unused units
+at the end in their low bits, as Spur's do, so an exact length needs no
+length field. An aligned-byte object is its own format rather than a byte
+one because every reader that meets the byte format takes it for a string.
+A
 code no format uses reads as free, so a corrupt word walks as a gap rather
 than panicking. A forwarder needs no field of its own: the class word, which
 every object has -- a header and a class word are the 16-byte minimum --
@@ -1806,9 +1819,9 @@ alike, the class word and, by the header's format alone, every field of
 the two pointer formats, a class object's
 object fields, a closure's captured frame and copied values, and a frame's
 fixed fields and, once it is no longer married, its registers -- never the
-digits of a `LargeInteger`, a `Float`'s bits or a string's code points,
-which would read as handles ([memory.md](memory.md), "What the collector
-traces").
+digits of a `LargeInteger`, a `Float`'s bits, a string's code points or a
+`ByteArray`'s bytes, which would read as handles ([memory.md](memory.md),
+"What the collector traces").
 
 **Class objects, closures and frames are objects.** A class object keeps in
 eight fixed fields (`object.rs`'s `class_field`) everything that holds per

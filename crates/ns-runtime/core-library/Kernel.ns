@@ -10,13 +10,18 @@
 /// Newspeak source over a VM mirror"). One nested class per builtin class;
 /// the bootstrap fills the builtin class objects from them before it
 /// instantiates this module, so a nested class here *is* the class a literal
-/// has. Every method that needs a leaf reaches Rust through `vmMirror`, the
-/// one object that holds the leaves, and nothing else here does.
+/// has. Beside them, ordinary classes, which their accessors build as any
+/// class's do. Every method that needs a leaf reaches Rust through
+/// `vmMirror`, the one object that holds the leaves, and nothing else here
+/// does.
 ///
-/// A superclass clause below names a sibling by its bare name and nothing
-/// else: the bootstrap reads the name and never runs the clause, because the
-/// classes it names must exist before any clause could run. `Top` declares
-/// none: it has no superclass.
+/// A builtin's superclass clause names a sibling by its bare name and
+/// nothing else, and so does each of its `<:` clauses, which may name only
+/// an ordinary class whose own clause is a bare builtin name: the bootstrap
+/// reads the names and runs neither clause, because the classes they name
+/// must exist before any clause could run. An ordinary class's clause runs
+/// when the boot builds the class. `Top` declares none: it has no
+/// superclass.
 ///
 /// Every class here says `public`: §6.3.1 makes an undeclared member
 /// protected, and a protected class is unreachable from another module, so
@@ -204,6 +209,11 @@ class Kernel vmMirror: mirror = Value (
     /// Answers the kernel's class `Array`.
     protected Array = (
       ^outer Kernel Array.
+    )
+
+    /// Answers the kernel's class `ByteArray`.
+    protected ByteArray = (
+      ^outer Kernel ByteArray.
     )
 
     /// Answers the kernel's class `Closure`.
@@ -3049,6 +3059,27 @@ class Kernel vmMirror: mirror = Value (
       ^self.
     )
 
+    /// Answers a new ByteArray of the receiver's code points encoded as
+    /// UTF-8, in order: one byte for a code point below 128, up to four
+    /// for one past 65535. `String fromUtf8:` decodes it back to an equal
+    /// String. The receiver is unchanged, and each send answers a new
+    /// ByteArray.
+    ///
+    /// Signals an ArgumentError carrying the receiver, 'asUtf8 cannot
+    /// allocate a ByteArray of … bytes', only for a String whose bytes
+    /// the heap cannot hold.
+    public asUtf8 = (
+      ^vmMirror stringAsUtf8: self ifFail: [^super asUtf8].
+    )
+
+    /// Answers the number of bytes the receiver takes as UTF-8, the size
+    /// of `asUtf8`'s answer, counted without making it; never signals.
+    ///
+    /// `StringBuilder` asks it before it appends a String.
+    public utf8Size = (
+      ^vmMirror stringUtf8Size: self ifFail: [^super utf8Size].
+    )
+
     /// Evaluates `action` with each code point, an Integer, from the
     /// first. Answers the receiver.
     ///
@@ -3231,6 +3262,57 @@ class Kernel vmMirror: mirror = Value (
         ].
       ].
     )
+
+    /// Answers a new String of the code points the UTF-8 bytes of `bytes`
+    /// encode: `fromUtf8: bytes from: 1 to: bytes size`.
+    ///
+    /// bytes: a ByteArray.
+    ///
+    /// Signals an ArgumentError carrying `bytes`, 'fromUtf8: requires a
+    /// ByteArray, got …' and its `printString`, for any other argument,
+    /// and the one `fromUtf8:from:to:` signals for bytes that are no
+    /// UTF-8.
+    ///
+    /// The argument is checked first, since `bytes size` of anything else
+    /// could answer anything, or nothing.
+    public fromUtf8: bytes = (
+      bytes isKindOfByteArray ifFalse: [
+        ^(outer Kernel ArgumentError value: bytes) signal: 'fromUtf8: requires a ByteArray, got '
+            , bytes printString.
+      ].
+      ^self fromUtf8: bytes from: 1 to: bytes size.
+    )
+
+    /// Answers a new String of the code points the UTF-8 bytes of `bytes`
+    /// from `start` to `stop`, both included, encode; `bytes` is
+    /// unchanged. A `stop` of `start - 1` answers an empty String.
+    ///
+    /// bytes: a ByteArray.
+    /// start: an Integer from 1 to `bytes size + 1`.
+    /// stop: an Integer from `start - 1` to `bytes size`.
+    ///
+    /// Decodes strictly: a truncated sequence, a range that ends inside a
+    /// character among them, a stray continuation byte, an overlong
+    /// encoding, a surrogate and a code point past 1114111 are an
+    /// ArgumentError carrying `bytes`, 'fromUtf8: invalid UTF-8 at byte
+    /// …', which names the first byte of the bad sequence by its index in
+    /// `bytes`, not in the range. A byte-order mark is kept, as the code
+    /// point 65279.
+    ///
+    /// Signals, besides, an ArgumentError carrying `bytes`,
+    /// 'fromUtf8:from:to: requires a ByteArray, got …', for a `bytes`
+    /// that is no ByteArray; and for a range `bytes` does not hold the
+    /// ArgumentError `copyFrom:to:` signals, its text beginning 'from: …
+    /// to: …' and the bound that is no Integer named by
+    /// 'fromUtf8:from:to:'.
+    ///
+    /// Strict rather than a replacement character for each bad sequence,
+    /// so that nothing is lost silently. The leaf declines only a subject
+    /// that is not `String` itself, which a flat class side cannot be sent
+    /// from.
+    public fromUtf8: bytes from: start to: stop = (
+      ^vmMirror stringClass: self fromUtf8: bytes from: start to: stop ifFail: [nil].
+    )
   )
 
   /// A canonical String: one object per text (§5.1.6), made only by a
@@ -3258,6 +3340,194 @@ class Kernel vmMirror: mirror = Value (
     /// Answers a new String of the Symbol's text after a '#'.
     public printString = (
       ^vmMirror symbolPrintString: self ifFail: [^super printString].
+    )
+  )
+
+  /// A growing text, built by appending Strings and code points: it keeps
+  /// the UTF-8 bytes of what was appended in a ByteArray that grows by half
+  /// again when it is full, so an append costs amortised constant time. Its
+  /// `size` counts code points, as a String's does. Equality and `hash` are
+  /// identity.
+  ///
+  /// capacity: an Integer of at least 0, the number of UTF-8 bytes to make
+  ///     room for at the start; a hint, since the builder grows as needed.
+  ///
+  /// Signals the ArgumentError of `ByteArray new:` for a capacity that is
+  /// negative, no Integer or too large to allocate.
+  public class StringBuilder new: capacity = Object (
+    |
+      /// The UTF-8 bytes appended so far, then unused room; never handed
+      /// out, so the first `byteCount` of them are always valid UTF-8.
+      private data ::= outer Kernel ByteArray new: capacity.
+      /// How many bytes of `data` are used.
+      private byteCount ::= 0.
+      /// How many code points those bytes encode.
+      private codePointCount ::= 0.
+    |
+  ) (
+    /// Answers true: the receiver is a StringBuilder.
+    public isKindOfStringBuilder = (
+      ^true.
+    )
+
+    /// Appends the code points of `aString` and answers it.
+    ///
+    /// aString: a String or a Symbol.
+    ///
+    /// Signals an ArgumentError carrying `aString`, 'add: requires a
+    /// String, got …' and its `printString`, for any other argument, a
+    /// ByteArray included; the builder is unchanged.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    public add: aString = (
+      |
+        byteTotal
+      |
+      self checkState: #add:.
+      aString isKindOfString ifFalse: [
+        ^(outer Kernel ArgumentError value: aString) signal: 'add: requires a String, got '
+            , aString printString.
+      ].
+      byteTotal:: aString utf8Size.
+      self ensureRoom: byteCount + byteTotal.
+      data replaceFrom: byteCount + 1 to: byteCount + byteTotal with: aString startingAt: 1.
+      byteCount:: byteCount + byteTotal.
+      codePointCount:: codePointCount + aString size.
+      ^aString.
+    )
+
+    /// Appends one code point and answers it.
+    ///
+    /// codePoint: an Integer from 0 to 1114111 outside 55296 to 57343.
+    ///
+    /// Signals an ArgumentError carrying `codePoint`, 'addCodePoint:
+    /// requires a Unicode scalar value, got …' and its `printString`, for
+    /// any other argument; nothing is appended.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    ///
+    /// The value is checked here, before the write, so that the error
+    /// names `addCodePoint:` rather than the ByteArray store behind it.
+    public addCodePoint: codePoint = (
+      self checkState: #addCodePoint:.
+      (codePoint isKindOfInteger and: [
+        codePoint >= 0 and: [
+          codePoint <= 1114111 and: [(codePoint >= 55296 and: [codePoint <= 57343]) not].
+        ].
+      ]) ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: codePoint) signal: 'addCodePoint: requires a Unicode scalar value, got '
+            , codePoint printString.
+      ].
+      self ensureRoom: byteCount + 4.
+      byteCount:: byteCount + (data at: byteCount + 1 putCodePoint: codePoint).
+      codePointCount:: codePointCount + 1.
+      ^codePoint.
+    )
+
+    /// Appends the code points of `aString` and then a newline, code point
+    /// 10, and answers the receiver.
+    ///
+    /// aString: a String or a Symbol.
+    ///
+    /// Signals the ArgumentErrors of `add:`; the builder is unchanged.
+    public writeln: aString = (
+      self add: aString.
+      self addCodePoint: 10.
+      ^self.
+    )
+
+    /// Answers how many code points have been appended.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    public size = (
+      self checkState: #size.
+      ^codePointCount.
+    )
+
+    /// Answers whether nothing has been appended.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    public isEmpty = (
+      self checkState: #isEmpty.
+      ^codePointCount = 0.
+    )
+
+    /// Answers a new String of everything appended, in order; a new one
+    /// on every send, so the receiver's later appends do not reach it.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    public asString = (
+      self checkState: #asString.
+      ^outer Kernel String fromUtf8: data from: 1 to: byteCount.
+    )
+
+    /// Answers a new ByteArray of the UTF-8 bytes of everything appended,
+    /// a copy: changing it leaves the receiver unchanged.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    public asUtf8 = (
+      self checkState: #asUtf8.
+      ^data copyFrom: 1 to: byteCount.
+    )
+
+    /// Answers the receiver when its slots hold what its own members leave
+    /// in them: `data` a ByteArray, `byteCount` an Integer from 0 to
+    /// `data size`, and `codePointCount` an Integer from 0 to `byteCount`.
+    ///
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Signals an ArgumentError carrying the receiver, '<selector> found a
+    /// StringBuilder whose state is not its own', for any other state,
+    /// which only a crafted image can make; nothing is changed.
+    ///
+    /// Every member that reads the slots sends it first, so that a crafted
+    /// builder is refused under the selector the program sent, rather than
+    /// by whatever send first meets the wrong object, or by none when the
+    /// counts are wrong but still Integers.
+    private checkState: selector = (
+      (data isKindOfByteArray and: [
+        byteCount isKindOfInteger and: [
+          codePointCount isKindOfInteger and: [
+            byteCount >= 0 and: [
+              byteCount <= data size and: [codePointCount >= 0 and: [codePointCount <= byteCount]].
+            ].
+          ].
+        ].
+      ]) ifFalse: [
+        ^(outer Kernel ArgumentError value: self) signal: selector asString
+            , ' found a StringBuilder whose state is not its own'.
+      ].
+    )
+
+    /// Makes `data` hold at least `byteTotal` bytes, replacing it with a
+    /// ByteArray of that size or of one and a half times its current size,
+    /// whichever is more, that begins with the used bytes.
+    ///
+    /// byteTotal: an Integer of at least `byteCount`.
+    ///
+    /// Growing by a fraction of the size rather than a fixed step is what
+    /// keeps the cost of an append amortised constant.
+    private ensureRoom: byteTotal = (
+      |
+        grown
+      |
+      byteTotal > data size ifFalse: [^self].
+      grown:: outer Kernel ByteArray new: (byteTotal max: data size * 3 // 2).
+      grown replaceFrom: 1 to: byteCount with: data startingAt: 1.
+      data:: grown.
+    )
+  ) : (
+    /// Answers a new, empty StringBuilder with room for 16 bytes.
+    public new = (
+      ^self new: 16.
     )
   )
 
@@ -3498,9 +3768,416 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
+  /// The sequence protocol shared by the classes whose elements are
+  /// indexed from 1, a mixin `Array` and `ByteArray` apply over `Collection`
+  /// (`Collection <: IndexedCollection`, §6.2): every member here is
+  /// written over `at:`, `at:put:`, `size` and `newOfSize:`, which each
+  /// class applying it implements, and a class overrides any member it
+  /// can answer faster.
+  ///
+  /// It declares none of `at:`, `at:put:`, `size`, `do:`, `=`, `hash` and
+  /// `printString`, so that a failure block's `super` send in the class
+  /// applying it passes through to `Collection` and `Object`. Its own
+  /// superclass, `Collection`, records that its members build on
+  /// `Collection`'s protocol; applying it takes only its own members.
+  /// Public so that a shipped module can apply it (`TypedArraysFactory`
+  /// applies it over `Collection` to make the typed arrays); no facet
+  /// hands it to a program, which meets it only through the classes that
+  /// apply it.
+  public class IndexedCollection = Collection () (
+    /// Answers a new instance of the receiver's kind holding `size`
+    /// elements, each the empty element of that kind.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`,
+    /// 'IndexedCollection>>newOfSize: is abstract: … must implement it':
+    /// every class applying the mixin defines it.
+    protected newOfSize: size = (
+      ^self subclassResponsibility.
+    )
+
+    /// Answers whether the receiver has no element.
+    public isEmpty = (
+      ^self size = 0.
+    )
+
+    /// Answers the first element.
+    ///
+    /// Signals what `at:` signals for the index 1 when the receiver is
+    /// empty: for an Array, an ArgumentError carrying 1.
+    public first = (
+      ^self at: 1.
+    )
+
+    /// Answers the last element.
+    ///
+    /// Signals what `at:` signals for the index 0 when the receiver is
+    /// empty: for an Array, an ArgumentError carrying 0.
+    public last = (
+      ^self at: self size.
+    )
+
+    /// Answers the index of the first element `=` to `element`, or 0
+    /// when there is none. Each element is sent `=` with `element`, from
+    /// the first, until one answers true.
+    public indexOf: element = (
+      1 to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
+      ^0.
+    )
+
+    /// Evaluates `action` with each index and the element there, from
+    /// the first, reading each element when it reaches it. Answers the
+    /// receiver.
+    ///
+    /// action: a two-argument block, given the index and the element.
+    public keysAndValuesDo: action = (
+      1 to: self size do: [:index | action value: index value: (self at: index)].
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// elements from `start` to `stop`, in order; empty when `stop` is
+    /// `start - 1`. The receiver is unchanged.
+    ///
+    /// start, stop: Integers with 1 <= start <= stop + 1 and
+    ///     stop <= size.
+    ///
+    /// Signals an Array's ArgumentErrors for the range: carrying the
+    /// bound out of range, 'copyFrom: … to: … out of range: valid ranges
+    /// lie within 1..size, an empty range ends just before it starts
+    /// (size …)', or 'copyFrom:to: requires an Integer index, got …' for
+    /// a bound that is no Integer.
+    public copyFrom: start to: stop = (
+      |
+        result
+      |
+      self checkRangeFrom: start to: stop keyword: 'copyFrom:' ifNoInteger: [
+        (outer Kernel Array new: 0) copyFrom: start to: stop.
+      ].
+      result:: self newOfSize: stop - start + 1.
+      1 to: result size do: [:index | result at: index put: (self at: start + index - 1)].
+      ^result.
+    )
+
+    /// Stores the elements of `source` from `sourceStart` on into the
+    /// receiver's positions `start` to `stop`, and answers the
+    /// receiver. Correct when `source` is the receiver and the ranges
+    /// overlap: every element is read before any is stored.
+    ///
+    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
+    /// source: anything answering `size` and `at:` -- an Array, a List,
+    ///     a String, whose elements are its code points.
+    /// sourceStart: an Integer with 1 <= sourceStart and
+    ///     sourceStart + (stop - start) <= source size.
+    ///
+    /// Signals, before it reads or stores any element, an Array's
+    /// ArgumentErrors: for a range the receiver does not hold, the one
+    /// `copyFrom:to:` signals, its text beginning 'replaceFrom: … to: …';
+    /// for a bound or a `sourceStart` that is no Integer,
+    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got
+    /// …'; and for a source too short, one carrying `sourceStart`,
+    /// 'startingAt: … out of range: the source holds … elements, the
+    /// range needs … from …'. Then signals what `at:put:` signals for an
+    /// element the receiver cannot hold.
+    ///
+    /// The elements the range needs are copied into an Array first, which
+    /// is what makes an overlapping range correct.
+    public replaceFrom: start to: stop with: source startingAt: sourceStart = (
+      |
+        count
+        elements
+      |
+      self checkRangeFrom: start to: stop keyword: 'replaceFrom:' ifNoInteger: [
+        (outer Kernel Array new: 0) replaceFrom: start
+            to: stop
+            with: (outer Kernel Array new: 0)
+            startingAt: 1.
+      ].
+      count:: stop - start + 1.
+      self checkSourceStart: sourceStart count: count sourceSize: source size.
+      elements:: outer Kernel Array new: count.
+      1 to: count do: [:index | elements at: index put: (source at: sourceStart + index - 1)].
+      1 to: count do: [:index | self at: start + index - 1 put: (elements at: index)].
+    )
+
+    /// Answers the receiver when `start` to `stop` is a range it holds --
+    /// 1 <= start <= stop + 1 and stop <= size, the empty range included
+    /// -- and otherwise signals the ArgumentError an Array's leaf signals
+    /// for it: carrying the start unless it is a position the receiver
+    /// has, one past the end included, and then the stop, with the text
+    /// '<keyword> … to: … out of range: valid ranges lie within 1..size,
+    /// an empty range ends just before it starts (size …)'.
+    ///
+    /// keyword: the String naming the selector's first keyword,
+    ///     'copyFrom:' or 'replaceFrom:'.
+    /// refuse: a block, evaluated when a bound is no Integer, that
+    ///     signals the selector's own 'requires an Integer index' error.
+    ///
+    /// The texts are an Array leaf's, so that a receiver of any kind fails
+    /// as an Array does. A bound that is no Integer is refused by that
+    /// leaf on an empty Array, since the description of an arbitrary
+    /// object is the leaf's to give; checking the range itself allocates
+    /// nothing, whatever the receiver's size.
+    private checkRangeFrom: start to: stop keyword: keyword ifNoInteger: refuse = (
+      |
+        receiverSize
+        refused
+      |
+      (start isKindOfInteger and: [stop isKindOfInteger]) ifFalse: [^refuse value].
+      receiverSize:: self size.
+      (start >= 1 and: [stop >= (start - 1) and: [stop <= receiverSize]]) ifTrue: [^self].
+      refused:: (start >= 1 and: [start - 1 <= receiverSize]) ifTrue: [stop] ifFalse: [start].
+      ^(outer Kernel ArgumentError value: refused) signal: keyword
+          , ' '
+          , start printString
+          , ' to: '
+          , stop printString
+          , ' out of range: valid ranges lie within 1..'
+          , receiverSize printString
+          , ', an empty range ends just before it starts (size '
+          , receiverSize printString
+          , ')'.
+    )
+
+    /// Answers the receiver when a source of `sourceSize` elements holds
+    /// `count` of them from `sourceStart` on, and otherwise signals the
+    /// ArgumentError an Array's `replaceFrom:to:with:startingAt:` leaf
+    /// signals for it, carrying `sourceStart`: 'startingAt: … out of
+    /// range: the source holds … elements, the range needs … from …', or
+    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got …'
+    /// for a `sourceStart` that is no Integer.
+    ///
+    /// count, sourceSize: Integers of at least 0.
+    ///
+    /// The texts are the leaf's, as `checkRangeFrom:to:keyword:ifNoInteger:`'s
+    /// are, and so is the refusal of a start that is no Integer.
+    private checkSourceStart: sourceStart count: count sourceSize: sourceSize = (
+      sourceStart isKindOfInteger ifFalse: [
+        ^(outer Kernel Array new: 0) replaceFrom: 1
+            to: 0
+            with: (outer Kernel Array new: 0)
+            startingAt: sourceStart.
+      ].
+      (sourceStart >= 1 and: [sourceStart - 1 + count <= sourceSize]) ifTrue: [^self].
+      ^(outer Kernel ArgumentError value: sourceStart) signal: 'startingAt: '
+          , sourceStart printString
+          , ' out of range: the source holds '
+          , sourceSize printString
+          , (sourceSize = 1 ifTrue: [' element'] ifFalse: [' elements'])
+          , ', the range needs '
+          , count printString
+          , ' from '
+          , sourceStart printString.
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// receiver's elements followed by those of `collection`. The
+    /// receiver is unchanged.
+    ///
+    /// collection: anything answering `size` and `at:` -- an Array, a
+    ///     List, a String, whose elements are its code points.
+    ///
+    /// Signals what `at:put:` signals for an element of `collection` the
+    /// receiver's kind cannot hold.
+    public , collection = (
+      |
+        result
+      |
+      result:: self newOfSize: self size + collection size.
+      result replaceFrom: 1 to: self size with: self startingAt: 1.
+      result replaceFrom: self size + 1 to: result size with: collection startingAt: 1.
+      ^result.
+    )
+
+    /// Answers a new collection of the receiver's kind one longer than
+    /// the receiver, `element` last. The receiver is unchanged.
+    ///
+    /// Signals what `at:put:` signals for an `element` the receiver's
+    /// kind cannot hold.
+    public copyWith: element = (
+      |
+        result
+      |
+      result:: self copyWithSize: self size + 1.
+      result at: result size put: element.
+      ^result.
+    )
+
+    /// Answers a new collection of the receiver's kind of `newSize`
+    /// elements: the receiver's first ones, cut off when `newSize` is
+    /// smaller than `size`, followed by the empty element of that kind
+    /// -- nil for an Array -- when it is larger. The receiver is
+    /// unchanged.
+    ///
+    /// newSize: an Integer of at least 0.
+    ///
+    /// Signals what `newOfSize:` signals for a `newSize` that is negative
+    /// or no Integer: for an Array, the ArgumentError of `Array new:`.
+    public copyWithSize: newSize = (
+      |
+        result
+        kept
+      |
+      result:: self newOfSize: newSize.
+      kept:: newSize < self size ifTrue: [newSize] ifFalse: [self size].
+      result replaceFrom: 1 to: kept with: self startingAt: 1.
+      ^result.
+    )
+
+    /// Answers a new Array of `transform`'s answer for each element, in
+    /// order: an Array whatever the receiver's kind, since `transform`
+    /// may answer anything. The receiver is unchanged.
+    ///
+    /// transform: a one-argument block.
+    public collect: transform = (
+      |
+        result
+      |
+      result:: outer Kernel Array new: self size.
+      1 to: self size do: [:index | result at: index put: (transform value: (self at: index))].
+      ^result.
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// elements for which `predicate` answers true, in order. The
+    /// receiver is unchanged.
+    ///
+    /// predicate: a one-argument block answering a Boolean.
+    public select: predicate = (
+      |
+        result
+        count
+        element
+      |
+      result:: self newOfSize: self size.
+      count:: 0.
+      1 to: self size do: [:index |
+        element:: self at: index.
+        (predicate value: element) ifTrue: [
+          count:: count + 1.
+          result at: count put: element.
+        ].
+      ].
+      ^result copyFrom: 1 to: count.
+    )
+
+    /// Answers a new collection of the receiver's kind holding the
+    /// elements for which `predicate` answers false, in order. The
+    /// receiver is unchanged.
+    ///
+    /// predicate: a one-argument block answering a Boolean.
+    public reject: predicate = (
+      ^self select: [:element | (predicate value: element) not].
+    )
+
+    /// Sorts the elements in place, stably -- elements that may precede
+    /// each other both ways keep their order -- and answers the
+    /// receiver.
+    ///
+    /// lessOrEqual: a two-argument block answering whether its first
+    ///     argument may precede its second.
+    public sort: lessOrEqual = (
+      ^self sortFrom: 1 to: self size by: lessOrEqual.
+    )
+
+    /// Sorts the elements from `start` to `stop` in place, stably, as
+    /// `sort:` does, and answers the receiver; the rest stay where they
+    /// are.
+    ///
+    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
+    /// lessOrEqual: a two-argument block answering whether its first
+    ///     argument may precede its second.
+    ///
+    /// Signals the ArgumentError of `copyFrom:to:` for a range the
+    /// receiver does not hold.
+    ///
+    /// A bottom-up merge sort over a copy of the range and a buffer of
+    /// the same size, trading the two each pass: no recursion, so its
+    /// depth does not grow with the range, and two collections of the
+    /// receiver's kind the size of the range as extra memory. Taking from
+    /// the left run while its element may precede the right run's keeps
+    /// it stable.
+    public sortFrom: start to: stop by: lessOrEqual = (
+      |
+        source
+        target
+        count
+        width
+        left
+        swap
+      |
+      source:: self copyFrom: start to: stop.
+      count:: source size.
+      count < 2 ifTrue: [^self].
+      target:: self newOfSize: count.
+      width:: 1.
+      [width < count] whileTrue: [
+        left:: 1.
+        [left <= count] whileTrue: [
+          self merge: source into: target from: left width: width count: count by: lessOrEqual.
+          left:: left + width + width.
+        ].
+        swap:: source.
+        source:: target.
+        target:: swap.
+        width:: width + width.
+      ].
+      self replaceFrom: start to: stop with: source startingAt: 1.
+    )
+
+    /// Merges the sorted runs of `source` that start at `left` -- the
+    /// first `width` elements long, the second the next `width`, each
+    /// cut off at `count` -- into the same positions of `target`,
+    /// taking from the first run while its element may precede the
+    /// second's.
+    private merge: source into: target from: left width: width count: count by: lessOrEqual = (
+      |
+        middle
+        right
+        leftCursor
+        rightCursor
+        targetCursor
+      |
+      middle:: left + width - 1.
+      middle > count ifTrue: [middle:: count].
+      right:: middle + width.
+      right > count ifTrue: [right:: count].
+      leftCursor:: left.
+      rightCursor:: middle + 1.
+      targetCursor:: left.
+      [targetCursor <= right] whileTrue: [
+        ((rightCursor > right) or: [
+          (leftCursor <= middle) and: [
+            lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor).
+          ].
+        ]) ifTrue: [
+          target at: targetCursor put: (source at: leftCursor).
+          leftCursor:: leftCursor + 1.
+        ] ifFalse: [
+          target at: targetCursor put: (source at: rightCursor).
+          rightCursor:: rightCursor + 1.
+        ].
+        targetCursor:: targetCursor + 1.
+      ].
+    )
+
+    /// Answers a new Array of the receiver's elements, in order. The
+    /// receiver is unchanged, and later changes to either do not reach
+    /// the other.
+    public asArray = (
+      |
+        result
+      |
+      result:: outer Kernel Array new: self size.
+      1 to: self size do: [:index | result at: index put: (self at: index)].
+      ^result.
+    )
+  )
+
   /// A fixed-size sequence of objects, indexed from 1, and a Collection:
-  /// `Array new: 3`, or a literal such as `{1. 2}`.
-  public class Array = Collection () (
+  /// `Array new: 3`, or a literal such as `{1. 2}`. The sequence protocol
+  /// comes from `IndexedCollection`, over the leaves here.
+  public class Array = Collection <: IndexedCollection () (
     /// Answers true: the receiver is an Array.
     public isKindOfArray = (
       ^true.
@@ -3556,42 +4233,16 @@ class Kernel vmMirror: mirror = Value (
       ^self.
     )
 
-    /// Answers whether the Array has no element.
-    public isEmpty = (
-      ^self size = 0.
-    )
-
-    /// Answers the first element.
+    /// Answers a new Array of `size` elements, each nil: the new
+    /// instance of the receiver's kind the sequence protocol builds its
+    /// answers in.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 1, for an empty
-    /// Array.
-    public first = (
-      ^self at: 1.
-    )
-
-    /// Answers the last element.
+    /// size: an Integer of at least 0.
     ///
-    /// Signals the ArgumentError of `at:`, carrying 0, for an empty
-    /// Array.
-    public last = (
-      ^self at: self size.
-    )
-
-    /// Answers the index of the first element `=` to `element`, or 0
-    /// when there is none. Each element is sent `=` with `element`, from
-    /// the first, until one answers true.
-    public indexOf: element = (
-      1 to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
-      ^0.
-    )
-
-    /// Evaluates `action` with each index and the element there, from
-    /// the first, reading each element when it reaches it. Answers the
-    /// receiver.
-    ///
-    /// action: a two-argument block, given the index and the element.
-    public keysAndValuesDo: action = (
-      1 to: self size do: [:index | action value: index value: (self at: index)].
+    /// Signals the ArgumentError of `Array new:` for a `size` that is
+    /// negative or no Integer.
+    protected newOfSize: size = (
+      ^outer Kernel Array new: size.
     )
 
     /// Answers a new Array of the elements from `start` to `stop`; empty
@@ -3625,213 +4276,16 @@ class Kernel vmMirror: mirror = Value (
     /// not hold, and an ArgumentError carrying `sourceStart`,
     /// 'startingAt: … out of range: the source holds … elements, the
     /// range needs … from …', for a source too short.
+    ///
+    /// The leaf takes an Array source; any other source falls to
+    /// `IndexedCollection`'s, which copies it into an Array first.
     public replaceFrom: start to: stop with: source startingAt: sourceStart = (
       ^vmMirror collection: self
           replaceFrom: start
           to: stop
           with: source
           startingAt: sourceStart
-          ifFail: [self replaceFrom: start to: stop withElementsOf: source startingAt: sourceStart].
-    )
-
-    /// `replaceFrom:to:with:startingAt:` for a source that is no Array:
-    /// copies the whole source into a new Array of its size and hands
-    /// that to the leaf with `sourceStart` unchanged, so the leaf checks
-    /// the range and the start against a source of the same size, and
-    /// every error text is the leaf's.
-    ///
-    /// source: anything answering `size` and `at:`; signals the
-    ///     MessageNotUnderstood of the first it lacks.
-    ///
-    /// Signals what `replaceFrom:to:with:startingAt:` documents.
-    private replaceFrom: start to: stop withElementsOf: source startingAt: sourceStart = (
-      |
-        elements
-      |
-      elements:: outer Kernel Array new: source size.
-      1 to: source size do: [:index | elements at: index put: (source at: index)].
-      ^vmMirror collection: self
-          replaceFrom: start
-          to: stop
-          with: elements
-          startingAt: sourceStart
           ifFail: [^super replaceFrom: start to: stop with: source startingAt: sourceStart].
-    )
-
-    /// Answers a new Array of the receiver's elements followed by those
-    /// of `collection`. The receiver is unchanged.
-    ///
-    /// collection: an Array, or anything answering `size` and `at:` --
-    ///     a List, a String, whose elements are its code points.
-    public , collection = (
-      |
-        result
-      |
-      result:: outer Kernel Array new: self size + collection size.
-      result replaceFrom: 1 to: self size with: self startingAt: 1.
-      result replaceFrom: self size + 1 to: result size with: collection startingAt: 1.
-      ^result.
-    )
-
-    /// Answers a new Array one longer than the receiver, `element` last.
-    /// The receiver is unchanged.
-    public copyWith: element = (
-      |
-        result
-      |
-      result:: self copyWithSize: self size + 1.
-      result at: result size put: element.
-      ^result.
-    )
-
-    /// Answers a new Array of `newSize` elements: the receiver's first
-    /// ones, cut off when `newSize` is smaller than `size`, followed by
-    /// nils when it is larger. The receiver is unchanged.
-    ///
-    /// newSize: an Integer of at least 0.
-    ///
-    /// Signals the ArgumentError of `Array new:` for a `newSize` that
-    /// is negative or no Integer.
-    public copyWithSize: newSize = (
-      |
-        result
-        kept
-      |
-      result:: outer Kernel Array new: newSize.
-      kept:: newSize < self size ifTrue: [newSize] ifFalse: [self size].
-      result replaceFrom: 1 to: kept with: self startingAt: 1.
-      ^result.
-    )
-
-    /// Answers a new Array of `transform`'s answer for each element, in
-    /// order. The receiver is unchanged.
-    ///
-    /// transform: a one-argument block.
-    public collect: transform = (
-      |
-        result
-      |
-      result:: outer Kernel Array new: self size.
-      1 to: self size do: [:index | result at: index put: (transform value: (self at: index))].
-      ^result.
-    )
-
-    /// Answers a new Array of the elements for which `predicate`
-    /// answers true, in order. The receiver is unchanged.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    public select: predicate = (
-      |
-        result
-        count
-      |
-      result:: outer Kernel Array new: self size.
-      count:: 0.
-      self do: [:element |
-        (predicate value: element) ifTrue: [
-          count:: count + 1.
-          result at: count put: element.
-        ].
-      ].
-      ^result copyFrom: 1 to: count.
-    )
-
-    /// Answers a new Array of the elements for which `predicate`
-    /// answers false, in order. The receiver is unchanged.
-    ///
-    /// predicate: a one-argument block answering a Boolean.
-    public reject: predicate = (
-      ^self select: [:element | (predicate value: element) not].
-    )
-
-    /// Sorts the elements in place, stably -- elements that may precede
-    /// each other both ways keep their order -- and answers the
-    /// receiver.
-    ///
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
-    public sort: lessOrEqual = (
-      ^self sortFrom: 1 to: self size by: lessOrEqual.
-    )
-
-    /// Sorts the elements from `start` to `stop` in place, stably, as
-    /// `sort:` does, and answers the receiver; the rest stay where they
-    /// are.
-    ///
-    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
-    /// lessOrEqual: a two-argument block answering whether its first
-    ///     argument may precede its second.
-    ///
-    /// Signals the ArgumentError of `copyFrom:to:` for a range the
-    /// receiver does not hold.
-    ///
-    /// A bottom-up merge sort over a copy of the range and a buffer of
-    /// the same size, trading the two each pass: no recursion, so its
-    /// depth does not grow with the range, and two Arrays the size of
-    /// the range as extra memory. Taking from the left run while its
-    /// element may precede the right run's keeps it stable.
-    public sortFrom: start to: stop by: lessOrEqual = (
-      |
-        source
-        target
-        count
-        width
-        left
-        swap
-      |
-      source:: self copyFrom: start to: stop.
-      count:: source size.
-      count < 2 ifTrue: [^self].
-      target:: outer Kernel Array new: count.
-      width:: 1.
-      [width < count] whileTrue: [
-        left:: 1.
-        [left <= count] whileTrue: [
-          self merge: source into: target from: left width: width count: count by: lessOrEqual.
-          left:: left + width + width.
-        ].
-        swap:: source.
-        source:: target.
-        target:: swap.
-        width:: width + width.
-      ].
-      self replaceFrom: start to: stop with: source startingAt: 1.
-    )
-
-    /// Merges the sorted runs of `source` that start at `left` -- the
-    /// first `width` elements long, the second the next `width`, each
-    /// cut off at `count` -- into the same positions of `target`,
-    /// taking from the first run while its element may precede the
-    /// second's.
-    private merge: source into: target from: left width: width count: count by: lessOrEqual = (
-      |
-        middle
-        right
-        leftCursor
-        rightCursor
-        targetCursor
-      |
-      middle:: left + width - 1.
-      middle > count ifTrue: [middle:: count].
-      right:: middle + width.
-      right > count ifTrue: [right:: count].
-      leftCursor:: left.
-      rightCursor:: middle + 1.
-      targetCursor:: left.
-      [targetCursor <= right] whileTrue: [
-        ((rightCursor > right) or: [
-          (leftCursor <= middle) and: [
-            lessOrEqual value: (source at: leftCursor) value: (source at: rightCursor).
-          ].
-        ]) ifTrue: [
-          target at: targetCursor put: (source at: leftCursor).
-          leftCursor:: leftCursor + 1.
-        ] ifFalse: [
-          target at: targetCursor put: (source at: rightCursor).
-          rightCursor:: rightCursor + 1.
-        ].
-        targetCursor:: targetCursor + 1.
-      ].
     )
   ) : (
     /// Answers a new Array of `size` elements, each nil.
@@ -3868,6 +4322,1247 @@ class Kernel vmMirror: mirror = Value (
         result at: index put: element.
       ].
       ^result.
+    )
+  )
+
+  /// A fixed-size sequence of bytes, each an Integer from 0 to 255,
+  /// indexed from 1, and a Collection: `ByteArray new: 4` makes one of
+  /// zeros. The sequence protocol comes from `IndexedCollection`, over
+  /// the leaves here. No value: `=` and `hash` are identity, since a hash
+  /// of the bytes would change under a Map's key as they are stored.
+  public class ByteArray = Collection <: IndexedCollection () (
+    /// Answers true: the receiver is a ByteArray.
+    public isKindOfByteArray = (
+      ^true.
+    )
+
+    /// Evaluates `action` with each byte in turn, from the first, reading
+    /// each byte only when it reaches it, so that a store ahead of the
+    /// walk is seen; answers the receiver.
+    ///
+    /// action: a block of one argument, or anything understanding
+    /// `value:`; sent `value:` with each byte.
+    ///
+    /// Signals what `action`'s `value:` signals.
+    ///
+    /// The size is read through its leaf rather than `self size`, which
+    /// for a receiver holding no bytes -- an instance of a subclass --
+    /// would reach Collection's `size`, which counts through `do:` and
+    /// would come back here; the declining leaf sends such a receiver on
+    /// to Collection's `do:` instead.
+    public do: action = (
+      |
+        count
+      |
+      count:: vmMirror byteArraySize: self ifFail: [^super do: action].
+      1 to: count do: [:index | action value: (self at: index)].
+    )
+
+    /// Stores `value` at `index` and answers `value`.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'at:put: requires an
+    /// Integer index, got …' for an index that is no Integer; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from
+    /// 0 to 255, got …', for a value outside 0 to 255 or no Integer. A
+    /// refused store leaves the byte as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: self at: index put: value ifFail: [^super at: index put: value].
+    )
+
+    /// Answers the number of bytes, fixed when the ByteArray was made.
+    public size = (
+      ^vmMirror byteArraySize: self ifFail: [^super size].
+    )
+
+    /// Answers the byte at `index`, an Integer from 0 to 255.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'at: requires an
+    /// Integer index, got …' for an index that is no Integer.
+    public at: index = (
+      ^vmMirror byteArray: self at: index ifFail: [^super at: index].
+    )
+
+    /// Stores the UTF-8 bytes of the code point `codePoint` from `index`
+    /// on, and answers how many it stored, an Integer from 1 to 4.
+    ///
+    /// index: an Integer from 1 to `size`, with room from it to the end
+    ///     for every byte of `codePoint`.
+    /// codePoint: an Integer from 0 to 1114111 outside 55296 to 57343.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an index outside 1
+    /// to `size`, a LargeInteger included, or one whose last byte would
+    /// pass the end, naming that byte's index; and 'at:putCodePoint:
+    /// requires an Integer index, got …' for an index that is no
+    /// Integer. Signals an ArgumentError carrying `codePoint`,
+    /// 'at:putCodePoint: requires a Unicode scalar value, got …', for
+    /// any other code point. A refused store leaves every byte as it was.
+    ///
+    /// `StringBuilder>>addCodePoint:` writes through it.
+    public at: index putCodePoint: codePoint = (
+      ^vmMirror byteArray: self at: index putCodePoint: codePoint ifFail: [
+        ^super at: index putCodePoint: codePoint.
+      ].
+    )
+
+    /// Answers the receiver itself: a ByteArray is its own ByteArray.
+    public asByteArray = (
+      ^self.
+    )
+
+    /// Answers a new ByteArray of `size` bytes, each 0: the new instance
+    /// of the receiver's kind the sequence protocol builds its answers
+    /// in.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentError of `ByteArray new:` for a `size` that is
+    /// negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer Kernel ByteArray new: size.
+    )
+
+    /// Answers a new ByteArray of the bytes from `start` to `stop`; empty
+    /// when `stop` is `start - 1`. The receiver is unchanged.
+    ///
+    /// start, stop: Integers with 1 <= start <= stop + 1 and
+    ///     stop <= size.
+    ///
+    /// Signals an ArgumentError carrying the bound out of range,
+    /// 'copyFrom: … to: … out of range: valid ranges lie within
+    /// 1..size, an empty range ends just before it starts (size …)', or
+    /// 'copyFrom:to: requires an Integer index, got …' for a bound that
+    /// is no Integer.
+    public copyFrom: start to: stop = (
+      ^vmMirror byteArray: self copyFrom: start to: stop ifFail: [^super copyFrom: start to: stop].
+    )
+
+    /// Stores the bytes of `source` from `sourceStart` on into the
+    /// receiver's positions `start` to `stop`, and answers the receiver.
+    /// Correct when `source` is the receiver and the ranges overlap, in
+    /// either direction.
+    ///
+    /// start, stop: a range of the receiver, as for `copyFrom:to:`.
+    /// source: a ByteArray; a String, which counts as its UTF-8 bytes, so
+    ///     that `sourceStart` counts bytes, not code points; or anything
+    ///     answering `size` and `at:` with Integers from 0 to 255.
+    /// sourceStart: an Integer with 1 <= sourceStart and
+    ///     sourceStart + (stop - start) <= the source's size in bytes.
+    ///
+    /// Signals, before it stores any byte, the ArgumentError
+    /// `copyFrom:to:` signals, its text beginning 'replaceFrom: … to: …',
+    /// for a range the receiver does not hold;
+    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got
+    /// …' for a bound or a `sourceStart` that is no Integer; and an
+    /// ArgumentError carrying `sourceStart`, 'startingAt: … out of range:
+    /// the source holds … elements, the range needs … from …', for a
+    /// source too short. From any other source, signals then what
+    /// `at:put:` signals for an element that is no byte.
+    ///
+    /// The leaf takes a ByteArray or a String source; any other source
+    /// falls to `IndexedCollection`'s, which copies it into an Array
+    /// first and then stores its elements one by one, so an element
+    /// `at:put:` refuses leaves the bytes before it already stored.
+    public replaceFrom: start to: stop with: source startingAt: sourceStart = (
+      ^vmMirror byteArray: self
+          replaceFrom: start
+          to: stop
+          with: source
+          startingAt: sourceStart
+          ifFail: [^super replaceFrom: start to: stop with: source startingAt: sourceStart].
+    )
+
+    /// Answers a new ByteArray of the receiver's bytes followed by those
+    /// of `collection`. The receiver is unchanged.
+    ///
+    /// collection: a ByteArray; a String, which counts as its UTF-8
+    ///     bytes; or anything answering `size` and `at:` with Integers
+    ///     from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `collection`, ', cannot
+    /// allocate a ByteArray of … bytes', for a result too large to
+    /// allocate, and, for any other `collection`, what `at:put:` signals
+    /// for an element that is no byte.
+    public , collection = (
+      ^vmMirror byteArray: self concatenate: collection ifFail: [^super , collection].
+    )
+
+    /// Answers the index of the first occurrence of `element`, or 0;
+    /// `indexOf: element startingAt: 1`.
+    public indexOf: element = (
+      ^self indexOf: element startingAt: 1.
+    )
+
+    /// Answers the index at which the first occurrence of `element` that
+    /// starts at or after `start` begins, or 0 when there is none.
+    ///
+    /// element: an Integer, looked for as one byte -- one outside 0 to
+    ///     255 is never found; a ByteArray, or a String, which counts as
+    ///     its UTF-8 bytes, looked for as a run of bytes, an empty one
+    ///     found at `start`; or any other object, looked for as an
+    ///     element, each byte from `start` on sent `=` with it.
+    /// start: an Integer from 1 to `size + 1`.
+    ///
+    /// Signals an ArgumentError carrying `start`, 'indexOf:startingAt: …
+    /// out of range: valid starts are 1..… (size …)', for a `start`
+    /// outside 1 to `size + 1`, or 'indexOf:startingAt: requires an
+    /// Integer index, got …'.
+    public indexOf: element startingAt: start = (
+      ^vmMirror byteArray: self indexOf: element startingAt: start ifFail: [
+        start to: self size do: [:index | (self at: index) = element ifTrue: [^index]].
+        0.
+      ].
+    )
+
+    /// Answers the index of the last occurrence of `element`, or 0;
+    /// `lastIndexOf: element startingAt: size + 1`.
+    public lastIndexOf: element = (
+      ^self lastIndexOf: element startingAt: self size + 1.
+    )
+
+    /// Answers the index at which the last occurrence of `element` that
+    /// starts at or before `start` begins, or 0 when there is none.
+    ///
+    /// element: as for `indexOf:startingAt:`; an empty run of bytes is
+    ///     found at `start`.
+    /// start: an Integer from 1 to `size + 1`.
+    ///
+    /// Signals the ArgumentErrors `indexOf:startingAt:` signals, their
+    /// texts naming 'lastIndexOf:startingAt:'.
+    public lastIndexOf: element startingAt: start = (
+      ^vmMirror byteArray: self lastIndexOf: element startingAt: start ifFail: [
+        (start min: self size) to: 1 by: -1 do: [:index |
+          (self at: index) = element ifTrue: [^index].
+        ].
+        0.
+      ].
+    )
+
+    /// Answers whether the receiver begins with `prefix`; true for an
+    /// empty ByteArray or String.
+    ///
+    /// prefix: an Integer, compared with the first byte; or a ByteArray,
+    ///     or a String, which counts as its UTF-8 bytes, compared with the
+    ///     first bytes.
+    ///
+    /// Signals an ArgumentError carrying `prefix`, 'startsWith: requires
+    /// an Integer, a ByteArray or a String, got …', for any other
+    /// `prefix`.
+    public startsWith: prefix = (
+      ^vmMirror byteArray: self startsWith: prefix ifFail: [^super startsWith: prefix].
+    )
+
+    /// Answers whether the receiver ends with `suffix`; true for an
+    /// empty ByteArray or String.
+    ///
+    /// suffix: an Integer, compared with the last byte; or a ByteArray,
+    ///     or a String, which counts as its UTF-8 bytes, compared with the
+    ///     last bytes.
+    ///
+    /// Signals an ArgumentError carrying `suffix`, 'endsWith: requires
+    /// an Integer, a ByteArray or a String, got …', for any other
+    /// `suffix`.
+    public endsWith: suffix = (
+      ^vmMirror byteArray: self endsWith: suffix ifFail: [^super endsWith: suffix].
+    )
+  ) : (
+    /// Answers a new ByteArray of `size` bytes, each 0.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals an ArgumentError carrying `size`: 'new: requires an
+    /// Integer size, got …' for a size that is no Integer, 'new:
+    /// requires a size of at least 0, got …' for a negative one, and
+    /// 'new: cannot allocate a ByteArray of … bytes' for one too large
+    /// to allocate.
+    ///
+    /// The leaf declines only a subject that is not `ByteArray` itself,
+    /// which a flat class side cannot be sent from.
+    public new: size = (
+      ^vmMirror byteArrayClass: self new: size ifFail: [nil].
+    )
+
+    /// Answers a new ByteArray of `collection`'s elements: a copy of a
+    /// ByteArray, a String's UTF-8 bytes (`asUtf8`), and otherwise the
+    /// elements in `collection`'s `do:` order.
+    ///
+    /// collection: a ByteArray, a String, or anything answering `size`
+    ///     and `do:` whose elements are Integers from 0 to 255 -- an
+    ///     Array, a List.
+    ///
+    /// Signals an ArgumentError carrying the first element that is no
+    /// byte, 'withAll: requires an Integer from 0 to 255, got …' and its
+    /// `printString`.
+    ///
+    /// Each element is checked before it is stored, so that the error
+    /// names the message the program sent rather than `at:put:`.
+    public withAll: collection = (
+      |
+        result
+        index
+      |
+      collection isKindOfByteArray ifTrue: [^collection copyFrom: 1 to: collection size].
+      collection isKindOfString ifTrue: [^collection asUtf8].
+      result:: self new: collection size.
+      index:: 0.
+      collection do: [:element |
+        (element isKindOfInteger and: [element >= 0 and: [element <= 255]]) ifFalse: [
+          ^(outer
+              Kernel
+              ArgumentError value: element) signal: 'withAll: requires an Integer from 0 to 255, got '
+              , element printString.
+        ].
+        index:: index + 1.
+        result at: index put: element.
+      ].
+      ^result.
+    )
+  )
+
+  /// A view of a ByteArray that reads and writes numbers of one to eight
+  /// bytes in a byte order given when it is made, at any byte position:
+  /// `DataView on: bytes byteOrder: #bigEndian` and `DataView new: size
+  /// byteOrder: #littleEndian` answer an instance of a subclass fixed to
+  /// that order, so that no access branches on it. A program makes one with
+  /// those two class-side messages and not with `over:`, whose view has no
+  /// byte order to read the wider numbers in. The view holds the ByteArray
+  /// itself and not a copy, so views over one ByteArray, typed arrays among
+  /// them, see each other's writes.
+  ///
+  /// The accessors are `int8At:` and `uint8At:` -- a single byte has no
+  /// order -- here, and `int16At:`, `uint16At:`, `int32At:`, `uint32At:`,
+  /// `int64At:`, `uint64At:`, `float32At:` and `float64At:` in each
+  /// subclass, every one with a `put:` form. A position counts from 1, as
+  /// `at:` does, and need not be a multiple of the width: `uint32At: 3`
+  /// reads the bytes 3 to 6. The values follow the typed arrays' rules: an
+  /// Integer is checked against its width's range, a float accessor takes
+  /// any Number, and `put:` answers the value given. No value: `=` and
+  /// `hash` are identity.
+  ///
+  /// aByteArray: the ByteArray to view.
+  ///
+  /// Signals an ArgumentError carrying `aByteArray`: 'over: requires a
+  /// ByteArray, got …' and its `printString` for anything that is no
+  /// ByteArray.
+  public class DataView over: aByteArray = Object (
+    |
+      /// The ByteArray the view reads and writes: the one it was made over,
+      /// never a copy.
+      public bytes = viewable: aByteArray.
+    |
+  ) (
+    /// Answers true: the receiver is a DataView.
+    public isKindOfDataView = (
+      ^true.
+    )
+
+    /// Answers the byte order the view reads and writes in, the Symbol
+    /// #littleEndian or #bigEndian.
+    ///
+    /// Here, signals the Error of `subclassResponsibility`: the two
+    /// subclasses define it.
+    public byteOrder = (
+      ^self subclassResponsibility.
+    )
+
+    /// Answers the number of bytes of `bytes`.
+    ///
+    /// Signals the ArgumentError of `noByteArray:` when `bytes` holds no
+    /// ByteArray.
+    public size = (
+      bytes isKindOfByteArray ifFalse: [^self noByteArray: #size].
+      ^bytes size.
+    )
+
+    /// Answers the Integer from -128 to 127 at byte position `position`.
+    ///
+    /// position: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int8At: position … out of
+    /// range: valid positions are 1..… (size …)' or, when `bytes` is empty,
+    /// 'int8At: position … out of range: no position holds 1 byte (size …)',
+    /// for an Integer outside 1 to `size`, a LargeInteger included, and
+    /// 'int8At: requires an Integer position, got …' for a position that is no
+    /// Integer; and the ArgumentError of `noByteArray:` when `bytes` holds no
+    /// ByteArray.
+    public int8At: position = (
+      ^vmMirror byteArray: bytes int8At: position ifFail: [^self noByteArray: #int8At:].
+    )
+
+    /// Stores `value` at byte position `position` and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size`.
+    /// value: an Integer from -128 to 127.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int8At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` is
+    /// empty, 'int8At:put: position … out of range: no position holds 1 byte
+    /// (size …)', for an Integer outside 1 to `size`, a LargeInteger included,
+    /// and 'int8At:put: requires an Integer position, got …' for a position
+    /// that is no Integer; the ArgumentError of `noByteArray:` when `bytes`
+    /// holds no ByteArray; and an ArgumentError carrying `value`, 'int8At:put:
+    /// requires an Integer from -128 to 127, got …', for a value outside that
+    /// range or no Integer. A refused store leaves the bytes as they were.
+    public int8At: position put: value = (
+      ^vmMirror byteArray: bytes int8At: position put: value ifFail: [
+        ^self noByteArray: #int8At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 255 at byte position `position`.
+    ///
+    /// position: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint8At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` is empty,
+    /// 'uint8At: position … out of range: no position holds 1 byte (size …)',
+    /// for an Integer outside 1 to `size`, a LargeInteger included, and
+    /// 'uint8At: requires an Integer position, got …' for a position that is no
+    /// Integer; and the ArgumentError of `noByteArray:` when `bytes` holds no
+    /// ByteArray.
+    public uint8At: position = (
+      ^vmMirror byteArray: bytes uint8At: position ifFail: [^self noByteArray: #uint8At:].
+    )
+
+    /// Stores `value` at byte position `position` and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint8At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` is
+    /// empty, 'uint8At:put: position … out of range: no position holds 1 byte
+    /// (size …)', for an Integer outside 1 to `size`, a LargeInteger included,
+    /// and 'uint8At:put: requires an Integer position, got …' for a position
+    /// that is no Integer; the ArgumentError of `noByteArray:` when `bytes`
+    /// holds no ByteArray; and an ArgumentError carrying `value`, 'uint8At:put:
+    /// requires an Integer from 0 to 255, got …', for a value outside that
+    /// range or no Integer. A refused store leaves the bytes as they were.
+    public uint8At: position put: value = (
+      ^vmMirror byteArray: bytes uint8At: position put: value ifFail: [
+        ^self noByteArray: #uint8At:put:.
+      ].
+    )
+
+    /// Signals an ArgumentError carrying `bytes`, '<selector> found no
+    /// ByteArray under the view, got …' and its `printString`: what an
+    /// access signals when `bytes` holds anything else, which only a
+    /// crafted image can make.
+    ///
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Protected rather than private, since each subclass's accessors
+    /// signal it.
+    protected noByteArray: selector = (
+      ^(outer Kernel ArgumentError value: bytes) signal: selector asString
+          , ' found no ByteArray under the view, got '
+          , bytes printString.
+    )
+
+    /// Answers `aByteArray` when the view can read it: a ByteArray.
+    ///
+    /// Signals an ArgumentError carrying `aByteArray`: 'over: requires a
+    /// ByteArray, got …' and its `printString` for anything else.
+    private viewable: aByteArray = (
+      aByteArray isKindOfByteArray ifFalse: [
+        ^(outer Kernel ArgumentError value: aByteArray) signal: 'over: requires a ByteArray, got '
+            , aByteArray printString.
+      ].
+      ^aByteArray.
+    )
+  ) : (
+    /// Answers a new view of `bytes` reading and writing in the byte order
+    /// `order`: an instance of a subclass fixed to it.
+    ///
+    /// bytes: a ByteArray, viewed itself and not copied.
+    /// order: the Symbol #littleEndian or #bigEndian, decided by identity,
+    ///     so that a String of the same letters is refused.
+    ///
+    /// Signals an ArgumentError carrying `bytes`: 'on:byteOrder: requires
+    /// a ByteArray, got …' and its `printString` for anything that is no
+    /// ByteArray; and one carrying `order`: 'on:byteOrder: requires
+    /// #littleEndian or #bigEndian, got …' and its `printString` for
+    /// anything else.
+    public on: bytes byteOrder: order = (
+      bytes isKindOfByteArray ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: bytes) signal: 'on:byteOrder: requires a ByteArray, got '
+            , bytes printString.
+      ].
+      self checkByteOrder: order selector: #on:byteOrder:.
+      order == #littleEndian ifTrue: [^outer Kernel LittleEndianDataView over: bytes].
+      ^outer Kernel BigEndianDataView over: bytes.
+    )
+
+    /// Answers a new view of a new ByteArray of `size` bytes, each 0, in
+    /// the byte order `order`.
+    ///
+    /// size: an Integer, at least 0.
+    /// order: the Symbol #littleEndian or #bigEndian.
+    ///
+    /// Signals the ArgumentError of `on:byteOrder:` for `order`, with the
+    /// selector 'new:byteOrder:', before anything about `size`; then an
+    /// ArgumentError carrying `size`: 'new:byteOrder: requires an Integer
+    /// size, got …' and its `printString` for a size that is no Integer,
+    /// 'new:byteOrder: requires a size of at least 0, got …' and its
+    /// `printString` for a negative one, and 'new:byteOrder: cannot
+    /// allocate a ByteArray of … bytes' for one too large to allocate.
+    /// Each is signalled before anything is allocated. A `size` that
+    /// answers true to `isKindOfInteger` but is no Integer the VM knows is
+    /// a size that is no Integer.
+    public new: size byteOrder: order = (
+      self checkByteOrder: order selector: #new:byteOrder:.
+      ^self on: (self bytesOfSize: size) byteOrder: order.
+    )
+
+    /// Answers a new ByteArray of `size` bytes, each 0: the bytes of the
+    /// view `new:byteOrder:` makes.
+    ///
+    /// size: the size given to `new:byteOrder:`.
+    ///
+    /// Signals the ArgumentErrors `new:byteOrder:` describes for `size`.
+    ///
+    /// Whether the bytes can be allocated is asked of the VM before
+    /// allocating, the same decision `ByteArray new:` makes, so that a
+    /// size too large is refused under the message the program sent and
+    /// no other error is caught and replaced. Once `isKindOfInteger` has
+    /// answered true and `< 0` false, the VM declines to answer only for a
+    /// size that is no Integer it knows -- an object that merely claims to
+    /// be one -- so the decline is refused as a size that is no Integer,
+    /// under `new:byteOrder:` too.
+    private bytesOfSize: size = (
+      size isKindOfInteger ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: requires an Integer size, got '
+            , size printString.
+      ].
+      size < 0 ifTrue: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: requires a size of at least 0, got '
+            , size printString.
+      ].
+      (vmMirror byteArrayClass: outer Kernel ByteArray fits: size ifFail: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: requires an Integer size, got '
+            , size printString.
+      ]) ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: cannot allocate a ByteArray of '
+            , size printString
+            , ' bytes'.
+      ].
+      ^outer Kernel ByteArray new: size.
+    )
+
+    /// Answers the receiver when `order` is #littleEndian or #bigEndian and
+    /// signals otherwise: what `on:byteOrder:` and `new:byteOrder:` check
+    /// before they make anything.
+    ///
+    /// order: the argument given as the byte order.
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Signals an ArgumentError carrying `order`: '<selector> requires
+    /// #littleEndian or #bigEndian, got …' and its `printString`.
+    private checkByteOrder: order selector: selector = (
+      (order == #littleEndian or: [order == #bigEndian]) ifFalse: [
+        ^(outer Kernel ArgumentError value: order) signal: selector asString
+            , ' requires #littleEndian or #bigEndian, got '
+            , order printString.
+      ].
+    )
+  )
+
+  /// A DataView that reads and writes little-endian: the least significant byte
+  /// of a value at the lowest position. `DataView` describes the rest of the
+  /// protocol.
+  ///
+  /// aByteArray: the ByteArray to view; `DataView on:byteOrder:` has checked
+  ///     it.
+  private class LittleEndianDataView over: aByteArray = DataView over: aByteArray () (
+    /// Answers #littleEndian.
+    public byteOrder = (
+      ^#littleEndian.
+    )
+
+    /// Answers the Integer from -32768 to 32767 at byte position `position`,
+    /// little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'int16At: position … out of range: no position holds
+    /// 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'int16At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int16At: position = (
+      ^vmMirror byteArray: bytes littleEndianInt16At: position ifFail: [
+        ^self noByteArray: #int16At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from -32768 to 32767.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'int16At:put: position … out of range: no position
+    /// holds 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'int16At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'int16At:put: requires an Integer from -32768 to
+    /// 32767, got …', for a value outside that range or no Integer. A refused
+    /// store leaves the bytes as they were.
+    public int16At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianInt16At: position put: value ifFail: [
+        ^self noByteArray: #int16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 65535 at byte position `position`,
+    /// little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'uint16At: position … out of range: no position
+    /// holds 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'uint16At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public uint16At: position = (
+      ^vmMirror byteArray: bytes littleEndianUint16At: position ifFail: [
+        ^self noByteArray: #uint16At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from 0 to 65535.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'uint16At:put: position … out of range: no position
+    /// holds 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'uint16At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'uint16At:put: requires an Integer from 0 to 65535,
+    /// got …', for a value outside that range or no Integer. A refused store
+    /// leaves the bytes as they were.
+    public uint16At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianUint16At: position put: value ifFail: [
+        ^self noByteArray: #uint16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -2147483648 to 2147483647 at byte position
+    /// `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'int32At: position … out of range: no position holds
+    /// 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'int32At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int32At: position = (
+      ^vmMirror byteArray: bytes littleEndianInt32At: position ifFail: [
+        ^self noByteArray: #int32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from -2147483648 to 2147483647.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'int32At:put: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'int32At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'int32At:put: requires an Integer from -2147483648 to
+    /// 2147483647, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public int32At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianInt32At: position put: value ifFail: [
+        ^self noByteArray: #int32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 4294967295 at byte position `position`,
+    /// little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'uint32At: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'uint32At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public uint32At: position = (
+      ^vmMirror byteArray: bytes littleEndianUint32At: position ifFail: [
+        ^self noByteArray: #uint32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from 0 to 4294967295.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'uint32At:put: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'uint32At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'uint32At:put: requires an Integer from 0 to
+    /// 4294967295, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public uint32At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianUint32At: position put: value ifFail: [
+        ^self noByteArray: #uint32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -9223372036854775808 to 9223372036854775807 at
+    /// byte position `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'int64At: position … out of range: no position holds
+    /// 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'int64At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int64At: position = (
+      ^vmMirror byteArray: bytes littleEndianInt64At: position ifFail: [
+        ^self noByteArray: #int64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from -9223372036854775808 to 9223372036854775807.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'int64At:put: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'int64At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'int64At:put: requires an Integer from
+    /// -9223372036854775808 to 9223372036854775807, got …', for a value outside
+    /// that range or no Integer. A refused store leaves the bytes as they were.
+    public int64At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianInt64At: position put: value ifFail: [
+        ^self noByteArray: #int64At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 18446744073709551615 at byte position
+    /// `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'uint64At: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'uint64At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public uint64At: position = (
+      ^vmMirror byteArray: bytes littleEndianUint64At: position ifFail: [
+        ^self noByteArray: #uint64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from 0 to 18446744073709551615.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'uint64At:put: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'uint64At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'uint64At:put: requires an Integer from 0 to
+    /// 18446744073709551615, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the bytes as they were.
+    public uint64At: position put: value = (
+      ^vmMirror byteArray: bytes littleEndianUint64At: position put: value ifFail: [
+        ^self noByteArray: #uint64At:put:.
+      ].
+    )
+
+    /// Answers the Float at byte position `position`, little-endian, the
+    /// binary32 there widened exactly.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'float32At: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'float32At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public float32At: position = (
+      ^vmMirror byteArray: bytes littleEndianFloat32At: position ifFail: [
+        ^self noByteArray: #float32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian, converted as
+    /// `asFloat` converts it and rounded to binary32, and answers `value`
+    /// itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'float32At:put: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'float32At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'float32At:put: requires a Number, got …', for a value
+    /// that is no Number. A refused store leaves the bytes as they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float32At: position put: value = (
+      vmMirror byteArray: bytes
+          littleEndianFloat32At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float32At:put:].
+      ^value.
+    )
+
+    /// Answers the Float at byte position `position`, little-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'float64At: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'float64At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public float64At: position = (
+      ^vmMirror byteArray: bytes littleEndianFloat64At: position ifFail: [
+        ^self noByteArray: #float64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, little-endian, converted as
+    /// `asFloat` converts it, and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'float64At:put: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'float64At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'float64At:put: requires a Number, got …', for a value
+    /// that is no Number. A refused store leaves the bytes as they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float64At: position put: value = (
+      vmMirror byteArray: bytes
+          littleEndianFloat64At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float64At:put:].
+      ^value.
+    )
+  )
+
+  /// A DataView that reads and writes big-endian: the most significant byte of
+  /// a value at the lowest position. `DataView` describes the rest of the
+  /// protocol.
+  ///
+  /// aByteArray: the ByteArray to view; `DataView on:byteOrder:` has checked
+  ///     it.
+  private class BigEndianDataView over: aByteArray = DataView over: aByteArray () (
+    /// Answers #bigEndian.
+    public byteOrder = (
+      ^#bigEndian.
+    )
+
+    /// Answers the Integer from -32768 to 32767 at byte position `position`,
+    /// big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'int16At: position … out of range: no position holds
+    /// 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'int16At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int16At: position = (
+      ^vmMirror byteArray: bytes bigEndianInt16At: position ifFail: [^self noByteArray: #int16At:].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from -32768 to 32767.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'int16At:put: position … out of range: no position
+    /// holds 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'int16At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'int16At:put: requires an Integer from -32768 to
+    /// 32767, got …', for a value outside that range or no Integer. A refused
+    /// store leaves the bytes as they were.
+    public int16At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianInt16At: position put: value ifFail: [
+        ^self noByteArray: #int16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 65535 at byte position `position`,
+    /// big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'uint16At: position … out of range: no position
+    /// holds 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'uint16At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public uint16At: position = (
+      ^vmMirror byteArray: bytes bigEndianUint16At: position ifFail: [
+        ^self noByteArray: #uint16At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 1.
+    /// value: an Integer from 0 to 65535.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint16At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 2 bytes, 'uint16At:put: position … out of range: no position
+    /// holds 2 bytes (size …)', for an Integer outside 1 to `size` - 1, a
+    /// LargeInteger included, and 'uint16At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'uint16At:put: requires an Integer from 0 to 65535,
+    /// got …', for a value outside that range or no Integer. A refused store
+    /// leaves the bytes as they were.
+    public uint16At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianUint16At: position put: value ifFail: [
+        ^self noByteArray: #uint16At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -2147483648 to 2147483647 at byte position
+    /// `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'int32At: position … out of range: no position holds
+    /// 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'int32At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int32At: position = (
+      ^vmMirror byteArray: bytes bigEndianInt32At: position ifFail: [^self noByteArray: #int32At:].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from -2147483648 to 2147483647.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'int32At:put: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'int32At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'int32At:put: requires an Integer from -2147483648 to
+    /// 2147483647, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public int32At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianInt32At: position put: value ifFail: [
+        ^self noByteArray: #int32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 4294967295 at byte position `position`,
+    /// big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'uint32At: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'uint32At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public uint32At: position = (
+      ^vmMirror byteArray: bytes bigEndianUint32At: position ifFail: [
+        ^self noByteArray: #uint32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: an Integer from 0 to 4294967295.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'uint32At:put: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'uint32At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'uint32At:put: requires an Integer from 0 to
+    /// 4294967295, got …', for a value outside that range or no Integer. A
+    /// refused store leaves the bytes as they were.
+    public uint32At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianUint32At: position put: value ifFail: [
+        ^self noByteArray: #uint32At:put:.
+      ].
+    )
+
+    /// Answers the Integer from -9223372036854775808 to 9223372036854775807 at
+    /// byte position `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'int64At: position … out of range: no position holds
+    /// 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'int64At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public int64At: position = (
+      ^vmMirror byteArray: bytes bigEndianInt64At: position ifFail: [^self noByteArray: #int64At:].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from -9223372036854775808 to 9223372036854775807.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'int64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'int64At:put: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'int64At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'int64At:put: requires an Integer from
+    /// -9223372036854775808 to 9223372036854775807, got …', for a value outside
+    /// that range or no Integer. A refused store leaves the bytes as they were.
+    public int64At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianInt64At: position put: value ifFail: [
+        ^self noByteArray: #int64At:put:.
+      ].
+    )
+
+    /// Answers the Integer from 0 to 18446744073709551615 at byte position
+    /// `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'uint64At: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'uint64At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public uint64At: position = (
+      ^vmMirror byteArray: bytes bigEndianUint64At: position ifFail: [
+        ^self noByteArray: #uint64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian and answers
+    /// `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: an Integer from 0 to 18446744073709551615.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'uint64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'uint64At:put: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'uint64At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'uint64At:put: requires an Integer from 0 to
+    /// 18446744073709551615, got …', for a value outside that range or no
+    /// Integer. A refused store leaves the bytes as they were.
+    public uint64At: position put: value = (
+      ^vmMirror byteArray: bytes bigEndianUint64At: position put: value ifFail: [
+        ^self noByteArray: #uint64At:put:.
+      ].
+    )
+
+    /// Answers the Float at byte position `position`, big-endian, the binary32
+    /// there widened exactly.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'float32At: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'float32At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public float32At: position = (
+      ^vmMirror byteArray: bytes bigEndianFloat32At: position ifFail: [
+        ^self noByteArray: #float32At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian, converted as
+    /// `asFloat` converts it and rounded to binary32, and answers `value`
+    /// itself.
+    ///
+    /// position: an Integer from 1 to `size` - 3.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float32At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 4 bytes, 'float32At:put: position … out of range: no position
+    /// holds 4 bytes (size …)', for an Integer outside 1 to `size` - 3, a
+    /// LargeInteger included, and 'float32At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'float32At:put: requires a Number, got …', for a value
+    /// that is no Number. A refused store leaves the bytes as they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float32At: position put: value = (
+      vmMirror byteArray: bytes
+          bigEndianFloat32At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float32At:put:].
+      ^value.
+    )
+
+    /// Answers the Float at byte position `position`, big-endian.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At: position … out
+    /// of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'float64At: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'float64At: requires an Integer position, got
+    /// …' for a position that is no Integer; and the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray.
+    public float64At: position = (
+      ^vmMirror byteArray: bytes bigEndianFloat64At: position ifFail: [
+        ^self noByteArray: #float64At:.
+      ].
+    )
+
+    /// Stores `value` at byte position `position`, big-endian, converted as
+    /// `asFloat` converts it, and answers `value` itself.
+    ///
+    /// position: an Integer from 1 to `size` - 7.
+    /// value: a Number.
+    ///
+    /// Signals an ArgumentError carrying `position`: 'float64At:put: position …
+    /// out of range: valid positions are 1..… (size …)' or, when `bytes` holds
+    /// fewer than 8 bytes, 'float64At:put: position … out of range: no position
+    /// holds 8 bytes (size …)', for an Integer outside 1 to `size` - 7, a
+    /// LargeInteger included, and 'float64At:put: requires an Integer position,
+    /// got …' for a position that is no Integer; the ArgumentError of
+    /// `noByteArray:` when `bytes` holds no ByteArray; and an ArgumentError
+    /// carrying `value`, 'float64At:put: requires a Number, got …', for a value
+    /// that is no Number. A refused store leaves the bytes as they were.
+    ///
+    /// The leaf takes only a Float, so the conversion happens here; a value
+    /// that is no Number reaches the leaf as it is, so that the position is
+    /// checked first and the refusal names the value given.
+    public float64At: position put: value = (
+      vmMirror byteArray: bytes
+          bigEndianFloat64At: position
+          put: (value isKindOfNumber ifTrue: [value asFloat] ifFalse: [value])
+          ifFail: [^self noByteArray: #float64At:put:].
+      ^value.
     )
   )
 

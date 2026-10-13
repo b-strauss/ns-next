@@ -2,7 +2,8 @@
 //! per `BuiltinClass` family -- `object_class` for `Object` itself, `value`
 //! for what §3.1.1's value objects derive from their state, `behavior` for
 //! what §3.2's `Class` and `Metaclass` forward to, then `numbers`, `text`,
-//! `collections` and `block`, `activation` for the exceptions
+//! `collections`, `bytes` for `ByteArray`, `elements` for the typed arrays'
+//! and `DataView`'s elements on one, and `block`, `activation` for the exceptions
 //! `Kernel.ns` builds over the running activations, `message` for
 //! `Message>>sendTo:`, `module` for `moduleInstanceNamed:`, through which
 //! shipped source reaches another shipped module, and `future` for the
@@ -15,7 +16,9 @@
 pub mod activation;
 pub mod behavior;
 pub mod block;
+pub mod bytes;
 pub mod collections;
+pub mod elements;
 pub mod future;
 pub mod message;
 pub mod module;
@@ -89,6 +92,12 @@ pub(crate) fn execute<'gc>(
         }
         Primitive::Collection(primitive) => {
             collections::execute(mutator, primitive, receiver, selector, arguments)
+        }
+        Primitive::Bytes(primitive) => {
+            bytes::execute(mutator, primitive, receiver, selector, arguments).map(wrap_error)
+        }
+        Primitive::Element(access) => {
+            elements::execute(mutator, access, receiver, selector, arguments).map(wrap_error)
         }
         Primitive::Block(primitive) => block::execute(mutator, primitive, receiver, arguments),
         Primitive::Platform(primitive) => {

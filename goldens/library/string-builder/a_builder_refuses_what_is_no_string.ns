@@ -1,0 +1,47 @@
+/// A StringBuilder refuses what it cannot append with an ArgumentError
+/// carrying the argument: `add:` anything that is no String, a ByteArray
+/// included, and `addCodePoint:` anything but a Unicode scalar value -- a
+/// surrogate, a value past 1114111, a negative one, a non-Integer. A refused
+/// append leaves the builder as it was. `new:` refuses a capacity as
+/// `ByteArray new:` refuses a size.
+class ABuilderRefusesWhatIsNoString = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+    builder ::= nil.
+  |
+) (
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        show: ' / ';
+        show: builder asString;
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    builder:: platform kernel StringBuilder new.
+    builder add: 'ok'.
+    refusal: [builder add: 3].
+    refusal: [builder add: (ByteArray new: 2)].
+    refusal: [builder add: nil].
+    refusal: [builder addCodePoint: 55296].
+    refusal: [builder addCodePoint: 57343].
+    refusal: [builder addCodePoint: 1114112].
+    refusal: [builder addCodePoint: -1].
+    refusal: [builder addCodePoint: 'a'].
+    refusal: [builder addCodePoint: 65.0].
+    refusal: [builder writeln: 4].
+    refusal: [platform kernel StringBuilder new: -1].
+    refusal: [platform kernel StringBuilder new: 'x'].
+    transcript
+        show: builder size printString;
+        show: ' ';
+        show: (builder addCodePoint: 1114111) printString;
+        show: ' ';
+        show: (builder addCodePoint: 55295) printString;
+        newLine.
+  )
+)

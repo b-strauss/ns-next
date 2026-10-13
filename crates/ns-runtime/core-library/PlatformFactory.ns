@@ -1,7 +1,7 @@
 /// The platform's module: answers, to `build`, the platform the
 /// host hands every program, whose members are the program's standard
-/// output, the collections, the kernel classes a program may name and a
-/// stopwatch. The host instantiates it once, at boot.
+/// output, the collections, the kernel classes a program may name, a
+/// stopwatch and the typed arrays. The host instantiates it once, at boot.
 ///
 /// mirror: the VM mirror, which the host alone holds.
 /// kernel: the kernel module's instance, whose classes `KernelNamespace`
@@ -15,23 +15,23 @@
 /// The factory pattern: this root holds what is privileged -- the mirror,
 /// and the kernel's classes `KernelNamespace` hands out, never the kernel
 /// instance -- and the host never hands its instance to anyone. It
-/// instantiates the root once, sends it `build`, its one public
-/// member, and hands every program that platform, an instance of the
-/// nested class `Platform`, whose factory is a harmless `new`. What a
-/// program receives are instances of the nested classes, the facets,
-/// through the platform's members; each reaches the mirror and the kernel's
-/// classes lexically, as a member of this root, never through a slot of its
-/// own, so every one of them writes through the one mirror. The nested
-/// classes are private, so even
-/// a holder of this root's instance could send it nothing but
-/// `build`: a second line of defence behind the instance being
-/// unreachable. The transcript, the clock and the collections are each a
+/// instantiates the root once, sends it `build`, its one public member, and
+/// hands every program that platform, an instance of the nested class
+/// `Platform`, whose factory is a harmless `new`. What a program receives
+/// are instances of the nested classes, the facets, through the platform's
+/// members; each reaches the mirror and the kernel's classes lexically, as
+/// a member of this root, never through a slot of its own, so every one of
+/// them writes through the one mirror. The nested classes are private, so
+/// even a holder of this root's instance could send it nothing but `build`:
+/// a second line of defence behind the instance being unreachable. The
+/// transcript, the clock, the collections and the typed arrays are each a
 /// module of their own, another such root (`platform/TranscriptFactory.ns`,
-/// `platform/TimeFactory.ns`, `platform/CollectionsFactory.ns`), whose one
-/// instance the host builds at boot and this root reaches through the
-/// mirror's `moduleInstanceNamed:`, keeping it in a private lazy slot
-/// here; the platform hands out only the facets their `build` answers. Nothing a program can name answers this root's
-/// instance or its class, so no program can build a second one over
+/// `platform/TimeFactory.ns`, `platform/CollectionsFactory.ns`,
+/// `platform/TypedArraysFactory.ns`), whose one instance the host builds at
+/// boot and this root reaches through the mirror's `moduleInstanceNamed:`,
+/// keeping it in a private lazy slot here; the platform hands out only the
+/// facets their `build` answers. Nothing a program can name answers this
+/// root's instance or its class, so no program can build a second one over
 /// something that is not the mirror. Keep it so: no code whose receiver is
 /// this root's instance may send it anything it does not understand, since
 /// a `MessageNotUnderstood` hands its receiver to whoever catches it
@@ -40,9 +40,9 @@
 ///
 /// The factory's parameters are copied into slots because neither a lazy
 /// slot nor a method may name them (§6); of the kernel only the classes
-/// `KernelNamespace` hands out are kept, not the kernel instance itself. A send to `vmMirror` here is a
-/// mirror send, as in `Kernel.ns`: this module is resolved with
-/// `resolve_kernel`, which only shipped source is.
+/// `KernelNamespace` hands out are kept, not the kernel instance itself. A
+/// send to `vmMirror` here is a mirror send, as in `Kernel.ns`: this module
+/// is resolved with `resolve_kernel`, which only shipped source is.
 ///
 /// Everything here is a value (§3.1.1): stateless but for what the host
 /// hands the root and the modules the boot built, which the root reaches
@@ -76,6 +76,10 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private Proxy = kernel Proxy.
     /// The kernel's `Collection`, which `KernelNamespace` hands out.
     private Collection = kernel Collection.
+    /// The kernel's `StringBuilder`, which `KernelNamespace` hands out.
+    private StringBuilder = kernel StringBuilder.
+    /// The kernel's `DataView`, which `KernelNamespace` hands out.
+    private DataView = kernel DataView.
   |
 ) (
   /// The one collections module, the instance the boot built over the
@@ -97,6 +101,11 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// `build` answers leave this module.
   lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [nil].
 
+  /// The one typed arrays module, the instance the boot built over the
+  /// mirror and the kernel, and the same object on every use. Only the
+  /// `TypedArrays` namespaces its `build` answers leave this module.
+  lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [nil].
+
   /// The platform a program is handed: the namespace of what it may use
   /// beyond the kernel, each member built on first use.
   ///
@@ -106,8 +115,9 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
   /// this module's classes: a program holds the instances its members
   /// answer, and since `class` is protected it reaches no class of
   /// theirs, so it can make no second platform or transcript. `Time`
-  /// hands out `Stopwatch`, which a program instantiates itself, and the
-  /// collections facet the collections module's classes.
+  /// hands out `Stopwatch`, which a program instantiates itself, the
+  /// collections facet the collections module's classes, and the typed
+  /// arrays facet the typed arrays module's classes.
   private class Platform = Value () (
     /// The program's standard output, a `Transcript`, written as UTF-8.
     /// Built on first use; every later send answers the same one.
@@ -127,6 +137,16 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// The namespace of `Stopwatch`, a `Time`. Built on first use;
     /// every later send answers the same one.
     lazy public time = timeModule build.
+
+    /// The namespace of the typed arrays module's classes -- `TypedArray`
+    /// and the ten typed arrays, `Int8Array` to `Float64Array` -- a
+    /// `TypedArrays`. Built on first use; every later send answers the
+    /// same one.
+    ///
+    /// Exempt from the rule that an accessor here exists only because a
+    /// program needs it, as `kernel` is: it hands out a whole module of
+    /// the core library's classes, not a piece of the platform's services.
+    lazy public typedArrays = typedArraysModule build.
   )
 
   /// `platform kernel`: the kernel classes a program may name that
@@ -195,6 +215,18 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// of `Array`, `List`, `Map` and `Set`, for a program to subclass.
     public Collection = (
       ^outer PlatformFactory Collection.
+    )
+
+    /// Answers the kernel's class `StringBuilder`, which a program
+    /// instantiates with `new` or `new:` to build a String from pieces.
+    public StringBuilder = (
+      ^outer PlatformFactory StringBuilder.
+    )
+
+    /// Answers the kernel's class `DataView`, which a program instantiates
+    /// with `on:byteOrder:` a ByteArray or `new:byteOrder:`.
+    public DataView = (
+      ^outer PlatformFactory DataView.
     )
   )
 

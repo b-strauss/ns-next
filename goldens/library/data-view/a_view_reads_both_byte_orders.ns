@@ -1,0 +1,165 @@
+/// A DataView reads and writes a ByteArray in the byte order it was made
+/// with: the bytes 1 2 are 513 little-endian and 258 big-endian, at every
+/// width. An Integer is checked against its width's range and stored in two's
+/// complement, a float is the IEEE 754 pattern of its width, and `put:`
+/// answers the value given. The bytes themselves show the order.
+class AViewReadsBothByteOrders = Object new (
+  |
+    transcript ::= nil.
+    DataView ::= nil.
+  |
+) (
+  shown: bytes = (
+    1 to: bytes size do: [:index |
+      index > 1 ifTrue: [transcript show: ' '].
+      transcript print: (bytes at: index).
+    ].
+    transcript newLine.
+  )
+
+  littleOver: bytes = (
+    ^DataView on: bytes byteOrder: #littleEndian.
+  )
+
+  bigOver: bytes = (
+    ^DataView on: bytes byteOrder: #bigEndian.
+  )
+
+  public main: platform args: arguments = (
+    |
+      bytes
+      little
+      big
+      other
+    |
+    transcript:: platform transcript.
+    DataView:: platform kernel DataView.
+    bytes:: ByteArray new: 8.
+    1 to: 8 do: [:index | bytes at: index put: index].
+    little:: littleOver: bytes.
+    big:: bigOver: bytes.
+    transcript
+        print: (little uint8At: 1);
+        show: ' ';
+        print: (big int8At: 8);
+        newLine;
+        print: (little uint16At: 1);
+        show: ' ';
+        print: (big uint16At: 1);
+        newLine;
+        print: (little uint32At: 1);
+        show: ' ';
+        print: (big uint32At: 1);
+        newLine;
+        print: (little uint64At: 1);
+        show: ' ';
+        print: (big uint64At: 1);
+        newLine.
+    bytes:: ByteArray new: 8.
+    little:: littleOver: bytes.
+    transcript
+        print: (little int16At: 1 put: -2);
+        show: ' ';
+        print: (little uint16At: 1);
+        show: ' ';
+        print: (bytes at: 1);
+        show: ' ';
+        print: (bytes at: 2);
+        newLine.
+    bytes:: ByteArray new: 8.
+    big:: bigOver: bytes.
+    transcript
+        print: (big int16At: 1 put: -2);
+        show: ' ';
+        print: (big uint16At: 1);
+        show: ' ';
+        print: (bytes at: 1);
+        show: ' ';
+        print: (bytes at: 2);
+        newLine.
+    bytes:: ByteArray new: 8.
+    little:: littleOver: bytes.
+    big:: bigOver: bytes.
+    transcript
+        print: (little int32At: 1 put: -1);
+        show: ' ';
+        print: (big uint32At: 1);
+        show: ' ';
+        print: (little int64At: 1 put: -1);
+        show: ' ';
+        print: (big uint64At: 1);
+        newLine;
+        print: (little uint64At: 1 put: 18446744073709551615);
+        show: ' ';
+        print: (big int64At: 1);
+        newLine;
+        print: (big int64At: 1 put: -9223372036854775808);
+        show: ' ';
+        print: (big uint64At: 1);
+        show: ' ';
+        print: (little int64At: 1);
+        show: ' ';
+        print: (bytes at: 1);
+        newLine.
+    bytes:: ByteArray new: 8.
+    little:: littleOver: bytes.
+    little float32At: 1 put: 1.0.
+    shown: bytes.
+    bytes:: ByteArray new: 8.
+    big:: bigOver: bytes.
+    big float32At: 1 put: -2.5.
+    shown: bytes.
+    transcript
+        print: (big float32At: 1);
+        newLine.
+    bytes:: ByteArray new: 8.
+    big:: bigOver: bytes.
+    big float64At: 1 put: 1.5.
+    shown: bytes.
+    bytes:: ByteArray new: 8.
+    little:: littleOver: bytes.
+    little float64At: 1 put: 1.5.
+    shown: bytes.
+    transcript
+        print: (little float64At: 1);
+        show: ' ';
+        print: (little float64At: 1 put: 3);
+        show: ' ';
+        print: (little float64At: 1);
+        newLine.
+    bytes:: ByteArray new: 4.
+    bytes at: 1 put: 63.
+    bytes at: 2 put: 192.
+    transcript
+        print: ((bigOver: bytes) float32At: 1);
+        newLine.
+    bytes at: 1 put: 200.
+    little:: littleOver: bytes.
+    transcript
+        print: (little int8At: 1);
+        show: ' ';
+        print: (little uint8At: 1);
+        show: ' ';
+        print: (little int8At: 2 put: -1);
+        show: ' ';
+        print: (bytes at: 2);
+        newLine.
+    transcript
+        print: little byteOrder;
+        show: ' ';
+        print: big byteOrder;
+        show: ' ';
+        print: little isKindOfDataView;
+        show: ' ';
+        print: little bytes == bytes;
+        show: ' ';
+        print: little size;
+        newLine.
+    other:: DataView new: 4 byteOrder: #bigEndian.
+    transcript
+        print: other size;
+        show: ' ';
+        print: (other uint32At: 1);
+        newLine.
+  )
+)

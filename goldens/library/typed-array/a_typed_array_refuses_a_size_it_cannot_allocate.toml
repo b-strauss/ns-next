@@ -1,0 +1,40 @@
+stdout = '''
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 4611686018427387904 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 4611686018427387904 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 9223372036854775808 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 9223372036854775808 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 18446744073709551616 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 18446744073709551616 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 36893488147419103232 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 36893488147419103232 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 18446744073709551616 bytes
+new: requires an Integer size, got 'four'
+new: requires a size of at least 0, got -1
+new: cannot allocate a ByteArray of 36893488147419103232 bytes
+new: cannot allocate a ByteArray of 36893488147419103232 bytes
+new: cannot allocate a ByteArray of 9007199254740992 bytes
+new: requires an Integer size, got an Object
+bytesFor:width: requires a width of 1, 2, 4 or 8, got 3
+'four'
+-1
+4611686018427387904
+3
+'''

@@ -1,0 +1,15 @@
+stdout = '''
+add: requires a String, got 3 / ok
+add: requires a String, got an Object / ok
+add: requires a String, got nil / ok
+addCodePoint: requires a Unicode scalar value, got 55296 / ok
+addCodePoint: requires a Unicode scalar value, got 57343 / ok
+addCodePoint: requires a Unicode scalar value, got 1114112 / ok
+addCodePoint: requires a Unicode scalar value, got -1 / ok
+addCodePoint: requires a Unicode scalar value, got 'a' / ok
+addCodePoint: requires a Unicode scalar value, got 65.0 / ok
+add: requires a String, got 4 / ok
+new: requires a size of at least 0, got -1 / ok
+new: requires an Integer size, got the String "x" / ok
+2 1114111 55295
+'''

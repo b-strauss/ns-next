@@ -4669,8 +4669,9 @@ with the user.
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 numbers sub-project, which is built ("The kernel's numbers sub-project"
 below);
-`String`'s `ByteArray` forms wait for `ByteArray`; `ReadOnlyTuple` and
-value collections are not built; the collections' remaining cost on Havlak
+`String`'s `ByteArray` forms, built with `ByteArray` ("The kernel's
+`ByteArray`, `StringBuilder` and views sub-project" below); `ReadOnlyTuple`
+and value collections are not built; the collections' remaining cost on Havlak
 and DeltaBlue; and `Message>>sendTo:`, which answers nil for a
 native-backed method given too few arguments.
 
@@ -4700,7 +4701,7 @@ two numbers compare by exact value and hash by Python's numeric hash
 modulo 2^61 - 1, so `1 = 1.0` and `(1/2) = 0.5`; arithmetic without a
 `Float` is exact, so `7 / 2` is `(7/2)`; `//`, `\\`, `quo:` and `rem:`
 take every pair; and a value's derived equality compares numbers by the
-tower. The `MIRROR` table has 164 rows.
+tower. The sub-project brought the `MIRROR` table to 164 rows.
 
 The decisions, each the user's (2026-10-11): exact comparison; Python's
 numeric hash; `Fraction` a builtin with a Rust representation; an integer
@@ -4754,8 +4755,9 @@ faster.
 - This commit -- the documentation describes the built state.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the fifth
-sub-project, `ByteArray`, `StringBuilder` and the typed arrays, is next
-("Next"); two corners of a `Float`'s
+sub-project, `ByteArray`, `StringBuilder` and the typed arrays, which is
+built ("The kernel's `ByteArray`, `StringBuilder` and views sub-project"
+below); two corners of a `Float`'s
 rounding divisions; the tower's slow paths, unmeasured on their own; a
 subquadratic gcd for a huge decoded fraction; and the review's missing
 tests and leftovers.
@@ -4941,8 +4943,9 @@ accessors are protected", "The predefined classes are accessors on
 `Object`", "Decisions"; [image-format.md](design/image-format.md),
 "Verification", "Shipped names".
 
-Built before the kernel's fifth sub-project. `Object>>class` and `Object`'s
-sixteen class accessors are `protected`, so that holding an instance does
+Built before the kernel's fifth sub-project. `Object>>class` and every
+class accessor of `Object` (sixteen then; `ByteArray`'s, added since, is
+too) are `protected`, so that holding an instance does
 not hand out its class, its factory and its class side: `self class`,
 `super class` and a bare `Integer` still reach them, `other class` and
 `other Integer` fall to `doesNotUnderstand:`. The core library's three
@@ -5025,8 +5028,101 @@ The transcript and the clock are shipped modules of their own,
 reaches the collections module; every shipped factory's one public member
 is `build`. Every module root is `= Value` and every superclass clause that
 sends only `new` omits it (§6.1); the kernel's root is built by the root
-rule like any module's, so no shipped class applies a mixin and the image's
-shipped levels have no live example until one does
-([OPEN-WORK.md](OPEN-WORK.md)). The factories' mirror parameter is
-`mirror`. The boot leaves 31 inline-cache sites and 22 global entries, where
-it left 18 and 10 before this branch.
+rule like any module's, so no module root applies a mixin; the image's
+shipped levels got their live example with the levels `IndexedCollection`
+adds ("The kernel's `ByteArray`, `StringBuilder` and views sub-project"
+below). The factories' mirror parameter is `mirror`. This branch left the
+boot with 31 inline-cache sites and 22 global entries, where it found 18
+and 10.
+
+## The kernel's `ByteArray`, `StringBuilder` and views sub-project (2026-10-13)
+
+Plan: [byte-array-and-views](superpowers/plans/2026-10-13-1614-byte-array-and-views.md);
+[core-library.md](design/core-library.md), "`ByteArray`, `StringBuilder`
+and the views"; [memory.md](design/memory.md), "Every mover realigns a
+`ByteArray`'s data"; [image-format.md](design/image-format.md), "A
+`ByteArray` is a record of its own", "Shipped names".
+
+The fifth of the six sub-projects. `ByteArray` is a builtin of the new
+format `AlignedBytes` (codes 24 to 31): three reserve words, then the
+bytes, which begin at the first 32-byte address in the block, an offset
+computed from the address and never stored, so the scavenger's copy, the
+compaction's slide and the move stress mode each move the data to the new
+block's alignment -- a new invariant in `CLAUDE.md`. `ByteArray new:`
+refuses a size the reservation or the operating system cannot hold with an
+`ArgumentError` rather than aborting. An image carries one as
+`OBJECT_BYTE_ARRAY` (body tag 11), its bytes without the reserve, held to
+the `ByteArray` header both ways. `Array`'s sequence protocol moved into
+the kernel mixin `IndexedCollection`, which `Array`, `ByteArray` and
+`TypedArray` apply with `<:` -- the bootstrap builds a builtin over a mixin
+application, and the levels it adds are the shipped world's first live
+levels. `ByteArray` has Primordial Soup's byte protocol, a `String`
+argument counting as its UTF-8 bytes; `String` has `asUtf8`, `utf8Size`
+and a strict `String fromUtf8:`; `StringBuilder` builds a `String` over a
+`ByteArray` of UTF-8, counting code points; ten typed arrays view a whole
+`ByteArray` by element, little-endian, and `DataView` at 1-based byte
+positions in a byte order chosen at creation, through two private
+classes, all ordinary classes, with `Object>>ByteArray` the one new class
+accessor. `StringBuilder` and `DataView` are classes of `Kernel.ns`, reached
+through `platform kernel`; the typed arrays are the shipped module
+`TypedArraysFactory.ns`, booted with the mirror and the kernel, whose
+private classes the facet `platform typedArrays` hands out, and
+`IndexedCollection` is public so that the module applies it, an image
+naming it still only as a record's class or a frame's. A view's and a
+typed array's size refusals are their own `ArgumentError`s under their own
+selector, an allocation decided beforehand by the mirror leaf
+`byteArrayClass:fits:ifFail:`. A view or a builder
+whose slots an image crafted is refused with an `ArgumentError`. The
+`MIRROR` table has 234 rows: 16 for `ByteArray` and UTF-8, 18 for the
+typed arrays' elements and 36 for `DataView`'s, the last two families one
+leaf, `ElementAccess`, so `Primitive` stays two bytes.
+
+Settled during the work, where the design was silent (each recorded in
+[core-library.md](design/core-library.md), "Decisions"): `startsWith:` and
+`endsWith:` refuse an argument that is no `Integer`, `ByteArray` or
+`String`; the leaf behind `addCodePoint:` reports `at:putCodePoint:`, and
+`StringBuilder` checks the code point itself; a refusal written in
+Newspeak renders its argument with `printString`, a leaf's with
+`describe`; a view's missing `ByteArray` and a builder's crafted state are
+named by the selector sent.
+
+No existing golden's outcome changed. New goldens under
+`goldens/library/byte-array/`, `string/`, `string-builder/`,
+`typed-array/`, `data-view/` and `builtin-subclass/`; host tests in
+`tests/byte_array_leaves.rs`, `tests/element_access.rs` and
+`tests/image.rs`. The golden image fixture was regenerated with each change
+to the shipped modules; only its fingerprint bytes changed. **Measured**:
+a hello program's median start went from about 15.4 ms to about 20.1 ms at
+`1906a81d` (release, Windows 11), +4.6 ms for compiling the larger
+`Kernel.ns`, 4,089 lines to 6,586.
+
+- `b7423759` -- the plan.
+- `883774a5` -- the `AlignedBytes` format, realigned by every mover.
+- `1535510c` -- the image record `OBJECT_BYTE_ARRAY`.
+- `a758f810`, `b7ed974a` -- `Array`'s sequence protocol through the
+  kernel mixin `IndexedCollection`, and the mixin's range checks.
+- `337111f2`, `0ddc5bf4` -- `ByteArray`, a builtin of aligned bytes, and
+  its refusal of a size the heap cannot commit.
+- `ac03403a`, `82f3a730` -- `ByteArray`'s protocol, and the refusal of
+  what `startsWith:` cannot compare.
+- `9a91fe4f`, `8641f6a5` -- the UTF-8 conversions, and `at:putCodePoint:`
+  reported under its own selector.
+- `e35f1b93` -- `StringBuilder`.
+- `491f16c9` -- the typed arrays.
+- `5ce3eaf7`, `a2e5e412` -- `DataView`, and every one of its rows pinned
+  by a round trip.
+- `1906a81d`, `cc2aaebe` -- views and builders through an image, crafted
+  ones refused.
+- `69db2f7a`, `fb5bff7d` -- `IndexedCollection` public, and the typed
+  arrays moved into the shipped module `TypedArraysFactory`.
+- `4aac38d7`, `67f36add`, `1896acd2` -- a view's and a typed array's size
+  refusals with their own texts, and the leaf `byteArrayClass:fits:ifFail:`.
+- This commit -- the documents.
+
+What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): weak
+references, the sixth sub-project, is next and has no design yet; the
+boot's cost of building the shipped world, which it raised; byte-by-byte bulk
+paths and a `String` needle encoded at every candidate; `printString`'s
+"an Object" in Newspeak-built refusals; `IndexedCollection`'s receiver for
+a non-Integer bound; the amplification figures counted with two-byte class
+tags; and the reviews' missing tests and leftovers.

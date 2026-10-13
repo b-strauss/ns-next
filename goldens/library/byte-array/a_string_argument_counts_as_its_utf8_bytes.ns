@@ -1,0 +1,59 @@
+/// A String given to a ByteArray counts as its UTF-8 bytes -- a code point
+/// below 128 is one byte, `é` the two bytes 195 169 -- wherever it stands
+/// for bytes: in a search, `startsWith:` and `endsWith:`, `,`, as the
+/// source of `replaceFrom:to:with:startingAt:`, whose start counts bytes,
+/// and in `ByteArray withAll:`.
+/// A Symbol is a String. A String's own methods still take only Strings:
+/// a ByteArray given to one is refused, since its bytes need not decode.
+class AStringArgumentCountsAsItsUtf8Bytes = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      show
+      refusal
+      gif
+      accented
+    |
+    show:: [:collection |
+      collection do: [:each |
+        transcript show: each printString.
+      ] separatedBy: [
+        transcript show: ' '.
+      ].
+      transcript newLine.
+    ].
+    refusal:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error | error messageText]);
+          newLine.
+    ].
+    gif:: ByteArray withAll: {71. 73. 70. 56. 57. 97}.
+    accented:: ByteArray withAll: {120. 195. 169. 121. 195. 169}.
+    show value: {
+      gif startsWith: 'GIF'.
+      gif startsWith: #GIF.
+      gif startsWith: 'GIF89a!'.
+      gif startsWith: 'gif'.
+      gif endsWith: '9a'.
+      gif startsWith: ''.
+    }.
+    show value: {
+      accented indexOf: 'é'.
+      accented lastIndexOf: 'é'.
+      accented indexOf: 'é' startingAt: 3.
+      accented indexOf: 'y'.
+      accented indexOf: 'xé'.
+      accented indexOf: 'ý'.
+      accented endsWith: 'é'.
+    }.
+    show value: gif , 'é'.
+    show value: {(gif , 'é') isKindOfByteArray}.
+    show value: (ByteArray withAll: 'é').
+    show value: {(ByteArray withAll: 'GIF89a') startsWith: 'GIF'}.
+    show value: ((ByteArray new: 4) replaceFrom: 1 to: 3 with: 'aéb' startingAt: 2).
+    refusal value: [(ByteArray new: 3) replaceFrom: 1 to: 3 with: 'é' startingAt: 1].
+    refusal value: ['abc' indexOf: (ByteArray withAll: 'b')].
+    refusal value: ['abc' , (ByteArray withAll: {98})].
+  )
+)

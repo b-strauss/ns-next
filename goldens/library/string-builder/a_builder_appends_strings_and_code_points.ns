@@ -1,0 +1,103 @@
+/// A StringBuilder appends Strings and code points. `add:` answers its
+/// argument and takes a Symbol as a String, `addCodePoint:` answers its
+/// argument, `writeln:` appends the text and a newline and answers the
+/// builder. `size` counts code points, not bytes. `asString` answers a
+/// String equal to every other of the same text -- a String is a value, so
+/// `==` cannot tell a new one -- and `asUtf8` a copy of the bytes, so changing it
+/// leaves the builder as it was. A builder is equal only to itself, and
+/// `new: 0` makes one that grows from nothing.
+class ABuilderAppendsStringsAndCodePoints = Object new (
+  |
+    transcript ::= nil.
+    StringBuilder ::= nil.
+  |
+) (
+  public main: platform args: arguments = (
+    |
+      builder
+      bytes
+      empty
+    |
+    transcript:: platform transcript.
+    StringBuilder:: platform kernel StringBuilder.
+    builder:: StringBuilder new.
+    transcript
+        show: builder isEmpty printString;
+        show: ' ';
+        show: builder size printString;
+        show: ' ';
+        show: builder isKindOfStringBuilder printString;
+        show: ' ';
+        show: 3 isKindOfStringBuilder printString;
+        show: ' ';
+        show: ('' = builder asString) printString;
+        newLine.
+    transcript
+        show: (builder add: 'abc');
+        show: ' ';
+        show: (builder add: #def);
+        show: ' ';
+        show: (builder addCodePoint: 233) printString;
+        show: ' ';
+        show: (builder addCodePoint: 128512) printString;
+        newLine.
+    transcript
+        show: builder asString;
+        show: ' ';
+        show: builder size printString;
+        show: ' ';
+        show: builder asString size printString;
+        show: ' ';
+        show: builder asUtf8 size printString;
+        show: ' ';
+        show: builder isEmpty printString;
+        newLine.
+    transcript
+        show: ((builder writeln: 'end') == builder) printString;
+        show: ' ';
+        show: builder size printString;
+        show: ' ';
+        show: ((builder asString copyFrom: builder size to: builder size) = (String with: 10))
+            printString;
+        newLine.
+    transcript
+        show: (builder asString == builder asString) printString;
+        show: ' ';
+        show: (builder asString = builder asString) printString;
+        newLine.
+    bytes:: builder asUtf8.
+    bytes at: 1 put: 90.
+    transcript
+        show: (builder asString copyFrom: 1 to: 3);
+        show: ' ';
+        show: (bytes at: 1) printString;
+        show: ' ';
+        show: (builder asUtf8 at: 1) printString;
+        newLine.
+    transcript
+        show: (builder = builder) printString;
+        show: ' ';
+        show: (builder = StringBuilder new) printString;
+        show: ' ';
+        show: (builder hash = builder hash) printString;
+        newLine.
+    empty:: StringBuilder new: 0.
+    transcript
+        show: empty isEmpty printString;
+        show: ' ';
+        show: empty asString size printString;
+        show: ' ';
+        show: empty asUtf8 size printString;
+        newLine.
+    empty add: ''.
+    empty addCodePoint: 0.
+    empty add: 'xyz'.
+    transcript
+        show: empty size printString;
+        show: ' ';
+        show: empty asUtf8 size printString;
+        show: ' ';
+        show: empty isEmpty printString;
+        newLine.
+  )
+)

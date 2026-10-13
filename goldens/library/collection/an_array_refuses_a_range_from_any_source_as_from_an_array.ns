@@ -1,0 +1,33 @@
+/// A source that is no Array -- a String, a List -- is refused by
+/// `replaceFrom:to:with:startingAt:` with the ArgumentErrors an Array
+/// source gets, each carrying what it refuses, and before any element is
+/// stored: a range out of range, a bound past every small integer, a
+/// source too short, and a bound or a start that is no Integer.
+class AnArrayRefusesARangeFromAnySourceAsFromAnArray = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      List = platform collections List.
+      array
+      attempt
+    |
+    array:: {5. 3. 8. 1}.
+    attempt:: [:action |
+      transcript
+          show: (action on: kernel ArgumentError do: [:error |
+            error argument printString , ' ' , error messageText.
+          ]);
+          newLine.
+    ].
+    attempt value: [array replaceFrom: 2 to: 9 with: 'abc' startingAt: 1].
+    attempt value: [array replaceFrom: 0 to: 1 with: (List withAll: {1. 2. 3}) startingAt: 1].
+    attempt value: [array replaceFrom: 1 to: 100000000000000000000 with: 'abc' startingAt: 1].
+    attempt value: [array replaceFrom: 1 to: 3 with: (List withAll: {7}) startingAt: 1].
+    attempt value: [array replaceFrom: 1 to: 2 with: 'abc' startingAt: 3].
+    attempt value: [array replaceFrom: #a to: 2 with: 'abc' startingAt: 1].
+    attempt value: [array replaceFrom: 1 to: 2 with: 'abc' startingAt: 'x'].
+    array do: [:each | transcript show: each printString] separatedBy: [transcript show: ' '].
+    transcript newLine.
+  )
+)

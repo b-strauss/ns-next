@@ -17,6 +17,7 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::interpreter::FeedbackBase;
@@ -42,10 +43,12 @@ use compaction::ForwardingTable;
 use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
+pub use object::Element;
 use object::{
     class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, CLASS,
     FIELDS, HEADER,
 };
+pub(crate) use object::{ByteArrayData, ByteArrayDataMut};
 pub use records::{FrameRecord, NewClass, NewClosure, ObjectShape, PlaceholderFormat};
 use scavenge::Scavenger;
 use space::{
@@ -74,6 +77,12 @@ pub(crate) mod record_size {
 
     pub(crate) fn string_fields(text: &str) -> usize {
         super::object::string_field_count(text)
+    }
+
+    /// The fields of a `ByteArray` of `length` bytes: its alignment
+    /// reserve and its data words.
+    pub(crate) fn byte_array_fields(length: usize) -> usize {
+        super::object::byte_array_field_count(length)
     }
 
     /// Its overflow word included, when it needs one.
@@ -976,6 +985,61 @@ impl<'gc> Heap<'gc> {
         object
     }
 
+    /// A `ByteArray` of `class` of `size` bytes, every one zero. Its
+    /// reserve is zeroed too, so that the space holds no stale words.
+    pub(crate) fn allocate_zeroed_byte_array(
+        &mut self,
+        class: ClassReference<'gc>,
+        size: usize,
+    ) -> ObjectReference<'gc> {
+        // The unused bytes of the last word, 0 to 7, so the cast cannot
+        // truncate.
+        let unused = ((8 - size % 8) % 8) as u8;
+        let (object, fields) = self.allocate_object(
+            class,
+            Format::AlignedBytes,
+            unused,
+            false,
+            object::byte_array_field_count(size),
+        );
+        self.space.words_mut()[fields].fill(0);
+        object
+    }
+
+    /// Whether a `ByteArray` of `size` bytes can be allocated, asked before
+    /// a size the program chose is: a failed allocation aborts the process
+    /// as running out of memory, which no handler can catch. Two halves.
+    /// The block, its reserve and overflow word included, must fit the old
+    /// space of the reservation, which no commit can enlarge. And the
+    /// operating system must grant memory of the object's size, probed as
+    /// `Array new:` probes it, with `try_reserve_exact` of its field words
+    /// dropped at once: a size inside the reservation can still be one a
+    /// host that does not overcommit refuses to commit.
+    pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
+        let field_count = object::byte_array_field_count(size);
+        let words = record_size::block_words(field_count);
+        let old = self.space.region(RegionName::Old);
+        let inside_the_reservation = words
+            .checked_mul(8)
+            .is_some_and(|bytes| bytes <= old.end - old.base);
+        inside_the_reservation && Vec::<u64>::new().try_reserve_exact(field_count).is_ok()
+    }
+
+    /// A `ByteArray` of `class` holding `bytes`, in order. Crate-private: a
+    /// host makes one through `Mutator::new_byte_array`, of `ByteArray`'s
+    /// class, since an `AlignedBytes` object of another class is one the
+    /// image decoder refuses.
+    pub(crate) fn allocate_byte_array(
+        &mut self,
+        class: ClassReference<'gc>,
+        bytes: &[u8],
+    ) -> ObjectReference<'gc> {
+        let object = self.allocate_zeroed_byte_array(class, bytes.len());
+        let written = self.with_byte_array_mut(object, |mut data| data.write(0, bytes));
+        debug_assert_eq!(written, Some(true));
+        object
+    }
+
     /// A Symbol object of `class` for `symbol`. `Mutator::new_symbol` is the
     /// one caller, since a heap holds one object per symbol (§5.1.6).
     pub(crate) fn allocate_symbol(
@@ -1351,6 +1415,36 @@ impl<'gc> Heap<'gc> {
             return false;
         };
         self.rewrite_placeholder_header(object, class, identity_hash, format, unused);
+        true
+    }
+
+    /// Fills a placeholder in place as a `ByteArray` of `class` with
+    /// `identity_hash` holding `bytes`, in order: its header becomes the one
+    /// `allocate_byte_array` writes, its data begin at the 32-byte address
+    /// the placeholder's own place gives them, and every other field word,
+    /// the reserve among them, is zero. `false`, and nothing written, when
+    /// the placeholder is not the size the first pass read for that many
+    /// bytes (`record_size::byte_array_fields`) -- which is also what keeps
+    /// an `AlignedBytes` block shorter than its reserve out of the heap.
+    pub(crate) fn fill_placeholder_byte_array(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        bytes: &[u8],
+    ) -> bool {
+        self.check_object_origin(object);
+        let fields = self.fields_mut(object);
+        if fields.len() != object::byte_array_field_count(bytes.len()) {
+            return false;
+        }
+        fields.fill(0);
+        // The unused bytes of the last word, 0 to 7, so the cast cannot
+        // truncate.
+        let unused = ((8 - bytes.len() % 8) % 8) as u8;
+        self.rewrite_placeholder_header(object, class, identity_hash, Format::AlignedBytes, unused);
+        let written = self.with_byte_array_mut(object, |mut data| data.write(0, bytes));
+        debug_assert_eq!(written, Some(true));
         true
     }
 
@@ -2020,6 +2114,7 @@ impl<'gc> Heap<'gc> {
             Format::Frame => ObjectShape::Activation,
             Format::Closure => ObjectShape::Closure,
             Format::Class => ObjectShape::Class,
+            Format::AlignedBytes => ObjectShape::ByteArray,
             Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
                 ObjectShape::Symbol
             }
@@ -2258,6 +2353,131 @@ impl<'gc> Heap<'gc> {
                 char::from_u32(code_point).unwrap_or(char::REPLACEMENT_CHARACTER)
             }),
         ))
+    }
+
+    /// The one reader of a `ByteArray`'s data, private to the heap: its data
+    /// words, from the 32-byte address `aligned_data_start` computes from
+    /// the object's place, and its size; `None` unless the format is
+    /// `AlignedBytes`. Total for a block too short for its reserve, which
+    /// only an untrusted image could build.
+    fn byte_array_words(&self, object: ObjectReference<'gc>) -> Option<(&[u64], usize)> {
+        let index = header_index(object.offset);
+        let block = self.block(object);
+        let header = Header(block[HEADER]);
+        if header.format() != Format::AlignedBytes {
+            return None;
+        }
+        let (start, data_words) = Self::byte_array_extent(index, block.len())?;
+        let size = (data_words * 8).saturating_sub(usize::from(header.unused()));
+        Some((&block[start..start + data_words], size))
+    }
+
+    /// `byte_array_words`, for a write.
+    fn byte_array_words_mut(
+        &mut self,
+        object: ObjectReference<'gc>,
+    ) -> Option<(&mut [u64], usize)> {
+        let index = header_index(object.offset);
+        let block = self.block_mut(object);
+        let header = Header(block[HEADER]);
+        if header.format() != Format::AlignedBytes {
+            return None;
+        }
+        let (start, data_words) = Self::byte_array_extent(index, block.len())?;
+        let size = (data_words * 8).saturating_sub(usize::from(header.unused()));
+        Some((&mut block[start..start + data_words], size))
+    }
+
+    /// Where the data of the `AlignedBytes` block of `block_length` words
+    /// whose header is word `header` begin within the block, and how many
+    /// words they take.
+    fn byte_array_extent(header: usize, block_length: usize) -> Option<(usize, usize)> {
+        let data_words = block_length.checked_sub(FIELDS + object::ALIGNMENT_RESERVE)?;
+        let data_start = object::aligned_data_start(header);
+        debug_assert_eq!(data_start % object::ALIGNMENT_WORDS, 0);
+        Some((data_start - header, data_words))
+    }
+
+    /// Lends a `ByteArray`'s data to `read` and answers what it answers;
+    /// `None` for any other object.
+    pub(crate) fn with_byte_array<T>(
+        &self,
+        object: ObjectReference<'gc>,
+        read: impl FnOnce(ByteArrayData<'_>) -> T,
+    ) -> Option<T> {
+        let (words, size) = self.byte_array_words(object)?;
+        Some(read(ByteArrayData::new(words, size)))
+    }
+
+    /// Lends a `ByteArray`'s data to `write` and answers what it answers;
+    /// `None` for any other object.
+    pub(crate) fn with_byte_array_mut<T>(
+        &mut self,
+        object: ObjectReference<'gc>,
+        write: impl FnOnce(ByteArrayDataMut<'_>) -> T,
+    ) -> Option<T> {
+        let (words, size) = self.byte_array_words_mut(object)?;
+        Some(write(ByteArrayDataMut::new(words, size)))
+    }
+
+    /// Whether `object` is a `ByteArray`: decided by its format, which no
+    /// String shares.
+    pub fn is_byte_array(&self, object: ObjectReference<'gc>) -> bool {
+        self.header(object).format() == Format::AlignedBytes
+    }
+
+    /// A `ByteArray`'s number of bytes; `None` for any other object.
+    pub fn byte_array_size(&self, object: ObjectReference<'gc>) -> Option<usize> {
+        self.with_byte_array(object, |data| data.size())
+    }
+
+    /// A `ByteArray`'s bytes, copied out; `None` for any other object.
+    pub fn byte_array_bytes(&self, object: ObjectReference<'gc>) -> Option<Vec<u8>> {
+        self.with_byte_array(object, |data| data.bytes(0..data.size()))?
+    }
+
+    /// The byte at the 0-based `index`; `None` for any other object or
+    /// past the end.
+    pub fn byte_array_at(&self, object: ObjectReference<'gc>, index: usize) -> Option<u8> {
+        self.with_byte_array(object, |data| data.byte(index))?
+    }
+
+    /// Writes `byte` at the 0-based `index`; answers whether the write
+    /// happened, `false` for any other object or past the end.
+    pub fn byte_array_set(&mut self, object: ObjectReference<'gc>, index: usize, byte: u8) -> bool {
+        self.with_byte_array_mut(object, |mut data| data.set_byte(index, byte))
+            .unwrap_or(false)
+    }
+
+    /// The element of `kind` whose first byte is at the 0-based `offset`,
+    /// in the order `big_endian` names; `None` for any other object or
+    /// when its bytes pass the end.
+    pub fn byte_array_element(
+        &self,
+        object: ObjectReference<'gc>,
+        offset: usize,
+        kind: ElementKind,
+        big_endian: bool,
+    ) -> Option<Element> {
+        self.with_byte_array(object, |data| data.read_element(offset, kind, big_endian))?
+    }
+
+    /// Writes `element` as `kind` with its first byte at the 0-based
+    /// `offset`, in the order `big_endian` names; answers whether the write
+    /// happened, `false` for any other object, when its bytes pass the end,
+    /// or when the element is not of the kind's shape.
+    pub fn set_byte_array_element(
+        &mut self,
+        object: ObjectReference<'gc>,
+        offset: usize,
+        kind: ElementKind,
+        big_endian: bool,
+        element: Element,
+    ) -> bool {
+        self.with_byte_array_mut(object, |mut data| {
+            data.write_element(offset, kind, big_endian, element)
+        })
+        .unwrap_or(false)
     }
 
     /// A number object's words, its header and whether it is a boxed
@@ -2642,6 +2862,10 @@ impl<'gc> Heap<'gc> {
                                 .unwrap_or_default(),
                         }
                     }
+                    Format::AlignedBytes => format!(
+                        "a ByteArray of {}",
+                        self.byte_array_size(object).unwrap_or_default()
+                    ),
                     Format::Frame => "an Activation".to_string(),
                     Format::Closure => "a Closure".to_string(),
                     Format::Class => format!("the class {}", self.class_display_name(object)),
@@ -4595,6 +4819,19 @@ impl<'gc> Heap<'gc> {
                 region.start / 8..(region.start + length) / 8,
                 destination / 8,
             );
+            // A ByteArray's data sit at its own address's alignment, which
+            // the shift changes; left at the old block's offset, every read
+            // would answer wrong bytes. Each object moved by the region's
+            // one distance, so its old header lay that far from the new.
+            let words = self.space.words_mut();
+            let mut position = destination / 8;
+            while position < (destination + length) / 8 {
+                let (header, next) = object_at(words, position);
+                if Header(words[header]).format() == Format::AlignedBytes {
+                    object::realign(words, header - destination / 8 + region.start / 8, header);
+                }
+                position = next;
+            }
             self.space
                 .set_region_extent(name, destination, destination + length);
             regions.push(ShiftedRegion {
@@ -4690,6 +4927,13 @@ impl<'gc> Heap<'gc> {
                     let destination = table.destination(position);
                     words.copy_within(position..next, destination);
                     let moved = destination + (header - position);
+                    // A ByteArray's data sit at its own address's alignment;
+                    // left at the old block's offset, every read would answer
+                    // wrong bytes. The slide copies downward, so the words
+                    // inside the new block are all moved already.
+                    if Header(words[moved]).format() == Format::AlignedBytes {
+                        object::realign(words, header, moved);
+                    }
                     words[moved] = Header(words[moved]).with_marked(false).with_age(0).0;
                 }
                 position = next;
@@ -5987,6 +6231,61 @@ mod tests {
             assert_eq!(heap.block(placeholder), heap.block(built), "{text:?}");
             let wrong_size = heap.allocate_placeholder(class, record_size::string_fields(text) + 1);
             assert!(!heap.fill_placeholder_string(wrong_size, class, 9, text));
+        }
+    }
+
+    /// A ByteArray filled in place: the header its allocation writes, its
+    /// data at the placeholder's own 32-byte alignment wherever the
+    /// placeholder lies, every other field word zero; a placeholder of any
+    /// other size is refused untouched.
+    #[test]
+    fn a_byte_array_filled_in_place_is_aligned_where_its_placeholder_lies() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Object");
+        for size in [0, 1, 8, 13, 40] {
+            let bytes: Vec<u8> = (0..size).map(|index| index as u8 ^ 0x5A).collect();
+            for residue in 0..object::ALIGNMENT_WORDS {
+                // A filler that puts the placeholder's header at `residue`
+                // within a 32-byte line: the filler's header is two words
+                // after the probe's, and the placeholder's two words and
+                // the filler's fields after that.
+                let probe = heap.allocate_instance(class, 0);
+                let next = header_index(probe.offset) + 2;
+                let line = object::ALIGNMENT_WORDS;
+                let fields = (residue + 2 * line - (next + 2) % line) % line;
+                heap.allocate_instance(class, fields);
+                let placeholder =
+                    heap.allocate_placeholder(class, record_size::byte_array_fields(size));
+                assert!(heap.fill_placeholder_byte_array(placeholder, class, 9, &bytes));
+                assert!(heap.is_byte_array(placeholder));
+                assert_eq!(heap.byte_array_bytes(placeholder), Some(bytes.clone()));
+                assert_eq!(heap.object_identity_hash(placeholder), 9);
+                let built = heap.allocate_byte_array(class, &bytes);
+                heap.object_set_identity_hash(built, 9);
+                assert_eq!(heap.header(placeholder).0, heap.header(built).0);
+                let index = header_index(placeholder.offset);
+                let start = object::aligned_data_start(index);
+                assert_eq!(start % object::ALIGNMENT_WORDS, 0);
+                assert_eq!(index % object::ALIGNMENT_WORDS, residue);
+                let block = block_range(heap.space.words(), index);
+                let data = start..start + size.div_ceil(8);
+                for position in block.start + FIELDS..block.end {
+                    if !data.contains(&position) {
+                        assert_eq!(heap.space.words()[position], 0, "the reserve is zero");
+                    }
+                }
+                let wrong_size =
+                    heap.allocate_placeholder(class, record_size::byte_array_fields(size) + 1);
+                assert!(!heap.fill_placeholder_byte_array(wrong_size, class, 9, &bytes));
+                assert!(!heap.is_byte_array(wrong_size), "nothing was written");
+            }
+        }
+        // Shorter than the reserve, the one block `byte_array_size` could
+        // not read: never built, whatever bytes it is asked to hold.
+        for fields in 0..object::ALIGNMENT_RESERVE {
+            let short = heap.allocate_placeholder(class, fields);
+            assert!(!heap.fill_placeholder_byte_array(short, class, 9, &[]));
+            assert!(!heap.is_byte_array(short));
         }
     }
 
@@ -7917,5 +8216,196 @@ mod tests {
         let mut root = Value::object(kept);
         heap.collect_for_test(&mut [&mut root]);
         let _ = heap.str_value(kept);
+    }
+
+    /// The header index of the ByteArray `root` holds, after checking that
+    /// its bytes are `expected` and its data lie at a 32-byte address.
+    fn assert_byte_array_intact<'gc>(heap: &Heap<'gc>, root: Value<'gc>, expected: &[u8]) -> usize {
+        let object = rooted(root);
+        assert_eq!(heap.byte_array_bytes(object).as_deref(), Some(expected));
+        let header = header_index(object.offset);
+        assert_eq!(
+            object::aligned_data_start(header) % object::ALIGNMENT_WORDS,
+            0
+        );
+        header
+    }
+
+    #[test]
+    fn a_byte_array_reads_back_its_bytes_and_its_size() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        for size in [0, 1, 7, 8, 9, 33] {
+            let bytes: Vec<u8> = (0..size).map(|byte| byte as u8 ^ 0xA5).collect();
+            let object = heap.allocate_byte_array(class, &bytes);
+            assert!(heap.is_byte_array(object));
+            assert!(!heap.is_string(object), "a ByteArray is never a String");
+            assert_eq!(heap.byte_array_size(object), Some(size));
+            assert_eq!(heap.byte_array_bytes(object), Some(bytes.clone()));
+            let header = heap.header(object);
+            assert_eq!(header.format(), Format::AlignedBytes);
+            assert_eq!(usize::from(header.unused()), (8 - size % 8) % 8);
+            let index = header_index(object.offset);
+            let start = object::aligned_data_start(index);
+            assert_eq!(start % object::ALIGNMENT_WORDS, 0);
+            let block = block_range(heap.space.words(), index);
+            assert!(block.start + FIELDS <= start);
+            assert!(
+                start + size.div_ceil(8) <= block.end,
+                "the data end inside the block"
+            );
+            if size > 0 {
+                assert_eq!(heap.byte_array_at(object, size - 1), bytes.last().copied());
+                assert!(heap.byte_array_set(object, size - 1, 7));
+                assert_eq!(heap.byte_array_at(object, size - 1), Some(7));
+            }
+            assert_eq!(heap.byte_array_at(object, size), None);
+            assert!(!heap.byte_array_set(object, size, 7));
+        }
+        let string = heap.allocate_string(class, crate::CodePoints::from("abc"));
+        assert!(!heap.is_byte_array(string));
+        assert_eq!(heap.byte_array_size(string), None);
+    }
+
+    #[test]
+    fn a_new_byte_array_is_zero_filled() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let object = heap.allocate_zeroed_byte_array(class, 40);
+        assert_eq!(heap.byte_array_size(object), Some(40));
+        assert_eq!(heap.byte_array_bytes(object), Some(vec![0; 40]));
+        // The reserve too, so that the space holds no stale words.
+        let block = block_range(heap.space.words(), header_index(object.offset));
+        assert!(heap.space.words()[block.start + FIELDS..block.end]
+            .iter()
+            .all(|word| *word == 0));
+    }
+
+    #[test]
+    fn a_byte_array_lender_copies_within_as_a_memmove_does() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let object = heap.allocate_byte_array(class, &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            heap.with_byte_array_mut(object, |mut data| data.copy_within(0..6, 3)),
+            Some(true)
+        );
+        assert_eq!(
+            heap.byte_array_bytes(object),
+            Some(vec![0, 1, 2, 0, 1, 2, 3, 4, 5, 9])
+        );
+        assert_eq!(
+            heap.with_byte_array_mut(object, |mut data| data.copy_within(4..10, 1)),
+            Some(true)
+        );
+        assert_eq!(
+            heap.byte_array_bytes(object),
+            Some(vec![0, 1, 2, 3, 4, 5, 9, 4, 5, 9])
+        );
+        assert_eq!(
+            heap.with_byte_array_mut(object, |mut data| data.copy_within(5..11, 0)),
+            Some(false),
+            "a range past the end writes nothing"
+        );
+        assert_eq!(
+            heap.with_byte_array(object, |data| data.bytes(2..5)),
+            Some(Some(vec![2, 3, 4]))
+        );
+    }
+
+    /// Who moves the ByteArray of
+    /// `an_aligned_byte_array_keeps_its_bytes_through_every_mover_at_every_position`.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum ByteArrayMover {
+        Scavenge,
+        SlideFromTheNursery,
+        SlideInTheOldSpace,
+        #[cfg(debug_assertions)]
+        Move,
+    }
+
+    /// Every mover realigns the data from wherever the old block put them
+    /// to wherever the new one does. A dead instance of `filler` fields
+    /// ahead of the ByteArray moves its header by one word per field, and a
+    /// live one of `leader` fields ahead of it moves it at the destination
+    /// too, so that the scavenger and the slide meet every pair of old and
+    /// new positions within a 32-byte line.
+    #[test]
+    fn an_aligned_byte_array_keeps_its_bytes_through_every_mover_at_every_position() {
+        let expected: Vec<u8> = (0..37).collect();
+        let mut pairs = std::collections::BTreeSet::new();
+        let movers = [
+            ByteArrayMover::Scavenge,
+            ByteArrayMover::SlideFromTheNursery,
+            ByteArrayMover::SlideInTheOldSpace,
+            #[cfg(debug_assertions)]
+            ByteArrayMover::Move,
+        ];
+        for mover in movers {
+            for filler in 0..4 {
+                for leader_fields in 0..4 {
+                    let mut heap = Heap::new();
+                    let class = old_instance_class(&mut heap);
+                    heap.set_allocating_old(mover == ByteArrayMover::SlideInTheOldSpace);
+                    let leader = heap.allocate_instance(class, leader_fields);
+                    heap.allocate_instance(class, filler);
+                    let bytes = heap.allocate_byte_array(class, &expected);
+                    heap.set_allocating_old(false);
+                    let mut leader_root = Value::object(leader);
+                    let mut root = Value::object(bytes);
+                    let mut before = assert_byte_array_intact(&heap, root, &expected);
+                    match mover {
+                        ByteArrayMover::Scavenge => {
+                            // Survivor to survivor twice, so that both
+                            // survivor spaces are met, then a promotion.
+                            for tenure_all in [false, false, true] {
+                                scavenge_bare(
+                                    &mut heap,
+                                    tenure_all,
+                                    &mut [&mut leader_root, &mut root],
+                                );
+                                let after = assert_byte_array_intact(&heap, root, &expected);
+                                pairs.insert((before % 4, after % 4));
+                                before = after;
+                            }
+                        }
+                        ByteArrayMover::SlideFromTheNursery
+                        | ByteArrayMover::SlideInTheOldSpace => {
+                            heap.collect_for_test(&mut [&mut leader_root, &mut root]);
+                            let after = assert_byte_array_intact(&heap, root, &expected);
+                            pairs.insert((before % 4, after % 4));
+                        }
+                        #[cfg(debug_assertions)]
+                        ByteArrayMover::Move => {
+                            use crate::trace::Tracer;
+                            // Every distance of the stress mode, up from
+                            // each region's base and back down to it.
+                            for _ in 0..62 {
+                                let mut forwarder = heap.move_everything();
+                                forwarder.value(&mut leader_root);
+                                forwarder.value(&mut root);
+                                assert_byte_array_intact(&heap, root, &expected);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for old in 0..4 {
+            for new in 0..4 {
+                assert!(
+                    pairs.contains(&(old, new)),
+                    "no mover met a ByteArray moving from residue {old} to residue {new}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn describe_names_a_byte_array_by_its_size() {
+        let mut heap = Heap::new();
+        let class = heap.allocate_self_referential(0);
+        let object = heap.allocate_byte_array(class, &[1, 2, 3]);
+        assert_eq!(heap.describe(Value::object(object)), "a ByteArray of 3");
     }
 }

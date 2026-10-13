@@ -1,0 +1,57 @@
+/// Typed arrays are views: `on:` takes a ByteArray as it is, and `bytes`
+/// answers that very ByteArray, so views over one ByteArray see each
+/// other's writes and the ByteArray's own. Every element is little-endian,
+/// its first byte the lowest.
+class ViewsOverOneByteArrayShareIt = Object new () (
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      bytes
+      words
+      octets
+      halves
+    |
+    bytes:: ByteArray new: 8.
+    words:: platform typedArrays Int32Array on: bytes.
+    octets:: platform typedArrays Uint8Array on: bytes.
+    halves:: platform typedArrays Int16Array on: bytes.
+    transcript
+        print: words bytes == bytes;
+        show: ' ';
+        print: octets bytes == bytes;
+        show: ' ';
+        print: words size;
+        show: ' ';
+        print: octets size;
+        show: ' ';
+        print: halves size;
+        newLine.
+    words at: 1 put: 258.
+    octets at: 5 put: 255.
+    octets at: 8 put: 128.
+    octets do: [:byte | transcript print: byte] separatedBy: [transcript show: ' '].
+    transcript newLine.
+    transcript
+        print: (words at: 2);
+        show: ' ';
+        print: (halves at: 4);
+        show: ' ';
+        print: (bytes at: 2);
+        newLine.
+    bytes at: 1 put: 7.
+    transcript
+        print: (words at: 1);
+        show: ' ';
+        print: (halves at: 1);
+        show: ' ';
+        print: (octets at: 1);
+        newLine.
+    transcript
+        print: (platform typedArrays Int16Array new: 3) bytes size;
+        show: ' ';
+        print: (platform typedArrays Float64Array new: 2) bytes size;
+        show: ' ';
+        print: (platform typedArrays Int8Array on: bytes) size;
+        newLine.
+  )
+)

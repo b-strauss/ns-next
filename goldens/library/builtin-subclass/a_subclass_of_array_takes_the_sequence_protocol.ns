@@ -1,0 +1,79 @@
+/// A user subclass of Array that answers `size`, `at:` and `at:put:` over
+/// a slot of its own gets the sequence protocol: Array's leaves decline a
+/// receiver with no array payload, and their failure blocks' `super`
+/// sends reach the protocol Array's `<:` clause applies (§6.2), written
+/// over those three and over Array's `newOfSize:`. So `copyFrom:to:`
+/// answers an Array, the empty range included; `replaceFrom:to:with:
+/// startingAt:` stores through `at:put:`, an overlapping range correctly;
+/// and a range the receiver does not hold is refused with an Array's
+/// ArgumentError before anything is stored.
+class ASubclassOfArrayTakesTheSequenceProtocol = Object new () (
+  class MyArray = Array new (
+    |
+      elements = {1. 2. 3}.
+    |
+  ) (
+    public size = (
+      ^elements size.
+    )
+
+    public at: index = (
+      ^elements at: index.
+    )
+
+    public at: index put: value = (
+      ^elements at: index put: value.
+    )
+  )
+
+  public main: platform args: arguments = (
+    |
+      transcript = platform transcript.
+      kernel = platform kernel.
+      mine = MyArray new.
+      show
+      copy
+    |
+    show:: [:sequence |
+      1 to: sequence size do: [:index |
+        index > 1 ifTrue: [transcript show: ' '].
+        transcript show: (sequence at: index) printString.
+      ].
+      transcript newLine.
+    ].
+    copy:: mine copyFrom: 2 to: 3.
+    transcript
+        show: copy isKindOfArray printString;
+        show: ' ';
+        show: copy size printString;
+        newLine.
+    show value: copy.
+    copy:: mine copyFrom: 1 to: 0.
+    transcript
+        show: copy isKindOfArray printString;
+        show: ' ';
+        show: copy size printString;
+        newLine.
+    transcript
+        show: ([mine copyFrom: 0 to: 1] on: kernel ArgumentError do: [:error |
+          error argument printString , ' ' , error messageText.
+        ]);
+        newLine.
+    mine replaceFrom: 2 to: 3 with: {7. 8. 9} startingAt: 2.
+    show value: mine.
+    mine replaceFrom: 2 to: 3 with: mine startingAt: 1.
+    show value: mine.
+    transcript
+        show: ([mine replaceFrom: 1 to: 2 with: {7} startingAt: 1] on: kernel ArgumentError
+            do: [:error | error argument printString , ' ' , error messageText]);
+        newLine.
+    show value: mine.
+    transcript
+        show: mine first printString;
+        show: ' ';
+        show: mine last printString;
+        show: ' ';
+        show: (mine indexOf: 8) printString;
+        newLine.
+  )
+)
