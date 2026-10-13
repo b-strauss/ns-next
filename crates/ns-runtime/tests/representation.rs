@@ -98,6 +98,24 @@ fn class_name_of_body(body: &str) -> String {
     class_name_of(&source, "answer")
 }
 
+/// Whether what `body`, a method body, answers is an instance of the
+/// builtin class `kind` itself, not of a class of the same name.
+fn answers_an_instance_of(body: &str, kind: BuiltinClass) -> bool {
+    let source = formatdoc! {"
+        class Probe usingPlatform: platform = () (
+          public answer = (
+            {body}
+          )
+        )
+    "};
+    let (mut interpreter, instance) = instantiate(&source);
+    let answer = answer(&mut interpreter, &instance, "answer");
+    interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(&answer));
+        class.same(mutator.builtin_class(kind))
+    })
+}
+
 /// A module whose `foo` and `bar` answer the class objects `Foo` and
 /// `Bar`.
 const FOO_AND_BAR: &str = indoc! {"
@@ -188,6 +206,10 @@ fn the_class_of_a_class_is_its_metaclass_and_every_metaclass_is_a_metaclass() {
             foo_class_class.same(bar_class_class),
             "`Foo class class == Bar class class`"
         );
+        assert!(
+            foo_class_class.same(mutator.builtin_class(BuiltinClass::Metaclass)),
+            "`Foo class class == Metaclass`"
+        );
         let foo_class_class_class_class =
             class_of(Value::object(class_of(Value::object(foo_class_class))));
         assert!(
@@ -214,9 +236,9 @@ fn the_class_of_a_class_is_its_metaclass_and_every_metaclass_is_a_metaclass() {
 /// be one (§3.1.1).
 #[test]
 fn a_subclass_of_large_integer_is_no_number() {
-    assert_eq!(
-        class_name_of_body("^9223372036854775807 + 1."),
-        "LargeInteger"
+    assert!(
+        answers_an_instance_of("^9223372036854775807 + 1.", BuiltinClass::LargeInteger),
+        "`9223372036854775807 + 1` answers a `LargeInteger`"
     );
     let source = indoc! {"
         class LargeFallThrough usingPlatform: platform largeInteger: largeInteger = Object <: Value (
