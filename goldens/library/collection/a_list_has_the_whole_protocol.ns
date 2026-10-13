@@ -85,7 +85,7 @@ class AListHasTheWholeProtocol = Object new () (
         newLine.
     list addAll: list.
     show value: list.
-    show value: (kernel Array withAll: list).
+    show value: (Array withAll: list).
     show value: {9} , list.
     show value: list , list.
     transcript

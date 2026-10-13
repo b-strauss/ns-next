@@ -1,7 +1,7 @@
 //! Every builtin class's superclass is `Object`, and the ordinary lookup
 //! walk reaches `Object`'s primitives from any builtin receiver. These tests
 //! pin that a non-`Object` builtin receiver reaches `Object`'s own
-//! `class`/`==`/`=`/`printString`, and -- most importantly --
+//! `yourself`/`==`/`=`/`printString`, and -- most importantly --
 //! `Object`'s real, spec-shaped `doesNotUnderstand:`
 //! (`builtins::object_class`), not the interpreter's internal
 //! "no doesNotUnderstand: found" fallback string.
@@ -29,31 +29,31 @@ fn as_string<'gc>(heap: &Heap<'gc>, value: Value<'gc>) -> String {
     }
 }
 
-/// `3 class` -- `Integer` implements no `class` of its own, so this can only
-/// succeed by inheriting `Object`'s native `class`.
+/// `3 yourself` -- `Integer` and its superclasses below `Object` implement
+/// no `yourself` of their own, so this can only succeed by inheriting
+/// `Object`'s, which answers the receiver. `Object`'s mirror forwarders
+/// (`class`, `==`, `=`, `hash`, `printString`, `identityHash`) are each
+/// overridden on `Integer`'s chain or protected, so the inherited member
+/// asked here is a plain method.
 #[test]
-fn a_builtin_receiver_inherits_objects_native_class() {
+fn a_builtin_receiver_inherits_objects_yourself() {
     let mut interpreter = Interpreter::bootstrap();
 
     let result = interpreter.send(
         &interpreter.stash(Value::small_integer(3)),
-        Symbol::intern("class"),
+        Symbol::intern("yourself"),
         &[],
     );
 
-    let result = expect_ok(result, "3 class");
+    let result = expect_ok(result, "3 yourself");
     interpreter.enter(|mutator| {
-        let expected = mutator.builtin_class(BuiltinClass::Integer);
-        match mutator.fetch(&result).kind() {
-            ValueKind::Object(object) => assert!(
-                object.same(expected),
-                "`3 class` must yield the Integer class object"
-            ),
-            _ => panic!(
-                "expected the Integer class object, got {}",
-                mutator.heap().describe(mutator.fetch(&result))
-            ),
-        }
+        let answer = mutator.fetch(&result);
+        assert_eq!(
+            answer.as_small_integer(),
+            Some(3),
+            "`3 yourself` must yield the receiver, got {}",
+            mutator.heap().describe(answer)
+        );
     });
 }
 
