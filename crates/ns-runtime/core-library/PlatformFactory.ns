@@ -78,6 +78,28 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     private Collection = kernel Collection.
     /// The kernel's `StringBuilder`, which `KernelNamespace` hands out.
     private StringBuilder = kernel StringBuilder.
+    /// The kernel's `TypedArray`, which `KernelNamespace` hands out.
+    private TypedArray = kernel TypedArray.
+    /// The kernel's `Int8Array`, which `KernelNamespace` hands out.
+    private Int8Array = kernel Int8Array.
+    /// The kernel's `Uint8Array`, which `KernelNamespace` hands out.
+    private Uint8Array = kernel Uint8Array.
+    /// The kernel's `Int16Array`, which `KernelNamespace` hands out.
+    private Int16Array = kernel Int16Array.
+    /// The kernel's `Uint16Array`, which `KernelNamespace` hands out.
+    private Uint16Array = kernel Uint16Array.
+    /// The kernel's `Int32Array`, which `KernelNamespace` hands out.
+    private Int32Array = kernel Int32Array.
+    /// The kernel's `Uint32Array`, which `KernelNamespace` hands out.
+    private Uint32Array = kernel Uint32Array.
+    /// The kernel's `Int64Array`, which `KernelNamespace` hands out.
+    private Int64Array = kernel Int64Array.
+    /// The kernel's `Uint64Array`, which `KernelNamespace` hands out.
+    private Uint64Array = kernel Uint64Array.
+    /// The kernel's `Float32Array`, which `KernelNamespace` hands out.
+    private Float32Array = kernel Float32Array.
+    /// The kernel's `Float64Array`, which `KernelNamespace` hands out.
+    private Float64Array = kernel Float64Array.
   |
 ) (
   /// The one collections module, the instance the boot built over the
@@ -203,6 +225,73 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     /// instantiates with `new` or `new:` to build a String from pieces.
     public StringBuilder = (
       ^outer PlatformFactory StringBuilder.
+    )
+
+    /// Answers the kernel's `TypedArray` class, the abstract superclass
+    /// of the ten typed arrays, which a program tests a typed array
+    /// against or subclasses.
+    public TypedArray = (
+      ^outer PlatformFactory TypedArray.
+    )
+
+    /// Answers the kernel's class `Int8Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int8Array = (
+      ^outer PlatformFactory Int8Array.
+    )
+
+    /// Answers the kernel's class `Uint8Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint8Array = (
+      ^outer PlatformFactory Uint8Array.
+    )
+
+    /// Answers the kernel's class `Int16Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int16Array = (
+      ^outer PlatformFactory Int16Array.
+    )
+
+    /// Answers the kernel's class `Uint16Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint16Array = (
+      ^outer PlatformFactory Uint16Array.
+    )
+
+    /// Answers the kernel's class `Int32Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int32Array = (
+      ^outer PlatformFactory Int32Array.
+    )
+
+    /// Answers the kernel's class `Uint32Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint32Array = (
+      ^outer PlatformFactory Uint32Array.
+    )
+
+    /// Answers the kernel's class `Int64Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Int64Array = (
+      ^outer PlatformFactory Int64Array.
+    )
+
+    /// Answers the kernel's class `Uint64Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Uint64Array = (
+      ^outer PlatformFactory Uint64Array.
+    )
+
+    /// Answers the kernel's class `Float32Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Float32Array = (
+      ^outer PlatformFactory Float32Array.
+    )
+
+    /// Answers the kernel's class `Float64Array`, which a program instantiates
+    /// with `new:`, `withAll:` or `on:` a ByteArray.
+    public Float64Array = (
+      ^outer PlatformFactory Float64Array.
     )
   )
 

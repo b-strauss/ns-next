@@ -3931,6 +3931,13 @@ Decided with the user on 2026-10-12:
   `isKindOfCollection` answer `true`.
 - **One leaf per width for `at:` and one for `at:put:`**, on the
   `ByteArray` with the element index; `Uint8Array` uses `ByteArray`'s.
+  A view's accessor sends to the mirror with its `bytes` slot as the
+  subject, so it is an ordinary method and no primitive method; a slot
+  that holds no `ByteArray` makes the leaf decline, and the failure block
+  signals "at: found no ByteArray under the view". A float view converts
+  a Number with `asFloat` before the leaf, and hands anything else to the
+  leaf as it is, so the index is checked first, as for every other
+  element. A program names the classes as `platform kernel Int16Array`.
 
 #### `DataView`
 

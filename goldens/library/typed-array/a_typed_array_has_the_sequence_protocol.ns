@@ -1,0 +1,109 @@
+/// A typed array has the sequence protocol: `copyFrom:to:`, `select:`,
+/// `reject:` and `,` answer a new array of the receiver's class over a new
+/// ByteArray, `collect:` an Array, since its block may answer anything;
+/// `indexOf:` compares with `=`, so 3 finds 3.0; `sort:` sorts in place.
+/// `withAll:` fills a new one, and `bytesPerElement` answers the width on
+/// either side. `=` is identity. `class` is protected, so a copy's class
+/// shows through `isKindOfTypedArray` and its width.
+class ATypedArrayHasTheSequenceProtocol = Object new (
+  |
+    transcript ::= nil.
+  |
+) (
+  show: collection = (
+    collection do: [:element | transcript print: element] separatedBy: [transcript show: ' '].
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      Int16Array
+      Float64Array
+      halves
+      part
+      chosen
+      doubles
+      joined
+    |
+    transcript:: platform transcript.
+    Int16Array:: platform kernel Int16Array.
+    Float64Array:: platform kernel Float64Array.
+    halves:: Int16Array withAll: {5. -3. 9. 1}.
+    show: halves.
+    part:: halves copyFrom: 2 to: 3.
+    show: part.
+    transcript
+        print: part isKindOfTypedArray;
+        show: ' ';
+        print: part bytesPerElement;
+        show: ' ';
+        print: part bytes == halves bytes;
+        show: ' ';
+        print: part size;
+        newLine.
+    chosen:: halves select: [:element | element > 0].
+    show: chosen.
+    transcript
+        print: chosen bytesPerElement;
+        show: ' ';
+        print: (halves reject: [:element | element > 0]) size;
+        newLine.
+    show: (halves collect: [:element | element * 2]).
+    transcript
+        print: (halves collect: [:element | element]) isKindOfArray;
+        newLine.
+    joined:: halves , part.
+    show: joined.
+    transcript
+        print: joined isKindOfTypedArray;
+        newLine.
+    doubles:: Float64Array withAll: {1.5. 3. 7}.
+    show: doubles.
+    transcript
+        print: (doubles indexOf: 3);
+        show: ' ';
+        print: (doubles indexOf: 4);
+        show: ' ';
+        print: (doubles includes: 7);
+        newLine.
+    transcript
+        print: (halves sort: [:first :second | first <= second]) == halves;
+        newLine.
+    show: halves.
+    transcript
+        print: halves first;
+        show: ' ';
+        print: halves last;
+        show: ' ';
+        print: (halves inject: 0 into: [:sum :element | sum + element]);
+        show: ' ';
+        print: halves isEmpty;
+        show: ' ';
+        print: Int16Array new isEmpty;
+        newLine.
+    transcript
+        print: Int16Array bytesPerElement;
+        show: ' ';
+        print: halves bytesPerElement;
+        show: ' ';
+        print: Float64Array bytesPerElement;
+        show: ' ';
+        print: doubles bytesPerElement;
+        show: ' ';
+        print: platform kernel Uint8Array bytesPerElement;
+        show: ' ';
+        print: platform kernel Uint64Array bytesPerElement;
+        newLine.
+    transcript
+        print: halves = (halves copyFrom: 1 to: 4);
+        show: ' ';
+        print: halves = halves;
+        show: ' ';
+        print: halves isKindOfCollection;
+        show: ' ';
+        print: halves isKindOfArray;
+        newLine.
+    show: (platform kernel Uint8Array withAll: {1. 2. 255}).
+    show: (halves copyWith: 100).
+  )
+)

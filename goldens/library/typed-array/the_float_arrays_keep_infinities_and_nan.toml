@@ -1,0 +1,8 @@
+stdout = '''
+Infinity -Infinity Infinity -Infinity NaN Infinity
+true true true true
+at:put: requires a Number, got the String "x" / nil / Infinity
+1e+39 -1e+39 Infinity -Infinity NaN Infinity
+true true true false
+at:put: requires a Number, got the String "x" / nil / 1e+39
+'''

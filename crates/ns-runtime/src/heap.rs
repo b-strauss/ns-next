@@ -17,6 +17,7 @@
 //! sites that call back into the interpreter while holding one -- which is
 //! most of `interpreter/locals.rs`.
 
+use crate::builtins::primitive::ElementKind;
 use crate::bytecode::CompiledCode;
 use crate::hash::IdentityMap;
 use crate::interpreter::FeedbackBase;
@@ -42,6 +43,7 @@ use compaction::ForwardingTable;
 use compaction::{Shift, ShiftedRegion};
 pub(crate) use header::IDENTITY_HASH_LIMIT;
 use header::{Format, Header, MAX_AGE, WORD_COUNT_OVERFLOW};
+pub use object::Element;
 use object::{
     class_field, closure_field, frame_field, pointer_ranges, trace_block, PackedString, CLASS,
     FIELDS, HEADER,
@@ -2448,6 +2450,37 @@ impl<'gc> Heap<'gc> {
     pub fn byte_array_set(&mut self, object: ObjectReference<'gc>, index: usize, byte: u8) -> bool {
         self.with_byte_array_mut(object, |mut data| data.set_byte(index, byte))
             .unwrap_or(false)
+    }
+
+    /// The element of `kind` whose first byte is at the 0-based `offset`,
+    /// in the order `big_endian` names; `None` for any other object or
+    /// when its bytes pass the end.
+    pub fn byte_array_element(
+        &self,
+        object: ObjectReference<'gc>,
+        offset: usize,
+        kind: ElementKind,
+        big_endian: bool,
+    ) -> Option<Element> {
+        self.with_byte_array(object, |data| data.read_element(offset, kind, big_endian))?
+    }
+
+    /// Writes `element` as `kind` with its first byte at the 0-based
+    /// `offset`, in the order `big_endian` names; answers whether the write
+    /// happened, `false` for any other object, when its bytes pass the end,
+    /// or when the element is not of the kind's shape.
+    pub fn set_byte_array_element(
+        &mut self,
+        object: ObjectReference<'gc>,
+        offset: usize,
+        kind: ElementKind,
+        big_endian: bool,
+        element: Element,
+    ) -> bool {
+        self.with_byte_array_mut(object, |mut data| {
+            data.write_element(offset, kind, big_endian, element)
+        })
+        .unwrap_or(false)
     }
 
     /// A number object's words, its header and whether it is a boxed

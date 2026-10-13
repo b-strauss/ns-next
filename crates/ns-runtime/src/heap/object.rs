@@ -33,6 +33,7 @@
 //! `Mutator::new_float` are the one way to make either and decide it, so
 //! each number has one representation.
 
+use crate::builtins::primitive::ElementKind;
 use crate::heap::header::{Format, Header};
 use crate::heap::Word;
 use crate::trace::Tracer;
@@ -400,6 +401,56 @@ impl<'a> ByteArrayData<'a> {
         is_within(&range, self.size)
             .then(|| range.map(|index| data_byte(self.words, index)).collect())
     }
+
+    /// The element of `kind` whose first byte is at the 0-based `offset`,
+    /// in the order `big_endian` names; `None` when its bytes pass the
+    /// end. A float32 is widened to an `f64` exactly.
+    pub(crate) fn read_element(
+        self,
+        offset: usize,
+        kind: ElementKind,
+        big_endian: bool,
+    ) -> Option<Element> {
+        let width = kind.width();
+        if offset.checked_add(width)? > self.size {
+            return None;
+        }
+        // Gathered into little-endian order, so each kind converts from
+        // one order.
+        let mut bytes = [0u8; 8];
+        for (index, byte) in bytes[..width].iter_mut().enumerate() {
+            *byte = data_byte(self.words, offset + index);
+        }
+        if big_endian {
+            bytes[..width].reverse();
+        }
+        Some(match kind {
+            ElementKind::Int8 => Element::Integer(i8::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Uint8 => Element::Integer(u8::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Int16 => Element::Integer(i16::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Uint16 => Element::Integer(u16::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Int32 => Element::Integer(i32::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Uint32 => Element::Integer(u32::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Int64 => Element::Integer(i64::from_le_bytes(bytes).into()),
+            ElementKind::Uint64 => Element::Integer(u64::from_le_bytes(bytes).into()),
+            ElementKind::Float32 => Element::Float(f32::from_le_bytes(leading(bytes)).into()),
+            ElementKind::Float64 => Element::Float(f64::from_le_bytes(bytes)),
+        })
+    }
+}
+
+/// An element of a typed array or a `DataView` as Rust holds it between
+/// its bytes and its `Value`: an integer of any of the integer kinds, or a
+/// float of either float kind.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Element {
+    Integer(i128),
+    Float(f64),
+}
+
+/// The first `N` of eight little-endian bytes.
+fn leading<const N: usize>(bytes: [u8; 8]) -> [u8; N] {
+    std::array::from_fn(|index| bytes[index])
 }
 
 /// A `ByteArray`'s data words and size, lent to a leaf that writes in
@@ -453,6 +504,69 @@ impl<'a> ByteArrayDataMut<'a> {
                 let byte = data_byte(self.words, index);
                 set_data_byte(self.words, destination + offset, byte);
             }
+        }
+        true
+    }
+
+    /// Writes `element` as `kind` with its first byte at the 0-based
+    /// `offset`, in the order `big_endian` names, and answers whether it
+    /// did: nothing is written when its bytes pass the end, or when the
+    /// element is not of the kind's shape -- a float for an integer kind,
+    /// an integer for a float kind. An integer is not range-checked, its
+    /// low bytes stored, since the leaf has checked it; a float32 is
+    /// rounded to nearest, ties to even, a finite value past its range
+    /// becoming an infinity and a NaN staying a NaN.
+    pub(crate) fn write_element(
+        &mut self,
+        offset: usize,
+        kind: ElementKind,
+        big_endian: bool,
+        element: Element,
+    ) -> bool {
+        let width = kind.width();
+        match offset.checked_add(width) {
+            Some(end) if end <= self.size => {}
+            _ => return false,
+        }
+        let mut bytes = [0u8; 8];
+        match (kind, element) {
+            (ElementKind::Int8, Element::Integer(value)) => {
+                bytes[..1].copy_from_slice(&(value as i8).to_le_bytes());
+            }
+            (ElementKind::Uint8, Element::Integer(value)) => {
+                bytes[..1].copy_from_slice(&(value as u8).to_le_bytes());
+            }
+            (ElementKind::Int16, Element::Integer(value)) => {
+                bytes[..2].copy_from_slice(&(value as i16).to_le_bytes());
+            }
+            (ElementKind::Uint16, Element::Integer(value)) => {
+                bytes[..2].copy_from_slice(&(value as u16).to_le_bytes());
+            }
+            (ElementKind::Int32, Element::Integer(value)) => {
+                bytes[..4].copy_from_slice(&(value as i32).to_le_bytes());
+            }
+            (ElementKind::Uint32, Element::Integer(value)) => {
+                bytes[..4].copy_from_slice(&(value as u32).to_le_bytes());
+            }
+            (ElementKind::Int64, Element::Integer(value)) => {
+                bytes = (value as i64).to_le_bytes();
+            }
+            (ElementKind::Uint64, Element::Integer(value)) => {
+                bytes = (value as u64).to_le_bytes();
+            }
+            (ElementKind::Float32, Element::Float(value)) => {
+                bytes[..4].copy_from_slice(&(value as f32).to_le_bytes());
+            }
+            (ElementKind::Float64, Element::Float(value)) => {
+                bytes = value.to_le_bytes();
+            }
+            _ => return false,
+        }
+        if big_endian {
+            bytes[..width].reverse();
+        }
+        for (index, byte) in bytes[..width].iter().enumerate() {
+            set_data_byte(self.words, offset + index, *byte);
         }
         true
     }

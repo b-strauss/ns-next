@@ -1,0 +1,83 @@
+/// Each integer typed array holds exactly its kind's range: its minimum and
+/// maximum are written, `at:put:` answering them, and read back; one past
+/// either is an ArgumentError carrying the value, and the element stays as
+/// it was, as does one that is no Integer. `Int64Array`'s and
+/// `Uint64Array`'s extremes lie past 61 bits, so they read as LargeIntegers
+/// and are written from them, as any Integer is.
+class EachIntegerArrayHoldsItsRange = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+    kernel ::= nil.
+  |
+) (
+  refusal: action = (
+    ^action on: ArgumentError do: [:error | error messageText].
+  )
+
+  check: array from: min to: max = (
+    transcript
+        print: (array at: 1 put: min);
+        show: ' ';
+        print: (array at: 2 put: max);
+        show: ' ';
+        print: (array at: 1);
+        show: ' ';
+        print: (array at: 2);
+        newLine.
+    transcript
+        show: (refusal: [array at: 1 put: min - 1]);
+        show: ' / ';
+        show: (refusal: [array at: 2 put: max + 1]);
+        show: ' / ';
+        print: (array at: 1);
+        show: ' ';
+        print: (array at: 2);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      wide
+      unsigned
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    kernel:: platform kernel.
+    check: (kernel Int8Array new: 2) from: -128 to: 127.
+    check: (kernel Uint8Array new: 2) from: 0 to: 255.
+    check: (kernel Int16Array new: 2) from: -32768 to: 32767.
+    check: (kernel Uint16Array new: 2) from: 0 to: 65535.
+    check: (kernel Int32Array new: 2) from: -2147483648 to: 2147483647.
+    check: (kernel Uint32Array new: 2) from: 0 to: 4294967295.
+    wide:: kernel Int64Array new: 2.
+    check: wide from: (2 raisedTo: 63) negated to: (2 raisedTo: 63) - 1.
+    unsigned:: kernel Uint64Array new: 2.
+    check: unsigned from: 0 to: (2 raisedTo: 64) - 1.
+    transcript
+        print: (wide at: 1) = (2 raisedTo: 63) negated;
+        show: ' ';
+        print: (wide at: 2) = ((2 raisedTo: 63) - 1);
+        show: ' ';
+        print: (unsigned at: 2) = ((2 raisedTo: 64) - 1);
+        show: ' ';
+        print: (wide at: 2) + 1 = (2 raisedTo: 63);
+        newLine.
+    wide at: 1 put: 9223372036854775807.
+    unsigned at: 1 put: 18446744073709551615.
+    transcript
+        print: (wide at: 1) = (wide at: 2);
+        show: ' ';
+        print: (unsigned at: 1) = (unsigned at: 2);
+        newLine.
+    transcript
+        show: (refusal: [(kernel Int16Array new: 1) at: 1 put: 1.5]);
+        newLine;
+        show: (refusal: [(kernel Uint32Array new: 1) at: 1 put: nil]);
+        newLine;
+        show: (refusal: [(kernel Int64Array new: 1) at: 1 put: 2.5]);
+        newLine;
+        show: (refusal: [(kernel Uint64Array new: 1) at: 1 put: -1]);
+        newLine.
+  )
+)

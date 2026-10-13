@@ -1191,6 +1191,21 @@ mod tests {
         ("StringBuilder", "asUtf8"),
         ("StringBuilder", "ensureRoom:"),
         ("StringBuilder", "new"),
+        // `TypedArray` is Newspeak over its subclasses' accessors: its
+        // abstract members send `subclassResponsibility`, `size` and `do:`
+        // send, the slot's validation and the crafted-slot refusal signal,
+        // and its class side's helpers allocate and fill. Each of the ten
+        // typed arrays' own members is on `TYPED_ARRAY_MEMBERS`.
+        ("TypedArray", "bytesPerElement"),
+        ("TypedArray", "size"),
+        ("TypedArray", "do:"),
+        ("TypedArray", "at:"),
+        ("TypedArray", "at:put:"),
+        ("TypedArray", "newOfSize:"),
+        ("TypedArray", "noByteArray:"),
+        ("TypedArray", "viewable:"),
+        ("TypedArray", "bytesFor:width:"),
+        ("TypedArray", "fill:from:"),
         // What a `MessageNotUnderstood` hands a host: its message's
         // selector, a send, and its receiver, a slot.
         ("MessageNotUnderstood", "hostSelector"),
@@ -1250,6 +1265,35 @@ mod tests {
         // A forwarder in shape, but of its argument rather than of `self`:
         // the row's subject is the computation the future will force.
         ("Future", "computing:"),
+    ];
+
+    /// The ten typed arrays, whose members are the same in each.
+    const TYPED_ARRAYS: &[&str] = &[
+        "Int8Array",
+        "Uint8Array",
+        "Int16Array",
+        "Uint16Array",
+        "Int32Array",
+        "Uint32Array",
+        "Int64Array",
+        "Uint64Array",
+        "Float32Array",
+        "Float64Array",
+    ];
+
+    /// What each typed array declares, none a forwarder: `at:` and
+    /// `at:put:` send to the mirror with the `bytes` slot as the subject,
+    /// not `self` -- or, in `Uint8Array`, to the ByteArray itself -- so a
+    /// view stays an ordinary object over its ByteArray; `bytesPerElement`
+    /// answers a literal on both sides; the class side's `new`, `new:` and
+    /// `withAll:` send.
+    const TYPED_ARRAY_MEMBERS: &[&str] = &[
+        "bytesPerElement",
+        "at:",
+        "at:put:",
+        "new",
+        "new:",
+        "withAll:",
     ];
 
     /// The kernel forwarders whose row is reported under a selector other
@@ -1557,11 +1601,18 @@ mod tests {
     /// The quick methods of the kernel's ordinary classes, those that are no
     /// `BuiltinClass` and so cannot be named in `QUICK_METHODS`: the class's
     /// name, the selector, and the fast path it must have.
-    const ORDINARY_CLASS_QUICK_METHODS: &[(&str, &str, MethodFastPath)] = &[(
-        "StringBuilder",
-        "isKindOfStringBuilder",
-        MethodFastPath::Constant(QuickConstant::True),
-    )];
+    const ORDINARY_CLASS_QUICK_METHODS: &[(&str, &str, MethodFastPath)] = &[
+        (
+            "StringBuilder",
+            "isKindOfStringBuilder",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            "TypedArray",
+            "isKindOfTypedArray",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+    ];
 
     /// §3.2's accessors for the predefined classes, which `Object` declares:
     /// every builtin a program can name, which is every one but `Top`, the
@@ -1630,7 +1681,9 @@ mod tests {
                     .flat_map(|side| side.compiled_methods());
                 for method in mixin.compiled_methods().chain(class_side) {
                     let selector = method.selector.as_str();
-                    if NOT_FORWARDERS.contains(&(class_name, selector)) {
+                    let typed_array_member = TYPED_ARRAYS.contains(&class_name)
+                        && TYPED_ARRAY_MEMBERS.contains(&selector);
+                    if typed_array_member || NOT_FORWARDERS.contains(&(class_name, selector)) {
                         assert!(
                             method.fast_path.is_none(),
                             "{class_name}>>{selector} reaches a leaf after all; take it off NOT_FORWARDERS"
@@ -1795,7 +1848,11 @@ mod tests {
                 "Future",
                 "Proxy",
                 "StringBuilder",
-            ] {
+                "TypedArray",
+            ]
+            .into_iter()
+            .chain(TYPED_ARRAYS.iter().copied())
+            {
                 assert_eq!(
                     fast_path(&kernel_namespace, selector),
                     None,

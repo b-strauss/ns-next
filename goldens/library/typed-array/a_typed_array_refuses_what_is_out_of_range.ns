@@ -1,0 +1,64 @@
+/// A typed array refuses, with an ArgumentError, what it cannot view or
+/// hold: `on:` a ByteArray whose size is no multiple of the width, or
+/// anything that is no ByteArray; `new:` a size `Array new:` refuses; an
+/// index outside 1 to `size`, in Array's words. A refused store leaves the
+/// element as it was, and each error carries what was wrong.
+class ATypedArrayRefusesWhatIsOutOfRange = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  carried: action = (
+    transcript
+        print: (action on: ArgumentError do: [:error | error argument]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      Int32Array
+      words
+      odd
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    Int32Array:: platform kernel Int32Array.
+    words:: Int32Array new: 3.
+    words at: 1 put: 5.
+    odd:: ByteArray new: 6.
+    refusal: [Int32Array on: (ByteArray new: 6)].
+    refusal: [Int32Array on: 'abc'].
+    refusal: [Int32Array on: nil].
+    refusal: [platform kernel Uint8Array on: 'abc'].
+    refusal: [platform kernel Float64Array on: (ByteArray new: 12)].
+    refusal: [Int32Array new: -1].
+    refusal: [Int32Array new: 'x'].
+    refusal: [Int32Array withAll: {1. 2147483648}].
+    refusal: [words at: 0].
+    refusal: [words at: 4].
+    refusal: [words at: 'one'].
+    refusal: [words at: 0 put: 1].
+    refusal: [words at: 4 put: 'x'].
+    refusal: [(platform kernel Uint8Array new: 2) at: 3].
+    refusal: [(platform kernel Float32Array new: 2) at: 3 put: 1.0].
+    transcript
+        print: ([Int32Array on: odd] on: ArgumentError do: [:error | error argument == odd]);
+        newLine.
+    carried: [words at: 1 put: 2147483648].
+    carried: [words at: 7].
+    transcript
+        print: (words at: 1);
+        show: ' ';
+        print: (Int32Array on: (ByteArray new: 0)) size;
+        show: ' ';
+        print: Int32Array new size;
+        newLine.
+  )
+)
