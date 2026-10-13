@@ -596,8 +596,9 @@ core-library module beside `Kernel.ns` (decided with the user on
 2026-09-27):
 
 ```newspeak
-class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
-    | private vmMirror = theMirror. private kernelModule = theKernel. |
+class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value (
+    | private vmMirror = theMirror. private Exception = kernel Exception. ...
+      private Collection = kernel Collection. |
 ) (
     lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
     private class Platform = Value new () (
@@ -607,7 +608,7 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
         lazy public time = Time new.
     )
     private class Transcript = Value new () ( show: and newLine, through vmMirror )
-    private class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
+    private class KernelNamespace = Value new () ( public Exception = ( ^outer PlatformFactory Exception ) ... )
     private class Time = Value new () ( public Stopwatch = ( ^outer PlatformFactory Stopwatch ) )
     private class Stopwatch = Object new ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
         elapsedNanoseconds, start, and the clock reading, through vmMirror )
@@ -620,12 +621,11 @@ and `platform collections` is the facet of a second shipped module,
 way (2026-09-28, "The collections module (plan 2)" below):
 
 ```newspeak
-class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | private kernelModule = theKernel. private kernelError = theKernel Error.
-      private kernelCollection = theKernel Collection. |
+class CollectionsFactory usingKernel: kernel = Object <: Value (
+    | private ArgumentError = kernel ArgumentError. private Collection = kernel Collection. |
 ) (
     private class Collections = Value new () (
-        public Collection = ( ^kernelCollection )
+        public Collection = ( ^outer CollectionsFactory Collection )
         public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
         public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
         public List = ( ^outer CollectionsFactory List )
@@ -633,23 +633,27 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public NotFound = ( ^outer CollectionsFactory NotFound )
         public Set = ( ^outer CollectionsFactory Set )
     )
-    private class List new: capacity = kernelCollection new (
+    private class List new: capacity = Collection new (
         | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity.
           private modifications ::= 0. |
     ) ( ... ) : ( public new = ( ^self new: 3 ) )
-    private class Map new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class Map new: capacity = Collection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     private class IdentityMap new: capacity = Map new: capacity () ( ... ) : ( ... )
-    private class Set new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
-    private class NotFound = kernelError new ( | public element ::= nil. | ) ( ... ) : ( ... )
-    private class ConcurrentModification = kernelError new ( | public collection ::= nil. | ) () : ( ... )
+    private class Set new: capacity = Collection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class NotFound = Error new ( | public element ::= nil. | ) ( ... ) : ( ... )
+    private class ConcurrentModification = Error new ( | public collection ::= nil. | ) () : ( ... )
     public newCollections = ( ^Collections new )
 ) : ()
 ```
 
 **The factory pattern.** Every shipped module is written this way: an
-`XFactory` root holds what is privileged -- here the VM mirror and the
-kernel instance, in private slots, since neither a lazy slot nor a method
-may name a factory parameter (§6) -- and is never handed to anyone. What a
+`XFactory` root holds what is privileged -- here the VM mirror, and of the
+kernel instance only the classes its facets hand out or its classes
+inherit, each in a private slot, since neither a lazy slot nor a method may
+name a factory parameter (§6) -- and is never handed to anyone. A root keeps
+what it needs of an object it is handed, not the object, so it holds no
+more authority than it uses (decided with the user on 2026-10-13); the
+mirror is the exception, since every leaf is reached through it. What a
 program receives, and may instantiate, are the root's nested classes, its
 facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
@@ -710,7 +714,7 @@ accessor the compiler recognizes in every shipped module but the kernel,
 which is what lets an image name these private classes as values
 ("Shipped names in the image" below), and not its own class, so a program
 makes no second facet.
-`Collection` it answers from the root's `kernelCollection`, the kernel's
+`Collection` it answers from the root's slot `Collection`, the kernel's
 own class.
 
 **The boot.** `Interpreter::install_shipped_modules`, run by
@@ -733,8 +737,9 @@ host send and keeps the answer as the platform
 entered from the outside, as the kernel's instantiation is, so the stress
 modes see it. `Mutator::platform_value` only reads the platform, so asking
 for it runs no Newspeak. The boot runs shipped code -- the superclass
-clauses of every shipped class, `CollectionsFactory`'s eager slots
-`theKernel Error` and `theKernel Collection`, and `newPlatform` -- whose
+clauses of every shipped class, the factories' eager slots, which take the
+kernel's classes they need (`kernel Collection` and its siblings), and
+`newPlatform` -- whose
 sends take room in the inline caches, so a freshly bootstrapped interpreter
 does not start with an empty cache table (`tests/inline_caches.rs` pins
 what it leaves). It draws no identity hash, so every hash a run draws is
@@ -2812,9 +2817,9 @@ a handle on, not a class the image needs a name for.
   catchable. A `List` over a fixed array needs a sized array; this is what
   it grows into.
 - **`CollectionsFactory.ns`, built**, in the factory pattern ("The
-  platform" above): `class CollectionsFactory usingKernel: theKernel =
-  Object <: Value`, a root that holds the kernel in a private slot and is
-  never handed out, with the private nested classes a program reaches
+  platform" above): `class CollectionsFactory usingKernel: kernel =
+  Object <: Value`, a root that keeps the kernel's `ArgumentError` and
+  `Collection` in private slots and is never handed out, with the private nested classes a program reaches
   through the platform -- the `Collections` facet, `List`, `Map`,
   `IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` -- as
   SOMns's and Primordial Soup's collections modules are values; it
@@ -4037,7 +4042,7 @@ stands; the shipped-class naming the first item needs is built.
   stays under `Value` with its own protocol. `Collection` is a kernel
   builtin under `Object`, because `Array` is a kernel builtin and needs it
   as its superclass; `List`, `Map` and `Set` reach it through
-  `CollectionsFactory`'s `kernelCollection`. `IdentityMap` is a subclass of
+  `CollectionsFactory`'s slot `Collection`. `IdentityMap` is a subclass of
   `Map` in the collections module, not a separate kernel class: it compares
   keys with `==` and hashes them with `identityHash` and inherits
   everything else, insertion order and removal among it; its `at:put:`

@@ -4992,3 +4992,28 @@ modules; only its fingerprint bytes changed.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 reflective checks return as goldens with road step 5's mirrors.
+
+## The platform module hands out none of its classes (2026-10-13)
+
+`Platform`'s class accessors -- `Platform`, `Transcript`,
+`KernelNamespace`, `Time` and `Stopwatch` -- and the collections facet's
+`Collections` existed so that an image could name those classes by a path
+from the platform. Shipped names name them by declaration, and with
+`class` protected no program reaches them otherwise, so they are gone
+([core-library.md](design/core-library.md), "The platform"): a program
+holds the facets it is handed and makes no second platform, transcript or
+facet. `Time`'s `Stopwatch` stays, for the Are We Fast Yet harness.
+`goldens/library/platform/a_second_platform_writes_like_the_first` and
+`goldens/library/collection/every_platform_shares_one_collections_module`
+are gone, and `the_platform_and_its_parts_are_values` keeps its identity
+line; what they checked of second ones, which only a host makes, is
+`tests/platform.rs`'s `the_platform_and_its_parts_are_values` and
+`a_second_platform_writes_too`.
+
+The two factories keep of the kernel only the classes they use, one
+private slot each (`private Collection = kernel Collection`), not the
+kernel instance (decided with the user; the mirror stays whole), and
+`CollectionsFactory`'s two Errors name `Error` bare. The boot runs
+`PlatformFactory`'s twelve new slot initializers, so it leaves 31 inline
+cache sites and 20 global entries where it left 18 and 10
+(`tests/inline_caches.rs`).

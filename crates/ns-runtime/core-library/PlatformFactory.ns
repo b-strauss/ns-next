@@ -4,24 +4,25 @@
 /// stopwatch. The host instantiates it once, at boot.
 ///
 /// theMirror: the VM mirror, which the host alone holds.
-/// theKernel: the kernel module's instance.
+/// kernel: the kernel module's instance, whose classes `KernelNamespace`
+///     hands out.
 ///
 /// The module behind the platform a module is handed (§8.3): a shipped
 /// core-library module, booted by the host with the VM mirror and the
 /// kernel instance (`docs/design/core-library.md`, "The module table and
 /// the boot").
 ///
-/// The factory pattern: this root holds what is privileged -- the mirror
-/// and the kernel -- and the host never hands its instance to anyone. It
+/// The factory pattern: this root holds what is privileged -- the mirror,
+/// and the kernel's classes `KernelNamespace` hands out, never the kernel
+/// instance -- and the host never hands its instance to anyone. It
 /// instantiates the root once, sends it `newPlatform`, its one public
 /// member, and hands every program that platform, an instance of the
 /// nested class `Platform`, whose factory is a harmless `new`. What a
-/// program may instantiate are the nested classes, the facets, which it
-/// reaches only through the platform's class accessors and members; each
-/// reaches the mirror and the kernel lexically, as a member of this root,
-/// never through a slot of its own, so a program can make as many
-/// platforms, transcripts and namespaces as it likes and every one of them
-/// writes through the one mirror. The nested classes are private, so even
+/// program receives are instances of the nested classes, the facets,
+/// through the platform's members; each reaches the mirror and the kernel's
+/// classes lexically, as a member of this root, never through a slot of its
+/// own, so every one of them writes through the one mirror. The nested
+/// classes are private, so even
 /// a holder of this root's instance could send it nothing but
 /// `newPlatform`: a second line of defence behind the instance being
 /// unreachable. The collections module is another such root
@@ -37,7 +38,8 @@
 /// root").
 ///
 /// The factory's parameters are copied into slots because neither a lazy
-/// slot nor a method may name them (§6). A send to `vmMirror` here is a
+/// slot nor a method may name them (§6); of the kernel only the classes
+/// `KernelNamespace` hands out are kept, not the kernel instance itself. A send to `vmMirror` here is a
 /// mirror send, as in `Kernel.ns`: this module is resolved with
 /// `resolve_kernel`, which only shipped source is.
 ///
@@ -46,14 +48,35 @@
 /// which the root reaches through the mirror. A `Stopwatch` keeps its
 /// reading in slots, so it is an object, as `CollectionsFactory.ns`'s
 /// `List` is.
-class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
+class PlatformFactory usingVmMirror: theMirror kernel: kernel = Object <: Value (
   |
     /// The VM mirror the factory was given: the one object through which
     /// a member here reaches a native operation. Never handed out.
     private vmMirror = theMirror.
-    /// The kernel module's instance, whose classes `KernelNamespace`
-    /// hands out.
-    private kernelModule = theKernel.
+    /// The kernel's `Exception`, which `KernelNamespace` hands out.
+    private Exception = kernel Exception.
+    /// The kernel's `Error`, which `KernelNamespace` hands out.
+    private Error = kernel Error.
+    /// The kernel's `MessageNotUnderstood`, which `KernelNamespace` hands out.
+    private MessageNotUnderstood = kernel MessageNotUnderstood.
+    /// The kernel's `Halt`, which `KernelNamespace` hands out.
+    private Halt = kernel Halt.
+    /// The kernel's `Message`, which `KernelNamespace` hands out.
+    private Message = kernel Message.
+    /// The kernel's `ArgumentError`, which `KernelNamespace` hands out.
+    private ArgumentError = kernel ArgumentError.
+    /// The kernel's `CannotReturn`, which `KernelNamespace` hands out.
+    private CannotReturn = kernel CannotReturn.
+    /// The kernel's `CannotInstantiate`, which `KernelNamespace` hands out.
+    private CannotInstantiate = kernel CannotInstantiate.
+    /// The kernel's `Closure`, which `KernelNamespace` hands out.
+    private Closure = kernel Closure.
+    /// The kernel's `Future`, which `KernelNamespace` hands out.
+    private Future = kernel Future.
+    /// The kernel's `Proxy`, which `KernelNamespace` hands out.
+    private Proxy = kernel Proxy.
+    /// The kernel's `Collection`, which `KernelNamespace` hands out.
+    private Collection = kernel Collection.
   |
 ) (
   /// The one collections module, the instance the boot built over the
@@ -141,63 +164,63 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
   private class KernelNamespace = Value new () (
     /// Answers the kernel's class `Exception`.
     public Exception = (
-      ^kernelModule Exception.
+      ^outer PlatformFactory Exception.
     )
 
     /// Answers the kernel's class `Error`.
     public Error = (
-      ^kernelModule Error.
+      ^outer PlatformFactory Error.
     )
 
     /// Answers the kernel's class `MessageNotUnderstood`.
     public MessageNotUnderstood = (
-      ^kernelModule MessageNotUnderstood.
+      ^outer PlatformFactory MessageNotUnderstood.
     )
 
     /// Answers the kernel's class `Halt`.
     public Halt = (
-      ^kernelModule Halt.
+      ^outer PlatformFactory Halt.
     )
 
     /// Answers the kernel's class `Message`.
     public Message = (
-      ^kernelModule Message.
+      ^outer PlatformFactory Message.
     )
 
     /// Answers the kernel's class `ArgumentError`.
     public ArgumentError = (
-      ^kernelModule ArgumentError.
+      ^outer PlatformFactory ArgumentError.
     )
 
     /// Answers the kernel's class `CannotReturn`.
     public CannotReturn = (
-      ^kernelModule CannotReturn.
+      ^outer PlatformFactory CannotReturn.
     )
 
     /// Answers the kernel's class `CannotInstantiate`.
     public CannotInstantiate = (
-      ^kernelModule CannotInstantiate.
+      ^outer PlatformFactory CannotInstantiate.
     )
 
     /// Answers the kernel's class `Closure`.
     public Closure = (
-      ^kernelModule Closure.
+      ^outer PlatformFactory Closure.
     )
 
     /// Answers the kernel's class `Future`.
     public Future = (
-      ^kernelModule Future.
+      ^outer PlatformFactory Future.
     )
 
     /// Answers the kernel's class `Proxy`.
     public Proxy = (
-      ^kernelModule Proxy.
+      ^outer PlatformFactory Proxy.
     )
 
     /// Answers the kernel's `Collection` class, the abstract superclass
     /// of `Array`, `List`, `Map` and `Set`, for a program to subclass.
     public Collection = (
-      ^kernelModule Collection.
+      ^outer PlatformFactory Collection.
     )
   )
 

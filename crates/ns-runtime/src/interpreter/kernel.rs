@@ -1447,8 +1447,8 @@ mod tests {
     /// `Collections>>List`, are recognized too, as `MixinMethod::class_accessor`,
     /// but only the image's rule of what may be named where reads that
     /// recognition; a send runs the method like any other.
-    /// `KernelNamespace`'s members send to the kernel instance the platform was
-    /// handed, so they are neither. Each costs one activation more than a
+    /// `KernelNamespace`'s members answer a slot of the root, the kernel's
+    /// class it took at its instantiation, so they are neither. Each costs one activation more than a
     /// kernel accessor; a namespace member is asked for once, typically in a
     /// slot initializer, not in a loop. `Transcript`'s two and `Stopwatch`'s
     /// clock reading are mirror forwarders like the kernel's:

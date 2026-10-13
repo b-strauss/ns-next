@@ -749,31 +749,34 @@ ns_runtime::for_each_lowering! {
     }
 }
 
-/// What the bootstrap leaves in the caches: `CollectionsFactory`'s
-/// instantiation runs its two eager slot initializers, `theKernel Error`
-/// and `theKernel Collection`, each a send to the kernel instance that
-/// takes a site and fills a global entry; the platform's boot sends
-/// `PlatformFactory`'s `newPlatform`, `^Platform new`, whose family takes
-/// two sites and fills two global entries (the lexical `Platform`, and `new`
-/// to the class), and `Platform`'s superclass clause, `Value new`, whose
-/// family takes two more and whose lexical `Value` fills a fifth. The boot
-/// builds every class the shipped roots declare, so the superclass clause
-/// of every one that is no builtin runs too -- `Transcript`,
-/// `KernelNamespace`, `Time` and `Stopwatch` in `PlatformFactory`, and the
-/// seven classes of `CollectionsFactory` -- and their families take the
-/// other twelve sites and fill five more global entries. Pinned so that the
-/// boot growing -- more shipped code run at every start -- is noticed
-/// rather than absorbed by the tests that count from it. The cache stress
-/// mode vacates the caches at the boot's safepoints, which may empty the
-/// global entries, so those are counted only without it; the sites stay
-/// either way.
+/// What the bootstrap leaves in the caches. `PlatformFactory`'s
+/// instantiation runs its twelve eager slot initializers, `kernel
+/// Exception` to `kernel Collection`, each a send to the kernel instance
+/// that takes a site and fills a global entry, but for `ArgumentError` and
+/// `Collection`, whose entries `CollectionsFactory`'s two initializers,
+/// `kernel ArgumentError` and `kernel Collection`, fill too; the platform's
+/// boot sends `PlatformFactory`'s `newPlatform`, `^Platform new`, whose
+/// family takes two sites and fills two global entries (the lexical
+/// `Platform`, and `new` to the class), and `Platform`'s superclass clause,
+/// `Value new`, whose family takes two more and whose lexical `Value` fills
+/// another. The boot builds every class the shipped roots declare, so the
+/// superclass clause of every one that is no builtin runs too --
+/// `Transcript`, `KernelNamespace`, `Time` and `Stopwatch` in
+/// `PlatformFactory`, and the seven classes of `CollectionsFactory`, whose
+/// two Errors name `Error` bare -- and their families take the remaining
+/// sites and fill the remaining global entries. Pinned so that the boot
+/// growing -- more shipped code run at every start -- is noticed rather
+/// than absorbed by the tests that count from it. The cache stress mode
+/// vacates the caches at the boot's safepoints, which may empty the global
+/// entries, so those are counted only without it; the sites stay either
+/// way.
 #[test]
-fn a_fresh_bootstrap_leaves_eighteen_sites_and_ten_global_entries() {
+fn a_fresh_bootstrap_leaves_thirty_one_sites_and_twenty_global_entries() {
     let mut interpreter = Interpreter::bootstrap();
     let statistics = interpreter.cache_statistics();
-    assert_eq!(statistics.site_entries, 18);
+    assert_eq!(statistics.site_entries, 31);
     let stress_caches = std::env::var("NS_NEXT_STRESS_CACHES").is_ok_and(|value| value == "1");
     if !stress_caches {
-        assert_eq!(statistics.filled_global_entries, 10);
+        assert_eq!(statistics.filled_global_entries, 20);
     }
 }
