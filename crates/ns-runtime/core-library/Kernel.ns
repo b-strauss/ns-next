@@ -211,6 +211,11 @@ class Kernel vmMirror: mirror = Value (
       ^outer Kernel Array.
     )
 
+    /// Answers the kernel's class `ByteArray`.
+    protected ByteArray = (
+      ^outer Kernel ByteArray.
+    )
+
     /// Answers the kernel's class `Closure`.
     protected Closure = (
       ^outer Kernel Closure.
@@ -3504,7 +3509,7 @@ class Kernel vmMirror: mirror = Value (
   )
 
   /// The sequence protocol shared by the classes whose elements are
-  /// indexed from 1, a mixin `Array` applies over `Collection`
+  /// indexed from 1, a mixin `Array` and `ByteArray` apply over `Collection`
   /// (`Collection <: IndexedCollection`, §6.2): every member here is
   /// written over `at:`, `at:put:`, `size` and `newOfSize:`, which each
   /// class applying it implements, and a class overrides any member it
@@ -4054,6 +4059,106 @@ class Kernel vmMirror: mirror = Value (
         result at: index put: element.
       ].
       ^result.
+    )
+  )
+
+  /// A fixed-size sequence of bytes, each an Integer from 0 to 255,
+  /// indexed from 1, and a Collection: `ByteArray new: 4` makes one of
+  /// zeros. The sequence protocol comes from `IndexedCollection`, over
+  /// the leaves here. No value: `=` and `hash` are identity, since a hash
+  /// of the bytes would change under a Map's key as they are stored.
+  public class ByteArray = Collection <: IndexedCollection () (
+    /// Answers true: the receiver is a ByteArray.
+    public isKindOfByteArray = (
+      ^true.
+    )
+
+    /// Evaluates `action` with each byte in turn, from the first, reading
+    /// each byte only when it reaches it, so that a store ahead of the
+    /// walk is seen; answers the receiver.
+    ///
+    /// action: a block of one argument, or anything understanding
+    /// `value:`; sent `value:` with each byte.
+    ///
+    /// Signals what `action`'s `value:` signals.
+    ///
+    /// The size is read through its leaf rather than `self size`, which
+    /// for a receiver holding no bytes -- an instance of a subclass --
+    /// would reach Collection's `size`, which counts through `do:` and
+    /// would come back here; the declining leaf sends such a receiver on
+    /// to Collection's `do:` instead.
+    public do: action = (
+      |
+        count
+      |
+      count:: vmMirror byteArraySize: self ifFail: [^super do: action].
+      1 to: count do: [:index | action value: (self at: index)].
+    )
+
+    /// Stores `value` at `index` and answers `value`.
+    ///
+    /// index: an Integer from 1 to `size`.
+    /// value: an Integer from 0 to 255.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'at:put: requires an
+    /// Integer index, got …' for an index that is no Integer; and an
+    /// ArgumentError carrying `value`, 'at:put: requires an Integer from
+    /// 0 to 255, got …', for a value outside 0 to 255 or no Integer. A
+    /// refused store leaves the byte as it was.
+    public at: index put: value = (
+      ^vmMirror byteArray: self at: index put: value ifFail: [^super at: index put: value].
+    )
+
+    /// Answers the number of bytes, fixed when the ByteArray was made.
+    public size = (
+      ^vmMirror byteArraySize: self ifFail: [^super size].
+    )
+
+    /// Answers the byte at `index`, an Integer from 0 to 255.
+    ///
+    /// index: an Integer from 1 to `size`.
+    ///
+    /// Signals an ArgumentError carrying `index`: 'index … out of
+    /// range: valid indices are 1..size (size …)' for an Integer outside
+    /// 1 to `size`, a LargeInteger included, and 'at: requires an
+    /// Integer index, got …' for an index that is no Integer.
+    public at: index = (
+      ^vmMirror byteArray: self at: index ifFail: [^super at: index].
+    )
+
+    /// Answers the receiver itself: a ByteArray is its own ByteArray.
+    public asByteArray = (
+      ^self.
+    )
+
+    /// Answers a new ByteArray of `size` bytes, each 0: the new instance
+    /// of the receiver's kind the sequence protocol builds its answers
+    /// in.
+    ///
+    /// size: an Integer of at least 0.
+    ///
+    /// Signals the ArgumentError of `ByteArray new:` for a `size` that is
+    /// negative, no Integer or too large to allocate.
+    protected newOfSize: size = (
+      ^outer Kernel ByteArray new: size.
+    )
+  ) : (
+    /// Answers a new ByteArray of `size` bytes, each 0.
+    ///
+    /// size: an Integer, at least 0.
+    ///
+    /// Signals an ArgumentError carrying `size`: 'new: requires an
+    /// Integer size, got …' for a size that is no Integer, 'new:
+    /// requires a size of at least 0, got …' for a negative one, and
+    /// 'new: cannot allocate a ByteArray of … bytes' for one too large
+    /// to allocate.
+    ///
+    /// The leaf declines only a subject that is not `ByteArray` itself,
+    /// which a flat class side cannot be sent from.
+    public new: size = (
+      ^vmMirror byteArrayClass: self new: size ifFail: [nil].
     )
   )
 

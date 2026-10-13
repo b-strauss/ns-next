@@ -2705,12 +2705,11 @@ fn a_byte_array_round_trips_with_its_bytes_and_identity_hash() {
     let (mut interpreter, _class, original, decoded, _max) =
         round_trip_graph(EMPTY, |interpreter, _| {
             interpreter.enter(|mutator| {
-                let class = mutator.builtin_class(BuiltinClass::Object);
                 let arrays: Vec<Value> = sizes
                     .iter()
                     .map(|size| {
                         let bytes = byte_array_contents(*size);
-                        let array = mutator.heap_mut().allocate_byte_array(class, &bytes);
+                        let array = mutator.new_byte_array(&bytes);
                         mutator.heap_mut().object_ensure_identity_hash(array);
                         Value::object(array)
                     })
@@ -2723,6 +2722,7 @@ fn a_byte_array_round_trips_with_its_bytes_and_identity_hash() {
     interpreter.enter(|mutator| {
         let original = mutator.fetch(&original[0]);
         let decoded = mutator.fetch(&decoded[0]);
+        let byte_array_class = mutator.builtin_class(BuiltinClass::ByteArray);
         let heap = mutator.heap();
         let originals = heap
             .array_elements(object(original))
@@ -2748,8 +2748,44 @@ fn a_byte_array_round_trips_with_its_bytes_and_identity_hash() {
                 heap.object_identity_hash(decoded),
                 heap.object_identity_hash(original)
             );
-            assert!(heap.object_class(decoded).same(heap.object_class(original)));
+            assert!(heap.object_class(decoded).same(byte_array_class));
         }
+    });
+}
+
+/// A `ByteArray` a program made, held in a slot, round-trips as the
+/// kernel's class with its bytes.
+#[test]
+fn a_byte_array_a_program_made_round_trips() {
+    let source = indoc! {"
+        class X = Object new (
+          | bytes = ByteArray new: 3. |
+        ) (
+          public fill = (
+            bytes at: 1 put: 1.
+            bytes at: 3 put: 255.
+          )
+        ) : ()
+    "};
+    let (mut interpreter, _class, _original, decoded, _max) =
+        round_trip_graph(source, |interpreter, class| {
+            let instance = expect_ok(interpreter.instantiate(class, &[]), "instantiate");
+            expect_ok(
+                interpreter.send(&instance, Symbol::intern("fill"), &[]),
+                "fill",
+            );
+            vec![instance]
+        });
+    interpreter.enter(|mutator| {
+        let decoded = mutator.fetch(&decoded[0]);
+        let byte_array_class = mutator.builtin_class(BuiltinClass::ByteArray);
+        let heap = mutator.heap();
+        let bytes = object(
+            heap.instance_field(object(decoded), 0)
+                .expect("expected an instance"),
+        );
+        assert!(heap.object_class(bytes).same(byte_array_class));
+        assert_eq!(heap.byte_array_bytes(bytes), Some(vec![1, 0, 255]));
     });
 }
 
@@ -2762,13 +2798,8 @@ fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let object_class = mutator.builtin_class(BuiltinClass::Object);
-        let small = mutator
-            .heap_mut()
-            .allocate_byte_array(object_class, &[0x00, 0x7f, 0xff]);
-        let large = mutator
-            .heap_mut()
-            .allocate_byte_array(object_class, &byte_array_contents(20));
+        let small = mutator.new_byte_array(&[0x00, 0x7f, 0xff]);
+        let large = mutator.new_byte_array(&byte_array_contents(20));
         snapshot_one(
             mutator,
             None,
@@ -3116,6 +3147,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "Activation", 2),           // ACTIVATION_CLASS_NAME = 18
     ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
     ("Kernel", "NonBooleanReceiver", 1),   // NON_BOOLEAN_RECEIVER_NAME = 20
+    ("Kernel", "ByteArray", 1),            // BYTE_ARRAY_NAME = 21
 ];
 const OBJECT_NAME: u32 = 0;
 const ARRAY_NAME: u32 = 1;
@@ -3138,6 +3170,7 @@ const CLASS_NAME: u32 = 17;
 const ACTIVATION_CLASS_NAME: u32 = 18;
 const FUTURE_IMPLEMENTATION_CLASS_NAME: u32 = 19;
 const NON_BOOLEAN_RECEIVER_NAME: u32 = 20;
+const BYTE_ARRAY_NAME: u32 = 21;
 
 /// A section entry's kind byte as the shipped name it stands for.
 fn fixture_kind(kind: u8) -> ShippedKind {
@@ -3468,7 +3501,7 @@ fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
 /// says `length` and after which only `written` bytes follow.
 fn one_byte_array_record(length: u32, written: usize) -> Vec<u8> {
     class_records(1, |writer| {
-        writer.write_shipped(OBJECT_NAME);
+        writer.write_shipped(BYTE_ARRAY_NAME);
         writer.write_u32(1); // identity hash
         writer.write_u8(OBJECT_BYTE_ARRAY); // object body: ByteArray
         writer.write_u32(length);
@@ -3519,6 +3552,63 @@ fn a_crafted_byte_array_record_decodes_to_its_bytes() {
         assert_eq!(heap.byte_array_bytes(decoded), Some((0..11).collect()));
         assert_eq!(heap.object_identity_hash(decoded), 1);
     });
+}
+
+/// A record carries exactly its class's layout: a byte-array record under
+/// any class but `ByteArray` would be an object of that class whose
+/// methods read fields it does not have, and a record of another body
+/// under `ByteArray`'s header one whose leaves find no bytes. Both are
+/// refused by the first pass, before anything is allocated.
+#[test]
+fn a_byte_array_record_and_the_byte_array_class_go_together() {
+    let byte_array_under = |header: u32| {
+        class_records(1, |writer| {
+            writer.write_shipped(header);
+            writer.write_u32(1); // identity hash
+            writer.write_u8(OBJECT_BYTE_ARRAY);
+            writer.write_u32(2); // two bytes
+            writer.write_u8(7);
+            writer.write_u8(9);
+        })
+    };
+    let array_under_byte_array = class_records(1, |writer| {
+        writer.write_shipped(BYTE_ARRAY_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_ARRAY);
+        writer.write_u32(0); // no elements
+    });
+    let under_another_class = "a byte-array record has a class other than ByteArray".to_string();
+    for (bytes, body, text) in [
+        (
+            byte_array_under(ARRAY_NAME),
+            OBJECT_BYTE_ARRAY,
+            under_another_class.clone(),
+        ),
+        (
+            byte_array_under(OBJECT_NAME),
+            OBJECT_BYTE_ARRAY,
+            under_another_class,
+        ),
+        (
+            array_under_byte_array,
+            OBJECT_ARRAY,
+            format!(
+                "a record of the class ByteArray has object body {OBJECT_ARRAY}, but a \
+                 ByteArray is a byte-array record"
+            ),
+        ),
+    ] {
+        let mut fixture = GraphFixture::new();
+        let before = fixture.interpreter.heap_statistics().live_objects;
+        let error = fixture.decode_error(&bytes);
+        assert_eq!(error, decode::DecodeError::ByteArrayRecordMismatch { body });
+        assert_eq!(error.to_string(), text);
+        assert_eq!(
+            fixture.interpreter.heap_statistics().live_objects,
+            before,
+            "nothing was allocated"
+        );
+    }
 }
 
 #[test]
@@ -3988,10 +4078,7 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     // nothing.
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let object_class = mutator.builtin_class(BuiltinClass::Object);
-        let byte_array = mutator
-            .heap_mut()
-            .allocate_byte_array(object_class, &byte_array_contents(13));
+        let byte_array = mutator.new_byte_array(&byte_array_contents(13));
         let roots = vec![mutator.fetch(&instance), Value::object(byte_array)];
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
@@ -4943,10 +5030,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);
-        let object_class = mutator.builtin_class(BuiltinClass::Object);
-        let byte_array = mutator
-            .heap_mut()
-            .allocate_byte_array(object_class, &byte_array_contents(13));
+        let byte_array = mutator.new_byte_array(&byte_array_contents(13));
         let modules = [image::ModuleSource {
             class,
             origin: &origin,

@@ -1003,6 +1003,18 @@ impl<'gc> Heap<'gc> {
         object
     }
 
+    /// Whether a `ByteArray` of `size` bytes fits the old space at all, its
+    /// reserve and its block's words included. Asked before a size the
+    /// program chose is allocated: one past the reservation would abort
+    /// the process as running out of memory, which no handler can catch.
+    pub(crate) fn byte_array_fits(&self, size: usize) -> bool {
+        let words = record_size::block_words(object::byte_array_field_count(size));
+        let old = self.space.region(RegionName::Old);
+        words
+            .checked_mul(8)
+            .is_some_and(|bytes| bytes <= old.end - old.base)
+    }
+
     /// A `ByteArray` of `class` holding `bytes`, in order.
     pub fn allocate_byte_array(
         &mut self,

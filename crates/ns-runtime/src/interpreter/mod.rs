@@ -1566,6 +1566,12 @@ impl<'gc> Mutator<'gc> {
         self.heap.allocate_array(class, &elements)
     }
 
+    /// A `ByteArray` of the kernel's class holding `bytes`, in order.
+    pub fn new_byte_array(&mut self, bytes: &[u8]) -> ObjectReference<'gc> {
+        let class = self.builtin_class(BuiltinClass::ByteArray);
+        self.heap.allocate_byte_array(class, bytes)
+    }
+
     pub fn new_string(&mut self, string: String) -> ObjectReference<'gc> {
         self.new_string_from_code_points(crate::CodePoints::from(string))
     }

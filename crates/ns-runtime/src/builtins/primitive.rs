@@ -29,6 +29,8 @@ pub enum Primitive {
     String(StringPrimitive),
     Symbol(SymbolPrimitive),
     Collection(CollectionPrimitive),
+    /// `ByteArray`'s leaves (`builtins::bytes`).
+    Bytes(BytePrimitive),
     Block(BlockPrimitive),
     Platform(PlatformPrimitive),
     Activation(ActivationPrimitive),
@@ -221,6 +223,12 @@ impl Primitive {
                 | CollectionPrimitive::Allocate
                 | CollectionPrimitive::CopyRange
                 | CollectionPrimitive::Replace,
+            ) => false,
+            Primitive::Bytes(
+                BytePrimitive::Allocate
+                | BytePrimitive::Size
+                | BytePrimitive::ElementAt
+                | BytePrimitive::ElementAtPut,
             ) => false,
             Primitive::Block(
                 BlockPrimitive::Value
@@ -480,6 +488,16 @@ pub enum CollectionPrimitive {
     CopyRange,
     /// `replaceFrom:to:with:startingAt:` from another Array, or the same.
     Replace,
+}
+
+/// `ByteArray`'s primitives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BytePrimitive {
+    /// `ByteArray new: size`, on `ByteArray`'s class side.
+    Allocate,
+    Size,
+    ElementAt,
+    ElementAtPut,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1450,6 +1468,26 @@ pub const MIRROR: &[MirrorEntry] = &[
         // what the program sent.
         "computing",
         Primitive::Future(FuturePrimitive::Made),
+    ),
+    mirror(
+        "byteArrayClass:new:ifFail:",
+        "new:",
+        Primitive::Bytes(BytePrimitive::Allocate),
+    ),
+    mirror(
+        "byteArraySize:ifFail:",
+        "size",
+        Primitive::Bytes(BytePrimitive::Size),
+    ),
+    mirror(
+        "byteArray:at:ifFail:",
+        "at:",
+        Primitive::Bytes(BytePrimitive::ElementAt),
+    ),
+    mirror(
+        "byteArray:at:put:ifFail:",
+        "at:put:",
+        Primitive::Bytes(BytePrimitive::ElementAtPut),
     ),
 ];
 

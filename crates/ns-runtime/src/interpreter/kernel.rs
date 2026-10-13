@@ -100,6 +100,7 @@ pub(crate) fn kernel_class_name(kind: BuiltinClass) -> &'static str {
         BuiltinClass::Future => "Future",
         BuiltinClass::Collection => "Collection",
         BuiltinClass::Fraction => "Fraction",
+        BuiltinClass::ByteArray => "ByteArray",
         BuiltinClass::VmMirror => {
             unreachable!("internal: the mirror's class is not in Kernel.ns")
         }
@@ -1152,6 +1153,10 @@ mod tests {
         // `withAll:`: sends, no leaf.
         ("Array", "newOfSize:"),
         ("Array", "withAll:"),
+        // `ByteArray`'s new instance of its own kind, and its `do:`, a
+        // loop over the size leaf's answer that sends `value:`.
+        ("ByteArray", "newOfSize:"),
+        ("ByteArray", "do:"),
         // `String`'s code-point protocol is Newspeak over its leaves --
         // `size`, `at:`, `copyFrom:to:` and the two searches: every method
         // sends, none forwards to a leaf.
@@ -1484,6 +1489,16 @@ mod tests {
         (BuiltinClass::Integer, "hash", MethodFastPath::Receiver),
         (BuiltinClass::String, "asString", MethodFastPath::Receiver),
         (BuiltinClass::Array, "asArray", MethodFastPath::Receiver),
+        (
+            BuiltinClass::ByteArray,
+            "isKindOfByteArray",
+            MethodFastPath::Constant(QuickConstant::True),
+        ),
+        (
+            BuiltinClass::ByteArray,
+            "asByteArray",
+            MethodFastPath::Receiver,
+        ),
         // Quick in shape, though only the unwinder activates it, pushing it
         // as a method so that its return carries the unwind on
         // (`Mutator::start_unwind_block`).
@@ -1539,6 +1554,7 @@ mod tests {
         BuiltinClass::Symbol,
         BuiltinClass::UndefinedObject,
         BuiltinClass::Array,
+        BuiltinClass::ByteArray,
         BuiltinClass::Closure,
         BuiltinClass::Exception,
         BuiltinClass::Error,
@@ -1788,6 +1804,36 @@ mod tests {
                 .clone();
             let row = crate::builtins::primitive::mirror_primitive_named("arrayClass:new:ifFail:")
                 .expect("the row exists");
+            assert_eq!(
+                method.fast_path,
+                Some(crate::mixin::MethodFastPath::Mirror(row))
+            );
+        });
+    }
+
+    /// `ByteArray new:` is a class-side mirror forwarder, as `Array new:`
+    /// is, so a send of it runs the leaf with no activation.
+    #[test]
+    fn byte_array_new_is_a_mirror_forwarder() {
+        let mut interpreter = Interpreter::bootstrap();
+        interpreter.enter(|mutator| {
+            let byte_array = mutator.builtin_class(BuiltinClass::ByteArray);
+            let metaclass = mutator
+                .heap()
+                .class_metaclass(byte_array)
+                .expect("ByteArray has a metaclass");
+            let application = mutator
+                .heap()
+                .class_application(metaclass)
+                .expect("a metaclass has an application");
+            let method = application
+                .mixin
+                .compiled_method(crate::Symbol::intern("new:"))
+                .expect("ByteArray's class side declares new:")
+                .clone();
+            let row =
+                crate::builtins::primitive::mirror_primitive_named("byteArrayClass:new:ifFail:")
+                    .expect("the row exists");
             assert_eq!(
                 method.fast_path,
                 Some(crate::mixin::MethodFastPath::Mirror(row))
@@ -2228,43 +2274,46 @@ mod tests {
                     None => assert!(actual.is_none(), "{kind:?} has no superclass"),
                 }
             }
-            // `Array = Collection <: IndexedCollection` (§6.2): its
-            // superclass is the level the clause adds, the kernel's
-            // `IndexedCollection` mixin applied over `Collection`.
+            // `Array = Collection <: IndexedCollection` (§6.2), and
+            // `ByteArray` likewise: each one's superclass is the level its
+            // clause adds, the kernel's `IndexedCollection` mixin applied
+            // over `Collection`.
             let heap = mutator.heap();
-            let array = mutator.builtin_class(BuiltinClass::Array);
-            let level = heap
-                .class_superclass(array)
-                .expect("Array has a superclass");
-            let origin = heap
-                .class_applied_origin(level)
-                .expect("Array's superclass is the level its clause adds");
-            let array_mixin = heap
-                .class_application(array)
-                .expect("Array is a class")
-                .mixin
-                .clone();
-            assert!(std::rc::Rc::ptr_eq(&origin.declaration, &array_mixin));
-            assert_eq!(origin.index, 0);
             let Some(kernel) = mutator.kernel.and_then(|value| value.as_object()) else {
                 panic!("the kernel is instantiated at bootstrap");
             };
             let kernel_mixin = super::kernel_application(mutator, kernel).mixin.clone();
-            let level_mixin = heap
-                .class_application(level)
-                .expect("a level is a class")
-                .mixin
-                .clone();
-            assert!(std::rc::Rc::ptr_eq(
-                &level_mixin,
-                super::nested_named(&kernel_mixin, "IndexedCollection")
-            ));
             let collection = mutator.builtin_class(BuiltinClass::Collection);
-            assert!(
-                heap.class_superclass(level)
-                    .is_some_and(|class| class.same(collection)),
-                "the level sits on Collection"
-            );
+            for kind in [BuiltinClass::Array, BuiltinClass::ByteArray] {
+                let class = mutator.builtin_class(kind);
+                let level = heap
+                    .class_superclass(class)
+                    .unwrap_or_else(|| panic!("{kind:?} has a superclass"));
+                let origin = heap.class_applied_origin(level).unwrap_or_else(|| {
+                    panic!("{kind:?}'s superclass is the level its clause adds")
+                });
+                let class_mixin = heap
+                    .class_application(class)
+                    .unwrap_or_else(|| panic!("{kind:?} is a class"))
+                    .mixin
+                    .clone();
+                assert!(std::rc::Rc::ptr_eq(&origin.declaration, &class_mixin));
+                assert_eq!(origin.index, 0);
+                let level_mixin = heap
+                    .class_application(level)
+                    .expect("a level is a class")
+                    .mixin
+                    .clone();
+                assert!(std::rc::Rc::ptr_eq(
+                    &level_mixin,
+                    super::nested_named(&kernel_mixin, "IndexedCollection")
+                ));
+                assert!(
+                    heap.class_superclass(level)
+                        .is_some_and(|superclass| superclass.same(collection)),
+                    "{kind:?}'s level sits on Collection"
+                );
+            }
         });
     }
 
@@ -2369,6 +2418,7 @@ mod tests {
                 (BuiltinClass::UndefinedObject, true),
                 (BuiltinClass::Number, true),
                 (BuiltinClass::Array, false),
+                (BuiltinClass::ByteArray, false),
                 (BuiltinClass::Closure, false),
                 (BuiltinClass::Object, false),
                 // §3.2's "subclass of" is inclusive -- "C's superclass is S

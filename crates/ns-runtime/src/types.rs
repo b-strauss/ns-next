@@ -159,6 +159,12 @@ pub enum BuiltinClass {
     /// the runtime: a `Number` whose two hidden fields no slot names
     /// (`numeric::Rational`).
     Fraction,
+    /// A fixed-size sequence of bytes, each an Integer from 0 to 255: a
+    /// builtin because its instances have their own format,
+    /// `AlignedBytes`, whose data lie at a 32-byte address
+    /// (`docs/design/core-library.md`, "`ByteArray` in the heap, the
+    /// movers and the image"). No value: §3.1.1 lists it among none.
+    ByteArray,
 }
 
 impl BuiltinClass {
@@ -178,7 +184,7 @@ impl BuiltinClass {
     /// `objects_class_accessors_are_exactly_the_nameable_builtins`. An image
     /// names it by its declaration in `Kernel.ns`, like every shipped class
     /// (`image::shipped_names`), so it needs no wire tag.
-    pub const ALL: [BuiltinClass; 34] = [
+    pub const ALL: [BuiltinClass; 35] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
         BuiltinClass::True,
@@ -213,6 +219,7 @@ impl BuiltinClass {
         BuiltinClass::Future,
         BuiltinClass::Collection,
         BuiltinClass::Fraction,
+        BuiltinClass::ByteArray,
     ];
 }
 

@@ -1,0 +1,7 @@
+status = 1
+stdout = '''
+true an Object
+'''
+stderr = '''
+Uncaught Newspeak error: Collection>>do: is abstract: MyByteArray must implement it
+'''

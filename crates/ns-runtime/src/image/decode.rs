@@ -408,6 +408,14 @@ pub enum DecodeError {
     /// would be a second Symbol of its text, outside the canonical table,
     /// and two Symbols of one text would not be identical (§5.1.6).
     StringOfSymbolClass,
+    /// An `OBJECT_BYTE_ARRAY` record under a header whose class is not the
+    /// builtin `ByteArray`, or a record of any other body, `body`, under
+    /// `ByteArray`'s. A record carries exactly its class's layout: the
+    /// first would answer that class's methods over bytes they do not
+    /// read, the second `ByteArray`'s leaves over an object holding none.
+    ByteArrayRecordMismatch {
+        body: u8,
+    },
     /// Bytes remain after the last section. Refused rather than ignored:
     /// silently accepting a tail means a padded image loads as something its
     /// author did not write.
@@ -727,6 +735,14 @@ impl std::fmt::Display for DecodeError {
             }
             DecodeError::StringOfSymbolClass => f.write_str(
                 "a string record has the class Symbol, which only a symbol record may have",
+            ),
+            DecodeError::ByteArrayRecordMismatch { body } if *body == OBJECT_BYTE_ARRAY => {
+                f.write_str("a byte-array record has a class other than ByteArray")
+            }
+            DecodeError::ByteArrayRecordMismatch { body } => write!(
+                f,
+                "a record of the class ByteArray has object body {body}, but a ByteArray is a \
+                 byte-array record"
             ),
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
@@ -3462,6 +3478,13 @@ impl Sizing<'_, '_, '_> {
         if fraction && body != OBJECT_INSTANCE {
             return Err(DecodeError::FractionRecord);
         }
+        // Only `ByteArray`'s header carries a byte-array record, and it
+        // carries no other. A header that names a record of the graph is
+        // a program's class, never `ByteArray`, so the header is known
+        // here whatever it names.
+        if (header == Some(BuiltinClass::ByteArray)) != (body == OBJECT_BYTE_ARRAY) {
+            return Err(DecodeError::ByteArrayRecordMismatch { body });
+        }
         let (fields, frame) = match body {
             // A future has exactly its two fields; a record under its header
             // claiming any other count is refused here, before it is
@@ -3671,6 +3694,14 @@ pub fn decode_graph_section<'gc>(
         // layout check below, as what filling the record rests on.
         if shipped_non_builtin && body != OBJECT_INSTANCE {
             return Err(DecodeError::ShippedInstanceBody { body });
+        }
+        // Refused by the first pass too; restated here as what filling a
+        // byte-array record, and every other record under `ByteArray`'s
+        // header, rests on.
+        if (context.mutator.heap.class_builtin(class) == Some(BuiltinClass::ByteArray))
+            != (body == OBJECT_BYTE_ARRAY)
+        {
+            return Err(DecodeError::ByteArrayRecordMismatch { body });
         }
         if body == OBJECT_FRAME {
             if !activation_header {

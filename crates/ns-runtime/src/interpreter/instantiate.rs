@@ -500,6 +500,11 @@ impl<'gc> Mutator<'gc> {
             Some(BuiltinClass::Array) => Ok(Step::Value(Value::object(
                 self.heap.allocate_array(class, &[]),
             ))),
+            // An empty `AlignedBytes` payload, as `Array`'s above: a slotless
+            // instance would hold no bytes for the leaves to find.
+            Some(BuiltinClass::ByteArray) => Ok(Step::Value(Value::object(
+                self.heap.allocate_zeroed_byte_array(class, 0),
+            ))),
             // A Symbol is canonical, one object per text (§5.1.6), made only
             // by a literal or `asSymbol`; `new` would mint a second one.
             Some(BuiltinClass::Symbol) => Err(Signal::Error(NewspeakError::cannot_instantiate(
