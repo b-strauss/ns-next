@@ -222,11 +222,12 @@ fn no_corruption_of_a_version_matching_image_reaches_a_panic() {
     let (ok, _out, error) = ns_next(&["build".as_ref(), source.as_os_str(), image.as_os_str()]);
     assert!(ok, "{error}");
     let original = std::fs::read(&image).expect("read image");
-    // Past the 8-byte header (magic + version), every 7th byte, each flipped
+    // Past the 17-byte header (magic, version, flags, the shipped world's
+    // fingerprint), which the loader refuses outright, every 7th byte, each flipped
     // two ways: enough coverage to sweep every section without turning one
     // test into thousands of processes.
     let (mut swept, mut rejected) = (0, 0);
-    for offset in (8..original.len()).step_by(7) {
+    for offset in (17..original.len()).step_by(7) {
         for delta in [1u8, 0x80] {
             let mut bytes = original.clone();
             bytes[offset] ^= delta;
@@ -353,12 +354,13 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 /// The slot initializers ask a builtin class, the module class and its
 /// metaclass for their hashes while `build` assembles the application; the
-/// load answers the same three questions against the objects it rebuilt
-/// from tags. Without the image's tag-named hashes, all three would print
-/// `false`.
+/// load answers the same three questions against the builtin it names, its
+/// hash in the image's tag-named hashes, and the two records it decoded,
+/// their hashes in their headers. Had the image dropped them, all three
+/// would print `false`.
 ///
 /// `stamp` is drawn and never checked: it gives the identity-hash counter a
-/// fourth, ordinary draw after the three tag-named ones, so that a load
+/// fourth, ordinary draw after the three recorded ones, so that a load
 /// which forgot the recorded hashes would draw different numbers rather than
 /// the same first three by coincidence (image-format.md, "Identity hashes
 /// are preserved verbatim").
@@ -469,7 +471,6 @@ fn load_refuses_an_image_that_is_not_started() {
     .expect("resolve");
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.load_module(&resolved);
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let Some(class) = mutator.fetch(&class).as_object() else {
             panic!("load_module answers a class object")
@@ -480,8 +481,7 @@ fn load_refuses_an_image_that_is_not_started() {
             origin: &origin,
             source: None,
         }];
-        let platform = mutator.fetch(&platform);
-        ns_runtime::image::snapshot(mutator, &modules, platform, &[]).expect("snapshot")
+        ns_runtime::image::snapshot(mutator, &modules, &[]).expect("snapshot")
     });
     let directory = ScratchDirectory::new("not-started");
     let image = directory.join("world.img");

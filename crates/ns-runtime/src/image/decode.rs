@@ -23,8 +23,8 @@ use crate::types::{
 use crate::Symbol;
 use crate::{ArbitraryInteger, Mutator};
 
-use super::modules::ModuleClasses;
 use super::opcodes::*;
+use super::shipped_names::{NamePosition, ResolvedName, ShippedKind, ShippedName};
 use super::{mixins, symbols};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +34,13 @@ pub enum DecodeError {
     VersionMismatch {
         found: u32,
         expected: u32,
+    },
+    /// The header's fingerprint is not this binary's: the image names the
+    /// shipped world by declaration, and another world's declarations are
+    /// not this one's.
+    ShippedWorldMismatch {
+        found: u64,
+        expected: u64,
     },
     InvalidTag {
         what: &'static str,
@@ -226,15 +233,14 @@ pub enum DecodeError {
         register_count: u16,
     },
     /// A class record names a `<:` clause its applying row does not declare:
-    /// `index` is past the row's clauses, or -- in a module's root section --
-    /// the root's levels are not listed in clause order, one per clause at
-    /// most. A level's clause is where its selector and compiled message come
-    /// from, so there is nothing a level with no clause could initialize by.
+    /// `index` is past the row's clauses. A level's clause is where its
+    /// selector and compiled message come from, so there is nothing a level
+    /// with no clause could initialize by.
     BadMixinApplicationClause {
         row: u32,
         index: u32,
     },
-    /// A class record's or a root's `<:` clause index at or past
+    /// A class record's `<:` clause index at or past
     /// `CLAUSE_INDEX_LIMIT`. The resolver refuses such a source, and a class
     /// object's applied-clause field cannot number one, so refusing it is the
     /// only answer that does not truncate it into another clause.
@@ -261,37 +267,27 @@ pub enum DecodeError {
     /// (`interpreter::nested::superclass_clause_expression`), so such a row
     /// describes a declaration no source has and whose levels nothing builds.
     MixinApplicationWithoutSuperclass,
-    /// A module's root section names no superclass for its root
-    /// class. The root rule builds every root over `Object` or `Value`
-    /// (`resolver::root_clause_defect`), so the encoder never
-    /// writes one without, and a root with none would be a class outside
-    /// §3.2's hierarchy, below neither `Object` nor `Top`.
-    RootWithoutSuperclass,
-    /// A `CLASS_MODULE` class tag or `HASHED_MODULE_CLASS` entry names a
-    /// module past the ones the module section declares.
-    BadModuleReference {
-        module: u32,
-    },
-    /// A `CLASS_MODULE_LEVEL` class tag or `HASHED_MODULE_LEVEL` entry names
-    /// a module past the ones the module section declares, or a position
-    /// past the levels that module's root section rebuilt.
-    BadModuleLevel {
-        module: u32,
-        position: u32,
-    },
-    /// A module has no tree in the image's mixin table, so it describes no
-    /// root class -- nothing for the graph's `CLASS_MODULE` tag to name and
-    /// no declaration to instantiate.
+    /// A module has no tree in the image's mixin table, or the image carries
+    /// a class it has no application for, so there is no declaration to
+    /// build a class on.
     NotAClass,
-    /// A module's root section names a builtin for its root class to inherit
-    /// or apply that the loading bootstrap has no application for, so there
-    /// is no behaviour to build the root or its level on. `decode_root_section`
-    /// admits only `Object` and `Value`, which every bootstrap applies, so no
-    /// image reaches this today; it stands so that a change to either side is
-    /// a refusal that says what went wrong rather than a panic.
-    RootBuiltinWithoutApplication {
+    /// The record the module section names as a module's root class is no
+    /// class of that module's root declaration as its outermost level: a
+    /// record of another kind, a metaclass, a level, a class of another
+    /// declaration, or one with an enclosing object or a declaring class. A
+    /// module's root is the class a host instantiates, so the record must be
+    /// the one its own root row describes.
+    ModuleRootNotItsRecord {
         module: u32,
-        builtin: BuiltinClass,
+    },
+    /// A module's root class record inherits what the root rule does not
+    /// build (`resolver::root_clause_defect`): its superclass must be
+    /// `Kernel Object` or `Kernel Value`, or, for a root with its one
+    /// permitted `<:` clause, the level that clause added, applying `Kernel
+    /// Value` over `Kernel Object`. The encoder writes no other root, so a
+    /// crafted artifact cannot bring back one the resolver refuses.
+    RootRule {
+        module: u32,
     },
     /// A selector the image names has no declaration to bind to: a
     /// mixin-table row's code list naming a selector its own method
@@ -418,35 +414,52 @@ pub enum DecodeError {
     TrailingBytes {
         count: usize,
     },
-    /// The platform path section lists more paths than
-    /// `platform_paths::MAX_PLATFORM_PATHS`. Each path costs the loader
-    /// sends, so the count is bounded before any is made.
-    TooManyPlatformPaths {
+    /// The shipped-name section lists more names than
+    /// `shipped_names::MAX_SHIPPED_NAMES`, which the count is held to before
+    /// anything is reserved for it.
+    TooManyShippedNames {
         count: usize,
     },
-    /// A platform path of no members -- the empty path is the platform,
-    /// which `VALUE_PLATFORM` names -- or of more than
-    /// `platform_paths::MAX_PLATFORM_PATH_LENGTH`.
-    PlatformPathLength {
-        length: usize,
+    /// A shipped name the loading binary's shipped world has no object for:
+    /// an unknown module, an unknown declaration, or a level past its
+    /// declaration's clauses.
+    UnknownShippedName(String),
+    /// The shipped-name section lists one name twice. The encoder lists each
+    /// name once, so a second entry would give one object two indices.
+    DuplicateShippedName(String),
+    /// A shipped-name reference whose index is past the image's section.
+    BadShippedName(u32),
+    /// A shipped name standing where the rule of what may be named where
+    /// forbids it (`docs/design/image-format.md`, "Shipped names"): `Top` or
+    /// `Activation` as a value, a module root as a
+    /// record's class, a module instance outside a frame. `position` is
+    /// `NamePosition::describe`'s text.
+    ShippedNameNotAllowed {
+        name: String,
+        position: &'static str,
     },
-    /// A platform path member that is not a unary selector. A path is a
-    /// chain of unary sends, so no other selector can be one of its steps.
-    PlatformPathMemberNotUnary(String),
-    /// A platform path reference whose index is past the image's platform
-    /// path section.
-    BadPlatformPath(u32),
-    /// A class reference names a platform path whose object is not a class.
-    PlatformPathNotAClass,
-    /// An `OBJECT_INSTANCE` record of a class the loading platform names by
-    /// path carries a field count other than that class's layout. The layout
-    /// comes from the loading binary, not from the image
-    /// (`docs/design/core-library.md`, "Platform paths in the image"), so a
-    /// mismatch would leave the class's code reading fields the record does
-    /// not have, or not reading ones it does.
-    PlatformInstanceFieldCount {
+    /// A started image names a shipped object of a module other than the
+    /// kernel, or a module's instance, the kernel's included. Before
+    /// `main:args:` a program reaches nothing of the other modules, and no
+    /// program reaches a module's instance, so no encoder writes such an
+    /// image.
+    ShippedNameInStartedImage(String),
+    /// An `OBJECT_INSTANCE` record of a shipped class that is no builtin
+    /// carries a field count other than that class's layout. The layout
+    /// comes from the loading binary, not from the image, so a mismatch
+    /// would leave the class's code reading fields the record does not
+    /// have, or not reading ones it does.
+    ShippedInstanceFieldCount {
         expected: usize,
         found: usize,
+    },
+    /// A record under the header of a shipped class that is no builtin with
+    /// a body other than `OBJECT_INSTANCE`. Such a class's instances are
+    /// instances with slots, laid out by the loading binary; an array,
+    /// string, closure, class or frame record under its header would be an
+    /// object its code reads as something it is not.
+    ShippedInstanceBody {
+        body: u8,
     },
     /// A `LargeInteger`, as a value or a literal, in an encoding the encoder
     /// never writes: one that fits `i64` (which travels as an `i64`), a zero
@@ -478,6 +491,10 @@ impl std::fmt::Display for DecodeError {
             DecodeError::VersionMismatch { found, expected } => {
                 write!(f, "image format version {found} is not supported (this build reads version {expected})")
             }
+            DecodeError::ShippedWorldMismatch { found, expected } => write!(
+                f,
+                "the image was written by another shipped world (fingerprint {found:016x}, this binary's {expected:016x})"
+            ),
             DecodeError::InvalidTag { what, tag } => write!(f, "invalid {what} tag {tag}"),
             DecodeError::UnknownHeaderFlags { flags } => write!(
                 f,
@@ -600,26 +617,18 @@ impl std::fmt::Display for DecodeError {
                 f,
                 "a mixin-table row applies mixins but declares no superclass clause to apply them to"
             ),
-            DecodeError::RootWithoutSuperclass => write!(
-                f,
-                "the image's root class inherits from nothing, but a module's root class must inherit Object or Value"
-            ),
-            DecodeError::BadModuleReference { module } => write!(
-                f,
-                "the image names module {module}, which its module section does not declare"
-            ),
-            DecodeError::BadModuleLevel { module, position } => write!(
-                f,
-                "the image names level {position} of module {module}, which its module section \
-                 does not rebuild"
-            ),
             DecodeError::NotAClass => {
                 write!(f, "the image's mixin table describes no root class")
             }
-            DecodeError::RootBuiltinWithoutApplication { module, builtin } => write!(
+            DecodeError::ModuleRootNotItsRecord { module } => write!(
                 f,
-                "the root class of the image's module {module} builds on the builtin {builtin:?}, \
-                 which this build has no behaviour for"
+                "the image names a record as the root class of its module {module} that is no \
+                 class of that module's root declaration"
+            ),
+            DecodeError::RootRule { module } => write!(
+                f,
+                "the root class of the image's module {module} inherits neither Object nor \
+                 Value, nor Value applied over Object, as a module's root class must"
             ),
             DecodeError::UnknownSelector(selector) => write!(
                 f,
@@ -722,31 +731,40 @@ impl std::fmt::Display for DecodeError {
             DecodeError::TrailingBytes { count } => {
                 write!(f, "{count} trailing byte(s) after the last section")
             }
-            DecodeError::TooManyPlatformPaths { count } => write!(
+            DecodeError::TooManyShippedNames { count } => write!(
                 f,
-                "the image lists {count} platform paths, more than the {} a loader follows",
-                super::platform_paths::MAX_PLATFORM_PATHS
+                "the image lists {count} shipped names, more than the {} a loader resolves",
+                super::shipped_names::MAX_SHIPPED_NAMES
             ),
-            DecodeError::PlatformPathLength { length } => write!(
+            DecodeError::UnknownShippedName(name) => write!(
                 f,
-                "a platform path in the image has {length} members, but a path has between 1 and {} members",
-                super::platform_paths::MAX_PLATFORM_PATH_LENGTH
+                "the image names {name}, which this binary's shipped world does not have"
             ),
-            DecodeError::PlatformPathMemberNotUnary(member) => write!(
-                f,
-                "platform path member `{member}` is not a unary selector"
-            ),
-            DecodeError::BadPlatformPath(index) => {
-                write!(f, "platform path {index} out of range")
+            DecodeError::DuplicateShippedName(name) => {
+                write!(f, "the image lists the shipped name {name} twice")
             }
-            DecodeError::PlatformPathNotAClass => write!(
+            DecodeError::BadShippedName(index) => {
+                write!(f, "shipped name {index} out of range")
+            }
+            DecodeError::ShippedNameNotAllowed { name, position } => write!(
                 f,
-                "an image field that must name a class names a platform path whose object is not a class"
+                "the image names {name} as {position}, where no program may name it"
             ),
-            DecodeError::PlatformInstanceFieldCount { expected, found } => write!(
+            DecodeError::ShippedNameInStartedImage(name) => write!(
                 f,
-                "an instance of a class the platform names carries {found} field(s), but the loading \
+                "a started image names {name}, but before main:args: a program reaches \
+                 no module's instance and nothing of the shipped world but the \
+                 kernel's classes"
+            ),
+            DecodeError::ShippedInstanceFieldCount { expected, found } => write!(
+                f,
+                "an instance of a shipped class carries {found} field(s), but the loading \
                  binary lays that class out with {expected}"
+            ),
+            DecodeError::ShippedInstanceBody { body } => write!(
+                f,
+                "a record of a shipped class has object body {body}, but an instance of that \
+                 class is an instance record"
             ),
             DecodeError::NonCanonicalInteger => {
                 write!(f, "an integer is not in its one canonical encoding")
@@ -888,6 +906,9 @@ pub struct Header {
     pub has_source: bool,
     /// The graph's one root is an application to start (`FLAG_START`).
     pub start: bool,
+    /// The shipped world's fingerprint the image was written under; always
+    /// this binary's, since a header with another is refused.
+    pub fingerprint: u64,
 }
 
 pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
@@ -909,7 +930,16 @@ pub fn read_header(reader: &mut Reader) -> Result<Header, DecodeError> {
     if flags & !super::encode::KNOWN_FLAGS != 0 {
         return Err(DecodeError::UnknownHeaderFlags { flags });
     }
+    let fingerprint = reader.read_u64()?;
+    let expected = super::fingerprint::shipped_world_fingerprint();
+    if fingerprint != expected {
+        return Err(DecodeError::ShippedWorldMismatch {
+            found: fingerprint,
+            expected,
+        });
+    }
     Ok(Header {
+        fingerprint,
         has_source: flags & super::encode::FLAG_HAS_SOURCE != 0,
         start: flags & super::encode::FLAG_START != 0,
     })
@@ -950,121 +980,6 @@ fn integer_value<'gc>(mutator: &mut Mutator<'gc>, number: i64) -> Value<'gc> {
         Value::small_integer(number)
     } else {
         mutator.new_integer(ArbitraryInteger::from_i64(number))
-    }
-}
-
-pub fn builtin_class_from_tag(tag: u8) -> Option<BuiltinClass> {
-    Some(match tag {
-        0 => BuiltinClass::Object,
-        1 => BuiltinClass::Boolean,
-        2 => BuiltinClass::True,
-        3 => BuiltinClass::False,
-        4 => BuiltinClass::Integer,
-        5 => BuiltinClass::Float,
-        6 => BuiltinClass::String,
-        7 => BuiltinClass::Symbol,
-        9 => BuiltinClass::Array,
-        11 => BuiltinClass::UndefinedObject,
-        12 => BuiltinClass::Closure,
-        14 => BuiltinClass::VmMirror,
-        15 => BuiltinClass::Top,
-        16 => BuiltinClass::Value,
-        17 => BuiltinClass::Number,
-        20 => BuiltinClass::Behavior,
-        21 => BuiltinClass::Class,
-        22 => BuiltinClass::Metaclass,
-        23 => BuiltinClass::Activation,
-        24 => BuiltinClass::Exception,
-        25 => BuiltinClass::Error,
-        26 => BuiltinClass::MessageNotUnderstood,
-        27 => BuiltinClass::Message,
-        28 => BuiltinClass::Halt,
-        30 => BuiltinClass::FutureImplementation,
-        31 => BuiltinClass::LargeInteger,
-        32 => BuiltinClass::ArgumentError,
-        33 => BuiltinClass::CannotReturn,
-        34 => BuiltinClass::NonBooleanReceiver,
-        35 => BuiltinClass::CannotInstantiate,
-        36 => BuiltinClass::Proxy,
-        37 => BuiltinClass::Future,
-        38 => BuiltinClass::Collection,
-        39 => BuiltinClass::Fraction,
-        _ => return None,
-    })
-}
-
-pub fn read_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
-    let tag = reader.read_u8()?;
-    builtin_class_from_tag(tag).ok_or(DecodeError::InvalidTag {
-        what: "builtin class",
-        tag,
-    })
-}
-
-/// A builtin class referenced in the graph: a class reference recorded as a
-/// value (`CLASS_BUILTIN`), which from Task 4 on can hold `Metaclass` -- `3
-/// class class class` reaches it. Four tags are refused here, because no
-/// source module can produce them and an artifact that carried one would
-/// decode into a program the language does not admit. The VM mirror's class:
-/// there is exactly one mirror, and an artifact that could name its class
-/// could instantiate or reach a second one, and so claim every primitive.
-/// `Top`: §3.2 lets only `Object` have it as a superclass, so a class named
-/// over `Top` would sit outside `Object`'s chain and inherit none of its
-/// methods. `Activation`: a running activation as an object reads other
-/// frames and unwinds stacks, a capability Newspeak hands out only through
-/// mirrors, so no artifact may name its class either
-/// (`docs/design/core-library.md`, "Exceptions") -- except as the header of a
-/// frame record, which `decode_object_header` reads. `FutureImplementation`:
-/// §6.3.2's pull future is kernel-private as `Activation` is, and no program
-/// names its class -- except as the header of an unresolved future's record,
-/// which `decode_object_header` reads too. `Object` declares an accessor for
-/// none of the four, for the same reasons, which is what keeps source and
-/// artifact agreed on the names a program has. Only the closing hash table
-/// names them, by tag, as it names every builtin.
-pub fn read_referenced_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
-    referenced_builtin_class(read_builtin_class(reader)?)
-}
-
-/// `read_referenced_builtin_class`'s refusals, of a builtin already read --
-/// what `decode_object_header` applies to every header but an activation
-/// record's and an unresolved future's.
-fn referenced_builtin_class(kind: BuiltinClass) -> Result<BuiltinClass, DecodeError> {
-    match kind {
-        BuiltinClass::VmMirror => Err(DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: 14,
-        }),
-        BuiltinClass::Top => Err(DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: 15,
-        }),
-        BuiltinClass::Activation => Err(DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: 23,
-        }),
-        BuiltinClass::FutureImplementation => Err(DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: 30,
-        }),
-        kind => Ok(kind),
-    }
-}
-
-/// A builtin class a *program* names as a superclass or as the mixin of a
-/// `<:` clause. `read_referenced_builtin_class`'s two refusals, and three
-/// more: `Behavior`, `Class` and `Metaclass`, which `Object` declares no
-/// accessor for, so no source module can name them either; a class over
-/// one of them could never be instantiated (`InstantiationRefusal::ClassObject`).
-pub fn read_program_builtin_class(reader: &mut Reader) -> Result<BuiltinClass, DecodeError> {
-    let kind = read_referenced_builtin_class(reader)?;
-    match kind {
-        BuiltinClass::Behavior | BuiltinClass::Class | BuiltinClass::Metaclass => {
-            Err(DecodeError::InvalidTag {
-                what: "builtin class a program may name",
-                tag: crate::image::encode::builtin_class_tag(kind),
-            })
-        }
-        kind => Ok(kind),
     }
 }
 
@@ -2270,9 +2185,9 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
 // ---------------------------------------------------------------------------
 
 /// Everything the graph decoder resolves tags against: the live bootstrap
-/// (`mutator`), the module classes built from the mixin table, the decoded
-/// code table, the interpreter's `platform` singleton, and the decoded
-/// declaration trees a class object's mixin id names.
+/// (`mutator`), the object ids of the module roots' records, the decoded
+/// code table, the decoded declaration trees a class object's mixin id
+/// names, and the image's shipped names resolved against the loading world.
 ///
 /// `mutator` is `&mut` because decoding a class object *allocates into* the
 /// interpreter: rebuilding its `MixinApplication` goes through
@@ -2281,12 +2196,11 @@ fn decode_literal(reader: &mut Reader, symbols: &symbols::Table) -> Result<Liter
 /// before the snapshot.
 pub struct DecodeContext<'a, 'gc> {
     pub mutator: &'a mut Mutator<'gc>,
-    /// Each module's root class and `<:` levels, lowest first, as
-    /// `modules::build_module_classes` built them: what a `CLASS_MODULE` and
-    /// a `CLASS_MODULE_LEVEL` class tag name by index.
-    pub modules: &'a ModuleClasses<'gc>,
+    /// The object id of each module's root class record, in module order,
+    /// as the module section names it: module 0's is the class a frame with
+    /// no current class resolves its method against (`method_declaration`).
+    pub module_roots: &'a [u32],
     pub codes: &'a [Rc<CompiledCode>],
-    pub platform: Value<'gc>,
     /// The decoded mixin table's rows, indexed by row id -- the same
     /// `Rc<Mixin>`s that carry the image's compiled bodies and that
     /// `verify_mixins` reconciled, so a class object built around one of
@@ -2295,12 +2209,12 @@ pub struct DecodeContext<'a, 'gc> {
     /// other copy of the same declaration would miss the entry every other
     /// class object of that row shares.
     pub mixins: &'a [Rc<crate::mixin::Mixin>],
-    /// What each entry of the image's platform path section answered when
-    /// `load` sent its members to the loading platform, by index: what a
-    /// `VALUE_PLATFORM_PATH`, a `CLASS_PLATFORM_PATH` and a
-    /// `HASHED_PLATFORM_PATH` name. Resolved before the graph is decoded, so
-    /// the decoder only looks them up and runs no code.
-    pub platform_paths: &'a [Value<'gc>],
+    /// The image's shipped-name section, resolved against the loading
+    /// world (`shipped_names::resolve`), by index: what a `CLASS_SHIPPED`,
+    /// a `MIXIN_SHIPPED`, a `VALUE_SHIPPED_MODULE` and a `HASHED_SHIPPED`
+    /// name. Resolved before the graph is decoded, by table lookup, so the
+    /// decoder only indexes it and runs no code.
+    pub shipped: &'a [ResolvedName<'gc>],
 }
 
 pub struct DecodedGraph<'gc> {
@@ -2321,68 +2235,68 @@ pub struct Tables<'a, 'gc> {
     pub objects: &'a [ObjectReference<'gc>],
 }
 
-/// The inverse of `encode::encode_class_tag`. Tag 2's object may still be a
-/// placeholder when this runs -- a class object can be named before its own
-/// record is read -- so this resolves identity only; that the record really
-/// was a class record is `check_class_references`'s job, once every record
-/// has been read. Tag 4 names the metaclass of a class the loading world
-/// already has, which exists by then: `build_root_class` builds the root
-/// and its levels through `Mutator::new_class_object` and
-/// `new_applied_level`, which attach one, after the bootstrap attached the
-/// builtins'.
+/// The inverse of `encode::encode_class_tag`, at `position`. Tag 2's object
+/// may still be a placeholder when this runs -- a class object can be named
+/// before its own record is read -- so this resolves identity only; that the
+/// record really was a class record is `check_class_references`'s job, once
+/// every record has been read. A shipped name exists by then: the loading
+/// boot built the shipped world.
 pub fn decode_class_tag<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
+    position: NamePosition,
 ) -> Result<ClassReference<'gc>, DecodeError> {
     let tag = reader.read_u8()?;
-    decode_class_tag_after(tag, reader, context, tables)
+    decode_class_tag_after(tag, reader, context, tables, position)
 }
 
 /// An object record's header, as `decode_object_header` read it.
 struct ObjectHeader<'gc> {
     class: ClassReference<'gc>,
-    /// The header named the builtin `Activation`.
+    /// The header named the shipped `Kernel Activation`.
     activation: bool,
-    /// The header named the builtin `FutureImplementation`.
+    /// The header named the shipped `Kernel FutureImplementation`.
     future: bool,
-    /// The header named a class by platform path (`CLASS_PLATFORM_PATH`),
-    /// whose layout comes from the loading binary.
-    platform_path: bool,
+    /// The header named a shipped class that is no builtin, whose layout
+    /// comes from the loading binary.
+    shipped_non_builtin: bool,
+    /// The shipped name the header named, if it named one.
+    name: Option<ShippedName>,
 }
 
-/// An object record's header: its class tag, which is `decode_class_tag`'s
-/// except that it also accepts the builtin `Activation` -- the header of a
-/// frame record, the one place an image may name that class -- and the builtin
-/// `FutureImplementation`, the header of an unresolved future's record, for the
-/// same reason. Answers whether it did, so the caller can hold the header and
-/// the body to each other (`DecodeError::FrameRecordUnderAnotherClass`,
-/// `DecodeError::FutureRecord`) once it has read the body, and whether it named
-/// its class by platform path, so the caller can hold an instance's fields to
-/// that class's layout.
+/// An object record's header: its class tag at `NamePosition::Header`.
+/// Answers whether it named `Kernel Activation` -- the header of a frame
+/// record, the one record that class may have -- or `Kernel
+/// FutureImplementation`, the header of an unresolved future's record, so
+/// the caller can hold the header and the body to each other
+/// (`DecodeError::FrameRecordUnderAnotherClass`, `DecodeError::FutureRecord`)
+/// once it has read the body, and whether it named a shipped class that is
+/// no builtin, so the caller can hold an instance's fields to that class's
+/// layout.
 fn decode_object_header<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
 ) -> Result<ObjectHeader<'gc>, DecodeError> {
     let tag = reader.read_u8()?;
-    if tag != CLASS_BUILTIN {
+    if tag != CLASS_SHIPPED {
         return Ok(ObjectHeader {
-            class: decode_class_tag_after(tag, reader, context, tables)?,
+            class: decode_class_tag_after(tag, reader, context, tables, NamePosition::Header)?,
             activation: false,
             future: false,
-            platform_path: tag == CLASS_PLATFORM_PATH,
+            shipped_non_builtin: false,
+            name: None,
         });
     }
-    let kind = match read_builtin_class(reader)? {
-        kind @ (BuiltinClass::Activation | BuiltinClass::FutureImplementation) => kind,
-        kind => referenced_builtin_class(kind)?,
-    };
+    let entry = read_shipped_class(reader, context.shipped, NamePosition::Header)?;
+    let builtin = context.mutator.heap.class_builtin(entry.object);
     Ok(ObjectHeader {
-        class: context.mutator.builtin_class(kind),
-        activation: kind == BuiltinClass::Activation,
-        future: kind == BuiltinClass::FutureImplementation,
-        platform_path: false,
+        class: entry.object,
+        activation: builtin == Some(BuiltinClass::Activation),
+        future: builtin == Some(BuiltinClass::FutureImplementation),
+        shipped_non_builtin: builtin.is_none(),
+        name: Some(entry.name),
     })
 }
 
@@ -2392,10 +2306,11 @@ fn decode_class_tag_after<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
+    position: NamePosition,
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match tag {
         CLASS_RECORD => decode_object_id(reader, tables),
-        tag => read_class_tag_outside_the_graph(tag, reader, context),
+        tag => read_class_tag_outside_the_graph(tag, reader, context, position),
     }
 }
 
@@ -2406,120 +2321,82 @@ fn read_class_tag_outside_the_graph<'gc>(
     tag: u8,
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
+    position: NamePosition,
 ) -> Result<ClassReference<'gc>, DecodeError> {
     match tag {
-        CLASS_BUILTIN => Ok(context
-            .mutator
-            .builtin_class(read_referenced_builtin_class(reader)?)),
-        CLASS_MODULE => read_module_class(reader, context.modules),
-        CLASS_MODULE_LEVEL => read_module_level(reader, context.modules),
-        CLASS_PLATFORM_PATH => {
-            read_platform_path_class(&context.mutator.heap, reader, context.platform_paths)
-        }
-        CLASS_METACLASS => {
-            let class = read_prebuilt_class(
-                context.mutator,
-                reader,
-                context.modules,
-                context.platform_paths,
-            )?;
-            context
-                .mutator
-                .heap
-                .class_metaclass(class)
-                .ok_or(DecodeError::NotAClassReference)
-        }
+        CLASS_SHIPPED => Ok(read_shipped_class(reader, context.shipped, position)?.object),
         tag => Err(DecodeError::InvalidTag { what: "class", tag }),
     }
 }
 
-/// The class a `CLASS_METACLASS` reference or a `HASHED_METACLASS` entry
-/// names the metaclass of: a builtin, a module's root class, a module level
-/// or a class named by platform path -- a class the loading world has before
-/// the graph. A second `CLASS_METACLASS` or a `CLASS_RECORD` here is refused,
-/// which bounds the nesting at one: a class record's metaclass is a record of
-/// its own and is named by its id.
-fn read_prebuilt_class<'gc>(
-    mutator: &Mutator<'gc>,
+/// A shipped name's index, after its tag, resolved against the image's
+/// section: in range, or `BadShippedName` before anything indexes by it.
+fn read_shipped_entry<'a, 'gc>(
     reader: &mut Reader,
-    modules: &ModuleClasses<'gc>,
-    platform_paths: &[Value<'gc>],
-) -> Result<ClassReference<'gc>, DecodeError> {
-    match reader.read_u8()? {
-        CLASS_BUILTIN => Ok(mutator.builtin_class(read_referenced_builtin_class(reader)?)),
-        CLASS_MODULE => read_module_class(reader, modules),
-        CLASS_MODULE_LEVEL => read_module_level(reader, modules),
-        CLASS_PLATFORM_PATH => read_platform_path_class(&mutator.heap, reader, platform_paths),
-        tag => Err(DecodeError::InvalidTag {
-            what: "prebuilt class",
-            tag,
-        }),
-    }
-}
-
-/// A platform path reference's index, after its tag, resolved against what
-/// `load` resolved the section's paths to: in range, or `BadPlatformPath`
-/// before anything indexes by it.
-fn read_platform_path<'gc>(
-    reader: &mut Reader,
-    platform_paths: &[Value<'gc>],
-) -> Result<Value<'gc>, DecodeError> {
+    shipped: &'a [ResolvedName<'gc>],
+) -> Result<&'a ResolvedName<'gc>, DecodeError> {
     let index = reader.read_u32()?;
-    platform_paths
+    shipped
         .get(index as usize)
-        .copied()
-        .ok_or(DecodeError::BadPlatformPath(index))
+        .ok_or(DecodeError::BadShippedName(index))
 }
 
-/// `read_platform_path` where the format types the reference as a class:
-/// its object must be a class object.
-fn read_platform_path_class<'gc>(
-    heap: &Heap<'gc>,
+/// `read_shipped_entry` where the format types the reference as a class at
+/// `position`: the entry must be a class, a metaclass or a level -- a module
+/// instance is `NotAClassReference` -- and allowed there
+/// (`ShippedNameNotAllowed`).
+fn read_shipped_class<'a, 'gc>(
     reader: &mut Reader,
-    platform_paths: &[Value<'gc>],
-) -> Result<ClassReference<'gc>, DecodeError> {
-    match read_platform_path(reader, platform_paths)?.as_object() {
-        Some(class) if heap.is_class(class) => Ok(class),
-        _ => Err(DecodeError::PlatformPathNotAClass),
+    shipped: &'a [ResolvedName<'gc>],
+    position: NamePosition,
+) -> Result<&'a ResolvedName<'gc>, DecodeError> {
+    let entry = read_shipped_entry(reader, shipped)?;
+    if entry.name.kind == ShippedKind::ModuleInstance {
+        return Err(DecodeError::NotAClassReference);
     }
+    allowed(entry, position)?;
+    Ok(entry)
 }
 
-/// A `CLASS_MODULE`'s module index, after its tag, resolved against the
-/// module classes `load` rebuilt: in range, or `BadModuleReference` before
-/// anything indexes by it.
-fn read_module_class<'gc>(
-    reader: &mut Reader,
-    modules: &ModuleClasses<'gc>,
-) -> Result<ClassReference<'gc>, DecodeError> {
-    let module = reader.read_u32()?;
-    modules
-        .root(module)
-        .ok_or(DecodeError::BadModuleReference { module })
-}
-
-/// A `CLASS_MODULE_LEVEL`'s module index and position, after its tag,
-/// resolved the same way.
-fn read_module_level<'gc>(
-    reader: &mut Reader,
-    modules: &ModuleClasses<'gc>,
-) -> Result<ClassReference<'gc>, DecodeError> {
-    let module = reader.read_u32()?;
-    let position = reader.read_u32()?;
-    modules
-        .level(module, position)
-        .ok_or(DecodeError::BadModuleLevel { module, position })
+/// Refuses `entry` where `position` does not allow it.
+fn allowed(entry: &ResolvedName<'_>, position: NamePosition) -> Result<(), DecodeError> {
+    if position.allows(entry.positions) {
+        Ok(())
+    } else {
+        Err(DecodeError::ShippedNameNotAllowed {
+            name: entry.name.describe(),
+            position: position.describe(),
+        })
+    }
 }
 
 fn decode_optional_class<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
+    position: NamePosition,
 ) -> Result<Option<ClassReference<'gc>>, DecodeError> {
     if reader.read_boolean()? {
-        Ok(Some(decode_class_tag(reader, context, tables)?))
+        Ok(Some(decode_class_tag(reader, context, tables, position)?))
     } else {
         Ok(None)
     }
+}
+
+/// A `VALUE_SHIPPED_MODULE`'s index, after its tag: an entry a frame's
+/// register may hold -- a module instance, the only kind that may stand
+/// there -- standing as one (`position` is `NamePosition::FrameRegister`);
+/// anywhere else it is refused, since a module instance holds the core
+/// library's state.
+fn read_shipped_module<'gc>(
+    reader: &mut Reader,
+    shipped: &[ResolvedName<'gc>],
+    position: NamePosition,
+) -> Result<ObjectReference<'gc>, DecodeError> {
+    let entry = read_shipped_entry(reader, shipped)?;
+    allowed(entry, NamePosition::FrameRegister)?;
+    allowed(entry, position)?;
+    Ok(entry.object)
 }
 
 /// One value off the wire. Four kinds allocate objects of their own -- an
@@ -2603,6 +2480,7 @@ fn decode_value<'gc>(
     reader: &mut Reader,
     context: &mut DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
+    position: NamePosition,
 ) -> Result<Value<'gc>, DecodeError> {
     match reader.read_u8()? {
         VALUE_NIL => Ok(Value::nil()),
@@ -2616,9 +2494,17 @@ fn decode_value<'gc>(
         // 3.6x of its 9 bytes with the word that holds it (above).
         VALUE_FLOAT => Ok(context.mutator.new_float(reader.read_f64()?)),
         VALUE_OBJECT_ID => Ok(Value::object(decode_object_id(reader, tables)?)),
-        VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(reader, context, tables)?)),
-        VALUE_PLATFORM => Ok(context.platform),
-        VALUE_PLATFORM_PATH => read_platform_path(reader, context.platform_paths),
+        VALUE_CLASS_TAG => Ok(Value::object(decode_class_tag(
+            reader,
+            context,
+            tables,
+            NamePosition::Value,
+        )?)),
+        VALUE_SHIPPED_MODULE => Ok(Value::object(read_shipped_module(
+            reader,
+            context.shipped,
+            position,
+        )?)),
         // Allocating here is sound: the decoder never polls a safepoint, so
         // nothing moves the placeholders `tables` holds. It stays
         // proportional to the input because the digit count is bounded
@@ -2649,7 +2535,7 @@ fn decode_values<'gc>(
     let count = reader.read_u32()? as usize;
     let mut values = reserve_for(count, reader);
     for _ in 0..count {
-        values.push(decode_value(reader, context, tables)?);
+        values.push(decode_value(reader, context, tables, NamePosition::Value)?);
     }
     Ok(values)
 }
@@ -2763,7 +2649,7 @@ fn decode_fields_into<'gc>(
     count: usize,
 ) -> Result<(), DecodeError> {
     for index in 0..count {
-        let value = decode_value(reader, context, tables)?;
+        let value = decode_value(reader, context, tables, NamePosition::Value)?;
         let field = first.saturating_add(index);
         if !context
             .mutator
@@ -2788,16 +2674,28 @@ fn decode_fields_into<'gc>(
 /// root, and resolving everything against the root would either miss the
 /// selector or bind the frame to a same-named method of a different class.
 /// `None` -- a `TopLevel` activation -- has no class to ask, so the
-/// application's module, module 0, stands in, as its root class did for
-/// every frame before nesting.
+/// application's module, module 0, stands in: the record the module section
+/// names as its root class, as its root class did for every frame before
+/// nesting. The frames are decoded after every class record has its
+/// application, so that record answers its own; whether it really is the
+/// module's root is `modules::module_root_classes`'s to refuse, and a record
+/// that is no class here answers no method.
 fn method_declaration<'gc>(
     context: &DecodeContext<'_, 'gc>,
+    tables: &Tables<'_, 'gc>,
     current_class: Option<&ClassReference<'gc>>,
     selector: Symbol,
 ) -> Result<Rc<crate::mixin::MixinMethod>, DecodeError> {
     let class = match current_class {
         Some(class) => *class,
-        None => context.modules.root(0).ok_or(DecodeError::NotAClass)?,
+        None => {
+            let id = *context.module_roots.first().ok_or(DecodeError::NotAClass)?;
+            tables
+                .objects
+                .get(id as usize)
+                .copied()
+                .ok_or(DecodeError::BadObjectId(id))?
+        }
     };
     let found = context
         .mutator
@@ -2826,16 +2724,25 @@ fn decode_frame<'gc>(
         FRAME_METHOD => Err(decode_symbol(reader, symbols)?),
         FRAME_TOP_LEVEL => Ok(FrameKind::TopLevel),
         FRAME_INITIALIZER => Ok(FrameKind::Initializer(decode_class_tag(
-            reader, context, tables,
+            reader,
+            context,
+            tables,
+            NamePosition::FrameClass,
         )?)),
         FRAME_SUPERCLASS_CLAUSE => Ok(FrameKind::SuperclassClause(decode_class_tag(
-            reader, context, tables,
+            reader,
+            context,
+            tables,
+            NamePosition::FrameClass,
         )?)),
         FRAME_SUPERCLASS_MESSAGE => Ok(FrameKind::SuperclassMessage(decode_class_tag(
-            reader, context, tables,
+            reader,
+            context,
+            tables,
+            NamePosition::FrameClass,
         )?)),
         FRAME_MIXIN_APPLICATION_MESSAGE => Ok(FrameKind::MixinApplicationMessage(
-            decode_class_tag(reader, context, tables)?,
+            decode_class_tag(reader, context, tables, NamePosition::FrameClass)?,
         )),
         FRAME_CLOSURE => Ok(FrameKind::Closure(decode_object_id(reader, tables)?)),
         tag => {
@@ -2847,14 +2754,15 @@ fn decode_frame<'gc>(
     };
     let program_counter = reader.read_u32()? as usize;
     let uncontinuable = reader.read_boolean()?;
-    let receiver = decode_value(reader, context, tables)?;
+    let receiver = decode_value(reader, context, tables, NamePosition::FrameRegister)?;
     let sender = decode_frame_reference(reader, context, tables)?;
     let home = decode_frame_reference(reader, context, tables)?;
-    let current_class = decode_optional_class(reader, context, tables)?;
+    let current_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
     let kind = match kind {
         Ok(kind) => kind,
         Err(selector) => FrameKind::Method(method_declaration(
             context,
+            tables,
             current_class.as_ref(),
             selector,
         )?),
@@ -2875,7 +2783,7 @@ fn decode_frame<'gc>(
     );
     let count = reader.read_u32()? as usize;
     for index in 0..count {
-        let value = decode_value(reader, context, tables)?;
+        let value = decode_value(reader, context, tables, NamePosition::FrameRegister)?;
         if !context
             .mutator
             .heap
@@ -2895,8 +2803,9 @@ fn decode_frame<'gc>(
 /// sizes. A lower bound stays a sound one.
 pub(crate) const MIN_OBJECT_RECORD_BYTES: usize = 6;
 
-/// The smallest entry of the closing hash table: a tag (1) and a hash (4). A
-/// builtin-class entry carries one more byte.
+/// A floor under the smallest entry of the closing hash table: a tag (1) and
+/// a hash (4). A shipped entry, the one kind there is, carries its `u32`
+/// index besides; a lower bound stays a sound one.
 pub(crate) const MIN_TAG_NAMED_HASH_BYTES: usize = 5;
 
 /// A record count read from an untrusted stream, refused before it is used
@@ -2919,143 +2828,6 @@ pub(crate) fn bounded_count(
         return Err(DecodeError::UnexpectedEndOfFile);
     }
     Ok(count)
-}
-
-/// Module `module_index`'s root class object, rebuilt from the first row of
-/// its tree in the mixin table and its root section --
-/// `instantiate::load_module` without the source.
-///
-/// The two do the same three things in the same order, so a loaded world's
-/// root class is indistinguishable from a freshly loaded module's, down to
-/// its identity hash (both allocate the same class objects in the same
-/// order, module after module, after the bootstrap's builtins): apply the
-/// root mixin over the
-/// superclass's own application, then mint the class object with no
-/// enclosing object and no declaring class -- the module's root class is
-/// the outermost level, so neither exists.
-///
-/// The superclass arrives as an already-resolved `ClassReference` from
-/// `decode_root_superclass`, because `load_module` resolves it by *name*
-/// from the declaration and a decoded mixin has no declaration to read a
-/// name from.
-///
-/// The root's `<:` levels (`newspeak-spec.pdf` §6.2) are built here too, by
-/// `nested::build_applied_levels` -- the function `load_module` builds them
-/// with -- and in the same place in the order, before the root class object
-/// itself. Answers the root class and its levels, lowest first: the levels
-/// are what a `CLASS_MODULE_LEVEL` class tag names by position.
-pub fn build_root_class<'gc>(
-    mutator: &mut Mutator<'gc>,
-    mixins: &mixins::Decoded,
-    module_index: usize,
-    section: &RootSection,
-) -> Result<(ClassReference<'gc>, Vec<ClassReference<'gc>>), DecodeError> {
-    let root_mixin = mixins
-        .module_root(module_index)
-        .cloned()
-        .ok_or(DecodeError::NotAClass)?;
-    let without_application = |builtin| DecodeError::RootBuiltinWithoutApplication {
-        module: u32::try_from(module_index).unwrap_or(u32::MAX),
-        builtin,
-    };
-    let builtin = mutator.builtin_class(section.superclass);
-    let application = mutator
-        .heap
-        .class_application(builtin)
-        .ok_or_else(|| without_application(section.superclass))?;
-    // One level at a time, so a refusal names the builtin its level applies.
-    // `decode_root_section` held every index to the root row's clauses, so
-    // the one thing `build_applied_levels` refuses is a class with no
-    // application.
-    let mut top = Some((builtin, application));
-    for &(index, kind) in &section.levels {
-        let applied = [(index as usize, Value::object(mutator.builtin_class(kind)))];
-        top = crate::interpreter::nested::build_applied_levels(mutator, &root_mixin, top, &applied)
-            .map_err(|_| without_application(kind))?;
-    }
-    let (superclass, super_application) = top.unzip();
-    let application = mutator.apply_mixin(&root_mixin, super_application.as_ref());
-    let root_class = mutator.new_class_object(application, None, None, superclass);
-    let levels = super::encode::root_levels(&mutator.heap, root_class);
-    Ok((root_class, levels))
-}
-
-/// A module's root section as read: the builtin its root class inherits from
-/// -- `Object` or `Value`, the only two the root rule allows -- and the
-/// root's levels, lowest first, each as the position of the `<:` clause in
-/// the module's root row that added it and the builtin that clause named.
-#[derive(Debug, PartialEq)]
-pub struct RootSection {
-    pub superclass: BuiltinClass,
-    pub levels: Vec<(u32, BuiltinClass)>,
-}
-
-/// Module `module_index`'s root section: the class its root class inherits
-/// from, as a builtin tag behind a presence flag, then the levels its `<:`
-/// clauses add. The inverse of `encode::encode_root_class`, which explains
-/// why the format admits only builtins here.
-///
-/// Every level's clause position is checked against the clauses of this
-/// module's own root row -- never another module's -- and must rise from one
-/// level to the next: the levels are built in clause order, and no clause
-/// adds two. That bounds the count by the row's clause count before anything
-/// is reserved for it. Resolving no tag against a live interpreter, this
-/// serves `inspect` as well as `load`.
-///
-/// The reader refuses what the root rule forbids
-/// (`resolver::root_clause_defect`) -- a missing superclass,
-/// a superclass other than `Object` or `Value`, a level naming anything but
-/// `Value`, a second level, a level over anything but `Object` -- so a
-/// crafted artifact cannot bring back a root the encoder would refuse.
-pub fn decode_root_section(
-    reader: &mut Reader,
-    mixins: &mixins::Decoded,
-    module_index: usize,
-) -> Result<RootSection, DecodeError> {
-    if !reader.read_boolean()? {
-        return Err(DecodeError::RootWithoutSuperclass);
-    }
-    let superclass = read_program_builtin_class(reader)?;
-    if !matches!(superclass, BuiltinClass::Object | BuiltinClass::Value) {
-        return Err(DecodeError::InvalidTag {
-            what: "builtin class a module's root may inherit",
-            tag: super::encode::builtin_class_tag(superclass),
-        });
-    }
-    let clause_count = mixins
-        .module_root(module_index)
-        .map_or(0, |root| root.mixin_applications.len());
-    let row = mixins
-        .module_rows
-        .get(module_index)
-        .copied()
-        .unwrap_or_default();
-    let count = reader.read_u32()? as usize;
-    let mut levels = Vec::with_capacity(count.min(clause_count));
-    let mut next_allowed: u32 = 0;
-    for _ in 0..count {
-        let index = reader.read_u32()?;
-        if index as usize >= crate::mixin::CLAUSE_INDEX_LIMIT {
-            return Err(DecodeError::ClauseIndexTooLarge { row, index });
-        }
-        if index < next_allowed
-            || index as usize >= clause_count
-            || !levels.is_empty()
-            || superclass != BuiltinClass::Object
-        {
-            return Err(DecodeError::BadMixinApplicationClause { row, index });
-        }
-        next_allowed = index + 1;
-        let kind = read_program_builtin_class(reader)?;
-        if kind != BuiltinClass::Value {
-            return Err(DecodeError::InvalidTag {
-                what: "builtin class a module's root may apply",
-                tag: super::encode::builtin_class_tag(kind),
-            });
-        }
-        levels.push((index, kind));
-    }
-    Ok(RootSection { superclass, levels })
 }
 
 /// A class record as read, before its application exists: the object-table
@@ -3094,7 +2866,7 @@ struct PendingClass {
 /// The order is the catch: a class object's record may name a superclass
 /// whose own record appears later in the table. Each class has at most one
 /// superclass, so the dependency structure is a forest; this walks each
-/// chain to its already-applied end (a builtin, the root class, or a class
+/// chain to its already-applied end (a shipped class, or a class
 /// resolved by an earlier walk) over an explicit stack, then applies back
 /// down it. A chain that closes on itself is `SuperclassCycle` rather than
 /// a loop that never ends.
@@ -3257,9 +3029,9 @@ fn rebuild_applications<'gc>(
 /// inside the same declaration as its instance side.
 ///
 /// A metaclass record's class must be a class record: `position` holds
-/// exactly those. A metaclass of a builtin, the root class or a root level
-/// is named by tag (`CLASS_METACLASS`) and already exists, and one of a
-/// metaclass or of an ordinary object does not exist at all.
+/// exactly those. A shipped metaclass is named by its shipped name and
+/// already exists; one of a metaclass or of an ordinary object does not
+/// exist at all.
 fn rebuild_metaclasses<'gc>(
     context: &mut DecodeContext<'_, 'gc>,
     objects: &[ObjectReference<'gc>],
@@ -3502,52 +3274,61 @@ impl Sizing<'_, '_, '_> {
         Ok(())
     }
 
-    fn class_tag(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+    fn class_tag(&self, reader: &mut Reader, position: NamePosition) -> Result<(), DecodeError> {
         let tag = reader.read_u8()?;
-        self.class_tag_after(tag, reader)
+        self.class_tag_after(tag, reader, position)
     }
 
-    fn class_tag_after(&self, tag: u8, reader: &mut Reader) -> Result<(), DecodeError> {
+    fn class_tag_after(
+        &self,
+        tag: u8,
+        reader: &mut Reader,
+        position: NamePosition,
+    ) -> Result<(), DecodeError> {
         match tag {
             CLASS_RECORD => self.object_id(reader),
-            tag => read_class_tag_outside_the_graph(tag, reader, self.context).map(drop),
+            tag => read_class_tag_outside_the_graph(tag, reader, self.context, position).map(drop),
         }
     }
 
-    fn optional_class(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+    fn optional_class(
+        &self,
+        reader: &mut Reader,
+        position: NamePosition,
+    ) -> Result<(), DecodeError> {
         if reader.read_boolean()? {
-            self.class_tag(reader)?;
+            self.class_tag(reader, position)?;
         }
         Ok(())
     }
 
     /// `decode_object_header`'s reading; answers the builtin the header
-    /// named, if it named one by tag.
-    fn header(&self, reader: &mut Reader) -> Result<Option<BuiltinClass>, DecodeError> {
+    /// named, if it named a shipped builtin, and whether it named a shipped
+    /// class that is no builtin.
+    fn header(&self, reader: &mut Reader) -> Result<(Option<BuiltinClass>, bool), DecodeError> {
         let tag = reader.read_u8()?;
-        if tag != CLASS_BUILTIN {
-            return self.class_tag_after(tag, reader).map(|()| None);
+        if tag != CLASS_SHIPPED {
+            return self
+                .class_tag_after(tag, reader, NamePosition::Header)
+                .map(|()| (None, false));
         }
-        match read_builtin_class(reader)? {
-            kind @ (BuiltinClass::Activation | BuiltinClass::FutureImplementation) => {
-                Ok(Some(kind))
-            }
-            kind => referenced_builtin_class(kind).map(Some),
-        }
+        let entry = read_shipped_class(reader, self.context.shipped, NamePosition::Header)?;
+        let builtin = self.context.mutator.heap.class_builtin(entry.object);
+        Ok((builtin, builtin.is_none()))
     }
 
     /// `decode_value`'s reading. A `LargeInteger`'s digits, and a
     /// fraction's parts, are read into a transient `Vec`, bounded by the
     /// bytes they occupy, and dropped.
-    fn value(&self, reader: &mut Reader) -> Result<(), DecodeError> {
+    fn value(&self, reader: &mut Reader, position: NamePosition) -> Result<(), DecodeError> {
         match reader.read_u8()? {
-            VALUE_NIL | VALUE_FALSE | VALUE_TRUE | VALUE_PLATFORM => Ok(()),
+            VALUE_NIL | VALUE_FALSE | VALUE_TRUE => Ok(()),
             VALUE_SMALL_INTEGER => reader.read_i64().map(drop),
             VALUE_FLOAT => reader.read_f64().map(drop),
             VALUE_OBJECT_ID => self.object_id(reader),
-            VALUE_CLASS_TAG => self.class_tag(reader),
-            VALUE_PLATFORM_PATH => {
-                read_platform_path(reader, self.context.platform_paths).map(drop)
+            VALUE_CLASS_TAG => self.class_tag(reader, NamePosition::Value),
+            VALUE_SHIPPED_MODULE => {
+                read_shipped_module(reader, self.context.shipped, position).map(drop)
             }
             VALUE_LARGE_INTEGER => read_large_integer(reader).map(drop),
             // Its normal form checked here too, so an image that carries
@@ -3559,10 +3340,10 @@ impl Sizing<'_, '_, '_> {
 
     /// A counted list of values; answers the count, which every value read
     /// has paid for in bytes.
-    fn values(&self, reader: &mut Reader) -> Result<usize, DecodeError> {
+    fn values(&self, reader: &mut Reader, position: NamePosition) -> Result<usize, DecodeError> {
         let count = reader.read_u32()? as usize;
         for _ in 0..count {
-            self.value(reader)?;
+            self.value(reader, position)?;
         }
         Ok(count)
     }
@@ -3582,20 +3363,21 @@ impl Sizing<'_, '_, '_> {
                 if self.context.mixins.get(id as usize).is_none() {
                     return Err(DecodeError::BadMixinId(id));
                 }
-                self.optional_class(reader)?;
+                self.optional_class(reader, NamePosition::Superclass)?;
                 if reader.read_boolean()? {
-                    self.value(reader)?;
+                    self.value(reader, NamePosition::Value)?;
                 }
-                self.optional_class(reader)?;
+                self.optional_class(reader, NamePosition::FrameClass)?;
                 if reader.read_boolean()? {
                     decode_applied_clause(reader, self.context, None)?;
                 }
                 Ok(())
             }
-            MIXIN_BUILTIN => {
-                let kind = read_program_builtin_class(reader)?;
-                self.optional_class(reader)?;
-                decode_applied_clause(reader, self.context, Some(kind)).map(drop)
+            MIXIN_SHIPPED => {
+                let named = read_shipped_mixin(reader, self.context.shipped)?;
+                self.optional_class(reader, NamePosition::Superclass)?;
+                let builtin = self.context.mutator.heap.class_builtin(named);
+                decode_applied_clause(reader, self.context, builtin).map(drop)
             }
             tag => Err(DecodeError::InvalidTag {
                 what: "mixin reference",
@@ -3614,7 +3396,9 @@ impl Sizing<'_, '_, '_> {
             FRAME_INITIALIZER
             | FRAME_SUPERCLASS_CLAUSE
             | FRAME_SUPERCLASS_MESSAGE
-            | FRAME_MIXIN_APPLICATION_MESSAGE => self.class_tag(reader)?,
+            | FRAME_MIXIN_APPLICATION_MESSAGE => {
+                self.class_tag(reader, NamePosition::FrameClass)?
+            }
             FRAME_CLOSURE => self.object_id(reader)?,
             tag => {
                 return Err(DecodeError::InvalidTag {
@@ -3625,11 +3409,11 @@ impl Sizing<'_, '_, '_> {
         }
         reader.read_u32()?; // the program counter, checked by `verify_graph`
         reader.read_boolean()?; // uncontinuable
-        self.value(reader)?; // the receiver
+        self.value(reader, NamePosition::FrameRegister)?; // the receiver
         self.frame_reference(reader)?; // the sender
         self.frame_reference(reader)?; // the home
-        self.optional_class(reader)?; // the current class
-        self.values(reader)
+        self.optional_class(reader, NamePosition::FrameClass)?; // the current class
+        self.values(reader, NamePosition::FrameRegister)
     }
 
     /// One record, sized: what it becomes, and the words of it the size
@@ -3644,11 +3428,19 @@ impl Sizing<'_, '_, '_> {
         reader: &mut Reader,
         symbols_named: &mut [bool],
     ) -> Result<(PlannedRecord, usize), DecodeError> {
-        let header = self.header(reader)?;
+        let (header, shipped_non_builtin) = self.header(reader)?;
         let future = header == Some(BuiltinClass::FutureImplementation);
         let fraction = header == Some(BuiltinClass::Fraction);
         reader.read_u32()?; // the identity hash, checked by the second pass
         let body = reader.read_u8()?;
+        // A shipped class that is no builtin lays its instances out with
+        // slots, as the loading binary declares them: a record of any other
+        // shape under its header would make an object its code reads as
+        // something it is not. Refused before anything is allocated, as the
+        // second pass would refuse it.
+        if shipped_non_builtin && body != OBJECT_INSTANCE {
+            return Err(DecodeError::ShippedInstanceBody { body });
+        }
         // `Fraction new`'s record is the one a `Fraction` header may carry:
         // a fraction is a `VALUE_FRACTION`, its normal form checked, and a
         // record of fields under the header would make one unchecked. The
@@ -3662,20 +3454,20 @@ impl Sizing<'_, '_, '_> {
             // claiming any other count is refused here, before it is
             // allocated, as the second pass would refuse it once read.
             OBJECT_INSTANCE if future => {
-                let count = self.values(reader)?;
+                let count = self.values(reader, NamePosition::Value)?;
                 if count != crate::interpreter::future::FIELD_COUNT {
                     return Err(DecodeError::FutureRecord);
                 }
                 (count, false)
             }
             OBJECT_INSTANCE if fraction => {
-                let count = self.values(reader)?;
+                let count = self.values(reader, NamePosition::Value)?;
                 if count != 0 {
                     return Err(DecodeError::FractionRecord);
                 }
                 (count, false)
             }
-            OBJECT_INSTANCE | OBJECT_ARRAY => (self.values(reader)?, false),
+            OBJECT_INSTANCE | OBJECT_ARRAY => (self.values(reader, NamePosition::Value)?, false),
             OBJECT_STRING => {
                 let text = reader.read_text()?;
                 (record_size::string_fields(text), false)
@@ -3712,7 +3504,7 @@ impl Sizing<'_, '_, '_> {
                     });
                 }
                 for _ in 0..count {
-                    self.value(reader)?;
+                    self.value(reader, NamePosition::Value)?;
                 }
                 (record_size::CLOSURE_FIXED_FIELDS + count, false)
             }
@@ -3721,7 +3513,7 @@ impl Sizing<'_, '_, '_> {
                 (record_size::CLASS_FIELDS, false)
             }
             OBJECT_METACLASS => {
-                self.class_tag(reader)?;
+                self.class_tag(reader, NamePosition::Header)?;
                 (record_size::CLASS_FIELDS, false)
             }
             OBJECT_FRAME => {
@@ -3846,7 +3638,8 @@ pub fn decode_graph_section<'gc>(
             class,
             activation: activation_header,
             future: future_header,
-            platform_path: class_named_by_path,
+            shipped_non_builtin,
+            name: header_name,
         } = decode_object_header(reader, context, &tables)?;
         let identity_hash = reader.read_u32()?;
         // Checked here, the one place an object record's hash is read: the
@@ -3857,6 +3650,11 @@ pub fn decode_graph_section<'gc>(
         }
         max_identity_hash = max_identity_hash.max(identity_hash);
         let body = reader.read_u8()?;
+        // The first pass refused it already; restated here, beside the
+        // layout check below, as what filling the record rests on.
+        if shipped_non_builtin && body != OBJECT_INSTANCE {
+            return Err(DecodeError::ShippedInstanceBody { body });
+        }
         if body == OBJECT_FRAME {
             if !activation_header {
                 return Err(DecodeError::FrameRecordUnderAnotherClass);
@@ -3881,11 +3679,11 @@ pub fn decode_graph_section<'gc>(
         // `Activation` names a frame record's class and nothing else's: on
         // any other record it would make an ordinary object answer
         // `Activation`'s methods, which read other frames and unwind the
-        // stack. Refused as it is wherever else the graph names it.
+        // stack.
         if activation_header {
-            return Err(DecodeError::InvalidTag {
-                what: "builtin class a program may name",
-                tag: super::encode::builtin_class_tag(BuiltinClass::Activation),
+            return Err(DecodeError::ShippedNameNotAllowed {
+                name: header_name.map_or_else(String::new, |name| name.describe()),
+                position: NamePosition::Header.describe(),
             });
         }
         if future_header && body != OBJECT_INSTANCE {
@@ -3918,14 +3716,14 @@ pub fn decode_graph_section<'gc>(
                 if future_header && count != crate::interpreter::future::FIELD_COUNT {
                     return Err(DecodeError::FutureRecord);
                 }
-                if class_named_by_path {
+                if shipped_non_builtin {
                     let expected = context
                         .mutator
                         .heap
                         .class_application(class)
                         .map_or(0, |application| application.slot_count);
                     if count != expected {
-                        return Err(DecodeError::PlatformInstanceFieldCount {
+                        return Err(DecodeError::ShippedInstanceFieldCount {
                             expected,
                             found: count,
                         });
@@ -4019,7 +3817,12 @@ pub fn decode_graph_section<'gc>(
                 if !class.same(metaclass_class) {
                     return Err(DecodeError::MetaclassPairing);
                 }
-                this_class = Some(decode_class_tag(reader, context, &tables)?);
+                this_class = Some(decode_class_tag(
+                    reader,
+                    context,
+                    &tables,
+                    NamePosition::Header,
+                )?);
                 let class_class = context.mutator.builtin_class(BuiltinClass::Class);
                 pending_metaclasses.push(index);
                 Some(NewClass {
@@ -4108,49 +3911,37 @@ pub fn decode_graph_section<'gc>(
 }
 
 /// The inverse of `encode::encode_tag_named_hashes`: puts each recorded hash
-/// back onto the object the bootstrap -- or `build_root_class`, or a
-/// platform path's sends -- built, and answers the largest one, which `load`
-/// advances the counter past together with the graph's own maximum. A 0, a
-/// repeated object and a hash of 2^22 or more (`IDENTITY_HASH_LIMIT`) are
-/// refused, each for the reason its `DecodeError` gives.
+/// back onto the shipped object the loading boot built,
+/// and answers the largest one, which `load` advances the counter past
+/// together with the graph's own maximum. A shipped entry may name any kind
+/// of shipped object, a module instance included: a hash is no reference,
+/// and none of them is a record. A 0, a repeated object and a hash of 2^22 or
+/// more (`IDENTITY_HASH_LIMIT`) are refused, each for the reason its
+/// `DecodeError` gives.
 pub fn decode_tag_named_hashes<'gc>(
     mutator: &mut Mutator<'gc>,
     reader: &mut Reader,
-    modules: &ModuleClasses<'gc>,
-    platform_paths: &[Value<'gc>],
+    shipped: &[ResolvedName<'gc>],
 ) -> Result<u32, DecodeError> {
     let count = bounded_count(
         reader.read_u32()? as usize,
         MIN_TAG_NAMED_HASH_BYTES,
         reader,
     )?;
-    let mut restored: Vec<ObjectReference> = Vec::new();
+    // One flag per section entry: `resolve` refuses a name listed twice, and
+    // the shipped world names each object once
+    // (`an_object_and_a_mixin_lead_back_to_their_entry`), so a section index
+    // is an object, and a repeat is found without comparing objects.
+    let mut restored = vec![false; shipped.len()];
     let mut max = 0;
     for _ in 0..count {
-        let target = match reader.read_u8()? {
-            HASHED_BUILTIN_CLASS => mutator.builtin_class(read_builtin_class(reader)?),
-            HASHED_MODULE_CLASS => read_module_class(reader, modules)?,
-            HASHED_MODULE_LEVEL => read_module_level(reader, modules)?,
-            HASHED_PLATFORM => match mutator.platform_value().as_object() {
-                Some(platform) => platform,
-                _ => unreachable!("the platform singleton is always an object"),
-            },
-            HASHED_PLATFORM_PATH => {
+        let index = match reader.read_u8()? {
+            HASHED_SHIPPED => {
                 let index = reader.read_u32()?;
-                match platform_paths
-                    .get(index as usize)
-                    .and_then(|value| value.as_object())
-                {
-                    Some(object) => object,
-                    _ => return Err(DecodeError::BadPlatformPath(index)),
+                if shipped.get(index as usize).is_none() {
+                    return Err(DecodeError::BadShippedName(index));
                 }
-            }
-            HASHED_METACLASS => {
-                let class = read_prebuilt_class(mutator, reader, modules, platform_paths)?;
-                mutator
-                    .heap
-                    .class_metaclass(class)
-                    .ok_or(DecodeError::NotAClassReference)?
+                index as usize
             }
             tag => {
                 return Err(DecodeError::InvalidTag {
@@ -4166,11 +3957,12 @@ pub fn decode_tag_named_hashes<'gc>(
         if hash >= IDENTITY_HASH_LIMIT {
             return Err(DecodeError::IdentityHashTooWide(hash));
         }
-        if restored.iter().any(|seen| seen.same(target)) {
+        if std::mem::replace(&mut restored[index], true) {
             return Err(DecodeError::DuplicateTagNamedHash);
         }
-        restored.push(target);
-        mutator.heap.object_set_identity_hash(target, hash);
+        mutator
+            .heap
+            .object_set_identity_hash(shipped[index].object, hash);
         max = max.max(hash);
     }
     Ok(max)
@@ -4186,15 +3978,15 @@ pub fn decode_tag_named_hashes<'gc>(
 /// ever run a clause message `verify_mixins` reconciled with its row's
 /// factory.
 ///
-/// A level whose clause named a builtin (`MIXIN_BUILTIN`) is its own shape:
-/// its mixin, enclosing object and declaring class are the loading
-/// bootstrap's builtin's, exactly what `nested::build_applied_levels` gives a
-/// level it builds, so the record carries only the builtin, the superclass and
-/// the clause. The three references resolve
-/// to identities that already exist (every record was allocated at its size
-/// before this pass started), so a forward reference and a cycle are both
-/// ordinary; what cannot be settled yet is whether each really is a class
-/// record, which `check_class_references` establishes afterwards.
+/// A level whose clause named a shipped class (`MIXIN_SHIPPED`) is its own
+/// shape: its mixin, enclosing object and declaring class are the loading
+/// world's class's, exactly what `nested::build_applied_levels` gives a
+/// level it builds, so the record carries only the name, the superclass and
+/// the clause. The three references resolve to identities that already
+/// exist (every record was allocated at its size before this pass started),
+/// so a forward reference and a cycle are both ordinary; what cannot be
+/// settled yet is whether each really is a class record, which
+/// `check_class_references` establishes afterwards.
 /// A class record as `decode_class_record` reads it: the class object to
 /// build, the `<:` clause that added it, if any, set once it is built
 /// (`Heap::class_set_applied_clause`), and the mixin-table row it applies.
@@ -4219,8 +4011,8 @@ fn decode_class_record<'gc>(
                 .cloned()
                 .ok_or(DecodeError::BadMixinId(id))?
         }
-        MIXIN_BUILTIN => {
-            return decode_builtin_level(reader, context, tables, placeholder_application)
+        MIXIN_SHIPPED => {
+            return decode_shipped_level(reader, context, tables, placeholder_application)
         }
         tag => {
             return Err(DecodeError::InvalidTag {
@@ -4229,25 +4021,25 @@ fn decode_class_record<'gc>(
             })
         }
     };
-    let superclass = decode_optional_class(reader, context, tables)?;
+    let superclass = decode_optional_class(reader, context, tables, NamePosition::Superclass)?;
     let enclosing = if reader.read_boolean()? {
-        match decode_value(reader, context, tables)?.as_object() {
+        match decode_value(reader, context, tables, NamePosition::Value)?.as_object() {
             Some(object) => Some(object),
             _ => return Err(DecodeError::EnclosingNotAnObject),
         }
     } else {
         None
     };
-    let declaring_class = decode_optional_class(reader, context, tables)?;
+    let declaring_class = decode_optional_class(reader, context, tables, NamePosition::FrameClass)?;
     let applied_clause = if reader.read_boolean()? {
         Some(decode_applied_clause(reader, context, None)?)
     } else {
         None
     };
-    // A record only ever describes a user class: a builtin is a class *tag*,
-    // resolved through the bootstrap, and never an object-table entry. Its
-    // metaclass is its header, which `pair_metaclasses` holds to it once
-    // every record is read.
+    // A record only ever describes a program's class: a shipped class is a
+    // shipped name, resolved against the loading world, and never an
+    // object-table entry. Its metaclass is its header, which
+    // `pair_metaclasses` holds to it once every record is read.
     let class = NewClass {
         application: placeholder_application.clone(),
         enclosing,
@@ -4258,25 +4050,39 @@ fn decode_class_record<'gc>(
     Ok((class, applied_clause, mixin))
 }
 
-/// A `MIXIN_BUILTIN` class record, after its tag: the builtin whose mixin the
-/// level applies, its superclass and the clause that added it. The builtin is
-/// read as a program names one, so neither the VM mirror's class nor `Top`
-/// can be applied.
-fn decode_builtin_level<'gc>(
+/// A `MIXIN_SHIPPED` reference's index, after its tag: the shipped class
+/// whose mixin a level applies, which must be a class -- a level applies the
+/// mixin of a class, never of a metaclass, a level or a module instance --
+/// that a program may name as a superclass, so neither the VM mirror's
+/// class, which has no name, nor `Top` can be applied.
+fn read_shipped_mixin<'gc>(
+    reader: &mut Reader,
+    shipped: &[ResolvedName<'gc>],
+) -> Result<ClassReference<'gc>, DecodeError> {
+    let entry = read_shipped_entry(reader, shipped)?;
+    if entry.name.kind != ShippedKind::Class {
+        return Err(DecodeError::NotAClassReference);
+    }
+    allowed(entry, NamePosition::Superclass)?;
+    Ok(entry.object)
+}
+
+/// A `MIXIN_SHIPPED` class record, after its tag: the shipped class whose
+/// mixin the level applies, its superclass and the clause that added it.
+fn decode_shipped_level<'gc>(
     reader: &mut Reader,
     context: &DecodeContext<'_, 'gc>,
     tables: &Tables<'_, 'gc>,
     placeholder_application: &Rc<crate::mixin::MixinApplication>,
 ) -> Result<DecodedClassRecord<'gc>, DecodeError> {
-    let kind = read_program_builtin_class(reader)?;
-    let named = context.mutator.builtin_class(kind);
+    let named = read_shipped_mixin(reader, context.shipped)?;
     let heap = &context.mutator.heap;
     let mixin = heap
         .class_application(named)
         .map(|application| application.mixin.clone())
         .ok_or(DecodeError::NotAClass)?;
-    let superclass = decode_optional_class(reader, context, tables)?;
-    let applied_clause = decode_applied_clause(reader, context, Some(kind))?;
+    let superclass = decode_optional_class(reader, context, tables, NamePosition::Superclass)?;
+    let applied_clause = decode_applied_clause(reader, context, heap.class_builtin(named))?;
     let class = NewClass {
         application: placeholder_application.clone(),
         enclosing: heap.class_enclosing(named),

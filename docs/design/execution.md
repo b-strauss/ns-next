@@ -4780,7 +4780,9 @@ slots — as first measured below, a lazy getter was a compiled method with
 `MethodFastPath::LazySlot`, its arm sitting beside the other
 `MethodFastPath` arms in `interpreter/resolve.rs`'s `act_with_base`; since
 "Recovering it" below, it has no fast path and answers a filled slot with
-`Instruction::ReturnSlotIfFilled` — platform paths in the image,
+`Instruction::ReturnSlotIfFilled` — platform paths in the image (since
+replaced by shipped names, [image-format.md](image-format.md), "Shipped
+names"),
 and a shipped `Platform.ns` (since 2026-09-27 `PlatformFactory.ns`, in the
 factory pattern of [core-library.md](core-library.md), "The platform")
 compiled and resolved once at bootstrap,
@@ -4989,15 +4991,24 @@ they measure is the send sites' shape, which (c) restored.
 ### What the collections module cost
 
 The collections module (`docs/design/core-library.md`, "The collections
-module (plan 2)") added a third shipped module, `CollectionsFactory.ns`
-(99 lines), whose `List` is Newspeak over `Array new:` where the builtin
-`OrderedCollection` was Rust over a growable payload; the mirror's
-`moduleNamed:`, which builds a shipped module's root class on request; and
-`PlatformFactory`'s lazy `collectionsModule`, so the module is resolved,
-compiled and instantiated on the first `platform collections`, not at boot.
-`Kernel.ns` grew from 553 lines to 568 (`Array new:`, the handler search
-collecting into an `Array`) and `PlatformFactory.ns` from 83 to 87: 754
-lines of shipped source against 636. Nothing on a send's path changed.
+module (plan 2)") is a third shipped module, `CollectionsFactory.ns`, whose
+`List` is Newspeak over `Array new:` where the builtin `OrderedCollection`
+was Rust over a growable payload. Every boot builds it, with every other
+shipped module and every class their roots declare
+(`interpreter/shipped_world.rs`, `complete_shipped_world`): an image names
+the shipped world's objects by their declarations and the loader runs
+nothing the image chooses, so all of them exist before it decodes
+(`image-format.md`, "Shipped names"). The mirror's
+`moduleInstanceNamed:` answers the instance the boot built, and
+`PlatformFactory`'s lazy `collectionsModule` reads it.
+
+Plan 2, which the first two measurements below are of, built the module on
+the first `platform collections` instead, through the mirror's
+`moduleNamed:`, and nothing of it at boot. It made `CollectionsFactory.ns`
+99 lines, grew `Kernel.ns` from 553 lines to 568 (`Array new:`, the handler
+search collecting into an `Array`) and `PlatformFactory.ns` from 83 to 87:
+754 lines of shipped source against 636. Nothing on a send's path changed.
+The last measurement is of the boot that builds the whole shipped world.
 
 **Start-up, measured 2026-09-28, `816367e` against `6d9974b`** (the commit
 before the plan's first), by the protocol of "What removing the re-entries
@@ -5044,21 +5055,21 @@ median and the p10–p90 range of the pooled runs:
 | | `ee4bdc8` | 13.525 | 13.428 | 13.002–14.149 | +0.31 ms, +2.4% |
 | | `6d9974b` | 13.212 | 13.122 | 12.705–13.858 | |
 
-**A start that never sends `platform collections` costs what it did before
-the module existed; the first `platform collections` costs about 0.28 ms.**
-The head's `startup_zero.ns` is level with `6d9974b`'s: its builds' means lie
+**Under plan 2, a start that never sent `platform collections` cost what it
+did before the module existed; the first `platform collections` cost about
+0.28 ms.** The head's `startup_zero.ns` is level with `6d9974b`'s: its builds' means lie
 among `6d9974b`'s (13.27–13.31 against 13.25–13.28), a difference of 0.03 ms
 where one build's p10–p90 range is over 1 ms wide. `ee4bdc8`'s lay above
 both in every sitting, every one of its builds above every head build, by
 0.085 ms pooled: that is what resolving `CollectionsFactory.ns`'s 99 lines
 at every boot cost, and resolving each shipped module on its first request
 (`interpreter/core_library.rs`'s `RESOLVED_SHIPPED_MODULES`, one cell per
-table entry) is what removed it. The 15 lines `Kernel.ns` grew by do not
-show. `startup_list.ns` is where the work went: the head and `ee4bdc8` are
+table entry) is what removed it then; every boot asks for every entry now.
+The 15 lines `Kernel.ns` grew by do not show. `startup_list.ns` is where the work went: the head and `ee4bdc8` are
 level there (-0.03 ms), since both resolve the module by the time the
 program ends, and both lie 0.28–0.31 ms above `6d9974b`, whose `List` was a
-builtin class that was there anyway. That first-use cost is what the design
-expects to pay: parsing and resolving `CollectionsFactory.ns`, compiling it,
+builtin class that was there anyway. That first-use cost was what plan 2
+expected to pay: parsing and resolving `CollectionsFactory.ns`, compiling it,
 building its root class, and instantiating it and its facet.
 
 **The four `goldens/tool/bench/` fixtures, measured 2026-09-28, `f9d953a`
@@ -5103,6 +5114,40 @@ sitting:
 sends a collection message in its timed loop, and nothing on a send's path
 changed. `bench_block.ns`'s largest round, 14.80 for one head build, is the
 build-to-build outlier kind the pooling is for.
+
+**The whole shipped world at boot, measured 2026-10-12** on this
+workstation (Windows 11): `ns-next run` of a source whose `main:args:`
+shows `hello` on the transcript, release builds without the pinned
+`RUSTFLAGS`, each sample 50 runs timed by PowerShell's `Measure-Command`
+with the output discarded, its median taken; the three binaries were
+sampled in turn, three rounds. Three trees: `e2e1695`, before the boot
+built any shipped module but `PlatformFactory`; `1ff9a33`, whose boot
+compiles and instantiates `PlatformFactory` and `CollectionsFactory` and
+builds only the classes a run asks for; and `2d35951`, whose boot then
+builds every class the three roots declare and records each shipped
+object under its name (`complete_shipped_world`), as every later tree's
+does. Medians in ms:
+
+| Round | `e2e1695` | `1ff9a33` | `2d35951` |
+|---|---|---|---|
+| 1 | 12.54 | 16.24 | 16.10 |
+| 2 | 12.28 | 15.92 | 16.07 |
+| 3 | 12.06 | 15.86 | 15.72 |
+
+A first sample of `1ff9a33` alone, before `2d35951` existed, gave 16.11 and
+16.06 ms, and two more of `2d35951` against `1ff9a33` 15.94 against 16.17
+and 16.06 against 15.87 ms. **Building every shipped class and naming the
+world does not show**: `2d35951` and `1ff9a33` lie within each other's
+round-to-round spread of some 0.3 ms. **Building `CollectionsFactory` at
+every boot costs about 3.7 ms**, `1ff9a33` against `e2e1695`: parsing,
+resolving and compiling its 1,710 lines of source, against the 0.28 ms plan
+2 measured for its first use when it had 99: a hello program's median
+start went from about 12.3 ms to about 16.0 ms. The per-process overhead of
+this machine is high (above), so the figures compare with each other only.
+The two ways back -- building a shipped module on first demand, or an
+embedded base image of the shipped world -- are open
+([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
+at boot").
 
 ### What simultaneous slots cost
 

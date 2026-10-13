@@ -1,16 +1,14 @@
-//! `moduleNamed:`, the leaf through which shipped Newspeak reaches another
-//! shipped module (`docs/design/core-library.md`, "The module table and the
-//! boot"): `PlatformFactory.ns` builds the collections module with it.
+//! `moduleInstanceNamed:`, the leaf through which shipped Newspeak reaches
+//! another shipped module (`docs/design/core-library.md`, "The module table
+//! and the boot"): `PlatformFactory.ns` reaches the collections module with
+//! it.
 //!
-//! It answers the module's root class, built from the table's resolved
-//! source by `Mutator::load_root_class`, which is pure structure and runs no
-//! Newspeak. It keeps nothing: every request builds a new class object, and
-//! the caller keeps the one it wants -- `PlatformFactory`'s root in a lazy
-//! slot, which runs once -- so the runtime holds no module root of its own
-//! and traces nothing more.
+//! It answers the canonical instance the boot built and recorded in the
+//! shipped world (`interpreter::shipped_world`), the same object on every
+//! request, so every platform shares one collections module. It builds
+//! nothing and runs no Newspeak.
 
 use crate::builtins::primitive::ModulePrimitive;
-use crate::interpreter::core_library;
 use crate::types::*;
 use crate::Mutator;
 
@@ -22,12 +20,11 @@ pub(crate) fn execute<'gc>(
     receiver: Value<'gc>,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
-        ModulePrimitive::Named => {
+        ModulePrimitive::InstanceNamed => {
             let name = receiver.as_object()?;
             let name = mutator.heap().symbol_value(name)?;
-            let resolved = core_library::shipped_module_named(name.as_str())?;
-            let class = mutator.load_root_class(&resolved);
-            Some(Ok(Value::object(class)))
+            let instance = mutator.shipped_world.module_instance(name)?;
+            Some(Ok(Value::object(instance)))
         }
     }
 }

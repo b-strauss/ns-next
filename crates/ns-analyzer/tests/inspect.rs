@@ -31,7 +31,7 @@ fn inspect_reports_the_sections_symbols_and_mixins_of_an_image() {
         "code",
         "mixins",
         "modules",
-        "platform paths",
+        "shipped names",
         "graph",
     ] {
         assert!(out.contains(section), "missing section `{section}`:\n{out}");

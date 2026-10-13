@@ -635,7 +635,8 @@ need it; the common shapes never leave the leaf.
 
 Bytecode and image are unaffected: the mirror's mixin is built by the
 bootstrap and never serialized, so primitive numbers never reach the wire,
-and neither does `Kernel.ns`, whose classes an image names only by tag.
+and neither does `Kernel.ns`, whose classes an image names only by their
+declarations ([image-format.md](image-format.md), "Shipped names").
 
 ## Primitive methods
 

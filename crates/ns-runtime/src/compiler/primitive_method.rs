@@ -183,8 +183,9 @@ fn recognize_builtin_class_accessor(
 /// The nested class of `root` that `declaration` answers, when its whole
 /// body is `^outer <Root> <Nested>` with `<Root>` the module root's name,
 /// resolved lexically, and `<Nested>` a class the root declares: a pure
-/// class accessor, which a platform path may step through
-/// (`MixinMethod::class_accessor`, `image::platform_paths`). The caller
+/// class accessor, which lets the class it answers stand as a value in an
+/// image (`MixinMethod::class_accessor`, `interpreter::shipped_world`). The
+/// caller
 /// passes `root` for a shipped module other than the kernel alone. A
 /// parameter, a temporary, a second statement or a name the root does not
 /// declare as a nested class makes it an ordinary method.

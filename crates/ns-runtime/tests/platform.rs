@@ -6,6 +6,7 @@
 //! process-level test can't easily observe.
 
 use indoc::indoc;
+use ns_runtime::image::shipped_names::{self, ShippedKind, ShippedName};
 use ns_runtime::{
     BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind,
 };
@@ -176,6 +177,61 @@ fn platform_collections_answers_the_collections_modules_list() {
             second_list.same(list),
             "a second platform answers the same List"
         );
+    });
+}
+
+/// Every shipped module has one instance, built at boot: the collections
+/// module's instance is in the shipped world before anything asked for
+/// `platform collections` or for the platform at all, and both platforms'
+/// facets are of that very instance.
+#[test]
+fn the_collections_module_is_built_once_at_boot() {
+    let mut interpreter = Interpreter::bootstrap();
+    let at_boot = interpreter.enter(|mutator| {
+        let name = ShippedName {
+            module: Symbol::intern("CollectionsFactory"),
+            declaration: Symbol::intern("CollectionsFactory"),
+            kind: ShippedKind::ModuleInstance,
+        };
+        let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
+            Ok(resolved) => resolved,
+            Err(error) => panic!("the collections module is built at boot: {error}"),
+        };
+        mutator.stash(Value::object(resolved[0].object))
+    });
+    let platform = interpreter.platform();
+    let first = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    let second_platform = expect_ok(
+        interpreter.send(&platform, Symbol::intern("class"), &[]),
+        "platform class",
+    );
+    let second_platform = expect_ok(
+        interpreter.send(&second_platform, Symbol::intern("new"), &[]),
+        "platform class new",
+    );
+    let second = expect_ok(
+        interpreter.send(&second_platform, Symbol::intern("collections"), &[]),
+        "second platform collections",
+    );
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let module_of = |facet: &Root| {
+            let facet = mutator
+                .fetch(facet)
+                .as_object()
+                .expect("a facet is an object");
+            heap.class_enclosing(heap.object_class(facet))
+                .expect("a facet's class is nested")
+        };
+        let at_boot = mutator
+            .fetch(&at_boot)
+            .as_object()
+            .expect("a module instance is an object");
+        assert!(module_of(&first).same(at_boot));
+        assert!(module_of(&second).same(at_boot));
     });
 }
 
@@ -575,7 +631,8 @@ fn the_collections_factory_answers_only_new_collections() {
 
 /// The platform's class accessors reach the module's private classes by a
 /// lexical send (§5.9), so each still answers a class a program can use,
-/// and each is still a platform path step.
+/// and each such class may stand as a value in an image: a public class
+/// accessor answers it.
 #[test]
 fn the_platforms_class_accessors_reach_the_private_classes() {
     let mut interpreter = Interpreter::bootstrap();
@@ -590,16 +647,29 @@ fn the_platforms_class_accessors_reach_the_private_classes() {
             &format!("platform {name} new"),
         );
         interpreter.enter(|mutator| {
-            let Some(platform) = mutator.fetch(&platform).as_object() else {
-                panic!("the platform is an object");
+            let name = ShippedName {
+                module: Symbol::intern("PlatformFactory"),
+                declaration: Symbol::intern(name),
+                kind: ShippedKind::Class,
+            };
+            let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
+                Ok(resolved) => resolved,
+                Err(error) => panic!("{} is a shipped name: {error}", name.describe()),
             };
             assert!(
-                ns_runtime::image::platform_paths::is_path_step(
-                    mutator.heap(),
-                    platform,
-                    Symbol::intern(name)
+                resolved[0].positions.value,
+                "{} may stand as a value",
+                name.describe()
+            );
+            assert!(
+                resolved[0].object.same(
+                    mutator
+                        .fetch(&class)
+                        .as_object()
+                        .expect("the accessor answers a class")
                 ),
-                "{name} is a platform path step"
+                "{} is the class the accessor answers",
+                name.describe()
             );
         });
     }

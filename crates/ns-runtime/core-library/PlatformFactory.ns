@@ -25,10 +25,11 @@
 /// a holder of this root's instance could send it nothing but
 /// `newPlatform`: a second line of defence behind the instance being
 /// unreachable. The collections module is another such root
-/// (`CollectionsFactory.ns`), built once through the mirror's
-/// `moduleNamed:` and kept in a private lazy slot here; the platform hands
-/// out only the facet it answers. Nothing a program can name answers this
-/// root's instance or its class, so no program can build a second one over
+/// (`CollectionsFactory.ns`), whose one instance the host builds at boot
+/// and this root reaches through the mirror's `moduleInstanceNamed:`,
+/// keeping it in a private lazy slot here; the platform hands out only the
+/// facet it answers. Nothing a program can name answers this root's
+/// instance or its class, so no program can build a second one over
 /// something that is not the mirror. Keep it so: no code whose receiver is
 /// this root's instance may send it anything it does not understand, since
 /// a `MessageNotUnderstood` hands its receiver to whoever catches it
@@ -40,30 +41,29 @@
 /// mirror send, as in `Kernel.ns`: this module is resolved with
 /// `resolve_kernel`, which only shipped source is.
 ///
-/// Everything here but `Stopwatch` is a value (§3.1.1), as SOMns's
-/// `Platform` is: stateless but for what the host hands the root and the
-/// collections module it builds once. A `Stopwatch` keeps its reading in
-/// slots, so it is an object, as `CollectionsFactory.ns`'s `List` is.
+/// Everything here but `Stopwatch` is a value (§3.1.1): stateless but for
+/// what the host hands the root and the collections module the boot built,
+/// which the root reaches through the mirror. A `Stopwatch` keeps its
+/// reading in slots, so it is an object, as `CollectionsFactory.ns`'s
+/// `List` is.
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
   |
     /// The VM mirror the factory was given: the one object through which
     /// a member here reaches a native operation. Never handed out.
     private vmMirror = theMirror.
     /// The kernel module's instance, whose classes `KernelNamespace`
-    /// hands out and over which the collections module is built.
+    /// hands out.
     private kernelModule = theKernel.
   |
 ) (
-  /// The instance of the collections module, built over the kernel on
-  /// first use and the same object from then on.
+  /// The one collections module, the instance the boot built over the
+  /// kernel, and the same object on every use.
   ///
-  /// The collections module, built on first use and kept here, so that
-  /// every platform's facet comes from one factory and hands out one
-  /// `List` class. Its instance is as private as this one: only its
-  /// `newCollections` facet leaves this module.
-  lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [
-    nil.
-  ]) usingKernel: kernelModule.
+  /// The host builds every shipped module once, at boot, and the mirror
+  /// answers that instance, so every platform's facet comes from one
+  /// factory and hands out one `List` class. Its instance is as private
+  /// as this one: only its `newCollections` facet leaves this module.
+  lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
 
   /// The platform a program is handed: the namespace of what it may use
   /// beyond the kernel, each member built on first use.
@@ -73,9 +73,9 @@ class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Val
   /// so a program pays only for what it asks for. This module's classes
   /// -- `Platform`, `Transcript`, `KernelNamespace`, `Time` and
   /// `Stopwatch` -- are handed out by class accessors, each exactly
-  /// `^outer PlatformFactory <Name>`, which an image names by its path
-  /// from the platform rather than carrying the class
-  /// (`docs/design/image-format.md`, "The platform path section"). Each is a lexical send, which reaches the root's
+  /// `^outer PlatformFactory <Name>`, which lets an image name the class
+  /// by its declaration rather than carry it
+  /// (`docs/design/image-format.md`, "Shipped names"). Each is a lexical send, which reaches the root's
   /// private classes (§5.9). The collections module's classes are its
   /// facet's, handed out the same way.
   private class Platform = Value new () (

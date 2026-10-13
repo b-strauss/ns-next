@@ -8,12 +8,19 @@
 > wire"). The decoder reads the graph section in two passes, sizing every
 > record's object from its own bytes before it allocates any ("Two
 > passes"), and a reified frame is an object record like every other
-> ("Frames are object records"). A load tenures everything once before
-> it decodes the graph, which it allocates old ("The image under
-> generations"). **Planned:** suspend and resume.
+> ("Frames are object records"). An image names every object the binary
+> owns -- a shipped module's instance, a class its root declares, their
+> metaclasses and levels -- by its declaration, resolved by table lookup
+> against the shipped world the bootstrap builds whole, and carries the
+> fingerprint of that world in its header ("Shipped names"); a module's
+> root class is a record of the graph like any class. A load tenures
+> everything once before it decodes the graph, which it allocates old
+> ("The image under generations"). **Planned:** suspend and resume.
 > **Code:** `crates/ns-runtime/src/image/` — `mod.rs` (`package`, `snapshot`,
 > `load`), `encode.rs`, `decode.rs`, `mixins.rs`, `modules.rs`,
-> `platform_paths.rs`, `symbols.rs`, `opcodes.rs`, `inspect.rs`;
+> `shipped_names.rs`, `fingerprint.rs`, `symbols.rs`, `opcodes.rs`,
+> `inspect.rs`; `crates/ns-runtime/src/interpreter/shipped_world.rs` (the
+> shipped world and what may be named where);
 > `crates/ns-runtime/core-library/Manifest.ns`. CLI: `ns-next build`,
 > `ns-next load`, `ns-next-analyzer inspect`, and `ns-next-analyzer disasm` on an artifact;
 > `crates/ns-cli/src/project.rs` (the project file) and `program.rs`
@@ -89,7 +96,7 @@ program and none of the world it will run in.
 `image::package` writes the started image. `image::snapshot` writes a graph
 from whatever roots a host hands it, without `FLAG_START`; no command calls
 it -- the tests use it to take the graph shapes a started image never holds
-(a stored platform, the objects platform paths name, several roots), and it
+(a stored platform, the classes and facets it hands out, several roots), and it
 is the writer the image with heap state will build on. Both go through
 one writer (`write_image`).
 
@@ -106,14 +113,16 @@ the same reason: encoding runs no code.
 ## Layout
 
 ```
-[header][symbols][code][mixins][modules][platform paths][graph][tag-named hashes]
+[header][symbols][code][mixins][modules][shipped names][graph][tag-named hashes]
 
-header:  magic "NSNX", FORMAT_VERSION (u32), flags (u8)
-modules: count (u32), then per module [origin][source?][root section]
-graph:   object table, roots
+header:        magic "NSNX", FORMAT_VERSION (u32), flags (u8), fingerprint (u64)
+modules:       count (u32), then per module [origin][source?][root object id (u32)]
+shipped names: count (u32), then per name [module][declaration][kind (u8)][clause (u32)?]
+graph:         object table, roots
 ```
 
-The header carries magic, `FORMAT_VERSION` and a flag byte. Two flags are
+The header carries magic, `FORMAT_VERSION`, a flag byte and the shipped
+world's fingerprint ("Shipped names" below). Two flags are
 assigned (`image/encode.rs`): `FLAG_HAS_SOURCE` (1) says every module in the
 module section carries its source text, and `FLAG_START` (4) says the graph's
 one root is an application `load` starts. Bit 2 is retired
@@ -131,37 +140,41 @@ nothing certain, to start.
 `FORMAT_VERSION` is 1 and is not bumped. The project has no external users, so
 images predating a change are disposable and no migration path is owed to them.
 The guarantee that still has to hold is the untrusted-input one, and that comes
-from validating ids and lengths, not from a version field.
+from validating ids and lengths, not from a version field. What the version
+cannot say -- that the image was written by a binary whose shipped world is
+the loading one's -- the fingerprint says: a load whose binary computes
+another refuses the image before it reads anything past the header
+(`DecodeError::ShippedWorldMismatch`).
 
 ## What is *not* serialized
 
 This is the part that decides how big an artifact is and how large its trusted
 surface is.
 
-- **Builtin classes, each module's root class and the levels its `<:`
-  clauses add** are referenced by a **class tag**
-  wherever a class object appears — an object's `.class`, a class-valued slot, a
-  frame's `current_class` — never structurally encoded. On load a tag resolves to
-  the live class the bootstrap produced. The bootstrap itself is the fixed
-  root/special-objects table. So is the core library: a builtin class's
-  methods are the loading process's own `Kernel.ns`, compiled at its
-  bootstrap ([core-library.md](core-library.md)), and no image carries the
-  kernel's code, its instance or the VM mirror — which is also why
-  `Instruction::SendMirror`, emitted only into shipped core-library source
-  (`Kernel.ns`, `PlatformFactory.ns`), has no wire tag
+- **The shipped world** -- every object the binary owns: each shipped
+  module's instance (`Kernel`, `PlatformFactory`, `CollectionsFactory`),
+  each class its root declares, the builtins among them, their metaclasses
+  and the levels their `<:` clauses add -- is named by its **shipped
+  name**, never structurally encoded: the module, the declaration and the
+  kind, listed once in a section of its own and resolved by table lookup
+  against the loading binary's own shipped world before the graph is
+  decoded ("Shipped names" below). The bootstrap builds that world whole
+  and is the fixed root/special-objects table. So is the core library: a
+  shipped class's methods are the loading process's own `Kernel.ns`,
+  `PlatformFactory.ns` and `CollectionsFactory.ns`, compiled at its
+  bootstrap ([core-library.md](core-library.md)), and no image carries their
+  code or the VM mirror — which is also why `Instruction::SendMirror`,
+  emitted only into shipped core-library source, has no wire tag
   ([compiler.md](compiler.md), "Mirror sends").
 - **`nil`, `true` and `false`** are unboxed `Value` scalars with no heap identity
   to preserve, encoded as scalar tags.
-- **The `platform` singleton** gets its own tag, resolved to the loading
-  interpreter's own singleton. Essentially every module stores it in a slot, so
-  without this the whole platform graph would come along.
-- **Every object reached through the platform** is named by its **platform
-  path**, the public members sent from the platform that answer it
-  (`transcript`, `collections`, `Transcript`, `Platform`): listed in a section
-  of its own, resolved by the
-  loading host before the graph is decoded, and never written as a record
-  ("Platform paths" below, [core-library.md](core-library.md), "Platform
-  paths in the image"). The platform's own tag is the empty path.
+- **The platform is a record, not a reference to the loading one.** It is an
+  instance of the shipped class `PlatformFactory Platform`, a value whose
+  lazy slots are written as they stand, so it decodes to a value equal to
+  the loading platform -- lazy slots are no part of a value's state -- and
+  fills an empty slot on demand through the canonical `PlatformFactory`
+  instance. A started image holds no platform: nothing before `main:args:`
+  hands a program one ("Packaging" below).
 - **Mixin applications** are not serialized. Layout and lookup follow
   deterministically from a mixin and its superclass application, so they are
   rebuilt as class objects decode. This removes a section, a verification pass,
@@ -173,9 +186,10 @@ surface is.
   (`OBJECT_METACLASS`, header `Metaclass`) whose body is only the class
   reference back to its class, and the decoder applies its class's metaclass
   mixin over `Class`, as `Mutator::attach_metaclass` does (§6); a class
-  record's header names its metaclass record. The metaclass of a builtin, a
-  module's root class or one of its levels is named by tag, `CLASS_METACLASS`
-  followed by that class's own reference, one level deep. A class record applying some
+  record's header names its metaclass record; a module's root class and the
+  levels its clauses add are class records too, with metaclass records of
+  their own. The metaclass of a shipped class or level is named by its own
+  shipped name. A class record applying some
   row's class side is refused (`ClassRecordAppliesAClassSide`)
   ([object-model.md](object-model.md), "The image format").
 - **Inline-cache state and dispatch ids.** No cache entry, polymorphic block,
@@ -193,13 +207,14 @@ surface is.
   one would require re-resolving the source, which would require re-parsing it —
   exactly the load path that was removed.
 
-A hostile image therefore cannot replace a builtin, because a class tag resolves
-against the fresh bootstrap rather than against file content.
+A hostile image therefore cannot replace a builtin or any other shipped
+class, because a shipped name resolves against the fresh bootstrap rather
+than against file content.
 
 ## Sections
 
 In order: the symbol table, the code table, the mixin table, the module
-section, the platform paths, the graph (object table, roots),
+section, the shipped names, the graph (object table, roots),
 and the tag-named hashes. Each is described below; the code table's
 instruction encoding has a section of its own.
 
@@ -411,7 +426,7 @@ blocks' sizes the same way, read off the encoding as `bytecode::family_size_of`
 reads the decoded view. A block precedes its parent in the table, but its
 numbers depend on where its `MakeClosure` sits in its root's emission order, so
 the decoder numbers a family only once its root -- the body nothing else's
-`MakeClosure` creates -- has been read in full. The golden image is 1281 bytes.
+`MakeClosure` creates -- has been read in full. The golden image is 1363 bytes.
 
 Both lists are declared once, in `image/opcodes.rs`, and used by the encoder and
 the decoder alike rather than repeated as magic numbers on each side.
@@ -423,9 +438,10 @@ The graph section's six tag families live there under the same rule: how a
 `Value` is encoded, an object record's body, how a class record names its
 mixin, how a class reference is named, what a frame was activated for, and
 which tag-named object an entry of the closing hash table names (`HASHED_*`,
-below). The platform paths added one tag to three of them, each followed by a
-`u32` index into the platform path section: `VALUE_PLATFORM_PATH` = 8,
-`CLASS_PLATFORM_PATH` = 5 and `HASHED_PLATFORM_PATH` = 4. They were bare
+below). The shipped names gave four of them a tag each, followed by a `u32`
+index into the shipped-name section: `VALUE_SHIPPED_MODULE` = 11,
+`MIXIN_SHIPPED` = 2, `CLASS_SHIPPED` = 8 and `HASHED_SHIPPED` = 7
+("Shipped names" below). They were bare
 literals in the encoder and again in the decoder until `inspect` became a
 third reader of those bytes — and three hand-kept copies of one numbering is
 how a viewer starts quietly disagreeing with the loader. A closure frame
@@ -544,15 +560,19 @@ that dropped it would come back resolving `outer` from the wrong chain. The
 applied clause is present exactly for a level a `<:` clause added, as the
 applying declaration's row id and the clause's position in that row, so the
 selector and message a level is initialized with are the ones its row carries
-and `verify_mixins` reconciled with that row's factory. A level whose clause
-named a builtin (`<: Value`) is recorded as `{MIXIN_BUILTIN, builtin tag,
-superclass, applied clause}`: its mixin is the builtin's, which no row
-describes, and its enclosing object and declaring class are the builtin's own —
-the core library's `Kernel`, which holds the VM mirror — so the record carries
-neither, and the decoder takes both from the loading bootstrap, as building the
-level from source does. The record changed shape when its mixin became a tagged
-reference, so the old class-record tag 5 is retired
-(`opcodes::RETIRED_OBJECT_BODIES`).
+and `verify_mixins` reconciled with that row's factory. A level a program's
+clause added over a shipped class (`<: Value`, or a `List` the program holds,
+`<: listClass new: 4`) is recorded as `{MIXIN_SHIPPED, shipped-name index,
+superclass, applied clause}`: its mixin is the shipped class's, which no row
+describes, and its enclosing object and declaring class are the shipped
+class's own — for `Value`, the core library's `Kernel`, which holds the VM
+mirror — so the record carries neither, and the decoder takes both from the
+loading bootstrap, as building the level from source does. The name must be
+one the rule allows as a superclass ("What may be named where" below). The
+record changed shape when its mixin became a tagged reference, so the old
+class-record tag 5 is retired (`opcodes::RETIRED_OBJECT_BODIES`); mixin
+reference 1, `MIXIN_BUILTIN`, which named a builtin's mixin by builtin class
+tag, is retired too (`RETIRED_MIXIN_TAGS`).
 
 **A class record's header names its metaclass record** (object body tag 8,
 `OBJECT_METACLASS`): every class object's class is its metaclass (§3.2), so a
@@ -562,25 +582,24 @@ to its class record. Nothing else about a metaclass is written — its mixin,
 application, enclosing object and declaring class follow from its class
 ([object-model.md](object-model.md), "The image format") — and the decoder
 applies it over `Class` from its class's row (`rebuild_metaclasses`). The
-metaclass of a class that is no record — a builtin, a module's root class or
-one of its levels, or a class a platform path names — is named by class tag 4,
-`CLASS_METACLASS`, followed by that class's own class tag, which may be
-`CLASS_BUILTIN`, `CLASS_MODULE`, `CLASS_MODULE_LEVEL` or
-`CLASS_PLATFORM_PATH` and nothing else (`read_prebuilt_class`), so the nesting
-is one level deep. The encoder refuses a class record whose class object has no
-metaclass rather than write a header the decoder could not pair. A metaclass
+metaclass of a class that is no record — a shipped class or level — is
+named by its own shipped name, of kind metaclass or level metaclass, under
+`CLASS_SHIPPED` like any shipped class reference. The encoder refuses a class
+record whose class object has no metaclass rather than write a header the
+decoder could not pair. A metaclass
 record is a record like any other, sized and allocated as one placeholder, and
 the smallest record there is: 9 bytes for a class object of 80, about 8.9x,
 which with the decoder's own tables sets the bound a rejected load reaches
 in a release build, about 10.7x of the graph section's bytes; in a debug
 one the root list sets it, at 16x ([memory.md](memory.md), "The
-amplification bound of a rejected load"); a tag-named metaclass is no
+amplification bound of a rejected load"); a shipped metaclass is no
 record at all and allocates nothing.
 
 **Module section.** Which top-level modules the artifact carries
 (`image/modules.rs`): a `u32` count, equal to the mixin table's trees, then
 per module, in module order, its origin, its source text when the header
-sets `FLAG_HAS_SOURCE`, and its root section. **Module order** is the
+sets `FLAG_HAS_SOURCE`, and the `u32` object id of its root class's record
+in the graph. **Module order** is the
 application module (a project file's `main`) first, then a project file's
 modules in the order written, then the embedded `Manifest.ns` ("Packaging"
 below); a source file's program is its one module. The count is bounded by the bytes left before anything is
@@ -594,103 +613,58 @@ module or for none, as the header's one flag says, so the encoder refuses a
 set of modules of which only some carry theirs rather than invent an empty
 text.
 
-A module's **root section** is the class its root inherits from, as a
-builtin tag behind a presence flag that is always set, then the root's own
-`<:` levels, lowest first, each as its clause's position in that module's
-root row and the builtin that clause named. The root rule lets a root
-inherit only `Object` or `Value` and apply only `Value` over `Object`
-([object-model.md](object-model.md), "Mixin application", "The root rule"),
-so builtin tags are enough, and there is at most one level; a root the rule
-refuses is never written ("Verification" below). `load` rebuilds every
-module's root class and levels in module order
-(`modules::build_module_classes`), before the graph, so the graph names a
-module's root by the module's index (`CLASS_MODULE`, class tag 6, followed by
-a `u32`) and a level by module index and position (`CLASS_MODULE_LEVEL`,
-class tag 7, followed by two `u32`s) rather than as records. An index past
-the modules is `BadModuleReference`, a position past a module's levels
-`BadModuleLevel`. A module is named by its index and never by its name,
-which is why two modules may share one ("Packaging" below). The class tags 1
+A module's **root class is a record of the graph** like any class: a
+`MIXIN_ROW` class record applying the module's root row, with a metaclass
+record of its own, and the level its `<:` clause adds a `MIXIN_SHIPPED`
+record applying `Kernel Value`. The encoder walks every module's root class
+after the image's roots, so a root no value of the graph reaches still has
+its record, and a root the image's roots reach keeps the id that walk gives
+it; the module section names each by that id. Once the graph is decoded,
+the loader holds the record each id names to its module
+(`modules::module_root_classes`): an id past the object table is
+`BadObjectId`; a record that is no class applying the module's own root row
+as its outermost level -- a metaclass, a level, a class of another row, one
+with an enclosing object or a declaring class -- is
+`ModuleRootNotItsRecord`; a superclass chain the root rule does not build
+is `RootRule`. The root rule, as both sides check it
+(`modules::root_record_defect`, which the encoder and the decoder share, so
+the encoder never writes a root the loader refuses): a root row with no
+`<:` clause has `Kernel Object` or `Kernel Value` as its superclass, `Value
+new` included; a row with its one permitted clause has as its superclass
+the level that clause, index 0, added, applying `Kernel Value`'s mixin over
+`Kernel Object`; a row with more clauses is refused
+([object-model.md](object-model.md), "Mixin application", "The root
+rule"). A module is named by its index and never by its name, which is why
+two modules may share one ("Packaging" below). The class tags 1
 (`CLASS_USER_ROOT`) and 3 (`CLASS_ROOT_LEVEL`), which named *the* root class
-of an artifact that carried one module, are retired
-(`opcodes::RETIRED_CLASS_TAGS`). Rebuilding the modules in the order the
-program loaded them is also what keeps every identity hash the bootstrap
-draws the same as in the run that wrote the image.
+of an artifact that carried one module, 6 (`CLASS_MODULE`) and 7
+(`CLASS_MODULE_LEVEL`), which named a module's root and its levels by module
+index, and 4 (`CLASS_METACLASS`), which named their metaclasses, are retired
+(`opcodes::RETIRED_CLASS_TAGS`), with the per-module root section that
+described the root's superclass by builtin class tag: a stale image's
+reference meets an unknown tag. A second class record applying a module's
+root row, beside the one the module section names, is not refused
+([OPEN-WORK.md](../OPEN-WORK.md)).
 
-**Platform paths.** Immediately before the graph: a `u32` count, then per path
-a `u32` member count and that many symbol ids (`image::platform_paths`). A
-started image's section is empty: nothing before `main:args:` holds the
-platform or anything reached through it ("Packaging" below), so the section
-serves an image `image::snapshot` writes, and the image with heap state to
-come. A path is the list of public members sent from the platform, one unary
-send each. The encoder finds them with `platform_paths::discover`, which walks
-from the platform over, for every level of an object's class, each **public**
-slot's field — a lazy slot's included, skipped while `nil` — and each
-**public** nested class's cache slot, skipped while empty, and then over each
-**public class accessor** the object answers: a method the compiler
-recognized, in shipped source other than the kernel, as exactly
-`^outer <Root> <Nested>` naming a nested class of its module's root
-(`MixinMethod::class_accessor`, read by the image code alone — no fast path
-and no per-send check). For one, `discover` decides without running anything
-what the send would do — the public lookup must find the recognized method,
-its `outer <Root>` must reach a module root's shipped instance, and the
-lexical send of `<Nested>` there must find that root's nested class — and
-reads the root instance's cache slot for that class, skipped while empty. It
-records every **shipped object** it reaches — a class object whose own mixin
-is compiled from shipped source (`Mixin.shipped`, `Heap::class_is_shipped`),
-or an instance with slots of such a class — and descends into shipped
-instances only, never into a class object. The one definition,
-`platform_paths::is_shipped_object`, is what the encoder's refusals and the
-loader apply too, so no path is written that a loader must refuse.
-Breadth-first, visiting each object once, so an object's path is its shortest,
-and among equals the first in member order — superclass level first, within a
-level its slots and nested classes in declaration order, then the class
-accessors by selector: one world encodes to one byte sequence. A string or an
-array is no shipped instance even when its class is a builtin: it carries its
-own data, and the image writes it as a record. Only the paths the graph
-**uses** are written, in the order the graph first reaches them, numbered
-densely from 0; at most `MAX_PLATFORM_PATHS` (4096) of at most
-`MAX_PLATFORM_PATH_LENGTH` (32) members each. Today the platform is an
-instance of the nested class `Platform` of the shipped `PlatformFactory.ns`
-([core-library.md](core-library.md), "The platform"): its public slots are the
-lazy `transcript`, `collections`, `kernel` and `time`, and its class accessors
-`Platform`, `Transcript`, `KernelNamespace`, `Time` and `Stopwatch` name those
-classes of the module, once the module root's accessor for each has run.
-`time`'s own class accessor `Stopwatch` answers the class `Stopwatch` does, so
-the path `Stopwatch`, the shorter, is the one written for it. `collections`
-answers an instance of the shipped `CollectionsFactory.ns`'s facet
-`Collections`, whose own class accessors `Collections`, `List`, `Map`,
-`IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` name that
-module's seven classes the same way, so `collections Collections`,
-`collections List` and the rest are platform paths too, with the facet as
-their first member. The facet's `Collection` is no such accessor: it
-answers the kernel's `Collection`, a builtin class, which an image names by
-its builtin class tag. All twelve classes of the two modules are private
-to their root: a class accessor reaches
-them by a lexical send (§5.9), and `discover` looks the class up the same way
-(`dispatch::lexical_member`), so a private nested class is named by its
-accessor's path like a public one. Neither root instance is named by any path,
-and neither is ever written: nothing a program can name answers
-`PlatformFactory`'s root, and `CollectionsFactory`'s root is reached only
-lexically, from inside its own module, never through a slot a program can
-read. A second platform a program made with `platform class new` is an
-ordinary instance record of the class the path `Platform` names, and a second
-facet made with `platform collections class new` is one of the class the path
-`collections Collections` names. A `Stopwatch` is an object, not a value, and
-is written the same way, as a record of the class the path `Stopwatch` names
-with its readings; a started one reads a wrong time once loaded into another
-process ([core-library.md](core-library.md), "The platform").
-
-An object a path names is referenced as `VALUE_PLATFORM_PATH` (value tag 8), a
-class a path names as `CLASS_PLATFORM_PATH` (class tag 5), each followed by the
-`u32` index into the section; a path-named class counts as prebuilt, so
-`CLASS_METACLASS` may be followed by one. The encoder refuses a shipped object
-no path names instead of writing it: a class object compiled from shipped
-source that no builtin tag names, and a **module instance** — an instance of a
-shipped class whose class object has no enclosing object, such as the kernel
-instance — which holds the core library's state as the platform holds the
-mirror. A level a `<:` clause naming a builtin added applies that builtin's
-shipped mixin but belongs to the user class, and stays a `MIXIN_BUILTIN`
-record.
+**Shipped names.** Immediately before the graph: a `u32` count, then per
+name the module's symbol id, the declaration's symbol id -- for a module's
+root, the module's own name -- and a kind byte: 0 the module instance, 1
+the class, 2 its metaclass, 3 a level, followed by the `u32` index of the
+clause that adds it, 4 that level's metaclass, followed the same way
+(`image::shipped_names`). The encoder lists each name the graph and its
+closing hash table use once, in the order they first use each, so one
+world encodes to one byte sequence; a reference in the graph is its tag and
+a `u32` index into the list. The section's reader refuses more than
+`MAX_SHIPPED_NAMES` (65,536) entries (`TooManyShippedNames`), a count past
+the bytes left at the 9 bytes of the smallest entry, a symbol id past the
+symbol table (`BadSymbolId`), a kind byte no kind has (`InvalidTag`) and a
+clause index at or past `CLAUSE_INDEX_LIMIT`, which no class object can
+number (`UnknownShippedName`); it asks no world, so `inspect` reads the
+section the same way. How the loader resolves the names, and what a name
+may stand for where, is "Shipped names" below. A started image names only
+the kernel's classes and levels, never a module instance; an image
+`image::snapshot` writes names whatever its graph reaches of the shipped
+world, the module instances only in a frame.
 
 **Object table.** Every heap object reachable from the roots — instances,
 strings, symbols, arrays, closures, class and metaclass records, reified
@@ -708,11 +682,12 @@ body tag 4 is retired (`opcodes::RETIRED_OBJECT_BODIES`) and the record is 6.
 **Frames are object records.** A reified frame is an object of the frame
 format, an instance of the kernel-private `Activation`
 ([object-model.md](object-model.md), "The object layout"), and it is written
-as one: `OBJECT_FRAME` (body tag 10) under a header whose class tag is
-`Activation`'s builtin tag, 23 — the one place an image may name that class
-(`decode::read_referenced_builtin_class`); a frame record under any other
-header is `FrameRecordUnderAnotherClass`, and `Activation`'s header on any
-other body is refused as the class tag no program may name. The body is, in
+as one: `OBJECT_FRAME` (body tag 10) under a header that names
+`Kernel Activation` by its shipped name (`CLASS_SHIPPED`) — the one record
+an image may give that class; a frame record under any other header is
+`FrameRecordUnderAnotherClass`, and `Kernel Activation` as the header of any
+other record is `ShippedNameNotAllowed`, as it is anywhere but a record's
+class and a frame's class ("What may be named where" below). The body is, in
 order: the frame's kind tag (`FRAME_*`) and that kind's payload — a method
 frame's selector symbol id, a closure frame's closure object id, nothing for
 a top-level frame, a class tag for the four class-carrying kinds — a `u32`
@@ -741,11 +716,13 @@ retired with it (`RETIRED_OBJECT_BODIES` is 4, 5 and 9; "Next free number:
 record's object must exist before any is filled. `decode_graph_section`
 therefore reads the object table twice. The first pass (`Sizing`) reads
 every header and body exactly as the second will and stores nothing: values
-are parsed and dropped, ids range-checked against the count, prebuilt class
-tags, code ids, mixin rows, clause indices and symbol ids resolved, a symbol
+are parsed and dropped, ids range-checked against the count, shipped-name
+indices, code ids, mixin rows, clause indices and symbol ids resolved, each
+shipped name held to the position it stands in, a symbol
 record naming a symbol-table entry already named refused (`DuplicateSymbol`),
-and a `FutureImplementation` record of a field count other than two refused
-(`FutureRecord`); each record yields its object's size, read from its own
+a `FutureImplementation` record of a field count other than two refused
+(`FutureRecord`), and a record of a shipped class that is no builtin
+refused unless it is an instance record (`ShippedInstanceBody`); each record yields its object's size, read from its own
 bytes — the kind comes first in a frame record and the register count is on
 the wire, so no size depends on another record. If the objects would take
 more than eight words a byte of the input left, the load is refused
@@ -772,30 +749,26 @@ its 22 bits, which a hash may ([object-model.md](object-model.md), "The
 identity hash is 22 bits wide"). A record's 0 means "not yet assigned" and is
 preserved the same way.
 
-**The exception is an object the image names by tag rather than by record**: a
-builtin class, a module's root class or one of its levels, the `platform`
-singleton, an object a used platform path names, and the metaclass of a
-builtin, of a module's root class or level or of a path-named class
-(`encode::is_class_tag`, and the platform and path checks beside it in
-`GraphTable::visit_value`). None of them is a record, so nothing about a
-record could carry its hash. Instead the graph section closes, after its
-roots, with a table of exactly the tag-named objects whose stored hash is not
-0 — the builtin classes in wire-tag order, then the module roots in module
-order (`HASHED_MODULE_CLASS`, 5, followed by the module's index), then their
-levels, module by module and lowest first (`HASHED_MODULE_LEVEL`, 6, followed
-by the module's index and the level's position), then `platform`, then the
-path-named objects in section order (`HASHED_PLATFORM_PATH` followed by the
-path's index), then the metaclasses (`HASHED_METACLASS` followed by the
-class's reference) of the builtins in wire-tag order, of the module roots,
-of their levels and of the path-named classes in section order — each entry
-a tag from the `HASHED_*` family in `opcodes.rs` naming the object, and its
-hash (`encode::encode_tag_named_hashes`). An entry naming a module or level
-past the ones the module section rebuilt is `BadModuleReference` or
-`BadModuleLevel` (`a_tag_named_hash_past_the_modules_is_refused`). Hash tag
-1 (`HASHED_ROOT_CLASS`), which named the one root class, is retired
-(`RETIRED_HASHED_TAGS`). A builtin
-class a path names keeps only its builtin entry, since the loader refuses one
-object listed twice. `load` restores each hash onto the object
+**The exception is an object the image names rather than carries**: an
+object of the shipped world -- a module instance, a shipped class, its
+metaclass, a level and a level's metaclass. None of them is a record, so
+nothing about a record could carry its hash. Instead the graph section
+closes, after its roots, with a table of exactly the shipped objects whose
+stored hash is not 0, in the shipped world's own order -- per module, the
+instance, the root class, its metaclass and levels, then every class the
+root declares in declaration order, each with its metaclass and levels --
+each entry `HASHED_SHIPPED` (hash tag 7), the `u32` index of the object's
+name in the shipped-name section, and its hash
+(`encode::encode_tag_named_hashes`). Every object of the shipped world is
+considered, not only those the graph reaches, since a program can keep
+`Integer hash` in a slot without keeping `Integer`; a name the graph did
+not use is added to the section for its entry. An index past the section
+is `BadShippedName` (`a_tag_named_hash_past_the_shipped_names_is_refused`).
+Every other hash tag is retired (`RETIRED_HASHED_TAGS`, 0 to 6): the
+builtin classes', the platform's and the platform paths' entries, which a
+shipped name replaced, and the module roots', their levels' and their
+metaclasses', whose hashes travel in the headers of their records now.
+`load` restores each hash onto the object
 the bootstrap built (`decode::decode_tag_named_hashes`), and refuses a 0, a
 duplicate entry or a hash of 2^22 or more (`IdentityHashTooWide`) like any
 other malformed hash. The identity-hash counter is then advanced past the
@@ -804,26 +777,26 @@ afterward does not collide with either before the counter wraps.
 `inspect` reads the table as part of the graph section
 (`Report::graph_tag_named_hashes`).
 
-**A module's `<:` levels have entries of their own**, although no program
-can obtain one as a value today — there is no reflective `superclass` — and
-the one thing that names a level in a graph is a frame's `current_class`,
-when a method of the builtin the clause named, a kernel method, runs on an
-instance of the module's root class; that is why `CLASS_MODULE_LEVEL` exists
-rather than a refusal. The decoder rebuilds the levels with their root
-class, so without an entry a hash one was given would be drawn afresh after
-a load (`a_module_levels_own_hash_survives_an_image`,
-`crates/ns-runtime/tests/image.rs`).
+**A module's `<:` levels are records**, whose hashes travel in their headers,
+although no program can obtain one as a value today — there is no
+reflective `superclass` — and the one thing that names a level in a graph
+besides its class's superclass is a frame's `current_class`, when a method
+of the shipped class the clause named, a kernel method, runs on an instance
+of the module's root class (`a_module_levels_own_hash_survives_an_image`,
+`crates/ns-runtime/tests/image.rs`). A shipped declaration's own levels, the
+level `Value` the `Kernel` root's clause adds among them, are shipped names
+and have hash entries like every shipped object.
 
 That is what Cog and Primordial Soup get without trying: their images carry
 every object, classes included — a Spur class's identity hash is even its index
 in the class table (`ensureBehaviorHash`, `enterIntoClassTable`) — so no hash
 is ever rebuilt from anything. ns-next's bootstrap rebuilds these objects
 instead, so the image has to carry what the program observed of them. That
-stays true when the core library moves into Newspeak
-([core-library.md](core-library.md)): the builtins stay out of the image
-("How upstream compares" below), so they stay tag-named. The alternative, a
-deterministic hash for each tag-named object from a reserved range, was
-rejected: every tag-named object added later would need a reserved number, and
+stays true with the core library in Newspeak
+([core-library.md](core-library.md)): the shipped world stays out of the
+image ("How upstream compares" below), so it stays named. The alternative, a
+deterministic hash for each named object from a reserved range, was
+rejected: every shipped object added later would need a reserved number, and
 the hash would no longer be the one the program was actually given, which is
 what "verbatim" promises for every other object.
 `a_hash_given_to_a_tag_named_object_survives_build_and_load` in
@@ -936,10 +909,9 @@ and a position that must exist (`BadMixinId`, `BadMixinApplicationClause`) and
 fit the 23 bits a class object's packed applied clause gives it
 (`ClauseIndexTooLarge`, at 2^23 or more, the limit the resolver holds a
 source to; [object-model.md](object-model.md), "The object layout"), and
-each module's root section lists its root's levels at rising positions within
-the clauses of that module's own root row -- never another module's
-(`a_root_section_clause_is_checked_against_its_own_modules_row`) -- which
-also bounds their count before anything is reserved for it.
+a module's root class record is held to that module's own root row and to
+the root rule -- never another module's (`a_module_root_is_held_to_its_own_modules_row`;
+"Module section" above).
 Levels whose superclass links close on themselves have no order to be rebuilt
 in and are refused like any other class records that do (`SuperclassCycle`).
 What is not checked is that a level sits directly above a class of its applying
@@ -973,13 +945,21 @@ never be instantiated, so an artifact of it could only fail, and refusing it
 needs no wire field. From source a root defect is a resolve error, so `run`
 and `build` refuse such a project alike, before anything runs, whether or not
 the application would instantiate the module; the encoder's refusal guards a
-`ResolvedModule` a host assembled past `resolve`. The
-root-section reader (`decode_root_section`) refuses what the encoder cannot
-write: a section naming no superclass at all, as `RootWithoutSuperclass`; a
-superclass tag other than `Object`'s or `Value`'s, and a level naming
-anything but `Value`, as `InvalidTag` ("invalid builtin class a module's root
-may inherit tag *n*", "… may apply tag *n*"); a second level, or a level over
-anything but `Object`, as `BadMixinApplicationClause`. So a crafted artifact
+`ResolvedModule` a host assembled past `resolve`. Before the walk the
+encoder also holds each module's root class to `modules::root_record_defect`
+("root object is not a class", "… is a metaclass, a level, a class applying
+another declaration's mixin, or a class with an enclosing object or a
+declaring class, such as a nested class", "… does not inherit what the root
+rule allows"), and refuses a root
+that is shipped. The loader holds the record the module section names to the
+same check and refuses what the encoder cannot write: a record that is not
+the module's own root class, as `ModuleRootNotItsRecord`, and a superclass
+chain the rule does not build -- a superclass other than `Kernel Object` or
+`Kernel Value`, a level applying anything but `Kernel Value`, a level over
+anything but `Kernel Object`, a level its root's clause did not add -- as
+`RootRule`, each naming its module
+(`a_root_record_over_kernel_array_breaks_the_root_rule`,
+`the_root_rule_holds_a_root_classs_superclass_chain`). So a crafted artifact
 cannot bring back a root the rule refuses, and no decoded mixin carries a
 root defect.
 
@@ -1077,106 +1057,96 @@ holds, against §5.1.6.
 capability: whoever holds it can run any leaf, and the bootstrap hands it to
 the shipped core-library modules alone, `Kernel.ns` and `PlatformFactory.ns`
 ([core-library.md](core-library.md), "The VM mirror is the whole Rust
-boundary"). Its class has builtin class tag **14** (`BuiltinClass::VmMirror`,
-appended to `BuiltinClass::ALL` after the retired 13), which
-`builtin_class_from_tag` knows so that the closing table of tag-named hashes
-can name it as it names every builtin. **Everywhere the graph names a class —
-a class reference, the class behind a `CLASS_METACLASS`, a root class's
-superclass, the builtin a `<:` clause named — the decoder reads the tag
-through `read_referenced_builtin_class`, which refuses 14** as an invalid tag
-(`read_program_builtin_class`, which reads a superclass or a `<:` clause's
-builtin, calls it first): an artifact that could name the mirror's class could
-instantiate a second mirror or reach the one there is, and so claim every
-primitive, which no source module can
-(`a_level_applying_a_builtin_no_program_may_name_is_refused` and
-`a_root_level_naming_a_clause_out_of_place_is_refused`, whose last case is a
-root level naming tag 14, in `crates/ns-runtime/tests/image.rs`). The encoder
-refuses the other direction: an image whose graph reaches the mirror object is
-not written at all, since it would hand the capability to whatever loaded it
-(`a_snapshot_that_reaches_the_mirror_is_refused`, `interpreter/mirror.rs`),
-and neither is one whose graph reaches the mirror's class, `Top`,
-`Activation`, `FutureImplementation` or the metaclass of one of them
-(`encode::unnameable_class`), which the decoder would refuse. Neither can
-happen to a program built from source, which cannot obtain the mirror; both
-are there for the day something could.
+boundary"). **Its class has no declaration in any shipped module, and so no
+shipped name**: no byte sequence can name it, as a value, a superclass, a
+record's class or anywhere else, so an artifact cannot instantiate a second
+mirror or reach the one there is and claim every primitive, which no source
+module can. The encoder refuses the other direction: an image whose graph
+reaches the mirror object is not written at all, since it would hand the
+capability to whatever loaded it (`a_snapshot_that_reaches_the_mirror_is_refused`,
+`interpreter/mirror.rs`) -- that refusal is checked ahead of every other --
+and neither is one whose graph reaches the mirror's class or its metaclass
+("image encoding refuses the VM mirror's class: it has no declaration, so
+no shipped name names it"). Neither can happen to a program built from
+source, which cannot obtain the mirror; both are there for the day
+something could.
 
-**`Top` is refused the same way, for the same kind of reason.** The three
-classes the object model gained carry tags **15** (`Top`), **16** (`Value`)
-and **17** (`Number`), appended after the mirror's 14 rather than slotted in
-beside their siblings, because a tag is assigned once and never renumbered
-("A tag is assigned once and never changes" above) — so `BuiltinClass::ALL`
-is a tag order and not a superclass order. `Value` and `Number` are ordinary nameable classes:
-a program may write `Value` or `Number` in a superclass clause, so an image
-may carry their tags. `Top` may not. §3.2 lets only `Object` have `Top` as
-its superclass, and `Kernel.ns` enforces that by making `Top` the one
-private class it declares, so no source module can name it —
-`read_referenced_builtin_class` refuses tag 15 exactly as it refuses 14, so no
-artifact can name what no source can
-(`a_load_builtin_class_naming_top_is_refused`,
-`crates/ns-runtime/tests/image.rs`). An artifact naming `Top` would
-otherwise build a class outside §3.2's hierarchy that inherits nothing at
-all, not even `doesNotUnderstand:`.
+**Every other shipped class is held to what may be named where** ("Shipped
+names" below), by the encoder and the decoder alike: the decoder refuses a
+name in a position the rule does not allow as `ShippedNameNotAllowed`, and
+the encoder refuses to write one ("image encoding refuses *name* as
+*position*: no program may name it there, and the loader refuses an image
+that does"; `a_shipped_name_in_a_forbidden_position_is_refused`,
+`a_graph_reaching_an_unnameable_class_is_refused`). What the rule keeps out,
+and why:
 
-**`Behavior`, `Class` and `Metaclass` carry tags 20, 21 and 22**, after the
-retired 18 and 19. `read_program_builtin_class` refuses them as the builtin a
-`<:` level applies (`MIXIN_BUILTIN`) and as a root's superclass or level,
-since `Object` declares no accessor for any of them and no source module can
-name them — and a class over one of them could never be instantiated. As a
-class reference in the graph they are accepted, since a program reaches
-`Metaclass` as `3 class class class` and may keep it in a slot; a class
-record's superclass is such a reference, so a crafted class record over
-`Class` decodes, and its application carries the refusal to instantiate a
-class object like any class below `Behavior`. An object record that is no
-class object but whose class refuses instantiation as a class object — an
-instance of `Class`, `Metaclass` or a metaclass — is `InstanceOfAClassClass`,
-and a class record whose row is some row's class side is
-`ClassRecordAppliesAClassSide`: no source makes either.
+- **`Top`** is no value, no superclass and no record's class. §3.2 lets only
+  `Object` have `Top` as its superclass, and `Kernel.ns` enforces that by
+  making `Top` a private class with no accessor, so no source module can name
+  it; an artifact naming it would otherwise build a class outside §3.2's
+  hierarchy that inherits nothing at all, not even `doesNotUnderstand:`, or
+  an object of it (`a_record_of_top_is_refused`). It may stand as a frame's
+  class, as every shipped class may.
+- **`Behavior`, `Class` and `Metaclass`** are no superclass and no mixin a
+  level applies: a class object is made only by evaluating a declaration, so
+  a class over one of them could never be instantiated. As a value they are
+  accepted, since a program reaches `Metaclass` as `3 class class class` and
+  may keep it in a slot. An object record that is no class object but whose
+  class refuses instantiation as a class object — an instance of `Class`,
+  `Metaclass` or a metaclass — is `InstanceOfAClassClass`, and a class record
+  whose row is some row's class side is `ClassRecordAppliesAClassSide`: no
+  source makes either.
+- **A module's root and its instance.** A shipped module's root class, its
+  metaclass and the levels its clause adds are a frame's class and nothing
+  else, and a module instance is a frame record's receiver or register and
+  nothing else (`VALUE_SHIPPED_MODULE`): a module instance holds the core
+  library's state, the kernel's the mirror, and no program reaches one
+  (`a_module_instance_outside_a_frame_is_refused`,
+  `an_objects_class_naming_a_module_root_or_instance_is_refused`).
 
-**A frame record is the one place an image names `Activation`.** The kernel's
-activation object is the frame object itself, an instance of the
-kernel-private `Activation` class (builtin tag **23**), written as an
-`OBJECT_FRAME` record ("Frames are object records" above). Its header is
-`CLASS_BUILTIN` followed by tag 23, and that header is the one place an image
-may name `Activation`: `decode_object_header` accepts it there, and header and
-body are held to each other both ways — a frame record under any other class
-is `FrameRecordUnderAnotherClass`, and the `Activation` header on any other
-record is refused as an invalid tag — and `read_referenced_builtin_class`
-refuses tag 23 everywhere else, as a value, a superclass, a `<:` clause's
-builtin and behind `CLASS_METACLASS`, exactly as it refuses `Top`'s 15. An
-activation reads other frames and unwinds stacks, a capability Newspeak hands
-out only through mirrors, so no program may name its class; the encoder never
-walks a frame object's header as a reference (`GraphTable::visit_value`), so
-writing frames never trips the refusal of a graph that reaches the class
-itself. A record under the retired activation body tag 9 is an unknown tag
+**A frame record is the one place an image names `Activation` as a record's
+class.** The kernel's activation object is the frame object itself, an
+instance of the kernel-private `Activation` class, written as an
+`OBJECT_FRAME` record ("Frames are object records" above), its header
+`CLASS_SHIPPED` naming `Kernel Activation`. Header and body are held to each
+other both ways: a frame record under any other class is
+`FrameRecordUnderAnotherClass`, and `Kernel Activation` as the header of any
+other record is `ShippedNameNotAllowed` ("a record's class",
+`an_activation_header_on_another_record_is_refused`); as a value, a
+superclass or a level's mixin it is refused as `Top` is
+(`activation_named_anywhere_else_is_refused`). An activation reads other
+frames and unwinds stacks, a capability Newspeak hands out only through
+mirrors, so no program may name its class. A record under the retired
+activation body tag 9 is an unknown tag
 (`a_record_under_the_retired_activation_tag_is_refused`).
 
-**The other classes the exceptions added are ordinary nameable builtins.**
-`Exception`, `Error`, `MessageNotUnderstood`, `Message` and `Halt` carry
-tags **24** to **28**, in that order, after `Activation`'s 23
-([core-library.md](core-library.md), "Exceptions"). A program reaches them
-through `platform kernel` and may subclass them, so an image may name any
-of the five wherever it names a class: an exception a program made is an
-ordinary instance record.
+**`NonBooleanReceiver` is private and no capability, and the VM hands it
+out.** No source names it and no public class accessor answers it, but the
+VM signals its instances into a program, which catches one and reaches its
+class as `error class`; a program that runs must also build, so the rule
+lets a class the VM signals as a VM error (`ErrorClass::is_signalled`, every
+class of `types::ErrorClass`) stand as a value and a superclass, private or
+not. A caught instance is an ordinary instance record whose class the image
+names as its header, and its class object a value the graph may hold
+(`a_caught_non_boolean_receivers_class_round_trips_through_a_package`).
 
 **Futures in a graph: a resolved future is its value, an unresolved one a
-record under tag 30.** `FutureImplementation` carries builtin tag **30**,
-the kernel-private pull future of §6.3.2's simultaneous slots and of
-`Future computing:` ([object-model.md](object-model.md), "Simultaneous
-slots"). No
-program names it, so `read_referenced_builtin_class` refuses tag 30 wherever
-the graph names a class — as a value, a superclass, a `<:` clause's builtin
-and behind `CLASS_METACLASS` — and the encoder refuses a graph that reaches
-the class or its metaclass (`encode::unnameable_class`), exactly as for
-`Activation`'s 23. A future *object* is written two ways. A resolved one is
+record of `Kernel FutureImplementation`.** `FutureImplementation` is the
+kernel-private pull future of §6.3.2's simultaneous slots and of `Future
+computing:` ([object-model.md](object-model.md), "Simultaneous slots"). No
+program names it, so the rule allows it as a value, a superclass or a
+level's mixin nowhere, and the encoder refuses a graph that reaches the class
+or its metaclass, exactly as for `Activation`
+(`a_graph_naming_the_future_implementation_as_a_class_is_refused`). A future
+*object* is written two ways. A resolved one is
 never a record: the graph walk and the value encoder both see through it
 (`future::seen_through`), so every reference to it is written as a reference
 to its value, and a load gives back one object where the program saw one —
 the value a collection would have put in its place anyway
 ([memory.md](memory.md)). An unresolved one is an ordinary instance record
-(`OBJECT_INSTANCE`) whose header is `CLASS_BUILTIN` followed by tag 30, the
+(`OBJECT_INSTANCE`) whose header names `Kernel FutureImplementation`, the
 one other header besides an activation record's that names a
-kernel-private class; the walk does not visit that header as a reference, as
-it does not an activation's. Its two fields are its computation -- a
+kernel-private class. Its two fields are its computation -- a
 block, or any other value, `Future computing:`'s argument as it was handed
 over -- and the state 0. A future is *resolving* only while its
 computation runs, and the image writer refuses a world with a running
@@ -1186,8 +1156,7 @@ in the first field (`future::fields_for_an_image`), which is what an
 abandonment would make of it — a load starts no computation, so nothing
 could finish resolving it.
 
-The decoder accepts tag 30 in an object's header alone
-(`decode_object_header`) and holds the record to what the encoder writes: an
+The decoder holds a record under that header to what the encoder writes: an
 instance body of exactly two fields whose second is the state 0; the
 first may be any value. Anything else under that header — another body,
 another field count, the state 1 or 2 or one that is none of the three —
@@ -1216,96 +1185,45 @@ future exists runs in the loaded world
 `goldens/language/slot/simultaneous/spec_6_3_2_a_data_cycle_survives_an_image.ns`, whose build/load
 round trip carries a data cycle through resolved futures).
 
-**`LargeInteger` carries builtin tag 31**. A
-program never names the class -- `Object` declares no accessor for it --
-but reaches it as an integer's class (`(9223372036854775807 + 1) class`)
-and may keep it in a slot or subclass it, so an image may name tag 31
-wherever it names a class. A `LargeInteger` itself is never a record
-("A `LargeInteger` is a value on the wire" above); an instance of the class
-that holds no digits, which only `LargeInteger new` makes, is an ordinary
-instance record.
+**The other public kernel classes are ordinary nameable classes.**
+`Exception`, `Error`, `MessageNotUnderstood`, `Message`, `Halt`,
+`ArgumentError`, `CannotReturn`, `CannotInstantiate`, `Proxy`, the public
+`Future`, `Collection`, `Value` and `Number` may stand wherever a class
+may; a program reaches them through `platform kernel` or `Object`'s
+accessors and may subclass them, and an instance of a program's subclass is
+an ordinary instance record. **`LargeInteger`** is public in `Kernel.ns`
+although `Object` declares no accessor for it: a program reaches it as an
+integer's class (`(9223372036854775807 + 1) class`) and may keep it in a slot
+or subclass it. A `LargeInteger` itself is never a record ("A `LargeInteger`
+is a value on the wire" above); an instance of the class that holds no
+digits, which only `LargeInteger new` makes, is an ordinary instance record.
+**`Fraction`** is reached through `Object`'s accessor; a fraction itself is
+never a record ("A `Fraction` is a value on the wire too" above), and the
+one record its header may carry is `Fraction new`'s, an instance of no
+field: any other is `DecodeError::FractionRecord`, since a record of fields
+would be a fraction whose normal form nothing checked
+(`a_fraction_record_with_fields_is_refused`).
 
-**The error classes that carry a subject take tags 32 to 35**:
-`ArgumentError` **32**, `CannotReturn` **33**, `NonBooleanReceiver` **34**,
-`CannotInstantiate` **35** ([core-library.md](core-library.md),
-"Exceptions"). A caught one is an ordinary instance record, and an image
-may name any of the four wherever it names a class. Three are nameable in
-source like the other exception classes; `NonBooleanReceiver` is
-kernel-private, so no source names it, but a program reaches the class
-through a caught instance's `class`, and so an image names it as that
-record's class or as a class object the graph holds. Unlike `Activation`'s
-and `FutureImplementation`'s, its tag is no capability to refuse.
+**A builtin is a fact of Rust's, not of the wire.** No part of an image
+names a class by its position in `BuiltinClass::ALL`: the builtin class tags
+that once did -- a numbering of their own, 0 to 39 -- are retired as a
+whole, with class tag 0 (`CLASS_BUILTIN`), mixin reference 1
+(`MIXIN_BUILTIN`) and hash tag 0 (`HASHED_BUILTIN_CLASS`), which carried
+them (`opcodes::RETIRED_CLASS_TAGS`). Since a builtin is named by its
+declaration, removing or adding one retires nothing on the wire; the
+header's fingerprint, which covers the names in `BuiltinClass::ALL`, keeps
+a stale image from loading against the new binary
+(`an_image_of_another_shipped_world_is_refused`).
 
-**`Proxy` takes tag 36 and the public `Future` 37**
-([object-model.md](object-model.md), "Simultaneous slots"). Both are
-nameable builtins an image may name wherever it names a class; an
-instance of a program's `Proxy` subclass is an ordinary instance record,
-and a program's future is a `FutureImplementation`, under tag 30 as above.
-
-**`Collection` takes tag 38** ([core-library.md](core-library.md), "What
-exists"). A program names it through `platform kernel Collection` and
-subclasses it, so an image may name it wherever it names a class; an
-instance of a program's subclass is an ordinary instance record.
-
-**`Fraction` takes tag 39** ([core-library.md](core-library.md), "The
-numeric tower"). A program names it through `Object`'s accessor `Fraction`, so
-an image may name it wherever it names a class; a fraction itself is never
-a record ("A `Fraction` is a value on the wire too" above), and the one
-record its header may carry is `Fraction new`'s, an instance of no field:
-any other is `DecodeError::FractionRecord`, since a record of fields would
-be a fraction whose normal form nothing checked
-(`a_fraction_record_with_fields_is_refused`). A header that names it by its
-platform path instead is held to its layout of no field as every class a
-path names is (`DecodeError::PlatformInstanceFieldCount`).
-
-**Retired builtin class tags: 8, 10, 13, 18, 19 and 29.** 8 was `Character`;
-10 was `OrderedCollection`, replaced by `platform collections List`, Newspeak
-in the shipped `CollectionsFactory.ns`
-([core-library.md](core-library.md), "The collections module (plan 2)");
-13, 18, 19 and 29 were `Platform`, `Transcript`, `Collections` and
-`KernelNamespace`, which moved into a shipped module, now `PlatformFactory.ns`
-([core-library.md](core-library.md), "The platform"). An image names the
-platform, its members and their classes by their platform paths instead
-(`transcript`, `Transcript`, `kernel`, ...), and a stale image's reference
-to a retired tag is refused as an unknown builtin
-(`opcodes::RETIRED_BUILTIN_CLASS_TAGS`).
-
-**A platform path is resolved before the graph, and only looked up while it
-decodes.** `load` runs in three phases. The first decodes everything up to and
-including the platform path section and roots every module's root class and levels.
-The section's reader refuses what a loader cannot follow before anything is
-sent: more than `MAX_PLATFORM_PATHS` paths (`TooManyPlatformPaths`), a path of
-no members or more than `MAX_PLATFORM_PATH_LENGTH` (`PlatformPathLength`), a
-member that is no symbol id (`BadSymbolId`) and one that is no unary selector
-(`PlatformPathMemberNotUnary`). The second, outside any entry, sends each
-path's members to the loading interpreter's platform with `Interpreter::send`.
-Each step must be one `discover` could have taken — a public slot's getter, a
-lazy slot's included, a public nested class's accessor, or a public class
-accessor of the shipped instance reached so far, found by the same
-enumeration of its members (`platform_paths::is_path_step`) — and is checked
-before it is sent, then
-sent as an ordinary public send. So a crafted `transcript newLine` is refused
-before anything prints, rather than run 131,072 times while the image is
-read. The image is refused, naming the path, when a step is none of these,
-when a send fails, or when the final answer is no shipped object
-(`platform_paths::is_shipped_object`). The third decodes the graph against the answers
-(`DecodeContext::platform_paths`), so the decoder still runs no code; an index
-past the section is `BadPlatformPath`, and a `CLASS_PLATFORM_PATH` whose
-object is no class is `PlatformPathNotAClass`. A crafted image can make the
-second phase read public slots, nested classes and class accessors of
-shipped objects, and so run their lazy initializers, the class accessors'
-one send and superclass clauses; it can run no other method. A crafted
-`collections List` decodes: `List` is a class accessor step of the facet,
-exactly `^outer CollectionsFactory List`. A crafted `collections
-newCollections` is refused instead: `newCollections` is the collections
-factory's own public member, never a step of the facet's shipped instance, so
-no enumeration of the facet's members finds it.
-
-**An instance of a path-named class carries exactly that class's layout.** The
-code and the layout of a shipped class come from the loading binary, not from
-the image, so an `OBJECT_INSTANCE` record whose header is a
-`CLASS_PLATFORM_PATH` must carry exactly the class's `slot_count` fields, or
-the image is refused (`PlatformInstanceFieldCount`).
+**A record of a shipped class carries exactly that class's layout.** The
+code and the layout of a shipped class that is no builtin -- a `List`, a
+`Stopwatch`, the platform -- come from the loading binary, not from the
+image, so a record whose header names one must be an instance record
+(`ShippedInstanceBody` otherwise, refused by the first pass before anything
+is allocated, `a_record_of_a_shipped_class_with_another_body_is_refused`)
+carrying exactly the class's slot count of fields
+(`ShippedInstanceFieldCount`, `a_record_of_a_shipped_class_carries_exactly_its_layout`).
+A builtin's record is held to its own format instead, as above.
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
@@ -1327,10 +1245,13 @@ are not reachable through `disasm` of the artifact (`inspect --full` shows
 them).
 
 `ns-next-analyzer inspect <artifact>` prints the file itself. Its default is a table of
-contents — header flags, section offsets, the symbol table, **the code table
-with every body named**, the mixin table, and the module section, each
-module's origin, whether it carries source and its root section — and
-`--full` prints everything:
+contents — header flags and the shipped world's fingerprint, section
+offsets, the symbol table, **the code table with every body named**, the
+mixin table, the module section, each module's origin, whether it carries
+source and its root's object id, and the count of shipped names — and
+`--full` prints everything, the shipped names among it, each as
+`ShippedName::describe` spells it (`Kernel Array`, `Kernel Kernel level 0`,
+`CollectionsFactory instance`):
 the mixin rows expanded to slot names and per-body code ids, then every body
 disassembled. The intent is `javap -v`'s: an artifact should be followable end
 to end from the text, without opening the file again. The default stays brief
@@ -1345,17 +1266,17 @@ over prints as `(unnamed)`, which means the code table and the mixin table
 disagree and is worth seeing rather than hiding.
 
 **An image's object graph is read, not rebuilt.** `decode_graph_section`
-materializes objects and resolves class tags against live builtins, so it needs
+materializes objects and resolves shipped names against a live shipped world, so it needs
 an `Interpreter`; a viewer must not bootstrap one, any more than `javap`
 instantiates a class to print it. `inspect` therefore walks the same bytes and
-reports each record: an object's class tag, identity hash and slot values, a
+reports each record: an object's class reference, identity hash and slot values, a
 frame record's kind, `program_counter`, `uncontinuable`, receiver, sender,
 home, current class and registers (`class Activation, hash H, frame <kind>,
 pc P, …, registers [..]`), and the roots, and a started image's one root is
 the application. Nothing else shows
 the graph. A module count that disagrees with the mixin table's trees is
-refused, as `load` refuses it, rather than listed past: which tree a root
-section is read against depends on the count, so a report past it would
+refused, as `load` refuses it, rather than listed past: which tree a
+module's root is held to depends on the count, so a report past it would
 describe modules that are not there.
 
 Being a second reader over one layout is a drift risk, taken deliberately and
@@ -1378,7 +1299,8 @@ asked for the debug variant: the one tool that prints bytecode would
 otherwise require the thing the artifact was built to do without. It also
 makes checkable against the artifact itself what could otherwise be
 verified only by reading the encoder -- that a started image holds no
-platform and names no platform path.
+platform, no module instance and names nothing of the shipped world but
+the kernel.
 
 **One-way only. There is no text format that can be loaded back.** That would
 be a second encoder and decoder pair to keep in step with the binary one — the
@@ -1627,13 +1549,16 @@ time (`goldens/tool/manifest/a_name_the_manifest_does_not_hold_is_not_understood
 **What `build` writes.** `image::package` takes the modules in module order
 and the application, and writes an image whose graph has the application as
 its one root and whose header sets `FLAG_START`. No platform exists for the
-application yet, so none is named: the encoder is handed `nil` as the
-platform, discovers no platform path, and a graph that reaches the platform
-or anything shipped meets the encoder's refusal of a shipped object no path
-names (`package_refuses_an_application_that_reaches_the_platform`,
-`crates/ns-runtime/tests/image.rs`). An application that reached the
-platform could only have been handed it, and nothing hands one out before
-`main:args:`. `--debug-source` stores every module's source text. An error
+application yet, and before `main:args:` a program reaches nothing of the
+shipped world but the kernel, so a graph naming anything of
+`PlatformFactory` or `CollectionsFactory` is refused ("image encoding
+refuses PlatformFactory Platform in a started application: nothing before
+main:args: reaches it"; `package_refuses_an_application_that_reaches_the_platform`,
+`crates/ns-runtime/tests/image.rs`). So is a graph naming a module's
+instance, the kernel's included, which no program reaches. The loader
+refuses such a started image too ("Shipped names" below). An application
+that reached the platform could only have been handed it, and nothing hands
+one out before `main:args:`. `--debug-source` stores every module's source text. An error
 raised while assembling -- a refused factory, a resolve error, an
 initializer that raises -- fails the build with the status and report `run`
 gives the same error, so a golden whose assembly fails round-trips as that
@@ -1684,8 +1609,8 @@ two modules draw the same identity hashes under `run` and `load`
 (`crates/ns-cli/tests/run.rs`, and `project.rs`'s own tests for the rules
 and the paths); the schema and the reader in agreement
 (`crates/ns-cli/tests/project_schema.rs`);
-and mutation and truncation tests for the module section, the module class
-and hash tags, `FLAG_START` and the retired tags and flag
+and mutation and truncation tests for the module section, the shipped-name
+section, `FLAG_START`, the fingerprint and the retired tags and flag
 (`crates/ns-runtime/tests/image.rs`).
 
 ## The image under generations
@@ -1700,25 +1625,22 @@ Primordial Soup's snapshots are
 (`prior-art/primordialsoup/vm/snapshot.cc:398-470`); Spur's image, which is
 old space's bytes relocated on load, is the model this does not take.
 
-- **Every load tenures once, between the platform paths and the graph
-  pass** (decided with the user on 2026-10-04). A load runs in three
-  phases (`image::load`): the first bootstraps an interpreter
-  (`Interpreter::bootstrap`), then, in an entry of its own, decodes
-  everything up to and including the platform path section and rebuilds
-  every module's root class (`modules::build_module_classes`), rooting the
-  classes as `Root`s; the second follows the platform paths, sending each
-  step to the loading platform as an ordinary run, which may scavenge or
-  collect at its safepoints like any run; the third decodes the graph.
-  Between the second and the third, outside any entry, where only roots
-  hold values, one scavenge that tenures everything
-  (`Interpreter::tenure_now`) makes the builtins, the module classes and
-  everything the paths answered old. Spur, Primordial Soup, Strongtalk and
-  HotSpot's CDS all load into a heap that holds nothing young; this makes
-  the heap so before the graph is decoded. One tenure suffices: a second
-  right after the bootstrap, between it and the first phase's entry, would
-  be redundant, since the module classes and what the paths answer are
-  made young after it, so the tenure before the graph pass is needed
-  anyway, and it covers the bootstrap's objects too.
+- **Every load tenures once, between the shipped-name section and the graph
+  pass** (decided with the user on 2026-10-04). A load runs in two phases
+  (`image::load`), after it bootstraps an interpreter
+  (`Interpreter::bootstrap`), which builds the whole shipped world. The
+  first, in an entry of its own, decodes everything up to and including the
+  shipped-name section and resolves every name against that world by table
+  lookup; it runs no Newspeak, builds no object and keeps the names, not
+  handles. Then, outside any entry, where only roots hold values, one
+  scavenge that tenures everything (`Interpreter::tenure_now`) makes the
+  shipped world old. The second phase, in an entry of its own, resolves the
+  names again -- a lookup, no allocation -- and decodes the graph against
+  them, the module roots' records among it. Spur, Primordial Soup,
+  Strongtalk and HotSpot's CDS all load into a heap that holds nothing
+  young; this makes the heap so before the graph is decoded. One tenure
+  suffices: nothing between the bootstrap and the graph pass allocates, so
+  a tenure right after the bootstrap would be the same tenure.
 - **The graph pass allocates old.** It sets the heap allocating old
   (`Heap::set_allocating_old`) for its whole length, the refusal path
   included, so every placeholder -- the boxed floats and large integers it
@@ -1733,6 +1655,180 @@ old space's bytes relocated on load, is the model this does not take.
   moves while its placeholders exist, and the transient peak of a rejected
   load is unchanged by the generations ([memory.md](memory.md), "The
   amplification bound of a rejected load").
+
+## Shipped names
+
+An image names every object the binary owns -- each shipped module's
+instance, each class its root declares, their metaclasses and the levels
+their `<:` clauses add -- by where it is declared, resolved against the
+shipped world the bootstrap builds whole (decided with the user on
+2026-10-12, built the same week;
+[its plan](../superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md)).
+It replaced four ways of naming: the builtin class tags, `MIXIN_BUILTIN`
+and `CLASS_METACLASS`; the platform paths and `VALUE_PLATFORM`; the module
+class tags `CLASS_MODULE` and `CLASS_MODULE_LEVEL`; and every tag-named hash
+but `HASHED_SHIPPED`. Code: `image/shipped_names.rs` (the section, its
+reader and the resolution), `interpreter/shipped_world.rs` (the world, its
+names and what may stand where), `image/fingerprint.rs`.
+
+**Why one mechanism.** The VM mirror is never in an image; every shipped
+module instance holds it or the kernel that does; every shipped class object
+reaches its module instance lexically. The whole shipped world is therefore
+the loader's, and an image can only name into it. The image used to name in
+four coordinate systems -- a position in `BuiltinClass::ALL`, a path of
+sends from the platform replayed at load, an image-local module index and
+the platform singleton -- and each broke on the next class that was neither
+a builtin nor handed out by the platform: a plain kernel class, a private
+one, the level a kernel mixin adds under a builtin. The coordinate system
+Newspeak itself provides is the lexical declaration tree of the shipped
+modules. Every shipped class is declared directly in its module's root, so
+a name is a pair: the module and the declaration. Rebuilding a shipped class
+as a record was rejected because Rust compares class objects by identity
+(the builtin field, the exception classes, `resolve.rs`): a name has to
+resolve to the loading world's own, canonical object, as Java's
+serialization re-resolves an enum constant by name. Naming by a path from
+the platform was rejected because the loader had to send the selectors the
+image chose before it decoded the graph, and because a path reaches only
+what the platform hands out. Putting the shipped world into the image, as
+Primordial Soup's snapshot does, was rejected because it makes every image
+as trusted as the binary: an untrusted file holding the mirror runs every
+leaf, so locks (3) to (6) of the mirror would go, and a fix to the kernel
+would no longer reach a deployed artifact ([core-library.md](core-library.md),
+"The VM mirror is the whole Rust boundary").
+
+**The shipped world is a function of the binary.** The bootstrap builds it
+whole and in a fixed order, running only the binary's own code
+(`Interpreter::install_shipped_modules`, `interpreter/core_library.rs`):
+after the kernel's phase it records the kernel instance, instantiates
+`PlatformFactory` (`usingVmMirror:kernel:`) and `CollectionsFactory`
+(`usingKernel:`, since it needs no mirror and so is given none), and then
+`complete_shipped_world` (`interpreter/shipped_world.rs`) builds every class
+the three roots declare, in declaration order, metaclasses and levels
+included, before the platform is made. The world keeps two tables, traced
+as roots (`ShippedWorld`, in the step roots beside the kernel): the module
+instances, the kernel first, which the mirror's `moduleInstanceNamed:`
+answers, so one collections module serving every platform is a guarantee
+of the VM; and every shipped object under its name, `ShippedName` --
+(module, declaration, kind), the kind being the module instance, the class,
+its metaclass, the level a clause adds by the clause's index, or that
+level's metaclass (`ShippedKind`) -- with the positions it may stand in
+(`Positions`). Every name resolves to the object the bootstrap built, so no
+comparison by identity in Rust changes. The bootstrap draws no identity
+hash while it builds them, so every hash a run draws is the same under
+`run` and `load` (`goldens/library/object/identity_hash.ns`). Building the
+whole world costs every process start about 3.7 ms on the measuring
+workstation, almost all of it compiling `CollectionsFactory.ns`
+([execution.md](execution.md), "What the collections module cost"); the
+two ways back, neither touching the format, are open
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**The section.** A `u32` count, then per entry the module's symbol, the
+declaration's symbol (for the root, the module's own name), the kind as a
+`u8` and, for a level or a level's metaclass, the clause's `u32` index
+("Shipped names" in "Sections" above). Each name the image uses appears
+once, in the order of first use. The loader resolves the whole section
+before the graph by table lookup alone (`shipped_names::resolve`) and sends
+nothing; a name the loading world does not have -- an unknown module or
+declaration, a level past the declaration's clauses -- is
+`UnknownShippedName`, a name given twice `DuplicateShippedName`. In the
+graph, a reference is a tag and a `u32` index into the section -- five
+bytes, against the two a builtin class tag took -- so an image of millions
+of small records pays for each name once and resolves each reference by
+indexing; an index past the section is `BadShippedName`:
+
+| Tag | Number | Followed by | Retired in its place |
+|---|---|---|---|
+| `CLASS_SHIPPED` | class tag 8 | an entry of a class, a metaclass or a level | `CLASS_BUILTIN` (0), `CLASS_PLATFORM_PATH` (5), and `CLASS_METACLASS` (4), `CLASS_MODULE` (6), `CLASS_MODULE_LEVEL` (7), whose objects are records now |
+| `MIXIN_SHIPPED` | mixin reference 2 | an entry of a class, whose mixin the class record applies | `MIXIN_BUILTIN` (1) |
+| `VALUE_SHIPPED_MODULE` | value tag 11 | an entry of a module instance | `VALUE_PLATFORM` (7), `VALUE_PLATFORM_PATH` (8) |
+| `HASHED_SHIPPED` | hash tag 7 | an entry of any kind | `HASHED_BUILTIN_CLASS` (0), `HASHED_PLATFORM` (2), `HASHED_PLATFORM_PATH` (4), and `HASHED_METACLASS` (3), `HASHED_MODULE_CLASS` (5), `HASHED_MODULE_LEVEL` (6), whose objects are records now |
+
+A class as a value stays `VALUE_CLASS_TAG` with a class reference, and a
+`<:` clause's message frame names its level by an ordinary class reference.
+Retired and never reused (`opcodes.rs`): class tags 0, 1, 3, 4, 5, 6 and 7,
+mixin reference 1, value tags 7 and 8, hash tags 0 to 6, and the builtin
+class tags as a whole; being a builtin is a fact of Rust's and left the
+wire. The live naming tags are `CLASS_RECORD` and `CLASS_SHIPPED`,
+`MIXIN_ROW` and `MIXIN_SHIPPED`, `VALUE_SHIPPED_MODULE` and
+`HASHED_SHIPPED` (`crates/ns-runtime/tests/opcode_tags.rs`).
+
+**What is an ordinary record.** The platform is a record of class
+`PlatformFactory Platform` like any instance, its lazy slots written as they
+stand; it decodes to a value equal to the loading platform, since lazy slots
+are no part of a value's state, and fills an empty one on demand through the
+canonical `PlatformFactory` instance
+(`the_platform_decodes_to_a_record_equal_to_the_interpreters_own`). Its
+facets, a `Stopwatch`, a `List` and a `Map` are records of their shipped
+classes (`a_platform_member_round_trips_as_a_record`), and a level a
+program's clause adds over a shipped class that is no builtin is a
+`MIXIN_SHIPPED` record like one over `Value`
+(`a_level_applying_a_shipped_class_that_is_no_builtin_round_trips`). The
+decoder holds every record of a shipped class that is no builtin to its
+class's layout ("A record of a shipped class carries exactly that class's
+layout", "Verification" above). The program's module roots and the levels
+their clauses add are class records ("Module section" above).
+
+**The header carries the shipped world's fingerprint**, a `u64` after the
+flag byte (`fingerprint::shipped_world_fingerprint`): FNV-1a over the
+kernel's and the shipped modules' sources, the names in `BuiltinClass::ALL`
+and the mirror's selectors, each part preceded by its length. The lowering
+is not in it: `load` always compiles the shipped code with the optimized
+lowering, and an application built under the reference lowering carries its
+own code. A load whose binary computes another refuses the image before it
+reads anything else (`ShippedWorldMismatch`,
+`an_image_of_another_shipped_world_is_refused`). It replaced retiring a
+builtin tag per removed class, and it closes a coupling nothing else
+checks: a frame of a kernel method is reconciled against the loading
+binary's body of that method. `FORMAT_VERSION` stays 1; images are
+disposable ("Layout"). `inspect` prints it (`shipped world …`).
+
+**What may be named where** is a static rule, computed once per boot from
+the declarations (`Positions`, recorded by `complete_shipped_world`) and
+checked per position by the encoder and the decoder alike
+(`shipped_names::NamePosition`):
+
+| Position | Allowed |
+|---|---|
+| a value (slot, register, element, root), a class as a value | a shipped class that is public, that a recognized public class accessor of its module answers (`MixinMethod::class_accessor`), or whose instances the VM signals as a VM error (`ErrorClass::is_signalled`: `NonBooleanReceiver` among the private ones), and its metaclass |
+| a superclass, `MIXIN_SHIPPED` | such a class, not its metaclass, but `Behavior`, `Class` and `Metaclass` |
+| a record's class | any shipped class but a module's root and `Top`; `Activation` only on a frame record, `FutureImplementation` only on an unresolved future's; never a metaclass or a level |
+| a frame's `current_class` and kind, a class record's declaring class | any shipped class, metaclass or level |
+| `VALUE_SHIPPED_MODULE` | a frame record's receiver or registers only, and never in a started image |
+
+It keeps every capability out of a value -- `Top`, `Activation`,
+`FutureImplementation`, the module roots and their instances are no value,
+as no builtin class tag or platform path could name them either -- lets a
+program keep every class it can reach by running, the private
+`NonBooleanReceiver` included, and keeps a future private class without a
+public accessor, a `File` say, unnamed. The mirror's class has no declaration and so no name.
+Locks (3) and (4) of the mirror are this rule: the encoder names a shipped
+object by its declaration and refuses one the rule does not allow where it
+stands, and the decoder refuses the same, `Top` and `Activation` among
+them, as `ShippedNameNotAllowed` ("Verification" above). A class accessor
+counts wherever it is declared in the module, by the class name it answers
+(`shipped_world.rs`, `accessed_classes`), which is right while every shipped
+class is declared directly in its root ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+**A started image names only the kernel, and no module instance.** Before
+`main:args:` a program can reach nothing of `PlatformFactory` or
+`CollectionsFactory`, so the decoder refuses an image with `FLAG_START`
+whose shipped-name section names another module
+(`ShippedNameInStartedImage`,
+`a_started_image_naming_another_module_is_refused`). No program reaches a
+module's instance either, the kernel's included, and a started image may
+hold frames -- a block in a slot brings its frame along -- whose registers
+a closure reads, so the decoder refuses a started image naming any module
+instance the same way (`a_started_image_names_no_module_instance`). The
+encoder refuses to package either ("Packaging" above).
+
+**A running world's image is trusted.** A started image holds no module
+instance and stays untrusted input. An image of a running world
+-- a snapshot today, a suspended one later ("Planned: suspend and resume")
+-- may hold frames of shipped code whose registers legitimately hold the
+kernel, a module instance or an `Activation`, and a crafted frame could pass
+one to the program's code. Such an image is loaded only when its host
+decides to, and decoding it still never panics; a check over each body's
+dataflow that would close the gap is open ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 ## Planned: suspend and resume
 
@@ -1804,8 +1900,8 @@ the encoder walks each module's tree through the ids to the mixins they
 name now: an edited mixin is the row of the declaration it replaced, in
 the same place of the same tree, and its code enters the code table like
 any other. Nothing about the format's trust changes: a row an edit
-produced is verified as any row is ("Verification"), the kernel's mixins
-stay named by tag, and an edit to a shipped mixin is refused, so no image
+produced is verified as any row is ("Verification"), the shipped mixins
+stay named by declaration, and an edit to a shipped mixin is refused, so no image
 carries one. This is the step toward the graph style for user-defined
 behaviour that "How upstream compares" below names, taken in the table
 style: the row is the unit, not a graph of method objects.
@@ -1851,11 +1947,11 @@ The trade is real in both directions. Upstream can ship a modified kernel, can
 round-trip behaviour created at run time because methods are ordinary graph
 edges, and reuses one format for isolate messages. We get artifacts in kilobytes
 rather than a ~1.27 MB floor, and hold the untrusted-input invariant cheaply
-because a hostile file cannot replace a builtin. **The decision is to stay with
-the table style**, and to move the line one step toward the graph style for
-*user-defined* behaviour only -- with road step 5's edits, as rows of the
-mixin table ("Planned: edited mixins in the image") -- never for the
-builtins.
+because a hostile file cannot replace a shipped class. **The decision is to
+stay with the table style**, and to move the line one step toward the graph
+style for *user-defined* behaviour only -- with road step 5's edits, as rows
+of the mixin table ("Planned: edited mixins in the image") -- never for the
+shipped world.
 
 ## Decisions
 
@@ -1955,7 +2051,11 @@ builtins.
   `HASHED_MODULE_CLASS` (5), `HASHED_MODULE_LEVEL` (6), `FLAG_START` (4) and
   the origin tags `ORIGIN_FILE` (0) and `ORIGIN_EMBEDDED` (1) took the next
   free numbers, so a stale artifact meets an unknown tag instead of decoding
-  into a different program.
+  into a different program. `CLASS_MODULE`, `CLASS_MODULE_LEVEL`,
+  `HASHED_MODULE_CLASS` and `HASHED_MODULE_LEVEL` are retired in turn, since
+  a module's root class and its levels became records of the graph, which
+  the module section names by object id (2026-10-13, "An image names the
+  shipped world by declaration" below).
 - **Applications are rebuilt, not serialized**, so a stored layout can never
   disagree with its mixins.
 - **Inline-cache state is never serialized** (2026-09-16), and neither is a
@@ -1987,9 +2087,9 @@ builtins.
 - **Artifacts are readable but not writable as text.** A dump serves inspection;
   a loadable text format would be a second codec to keep in step, and the need
   that would justify it is already met by corrupting real images.
-- **An image records the hashes of the objects it names by tag**, so a hash the
-  program was given survives a load like every other; a reserved-range
-  rule was rejected.
+- **An image records the hashes of the objects it names rather than
+  carries**, so a hash the program was given survives a load like every
+  other; a reserved-range rule was rejected.
 - **Frames are object records, and the decoder sizes every record before it
   allocates** (decided with the user on 2026-09-29 and 2026-10-03, built with
   road step 3a on 2026-10-03; "Frames are object records", "Two passes"). A
@@ -2001,6 +2101,19 @@ builtins.
   count once, so the bound of a rejected load is the largest of the per-record
   and per-value ratios rather than their sum; the wire stays id-based and
   records carry no size field.
+- **An image names the shipped world by declaration** (decided with the
+  user on 2026-10-12, built 2026-10-13; "Shipped names"): the bootstrap
+  builds every shipped module instance and class whole, and an image names
+  one by module, declaration and kind through a section resolved by lookup
+  before the graph; the platform and the program's module roots are
+  ordinary records; a fingerprint of the shipped world in the header
+  refuses an image another binary wrote. The boot pays for it, about 3.7 ms
+  a process start, measured ([execution.md](execution.md), "What the
+  collections module cost"); how to take it back is open.
+  Rejected: more builtin tags (a builtin is a class Rust needs a handle on),
+  records relying on value semantics (a twin, not the canonical object),
+  instances the loader supplies through accessors the image chooses, and
+  the shipped world in the image (every image as trusted as the binary).
 - **A string record under the `Symbol` class is refused**
   (`StringOfSymbolClass`, 2026-10-03): with `Symbol` a subclass of `String`
   and a symbol told from a string by its class alone, such a record would be

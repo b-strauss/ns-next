@@ -22,12 +22,13 @@
 > module), `crates/ns-runtime/core-library/Manifest.ns` (a project's
 > manifest, which is no shipped module: "The manifest"),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
-> `interpreter/core_library.rs` (the table of shipped modules and the
-> platform's boot),
+> `interpreter/core_library.rs` (the table of shipped modules and their
+> boot), `interpreter/shipped_world.rs` (every shipped object under its
+> name),
 > `interpreter/mirror.rs` (how a send to the mirror runs), `builtins/` (the
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
 > `builtins/activation.rs` and `builtins/message.rs` the exceptions',
-> `builtins/module.rs` `moduleNamed:`, `builtins/future.rs` the pull
+> `builtins/module.rs` `moduleInstanceNamed:`, `builtins/future.rs` the pull
 > future's forcing),
 > `interpreter/unwind.rs` (the one unwinder, and a VM error signalled),
 > `compiler/primitive_method.rs`, `compiler/unwind_marker.rs`, `platform.rs`.
@@ -346,8 +347,10 @@ is how a program gets text back out of a position. Three more leaves:
   gathers any other collection into an Array (`Array withAll:`) and asks
   again.
 
-`asByteArray` and the forms that take or answer a `ByteArray` wait for
-sub-project 5, which brings `ByteArray`. Primordial Soup's `out`, which
+The UTF-8 conversions, `asUtf8` and `String fromUtf8:`, wait for
+sub-project 5, which brings `ByteArray`; a `String`'s methods take no
+`ByteArray` ("Planned: sub-project 5, `ByteArray`, `StringBuilder` and the
+views"). Primordial Soup's `out`, which
 writes a string to the standard output, is not adopted: a program writes
 through the platform's `Transcript`.
 `goldens/library/string/a_string_searches_and_iterates_its_code_points` and
@@ -370,7 +373,7 @@ subclass of `Symbol` instantiates as an ordinary instance
 (`goldens/library/builtin-subclass/a_subclass_of_a_builtin_falls_to_objects_methods.ns`);
 and `String new` answers the empty string, of the byte format
 (`string_new_answers_an_empty_string.ns`). Both are decided in
-`instantiate::decide_factory`, which reads the class object's builtin tag on
+`instantiate::decide_factory`, which reads the class object's builtin field on
 every send, beside `Array`'s and the VM mirror's class.
 
 Four further rows serve `Value` itself rather than one builtin:
@@ -596,7 +599,7 @@ core-library module beside `Kernel.ns` (decided with the user on
 class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
     | private vmMirror = theMirror. private kernelModule = theKernel. |
 ) (
-    lazy private collectionsModule = (vmMirror moduleNamed: #CollectionsFactory ifFail: [nil]) usingKernel: kernelModule.
+    lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
     private class Platform = Value new () (
         lazy public transcript = Transcript new.
         lazy public collections = collectionsModule newCollections.
@@ -694,54 +697,58 @@ is (`the_collections_factory_answers_only_new_collections`).
 built on its first use, so a program pays only for the members it asks for,
 and the host's boot runs no member's initializer.
 
-**One collections module serves every platform.** `PlatformFactory`'s root
-keeps the collections module in its private lazy slot `collectionsModule`,
-which fetches `CollectionsFactory`'s root class through the mirror's
-`moduleNamed:` ("The module table and the boot" below) and instantiates it
-with the kernel instance, on the first `platform collections` of any
+**One collections module serves every platform.** The boot builds the one
+`CollectionsFactory` instance, with the kernel instance ("The module table
+and the boot" below), and `PlatformFactory`'s root keeps it in its private
+lazy slot `collectionsModule`, which asks the mirror's
+`moduleInstanceNamed:` for it on the first `platform collections` of any
 platform; `Platform`'s `collections` answers that instance's
 `newCollections`. So every platform's facet comes from one factory and
 hands out one class of each name, and the facets, values, are all equal
-(`goldens/library/collection/every_platform_shares_one_collections_module`).
+(`goldens/library/collection/every_platform_shares_one_collections_module`;
+`tests/platform.rs`, `the_collections_module_is_built_once_at_boot`).
 The facet names its own class, `^outer CollectionsFactory Collections`, as
 `Platform>>Platform` does, and each of the module's classes by `^outer
 CollectionsFactory <Name>`: class accessors the compiler recognizes in
-every shipped module but the kernel, so the platform paths `collections
-Collections`, `collections List`, `collections IdentityMap` and the rest
-needed no wider recognition. `Collection` it answers from the root's
-`kernelCollection`, the kernel's own class.
+every shipped module but the kernel, which is what lets an image name these
+private classes as values ("Shipped names in the image" below).
+`Collection` it answers from the root's `kernelCollection`, the kernel's
+own class.
 
-**The boot.** `Interpreter::install_platform`, run by `bootstrap_with`
-right after `install_kernel`, takes `PlatformFactory` from the table of
-shipped modules ("Where the library source lives, and how modules are
-found" below), instantiates it with `usingVmMirror: mirror kernel: kernel`
-through the ordinary `Interpreter::instantiate`, checks that its `vmMirror`
-is an immutable, eager slot holding the mirror
-(`interpreter::core_library`'s `check_factory_holds_the_mirror`, as
-`interpreter::kernel` checks the kernel's), then sends it `newPlatform`
-as an ordinary host send and keeps the answer as the platform
+**The boot.** `Interpreter::install_shipped_modules`, run by
+`bootstrap_with` right after `install_kernel`, records the kernel instance
+as the first shipped module's, then takes each entry of the table of
+shipped modules in order ("Where the library source lives, and how modules
+are found" below), compiles it and instantiates its root through the
+ordinary `Interpreter::instantiate` -- `PlatformFactory` with
+`usingVmMirror: mirror kernel: kernel`, `CollectionsFactory` with
+`usingKernel: kernel` -- checks that `PlatformFactory`'s `vmMirror` is an
+immutable, eager slot holding the mirror (`interpreter::core_library`'s
+`check_factory_holds_the_mirror`, as `interpreter::kernel` checks the
+kernel's), and records each instance as its module's one instance
+(`interpreter/shipped_world.rs`). `complete_shipped_world` then builds every
+class the three roots declare and records every shipped object under its
+name, which is what an image names ("Shipped names in the image" below).
+Last, it sends `PlatformFactory`'s instance `newPlatform` as an ordinary
+host send and keeps the answer as the platform
 (`Mutator::platform_singleton`, traced like every root). Each step is a run
 entered from the outside, as the kernel's instantiation is, so the stress
 modes see it. `Mutator::platform_value` only reads the platform, so asking
-for it, at bootstrap or in `image::load`, runs no Newspeak. The boot does
-run a little shipped code -- `newPlatform` and `Platform`'s superclass
-clause `Value new`, whose sends take room in the inline caches -- so a
-freshly bootstrapped interpreter no longer starts with an empty cache
-table (`tests/inline_caches.rs` pins what it leaves). The kernel instance
+for it runs no Newspeak. The boot runs shipped code -- the superclass
+clauses of every shipped class, `CollectionsFactory`'s eager slots
+`theKernel Error` and `theKernel Collection`, and `newPlatform` -- whose
+sends take room in the inline caches, so a freshly bootstrapped interpreter
+does not start with an empty cache table (`tests/inline_caches.rs` pins
+what it leaves). It draws no identity hash, so every hash a run draws is
+the same under `run` and `load`, and a shipped initializer that hashes
+something -- a hashed collection built eagerly, say -- would change that
+(`goldens/library/object/identity_hash.ns`). The kernel instance
 is the second parameter, as in Primordial Soup (`Platform internalKernel:
 ik`), rather than a mirror leaf answering the kernel (SOMns's
 `vmMirror kernelObject: nil`): handing over an object needs no Rust, and
-the dependency stands in the factory's signature. `image::load` depends on
-what `PlatformFactory.ns` runs at load: it resolves the image's platform
-paths -- each step a unary send that runs a lazy member's initializer the
-first time, or a class accessor or nested class's accessor and, on the
-class's first use, its superclass clause -- before it restores the identity
-hashes the image recorded, so a hash drawn on the way could equal one the
-graph hands back. Nothing the boot, a member's initializer or a path's sends
-run assigns one; a debug build asserts that the counter stood still across
-path resolution, and a member whose initializer hashes something -- a hashed
-collection built eagerly, say -- would have to be kept off every path or the
-order changed.
+the dependency stands in the factory's signature. `image::load` runs
+nothing of `PlatformFactory.ns` or any shipped module: every object an image
+names exists once the boot is done, and the loader finds it by table lookup.
 
 **The transcript leaf does not check its receiver.** `Transcript`'s `show:`
 and `newLine` are mirror forwarders like the kernel's —
@@ -779,7 +786,8 @@ write, so each costs one activation more than it did as a kernel accessor
 namespace member is asked for once, typically in a slot initializer. The
 platform's class accessors, and the collections facet's, carry no fast
 path either: the compiler recognizes them
-(`MixinMethod::class_accessor`) for the image's platform paths alone, and
+(`MixinMethod::class_accessor`) for the image's rule of what may be named
+where alone ("Shipped names in the image" below), and
 no send reads the mark
 (`the_platforms_class_accessors_are_recognized_without_a_fast_path`).
 
@@ -905,11 +913,12 @@ authority publicly reachable, through a lazy slot, a class accessor or the
 class of any object it hands out; the facet's own classes are what a
 program may reach.
 
-**An image names the platform and what it reaches by path.** The platform
-is never written field by field: the encoder names it, and every shipped
-instance or class it reaches, by its path of public members from the
-platform ("Platform paths in the image" below); a second platform is an
-ordinary record of the class the path `Platform` names.
+**An image names the platform's classes by their declarations.** The
+platform and its facets are ordinary records of their shipped classes, and
+every shipped class they reach is named by its module and declaration
+("Shipped names in the image" below), so a second platform is a record of
+`PlatformFactory Platform` like the first. A module instance -- the
+factory's, holding the mirror and the kernel -- is never written.
 
 ## The on-demand rule
 
@@ -967,7 +976,7 @@ integer "obeys the protocol of class `Integer`", so `3 class` keeps
 answering `Integer`. `Object` declares no accessor for it -- a program meets
 it only as an integer's class (`interpreter/kernel.rs`'s
 `objects_class_accessors_are_exactly_the_nameable_builtins`) -- and an image
-names it by builtin class tag 31. It is a value object (§3.1.1): `==` is
+names it by its shipped name, `Kernel LargeInteger`. It is a value object (§3.1.1): `==` is
 `Value`'s, `^self = other`, and `=` and `hash` come from its sign and
 magnitude, never from an identity hash, so a value whose slot holds one
 compares and hashes by state too
@@ -1298,7 +1307,7 @@ mathematics through `asFloat`, and the answers to `isNaN`, `isFinite` and
 
 **`Fraction` is a builtin with a representation of its own**, as
 `LargeInteger` is, not a Newspeak class with slots: a subclass of `Number`,
-builtin class tag 39, reached as `Fraction`, `Object`'s accessor ("The
+reached as `Fraction`, `Object`'s accessor ("The
 predefined classes are accessors on `Object`"). Its object is
 of the fixed-pointer format with two fields, the numerator and the
 denominator, each an integer value -- a `SmallInteger` or a `LargeInteger`
@@ -1596,8 +1605,8 @@ is a leaf on the mirror, which road step 5's shipped mirrors module alone
 uses, for its atomic install, and the install forwards only the instances it
 migrates, of classes a program edited -- never of a shipped mixin, since the
 mirrors refuse every edit to one ([liveness-and-reflection.md](liveness-and-reflection.md),
-"Planned: road step 5, mirrors and atomic installation"). So no instance a
-platform path names, no class object and no kernel-made object a program
+"Planned: road step 5, mirrors and atomic installation"). So no object a
+shipped name names, no class object and no kernel-made object a program
 can reach, such as a VM error's `Error` and its `Message`, is ever
 forwarded; the path to the mirror runs only through class objects and the
 value roots of `Kernel`, `PlatformFactory` and `CollectionsFactory`, so no
@@ -1623,15 +1632,24 @@ and loosening any one of them lets a program claim every primitive:
   root instance or root class (the factory pattern, "The platform" above),
   so no program can make another root instance, and every object whose
   code sends to `vmMirror` reaches the one the bootstrap checked.
+- The image encoder names a shipped object by its declaration and refuses
+  one the rule of what may be named where does not allow
+  (`image/shipped_names.rs`; [image-format.md](image-format.md), "Shipped
+  names"), so no artifact carries a shipped object's state or the mirror's
+  code.
 - No program can name the mirror's class: `Object` declares no accessor for
   it or for `Top` (`interpreter/kernel.rs`'s
   `objects_class_accessors_are_exactly_the_nameable_builtins` pins the
   accessor set, and `compiler::primitive_method` recognizes no accessor for
-  either), so a bare name for it ends in `doesNotUnderstand:`; and the image
-  decoder refuses builtin class tag 14 wherever the graph names a class
-  ([image-format.md](image-format.md), "Verification").
+  either), so a bare name for it ends in `doesNotUnderstand:`; the mirror's
+  class has no declaration and so no shipped name, and the image decoder
+  refuses `Top`, `Activation` and every other shipped name in a position the
+  rule does not allow ([image-format.md](image-format.md), "Verification").
 - The image encoder refuses an image whose graph reaches the mirror, its
-  class or its class's metaclass.
+  class, `Top` or their metaclasses, and `decide_factory` refuses to
+  instantiate the mirror's class, so there is never a second mirror.
+- `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
+  only for a `MirrorSend` and has no wire tag, so no artifact can carry one.
 
 The activation objects the exceptions are built on are a capability of the
 same kind — one reads another frame's registers and unwinds the stack — and
@@ -1639,10 +1657,6 @@ are held the same way: `Activation` is private to `Kernel.ns`, `Object`
 declares no accessor for it, a program reaches one only through a kernel
 method's local, and an image names its class only as the header of an
 activation record ("Exceptions" below).
-- `decide_factory` refuses to instantiate the mirror's class, so there is
-  never a second mirror.
-- `SendMirror`, the instruction that runs a leaf with no lookup, is emitted
-  only for a `MirrorSend` and has no wire tag, so no artifact can carry one.
 
 The platform keeps its separate role: §8.3 distinguishes the platform object,
 which is the environment, from the VM mirror, which is the virtual machine.
@@ -1959,20 +1973,20 @@ embedded with `include_str!` from `crates/ns-runtime/core-library/` like
 the kernel. Today it has two entries, `PlatformFactory` and
 `CollectionsFactory`. The table parses and resolves an entry once per
 thread, on the first request for it, with `resolve_kernel`, because the
-entry is shipped source: the boot asks for `PlatformFactory` alone, so a
-program that never reaches `platform collections` never pays for
-`CollectionsFactory.ns`. It panics for an entry that does not parse or
-resolve, as the kernel's does: that is a defect in the binary, not in a
-program, and since a boot no longer resolves every entry, the unit test
-`every_shipped_module_resolves` does, so the suite still catches one.
-Every interpreter still compiles each module it asks for itself, since
-compiled code is numbered against one heap's inline caches. Every entry is
+entry is shipped source, and every boot asks for every entry: an image
+names the shipped world's objects and the loader runs nothing the image
+chooses, so every shipped module is compiled and instantiated at every boot
+("The module table and the boot" below). It panics for an entry that does
+not parse or resolve, as the kernel's does: that is a defect in the binary,
+not in a program, and the unit test `every_shipped_module_resolves` checks
+every entry. Every interpreter compiles each module itself, since compiled
+code is numbered against one heap's inline caches. Every entry is
 shipped source; a user module would join the table, marked as such by the
 host and resolved with `resolve`, only with the module namespace on the
-mirror (below). The mirror's
-`moduleNamed:` (below) is the leaf through which shipped Newspeak reaches
-an entry (`shipped_module_named`), and the host's boot names
-`PlatformFactory` directly (`resolved_shipped_module`).
+mirror (below). The mirror's `moduleInstanceNamed:` (below) is the leaf
+through which shipped Newspeak reaches a module's one instance, and the
+host's boot takes each entry from the table directly
+(`resolved_shipped_module`).
 
 **Planned: the module namespace on the mirror.** For the modules there are,
 the namespace belongs on the mirror (decided with the user on 2026-09-21): a
@@ -1982,10 +1996,11 @@ Nothing would touch the file system at run time, which is what linking
 statically means here. Later the same primitive falls back to the file system
 on a miss, so dynamic loading extends one primitive and changes neither
 `Kernel.ns` nor anything else on the Newspeak side. Its first half is
-built: `moduleNamed:` ("The platform and collections as
-core-library modules" below) looks a name up in the table the binary
-carries. The table itself is still the host's rather than the mirror's,
-and the fallback to the file system comes with user modules.
+built: `moduleInstanceNamed:` ("The platform and collections as
+core-library modules" below) looks a name up among the module instances
+the boot built from the table the binary carries. The table itself is
+still the host's rather than the mirror's, and the fallback to the file
+system comes with user modules.
 
 **Start-up was measured, not assumed: the kernel costs about 0.5 ms** —
 `ns-next run` of a module that answers at once, 4.07 ms against 3.56 ms
@@ -2028,7 +2043,7 @@ three things follow from that:
   project's modules, as the last module in module order, from the origin
   `ORIGIN_EMBEDDED` `Manifest.ns`, so an application that keeps its manifest
   in a slot is written and loaded like any other object. A shipped module's
-  instance is never written ("Platform paths in the image" below); the
+  instance is never written ("Shipped names in the image" below); the
   manifest must be, and is.
 - **It is compiled as user code**, by the interpreter's own lowering, with
   its code on its mixin like any module's, and it is the host, not the
@@ -2260,9 +2275,9 @@ with an argument that is no `Message` fails inside the handler, on
 - **Activation objects.** An activation object is the reified frame object
   itself, of the frame format and the private kernel class `Activation`
   ([object-model.md](object-model.md), "The object layout"), which no
-  program can name — no accessor on `Object`, and its builtin class tag is
-  refused wherever an image names a class but the header of a frame record,
-  as `Top`'s is everywhere. An
+  program can name — no accessor on `Object`, and its shipped name is
+  refused wherever an image names a class but the header of a frame record
+  and a frame's class, as `Top`'s is everywhere but a frame's class. An
   activation reads another frame's temporaries and unwinds stacks, so it is a
   capability, and Newspeak hands those out only through mirrors, which the
   reflection step builds on it. The eleven leaves (`builtins/activation.rs`,
@@ -2416,11 +2431,10 @@ with an argument that is no `Message` fails inside the handler, on
   will be breaking the promise (§3.7).
 
 **The image format.** An `Activation` is a frame record (`OBJECT_FRAME`,
-body tag 10), its header `Activation`'s builtin tag
+body tag 10), its header `Activation`'s shipped name, `Kernel Activation`
 ([image-format.md](image-format.md), "Frames are object records").
-`Activation`, `Exception`, `Error`, `MessageNotUnderstood`, `Message` and
-`Halt` take builtin class tags 23 to 28 (29, `KernelNamespace`'s, is retired:
-the class moved into the shipped platform module, now `PlatformFactory.ns`)
+`Exception`, `Error`, `MessageNotUnderstood`, `Message` and `Halt` are named
+by their shipped names like every kernel class
 ([image-format.md](image-format.md), "Verification"). A snapshot in the
 middle of an unwind is no more possible than one in the middle of a loop:
 the continuations "carry the unwind on" and "end the run with this VM
@@ -2492,12 +2506,14 @@ caught twenty activations up costs about 6.4 µs.
 
 ### The platform and collections as core-library modules
 
-**Built in two plans: the first gives lazy slots, the table of shipped
-modules and the platform's boot, and platform paths in the image ("The
-platform" above describes what exists); the second gives `Array new:
-size`, the handler search that keeps no growable collection,
-`moduleNamed:` and `CollectionsFactory.ns` with a Newspeak `List` ("The
-collections module (plan 2)" below).** `Kernel.ns` is to hold only what the VM
+**Built in two plans and completed by a third: the first gives lazy slots,
+the table of shipped modules and the platform's boot ("The platform" above
+describes what exists); the second gives `Array new: size`, the handler
+search that keeps no growable collection, the mirror's module leaf and
+`CollectionsFactory.ns` with a Newspeak `List` ("The collections module
+(plan 2)" below); the third builds every shipped module at boot and names
+the shipped world in an image by declaration ("Shipped names in the image"
+below).** `Kernel.ns` is to hold only what the VM
 must know — the classes whose instances the VM creates or on which dispatch
 depends — and the rest of the library moves into modules the runtime ships.
 Primordial Soup splits it this way (`KernelForPrimordialSoup.ns` beside
@@ -2510,25 +2526,35 @@ The two plans:
 
 1. **The platform module**: §6.3.3's lazy slots, the module table,
    `Platform.ns` with `Platform`, `Transcript` and
-   `KernelNamespace`, booted with `usingVmMirror:kernel:`, and platform
-   paths in the image. `Collections` moves too. Built, and since 2026-09-27
-   written in the factory pattern ("The platform" above): the module is
-   `PlatformFactory.ns`, whose root takes `usingVmMirror:kernel:` and is
-   never handed out, and the platform is its nested `Platform`.
-2. **The collections module**: the mirror's `moduleNamed:`, `Array new:`,
+   `KernelNamespace`, booted with `usingVmMirror:kernel:`, and a way for an
+   image to name what the platform reaches. `Collections` moves too. Built,
+   and since 2026-09-27 written in the factory pattern ("The platform"
+   above): the module is `PlatformFactory.ns`, whose root takes
+   `usingVmMirror:kernel:` and is never handed out, and the platform is its
+   nested `Platform`.
+2. **The collections module**: the mirror's module leaf, `Array new:`,
    `CollectionsFactory.ns` with a
    Newspeak `List`, a handler search that keeps no growable collection, and
    `OrderedCollection` removed with its leaf and `Heap::array_push`. Built
    (2026-09-28).
+3. **Shipped names in the image**: every shipped module instantiated at
+   boot and every class its root declares built, `moduleInstanceNamed:`
+   answering the instance, and an image naming every shipped object by its
+   declaration. Built (2026-10-13).
 
 #### Lazy slots first (plan 1)
 
-The platform's members become lazy slots (§6.3.3), so that a module is
-built on the first `platform collections`, not at every start: once the
-platform grows modules for I/O, networking, time and rendering, building
-all of them eagerly would make every program pay for all of them. SOMns
-builds every member eagerly; this runtime deliberately does not. Lazy slots
-are also what the image's platform paths below rest on, and §6.3.3 states
+The platform's members are lazy slots (§6.3.3), so that a member is built
+on its first use, not at every start: once the platform grows members for
+I/O, networking, time and rendering, building all of them eagerly would
+make every program pay for all of them. SOMns builds every member eagerly;
+this runtime deliberately does not. The shipped modules behind the members
+are built at every boot since an image names them ("Shipped names in the
+image" below), so a lazy member saves its facet and whatever its
+initializer does, not its module; building a module on first demand is
+open ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped
+world at boot"). Lazy slots are also what lets an image write the platform
+as a record whose empty members fill on demand, and §6.3.3 states
 the intent directly: "Lazy slots themselves need never be persisted or
 synchronized".
 
@@ -2596,16 +2622,18 @@ without an activation, but its arm, inlined into every send site of
 `vm::run`, slowed every method send; the getter gave it up
 ([execution.md](execution.md), "What the platform module cost").
 
-#### The module table and the boot (plan 1)
+#### The module table and the boot
 
 **Built**, as "The platform" and "Where the library source lives, and how
 modules are found" above describe, with one part of the design below not
 built: the table is `interpreter/core_library.rs`'s `SHIPPED_MODULES`,
-read by the host and by `moduleNamed:`, not yet a table on the mirror, and
-its entries carry no shipped flag yet, since every entry is shipped
-source; the flag comes with the first user module the table holds. The
-mirror's `moduleNamed:` came with `CollectionsFactory.ns` in plan 2, and
-the table has two entries. The design as decided:
+read by the host, not yet a table on the mirror, and its entries carry no
+shipped flag yet, since every entry is shipped source; the flag comes with
+the first user module the table holds. The table has two entries,
+`PlatformFactory` and `CollectionsFactory`; the kernel is booted before
+them by `interpreter/kernel.rs`. **Every shipped module is built at every
+boot**, and the mirror's `moduleInstanceNamed:` answers the instance the
+boot built. The design as decided:
 
 - **One module table, on the mirror** (the decision of 2026-09-21 in "Where
   the library source lives, and how modules are found"). The host fills a
@@ -2615,27 +2643,35 @@ the table has two entries. The design as decided:
   is unified; trust and visibility are not:** every entry carries whether it
   is shipped core-library source, set by the host and never by the module, and
   only such an entry is resolved with `resolve_kernel`. The mirror leaf
-  `moduleNamed:` (the row `moduleNamed:ifFail:`, whose subject is the name,
-  `builtins/module.rs`) answers an entry's root class, built by
-  `Mutator::load_root_class` on every request, and declines a subject that is
-  no `Symbol` or names no entry. It keeps nothing: the caller keeps the class
-  it wants, `PlatformFactory`'s root the one instance of it in its lazy
-  `collectionsModule`, which Newspeak evaluates once. The design had the leaf
-  keep the class, built on its first request; decided with the user on
-  2026-09-28, a lazy slot keeps it instead, which needs no new root in
-  `Mutator` and no tracing. Compiling is total, so the leaf runs no Newspeak.
+  `moduleInstanceNamed:` (the row `moduleInstanceNamed:ifFail:`, whose
+  subject is the name, `builtins/module.rs`) answers the one instance the
+  boot built of a shipped module -- `Kernel`'s included -- as the shipped
+  world recorded it (`interpreter/shipped_world.rs`), the same object on
+  every request, and declines a subject that is no `Symbol` or names no
+  module. It builds nothing and runs no Newspeak; `PlatformFactory`'s root
+  keeps the collections module's instance in its lazy `collectionsModule`.
+  The leaf answers an instance the boot built, rather than building a root
+  class on request for its caller to instantiate, because an image names the
+  shipped world by declaration and the loader runs nothing the image chooses,
+  so every shipped module must exist before an image is decoded (decided
+  with the user on 2026-10-12; "Shipped names in the image" below); one
+  collections module serving every platform is then a guarantee of the VM
+  rather than of `PlatformFactory`'s lazy slot.
   The same table later holds user modules and falls back to the file system.
   The loader a program is later handed through the platform sees user modules
   only: a program reaches the standard modules as the instances the platform
   built (`platform collections`), never as module definitions, whose code was
   compiled for a trusted context.
-- **The boot.** After `install_kernel` the host takes `Platform` from the
-  table and instantiates it with `usingVmMirror: mirror kernel: kernel` — an
-  ordinary run, as the kernel's instantiation is, so the stress modes see
-  it — and keeps the result as a root. Since 2026-09-27 it takes
-  `PlatformFactory`, instantiates that, and keeps what its `newPlatform`
-  answers instead ("The platform" above). `Mutator::platform_value` reads that
-  root instead of building the platform in Rust. The second parameter is
+- **The boot.** After `install_kernel` the host records the kernel
+  instance, takes each entry from the table in order and instantiates it --
+  `PlatformFactory` with `usingVmMirror: mirror kernel: kernel`,
+  `CollectionsFactory` with `usingKernel: kernel`, since it reaches no leaf
+  and so is given no mirror -- each an ordinary run, as the kernel's
+  instantiation is, so the stress modes see it; builds every class the roots
+  declare (`complete_shipped_world`); and sends `PlatformFactory`'s instance
+  `newPlatform`, keeping the answer as a root ("The platform" above).
+  `Mutator::platform_value` reads that root instead of building the platform
+  in Rust. The second parameter is
   Primordial Soup's (`Platform internalKernel: ik`), chosen over a mirror
   leaf answering the kernel (SOMns's `vmMirror kernelObject: nil`): handing
   over an object needs no Rust, and the dependency stands in the factory's
@@ -2675,93 +2711,91 @@ the table has two entries. The design as decided:
   that `text` is a string. A user subclass of `Transcript` inherits a
   working `show:`, which no golden pinned the other way.
 - **Retired:** `BuiltinClass::Platform`, `Transcript`, `Collections` and
-  `KernelNamespace`, with builtin class tags 13, 18, 19 and 29.
+  `KernelNamespace`.
 - **One golden changed:** `goldens/library/platform/the_platform_and_its_parts_are_values`
   asked `platform = platform class new`, which `Platform`'s
   `usingVmMirror:kernel:` factory no longer answered; that line was
   replaced, and the other checks kept their recorded output. The factory
   pattern gave the platform's class `new` back, and the golden its
   original checks.
-- **`moduleNamed:` came with plan 2.** The host still takes
-  `PlatformFactory` from the table itself; `PlatformFactory.ns` fetches
-  `CollectionsFactory.ns` through the leaf.
+- **The host takes every entry from the table itself**; `PlatformFactory.ns`
+  reaches `CollectionsFactory`'s instance through `moduleInstanceNamed:`.
 
-#### Platform paths in the image (plan 1)
+#### Shipped names in the image
 
-**Built** (`image/platform_paths.rs`; [image-format.md](image-format.md),
-"Verification"). The design as decided:
+**Built** (`image/shipped_names.rs`, `interpreter/shipped_world.rs`;
+[image-format.md](image-format.md), "Shipped names"; decided with the user
+on 2026-10-12, built 2026-10-13). An artifact names every object the binary
+owns -- each shipped module's instance, each class its root declares, their
+metaclasses and the levels their `<:` clauses add -- by its module, its
+declaration and its kind, resolved by table lookup against the shipped world
+the boot built, before the graph is decoded and without a send. The
+platform, its facets, a `List`, a `Stopwatch` are ordinary records of their
+shipped classes; a second platform made with `platform class new` is one
+like the first. It replaced plan 1's platform paths, which named a shipped
+object by the public members sent from the platform to reach it: the loader
+had to send them before it decoded the graph, and a path reached only what
+the platform hands out, so a plain kernel class, a private one or the level
+a kernel mixin adds had none.
 
-An artifact names a shipped object by its **path of public members from
-the platform**: the empty path is the platform, `collections` its
-collections facet, `collections Collections`, `collections List` and the
-rest the classes of its module, `transcript` the transcript,
-`Transcript` its class,
-`Platform` the platform's own. A step is a public slot's getter, a public
-nested class's accessor, or a public **class accessor**: a method the
-compiler recognized, in shipped source other than the kernel, as exactly
-`^outer <Root> <Nested>` naming a nested class of its module's root
-(`MixinMethod::class_accessor`, which only the image code reads -- no fast
-path, no per-send check). The platform hands out its module's classes that
-way, since they are nested classes of `PlatformFactory`, not of the
-platform. This replaces the decision of
-2026-09-25 to name a class by its module's name and its path in the module,
-because two things stand in the way of that on load: nothing in Rust knows
-the module instances, which the platform's Newspeak builds; and a nested
-class object exists only once its accessor has run, which evaluates its
-superclass clause — Newspeak the decoder must never run.
+**What an author of a shipped module keeps.** The rule of what may be named
+where is computed from the declarations at every boot, so a new shipped
+module or class needs no tag and no table, but its shape decides what an
+image can carry:
 
-- **The encoder** writes, in a section of its own, the platform paths the
-  graph uses, and a record tag (the next free number) that names one of
-  them. It writes an object or class it reached by a path as that record,
-  and refuses a module instance or a class object compiled from shipped
-  source that no path reaches: a module instance holds the kernel, as the
-  platform holds the
-  mirror, so neither is ever written field by field. `HASHED_PLATFORM`
-  stays, for the empty path. What needs a path is a **module instance** or
-  a **class object** compiled from shipped source; any other instance of
-  a shipped class — a `List`, a second transcript — is an ordinary
-  record (below). `CollectionsFactory`'s root instance and its class object
-  are exactly such a module instance and such a class object: the facet's
-  class accessors name `CollectionsFactory`'s private nested classes, never
-  the root that built the facet, so no path names either the root instance
-  or its class, and an image that reaches them -- which only a host
-  walking `class_enclosing` can -- is refused the same way as the
-  kernel's.
-- **On load, before the graph is decoded**, the host sends each listed path's
-  members to the loading interpreter's platform, each step a public slot's,
-  nested class's or class accessor of the shipped instance reached so far,
-  sent as an ordinary public send: exactly what the program's own
-  `platform collections` may do, and starting a packaged application runs its
-  code anyway. Each member must be a symbol, the path length and the number of
-  paths are bounded, and a step that is no such accessor, a send that fails or
-  an answer that is not a shipped object refuses the image. The decoder then
-  only looks paths up, so it still runs no code.
-- **A stored platform is a reference, never its state.** A program that
-  keeps `platform` in a slot and sends `platform collections` only after a
-  load gets the loading platform, whose lazy slot builds the module then;
-  a program that kept `platform Transcript` gets the same class through its
-  path, since the path's send reaches the same per-instance accessor of
-  the same `PlatformFactory` instance. Both routes answer identical
-  objects.
-- An instance of a shipped class — a `List` with its `data` array, a
-  second platform made by `platform class new` — is an ordinary record.
-  Its code and layout come from the loading binary, so the decoder checks
-  its field count against the class's layout and refuses a mismatch.
-- **A module added later needs no tag and no table:** it is nameable by its
-  path as soon as the platform declares it. A path the loading binary does
-  not have refuses the image, which suits disposable images.
-- **Serializing the modules instead** (Primordial Soup's `Serialization.ns`
-  writes a fresh runtime into the snapshot) would put code compiled with
-  `SendMirror`, which has no wire tag on purpose, into an artifact.
-  **Letting the decoder build shipped classes itself**, by restricting
-  shipped modules' superclass clauses to bare names as `Kernel.ns`'s are,
-  would constrain the library and teach the decoder class construction.
-  **Patching placeholders after decoding** would rewrite slots of decoded
-  values afterwards. All three were weighed and rejected.
+- **Declare every shipped class directly in its module's root.** A name is
+  (module, declaration), so only the root's own nested classes have one; a
+  class nested deeper has no name, and the encoder refuses a graph that
+  reaches it ("compiled from shipped source, and no shipped name names
+  it").
+- **A class is a value only if it is public or a public class accessor of
+  its module answers it**, a method the compiler recognizes in shipped
+  source other than the kernel as exactly `^outer <Root> <Name>`
+  (`MixinMethod::class_accessor`), or if the VM signals its instances into a
+  program as a VM error (`ErrorClass::is_signalled`; the private
+  `NonBooleanReceiver`), since a program that catches one holds its class.
+  Only such a class, and its metaclass, may
+  stand in a slot, an element or a register, or be a program's superclass
+  or the mixin a program's `<:` clause applies. A private class without
+  such an accessor -- a capability such as `Activation`, a future `File` --
+  is a record's class at most: an image may carry its instances, never its
+  class object.
+- **A module's root and its instance stay out of every value.** The root
+  class, its metaclass and its levels may stand only as a frame's class, and
+  the instance only as a frame record's receiver or register, and a started
+  image, whose frames a program's closures read, names no module instance
+  at all: it holds what the factory was handed, the mirror or the kernel.
+- **An instance of a shipped class that is no builtin is a plain instance
+  with slots**, held on load to the slot count the loading binary lays the
+  class out with. An object holding external state -- an open file or
+  socket, once I/O exists -- cannot be written as data at all, whatever
+  names its class; that needs its own decision when the first such module
+  arrives.
+- **The boot draws no identity hash.** Every class's superclass clause and
+  every eager slot of a root runs at every boot; one that hashes something
+  -- a hashed collection built eagerly, say -- changes every hash a run
+  draws.
+- **A change to shipped source refuses older images.** The header's
+  fingerprint covers every shipped module's source, so an image another
+  binary wrote is refused before anything is read; images are disposable.
+- **A module costs its compilation at every start**, since every shipped
+  module is built at boot ([execution.md](execution.md), "What the
+  collections module cost"; [OPEN-WORK.md](../OPEN-WORK.md), "The cost of
+  building the shipped world at boot").
 
-**Open for later:** an object holding external state — an open file or
-socket, once I/O exists — cannot be written as data at all, whatever names
-its class. That needs its own decision when the first such module arrives.
+**Rejected, and why the reasons stand.** **Serializing the modules** (as
+Primordial Soup's `Serialization.ns` writes a fresh runtime into the
+snapshot) would put code compiled with `SendMirror`, which has no wire tag
+on purpose, into an artifact, and make every image as trusted as the
+binary. **Letting the decoder build shipped classes itself**, by
+restricting shipped modules' superclass clauses to bare names as
+`Kernel.ns`'s are, would constrain the library and teach the decoder class
+construction; the boot builds them instead, running only the binary's own
+code. **Patching placeholders after decoding** would rewrite slots of
+decoded values afterwards. **Rebuilding a shipped class as a record** would
+give a twin, where Rust compares class objects by identity. **Making every
+shipped class a builtin** was rejected too: a builtin is a class Rust needs
+a handle on, not a class the image needs a name for.
 
 #### The collections module (plan 2)
 
@@ -2785,21 +2819,22 @@ its class. That needs its own decision when the first such module arrives.
   `IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` -- as
   SOMns's and Primordial Soup's collections modules are values; it
   needs no mirror.
-  `PlatformFactory`'s root fetches the module (`vmMirror moduleNamed:
-  #CollectionsFactory ifFail: [nil]`) and instantiates it with
-  `kernelModule`, once, in its lazy `collectionsModule`, so every platform
-  shares one module instance and one class of each; the platform's lazy
+  The boot instantiates it with the kernel instance, once, and
+  `PlatformFactory`'s root reaches that instance (`vmMirror
+  moduleInstanceNamed: #CollectionsFactory ifFail: [nil]`) in its lazy
+  `collectionsModule`, so every platform shares one module instance and one
+  class of each; the platform's lazy
   `collections` slot answers that instance's `newCollections`, its one
   public member, and plan 1's `Collections` class has left
   `PlatformFactory.ns`. **How the facet's class is named, settled with the
   user on 2026-09-28:** the facet names its own class with `public
   Collections = ( ^outer CollectionsFactory Collections )`, as
-  `Platform>>Platform` does, so its platform path is `collections
-  Collections`; the class-accessor recognition (`MixinMethod::
-  class_accessor`) is not widened, and `Platform>>Collections` is gone.
-  `List` is a private class of the factory, handed out by the facet's class
-  accessor `public List = ( ^outer CollectionsFactory List )`, path
-  `collections List`; a program may still subclass it
+  `Platform>>Platform` does, which is what lets an image name it
+  (`CollectionsFactory Collections`, "Shipped names in the image" above);
+  the class-accessor recognition (`MixinMethod::class_accessor`) is not
+  widened, and `Platform>>Collections` is gone. `List` is a private class of
+  the factory, handed out by the facet's class accessor `public List = (
+  ^outer CollectionsFactory List )`; a program may still subclass it
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`).
 - **`List`, built,** is a kernel `Collection` written here. Its elements
   live in `data` from `firstIndex` on, `size_` of them, in an `Array` of
@@ -2974,7 +3009,7 @@ its class. That needs its own decision when the first such module arrives.
   only the handler it found; this runtime keeps ANSI's handler environment.
 - **Removed:** `OrderedCollection` in `Kernel.ns` and its `Object` accessor
   (§3.2's accessors are for the classes of the literals and the array
-  factories), `BuiltinClass::OrderedCollection` with builtin class tag 10,
+  factories), `BuiltinClass::OrderedCollection`,
   the `add:` leaf and `Heap::array_push`. Every `Array` is
   fixed-size once allocated -- nothing grows an object in place
   ([memory.md](memory.md)).
@@ -3039,17 +3074,26 @@ collections module cost"), three builds a side against `6d9974b`: **all
 four bench fixtures are level** (`f9d953a`, -0.2% to +0.5%, every
 comparison overlapping in both sittings), as they should be, since none
 sends a collection message in its timed loop and no send path changed.
-**A start that answers at once is level too** (`816367e`, +0.03 ms, +0.2%,
+**A start that answers at once was level too** (`816367e`, +0.03 ms, +0.2%,
 the head's build means among `6d9974b`'s): `interpreter/core_library.rs`
-resolves each shipped module on its first request, so a program that never
-touches `platform collections` never parses or resolves
+resolved each shipped module on its first request, so a program that never
+touched `platform collections` never parsed or resolved
 `CollectionsFactory.ns`. When the boot still resolved the whole table
 (`ee4bdc8`), that start cost 0.11 ms (+0.8%) more, every build of it above
-every head build. A start that builds one `List` costs about 0.28 ms
+every head build. A start that built one `List` cost about 0.28 ms
 (+2.1%) more than `6d9974b`'s, whose `List` was a builtin class: resolving,
-compiling and instantiating `CollectionsFactory.ns`, which the lazy
-`collectionsModule` defers to the first `platform collections`, as
-intended.
+compiling and instantiating `CollectionsFactory.ns`, which plan 2's lazy
+`collectionsModule` deferred to the first `platform collections`.
+
+**Shipped names in the image, measured 2026-10-12** ([execution.md](execution.md),
+"What the collections module cost"): every boot now builds every shipped
+module and every class its root declares, so every start pays for
+`CollectionsFactory.ns`, which has grown to 1,710 lines: about 3.7 ms, a
+hello program's median start going from about 12.3 ms to about 16.0 ms on
+the measuring workstation. Building the declared classes and naming the
+world adds nothing measurable beside it. How to take it back is open
+([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
+at boot").
 
 **The collections written here, measured 2026-10-10** (sub-project 3 of
 "Planned: the kernel completed to Primordial Soup's core API" below), the
@@ -3217,9 +3261,9 @@ method is never carried by an image, so the format needed nothing for it.
 **`Instruction::LoadBuiltinClass` is gone, and its wire tag 2 is retired**
 into `RETIRED_OPCODES` (`image/opcodes.rs`), never reused: an old artifact
 naming it hits an unknown tag instead of decoding into another program
-([image-format.md](image-format.md)). The decoder's
-`read_program_builtin_class` stays for the class references a record
-carries.
+([image-format.md](image-format.md)). A class reference a record carries
+names a builtin by its shipped name ([image-format.md](image-format.md),
+"Shipped names").
 
 **The mirror's capability lock moved with it.** The lock that no program can
 name the mirror's class is now that `Object` declares no accessor for it or
@@ -3267,8 +3311,9 @@ mirror row `futureValue:ifFail:` (`builtins/future.rs`) and sends the
 message on to its value with `Message>>sendTo:`; its state is the two slots
 `computation` and `state`, and forcing is `interpreter/future.rs`'s, a
 trampoline step under `Continuation::Future`. Like `Activation`, it is
-private, `Object` declares no accessor for it, and builtin class tag 30
-names it only where the image must (an unresolved future's record). The
+private, `Object` declares no accessor for it, and an image names it,
+`Kernel FutureImplementation`, only where it must (an unresolved future's
+record). The
 instructions `MakeFuture` and `ResolveFuture` make and resolve the futures
 of a simultaneous slot clause, and the public `Future`, a class without
 instances, makes one for a program with `Future computing:`, which sends
@@ -3357,8 +3402,9 @@ on its own (decided with the user on 2026-10-06):
   above). Primordial Soup's `String` selectors are adopted with code-point
   meaning -- `size`, `at:`, `do:`, `indexOf:`, `withAll:` count and take
   code points -- and bytes appear only where a conversion says so:
-  `asByteArray` answers the UTF-8 bytes, a `String` is decoded from a
-  `ByteArray` as UTF-8, and `StringBuilder` takes strings and code points.
+  `asUtf8` answers the UTF-8 bytes, `String fromUtf8:` decodes them
+  strictly, and `StringBuilder` takes strings and code points ("Planned:
+  sub-project 5, `ByteArray`, `StringBuilder` and the views" below).
   §5.1.5 leaves the encoding to an API that "encapsulates this decision".
 - **Primordial Soup's error classes, under `Error`.** `ArgumentError`,
   `CannotReturn`, `NonBooleanReceiver` and `CannotInstantiate` exist as
@@ -3445,17 +3491,400 @@ a non-integral literal is a binary float" above), and there is no
    `float64`, the signed and unsigned integers -- indexed by element
    rather than by byte offset, as JavaScript's `Float32Array` and its
    siblings, so that a program keeps a large homogeneous run of numbers
-   packed at the width it needs. Their names, the set of widths and
-   whether they share an abstract class are left to the sub-project's
-   design. Their elements lie contiguous and aligned to 16 or 32 bytes,
-   so that a later leaf operating on a whole array -- `a add: b into: c`,
+   packed at the width it needs. Their elements lie contiguous and
+   aligned to 32 bytes, so that a later leaf operating on a whole array -- `a add: b into: c`,
    `a dot: b` -- can use SIMD directly, paying a send once per array
    rather than once per element; such bulk operations, and a GPU API
    among the platform's capabilities that uploads from these arrays, are
    possible later APIs and not part of the sub-project (noted with the
-   user on 2026-10-11).
+   user on 2026-10-11). Designed with the user on 2026-10-12, with
+   `DataView` beside the typed arrays ("Planned: sub-project 5,
+   `ByteArray`, `StringBuilder` and the views" below); no plan yet.
 6. **Weak references**: `WeakArray`, `WeakMap` and `Ephemeron`, in the
    scavenger and the compaction, the image and the stress modes.
+
+### Planned: sub-project 5, `ByteArray`, `StringBuilder` and the views
+
+Would change: the kernel gains `ByteArray`, a builtin of bytes whose data
+lie aligned to 32 bytes; the UTF-8 conversions on `String`; `StringBuilder`;
+and two kinds of view over a `ByteArray` -- `TypedArray`'s ten classes,
+indexed by element at one width, and `DataView`, read and written at byte
+positions in a byte order chosen when it is made (designed with the user
+on 2026-10-12). Where Primordial Soup's API does not fit strings of code
+points or a 1-based language, the API is changed here rather than adopted
+(decided with the user the same day); everything else is Primordial Soup's.
+This section is the design the sub-project's plan builds; once built, its
+content moves into "What exists" and the documents named below.
+
+**What the sub-project builds, in one table:**
+
+| Class | Kind | Reached through | Superclass |
+|---|---|---|---|
+| `ByteArray` | builtin, format `AlignedBytes` | `Object>>ByteArray` (§3.2), as `Array` is | `Collection <: IndexedCollection` |
+| `StringBuilder` | Newspeak, over a `ByteArray` of UTF-8 | `platform kernel` | `Object` |
+| `TypedArray` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Collection <: IndexedCollection` |
+| `Int8Array`, `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Int64Array`, `Uint64Array`, `Float32Array`, `Float64Array` | Newspeak | `platform kernel` | `TypedArray` |
+| `DataView` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Object` |
+| `LittleEndianDataView`, `BigEndianDataView` | Newspeak, private to the kernel | `DataView`'s factories only | `DataView` |
+| `IndexedCollection` | a mixin, private to the kernel | applied with `<:` | `Collection`, which its own members build on |
+
+The views and `StringBuilder` are ordinary Newspeak classes whose state is a
+`ByteArray` slot; only `ByteArray` is a builtin. A view's access is one
+mirror leaf on its `ByteArray`, the width, the signedness and the byte
+order in the selector, so no access branches on them, and nothing outside
+`ByteArray` needs a heap format or a mover's attention (decided with the
+user on 2026-10-12, against typed arrays as builtin heap objects, which
+would forbid a view over an existing `ByteArray`, and against leaves that
+take the view itself, which would give Rust the layout of a Newspeak
+class). They are no builtins either: an image names them, their private
+classes and the levels `IndexedCollection` adds by where they are
+declared, through the shipped-class naming, which is built ("What the
+plan must handle" below).
+
+#### `ByteArray` in the heap, the movers and the image
+
+**Its own format, `AlignedBytes`,** codes 24 to 31, unused until now
+(`heap/header.rs`), the low three bits counting the unused bytes of the
+last word as `Bytes`'s do. A `ByteArray` on `Bytes` would be a `String`
+everywhere -- `PackedString::new`, `Heap::is_string`, `object_shape`,
+`describe` and the encoder decide a string by the format alone -- so the
+format is new rather than the class checked. `pointer_ranges` answers only
+the class word, as for every raw format.
+
+**Its data lie at a 32-byte address** (decided with the user on 2026-10-12:
+AVX2's width, so no 32-byte load crosses a cache line; 16 would let one in
+four do so, 64 costs seven words an object), for every `ByteArray`, since
+`TypedArray on:` takes any. The layout is the header, the class word,
+**three reserve words** and the data words; the data begin at the first
+32-byte address at or after the first field word, 0, 8, 16 or 24 bytes
+in, **computed from the object's address, never stored**, so no header bit
+records it and the object's size never changes when it moves -- the
+compaction's forwarding counts words. An offset into the object space is an
+address modulo 32, since `ns-memory`'s reservation is page-aligned. `size`
+is (field words − 1 − 3) × 8 − the unused bytes. A new `ByteArray` is
+zero-filled; `ByteArray new` answers an empty one, as `Array new` does;
+one of 32 KiB or more is allocated old, as every object is.
+
+**Every mover realigns the data.** Whoever copies an `AlignedBytes` object
+to another address moves its data within the new block to the new block's
+aligned position (`copy_within`; the ranges may overlap): the scavenger's
+`copy` (`heap/scavenge.rs`), the compaction's slide (`heap.rs`), and the
+move stress mode, which shifts whole regions and so walks them afterwards.
+It is the first format that needs a per-object fix-up in the movers; slack
+inside the object touches the fewest invariants, where an aligned bump
+with `Free` fillers would break the compaction's dense forwarding. The
+heap's readers `debug_assert!` the alignment, and the move stress mode's
+shifting offsets reach all four positions. The rule joins `CLAUDE.md`'s
+invariants when it is built: a mover that skips it leaves the data at the
+old offset within the block, wrong bytes at exit status 0.
+
+**`heap.rs`'s accessors copy out**, as the seam's do: allocating, `size`,
+a byte, a range copied, a range replaced (`memmove`), and a value read or
+written at a width and byte order. Bytes are no handles, so no write
+barrier is involved. `describe` answers "a ByteArray of 3", as an `Array`
+describes itself.
+
+**The image** carries a `ByteArray` as the record `OBJECT_BYTE_ARRAY`, the
+next free object tag (11): a u32 length, then the bytes, its class named
+as every shipped class is. The decoder's first pass sizes the record from its
+own bytes -- the length bounded by `bounded_count` and by the bytes left
+-- and the second fills the placeholder; the reserve is not written, and
+the decoder places the data at its own address's alignment. `inspect`
+reads the record, a truncated or overlong one is a `DecodeError`, and
+`tests/opcode_tags.rs` pins the tag (`image-format.md`). A view or a
+`StringBuilder` is an ordinary instance whose slot holds the record, its
+class named as every shipped class is ("What the plan must handle"
+below).
+
+**As a builtin class** `BuiltinClass::ByteArray` is appended to `ALL` and
+reaches the list `types.rs` keeps: `kernel_class_name`, the hierarchy
+test, `OBJECT_CLASS_ACCESSORS` with `Object>>ByteArray` beside
+`Object>>Array`, a `decide_factory` branch for `new` and `new:`, and
+`isKindOfByteArray` as a quick method. The leaves decline an instance of a
+subclass, as `Array`'s and `String`'s do.
+
+#### The sequence protocol is a mixin
+
+`first`, `last`, `keysAndValuesDo:`, `indexOf:`, `copyFrom:to:`,
+`replaceFrom:to:with:startingAt:`, `copyWith:`, `copyWithSize:`, `,`,
+`collect:`, `select:`, `reject:`, `sort:`, `sortFrom:to:by:` and
+`asArray` -- `Array`'s protocol beyond `Collection`'s -- are written once, over `at:`,
+`at:put:`, `size` and a new instance of the receiver's kind, in a kernel
+mixin, `IndexedCollection` (named with the user on 2026-10-12), that `Array`,
+`ByteArray` and `TypedArray` apply over `Collection`: `class Array =
+Collection <: IndexedCollection`. A class overrides what a leaf does faster,
+as `Array`'s and `ByteArray`'s `copyFrom:to:` and
+`replaceFrom:to:with:startingAt:` do.
+Programs see the same selectors and no new level: the kernel has no
+public `superclass`, so only road step 5's mirrors will show the level
+between `Array` and `Collection`, a class whose name is its mixin's,
+`IndexedCollection` -- `Class>>name` answers the name of a class's
+application's mixin (`builtins/behavior.rs`), and an applied level's
+application is the named class's mixin over the level below
+(`interpreter/nested.rs`, `build_applied_levels`), §6.2's "class *I* with
+mixin *M*". `IndexedCollection` declares `Collection` its own
+superclass, which records that its members build on `Collection`'s
+protocol; applying it with `<:` takes only its own members (§6.2). A mixin rather than an abstract
+class (decided with the user on 2026-10-12): the shipped library uses the
+construct the language has for a protocol shared across classes, compiled
+code lives on the mixin and is shared by every application
+([compiler.md](compiler.md)), and `List` could apply it later. **If the
+bootstrap cannot yet take a builtin whose superclass is a mixin
+application, the bootstrap is fixed**; there is no fallback to an abstract
+class. `Kernel` itself is `Object <: Value`, but it is no builtin, so the
+builtin case is the plan's first step to check.
+
+#### `ByteArray`'s protocol
+
+Decided with the user on 2026-10-12. Primordial Soup's byte methods, the
+sequence protocol, and `Collection`'s:
+
+- **Class side.** `new` (empty), `new: size` (zero-filled; a negative, a
+  non-integer or an unallocatable size is an `ArgumentError` in `Array
+  new:`'s texts), and `withAll: collection`, from a `ByteArray`, an
+  `Array`, any collection of integers 0 to 255, or a `String`, which counts
+  as its UTF-8 bytes; an element outside 0 to 255 is an `ArgumentError`
+  carrying it.
+- **Elements.** `at:` answers an integer 0 to 255; `at:put:` answers the
+  value, and a value outside 0 to 255 or no integer is an `ArgumentError`
+  carrying the value -- Primordial Soup's carries the index -- with the
+  byte unchanged. Index errors are `Array`'s texts.
+- **The sequence protocol** from the mixin; `collect:` answers an `Array`,
+  since the block may answer anything, and `select:` and `reject:` a
+  `ByteArray`. `asArray` answers an `Array` of integers, `asByteArray`
+  the receiver.
+- **Primordial Soup's searches.** `indexOf:`, `indexOf:startingAt:`,
+  `lastIndexOf:`, `lastIndexOf:startingAt:`, `startsWith:` and `endsWith:`
+  decide by the argument: an integer is an element, a `ByteArray` or a
+  `String` a subsequence -- one byte means the same either way. The bounds
+  of a start are Primordial Soup's: 1 to `size + 1`, an empty subsequence
+  found at the start.
+- **`replaceFrom:to:with:startingAt:`** takes a `ByteArray` or a `String`
+  as its source and is right when source and receiver overlap
+  (`memmove`); `,` takes either and answers a `ByteArray`.
+- `=` and `hash` are identity, as Primordial Soup's are and §3.1.1 lists no
+  `ByteArray` among the values; a content hash on a mutable object would
+  move under a `Map`'s key. `printString` takes `Array`'s form.
+  `isKindOfByteArray` and `isKindOfCollection` answer `true`.
+- **Not adopted:** `asString` and `copyStringFrom:to:` (`String fromUtf8:`
+  instead), `copyByteArrayFrom:to:` (`copyFrom:to:` already answers a
+  `ByteArray`), and the width accessors `int8At:` to `float64At:put:`
+  (`DataView` instead).
+
+**A `String` argument is its UTF-8 bytes; a `ByteArray` argument to a
+`String` is refused** (decided with the user on 2026-10-12): the receiver
+decides the unit, and an argument of the other kind is taken only where the
+conversion cannot fail. Encoding a string is total, so `bytes startsWith:
+'GIF89a'` works as in Primordial Soup -- Newspeak has no byte literal, and a
+string stands in for one -- and a leaf encodes while it compares or copies,
+allocating nothing, an ASCII string's code points being its bytes. Decoding
+can fail, so `String`'s methods take only strings, as they already do, and
+a predicate never fails on an encoding; the conversion is written out.
+
+#### UTF-8
+
+Decided with the user on 2026-10-12:
+
+- **`String>>asUtf8`** answers a new `ByteArray` of the UTF-8 bytes and
+  never fails.
+- **`String fromUtf8: bytes`** and **`String fromUtf8: bytes from: start
+  to: stop`** decode strictly, as Rust's `str::from_utf8`: a truncated
+  sequence, a stray continuation byte, an overlong encoding, a surrogate
+  and anything past U+10FFFF are an `ArgumentError` naming the byte
+  position, "fromUtf8: invalid UTF-8 at byte 5"; a range that ends inside
+  a character is invalid; the range's bounds are `copyFrom:to:`'s; an
+  argument that is no `ByteArray` is an `ArgumentError`. A byte-order mark
+  stays U+FEFF. Strict, not U+FFFD per bad sequence: nothing is lost
+  silently, and a program that wants replacement characters writes them.
+- **`String withAll: bytes`** is element-wise, as for any collection:
+  every byte a code point, Latin-1, never failing.
+- Primordial Soup's `asByteArray`, `copyByteArrayFrom:to:` and `asString`
+  are renamed so that the encoding is in the name.
+
+#### `StringBuilder`
+
+Primordial Soup's protocol in code points (decided with the user on
+2026-10-12), in Newspeak over three private slots: `data`, a `ByteArray` of
+UTF-8; `byteCount`; and `codePointCount`.
+
+- `new` (16 bytes) and `new: capacity` (`capacity` bytes, a hint; a
+  negative or a non-integer is an `ArgumentError`). Growing replaces `data`
+  with a `ByteArray` of 1.5 times its size, or more if needed, so an
+  append costs amortised O(1).
+- **`add: aString`** first refuses what is no `String` -- a `Symbol` is one
+  -- with an `ArgumentError`, the builder unchanged; a `ByteArray` is
+  refused too, `add: (String fromUtf8: bytes)` being the written-out form.
+  It answers the argument.
+- **`addCodePoint: anInteger`**, Primordial Soup's `addByte:` renamed,
+  appends one code point; anything that is no Unicode scalar value is an
+  `ArgumentError` and nothing is appended (Primordial Soup's leaves a
+  stray zero byte). It answers the argument.
+- `writeln: aString` is `add:` and then code point 10, answering the
+  receiver. `size` counts code points, `isEmpty`, `isKindOfStringBuilder`.
+- `asString` answers `String fromUtf8: data from: 1 to: byteCount`, a new
+  string; `asUtf8`, Primordial Soup's `asByteArray` renamed, answers a copy
+  of the bytes. `data` is never handed out, so it holds valid UTF-8.
+- `=` and `hash` are identity. Two kernel-only leaves serve it: a string's
+  UTF-8 length in bytes, its size when it is ASCII, and writing one code
+  point as UTF-8 at a position of a `ByteArray`, answering the bytes
+  written, so `addCodePoint:` makes no intermediate string.
+
+#### The typed arrays
+
+Decided with the user on 2026-10-12:
+
+- **Ten classes under `TypedArray`**, JavaScript's names: `Int8Array`,
+  `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`,
+  `Int64Array`, `Uint64Array`, `Float32Array` and `Float64Array`.
+  `Uint8Array` is all but empty, a view of width one whose elements are a
+  `ByteArray`'s, kept so that the family is whole. Not built:
+  `Uint8ClampedArray` (JavaScript's canvas case) and `Float16Array` (Rust
+  has no stable `f16`; with the GPU API, [OPEN-WORK.md](../OPEN-WORK.md)).
+- **A view over a whole `ByteArray`.** `new: size` allocates a zero-filled,
+  aligned `ByteArray` of `size` × the width, a negative, a non-integer or
+  an unallocatable size being an `ArgumentError` in `Array new:`'s texts;
+  `new` an empty one; `on:
+  bytes` views an existing `ByteArray`, whose size must be a multiple of
+  the width, else an `ArgumentError`; `withAll: collection` is `new:` and
+  `at:put:`. `bytes` answers the `ByteArray` itself, not a copy: writes
+  through any view reach every other. No window with an offset, which
+  would also break the alignment the views exist for. `bytesPerElement`
+  answers the width on either side.
+- **Little-endian, always** -- every target's order, x86-64's and
+  aarch64's, so it costs nothing and an image reads the same everywhere. A
+  byte order chosen per array would put a branch or a swap on every access
+  and hand later bulk leaves non-native data; a big-endian block is read
+  through `DataView`, or converted once by a later bulk `byteSwap`.
+- **`at:put:` checks the range**: an integer outside the class's range, or
+  no integer, is an `ArgumentError` carrying the value, the element
+  unchanged -- as Primordial Soup's, Squeak's and Strongtalk's do, where
+  JavaScript wraps modulo 2^n. **A float element takes any number,
+  converted as `asFloat` converts it**, since `0 = 0.0` in the tower;
+  `Float32Array` then rounds to binary32 to nearest, ties to even, a
+  finite value past its range becoming an infinity, a NaN staying a NaN.
+  It answers the value given, not the rounded one. A float32 is read
+  widened exactly; an `Int64Array`'s or `Uint64Array`'s element may read as
+  a `LargeInteger`.
+- **The sequence protocol** from the mixin, copies being of the
+  receiver's class over a new `ByteArray`; `collect:` answers an `Array`,
+  `select:` and `reject:` the receiver's class; `indexOf:` compares with
+  `=`, so `3` finds `3.0`. `size` is the bytes' size over the width.
+  `=` and `hash` are identity; `isKindOfTypedArray` and
+  `isKindOfCollection` answer `true`.
+- **One leaf per width for `at:` and one for `at:put:`**, on the
+  `ByteArray` with the element index; `Uint8Array` uses `ByteArray`'s.
+
+#### `DataView`
+
+Decided with the user on 2026-10-12, in place of Primordial Soup's width
+accessors on `ByteArray`:
+
+- **One public class, the byte order given once.** `DataView on: bytes
+  byteOrder: #bigEndian` and `DataView new: size byteOrder: #littleEndian`
+  answer an instance of the private `BigEndianDataView` or
+  `LittleEndianDataView`; any other order, or an argument that is no
+  `ByteArray`, is an `ArgumentError`. `byteOrder` answers the symbol.
+  Fixing the order in the class keeps every access free of a branch, and
+  naming it once at creation keeps it visible where the view is made, where
+  Primordial Soup's accessors are little-endian without saying so.
+- **The accessors**: `int8At:` and `uint8At:` in `DataView`, a single byte
+  having no order; `int16At:`, `uint16At:`, `int32At:`, `uint32At:`,
+  `int64At:`, `uint64At:`, `float32At:` and `float64At:` in each concrete
+  class, each with its `put:` form.
+- **A 1-based byte position**, as `at:` and `indexOf:` count (decided with
+  the user on 2026-10-12; Primordial Soup's count from 0), not necessarily
+  aligned: `uint32At: 3` is allowed. A position below 1, or one whose last
+  byte lies past `bytes size`, is an `ArgumentError` carrying the position.
+  The values follow the typed arrays' rules: integers checked against
+  their range, floats taking any number, `put:` answering the value.
+- `bytes` answers the `ByteArray`, `size` its size; `=` and `hash` are
+  identity; `isKindOfDataView` answers `true`.
+- **The leaves**: 36 selectors on the `ByteArray`, eight widths in two
+  orders, read and write, and four for one byte, all one generic Rust
+  function over width, kind and order, which the typed arrays share with an
+  element index in place of a byte position.
+
+#### Errors and tests
+
+Every error is an `ArgumentError` carrying what was wrong -- the index, the
+position, the value, the argument, or the byte position of invalid UTF-8 --
+in the texts of `Array`'s and `String`'s existing errors, and none leaves a
+half-changed state: `at:put:`, `add:` and `addCodePoint:` check before they
+write. The goldens go under `goldens/library/` -- `byte-array/`, `string/`
+(UTF-8 both ways and every kind of invalid input), `string-builder/`,
+`typed-array/` (each class at its bounds, float32 rounding, the infinities,
+NaN, shared storage) and `data-view/` (both orders, unaligned positions,
+bounds) -- under both lowerings; heap tests hold the alignment and the
+bytes through a scavenge, a compaction and the move stress mode in all four
+positions; `tests/image.rs` round-trips a `ByteArray` and refuses a
+truncated or overlong record without a panic. The documentation, the
+formatting and the accessor tests cover the new members as they stand.
+
+#### What the plan must handle
+
+Found on 2026-10-12 while the plan was being prepared, in the code as it
+stands; the shipped-class naming the first item needs is built.
+
+- **An image names every shipped object by where it is declared**
+  (decided with the user on 2026-10-12, built 2026-10-13;
+  [image-format.md](image-format.md), "Shipped names";
+  "Shipped names in the image" above): the bootstrap builds every shipped
+  module instance and class whole, metaclasses and levels included, and an
+  image names one by module, declaration and kind, resolved by lookup
+  before the graph is decoded, so the decoder runs no code. So a program
+  holding a `Float32Array`, a `DataView` or a `StringBuilder` can be
+  written to an image without these classes being builtins: they are named
+  like any shipped class, `LittleEndianDataView`, `BigEndianDataView` and
+  `IndexedCollection` as a record's class or a frame's but never as a
+  value, since they are private and no public class accessor answers them.
+  Making the sixteen classes builtins was rejected: a builtin is a class
+  Rust needs a handle on, not a class the image needs a name for. What the
+  plan must still do here: the boot builds the kernel's new classes and the
+  level `IndexedCollection` adds under `Array` and `ByteArray` (the next
+  item), and `complete_shipped_world` names them, the level among the
+  builtins' own levels (`shipped_world.rs`'s `push_class` reads a class's
+  levels off its superclass chain); and the boot cost a larger kernel adds
+  is measured ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the
+  shipped world at boot").
+- **The bootstrap takes only builtins today.** `check_kernel_shape`
+  (`interpreter/kernel.rs`) asserts one nested class per builtin and a
+  superclass clause that is a bare kernel name; the plan lets `Kernel.ns`
+  declare ordinary classes beside them (`IndexedCollection`,
+  `StringBuilder`, `TypedArray` and its ten classes, `DataView` and its
+  two), built lazily by their nested-class accessors as any class is, and
+  lets a builtin's clause carry `<:` clauses naming a kernel mixin.
+  `fill_builtin_classes` then builds each such level as
+  `nested::build_applied_levels` builds one -- the mixin's application
+  over the level below, a class object made with `new_applied_level` --
+  applies the builtin's own mixin over the topmost level, links the
+  superclass to it, passes the levels to
+  `give_existing_class_objects_metaclasses`, and `wire_kernel_in` gives
+  each level and its metaclass the kernel's lexical context, as it does
+  for the kernel's own `Value` level. The hierarchy test walks through the
+  level.
+- **`Primitive` stays two bytes** (`resolve.rs`'s
+  `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
+  generic element access of the typed arrays and `DataView` is one
+  family whose payload packs the element kind, the byte order, the
+  indexing (element or byte position) and read or write into one `u8`,
+  not an enum of four fields.
+- **The movers realign by word index.** An allocation's fields are a range
+  of word indices into the space, whose base is page-aligned, so the data
+  begin at the first field index rounded up to a multiple of four; the
+  scavenger's `copy` and the compaction's slide know the old and the new
+  header index of each object, and the move stress mode shifts a whole
+  region by one distance, so after its bulk copy it walks the region and
+  realigns each `AlignedBytes` object from its old index, the new one less
+  the shift.
+- **An image's slots are untrusted.** A crafted record can give a view a
+  `bytes` slot that holds no `ByteArray`, or a `StringBuilder` counts that
+  disagree with its data: a leaf that meets one declines, and the failure
+  block signals an `ArgumentError`, never a panic.
+- **Overrides keep the failure paths.** `Array`'s and `ByteArray`'s leaf
+  methods fall back to `super`, which now reaches `IndexedCollection`
+  before `Collection`, so the mixin declares none of `at:`, `at:put:`,
+  `size`, `do:`, `=`, `hash` and `printString`, and
+  `goldens/library/builtin-subclass/` keeps its output.
 
 ## Decisions
 
@@ -3574,6 +4003,22 @@ a non-integral literal is a binary float" above), and there is no
   overrides. `num-rational`'s `Ratio` was the model for the arithmetic,
   the rounding and the comparison, and no code of it was taken, so its
   licence is not taken on.
+
+- **`ByteArray`, `StringBuilder` and the views** (decided with the user on
+  2026-10-12, not yet built; "Planned: sub-project 5, `ByteArray`,
+  `StringBuilder` and the views" above): Primordial Soup's API is changed
+  where it does not fit code-point strings or a 1-based language; UTF-8 is
+  decoded strictly, by `String fromUtf8:`, and encoded by `asUtf8`; a
+  `ByteArray`'s methods take a `String` as its UTF-8 bytes, a `String`'s
+  refuse a `ByteArray`; `ByteArray` gains the sequence protocol, from a
+  kernel mixin it shares with `Array` and `TypedArray`, and its `indexOf:`
+  decides by the argument; `StringBuilder` counts code points and appends
+  them with `addCodePoint:`; ten typed arrays view a whole `ByteArray` by
+  element, little-endian, checking integer ranges and converting any number
+  for a float element; `DataView` reads and writes at 1-based byte
+  positions in the byte order its factory is given, through two private
+  classes; and every `ByteArray`'s data lie at a 32-byte address, a reserve
+  of three words that every mover realigns.
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:

@@ -17,6 +17,7 @@ pub(crate) mod nested;
 pub(crate) mod resolve;
 pub(crate) mod safepoint;
 pub(crate) mod sends;
+pub(crate) mod shipped_world;
 mod slots;
 pub(crate) mod unwind;
 pub(crate) mod value_class;
@@ -280,6 +281,10 @@ pub struct Mutator<'gc> {
     /// enclosing object of every builtin class. `None` only until the
     /// bootstrap's kernel phase has run.
     pub(crate) kernel: Option<Value<'gc>>,
+    /// Every shipped module's one instance, the kernel's first, and every
+    /// shipped object under its name, built at boot and never changed
+    /// afterwards (`interpreter::shipped_world`).
+    pub(crate) shipped_world: shipped_world::ShippedWorld<'gc>,
     /// The `=` the core library's `Value` declares, recorded by the
     /// bootstrap's kernel phase. `builtins::value`'s derived equality
     /// compares against it to tell an inherited `=` from an overridden one:
@@ -479,7 +484,7 @@ impl Interpreter {
         // instantiation is a run like any other, and they should see it, as
         // is the platform's, which needs the kernel instance.
         interpreter.install_kernel();
-        interpreter.install_platform();
+        interpreter.install_shipped_modules();
         interpreter
     }
 
@@ -594,6 +599,33 @@ impl Interpreter {
                 .collect();
             let decided = mutator.decide_send(receiver, selector, &arguments);
             mutator.start(decided, &arguments)
+        });
+        self.run_from_host(start, depth)
+    }
+
+    /// Builds the class `nested` declares in the class of `enclosing`, as
+    /// its implicit accessor would, whatever the accessor's access: the boot
+    /// builds every class a shipped root declares this way, private ones
+    /// included, which a host send would be refused
+    /// (`interpreter::shipped_world`). The declaring class is `enclosing`'s
+    /// own class, which holds for a shipped module instance: every shipped
+    /// class is declared directly in its root, and the instance's class is
+    /// the root class. Answers the class object, or the error its superclass
+    /// clause raised.
+    pub(crate) fn build_nested_class(
+        &mut self,
+        enclosing: &Root,
+        nested: &Rc<crate::mixin::Mixin>,
+    ) -> HostResult {
+        let depth = self.world.activation_depth();
+        let start = self.enter(|mutator| {
+            let receiver = mutator.fetch(enclosing);
+            let declaring_class = match receiver.as_object() {
+                Some(object) => mutator.heap().object_class(object),
+                None => unreachable!("internal: a shipped module instance is an object"),
+            };
+            let decided = nested::nested_class(mutator, receiver, nested, declaring_class);
+            mutator.start(decided, &[])
         });
         self.run_from_host(start, depth)
     }
@@ -1641,10 +1673,11 @@ impl<'gc> Mutator<'gc> {
 
     /// The `platform` object (`docs/design/core-library.md`, "The
     /// platform"): the instance of `PlatformFactory.ns`'s nested `Platform`
-    /// the bootstrap built (`Interpreter::install_platform`) from the module
-    /// instance it made with the VM mirror and the kernel instance, the same
-    /// one for every reference within one interpreter. Asking for it, at
-    /// bootstrap or in `image::load`, runs no Newspeak and fills no cache.
+    /// the bootstrap built (`Interpreter::install_shipped_modules`) from the
+    /// module instance it made with the VM mirror and the kernel instance,
+    /// the same one for every reference within one interpreter. Asking for
+    /// it, at bootstrap or in `image::load`, runs no Newspeak and fills no
+    /// cache.
     pub(crate) fn platform_value(&self) -> Value<'gc> {
         self.platform_singleton
             .expect("internal: the platform is booted at bootstrap")

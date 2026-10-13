@@ -186,8 +186,8 @@ pub const RETIRED_LITERALS: [u8; 3] = [6, 7, 8];
 // what a file says, so the numbering lives here and all three read it.
 // ---------------------------------------------------------------------------
 
-/// How a `Value` is encoded. Scalars carry their payload inline; 5 to 8
-/// name something outside the value itself. Next free number: 11.
+/// How a `Value` is encoded. Scalars carry their payload inline; 5, 6 and
+/// 11 name something outside the value itself. Next free number: 12.
 pub const VALUE_NIL: u8 = 0;
 pub const VALUE_FALSE: u8 = 1;
 pub const VALUE_TRUE: u8 = 2;
@@ -197,12 +197,6 @@ pub const VALUE_FLOAT: u8 = 4;
 pub const VALUE_OBJECT_ID: u8 = 5;
 /// A class, named by a class tag rather than by object identity.
 pub const VALUE_CLASS_TAG: u8 = 6;
-/// The `platform` singleton, resolved to the loading interpreter's own.
-pub const VALUE_PLATFORM: u8 = 7;
-/// An object the loading platform answers along a path of public members,
-/// followed by a `u32` index into the image's platform path section
-/// (`image::platform_paths`).
-pub const VALUE_PLATFORM_PATH: u8 = 8;
 /// A `LargeInteger`, carried inline as a value rather than as an object
 /// record, since a value has no identity (§3.1.1): a sign byte, a `u32`
 /// digit count, that many `u64` digits, least significant first. Only the
@@ -217,6 +211,22 @@ pub const VALUE_LARGE_INTEGER: u8 = 9;
 /// form is accepted -- a denominator above 1, no common factor -- since
 /// anything else would break `=` and `hash`.
 pub const VALUE_FRACTION: u8 = 10;
+/// A shipped module's instance, followed by a `u32` index into the image's
+/// shipped-name section (`image::shipped_names`), whose entry must be a
+/// module instance. It stands only as a frame record's receiver or
+/// register: a module instance holds the core library's state, so no other
+/// value of a graph may name it, and only a frame of shipped code holds one.
+/// A started image names none at all, since its frames are read by the
+/// closures the program holds.
+pub const VALUE_SHIPPED_MODULE: u8 = 11;
+
+/// Value tags that no longer name anything and are never reused: 7 was
+/// `VALUE_PLATFORM`, the platform singleton, and 8 `VALUE_PLATFORM_PATH`, an
+/// object the loading platform answered along a path of public members. A
+/// shipped name replaced both on 2026-10-12: the platform is an ordinary
+/// record, and what a path reached is named by its declaration
+/// (`VALUE_CLASS_TAG` with `CLASS_SHIPPED`, or `VALUE_SHIPPED_MODULE`).
+pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
 /// Next free number: 11.
@@ -227,7 +237,7 @@ pub const OBJECT_ARRAY: u8 = 3;
 /// A block closure: its code, the frame it captured, and its copied values.
 pub const OBJECT_CLOSURE: u8 = 6;
 /// A class object, in one of the two shapes its mixin reference
-/// (`MIXIN_ROW`/`MIXIN_BUILTIN`) selects.
+/// (`MIXIN_ROW`/`MIXIN_SHIPPED`) selects.
 pub const OBJECT_CLASS: u8 = 7;
 /// The metaclass of a class *record*: a record of its own, so a slot can
 /// name it by id before its class record is decoded and its identity hash
@@ -237,10 +247,10 @@ pub const OBJECT_CLASS: u8 = 7;
 /// (`docs/design/object-model.md`, "The image format").
 pub const OBJECT_METACLASS: u8 = 8;
 /// A reified activation: an instance of the kernel-private `Activation`
-/// class, the object a frame reference names. Its header class tag is
-/// `Activation`'s builtin tag, the one place an image may name that class
-/// (`decode::read_referenced_builtin_class`); any other header on this body,
-/// or that header on any other body, is refused. Its body is the frame's
+/// class, the object a frame reference names. Its header names
+/// `Kernel Activation` by its shipped name (`CLASS_SHIPPED`), the one record
+/// an image may give that class; any other header on this body, or that
+/// header on any other body, is refused. Its body is the frame's
 /// kind tag (`FRAME_*`) and that kind's payload, a `u32` program counter,
 /// `uncontinuable`, the receiver, the sender and the home (each a presence
 /// flag and an object id), the current class (a presence flag and a class
@@ -268,55 +278,66 @@ pub const RETIRED_OBJECT_BODIES: [u8; 3] = [4, 5, 9];
 /// decides the rest of the record. Every class the graph creates applies a
 /// declaration of the module's own -- a row of the mixin table, followed by
 /// the superclass, enclosing object, declaring class and, for a level a `<:`
-/// clause added, that clause -- except a level a `<:` clause naming a builtin
-/// added, whose mixin is that builtin's: the bootstrap supplies it, no row
-/// describes it, and so it is named the way a builtin class is, by builtin
-/// tag, followed by the superclass and the clause only. Its enclosing object
-/// and declaring class are the builtin's, which no image carries.
+/// clause added, that clause -- except a level a `<:` clause naming a
+/// shipped class added, whose mixin is that class's: the loading binary
+/// supplies it and no row describes it, so it is named by the `u32` index of
+/// the shipped class's entry in the shipped-name section -- a class, allowed
+/// as a superclass -- followed by the superclass and the clause only. Its
+/// enclosing object and declaring class are the shipped class's, which no
+/// image carries.
 pub const MIXIN_ROW: u8 = 0;
-pub const MIXIN_BUILTIN: u8 = 1;
+pub const MIXIN_SHIPPED: u8 = 2;
 
-/// How a class reference is named. A builtin, a module's root class and the
-/// levels a module root's own `<:` clauses add are not in the graph at all --
-/// the bootstrap, the mixin table and the module section produce them -- so
-/// only `CLASS_RECORD` indexes the object table. `CLASS_MODULE` is followed by
-/// a `u32` module index; `CLASS_MODULE_LEVEL` by a `u32` module index and the
-/// level's `u32` position among that root's levels, lowest first.
-/// `CLASS_METACLASS` names the metaclass of one of those prebuilt classes,
-/// which is no record either, and is followed by that class's own reference
-/// -- `CLASS_BUILTIN`, `CLASS_MODULE`, `CLASS_MODULE_LEVEL` or
-/// `CLASS_PLATFORM_PATH`, never a second `CLASS_METACLASS` or a
-/// `CLASS_RECORD` (whose metaclass is a record, `OBJECT_METACLASS`), which
-/// bounds the nesting at one. `CLASS_PLATFORM_PATH` names a class the loading
-/// platform answers along a path of public members, followed by a `u32`
-/// index into the image's platform path section: like a builtin, it exists
-/// before the graph is decoded. Next free number: 8.
-pub const CLASS_BUILTIN: u8 = 0;
+/// Mixin references that no longer name anything and are never reused: 1
+/// was `MIXIN_BUILTIN`, a level applying a builtin's mixin, named by
+/// builtin class tag. A shipped name replaced it on 2026-10-12
+/// (`MIXIN_SHIPPED`), which names any shipped class's mixin by declaration.
+/// Next free number: 3.
+pub const RETIRED_MIXIN_TAGS: [u8; 1] = [1];
+
+/// How a class reference is named. A shipped class, metaclass or level is
+/// not in the graph at all -- the loading binary produces it -- so it is
+/// named by its shipped name; every other class object, a module's root
+/// class, the levels its `<:` clauses add and their metaclasses among them,
+/// is a record, and `CLASS_RECORD` names it by object id.
+///
+/// `CLASS_SHIPPED` is followed by a `u32` index into the image's
+/// shipped-name section (`image::shipped_names`), whose entry must be a
+/// class, a metaclass or a level -- never a module instance -- allowed where
+/// the reference stands (`docs/design/image-format.md`, "Shipped names"): as a
+/// value, a shipped class that is public, that a public class accessor of its
+/// module answers, or whose instances the VM signals as a VM error
+/// (`ErrorClass::is_signalled`), and its metaclass; as a superclass, such a
+/// class, not its metaclass, but `Behavior`, `Class` and `Metaclass`; as a
+/// record's class, any shipped class but a module's root and `Top`,
+/// `Activation` only on a frame record and `FutureImplementation` only on a
+/// future's; as a frame's class or a class record's declaring class, any
+/// shipped class, metaclass or level.
+/// Next free number: 9.
 pub const CLASS_RECORD: u8 = 2;
-pub const CLASS_METACLASS: u8 = 4;
-pub const CLASS_PLATFORM_PATH: u8 = 5;
-pub const CLASS_MODULE: u8 = 6;
-pub const CLASS_MODULE_LEVEL: u8 = 7;
+pub const CLASS_SHIPPED: u8 = 8;
 
 /// Class tags that no longer name anything and are never reused: 1 was the
-/// one root class an image could carry, 3 a level of it by position alone.
-/// Once an image carries several modules, each names its module by index
-/// (`CLASS_MODULE`, `CLASS_MODULE_LEVEL`); a stale image's tag-1 or tag-3
-/// reference meets an unknown tag instead of naming whichever module is first.
-pub const RETIRED_CLASS_TAGS: [u8; 2] = [1, 3];
-
-/// Builtin class tags (`encode::builtin_class_tag`, which a `CLASS_BUILTIN`
-/// reference, a `MIXIN_BUILTIN` level and a `HASHED_BUILTIN_CLASS` entry are
-/// followed by) that no longer name anything and are never reused: 8 was
-/// `Character`, retired 2026-09-25 with the class; 10 was `OrderedCollection`,
-/// retired 2026-09-28 when `platform collections List`, Newspeak in the
-/// shipped `CollectionsFactory.ns`, replaced it; 13, 18, 19 and 29 were
-/// `Platform`, `Transcript`, `Collections` and `KernelNamespace`, retired
-/// 2026-09-26 when the four moved into a shipped module (now
-/// `PlatformFactory.ns`), whose objects an image names by their platform
-/// paths. A stale image's reference to one names no builtin rather than
-/// whichever class took the number. Next free number: 40.
-pub const RETIRED_BUILTIN_CLASS_TAGS: [u8; 6] = [8, 10, 13, 18, 19, 29];
+/// one root class an image could carry, 3 a level of it by position alone,
+/// replaced by 6, `CLASS_MODULE`, a module's root class by module index, and
+/// 7, `CLASS_MODULE_LEVEL`, one of its levels by module index and position,
+/// once an image carried several modules. 4 was `CLASS_METACLASS`, the
+/// metaclass of such a root or level, followed by that class's own tag. A
+/// module's root class, its levels and their metaclasses became records of
+/// the graph on 2026-10-13 (`CLASS_RECORD`), which the module section names
+/// by object id, so a stale image's tag-1, 3, 4, 6 or 7 reference meets an
+/// unknown tag instead of naming whichever module is first. 0 was
+/// `CLASS_BUILTIN`, a builtin by builtin class tag, and 5
+/// `CLASS_PLATFORM_PATH`, a class the loading platform answered along a
+/// path of public members; a shipped name replaced both on 2026-10-12
+/// (`CLASS_SHIPPED`), which names a builtin and every other shipped class,
+/// metaclass and level by declaration.
+///
+/// The builtin class tags those references and a module's root section were
+/// written in -- a numbering of `BuiltinClass` of its own, 0 to 39 with 8,
+/// 10, 13, 18, 19 and 29 retired -- are retired as a whole: no part of an
+/// image names a builtin by position any more, only by its shipped name.
+pub const RETIRED_CLASS_TAGS: [u8; 7] = [0, 1, 3, 4, 5, 6, 7];
 
 /// What a frame was activated for, numbered in the order `types::FrameKind`
 /// declares it.
@@ -332,30 +353,26 @@ pub const FRAME_SUPERCLASS_MESSAGE: u8 = 5;
 pub const FRAME_MIXIN_APPLICATION_MESSAGE: u8 = 6;
 
 /// Which tag-named object an entry of the graph section's closing hash table
-/// names. They are exactly the objects `CLASS_BUILTIN`, `CLASS_MODULE`,
-/// `CLASS_MODULE_LEVEL`, `VALUE_PLATFORM`, `CLASS_METACLASS` and the platform
-/// path references name: none of them is a record, so without this table
-/// nothing in an image would carry a hash one of them was given
-/// (`docs/design/image-format.md`, "Identity hashes are preserved verbatim").
-/// A builtin-class entry is followed by its builtin class tag, a module-class
-/// entry by its `u32` module index, a module-level entry by its `u32` module
-/// index and `u32` level position. A metaclass entry names the metaclass of a
-/// prebuilt class -- a builtin, a module's root class, a module level or a
-/// class named by a platform path -- and is followed by that class's
-/// reference, the four tags `CLASS_METACLASS` allows. A platform path entry is
-/// followed by its `u32` index into the platform path section. Next free
-/// number: 7.
-pub const HASHED_BUILTIN_CLASS: u8 = 0;
-pub const HASHED_PLATFORM: u8 = 2;
-pub const HASHED_METACLASS: u8 = 3;
-pub const HASHED_PLATFORM_PATH: u8 = 4;
-pub const HASHED_MODULE_CLASS: u8 = 5;
-pub const HASHED_MODULE_LEVEL: u8 = 6;
+/// names: an object of the shipped-name section, which is no record, so
+/// without this table nothing in an image would carry a hash one of them
+/// was given (`docs/design/image-format.md`, "Identity hashes are preserved
+/// verbatim"). A shipped entry is followed by the `u32` index of a name of
+/// any kind in the shipped-name section. Next free number: 8.
+pub const HASHED_SHIPPED: u8 = 7;
 
 /// Tag-named hash tags that no longer name anything and are never reused: 1
-/// was the one root class's entry, replaced by `HASHED_MODULE_CLASS` and its
-/// module index when an image came to carry several modules.
-pub const RETIRED_HASHED_TAGS: [u8; 1] = [1];
+/// was the one root class's entry, replaced by 5, `HASHED_MODULE_CLASS`, a
+/// module's root class by module index, when an image came to carry several
+/// modules; 6 was `HASHED_MODULE_LEVEL`, one of its levels, and 3
+/// `HASHED_METACLASS`, the metaclass of either. A module's root class, its
+/// levels and their metaclasses became records on 2026-10-13, whose hashes
+/// travel in their headers like any record's. 0 was
+/// `HASHED_BUILTIN_CLASS`, a builtin by builtin class tag, 2
+/// `HASHED_PLATFORM`, the platform singleton, and 4 `HASHED_PLATFORM_PATH`,
+/// an object a platform path named; a shipped name replaced the three on
+/// 2026-10-12 (`HASHED_SHIPPED`), and the platform's hash travels in its
+/// record's header like any record's.
+pub const RETIRED_HASHED_TAGS: [u8; 7] = [0, 1, 2, 3, 4, 5, 6];
 
 /// A mixin-table slot record's kind: the accessor shape its slot declares
 /// (§6.3.2, §6.3.3). The two eager kinds are the mutability tags the record

@@ -163,27 +163,21 @@ pub enum BuiltinClass {
 
 impl BuiltinClass {
     /// Every builtin class, in declaration order. `Mutator::builtin_class`
-    /// indexes by discriminant, so the bootstrap builds them in this order,
-    /// and the image's closing hash table writes them in it too. It follows
-    /// their wire tags (`image::encode::builtin_class_tag`), less the
-    /// retired ones, which is why a class added later is appended rather
-    /// than slotted in beside its siblings. So this is *not* a
-    /// superclass-first order: the kernel phase sorts the kinds by their
-    /// depth below `Top` before it fills them
+    /// indexes by discriminant, so the bootstrap builds them in this order.
+    /// A class added later is appended rather than slotted in beside its
+    /// siblings. So this is *not* a superclass-first order: the kernel
+    /// phase sorts the kinds by their depth below `Top` before it fills them
     /// (`interpreter::kernel::fill_order`).
     ///
     /// A new builtin must also appear in `interpreter::kernel`'s
     /// `kernel_class_name`; in `check_kernel_shape`'s slot whitelist if it
     /// declares slots; in `Mutator::signal_vm_error`'s subject-slot match if
-    /// it is an error class carrying a subject; in the image's tag tables --
-    /// `image::encode::builtin_class_tag`, `image::decode::builtin_class_from_tag`,
-    /// `tests/opcode_tags.rs` and, for a class no program may name, the
-    /// filter in `image::encode::encode_tag_named_hashes`, the refusals in
-    /// `image::encode::named_builtin` and in
-    /// `image::decode::referenced_builtin_class`; and in the class
-    /// accessor lists, `OBJECT_CLASS_ACCESSORS` if `Object` declares an
-    /// accessor for it and otherwise the absent-list of
-    /// `objects_class_accessors_are_exactly_the_nameable_builtins`.
+    /// it is an error class carrying a subject; and in the class accessor
+    /// lists, `OBJECT_CLASS_ACCESSORS` if `Object` declares an accessor for
+    /// it and otherwise the absent-list of
+    /// `objects_class_accessors_are_exactly_the_nameable_builtins`. An image
+    /// names it by its declaration in `Kernel.ns`, like every shipped class
+    /// (`image::shipped_names`), so it needs no wire tag.
     pub const ALL: [BuiltinClass; 34] = [
         BuiltinClass::Object,
         BuiltinClass::Boolean,
@@ -583,6 +577,37 @@ pub enum ErrorClass {
     CannotReturn,
     NonBooleanReceiver,
     CannotInstantiate,
+}
+
+impl ErrorClass {
+    /// Every class a VM error is signalled as.
+    pub const ALL: [ErrorClass; 5] = [
+        ErrorClass::Error,
+        ErrorClass::ArgumentError,
+        ErrorClass::CannotReturn,
+        ErrorClass::NonBooleanReceiver,
+        ErrorClass::CannotInstantiate,
+    ];
+
+    /// The kernel class whose instance `Mutator::signal_vm_error` signals.
+    pub fn builtin(self) -> BuiltinClass {
+        match self {
+            ErrorClass::Error => BuiltinClass::Error,
+            ErrorClass::ArgumentError => BuiltinClass::ArgumentError,
+            ErrorClass::CannotReturn => BuiltinClass::CannotReturn,
+            ErrorClass::NonBooleanReceiver => BuiltinClass::NonBooleanReceiver,
+            ErrorClass::CannotInstantiate => BuiltinClass::CannotInstantiate,
+        }
+    }
+
+    /// Whether the VM signals instances of `kind` into a program: a caught
+    /// one hands the program its class, so the class is a value the program
+    /// holds, private or not.
+    pub fn is_signalled(kind: BuiltinClass) -> bool {
+        ErrorClass::ALL
+            .iter()
+            .any(|error_class| error_class.builtin() == kind)
+    }
 }
 
 impl<'gc> NewspeakError<'gc> {

@@ -644,9 +644,9 @@ instruction reads and writes only its own activation's registers, so
 
 **It has no wire tag**, and the encoder treats one as unreachable. It is
 emitted only for a `MirrorSend`, so only into shipped core-library source,
-and no image carries shipped code: an image names a builtin class by tag and a
-shipped object by its platform path, and the bootstrap of the loading process
-supplies both ([image-format.md](image-format.md), "What is
+and no image carries shipped code: an image names every shipped object, a
+builtin class among them, by its declaration, and the bootstrap of the
+loading process supplies it ([image-format.md](image-format.md), "What is
 *not* serialized"). A tag would be a wire form nothing legitimate writes, and
 a decoder that accepted one would hand an artifact a way to run any leaf with
 no lookup.

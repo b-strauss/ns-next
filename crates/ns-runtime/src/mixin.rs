@@ -139,10 +139,10 @@ pub struct MixinMethod {
     /// The nested class of its module's root this method answers, when it is
     /// a pure class accessor `compiler::primitive_method` recognized in
     /// shipped core-library source other than the kernel: a unary method
-    /// whose whole body is `^outer <Root> <Nested>`. Read by the image code
-    /// alone (`image::platform_paths`), which lets a platform path step
-    /// through it -- `platform Transcript` -- without running it; no send
-    /// ever reads it, so it costs the run loop nothing, unlike a
+    /// whose whole body is `^outer <Root> <Nested>`. Read by the shipped
+    /// world alone (`interpreter::shipped_world`), which lets the class it
+    /// answers -- `platform Transcript` -- stand as a value in an image; no
+    /// send ever reads it, so it costs the run loop nothing, unlike a
     /// `MethodFastPath` variant (`docs/design/execution.md`, "What the
     /// platform module cost"). `None` for every other method, and for every
     /// method decoded from an image, which never carries shipped source.
@@ -644,16 +644,18 @@ pub struct Mixin {
     /// root rule, `resolver::root_clause_defect`). Only a module's root
     /// mixin built from a `ResolvedModule` a host assembled past `resolve`,
     /// which refuses such a root, carries one; a decoded mixin
-    /// never does, because the decoder refuses a defective root section and
+    /// never does, because the decoder refuses a root class record the root
+    /// rule forbids (`image::modules::root_record_defect`) and
     /// the encoder never writes one. `Mutator::apply_mixin` turns it into
     /// `InstantiationRefusal::RootClause` on the application.
     pub root_clause_defect: Option<RootClauseDefect>,
     /// Compiled from shipped core-library source (`ResolvedModule.kernel`):
     /// set on the declaration's mixin, on every nested mixin and on its class
-    /// side. The image encoder names an object of a shipped class by its
-    /// platform path rather than writing it (`image::platform_paths`), and
-    /// the loader accepts a path only when it answers such an object. A
-    /// decoded mixin is never shipped: an image carries only its own module.
+    /// side. The image encoder refuses a class object of a shipped mixin
+    /// that no shipped name names (`image::shipped_names`), and holds every
+    /// record of a shipped class that is no builtin to the loading binary's
+    /// layout. A decoded mixin is never shipped: an image carries only its
+    /// own module.
     pub shipped: bool,
 }
 

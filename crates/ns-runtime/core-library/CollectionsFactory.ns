@@ -1,26 +1,25 @@
 /// The collections module: the growable Collections a program computes
 /// with -- `List`, `Map`, `IdentityMap` and `Set` -- and the Errors they
 /// signal, `NotFound` and `ConcurrentModification`, reached through
-/// `platform collections`. Built once per kernel by the platform
-/// (`PlatformFactory`'s `collectionsModule`), with the kernel it was built
-/// on, from which it takes `Collection`, `Error`, `ArgumentError` and
-/// `Array`.
+/// `platform collections`. Built once, at boot, over the kernel, from
+/// which it takes `Collection`, `Error`, `ArgumentError` and `Array`.
 ///
 /// theKernel: the kernel module instance; its `Collection` and `Error` are
 ///     the superclasses of the classes here.
 ///
 /// The factory pattern `PlatformFactory.ns` is written in. This root holds
 /// what is privileged -- the kernel instance -- and nothing hands its
-/// instance to a program: the platform's root builds it once, through the
-/// mirror's `moduleNamed:`, sends it `newCollections`, its one public
-/// member, and keeps it in a private lazy slot. What a program gets is the
-/// `Collections` facet `newCollections` answers, which hands out this
-/// module's classes by class accessors, each exactly `^outer
-/// CollectionsFactory <Name>` -- a lexical send, which reaches the root's
-/// private classes (§5.9), and which an image names by its path from the
-/// platform (`docs/design/image-format.md`, "The platform path section").
-/// Nothing a program can name answers this root's instance or its class, so
-/// no program can build one over something that is not the kernel. Keep it
+/// instance to a program: the host builds it once, at boot, and the
+/// platform's root reaches it through the mirror's `moduleInstanceNamed:`,
+/// sends it `newCollections`, its one public member, and keeps it in a
+/// private lazy slot. What a program gets is the `Collections` facet
+/// `newCollections` answers, which hands out this module's classes by
+/// class accessors, each exactly `^outer CollectionsFactory <Name>` -- a
+/// lexical send, which reaches the root's private classes (§5.9), and
+/// which lets an image name the class by its declaration
+/// (`docs/design/image-format.md`, "Shipped names"). Nothing a
+/// program can name answers this root's instance or its class, so no
+/// program can build one over something that is not the kernel. Keep it
 /// so: no code whose receiver is this root's instance may send it anything
 /// it does not understand, since a `MessageNotUnderstood` hands its
 /// receiver to whoever catches it.

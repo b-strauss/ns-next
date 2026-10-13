@@ -359,12 +359,13 @@ impl<'gc> Mutator<'gc> {
         let receiver = error.receiver;
         let subject = error.subject;
         // The slot each class adds for what it carries; an `Error` adds none.
-        let (kind, subject_slot) = match error.class {
-            ErrorClass::Error => (BuiltinClass::Error, None),
-            ErrorClass::ArgumentError => (BuiltinClass::ArgumentError, Some("argument")),
-            ErrorClass::CannotReturn => (BuiltinClass::CannotReturn, Some("result")),
-            ErrorClass::NonBooleanReceiver => (BuiltinClass::NonBooleanReceiver, Some("receiver")),
-            ErrorClass::CannotInstantiate => (BuiltinClass::CannotInstantiate, Some("behavior")),
+        let kind = error.class.builtin();
+        let subject_slot = match error.class {
+            ErrorClass::Error => None,
+            ErrorClass::ArgumentError => Some("argument"),
+            ErrorClass::CannotReturn => Some("result"),
+            ErrorClass::NonBooleanReceiver => Some("receiver"),
+            ErrorClass::CannotInstantiate => Some("behavior"),
         };
         let exception = self.new_kernel_instance(kind, |name| match name {
             "messageText" => text,

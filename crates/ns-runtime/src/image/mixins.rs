@@ -895,8 +895,8 @@ fn build(raw: Vec<RawRow>, codes: &[Rc<CompiledCode>], module_rows: Vec<u32>) ->
             initializer_code: row.initializer.map(code_at),
             superclass_clause_code: row.superclass_clause.map(code_at),
             superclass_message_code: row.superclass_message.map(code_at),
-            // The decoder refuses a root section the root rule forbids
-            // (`decode::decode_root_section`), so no decoded mixin has one.
+            // The loader refuses a root class record the root rule forbids
+            // (`modules::root_record_defect`), so no decoded mixin has one.
             root_clause_defect: None,
             // An image carries only its own module, never shipped source.
             shipped: false,

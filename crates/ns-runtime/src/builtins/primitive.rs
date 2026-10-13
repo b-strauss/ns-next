@@ -33,7 +33,8 @@ pub enum Primitive {
     Platform(PlatformPrimitive),
     Activation(ActivationPrimitive),
     Message(MessagePrimitive),
-    /// `moduleNamed:`: a shipped module's root class (`builtins::module`).
+    /// `moduleInstanceNamed:`: a shipped module's one instance
+    /// (`builtins::module`).
     Module(ModulePrimitive),
     /// §6.3.2's pull future, made by `Future computing:` and forced by its
     /// `doesNotUnderstand:` (`builtins::future`).
@@ -246,7 +247,7 @@ impl Primitive {
                 | ActivationPrimitive::Terminate,
             ) => false,
             Primitive::Message(MessagePrimitive::SendTo) => false,
-            Primitive::Module(ModulePrimitive::Named) => false,
+            Primitive::Module(ModulePrimitive::InstanceNamed) => false,
             Primitive::Future(FuturePrimitive::Value | FuturePrimitive::Made) => false,
             // It reaches its own primitive's row through `execute_sent`,
             // whose failure path looks for a future among that row's
@@ -530,7 +531,7 @@ pub enum MessagePrimitive {
 /// table and the boot").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePrimitive {
-    Named,
+    InstanceNamed,
 }
 
 /// The two leaves of the futures (`docs/design/object-model.md`,
@@ -1071,10 +1072,10 @@ pub const MIRROR: &[MirrorEntry] = &[
         Primitive::Collection(CollectionPrimitive::Allocate),
     ),
     mirror(
-        "moduleNamed:ifFail:",
+        "moduleInstanceNamed:ifFail:",
         // Unary: the module's name is the row's subject.
-        "moduleNamed",
-        Primitive::Module(ModulePrimitive::Named),
+        "moduleInstanceNamed",
+        Primitive::Module(ModulePrimitive::InstanceNamed),
     ),
     mirror(
         "futureValue:ifFail:",

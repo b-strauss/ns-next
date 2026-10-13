@@ -4,11 +4,11 @@
 //! (`docs/design/core-library.md`, "The platform"): its members are lazy
 //! slots holding values of the module's nested classes and the facet of
 //! the shipped `CollectionsFactory.ns` module, whose `List` is Newspeak and
-//! needs no leaf; that module is reached through the mirror's `moduleNamed:`
-//! (`builtins::module`). What is left here is `show:` and `newLine`, the
-//! forwarders of `Transcript`'s two methods, and the clock `Stopwatch`
-//! reads, nanoseconds since one origin per process, so that two
-//! interpreters in one process agree.
+//! needs no leaf; that module is reached through the mirror's
+//! `moduleInstanceNamed:` (`builtins::module`). What is left here is
+//! `show:` and `newLine`, the forwarders of `Transcript`'s two methods, and
+//! the clock `Stopwatch` reads, nanoseconds since one origin per process,
+//! so that two interpreters in one process agree.
 //!
 //! The leaves read nothing off their receiver; `show:` reads only its string
 //! argument. The capability is the VM mirror the forwarder sends to, which only shipped

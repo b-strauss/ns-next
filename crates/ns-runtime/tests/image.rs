@@ -12,7 +12,9 @@ use ns_runtime::bytecode::{
 };
 use ns_runtime::image;
 use ns_runtime::image::opcodes::*;
+use ns_runtime::image::shipped_names::{self, ShippedKind, ShippedName};
 use ns_runtime::image::{decode, encode, mixins, symbols};
+
 use ns_runtime::SourceOrigin as Origin;
 use ns_runtime::{
     ArbitraryInteger, BuiltinClass, ClassReference, DispatchId, FrameKind, Heap, HostResult,
@@ -329,7 +331,6 @@ fn snapshot_one<'gc>(
     source: Option<&str>,
     origin: &SourceOrigin,
     class: ClassReference<'gc>,
-    platform: Value<'gc>,
     roots: &[Value<'gc>],
 ) -> Result<Vec<u8>, String> {
     let modules = [image::ModuleSource {
@@ -337,7 +338,7 @@ fn snapshot_one<'gc>(
         origin,
         source,
     }];
-    image::snapshot(mutator, &modules, platform, roots)
+    image::snapshot(mutator, &modules, roots)
 }
 
 /// `image::snapshot` of the one module `class` with no roots: code and
@@ -348,7 +349,7 @@ fn module_only_image<'gc>(
     origin: &SourceOrigin,
     class: ClassReference<'gc>,
 ) -> Result<Vec<u8>, String> {
-    snapshot_one(mutator, source, origin, class, Value::nil(), &[])
+    snapshot_one(mutator, source, origin, class, &[])
 }
 
 /// The class object `root` holds, for the heap accessors and the encoder,
@@ -1236,17 +1237,14 @@ fn a_large_integer_value_round_trips() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1298,17 +1296,14 @@ fn an_array_past_two_hundred_and_fifty_four_elements_round_trips() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1351,17 +1346,14 @@ fn a_body_past_the_register_ceiling_round_trips_and_still_raises() {
     "};
     let (mut interpreter, class) = load(&source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1454,17 +1446,14 @@ fn a_boxed_float_value_round_trips_without_a_record() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1570,17 +1559,14 @@ fn a_crafted_small_integer_literal_beyond_61_bits_loads_as_a_large_integer() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let mut bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1742,17 +1728,14 @@ fn a_large_integer_is_a_value_not_a_record() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1825,13 +1808,11 @@ fn fractions_image() -> Vec<u8> {
     interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(FRACTIONS),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -1995,8 +1976,7 @@ fn a_fraction_outside_its_normal_form_is_refused() {
 /// no roots.
 fn fraction_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     class_records(1, |writer| {
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Fraction));
+        writer.write_shipped(FRACTION_NAME);
         writer.write_u32(5); // identity hash
         body(writer);
     })
@@ -2063,17 +2043,14 @@ fn a_large_integer_in_i64_travels_as_an_i64_and_loads_as_a_large_integer() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -2119,12 +2096,10 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let started = std::time::Instant::now();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let normal = mutator.new_integer(ArbitraryInteger::from_i128(1_i128 << 63));
         let huge =
             mutator.new_integer(ArbitraryInteger::from_parts(false, (1..=100_000).collect()));
@@ -2133,7 +2108,6 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance, normal, huge],
         )
         .expect("snapshot")
@@ -2152,80 +2126,6 @@ fn inspect_renders_a_huge_large_integer_elided_and_a_normal_one_in_decimal() {
         started.elapsed() < std::time::Duration::from_secs(20),
         "took {:?}",
         started.elapsed()
-    );
-}
-
-/// A builtin class tag names no builtin at the root-class section either:
-/// `decode_root_section` reads its superclass through the same
-/// `read_program_builtin_class`, so an out-of-range byte is refused there as
-/// well, never misread as some other builtin class.
-#[test]
-fn an_invalid_builtin_class_tag_at_the_root_section_is_a_decode_error_not_a_panic() {
-    let source = indoc! {"
-        class Root = Object new <: Value () ()
-    "};
-    let decoded = mixin_table_of(&snapshot_of(source));
-    let mut writer = encode::Writer::new();
-    writer.write_boolean(true); // the root's superclass is present ...
-    writer.write_u8(200); // ... naming no builtin class
-    writer.write_u32(0); // no levels
-    let bytes = writer.into_bytes();
-    assert_eq!(
-        decode::decode_root_section(&mut decode::Reader::new(&bytes), &decoded, 0),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class",
-            tag: 200
-        })
-    );
-}
-
-/// A root class's superclass tag can decode to `Metaclass` once
-/// `CLASS_BUILTIN` can hold it (a value's class chain reaching it, from Task
-/// 4 on), but a program may still not *declare* a root over it:
-/// `decode_root_section` reads the superclass through
-/// `read_program_builtin_class`, which refuses `Behavior`, `Class` and
-/// `Metaclass` the same way it refuses the VM mirror's class and `Top`.
-/// Patched into a real binary and located the way `corrupt_first_symbol_id`
-/// locates the symbol table's count, so this exercises the whole `load`
-/// pipeline, not `decode_root_section` alone.
-#[test]
-fn a_root_superclass_naming_metaclass_is_refused() {
-    let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let origin = Origin::File(PathBuf::from("t.ns"));
-    let mut binary = interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        module_only_image(mutator, None, &origin, class).expect("snapshot")
-    });
-
-    let superclass_tag_at = {
-        let mut reader = decode::Reader::new(&binary);
-        let header = decode::read_header(&mut reader).expect("valid header");
-        let symbols = symbols::decode(&mut reader).expect("symbols");
-        let mut table = decode::decode_code_table(&mut reader, &symbols).expect("code table");
-        decode::verify_code_table(&table).expect("verify code table");
-        decode::number_call_site_families(&mut table).expect("number call site families");
-        mixins::decode(&mut reader, &symbols, &table.codes).expect("mixins");
-        // The module section: its count, then module 0's origin and source.
-        reader.read_u32().expect("module count");
-        decode::decode_source_origin(&mut reader).expect("origin");
-        if header.has_source {
-            reader.read_str().expect("source");
-        }
-        // The root section opens with the "has superclass" boolean, then the
-        // superclass's builtin-class tag byte.
-        reader.position() + 1
-    };
-    binary[superclass_tag_at] = encode::builtin_class_tag(BuiltinClass::Metaclass);
-
-    // Not `.expect_err`: `LoadedImage` carries an `Interpreter`, which has no
-    // `Debug` impl, so neither type has one.
-    let error = match image::load(&binary) {
-        Ok(_) => panic!("a root superclass naming Metaclass must be refused"),
-        Err(error) => error,
-    };
-    assert!(
-        error.contains("builtin class a program may name"),
-        "unexpected error: {error}"
     );
 }
 
@@ -2280,41 +2180,6 @@ fn a_truncated_code_table_is_a_decode_error_not_a_panic() {
             "a code table cut to {cut} bytes must not decode"
         );
     }
-}
-
-#[test]
-fn every_builtin_class_tag_round_trips() {
-    let all = [
-        BuiltinClass::Object,
-        BuiltinClass::Boolean,
-        BuiltinClass::True,
-        BuiltinClass::False,
-        BuiltinClass::Integer,
-        BuiltinClass::Float,
-        BuiltinClass::String,
-        BuiltinClass::Symbol,
-        BuiltinClass::Array,
-        BuiltinClass::UndefinedObject,
-        BuiltinClass::Closure,
-        BuiltinClass::VmMirror,
-        BuiltinClass::Top,
-        BuiltinClass::Value,
-        BuiltinClass::Number,
-    ];
-    for kind in all {
-        assert_eq!(
-            decode::builtin_class_from_tag(encode::builtin_class_tag(kind)),
-            Some(kind)
-        );
-    }
-    assert_eq!(decode::builtin_class_from_tag(200), None);
-    let mut tags: Vec<u8> = all
-        .iter()
-        .map(|kind| encode::builtin_class_tag(*kind))
-        .collect();
-    tags.sort_unstable();
-    tags.dedup();
-    assert_eq!(tags.len(), all.len(), "every builtin class has its own tag");
 }
 
 #[test]
@@ -2514,18 +2379,20 @@ fn a_deeply_nested_block_chain_is_a_decode_error_not_a_stack_overflow() {
 }
 
 /// An image whose mixin table is empty describes no root class, so there is
-/// nothing for `load` to build the world around -- and nothing for the
-/// graph's class tag 1 to name.
+/// no declaration for a module's root record to be held to -- and nothing
+/// for `load` to build the world around.
 #[test]
 fn a_mixin_table_with_no_root_row_is_a_decode_error() {
     let mut interpreter = Interpreter::bootstrap();
     let empty = mixins::Decoded::empty();
     interpreter.enter(|mutator| {
-        let section = decode::RootSection {
-            superclass: BuiltinClass::Object,
-            levels: Vec::new(),
+        let module = image::modules::DecodedModule {
+            origin: SourceOrigin::Embedded("t".to_string()),
+            source: None,
+            root: 0,
         };
-        match decode::build_root_class(mutator, &empty, 0, &section) {
+        let objects = [mutator.builtin_class(BuiltinClass::Object)];
+        match image::modules::module_root_classes(mutator, &empty, &[module], &objects) {
             Err(decode::DecodeError::NotAClass) => assert_eq!(
                 decode::DecodeError::NotAClass.to_string(),
                 "the image's mixin table describes no root class"
@@ -2689,8 +2556,9 @@ fn mixin_ids_for<'gc>(
 
 /// Loads `source`, lets `make_roots` build the roots, encodes code table +
 /// graph section, decodes both with the same `Reader`, and returns
-/// (interpreter, class root, original roots, decoded roots, maximum identity
-/// hash) -- every handle rooted, since none of them may outlive the entry
+/// (interpreter, the decoded root class -- a record of the graph, as the
+/// module section would name it -- original roots, decoded roots, maximum
+/// identity hash) -- every handle rooted, since none of them may outlive the entry
 /// that produced it. `make_roots` may run code, so the class and the roots
 /// are only read again, inside a fresh entry, once it has returned.
 fn round_trip_graph(
@@ -2699,11 +2567,9 @@ fn round_trip_graph(
 ) -> (Interpreter, Root, Vec<Root>, Vec<Root>, u32) {
     let (mut interpreter, class) = load(source);
     let roots = make_roots(&mut interpreter, &class);
-    let platform = interpreter.platform();
-    let (decoded_roots, max_identity_hash) = interpreter.enter(|mutator| {
+    let (decoded_class, decoded_roots, max_identity_hash) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let root_values: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
-        let platform_value = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
         let ids = encode::encode_code_table(
@@ -2713,31 +2579,30 @@ fn round_trip_graph(
         )
         .expect("encode code table");
         let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
-        encode::encode_graph_section(
-            mutator.heap(),
+        let encoded = encode::encode_graph_section(
+            mutator,
             &mut writer,
             &root_values,
-            platform_value,
             &ids,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &[class],
             &mixin_ids,
             &mut symbols,
         )
         .expect("encode graph");
+        let shipped = shipped_names::resolve_in(mutator, &encoded.used.names(mutator), false)
+            .expect("the graph's own names resolve");
         let bytes = writer.into_bytes();
         let symbol_table = symbols.build();
         let mut reader = decode::Reader::new(&bytes);
         let code_table = decode::decode_code_table(&mut reader, &symbol_table).expect("code table");
         let mixin_order = mixin_preorder(mutator.heap(), class);
-        let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
         let decoded = {
             let mut context = decode::DecodeContext {
                 mutator,
-                modules: &module_classes,
+                module_roots: &encoded.module_roots,
                 codes: &code_table.codes,
-                platform: platform_value,
                 mixins: &mixin_order,
-                platform_paths: &[],
+                shipped: &shipped,
             };
             decode::decode_graph_section(&mut reader, &mut context, &symbol_table).expect("graph")
         };
@@ -2746,9 +2611,18 @@ fn round_trip_graph(
             .iter()
             .map(|value| mutator.stash(*value))
             .collect();
-        (decoded_roots, decoded.max_identity_hash)
+        let decoded_class = mutator.stash(Value::object(
+            decoded.objects[encoded.module_roots[0] as usize],
+        ));
+        (decoded_class, decoded_roots, decoded.max_identity_hash)
     });
-    (interpreter, class, roots, decoded_roots, max_identity_hash)
+    (
+        interpreter,
+        decoded_class,
+        roots,
+        decoded_roots,
+        max_identity_hash,
+    )
 }
 
 const EMPTY: &str = indoc! {"
@@ -2851,15 +2725,32 @@ fn class_references_resolve_to_the_same_live_class_objects() {
     });
 }
 
+/// The platform is an ordinary record of `PlatformFactory Platform`: it
+/// decodes to a second object of the loading platform's own class, equal to
+/// it, since a lazy slot is no part of a value's state.
 #[test]
-fn the_platform_singleton_resolves_to_the_interpreters_own() {
+fn the_platform_decodes_to_a_record_equal_to_the_interpreters_own() {
     let (mut interpreter, _class, _original, decoded, _max) =
         round_trip_graph(EMPTY, |interpreter, _| vec![interpreter.platform()]);
     let platform = interpreter.platform();
     interpreter.enter(|mutator| {
-        let decoded_0 = mutator.fetch(&decoded[0]);
-        let platform = mutator.fetch(&platform);
-        assert!(object(decoded_0).same(object(platform)));
+        let decoded_0 = object(mutator.fetch(&decoded[0]));
+        let platform = object(mutator.fetch(&platform));
+        let heap = mutator.heap();
+        assert!(!decoded_0.same(platform), "a record, not the singleton");
+        assert!(heap
+            .object_class(decoded_0)
+            .same(heap.object_class(platform)));
+    });
+    let equal = expect_ok(
+        interpreter.send(&decoded[0], Symbol::intern("="), &[platform]),
+        "decoded = platform",
+    );
+    interpreter.enter(|mutator| {
+        assert!(matches!(
+            mutator.fetch(&equal).kind(),
+            ValueKind::Boolean(true)
+        ));
     });
 }
 
@@ -3043,12 +2934,10 @@ fn the_graph_section_encoding_is_deterministic() {
     for _ in 0..2 {
         let (mut interpreter, class) = load(source);
         let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-        let platform = interpreter.platform();
         // Read out after the last run, for the encoder, which runs nothing.
         let bytes = interpreter.enter(|mutator| {
             let class = class_reference(mutator, &class);
             let roots = vec![mutator.fetch(&instance)];
-            let platform = mutator.fetch(&platform);
             let mut symbols = symbols::Builder::new();
             let mut writer = encode::Writer::new();
             let ids = encode::encode_code_table(
@@ -3059,12 +2948,11 @@ fn the_graph_section_encoding_is_deterministic() {
             .expect("encode code table");
             let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
             encode::encode_graph_section(
-                mutator.heap(),
+                mutator,
                 &mut writer,
                 &roots,
-                platform,
                 &ids,
-                &image::ModuleClasses::of(mutator.heap(), &[class]),
+                &[class],
                 &mixin_ids,
                 &mut symbols,
             )
@@ -3076,14 +2964,97 @@ fn the_graph_section_encoding_is_deterministic() {
     assert_eq!(encodings[0], encodings[1]);
 }
 
+/// The shipped names every hand-written graph in this file may use, by
+/// their index in the section a fixture decodes against: a module, a
+/// declaration and a kind byte as the section writes it (0 a module
+/// instance, 1 a class, 2 a metaclass).
+const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
+    ("Kernel", "Object", 1),               // OBJECT_NAME = 0
+    ("Kernel", "Array", 1),                // ARRAY_NAME = 1
+    ("Kernel", "Activation", 1),           // ACTIVATION_NAME = 2
+    ("Kernel", "Metaclass", 1),            // METACLASS_NAME = 3
+    ("Kernel", "String", 1),               // STRING_NAME = 4
+    ("Kernel", "Symbol", 1),               // SYMBOL_NAME = 5
+    ("Kernel", "Integer", 1),              // INTEGER_NAME = 6
+    ("Kernel", "Fraction", 1),             // FRACTION_NAME = 7
+    ("Kernel", "FutureImplementation", 1), // FUTURE_IMPLEMENTATION_NAME = 8
+    ("Kernel", "Value", 1),                // VALUE_NAME = 9
+    ("Kernel", "Top", 1),                  // TOP_NAME = 10
+    ("Kernel", "Integer", 2),              // INTEGER_CLASS_NAME = 11
+    ("Kernel", "Kernel", 0),               // KERNEL_INSTANCE_NAME = 12
+    ("Kernel", "Kernel", 1),               // KERNEL_ROOT_NAME = 13
+    ("PlatformFactory", "Stopwatch", 1),   // STOPWATCH_NAME = 14
+    ("Kernel", "Behavior", 1),             // BEHAVIOR_NAME = 15
+    ("Kernel", "Closure", 1),              // CLOSURE_NAME = 16
+    ("Kernel", "Class", 1),                // CLASS_NAME = 17
+    ("Kernel", "Activation", 2),           // ACTIVATION_CLASS_NAME = 18
+    ("Kernel", "FutureImplementation", 2), // FUTURE_IMPLEMENTATION_CLASS_NAME = 19
+];
+const OBJECT_NAME: u32 = 0;
+const ARRAY_NAME: u32 = 1;
+const ACTIVATION_NAME: u32 = 2;
+const METACLASS_NAME: u32 = 3;
+const STRING_NAME: u32 = 4;
+const SYMBOL_NAME: u32 = 5;
+const INTEGER_NAME: u32 = 6;
+const FRACTION_NAME: u32 = 7;
+const FUTURE_IMPLEMENTATION_NAME: u32 = 8;
+const VALUE_NAME: u32 = 9;
+const TOP_NAME: u32 = 10;
+const INTEGER_CLASS_NAME: u32 = 11;
+const KERNEL_INSTANCE_NAME: u32 = 12;
+const KERNEL_ROOT_NAME: u32 = 13;
+const STOPWATCH_NAME: u32 = 14;
+const BEHAVIOR_NAME: u32 = 15;
+const CLOSURE_NAME: u32 = 16;
+const CLASS_NAME: u32 = 17;
+const ACTIVATION_CLASS_NAME: u32 = 18;
+const FUTURE_IMPLEMENTATION_CLASS_NAME: u32 = 19;
+
+/// A section entry's kind byte as the shipped name it stands for.
+fn fixture_kind(kind: u8) -> ShippedKind {
+    match kind {
+        0 => ShippedKind::ModuleInstance,
+        1 => ShippedKind::Class,
+        2 => ShippedKind::Metaclass,
+        _ => panic!("a fixture name is a module instance, a class or a metaclass"),
+    }
+}
+
+/// `FIXTURE_NAMES` as shipped names, in section order.
+fn fixture_names() -> Vec<ShippedName> {
+    FIXTURE_NAMES
+        .iter()
+        .map(|(module, declaration, kind)| ShippedName {
+            module: Symbol::intern(module),
+            declaration: Symbol::intern(declaration),
+            kind: fixture_kind(*kind),
+        })
+        .collect()
+}
+
+/// A class reference to the shipped name at `index` of the fixture's
+/// section.
+fn shipped(writer: &mut encode::Writer, index: u32) {
+    writer.write_u8(CLASS_SHIPPED);
+    writer.write_u32(index);
+}
+
+/// `shipped` as a method, for a writer held by value or by reference alike.
+trait WriteShipped {
+    fn write_shipped(&mut self, index: u32);
+}
+
+impl WriteShipped for encode::Writer {
+    fn write_shipped(&mut self, index: u32) {
+        shipped(self, index);
+    }
+}
+
 /// A world whose graph decoder can be fed hand-crafted bytes: an empty
-/// class, no compiled code, and the interpreter's own `platform`.
+/// class, no compiled code, and the shipped names of `FIXTURE_NAMES`.
 struct GraphFixture {
     interpreter: Interpreter,
-    /// Roots, not handles: a fixture outlives every entry it makes, and only
-    /// a `Root` may do that. `decode` fetches both inside its own entry.
-    class: Root,
-    platform: Root,
     codes: Vec<Rc<CompiledCode>>,
     /// Empty by default: most fixtures' hand-crafted bytes never reference a
     /// selector. Tests that do (a frame kind's method name, a closure's
@@ -3092,9 +3063,13 @@ struct GraphFixture {
     /// `EMPTY`'s one declaration, so mixin id 0 is in range and every
     /// larger id is not.
     mixins: Vec<Rc<Mixin>>,
-    /// What the section's platform paths resolved to, by index. Empty by
-    /// default: most fixtures name no path.
-    platform_paths: Vec<Root>,
+    /// The section the bytes are decoded against, resolved against the
+    /// fixture's own world inside each entry: `FIXTURE_NAMES`.
+    names: Vec<ShippedName>,
+    /// The object ids the module section would name the module roots by:
+    /// empty by default, since most hand-crafted graphs carry no root class
+    /// record; one whose method frame has no current class names its own.
+    module_roots: Vec<u32>,
 }
 
 impl GraphFixture {
@@ -3106,17 +3081,15 @@ impl GraphFixture {
     /// that names rows `EMPTY` does not have.
     fn with_source(source: &str) -> GraphFixture {
         let (mut interpreter, class) = load(source);
-        let platform = interpreter.platform();
         let mixins = interpreter
             .enter(|mutator| mixin_preorder(mutator.heap(), class_reference(mutator, &class)));
         GraphFixture {
             interpreter,
-            class,
-            platform,
             codes: Vec::new(),
             symbols: symbols::Table::empty(),
             mixins,
-            platform_paths: Vec::new(),
+            names: fixture_names(),
+            module_roots: Vec::new(),
         }
     }
 
@@ -3134,28 +3107,21 @@ impl GraphFixture {
             Result<decode::DecodedGraph<'gc>, decode::DecodeError>,
         ) -> R,
     ) -> R {
-        let class = &self.class;
-        let platform = &self.platform;
         let codes = &self.codes;
         let mixins = &self.mixins;
         let symbols = &self.symbols;
-        let platform_paths = &self.platform_paths;
+        let names = &self.names;
+        let module_roots = &self.module_roots;
         self.interpreter.enter(|mutator| {
-            let class = class_reference(mutator, class);
-            let platform = mutator.fetch(platform);
-            let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
-            let platform_paths: Vec<Value> = platform_paths
-                .iter()
-                .map(|path| mutator.fetch(path))
-                .collect();
+            let shipped = shipped_names::resolve_in(mutator, names, false)
+                .expect("the fixture's names resolve");
             let decoded = {
                 let mut context = decode::DecodeContext {
                     mutator,
-                    modules: &module_classes,
+                    module_roots,
                     codes,
-                    platform,
                     mixins,
-                    platform_paths: &platform_paths,
+                    shipped: &shipped,
                 };
                 decode::decode_graph_section(&mut decode::Reader::new(bytes), &mut context, symbols)
             };
@@ -3194,11 +3160,11 @@ fn graph_counts(writer: &mut encode::Writer, objects: u32) {
     writer.write_u32(objects);
 }
 
-/// A frame record's header: `Activation`'s builtin tag -- the one header a
-/// frame record may carry -- the identity hash `hash`, and `OBJECT_FRAME`.
+/// A frame record's header: `Kernel Activation`'s shipped name -- the one
+/// header a frame record may carry -- the identity hash `hash`, and
+/// `OBJECT_FRAME`.
 fn frame_header(writer: &mut encode::Writer, hash: u32) {
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Activation));
+    shipped(writer, ACTIVATION_NAME);
     writer.write_u32(hash);
     writer.write_u8(OBJECT_FRAME); // object body: Frame
 }
@@ -3224,12 +3190,12 @@ fn frame_tail(writer: &mut encode::Writer, program_counter: u32, registers: u32)
 fn one_array_object(element: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    shipped(&mut writer, ARRAY_NAME);
     writer.write_u32(5); // identity hash
     writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(1); // one element
     element(&mut writer);
+
     writer.into_bytes()
 }
 
@@ -3273,8 +3239,7 @@ fn a_frame_id_out_of_range_is_a_decode_error_not_a_panic() {
 fn a_frame_reference_naming_a_string_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_shipped(STRING_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("not a frame");
@@ -3346,13 +3311,11 @@ fn a_frame_record_whose_register_count_would_exhaust_the_bytes_is_refused_before
 fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    writer.write_shipped(ARRAY_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(0); // no elements: a record that fits
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    writer.write_shipped(ARRAY_NAME);
     writer.write_u32(2); // identity hash
     writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(1_000_000); // a million elements...
@@ -3375,22 +3338,25 @@ fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
 
 #[test]
 fn an_invalid_value_tag_in_the_graph_is_a_decode_error_not_a_panic() {
-    let bytes = one_array_object(|writer| writer.write_u8(200));
-    assert_eq!(
-        GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::InvalidTag {
-            what: "value",
-            tag: 200
-        }
-    );
+    // 200 is no value tag at all; 7 and 8 are retired, the platform and an
+    // object a platform path named, and must name nothing now.
+    for tag in [200].into_iter().chain(RETIRED_VALUE_TAGS) {
+        let bytes = one_array_object(|writer| {
+            writer.write_u8(tag);
+            writer.write_u32(0); // what a platform path reference carried
+        });
+        assert_eq!(
+            GraphFixture::new().decode_error(&bytes),
+            decode::DecodeError::InvalidTag { what: "value", tag }
+        );
+    }
 }
 
 #[test]
 fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_BUILTIN);
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_shipped(OBJECT_NAME);
     writer.write_u32(1);
     writer.write_u8(200); // no such object body
     let bytes = writer.into_bytes();
@@ -3407,7 +3373,10 @@ fn an_invalid_object_body_tag_is_a_decode_error_not_a_panic() {
 fn an_invalid_class_tag_is_a_decode_error_not_a_panic() {
     // 200 is no class tag at all; 1 and 3 are retired, the one root class
     // and its levels before an image carried several modules, and must name
-    // no module now rather than whichever came first.
+    // no module now rather than whichever came first; 4, 6 and 7 are
+    // retired, a module's root class, its levels and their metaclasses
+    // before those became records; 0 and 5 are retired, a builtin by
+    // builtin tag and a class a platform path named.
     for tag in [200].into_iter().chain(RETIRED_CLASS_TAGS) {
         let mut writer = encode::Writer::new();
         graph_counts(&mut writer, 1);
@@ -3433,8 +3402,7 @@ fn a_symbol_recorded_twice_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
     for identity_hash in [1, 2] {
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Symbol));
+        writer.write_shipped(SYMBOL_NAME);
         writer.write_u32(identity_hash);
         writer.write_u8(OBJECT_SYMBOL);
         writer.write_u32(0); // symbol-table id 0: "foo"
@@ -3457,8 +3425,7 @@ fn a_string_recorded_with_the_class_symbol_is_refused() {
     // canonical table never hears of.
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_BUILTIN);
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Symbol));
+    writer.write_shipped(SYMBOL_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_STRING);
     writer.write_str("new");
@@ -3480,8 +3447,7 @@ fn a_symbol_recorded_with_a_class_other_than_symbol_is_refused() {
     // were let through.
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_BUILTIN);
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_shipped(STRING_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_SYMBOL);
     writer.write_u32(0); // symbol-table id 0: "foo"
@@ -3529,8 +3495,7 @@ fn class_record(
 /// One metaclass record: its header naming `Metaclass`, an identity hash,
 /// the body tag and the reference back to its class, the record `class_id`.
 fn metaclass_record(writer: &mut encode::Writer, class_id: u32) {
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Metaclass));
+    writer.write_shipped(METACLASS_NAME);
     writer.write_u32(8); // identity hash
     writer.write_u8(OBJECT_METACLASS); // object body: Metaclass
     writer.write_u8(CLASS_RECORD); // its class: an object-table record
@@ -3686,8 +3651,7 @@ fn a_class_reference_naming_a_record_that_is_not_a_class_is_a_decode_error() {
         writer.write_boolean(false);
         writer.write_boolean(false);
     });
-    writer.write_u8(CLASS_BUILTIN); // object 1's class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Array));
+    writer.write_shipped(ARRAY_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_ARRAY); // object body: Array
     writer.write_u32(0); // no elements
@@ -3773,14 +3737,20 @@ fn a_frame_record_with_a_stray_byte_is_refused() {
 
 #[test]
 fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
-    let mut writer = one_frame_prefix();
+    // The frame has no current class, so its method is resolved against the
+    // module's root class record, object 1, which declares no `gone`.
+    let mut writer = encode::Writer::new();
+    graph_counts(&mut writer, 3);
+    frame_header(&mut writer, 0);
     writer.write_u8(FRAME_METHOD); // frame kind: Method
     writer.write_u32(0); // selector id 0 ("gone")
     frame_tail(&mut writer, 0, 0);
+    root_class_records(&mut writer, 1);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
     let mut fixture = GraphFixture::new();
     fixture.symbols = table_with(&["gone"]);
+    fixture.module_roots = vec![1];
     let error = fixture.decode_error(&bytes);
     assert_eq!(
         error,
@@ -3792,8 +3762,7 @@ fn a_method_frame_naming_a_selector_the_class_lost_is_a_decode_error() {
 fn a_closure_objects_code_id_out_of_range_is_a_decode_error_not_a_panic() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Closure));
+    writer.write_shipped(CLOSURE_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(42); // code id, out of range for an empty code table
@@ -3830,13 +3799,11 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     // Read out after the last run, for the encoder and the decoder, which run
     // nothing.
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let roots = vec![mutator.fetch(&instance)];
-        let platform = mutator.fetch(&platform);
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
         let ids = encode::encode_code_table(
@@ -3848,29 +3815,28 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
         let before = writer.into_bytes().len();
         let mut writer = encode::Writer::new();
         let mixin_ids = mixin_ids_for(mutator, class, &mut symbols, &ids);
-        encode::encode_graph_section(
-            mutator.heap(),
+        let encoded = encode::encode_graph_section(
+            mutator,
             &mut writer,
             &roots,
-            platform,
             &ids,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
+            &[class],
             &mixin_ids,
             &mut symbols,
         )
         .expect("encode graph");
+        let shipped = shipped_names::resolve_in(mutator, &encoded.used.names(mutator), false)
+            .expect("the graph's own names resolve");
         let graph = writer.into_bytes();
         let symbol_table = symbols.build();
         assert!(before > 0 && graph.len() > 8);
         let mixin_order = mixin_preorder(mutator.heap(), class);
-        let module_classes = image::ModuleClasses::of(mutator.heap(), &[class]);
         let mut context = decode::DecodeContext {
             mutator,
-            modules: &module_classes,
+            module_roots: &encoded.module_roots,
             codes: &[],
-            platform,
             mixins: &mixin_order,
-            platform_paths: &[],
+            shipped: &shipped,
         };
         for cut in 1..graph.len() {
             let mut reader = decode::Reader::new(&graph[..cut]);
@@ -4046,20 +4012,18 @@ fn an_unknown_frame_kind_tag_is_refused() {
 #[test]
 fn inspect_refuses_an_unknown_frame_kind_tag() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
-    let platform = interpreter.platform();
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         )
         .expect("snapshot")
     });
+    bytes = with_fixture_names(&bytes);
     let graph_start = image::inspect::inspect(&bytes)
         .expect("inspect")
         .sections
@@ -4096,18 +4060,15 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let inner = expect_ok(interpreter.send(&instance, Symbol::intern("mk"), &[]), "mk");
-    let platform = interpreter.platform();
     // Read out after the last run, for the encoder, which runs nothing.
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let inner = mutator.fetch(&inner);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[inner],
         )
         .expect("snapshot")
@@ -4144,8 +4105,7 @@ fn inspect_names_the_closure_object_a_closure_frame_runs() {
 fn a_closure_frame_naming_an_object_that_is_not_a_closure_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_shipped(STRING_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("not a closure");
@@ -4207,8 +4167,7 @@ fn block_code(argument_count: u16, copied_count: u16) -> Rc<CompiledCode> {
 fn closure_object_with_copied_values(copied: &[i64]) -> Vec<u8> {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Closure));
+    writer.write_shipped(CLOSURE_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(0); // code id
@@ -4314,20 +4273,17 @@ fn a_snapshot_loads_into_a_bytecode_interpreter_with_its_state_and_a_safe_hash_c
         interpreter.send(&instance, Symbol::intern("bump"), &[]),
         "bump",
     );
-    let platform = interpreter.platform();
     let (bytes, max_hash) = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let max_hash = mutator
             .heap_mut()
             .object_ensure_identity_hash(object(instance));
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot");
@@ -4378,17 +4334,14 @@ fn a_loaded_image_answers_the_dispatch_ids_its_classes_were_given() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -4449,17 +4402,14 @@ fn a_loaded_root_gets_its_dispatch_id_though_its_class_record_comes_after_it() {
         "Alpha new",
     );
 
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let alpha = mutator.fetch(&alpha);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[alpha],
         )
         .expect("snapshot")
@@ -4524,17 +4474,14 @@ fn a_lazy_slot_survives_an_image_filled_and_unfilled() {
         interpreter.send(&first, Symbol::intern("computed"), &[]),
         "computed before the snapshot",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let root = mutator.fetch(&root);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[root],
         )
         .expect("snapshot")
@@ -4650,16 +4597,13 @@ fn bytes_after_the_last_section_are_refused_not_ignored() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         )
         .expect("snapshot")
@@ -4682,16 +4626,13 @@ fn load_refuses_a_version_mismatch() {
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     let mut bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         )
         .unwrap()
@@ -4699,6 +4640,37 @@ fn load_refuses_a_version_mismatch() {
     bytes[4..8].copy_from_slice(&9999u32.to_le_bytes());
     let error = load_error(&bytes);
     assert!(error.contains("version"), "{error}");
+}
+
+/// An image another binary wrote is refused before anything past the
+/// header is read: its shipped names would resolve against another world.
+#[test]
+fn an_image_of_another_shipped_world_is_refused() {
+    let mut bytes = snapshot_of(EMPTY);
+    let fingerprint_at = encode::MAGIC.len() + 4 + 1;
+    bytes[fingerprint_at] ^= 1;
+    let error = load_error(&bytes);
+    assert!(
+        error.contains("another shipped world"),
+        "the refusal names the mismatch: {error}"
+    );
+}
+
+/// The fingerprint is a function of the binary alone.
+#[test]
+fn the_shipped_world_fingerprint_is_stable_within_a_binary() {
+    assert_eq!(
+        image::fingerprint::shipped_world_fingerprint(),
+        image::fingerprint::shipped_world_fingerprint()
+    );
+    let bytes = snapshot_of(EMPTY);
+    let fingerprint_at = encode::MAGIC.len() + 4 + 1;
+    let written = u64::from_le_bytes(
+        bytes[fingerprint_at..fingerprint_at + 8]
+            .try_into()
+            .expect("eight bytes"),
+    );
+    assert_eq!(written, image::fingerprint::shipped_world_fingerprint());
 }
 
 /// `image::load`'s error message. Never `expect_err`: that would require
@@ -4778,11 +4750,9 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
     let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         let modules = [image::ModuleSource {
             class,
@@ -4790,7 +4760,7 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
             source: Some(source),
         }];
         (
-            image::snapshot(mutator, &modules, platform, &[instance]).expect("snapshot"),
+            image::snapshot(mutator, &modules, &[instance]).expect("snapshot"),
             image::package(mutator, &modules, instance).expect("package"),
         )
     });
@@ -5542,7 +5512,6 @@ const ONE_METHOD: &str = indoc! {"
 /// needs to verify: its lexical parent is `foo`, which has two registers.
 fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
     let (mut interpreter, class) = load(ONE_METHOD);
-    let platform = interpreter.platform();
     let block = code_with(
         CodeKind::Block,
         0,
@@ -5575,27 +5544,28 @@ fn closure_world() -> (GraphFixture, decode::DecodedCodeTable) {
     let fixture = GraphFixture {
         codes: table.codes.clone(),
         interpreter,
-        class,
-        platform,
         // `foo_frame` below writes the `Method` frame kind's selector as id
         // 0, which must resolve to "foo" -- the method `install_mixin` just
         // gave the compiled body to.
         symbols: table_with(&["foo"]),
         mixins,
-        platform_paths: Vec::new(),
+        names: fixture_names(),
+        module_roots: vec![2],
     };
+
     (fixture, table)
 }
 
 /// A graph section holding one closure object over code id 0 and the one
 /// frame it names as its `captured_frame`, object 1, whose record `frame`
 /// writes after its header. The home follows from the captured frame, so the
-/// record carries no second id.
+/// record carries no second id. The module root's two records follow at 2
+/// (`root_class_records`), the class a frame with no current class resolves
+/// its method against.
 fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Closure));
+    graph_counts(&mut writer, 4);
+    writer.write_shipped(CLOSURE_NAME);
     writer.write_u32(1); // identity hash
     writer.write_u8(OBJECT_CLOSURE); // object body: Closure
     writer.write_u32(0); // code id 0 -- the block body
@@ -5603,6 +5573,7 @@ fn closure_over_frame(frame: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     writer.write_u16(0); // copying nothing
     frame_header(&mut writer, 0);
     frame(&mut writer);
+    root_class_records(&mut writer, 2);
     writer.write_u32(1); // one root...
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0); // ...the closure
@@ -5725,17 +5696,14 @@ fn a_real_snapshots_graph_verifies_and_its_closures_still_read_their_captured_lo
         interpreter.send(&instance, Symbol::intern("keep"), &[]),
         "keep",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -5780,17 +5748,14 @@ fn a_decoded_symbol_round_trips_to_the_loaded_worlds_canonical_object() {
         interpreter.send(&instance, Symbol::intern("keep"), &[]),
         "keep",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -5833,17 +5798,14 @@ fn a_snapshot_whose_closure_was_captured_by_a_block_activation_loads_and_runs() 
         interpreter.send(&instance, Symbol::intern("keep"), &[]),
         "keep",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -5939,7 +5901,6 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
     // the doctored class -- and instantiating the doctored class would run
     // into the very invariant this test crafts an image to violate.
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     // Read out after the last run, for the encoder, which runs nothing.
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
@@ -5950,14 +5911,12 @@ fn a_whole_image_missing_its_initializer_is_refused_by_load() {
             ..mixin_of(mutator.heap(), class)
         };
         install_mixin(mutator, class, doctored);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             Some(NEEDS_INITIALIZER),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -5976,8 +5935,7 @@ fn an_identity_hash_at_the_ceiling_is_refused_rather_than_overflowing_the_counte
     // not place the counter past it.
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_shipped(STRING_NAME);
     writer.write_u32(1 << 22); // identity hash, at the ceiling
     writer.write_u8(OBJECT_STRING); // object body: String
     writer.write_str("x");
@@ -6004,21 +5962,18 @@ fn an_identity_hash_one_below_the_ceiling_loads_and_keeps_allocating() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance_object = object(mutator.fetch(&instance));
         mutator
             .heap_mut()
             .object_set_identity_hash(instance_object, (1 << 22) - 1);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -6056,21 +6011,18 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     let (mut interpreter, class) = load(source);
     let hashed = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let unhashed = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
-    let platform = interpreter.platform();
     let (bytes, assigned) = interpreter.enter(|mutator| {
         let hashed_value = mutator.fetch(&hashed);
         let assigned = mutator
             .heap_mut()
             .object_ensure_identity_hash(object(hashed_value));
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let unhashed_value = mutator.fetch(&unhashed);
         let bytes = snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[hashed_value, unhashed_value],
         )
         .expect("snapshot");
@@ -6102,11 +6054,12 @@ fn an_unhashed_object_round_trips_unassigned_and_draws_past_the_image_maximum() 
     });
 }
 
-/// A builtin class, the root class and `platform` are named by tag, not
-/// carried as records, so before the closing hash table nothing recorded a
-/// hash one of them had been given: after the load the bootstrap's fresh
-/// objects drew new ones (`docs/design/image-format.md`, "Identity hashes are
-/// preserved verbatim"). One that nothing asked stays unassigned.
+/// A builtin class is named, not carried as a record, so before the closing
+/// hash table nothing recorded a hash it had been given: after the load the
+/// bootstrap's fresh objects drew new ones (`docs/design/image-format.md`,
+/// "Identity hashes are preserved verbatim"). One that nothing asked stays
+/// unassigned. The root class and the platform are records, so their
+/// hashes travel in their records' headers.
 #[test]
 fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let source = indoc! {"
@@ -6132,8 +6085,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
-            &[],
+            &[platform],
         )
         .expect("snapshot");
         (bytes, integer_hash, class_hash, platform_hash)
@@ -6142,18 +6094,22 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
         report.graph_tag_named_hashes,
-        vec![
-            format!("Integer hash {integer_hash}"),
-            format!("<module 0> hash {class_hash}"),
-            format!("<platform> hash {platform_hash}"),
-        ],
-        "inspect reads the table, in the encoder's fixed order"
+        vec![format!("Kernel Integer hash {integer_hash}")],
+        "inspect reads the table, the shipped names alone"
+    );
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|record| record.contains(&format!("hash {class_hash}, class mixin row 0"))),
+        "the root class's hash is its record's: {:?}",
+        report.graph_objects
     );
 
     let mut loaded = image::load(&bytes).expect("load");
-    let loaded_platform = loaded.interpreter.platform();
+    let decoded_platform = loaded.roots[0].clone();
     loaded.interpreter.enter(|mutator| {
-        let loaded_platform = mutator.fetch(&loaded_platform);
+        let decoded_platform = mutator.fetch(&decoded_platform);
         let loaded_class = class_reference(mutator, &loaded.modules[0].class);
         let loaded_integer = mutator.builtin_class(BuiltinClass::Integer);
         let loaded_string = mutator.builtin_class(BuiltinClass::String);
@@ -6161,7 +6117,7 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
         assert_eq!(heap.object_identity_hash(loaded_integer), integer_hash);
         assert_eq!(heap.object_identity_hash(loaded_class), class_hash);
         assert_eq!(
-            heap.object_identity_hash(object(loaded_platform)),
+            heap.object_identity_hash(object(decoded_platform)),
             platform_hash
         );
         assert_eq!(
@@ -6177,14 +6133,15 @@ fn the_hashes_of_objects_named_by_tag_survive_a_snapshot() {
     });
 }
 
-/// The closing table alone, decoded against a freshly loaded world.
+/// The closing table alone, decoded against a freshly loaded world and the
+/// section of `FIXTURE_NAMES`.
 fn decode_tag_named(bytes: &[u8]) -> Result<u32, decode::DecodeError> {
-    let (mut interpreter, class) = load(EMPTY);
+    let (mut interpreter, _class) = load(EMPTY);
     interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let modules = image::ModuleClasses::of(mutator.heap(), &[class]);
+        let shipped = shipped_names::resolve_in(mutator, &fixture_names(), false)
+            .expect("the fixture's names resolve");
         let mut reader = decode::Reader::new(bytes);
-        decode::decode_tag_named_hashes(mutator, &mut reader, &modules, &[])
+        decode::decode_tag_named_hashes(mutator, &mut reader, &shipped)
     })
 }
 
@@ -6194,8 +6151,8 @@ fn a_tag_named_hash_of_zero_is_refused() {
     // out; accepting it would give one world two encodings.
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(image::opcodes::HASHED_MODULE_CLASS);
-    writer.write_u32(0); // module 0
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(0);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
@@ -6207,9 +6164,11 @@ fn a_tag_named_hash_of_zero_is_refused() {
 fn a_tag_named_object_recorded_twice_is_refused() {
     let mut writer = encode::Writer::new();
     writer.write_u32(2);
-    writer.write_u8(image::opcodes::HASHED_PLATFORM);
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(3);
-    writer.write_u8(image::opcodes::HASHED_PLATFORM);
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(4);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
@@ -6221,8 +6180,8 @@ fn a_tag_named_object_recorded_twice_is_refused() {
 fn a_tag_named_hash_at_the_ceiling_is_refused() {
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(1 << 22);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
@@ -6233,11 +6192,9 @@ fn a_tag_named_hash_at_the_ceiling_is_refused() {
 #[test]
 fn an_unknown_tag_named_hash_tag_is_refused() {
     // One past the last tag-named hash, and every retired one: a stale
-    // image's root-class entry names no module rather than module 0.
-    for tag in [HASHED_MODULE_LEVEL + 1]
-        .into_iter()
-        .chain(RETIRED_HASHED_TAGS)
-    {
+    // image's root-class entry names no module rather than module 0, and a
+    // stale builtin, platform or platform path entry names nothing.
+    for tag in [HASHED_SHIPPED + 1].into_iter().chain(RETIRED_HASHED_TAGS) {
         let mut writer = encode::Writer::new();
         writer.write_u32(1);
         writer.write_u8(tag);
@@ -6252,30 +6209,44 @@ fn an_unknown_tag_named_hash_tag_is_refused() {
     }
 }
 
+/// A shipped entry's index past the section is refused before it indexes.
 #[test]
-fn a_tag_named_hash_past_the_modules_is_refused() {
+fn a_tag_named_hash_past_the_shipped_names_is_refused() {
+    let past = u32::try_from(FIXTURE_NAMES.len()).expect("a count fits a u32");
     let mut writer = encode::Writer::new();
     writer.write_u32(1);
-    writer.write_u8(HASHED_MODULE_CLASS);
-    writer.write_u32(1); // the world carries module 0 alone
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(past);
     writer.write_u32(5);
     assert_eq!(
         decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::BadModuleReference { module: 1 })
+        Err(decode::DecodeError::BadShippedName(past))
     );
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(HASHED_MODULE_LEVEL);
-    writer.write_u32(0);
-    writer.write_u32(0); // `EMPTY`'s root adds no level
-    writer.write_u32(5);
-    assert_eq!(
-        decode_tag_named(&writer.into_bytes()),
-        Err(decode::DecodeError::BadModuleLevel {
-            module: 0,
-            position: 0
-        })
-    );
+}
+
+/// A hash is no reference, so an entry may name any kind of shipped object,
+/// the kernel's instance among them, and puts the hash on the loading
+/// world's own object.
+#[test]
+fn a_tag_named_hash_may_name_a_module_instance() {
+    let mut interpreter = Interpreter::bootstrap();
+    interpreter.enter(|mutator| {
+        let shipped = shipped_names::resolve_in(mutator, &fixture_names(), false)
+            .expect("the fixture's names resolve");
+        let kernel = shipped[KERNEL_INSTANCE_NAME as usize].object;
+        let mut writer = encode::Writer::new();
+        writer.write_u32(1);
+        writer.write_u8(HASHED_SHIPPED);
+        writer.write_u32(KERNEL_INSTANCE_NAME);
+        writer.write_u32(7);
+        let bytes = writer.into_bytes();
+        let mut reader = decode::Reader::new(&bytes);
+        assert_eq!(
+            decode::decode_tag_named_hashes(mutator, &mut reader, &shipped),
+            Ok(7)
+        );
+        assert_eq!(mutator.heap().object_identity_hash(kernel), 7);
+    });
 }
 
 #[test]
@@ -6292,11 +6263,12 @@ fn a_tag_named_hash_count_past_the_remaining_bytes_is_refused() {
 fn the_tag_named_hash_table_answers_its_largest_hash() {
     let mut writer = encode::Writer::new();
     writer.write_u32(2);
-    writer.write_u8(image::opcodes::HASHED_BUILTIN_CLASS);
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::String));
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(STRING_NAME);
     writer.write_u32(9);
-    writer.write_u8(image::opcodes::HASHED_MODULE_CLASS);
-    writer.write_u32(0); // module 0
+
+    writer.write_u8(HASHED_SHIPPED);
+    writer.write_u32(INTEGER_NAME);
     writer.write_u32(4);
     assert_eq!(decode_tag_named(&writer.into_bytes()), Ok(9));
 }
@@ -6397,14 +6369,12 @@ fn a_send_reaches_a_nested_mixins_method_after_a_snapshot_and_load() {
     );
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
             Some(NESTED_MODULE),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[outer],
         )
         .expect("snapshot")
@@ -6469,14 +6439,12 @@ fn the_nested_class_accessor_runs_a_reloaded_superclass_clause() {
     );
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
             Some(NESTED_MODULE),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[outer],
         )
         .expect("snapshot")
@@ -6536,19 +6504,16 @@ fn snapshot_world(
     interpreter: &mut Interpreter,
     source: &str,
     class: &Root,
-    platform: &Root,
     roots: &[Root],
 ) -> Vec<u8> {
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, class);
-        let platform_value = mutator.fetch(platform);
         let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform_value,
             &roots,
         )
         .expect("snapshot")
@@ -6626,7 +6591,7 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
     // that named no particular user class would decode one back as the
     // root. A class object is an ordinary record in the object table, which
     // is what makes both work.
-    let (mut interpreter, class, platform, outer) = instantiated_world(NESTED_MODULE);
+    let (mut interpreter, class, _platform, outer) = instantiated_world(NESTED_MODULE);
     let inner_class = expect_ok(
         interpreter.send(&outer, Symbol::intern("Inner"), &[]),
         "Inner",
@@ -6646,7 +6611,6 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         &mut interpreter,
         NESTED_MODULE,
         &class,
-        &platform,
         std::slice::from_ref(&outer),
     );
     let mut loaded = image::load(&bytes).expect("load");
@@ -6677,7 +6641,6 @@ fn a_snapshot_after_a_nested_class_access_round_trips() {
         &mut interpreter,
         NESTED_MODULE,
         &class,
-        &platform,
         std::slice::from_ref(&inner_instance),
     );
     let mut loaded = image::load(&bytes).expect("load");
@@ -6706,7 +6669,7 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
     // user-defined class object back as the root: a wrong class silently
     // installed, with no field count to contradict it, rather than a decode
     // error.
-    let (mut interpreter, class, platform, outer) = instantiated_world(NESTED_MODULE);
+    let (mut interpreter, class, _platform, outer) = instantiated_world(NESTED_MODULE);
     let _ = expect_ok(
         interpreter.send(&outer, Symbol::intern("Inner"), &[]),
         "Inner",
@@ -6715,7 +6678,6 @@ fn a_second_user_class_no_longer_decodes_as_the_root() {
         &mut interpreter,
         NESTED_MODULE,
         &class,
-        &platform,
         std::slice::from_ref(&outer),
     );
     let mut loaded = image::load(&bytes).expect("load");
@@ -6784,13 +6746,7 @@ fn one_application_shared_before_a_snapshot_is_still_shared_after_it() {
         );
     });
 
-    let bytes = snapshot_world(
-        &mut interpreter,
-        NESTED_MODULE,
-        &class,
-        &platform,
-        &[first, second],
-    );
+    let bytes = snapshot_world(&mut interpreter, NESTED_MODULE, &class, &[first, second]);
     let mut loaded = image::load(&bytes).expect("load");
     let outers: Vec<Root> = loaded.roots.clone();
     let first_inner = nested_class_of(&mut loaded, &outers[0], "Inner");
@@ -6857,18 +6813,12 @@ const DEEP_OUTER_MODULE: &str = indoc! {"
 
 #[test]
 fn outer_still_resolves_through_a_declaration_chain_that_came_from_an_image() {
-    let (mut interpreter, class, platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
+    let (mut interpreter, class, _platform, outer) = instantiated_world(DEEP_OUTER_MODULE);
     let deep = expect_ok(
         interpreter.send(&outer, Symbol::intern("makeDeep"), &[]),
         "makeDeep",
     );
-    let bytes = snapshot_world(
-        &mut interpreter,
-        DEEP_OUTER_MODULE,
-        &class,
-        &platform,
-        &[outer, deep],
-    );
+    let bytes = snapshot_world(&mut interpreter, DEEP_OUTER_MODULE, &class, &[outer, deep]);
     let mut loaded = image::load(&bytes).expect("load");
     let reloaded_deep = loaded.roots[1].clone();
     // `Deep`'s declaring class is `Base`, not `Derived` -- the two differ
@@ -6921,14 +6871,12 @@ fn a_reloaded_superclass_clause_message_still_passes_its_arguments() {
     );
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
             Some(NESTED_SUPERCLASS_ARGUMENTS),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[outer],
         )
         .expect("snapshot")
@@ -7044,7 +6992,6 @@ fn an_image_with_no_superclass_clause_for_a_clause_that_needs_one_is_refused() {
 #[test]
 fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_panic() {
     let (mut interpreter, class) = load(NESTED_SUPERCLASS_ARGUMENTS);
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         // The one thing an image can present that the load-time checks let
@@ -7077,13 +7024,11 @@ fn a_superclass_message_body_that_returns_no_argument_list_is_an_error_not_a_pan
         install_mixin(mutator, class, doctored);
         // An image is the only way such a body reaches an interpreter, so
         // the tampered mixin travels through one.
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         )
         .expect("snapshot")
@@ -7131,8 +7076,7 @@ fn the_superclass_clause_frame_kinds_decode() {
     for (tag, expect_clause) in [(4u8, true), (5u8, false)] {
         let mut writer = one_frame_prefix();
         writer.write_u8(tag);
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        writer.write_shipped(OBJECT_NAME);
         frame_tail(&mut writer, 0, 0);
         writer.write_u32(0); // no roots
         let bytes = writer.into_bytes();
@@ -7165,16 +7109,13 @@ const TRIVIAL_MODULE: &str = indoc! {"
 /// about the code table's own bytes, not the object graph.
 fn snapshot_of(source: &str) -> Vec<u8> {
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         )
         .expect("snapshot")
@@ -7184,6 +7125,29 @@ fn snapshot_of(source: &str) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // The module section: several modules in one image, each named by its index.
 // ---------------------------------------------------------------------------
+
+/// A module's root class is a record of the graph like any class: the
+/// module section names it by object id, and a load answers that record.
+#[test]
+fn a_modules_root_class_is_a_record_the_module_section_names() {
+    let (mut interpreter, class) = load(EMPTY);
+    let origin = SourceOrigin::File(PathBuf::from("t.ns"));
+    let bytes = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        snapshot_one(mutator, Some(EMPTY), &origin, class, &[]).expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.contains("class mixin row 0")),
+        "the root class is a class record: {:?}",
+        report.graph_objects
+    );
+    let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(loaded.modules.len(), 1);
+}
 
 /// Loads a further module into `interpreter`, resolved as coming from `name`.
 fn load_another(interpreter: &mut Interpreter, source: &str, name: &str) -> Root {
@@ -7230,7 +7194,6 @@ fn two_module_image(
 ) -> Vec<u8> {
     let first_origin = SourceOrigin::File("First.ns".into());
     let second_origin = SourceOrigin::File("Second.ns".into());
-    let platform = interpreter.platform();
     interpreter
         .enter(|mutator| {
             let modules = [
@@ -7245,8 +7208,7 @@ fn two_module_image(
                     source: None,
                 },
             ];
-            let platform = mutator.fetch(&platform);
-            image::snapshot(mutator, &modules, platform, &[mutator.fetch(instance)])
+            image::snapshot(mutator, &modules, &[mutator.fetch(instance)])
         })
         .unwrap_or_else(|error| panic!("{error}"))
 }
@@ -7308,12 +7270,10 @@ fn an_image_of_two_modules_restores_both_and_the_graph_reaching_them() {
             .map(|section| section.detail.as_str()),
         Some("2 modules")
     );
+    let second_root = module_root_object(&bytes, 1);
     assert!(
-        report
-            .graph_objects
-            .iter()
-            .any(|object| object.contains("<module 1>")),
-        "the graph names Second by its module index: {:?}",
+        report.graph_objects[second_root].contains("class mixin row"),
+        "the module section names Second's root class record: {:?}",
         report.graph_objects
     );
 }
@@ -7348,86 +7308,189 @@ fn rewrite_in_graph(bytes: &mut [u8], pattern: &[u8], replacement: &[u8]) {
     bytes[position..position + replacement.len()].copy_from_slice(replacement);
 }
 
-/// `inspect` reports on the files that fail to load too, so a class tag
-/// naming a module past the module section, or a level past the ones a root
-/// section rebuilds, is shown marked as such rather than refused or printed
-/// as if it named one.
-#[test]
-fn inspect_marks_a_module_class_tag_past_the_modules() {
-    let (mut interpreter, first, second, instance) = two_module_world();
-    expect_ok(
-        interpreter.send(
-            &instance,
-            Symbol::intern("held:"),
-            std::slice::from_ref(&second),
-        ),
-        "held:",
-    );
-    let mut bytes = two_module_image(&mut interpreter, &first, &second, &instance);
-    let mut held_second = vec![VALUE_CLASS_TAG, CLASS_MODULE];
-    held_second.extend(1u32.to_le_bytes());
-    let mut held_seventh = vec![VALUE_CLASS_TAG, CLASS_MODULE];
-    held_seventh.extend(7u32.to_le_bytes());
-    rewrite_in_graph(&mut bytes, &held_second, &held_seventh);
-    let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert!(
-        report
-            .graph_objects
-            .iter()
-            .any(|object| object.contains("class <module 7: out of range>")),
-        "the module past the section is marked: {:?}",
-        report.graph_objects
-    );
+/// The object id the module section names `module`'s root class record by,
+/// as `inspect` reports it (`root object {id}`).
+fn module_root_object(bytes: &[u8], module: usize) -> usize {
+    let report = image::inspect::inspect(bytes).expect("inspect");
+    report.modules[module]
+        .root
+        .strip_prefix("root object ")
+        .and_then(|id| id.parse().ok())
+        .expect("a module line names its root object")
+}
 
-    let source = indoc! {"
-        class Root = Object new <: Value () ()
-    "};
-    let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
-    let mut bytes = interpreter.enter(|mutator| {
-        let root_class = class_reference(mutator, &class);
-        let level = mutator
-            .heap()
-            .class_superclass(root_class)
-            .expect("the root's level");
-        let platform = mutator.fetch(&platform);
+/// Where the `u32` object id of `module`'s root class record sits in the
+/// module section.
+fn module_root_id_at(bytes: &[u8], module: usize) -> usize {
+    let has_source = decode::read_header(&mut decode::Reader::new(bytes))
+        .expect("valid header")
+        .has_source;
+    let mut reader = decode::Reader::new(bytes);
+    reader
+        .read_raw(module_section_start(bytes))
+        .expect("the sections before");
+    reader.read_u32().expect("module count");
+    for _ in 0..module {
+        decode::decode_source_origin(&mut reader).expect("an earlier module's origin");
+        if has_source {
+            reader.read_str().expect("an earlier module's source");
+        }
+        reader.read_u32().expect("an earlier module's root");
+    }
+    decode::decode_source_origin(&mut reader).expect("the module's origin");
+    if has_source {
+        reader.read_str().expect("the module's source");
+    }
+    reader.position()
+}
+
+/// `EMPTY` carried with one root, an empty array: its graph holds the
+/// array, the root class's record and its metaclass's, and its shipped
+/// names `Kernel Array` and `Kernel Object` both.
+fn empty_module_with_an_array() -> Vec<u8> {
+    let (mut interpreter, class) = load(EMPTY);
+    interpreter.enter(|mutator| {
+        let array = Value::object(mutator.new_array(Vec::new()));
+        let class = class_reference(mutator, &class);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
-            root_class,
-            platform,
-            &[Value::object(level)],
+            class,
+            &[array],
         )
         .expect("snapshot")
-    });
-    let mut level_zero = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
-    level_zero.extend(0u32.to_le_bytes());
-    level_zero.extend(0u32.to_le_bytes());
-    let mut level_three = vec![VALUE_CLASS_TAG, CLASS_MODULE_LEVEL];
-    level_three.extend(0u32.to_le_bytes());
-    level_three.extend(3u32.to_le_bytes());
-    rewrite_in_graph(&mut bytes, &level_zero, &level_three);
-    let report = image::inspect::inspect(&bytes).expect("inspect");
+    })
+}
+
+/// A module's root is named by an id into the object table, which is
+/// checked against the decoded graph like every other id.
+#[test]
+fn a_module_root_id_past_the_graph_is_refused() {
+    let mut bytes = empty_module_with_an_array();
+    let root_id_at = module_root_id_at(&bytes, 0);
+    bytes[root_id_at..root_id_at + 4].copy_from_slice(&999u32.to_le_bytes());
     assert_eq!(
-        report.graph_roots,
-        vec!["class <module 0 level 3: out of range>".to_string()]
+        load_error(&bytes),
+        decode::DecodeError::BadObjectId(999).to_string()
     );
 }
 
-/// No image reaches this refusal today -- the root rule admits only `Object`
-/// and `Value`, which every bootstrap applies -- so its report is pinned
-/// here, where a malformed message would otherwise go unseen.
+/// The record a module section names must be a class of the module's own
+/// root declaration: an array is no class at all.
 #[test]
-fn a_root_builtin_without_an_application_names_its_module_and_builtin() {
-    let error = decode::DecodeError::RootBuiltinWithoutApplication {
-        module: 2,
-        builtin: BuiltinClass::Value,
-    };
+fn a_module_root_naming_an_array_is_refused() {
+    let mut bytes = empty_module_with_an_array();
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let array = report
+        .graph_objects
+        .iter()
+        .position(|record| record.contains("array []"))
+        .expect("the array's record");
+    let root_id_at = module_root_id_at(&bytes, 0);
+    bytes[root_id_at..root_id_at + 4]
+        .copy_from_slice(&u32::try_from(array).expect("an id").to_le_bytes());
     assert_eq!(
-        error.to_string(),
-        "the root class of the image's module 2 builds on the builtin Value, which this build \
-         has no behaviour for"
+        load_error(&bytes),
+        decode::DecodeError::ModuleRootNotItsRecord { module: 0 }.to_string()
+    );
+}
+
+/// A root class record over `Kernel Array` applies its module's root row,
+/// but the root rule builds no root over anything but `Object` or `Value`:
+/// refused, though `Kernel Array` may stand as a superclass elsewhere.
+#[test]
+fn a_root_record_over_kernel_array_breaks_the_root_rule() {
+    let mut bytes = empty_module_with_an_array();
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let index_of = |name: &str| {
+        u32::try_from(
+            report
+                .shipped_names
+                .iter()
+                .position(|shipped| shipped == name)
+                .expect("the name is in the section"),
+        )
+        .expect("an index")
+    };
+    let row = mixin_table_of(&bytes).module_rows[0];
+    let superclass = |index: u32| {
+        let mut record = vec![OBJECT_CLASS, MIXIN_ROW];
+        record.extend(row.to_le_bytes());
+        record.push(1);
+        record.push(CLASS_SHIPPED);
+        record.extend(index.to_le_bytes());
+        record
+    };
+    rewrite_in_graph(
+        &mut bytes,
+        &superclass(index_of("Kernel Object")),
+        &superclass(index_of("Kernel Array")),
+    );
+    assert_eq!(
+        load_error(&bytes),
+        decode::DecodeError::RootRule { module: 0 }.to_string()
+    );
+}
+
+/// The two refusals of a module's root record, pinned by variant.
+#[test]
+fn the_refusals_of_a_module_root_record_name_their_module() {
+    assert_eq!(
+        decode::DecodeError::ModuleRootNotItsRecord { module: 2 }.to_string(),
+        "the image names a record as the root class of its module 2 that is no class of that \
+         module's root declaration"
+    );
+    assert_eq!(
+        decode::DecodeError::RootRule { module: 2 }.to_string(),
+        "the root class of the image's module 2 inherits neither Object nor Value, nor Value \
+         applied over Object, as a module's root class must"
+    );
+}
+
+/// The encoder holds a root to the same rule, so it never writes a root the
+/// loader refuses.
+#[test]
+fn a_root_class_over_kernel_array_is_not_written() {
+    let (mut interpreter, class) = load(EMPTY);
+    let error = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        mutator.heap_mut().class_set_superclass(class, array);
+        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+            Ok(_) => panic!("a root over Kernel Array must not be written"),
+            Err(error) => error,
+        }
+    });
+    assert!(
+        error.contains("does not inherit what the root rule allows"),
+        "unexpected error: {error}"
+    );
+}
+
+/// A module root with a declaring class is not its module's own root
+/// record, and the encoder's refusal says so rather than calling it a
+/// metaclass or a level.
+#[test]
+fn a_root_class_with_a_declaring_class_is_not_written() {
+    let (mut interpreter, class) = load(EMPTY);
+    let error = interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        mutator
+            .heap_mut()
+            .class_set_lexical_context(class, None, Some(array));
+        match module_only_image(mutator, None, &Origin::File(PathBuf::from("t.ns")), class) {
+            Ok(_) => panic!("a root with a declaring class must not be written"),
+            Err(error) => error,
+        }
+    });
+    assert!(
+        error.contains(
+            "a metaclass, a level, a class applying another declaration's mixin, or a class \
+             with an enclosing object or a declaring class"
+        ),
+        "unexpected error: {error}"
     );
 }
 
@@ -7476,11 +7539,11 @@ fn a_module_count_past_the_bytes_left_is_refused() {
     ));
 }
 
+/// Each module's root record is held to its own module's root row: module
+/// 1's id naming module 0's root class record -- a class record that obeys
+/// the root rule, of another declaration -- is refused for module 1.
 #[test]
-fn a_root_section_clause_is_checked_against_its_own_modules_row() {
-    // Module 0's row declares a `<:` clause; module 1's declares none. Module
-    // 1's section naming clause 0 is refused against module 1's own row --
-    // module 0's would have accepted it.
+fn a_module_root_is_held_to_its_own_modules_row() {
     let (mut interpreter, first) = load(indoc! {"
         class First = Object new <: Value () () : ()
     "});
@@ -7501,43 +7564,16 @@ fn a_root_section_clause_is_checked_against_its_own_modules_row() {
                     source: None,
                 },
             ];
-            image::snapshot(mutator, &modules, Value::nil(), &[])
+            image::snapshot(mutator, &modules, &[])
         })
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(image::load(&bytes).is_ok(), "the fixture itself must load");
-    let decoded = mixin_table_of(&bytes);
-    let second_row = decoded.module_rows[1];
-    let level_count_at = {
-        let mut reader = decode::Reader::new(&bytes);
-        reader
-            .read_raw(module_section_start(&bytes))
-            .expect("the sections before");
-        reader.read_u32().expect("module count");
-        decode::decode_source_origin(&mut reader).expect("module 0's origin");
-        decode::decode_root_section(&mut reader, &decoded, 0).expect("module 0's root section");
-        decode::decode_source_origin(&mut reader).expect("module 1's origin");
-        // Module 1's root section: the presence flag, the superclass tag,
-        // then the level count.
-        reader.position() + 2
-    };
-    assert_eq!(
-        bytes[level_count_at..level_count_at + 4],
-        0u32.to_le_bytes(),
-        "Second applies no mixin"
-    );
-    bytes[level_count_at..level_count_at + 4].copy_from_slice(&1u32.to_le_bytes());
-    let mut level = encode::Writer::new();
-    level.write_u32(0); // clause 0 ...
-    level.write_u8(encode::builtin_class_tag(BuiltinClass::Value)); // ... naming Value
-    let insert_at = level_count_at + 4;
-    bytes.splice(insert_at..insert_at, level.into_bytes());
+    let first_root = u32::try_from(module_root_object(&bytes, 0)).expect("an id");
+    let root_id_at = module_root_id_at(&bytes, 1);
+    bytes[root_id_at..root_id_at + 4].copy_from_slice(&first_root.to_le_bytes());
     assert_eq!(
         load_error(&bytes),
-        decode::DecodeError::BadMixinApplicationClause {
-            row: second_row,
-            index: 0
-        }
-        .to_string()
+        decode::DecodeError::ModuleRootNotItsRecord { module: 1 }.to_string()
     );
 }
 
@@ -7548,19 +7584,10 @@ fn a_graph_reaching_a_module_the_image_does_not_carry_is_refused() {
         interpreter.send(&instance, Symbol::intern("held:"), &[second]),
         "held:",
     );
-    let platform = interpreter.platform();
     let result = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &first);
-        let platform = mutator.fetch(&platform);
         let origin = SourceOrigin::File("First.ns".into());
-        snapshot_one(
-            mutator,
-            None,
-            &origin,
-            class,
-            platform,
-            &[mutator.fetch(&instance)],
-        )
+        snapshot_one(mutator, None, &origin, class, &[mutator.fetch(&instance)])
     });
     match result {
         Ok(_) => panic!("a graph reaching a module the image does not carry must be refused"),
@@ -7586,19 +7613,10 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
         interpreter.send(&instance, Symbol::intern("held:"), &[block]),
         "held:",
     );
-    let platform = interpreter.platform();
     let result = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &first);
-        let platform = mutator.fetch(&platform);
         let origin = SourceOrigin::File("First.ns".into());
-        snapshot_one(
-            mutator,
-            None,
-            &origin,
-            class,
-            platform,
-            &[mutator.fetch(&instance)],
-        )
+        snapshot_one(mutator, None, &origin, class, &[mutator.fetch(&instance)])
     });
     match result {
         Ok(_) => panic!("a closure over code no carried module compiled must be refused"),
@@ -7609,11 +7627,11 @@ fn a_closure_over_code_no_module_carries_is_refused_not_a_panic() {
     }
 }
 
-/// A level a module root's `<:` clause added is no record, so its own
-/// identity hash travels in the closing table (`HASHED_MODULE_LEVEL`), as
-/// its metaclass's already did. The kernel gives a program no `superclass`
-/// accessor, so the hash is drawn from Rust, where a later reflective
-/// reach would draw it.
+/// A level a module root's `<:` clause added is a record, so its own
+/// identity hash travels in its record's header, as its root's and both
+/// metaclasses' do. The kernel gives a program no `superclass` accessor,
+/// so the hash is drawn from Rust, where a later reflective reach would
+/// draw it.
 #[test]
 fn a_module_levels_own_hash_survives_an_image() {
     let source = indoc! {"
@@ -7621,7 +7639,6 @@ fn a_module_levels_own_hash_survives_an_image() {
     "};
     let (mut interpreter, class) = load(source);
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "M new");
-    let platform = interpreter.platform();
     let (bytes, hash) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let level = mutator
@@ -7629,13 +7646,11 @@ fn a_module_levels_own_hash_survives_an_image() {
             .class_superclass(class)
             .expect("the level `<: Value` added");
         let hash = mutator.heap_mut().object_ensure_identity_hash(level);
-        let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[mutator.fetch(&instance)],
         )
         .expect("snapshot");
@@ -7643,11 +7658,11 @@ fn a_module_levels_own_hash_survives_an_image() {
     });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
-        report
-            .graph_tag_named_hashes
-            .contains(&format!("<module 0 level 0> hash {hash}")),
-        "the closing table records the level: {:?}",
-        report.graph_tag_named_hashes
+        report.graph_objects.iter().any(
+            |record| record.contains(&format!("hash {hash}, class mixin shipped Kernel Value"))
+        ),
+        "the level's record carries its hash: {:?}",
+        report.graph_objects
     );
     let loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
     let module_class = loaded.modules[0].class.clone();
@@ -8337,14 +8352,12 @@ fn a_class_whose_superclass_has_a_keyword_factory_survives_a_round_trip() {
     );
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let outer = mutator.fetch(&outer);
         snapshot_one(
             mutator,
             Some(NESTED_SUPERCLASS_ARGUMENTS),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[outer],
         )
         .expect("snapshot")
@@ -8502,7 +8515,6 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
     // Two levels past the deepest module the parser will produce, so the
     // refusal cannot be blamed on an off-by-one at the boundary.
     let mixin = deep_mixin_chain(deepest_parseable_nesting() + 4);
-    let platform = interpreter.platform();
     let error = interpreter.enter(|mutator| {
         let application = mutator.apply_mixin(&mixin, None);
         let object_class = mutator.builtin_class(BuiltinClass::Object);
@@ -8516,13 +8528,11 @@ fn a_class_tree_nested_past_the_ceiling_is_refused_when_the_image_is_written() {
                 builtin: None,
             },
         );
-        let platform = mutator.fetch(&platform);
         let Err(error) = snapshot_one(
             mutator,
             Some(TRIVIAL_MODULE),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         ) else {
             panic!("a class tree past the ceiling must not encode");
@@ -8581,29 +8591,41 @@ fn instance_chain_depth<'gc>(heap: &Heap<'gc>, head: Value<'gc>) -> u32 {
     depth
 }
 
-/// A complete image whose graph section is `graph` verbatim. Everything
-/// before it comes from a real `snapshot` of `EMPTY`, whose own graph
-/// section is exactly the three zero counts at the end of the file -- so
-/// the splice point is found by structure, not by a hardcoded offset.
-fn image_with_graph_section(graph: &[u8]) -> Vec<u8> {
-    let mut bytes = snapshot_of(EMPTY);
-    let tail = bytes.len() - 12;
-    assert_eq!(
-        &bytes[tail..],
-        &[0u8; 12],
-        "a rootless snapshot ends in three zero counts: objects, roots, tag-named hashes"
-    );
-    bytes.truncate(tail);
+/// A complete image whose graph section is `graph` verbatim and whose
+/// module section names record `root` as `EMPTY`'s root class. Everything
+/// before the graph comes from a real `snapshot` of `EMPTY`, its
+/// shipped-name section replaced by `FIXTURE_NAMES`'s, so `graph` may use
+/// the fixture's indices. The splice point is found by structure, where
+/// `inspect` says the graph section starts, not by a hardcoded offset.
+fn image_with_graph_section(graph: &[u8], root: u32) -> Vec<u8> {
+    let mut bytes = with_fixture_names(&snapshot_of(EMPTY));
+    let root_id_at = module_root_id_at(&bytes, 0);
+    bytes[root_id_at..root_id_at + 4].copy_from_slice(&root.to_le_bytes());
+    bytes.truncate(graph_section_start(&bytes));
     bytes.extend_from_slice(graph);
     bytes
 }
 
+/// `EMPTY`'s root class as records `id` and `id + 1`: a class record of
+/// row 0 over `Kernel Object` and its metaclass record -- what a graph
+/// spliced into `EMPTY`'s image needs for its module section to name.
+fn root_class_records(writer: &mut encode::Writer, id: u32) {
+    class_record(writer, id + 1, 0, |writer| {
+        writer.write_boolean(true);
+        writer.write_shipped(OBJECT_NAME); // superclass: Kernel Object
+        writer.write_boolean(false); // no enclosing object
+        writer.write_boolean(false); // no declaring class
+    });
+    metaclass_record(writer, id);
+}
+
 /// `levels` class records, each inheriting from the next, with the
 /// outermost as the image's single root, followed by their `levels`
-/// metaclass records in the same order.
+/// metaclass records in the same order, then the module root's
+/// two (`root_class_records`) at `2 * levels`.
 fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 2 * levels);
+    graph_counts(&mut writer, 2 * levels + 2);
     for level in 0..levels {
         class_record(&mut writer, levels + level, 0, |writer| {
             if level + 1 < levels {
@@ -8620,6 +8642,7 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
     for level in 0..levels {
         metaclass_record(&mut writer, level);
     }
+    root_class_records(&mut writer, 2 * levels);
     writer.write_u32(1); // one root
     writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
     writer.write_u8(CLASS_RECORD); // class tag: object-table record
@@ -8630,13 +8653,13 @@ fn superclass_chain_graph(levels: u32) -> Vec<u8> {
 
 /// `levels` instance records, each holding the next in its one field, with
 /// the outermost as the image's single root -- the shape that has been
-/// expressible since the object table existed.
+/// expressible since the object table existed -- then the module root's two
+/// records (`root_class_records`) at `levels`.
 fn instance_chain_graph(levels: u32) -> Vec<u8> {
     let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, levels);
+    graph_counts(&mut writer, levels + 2);
     for level in 0..levels {
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        writer.write_shipped(OBJECT_NAME);
         writer.write_u32(level);
         writer.write_u8(OBJECT_INSTANCE); // object body: Instance
         if level + 1 < levels {
@@ -8647,6 +8670,7 @@ fn instance_chain_graph(levels: u32) -> Vec<u8> {
             writer.write_u32(0);
         }
     }
+    root_class_records(&mut writer, levels);
     writer.write_u32(1); // one root
     writer.write_u8(VALUE_OBJECT_ID);
     writer.write_u32(0);
@@ -8663,7 +8687,7 @@ fn a_send_to_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack() {
     // (`dispatch::walk`), iteratively over an explicit stack, on a chain a
     // four-megabyte image describes. Recursing on either walk would abort
     // here.
-    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
     loaded.interpreter.enter(|mutator| {
@@ -8687,7 +8711,7 @@ fn instantiating_a_class_heading_a_long_superclass_chain_does_not_blow_the_stack
     // not see a per-level recursion (`docs/design/execution.md`, "A
     // superclass chain is walked iteratively"). Recursing once per level
     // would abort here.
-    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     let head = loaded.roots[0].clone();
     loaded.interpreter.enter(|mutator| {
@@ -8714,7 +8738,7 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the
     // is the root and the chain it alone owns -- and the application chain
     // `rebuild_applications` built alongside it -- so the cascade fires
     // here, at the end of the test, with no send of any kind.
-    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&superclass_chain_graph(DEEP), 2 * DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
         let root_0 = mutator.fetch(&loaded.roots[0]);
@@ -8725,7 +8749,7 @@ fn dropping_a_loaded_world_whose_root_heads_a_long_class_chain_does_not_blow_the
 
 #[test]
 fn dropping_a_loaded_world_whose_root_heads_a_long_instance_chain_does_not_blow_the_stack() {
-    let bytes = image_with_graph_section(&instance_chain_graph(DEEP));
+    let bytes = image_with_graph_section(&instance_chain_graph(DEEP), DEEP);
     let mut loaded = image::load(&bytes).expect("load");
     loaded.interpreter.enter(|mutator| {
         let root_0 = mutator.fetch(&loaded.roots[0]);
@@ -8801,13 +8825,11 @@ fn snapshot_module(module_source: &str, source: Option<&str>, extra_send: Option
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let roots: Vec<Value> = roots.iter().map(|root| mutator.fetch(root)).collect();
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             source,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &roots,
         )
         .expect("snapshot")
@@ -8946,7 +8968,6 @@ fn the_debug_variants_source_is_never_parsed() {
 #[test]
 fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
     let (mut interpreter, class) = load(TRIVIAL_MODULE);
-    let platform = interpreter.platform();
     let result = interpreter.enter(|mutator| {
         let running = mutator.heap_mut().push_activation(
             ns_runtime::ActivationHeader {
@@ -8967,13 +8988,11 @@ fn a_snapshot_taken_while_an_activation_is_running_is_refused() {
             0,
         );
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let result = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[],
         );
         mutator.heap_mut().pop_activation(running);
@@ -9059,7 +9078,6 @@ fn an_activation_object_round_trips() {
         interpreter.send(&instance, Symbol::intern("makeClosure"), &[]),
         "makeClosure",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let instance = mutator.fetch(&instance);
         let closure = mutator.fetch(&closure);
@@ -9075,13 +9093,11 @@ fn an_activation_object_round_trips() {
             "the holder has a slot"
         );
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -9123,7 +9139,6 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let closure = expect_ok(interpreter.send(&instance, Symbol::intern("mk"), &[]), "mk");
     // `mk` has returned, so its frame is divorced and marked uncontinuable.
@@ -9139,7 +9154,6 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
         );
         mutator.heap_mut().frame_set_uncontinuable(home, false);
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         let closure = mutator.fetch(&closure);
         snapshot_one(
@@ -9147,7 +9161,6 @@ fn a_return_into_a_decoded_home_is_cannot_return_even_if_the_file_calls_it_conti
             None,
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance, closure],
         )
         .expect("snapshot")
@@ -9335,14 +9348,12 @@ fn snapshot_of_without_source(source: &str) -> Vec<u8> {
     // Read out after the run, for the encoder, which runs nothing.
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("golden.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -9404,13 +9415,11 @@ const ENTRY_SOURCE: &str = indoc! {"
 #[test]
 fn a_snapshot_with_empty_roots_loads_with_no_roots_and_is_not_started() {
     let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let platform = interpreter.platform();
     let origin = Origin::File(PathBuf::from("t.ns"));
 
     let image = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
-        snapshot_one(mutator, None, &origin, class, platform, &[]).expect("snapshot")
+        snapshot_one(mutator, None, &origin, class, &[]).expect("snapshot")
     });
 
     let loaded = image::load(&image).expect("load an image with no roots");
@@ -9454,8 +9463,7 @@ fn the_graph_walk_consumes_the_section_exactly() {
                 Err(_) => Vec::new(),
             };
             let class = class_reference(mutator, &class);
-            let platform = mutator.fetch(&platform);
-            snapshot_one(mutator, None, &origin, class, platform, &roots).expect("snapshot")
+            snapshot_one(mutator, None, &origin, class, &roots).expect("snapshot")
         });
 
         let report = image::inspect::inspect(&image).expect("inspect the image");
@@ -9506,17 +9514,14 @@ fn a_snapshot_with_full_caches_loads_with_empty_ones() {
         "apply:",
     );
     assert!(interpreter.cache_statistics().filled_sites > 0);
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("keeper.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -9617,17 +9622,14 @@ fn a_decoded_metaclass_is_rebuilt_over_class() {
         interpreter.send(&instance, Symbol::intern("keep"), &[]),
         "keep",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let instance = mutator.fetch(&instance);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[instance],
         )
         .expect("snapshot")
@@ -9705,15 +9707,15 @@ const METACLASS_MODULE: &str = indoc! {"
 "};
 
 /// `METACLASS_MODULE` instantiated, with its nested class accessed so the
-/// root's hidden slot holds it: the world, its root class, the platform, the
-/// root instance and the nested class object.
-fn metaclass_world() -> (Interpreter, Root, Root, Root, Root) {
-    let (mut interpreter, class, platform, outer) = instantiated_world(METACLASS_MODULE);
+/// root's hidden slot holds it: the world, its root class, the root
+/// instance and the nested class object.
+fn metaclass_world() -> (Interpreter, Root, Root, Root) {
+    let (mut interpreter, class, _platform, outer) = instantiated_world(METACLASS_MODULE);
     let holder = expect_ok(
         interpreter.send(&outer, Symbol::intern("Holder"), &[]),
         "Holder",
     );
-    (interpreter, class, platform, outer, holder)
+    (interpreter, class, outer, holder)
 }
 
 /// Stores `value` into `outer`'s slot `selector` names, through its setter.
@@ -9741,14 +9743,13 @@ fn metaclass_root(interpreter: &mut Interpreter, class: &Root) -> Root {
 /// in a slot is the decoded class's metaclass, not a second one.
 #[test]
 fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
-    let (mut interpreter, class, platform, outer, holder) = metaclass_world();
+    let (mut interpreter, class, outer, holder) = metaclass_world();
     let holder_metaclass = metaclass_root(&mut interpreter, &holder);
     store(&mut interpreter, &outer, "kept:", holder_metaclass);
     let bytes = snapshot_world(
         &mut interpreter,
         METACLASS_MODULE,
         &class,
-        &platform,
         std::slice::from_ref(&outer),
     );
     let report = image::inspect::inspect(&bytes).expect("inspect walks an image with metaclasses");
@@ -9799,7 +9800,7 @@ fn a_metaclass_in_a_slot_is_the_decoded_class_metaclass() {
 /// resolves to the loading world's own.
 #[test]
 fn a_builtin_metaclass_round_trips_by_tag() {
-    let (mut interpreter, class, platform, outer, _holder) = metaclass_world();
+    let (mut interpreter, class, outer, _holder) = metaclass_world();
     let integer = interpreter.enter(|mutator| {
         let integer = mutator.builtin_class(BuiltinClass::Integer);
         mutator.stash(Value::object(integer))
@@ -9812,7 +9813,6 @@ fn a_builtin_metaclass_round_trips_by_tag() {
         &mut interpreter,
         METACLASS_MODULE,
         &class,
-        &platform,
         std::slice::from_ref(&outer),
     );
     let mut loaded = image::load(&bytes).expect("load");
@@ -9846,7 +9846,7 @@ fn a_builtin_metaclass_round_trips_by_tag() {
 /// of a builtin and of the root class.
 #[test]
 fn a_metaclass_identity_hash_survives() {
-    let (mut interpreter, class, platform, outer, holder) = metaclass_world();
+    let (mut interpreter, class, outer, holder) = metaclass_world();
     let holder_metaclass = metaclass_root(&mut interpreter, &holder);
     store(&mut interpreter, &outer, "kept:", holder_metaclass);
     let hashes = interpreter.enter(|mutator| {
@@ -9870,7 +9870,6 @@ fn a_metaclass_identity_hash_survives() {
         &mut interpreter,
         METACLASS_MODULE,
         &class,
-        &platform,
         std::slice::from_ref(&outer),
     );
     let report = image::inspect::inspect(&bytes).expect("inspect");
@@ -9878,7 +9877,7 @@ fn a_metaclass_identity_hash_survives() {
         report
             .graph_tag_named_hashes
             .iter()
-            .any(|entry| entry.starts_with("metaclass of Integer hash")),
+            .any(|entry| entry.starts_with("Kernel Integer class hash")),
         "{:?}",
         report.graph_tag_named_hashes
     );
@@ -9905,17 +9904,15 @@ fn a_metaclass_identity_hash_survives() {
     });
 }
 
-/// The metaclass of a root level is named by tag, behind the level's own
-/// `CLASS_MODULE_LEVEL`, and its identity hash travels in the closing table:
-/// the root and its levels are built before the graph, metaclasses
-/// included, so both resolve to the loading world's own.
+/// The metaclass of a root level is a record like the level's, named by its
+/// object id, and its identity hash travels in its header: it decodes to the
+/// loaded level's own metaclass.
 #[test]
-fn a_root_level_metaclass_round_trips_by_tag() {
+fn a_root_level_metaclass_round_trips_as_a_record() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     let (bytes, hash) = interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &class);
         let level = mutator
@@ -9924,22 +9921,22 @@ fn a_root_level_metaclass_round_trips_by_tag() {
             .expect("the root's level");
         let metaclass = mutator.metaclass_of(level).expect("a metaclass");
         let hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
-        let platform = mutator.fetch(&platform);
         let bytes = snapshot_one(
             mutator,
             None,
             &Origin::File(PathBuf::from("t.ns")),
             root_class,
-            platform,
             &[Value::object(metaclass)],
         )
         .expect("snapshot");
         (bytes, hash)
     });
     let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert_eq!(
-        report.graph_roots,
-        vec!["class metaclass of <module 0 level 0>".to_string()]
+    assert_eq!(report.graph_roots, vec!["class object 0".to_string()]);
+    assert!(
+        report.graph_objects[0].contains(&format!("hash {hash}, metaclass of object ")),
+        "the root is the level's metaclass record: {:?}",
+        report.graph_objects
     );
     let mut loaded = image::load(&bytes).expect("load");
     let root = loaded.roots[0].clone();
@@ -9963,23 +9960,22 @@ fn a_root_level_metaclass_round_trips_by_tag() {
     });
 }
 
-/// No program may name `Top`, the VM mirror's class, `Activation` or the
-/// metaclass of one of them, and the loader refuses an image that does, so
-/// the encoder refuses to write one rather than produce an image nothing
-/// loads. No source module reaches any of the six; a graph built from Rust
-/// does. An activation *object* is no such reach: its header names
-/// `Activation` by tag, which the loader accepts there alone
-/// (`an_activation_object_round_trips`).
+/// No program may name `Top`, `Activation`, `FutureImplementation` or the
+/// metaclass of one of them as a value, and the loader refuses an image that
+/// does, so the encoder refuses to write one rather than produce an image
+/// nothing loads; the VM mirror's class and its metaclass have no
+/// declaration, so no shipped name names them at all. No source module
+/// reaches any of the eight; a graph built from Rust does. An activation
+/// *object* is no such reach: its header names `Kernel Activation`, which
+/// the loader accepts there alone (`an_activation_object_round_trips`).
 #[test]
 fn a_graph_reaching_an_unnameable_class_is_refused() {
     let source = indoc! {"
         class Root = Object new () ()
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let top = mutator.builtin_class(BuiltinClass::Top);
         let mirror_class = mutator.builtin_class(BuiltinClass::VmMirror);
         let top_metaclass = mutator.metaclass_of(top).expect("Top has a metaclass");
@@ -9994,34 +9990,44 @@ fn a_graph_reaching_an_unnameable_class_is_refused() {
         let future_metaclass = mutator
             .metaclass_of(future)
             .expect("FutureImplementation has a metaclass");
-        for (unnameable, described) in [
-            (top, "Top"),
-            (mirror_class, "the VM mirror's class"),
-            (top_metaclass, "Top class"),
-            (mirror_metaclass, "the VM mirror's class class"),
-            (activation, "Activation"),
-            (activation_metaclass, "Activation class"),
-            (future, "FutureImplementation"),
-            (future_metaclass, "FutureImplementation class"),
+        let as_a_value = |name: &str| {
+            format!(
+                "image encoding refuses {name} as a value: no program may name it there, and \
+                 the loader refuses an image that does"
+            )
+        };
+        let without_a_name = |name: &str| {
+            format!(
+                "image encoding refuses {name}: it has no declaration, so no shipped name names it"
+            )
+        };
+        for (unnameable, expected) in [
+            (top, as_a_value("Kernel Top")),
+            (mirror_class, without_a_name("the VM mirror's class")),
+            (top_metaclass, as_a_value("Kernel Top class")),
+            (
+                mirror_metaclass,
+                without_a_name("the VM mirror's class class"),
+            ),
+            (activation, as_a_value("Kernel Activation")),
+            (activation_metaclass, as_a_value("Kernel Activation class")),
+            (future, as_a_value("Kernel FutureImplementation")),
+            (
+                future_metaclass,
+                as_a_value("Kernel FutureImplementation class"),
+            ),
         ] {
             let refused = snapshot_one(
                 mutator,
                 None,
                 &Origin::File(PathBuf::from("t.ns")),
                 root_class,
-                platform,
                 &[Value::object(unnameable)],
             );
             let Err(message) = refused else {
-                panic!("a graph reaching {described} was encoded");
+                panic!("a graph reaching {expected} was encoded");
             };
-            assert_eq!(
-                message,
-                format!(
-                    "image encoding refuses {described}: no program may name it, and the \
-                     loader refuses an image that does"
-                )
-            );
+            assert_eq!(message, expected);
         }
     });
 }
@@ -10034,10 +10040,8 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
         class Root = Object new () ()
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         // The kernel instance encloses every builtin class and holds the
         // mirror in its `vmMirror` slot.
         let object = mutator.builtin_class(BuiltinClass::Object);
@@ -10061,7 +10065,6 @@ fn a_graph_reaching_the_vm_mirror_is_refused_as_the_mirror() {
             None,
             &Origin::File(PathBuf::from("t.ns")),
             root_class,
-            platform,
             &[mirror],
         );
         let Err(message) = refused else {
@@ -10128,8 +10131,7 @@ fn a_metaclass_record_naming_a_non_class_is_refused() {
     graph_counts(&mut writer, 3);
     class_record(&mut writer, 1, 0, no_class_references);
     metaclass_record(&mut writer, 2); // names object 2, an instance
-    writer.write_u8(CLASS_BUILTIN); // object 2's class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_shipped(OBJECT_NAME);
     writer.write_u32(3); // identity hash
     writer.write_u8(OBJECT_INSTANCE);
     writer.write_u32(0); // no fields
@@ -10147,8 +10149,7 @@ fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     let mut writer = encode::Writer::new();
     graph_counts(&mut writer, 2);
     class_record(&mut writer, 1, 0, no_class_references);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin, not `Metaclass`
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Class));
+    writer.write_shipped(CLASS_NAME);
     writer.write_u32(8); // identity hash
     writer.write_u8(OBJECT_METACLASS);
     writer.write_u8(CLASS_RECORD);
@@ -10157,58 +10158,6 @@ fn a_metaclass_record_whose_header_is_not_metaclass_is_refused() {
     assert_eq!(
         GraphFixture::new().decode_error(&writer.into_bytes()),
         decode::DecodeError::MetaclassPairing
-    );
-}
-
-/// A metaclass reference names a prebuilt class's metaclass, one level
-/// deep: behind `CLASS_METACLASS` a second `CLASS_METACLASS`, or a
-/// `CLASS_RECORD` -- whose metaclass is a record of its own -- is refused.
-#[test]
-fn a_nested_metaclass_reference_is_refused() {
-    let integer = encode::builtin_class_tag(BuiltinClass::Integer);
-    let mut fixture = GraphFixture::new();
-    let mut one_level = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(integer);
-    });
-    one_level.extend_from_slice(&[0, 0, 0, 0]); // no roots
-    fixture.decoded(&one_level, "Integer's metaclass by tag", |heap, graph| {
-        let Some(element) = heap
-            .array_element(graph.objects[0], 0)
-            .and_then(Value::as_object)
-        else {
-            panic!("the array holds a class object");
-        };
-        assert!(heap.class_this_class(element).is_some());
-    });
-    let nested = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(integer);
-    });
-    assert_eq!(
-        fixture.decode_error(&nested),
-        decode::DecodeError::InvalidTag {
-            what: "prebuilt class",
-            tag: CLASS_METACLASS
-        }
-    );
-    let of_a_record = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_RECORD);
-        writer.write_u32(0);
-    });
-    assert_eq!(
-        fixture.decode_error(&of_a_record),
-        decode::DecodeError::InvalidTag {
-            what: "prebuilt class",
-            tag: CLASS_RECORD
-        }
     );
 }
 
@@ -10226,25 +10175,30 @@ fn an_instance_of_metaclass_is_refused() {
         writer.write_u32(0); // no roots
         writer.into_bytes()
     };
-    let builtin = |kind: BuiltinClass| {
-        move |writer: &mut encode::Writer| {
-            writer.write_u8(CLASS_BUILTIN);
-            writer.write_u8(encode::builtin_class_tag(kind));
-        }
-    };
-    let integer_metaclass = |writer: &mut encode::Writer| {
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Integer));
+    let shipped_class = |index: u32| move |writer: &mut encode::Writer| writer.write_shipped(index);
+    // An instance of a metaclass record: a class record (object 0), its
+    // metaclass record (object 1), and an instance whose header names it.
+    let of_a_metaclass_record = {
+        let mut writer = encode::Writer::new();
+        graph_counts(&mut writer, 3);
+        class_record(&mut writer, 1, 0, no_class_references);
+        metaclass_record(&mut writer, 0);
+        writer.write_u8(CLASS_RECORD);
+        writer.write_u32(1); // its class: the metaclass record
+        writer.write_u32(3); // identity hash
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
+        writer.write_u32(0); // no roots
+        writer.into_bytes()
     };
     let mut fixture = GraphFixture::new();
-    let refused: [&dyn Fn(&mut encode::Writer); 3] = [
-        &builtin(BuiltinClass::Metaclass),
-        &builtin(BuiltinClass::Class),
-        &integer_metaclass,
+    let refused = [
+        instance_of(&shipped_class(METACLASS_NAME)),
+        instance_of(&shipped_class(CLASS_NAME)),
+        of_a_metaclass_record,
     ];
-    for class in refused {
-        let error = fixture.decode_error(&instance_of(class));
+    for bytes in refused {
+        let error = fixture.decode_error(&bytes);
         assert_eq!(error, decode::DecodeError::InstanceOfAClassClass);
         assert_eq!(
             error.to_string(),
@@ -10252,8 +10206,16 @@ fn an_instance_of_metaclass_is_refused() {
              which only a class object may be"
         );
     }
+    // A shipped metaclass is no record's class at all.
+    assert_eq!(
+        fixture.decode_error(&instance_of(&shipped_class(INTEGER_CLASS_NAME))),
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel Integer class".to_string(),
+            position: "a record's class",
+        }
+    );
     fixture.decoded(
-        &instance_of(&builtin(BuiltinClass::Object)),
+        &instance_of(&shipped_class(OBJECT_NAME)),
         "an instance of Object",
         |_, _| {},
     );
@@ -10284,23 +10246,22 @@ fn a_class_record_applying_a_class_side_is_refused() {
     );
 }
 
-/// `inspect` reads every metaclass form the way `load` does, and refuses a
-/// nested metaclass reference the same way.
+/// `inspect` refuses a retired class tag the way `load` does: 4 was the
+/// metaclass of a module's root class or level before those became records.
 #[test]
-fn inspect_refuses_a_nested_metaclass_reference() {
+fn inspect_refuses_a_retired_metaclass_tag() {
     let mut graph = one_array_object(|writer| {
         writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_METACLASS);
+        writer.write_u8(4);
     });
     graph.extend_from_slice(&[0, 0, 0, 0]); // no roots
     graph.extend_from_slice(&[0, 0, 0, 0]); // no tag-named hashes
-    let bytes = image_with_graph_section(&graph);
+    let bytes = image_with_graph_section(&graph, 0);
     let error = match image::inspect::inspect(&bytes) {
-        Ok(_) => panic!("inspect accepted a nested metaclass reference"),
+        Ok(_) => panic!("inspect accepted a retired metaclass tag"),
         Err(error) => error,
     };
-    assert_eq!(error, "invalid prebuilt class tag 4");
+    assert_eq!(error, "invalid class tag 4");
     assert_eq!(load_error(&bytes), error);
 }
 
@@ -10395,7 +10356,7 @@ fn answers_of(interpreter: &mut Interpreter, instance: &Root) -> (i64, i64, Stri
 /// level's own clause message with the applying class's factory argument.
 #[test]
 fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
-    let (mut interpreter, class, platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
+    let (mut interpreter, class, _platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
     let expected = (5, 40, "Applied Stamp Marker Base".to_string());
     assert_eq!(applied_answers(&mut interpreter, &host, 4), expected);
     let applied_class = expect_ok(
@@ -10411,7 +10372,6 @@ fn a_snapshot_of_a_world_with_applied_levels_loads_and_runs() {
         &mut interpreter,
         MIXIN_APPLICATION_MODULE,
         &class,
-        &platform,
         &[host, instance],
     );
 
@@ -10483,7 +10443,6 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
         )
     "};
     let (mut interpreter, class) = load(source);
-    let platform = interpreter.platform();
     let application = expect_ok(interpreter.instantiate(&class, &[]), "instantiate Root");
     let (packaged, snapshot) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
@@ -10495,9 +10454,7 @@ fn a_root_class_applying_a_builtin_mixin_round_trips() {
         }];
         let packaged =
             image::package(mutator, &modules, mutator.fetch(&application)).expect("package");
-        let platform = mutator.fetch(&platform);
-        let snapshot =
-            snapshot_one(mutator, None, &origin, class, platform, &[]).expect("snapshot");
+        let snapshot = snapshot_one(mutator, None, &origin, class, &[]).expect("snapshot");
         (packaged, snapshot)
     });
     for bytes in [packaged, snapshot] {
@@ -10554,7 +10511,7 @@ fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
             public class Holder from: x = Object new <: Keeper withBlock: [x * 3] () ()
         ) : ()
     "};
-    let (mut interpreter, class, platform, host) = instantiated_world(source);
+    let (mut interpreter, class, _platform, host) = instantiated_world(source);
     let holder_class = expect_ok(
         interpreter.send(&host, Symbol::intern("Holder"), &[]),
         "Holder",
@@ -10564,7 +10521,7 @@ fn a_frame_a_mixin_application_message_ran_in_decodes_to_that_messages_body() {
         interpreter.send(&holder_class, Symbol::intern("from:"), &[argument]),
         "Holder from:",
     );
-    let bytes = snapshot_world(&mut interpreter, source, &class, &platform, &[holder]);
+    let bytes = snapshot_world(&mut interpreter, source, &class, &[holder]);
 
     let mut loaded = image::load(&bytes).expect("load");
     let holder = loaded.roots[0].clone();
@@ -10760,39 +10717,42 @@ fn applied_levels_inheriting_from_each_other_in_a_cycle_are_refused() {
     }
 }
 
+/// One past the last mixin reference, and every retired one: a stale
+/// image's builtin level names no mixin rather than whatever took the number.
 #[test]
 fn an_unknown_mixin_reference_tag_is_a_decode_error_not_a_panic() {
-    let bytes = class_records(1, |writer| {
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
-        writer.write_u32(7); // identity hash
-        writer.write_u8(OBJECT_CLASS); // object body: Class
-        writer.write_u8(MIXIN_BUILTIN + 1); // one past the last mixin reference
-        writer.write_u32(0);
-        no_class_references(writer);
-        writer.write_boolean(false);
-    });
-    assert_eq!(
-        GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::InvalidTag {
-            what: "mixin reference",
-            tag: MIXIN_BUILTIN + 1
-        }
-    );
+    for tag in [MIXIN_SHIPPED + 1].into_iter().chain(RETIRED_MIXIN_TAGS) {
+        let bytes = class_records(1, |writer| {
+            writer.write_shipped(OBJECT_NAME);
+            writer.write_u32(7); // identity hash
+            writer.write_u8(OBJECT_CLASS); // object body: Class
+            writer.write_u8(tag);
+            writer.write_u32(0);
+            no_class_references(writer);
+            writer.write_boolean(false);
+        });
+        assert_eq!(
+            GraphFixture::new().decode_error(&bytes),
+            decode::DecodeError::InvalidTag {
+                what: "mixin reference",
+                tag
+            }
+        );
+    }
 }
 
-/// A class record for a level applying the mixin of the builtin `kind_tag`
-/// names, with no superclass, added by clause `index` of row `row`, and its
-/// metaclass record. Such a record carries no enclosing object or declaring
-/// class: both are the builtin's.
-fn builtin_mixin_record(kind_tag: u8, (row, index): (u32, u32)) -> Vec<u8> {
+/// A class record for a level applying the mixin of the shipped name at
+/// `name` of the fixture's section, with no superclass, added by clause
+/// `index` of row `row`, and its metaclass record. Such a record carries no
+/// enclosing object or declaring class: both are the shipped class's.
+fn shipped_mixin_record(name: u32, (row, index): (u32, u32)) -> Vec<u8> {
     class_records(2, |writer| {
         writer.write_u8(CLASS_RECORD); // class tag: its metaclass record
         writer.write_u32(1);
         writer.write_u32(7); // identity hash
         writer.write_u8(OBJECT_CLASS); // object body: Class
-        writer.write_u8(MIXIN_BUILTIN); // mixin reference: a builtin's
-        writer.write_u8(kind_tag);
+        writer.write_u8(MIXIN_SHIPPED); // mixin reference: a shipped class's
+        writer.write_u32(name);
         writer.write_boolean(false); // no superclass
         writer.write_u32(row);
         writer.write_u32(index);
@@ -10800,14 +10760,14 @@ fn builtin_mixin_record(kind_tag: u8, (row, index): (u32, u32)) -> Vec<u8> {
     })
 }
 
-/// A `<:` clause naming a builtin gives its level that builtin's mixin, which
-/// the record names by tag, and the builtin's own enclosing object and
-/// declaring class -- the positive side of the refusals below.
+/// A `<:` clause naming a shipped class gives its level that class's mixin,
+/// which the record names by its shipped name, and the class's own enclosing
+/// object and declaring class -- the positive side of the refusals below.
 #[test]
-fn a_level_applying_a_builtins_mixin_decodes() {
+fn a_level_applying_a_shipped_mixin_decodes() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let applied = row_named(&fixture, "Applied");
-    let bytes = builtin_mixin_record(encode::builtin_class_tag(BuiltinClass::Value), (applied, 0));
+    let bytes = shipped_mixin_record(VALUE_NAME, (applied, 0));
     fixture.decoded(&bytes, "a level applying Value", |heap, graph| {
         let level = graph.objects[0];
         assert_eq!(class_name(heap, level), "Value");
@@ -10819,19 +10779,18 @@ fn a_level_applying_a_builtins_mixin_decodes() {
     });
 }
 
-/// The clause of a level applying a builtin is checked like any other
+/// The clause of a level applying a shipped class is checked like any other
 /// level's: its applying row and its position there.
 #[test]
-fn a_builtin_levels_clause_is_checked_like_any_levels() {
+fn a_shipped_levels_clause_is_checked_like_any_levels() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
-    let value = encode::builtin_class_tag(BuiltinClass::Value);
     let applied = row_named(&fixture, "Applied");
     assert_eq!(
-        fixture.decode_error(&builtin_mixin_record(value, (99, 0))),
+        fixture.decode_error(&shipped_mixin_record(VALUE_NAME, (99, 0))),
         decode::DecodeError::BadMixinId(99)
     );
     assert_eq!(
-        fixture.decode_error(&builtin_mixin_record(value, (applied, 3))),
+        fixture.decode_error(&shipped_mixin_record(VALUE_NAME, (applied, 3))),
         decode::DecodeError::BadMixinApplicationClause {
             row: applied,
             index: 3
@@ -10839,54 +10798,72 @@ fn a_builtin_levels_clause_is_checked_like_any_levels() {
     );
 }
 
-/// The VM mirror's class, `Top`, `Activation` and `FutureImplementation` are
-/// refused wherever a program names a class, and a level's builtin mixin is
-/// such a place: a level applying the mirror's mixin would hand its instances
-/// every primitive.
+/// A level's mixin is named where a superclass stands, so `Top`,
+/// `Activation`, `FutureImplementation` and a module's root are refused
+/// there, and so is anything but a class -- a metaclass, a module instance
+/// -- whose mixin no level applies. The VM mirror's class has no name at
+/// all, so no image can apply its mixin.
 #[test]
-fn a_level_applying_a_builtin_no_program_may_name_is_refused() {
+fn a_level_applying_a_mixin_no_program_may_name_is_refused() {
     let mut fixture = GraphFixture::with_source(APPLYING_MODULE);
     let applied = row_named(&fixture, "Applied");
-    for kind in [
-        BuiltinClass::VmMirror,
-        BuiltinClass::Top,
-        BuiltinClass::Activation,
-        BuiltinClass::FutureImplementation,
+    for (name, described) in [
+        (TOP_NAME, "Kernel Top"),
+        (ACTIVATION_NAME, "Kernel Activation"),
+        (FUTURE_IMPLEMENTATION_NAME, "Kernel FutureImplementation"),
+        (KERNEL_ROOT_NAME, "Kernel Kernel"),
+        (BEHAVIOR_NAME, "Kernel Behavior"),
     ] {
-        let tag = encode::builtin_class_tag(kind);
         assert_eq!(
-            fixture.decode_error(&builtin_mixin_record(tag, (applied, 0))),
-            decode::DecodeError::InvalidTag {
-                what: "builtin class a program may name",
-                tag
+            fixture.decode_error(&shipped_mixin_record(name, (applied, 0))),
+            decode::DecodeError::ShippedNameNotAllowed {
+                name: described.to_string(),
+                position: "a superclass or an applied mixin",
             }
         );
     }
+    for name in [INTEGER_CLASS_NAME, KERNEL_INSTANCE_NAME] {
+        assert_eq!(
+            fixture.decode_error(&shipped_mixin_record(name, (applied, 0))),
+            decode::DecodeError::NotAClassReference
+        );
+    }
+    let past = u32::try_from(FIXTURE_NAMES.len()).expect("a count fits a u32");
+    assert_eq!(
+        fixture.decode_error(&shipped_mixin_record(past, (applied, 0))),
+        decode::DecodeError::BadShippedName(past)
+    );
 }
 
-/// An object's class field is a place a program names a class too, so
-/// `decode_class_tag`'s builtin arm refuses the VM mirror's class and `Top`
-/// there as well: an object recorded as an instance of the mirror's class
-/// would be a second mirror.
+/// An object's class is a place an image names a class too: a module's
+/// root is no record's class -- its one instance is the module's, named as
+/// such -- and a module instance is no class at all.
 #[test]
-fn an_objects_class_naming_the_mirrors_class_or_top_is_refused() {
-    for kind in [BuiltinClass::VmMirror, BuiltinClass::Top] {
-        let tag = encode::builtin_class_tag(kind);
-        let bytes = class_records(1, |writer| {
-            writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-            writer.write_u8(tag);
+fn an_objects_class_naming_a_module_root_or_instance_is_refused() {
+    let under = |name: u32| {
+        class_records(1, |writer| {
+            writer.write_shipped(name);
             writer.write_u32(5); // identity hash
-            writer.write_u8(OBJECT_ARRAY); // object body: Array
-            writer.write_u32(0); // no elements
-        });
-        assert_eq!(
-            GraphFixture::new().decode_error(&bytes),
-            decode::DecodeError::InvalidTag {
-                what: "builtin class a program may name",
-                tag
-            }
-        );
-    }
+            writer.write_u8(OBJECT_INSTANCE); // object body: Instance
+            writer.write_u32(0); // no fields
+        })
+    };
+    let error = GraphFixture::new().decode_error(&under(KERNEL_ROOT_NAME));
+    assert_eq!(
+        error,
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel Kernel".to_string(),
+            position: "a record's class",
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the image names Kernel Kernel as a record's class, where no program may name it"
+    );
+    assert_eq!(
+        GraphFixture::new().decode_error(&under(KERNEL_INSTANCE_NAME)),
+        decode::DecodeError::NotAClassReference
+    );
 }
 
 /// One record under the header `header` writes, identity hash 5, body tag
@@ -10911,8 +10888,7 @@ fn record_under(header: impl FnOnce(&mut encode::Writer), body: u8) -> Vec<u8> {
 
 /// The one header a frame record may carry: the builtin `Activation`.
 fn activation_header(writer: &mut encode::Writer) {
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Activation));
+    writer.write_shipped(ACTIVATION_NAME);
 }
 
 /// A well-formed frame record decodes into a frame object -- the object the
@@ -10948,8 +10924,7 @@ fn a_record_under_the_retired_activation_tag_is_refused() {
 fn a_frame_record_under_another_class_is_refused() {
     let bytes = record_under(
         |writer| {
-            writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-            writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+            writer.write_shipped(OBJECT_NAME);
         },
         OBJECT_FRAME,
     );
@@ -10963,8 +10938,7 @@ fn a_frame_record_under_another_class_is_refused() {
 
 /// The `Activation` header is accepted on a frame record only: on any other
 /// record it would make an ordinary object answer `Activation`'s methods,
-/// which read other frames and unwind the stack. It is refused there as it
-/// is everywhere else a program cannot name it.
+/// which read other frames and unwind the stack.
 #[test]
 fn an_activation_header_on_another_record_is_refused() {
     let bytes = class_records(1, |writer| {
@@ -10975,70 +10949,68 @@ fn an_activation_header_on_another_record_is_refused() {
     });
     assert_eq!(
         GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: encode::builtin_class_tag(BuiltinClass::Activation)
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel Activation".to_string(),
+            position: "a record's class",
         }
     );
 }
 
-/// Everywhere but a frame record's header, `Activation` is refused
-/// like `Top`: as a value, and behind a metaclass reference.
-#[test]
-fn activation_named_anywhere_else_is_refused() {
-    let tag = encode::builtin_class_tag(BuiltinClass::Activation);
-    let refused = decode::DecodeError::InvalidTag {
-        what: "builtin class a program may name",
-        tag,
-    };
-    let as_value = one_array_object(|writer| {
+/// The one-array graph whose element is the class the shipped name at
+/// `name` names, as a value.
+fn shipped_class_value(name: u32) -> Vec<u8> {
+    one_array_object(|writer| {
         writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(tag);
-    });
-    assert_eq!(GraphFixture::new().decode_error(&as_value), refused);
-    let as_metaclass = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(tag);
-    });
-    assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
+        writer.write_shipped(name);
+    })
 }
 
-/// Everywhere but a future record's header, `FutureImplementation` is refused
-/// like `Activation`: as a value, and behind a metaclass reference. Its class
-/// is kernel-private, and no program names it (`unnameable_class`).
+/// Everywhere but a frame record's header, `Activation` is refused like
+/// `Top`: it, and its metaclass, as a value.
+#[test]
+fn activation_named_anywhere_else_is_refused() {
+    for (name, described) in [
+        (ACTIVATION_NAME, "Kernel Activation"),
+        (ACTIVATION_CLASS_NAME, "Kernel Activation class"),
+        (TOP_NAME, "Kernel Top"),
+    ] {
+        assert_eq!(
+            GraphFixture::new().decode_error(&shipped_class_value(name)),
+            decode::DecodeError::ShippedNameNotAllowed {
+                name: described.to_string(),
+                position: "a value",
+            }
+        );
+    }
+}
+
+/// Everywhere but a future record's header, `FutureImplementation` is
+/// refused like `Activation`: it, and its metaclass, as a value. Its class
+/// is kernel-private, and no program names it.
 #[test]
 fn a_graph_naming_the_future_implementation_as_a_class_is_refused() {
-    let tag = encode::builtin_class_tag(BuiltinClass::FutureImplementation);
-    let refused = decode::DecodeError::InvalidTag {
-        what: "builtin class a program may name",
-        tag: 30,
-    };
-    let as_value = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(tag);
-    });
-    assert_eq!(GraphFixture::new().decode_error(&as_value), refused);
-    let as_metaclass = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_BUILTIN);
-        writer.write_u8(tag);
-    });
-    assert_eq!(GraphFixture::new().decode_error(&as_metaclass), refused);
+    for (name, described) in [
+        (FUTURE_IMPLEMENTATION_NAME, "Kernel FutureImplementation"),
+        (
+            FUTURE_IMPLEMENTATION_CLASS_NAME,
+            "Kernel FutureImplementation class",
+        ),
+    ] {
+        assert_eq!(
+            GraphFixture::new().decode_error(&shipped_class_value(name)),
+            decode::DecodeError::ShippedNameNotAllowed {
+                name: described.to_string(),
+                position: "a value",
+            }
+        );
+    }
 }
 
 /// One record under the `FutureImplementation` header, its body written by
 /// `body`, and no roots.
 fn future_record(body: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     class_records(1, |writer| {
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(
-            BuiltinClass::FutureImplementation,
-        ));
+        writer.write_shipped(FUTURE_IMPLEMENTATION_NAME);
         writer.write_u32(5); // identity hash
         body(writer);
     })
@@ -11196,7 +11168,6 @@ fn a_resolved_future_is_written_as_its_value() {
         interpreter.send(&future, Symbol::intern("size"), &[]),
         "future size",
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let holder = mutator.fetch(&holder);
         let future = mutator.fetch(&future);
@@ -11219,13 +11190,11 @@ fn a_resolved_future_is_written_as_its_value() {
         );
         assert!(reaches_a_future(mutator, holder), "the premise");
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(DATA_CYCLE),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[holder],
         )
         .expect("snapshot")
@@ -11299,7 +11268,6 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
         matches!(abandoned, Err(HostSignal::Error(_))),
         "first's initializer raises and abandons the clause"
     );
-    let platform = interpreter.platform();
     let bytes = interpreter.enter(|mutator| {
         let holder = mutator.fetch(&holder);
         let escaped = mutator
@@ -11317,13 +11285,11 @@ fn an_unresolved_future_round_trips_and_computes_after_load() {
             "the abandoned future is unresolved"
         );
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[holder],
         )
         .expect("snapshot")
@@ -11416,13 +11382,11 @@ fn an_argument_error_a_proxy_and_a_programs_future_round_trip() {
             "the future is unresolved when the image is written"
         );
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         snapshot_one(
             mutator,
             Some(source),
             &Origin::File(PathBuf::from("t.ns")),
             class,
-            platform,
             &[holder],
         )
         .expect("snapshot")
@@ -11482,7 +11446,6 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             interpreter.send(&holder, Symbol::intern("block"), &[]),
             "block",
         );
-        let platform = interpreter.platform();
         let refusal = interpreter.enter(|mutator| {
             let Some(closure) = mutator.fetch(&block).as_object() else {
                 panic!("block answers a block");
@@ -11504,13 +11467,11 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
             }
             heap.instance_set_field(object(holder), 0, Value::object(future));
             let class = class_reference(mutator, &class);
-            let platform = mutator.fetch(&platform);
             match snapshot_one(
                 mutator,
                 Some(source),
                 &Origin::File(PathBuf::from("t.ns")),
                 class,
-                platform,
                 &[holder],
             ) {
                 Ok(_) => panic!("{corruption}: a malformed future was written"),
@@ -11530,8 +11491,7 @@ fn a_future_with_corrupted_fields_is_refused_by_the_encoder() {
 #[test]
 fn the_retired_class_record_tag_is_refused() {
     let bytes = class_records(1, |writer| {
-        writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-        writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+        writer.write_shipped(OBJECT_NAME);
         writer.write_u32(7); // identity hash
         writer.write_u8(5); // the retired class-record tag
         writer.write_u32(0); // its bare mixin row id
@@ -11546,96 +11506,13 @@ fn the_retired_class_record_tag_is_refused() {
     );
 }
 
-#[test]
-fn a_root_level_class_tag_past_the_roots_levels_is_a_decode_error_not_a_panic() {
-    let bytes = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_MODULE_LEVEL); // class tag: a level of a module's root
-        writer.write_u32(0); // module 0 ...
-        writer.write_u32(5); // ... whose root, EMPTY's, applies no mixin
-    });
-    let mut bytes = bytes;
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
-    let error = GraphFixture::new().decode_error(&bytes);
-    assert_eq!(
-        error,
-        decode::DecodeError::BadModuleLevel {
-            module: 0,
-            position: 5
-        }
-    );
-    assert_eq!(
-        error.to_string(),
-        "the image names level 5 of module 0, which its module section does not rebuild"
-    );
-}
-
-#[test]
-fn a_module_class_tag_past_the_modules_is_refused() {
-    let mut bytes = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_MODULE); // class tag: a module's root class
-        writer.write_u32(7); // the fixture carries module 0 alone
-    });
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
-    assert_eq!(
-        GraphFixture::new().decode_error(&bytes),
-        decode::DecodeError::BadModuleReference { module: 7 }
-    );
-}
-
-/// A root level exists before the graph does, so the graph names it by its
-/// position among the root's levels, and decodes that back to the very class
-/// object the root-class section rebuilt.
-#[test]
-fn a_root_level_class_tag_names_the_root_classs_own_level() {
-    let source = indoc! {"
-        class Root = Object new <: Value () ()
-    "};
-    let mut bytes = one_array_object(|writer| {
-        writer.write_u8(VALUE_CLASS_TAG); // value tag: class tag
-        writer.write_u8(CLASS_MODULE_LEVEL); // class tag: a level of a module's root
-        writer.write_u32(0); // module 0
-        writer.write_u32(0); // its lowest level
-    });
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // no roots
-                                                  // A decoded graph's handles cannot leave the entry that decoded it, so
-                                                  // the element is compared with the root's level by a value both sides can
-                                                  // answer: the identity hash, assigned here, before the decode, to the
-                                                  // level the fixture's own root class sits on.
-    let mut fixture = GraphFixture::with_source(source);
-    let class = fixture.class.clone();
-    let level_hash = fixture.interpreter.enter(|mutator| {
-        let root = class_reference(mutator, &class);
-        let level = mutator
-            .heap()
-            .class_superclass(root)
-            .expect("the root's level");
-        mutator.heap_mut().object_ensure_identity_hash(level)
-    });
-    fixture.decoded(&bytes, "a root level", |heap, graph| {
-        let element = heap
-            .array_elements(graph.objects[0])
-            .expect("an array")
-            .first()
-            .copied()
-            .expect("one element");
-        let Some(level) = element.as_object() else {
-            panic!("the element is a class object")
-        };
-        assert_eq!(heap.object_identity_hash(level), level_hash);
-        assert!(heap.class_applied_clause(level).is_some());
-    });
-}
-
 /// The frame kind of a `<:` clause message names the level the clause added
 /// -- its body is that level's clause's -- and decodes back to that kind.
 #[test]
 fn the_mixin_application_message_frame_kind_decodes() {
     let mut writer = one_frame_prefix();
     writer.write_u8(FRAME_MIXIN_APPLICATION_MESSAGE);
-    writer.write_u8(CLASS_BUILTIN); // class tag: builtin
-    writer.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
+    writer.write_shipped(OBJECT_NAME);
     frame_tail(&mut writer, 0, 0);
     writer.write_u32(0); // no roots
     let bytes = writer.into_bytes();
@@ -11652,117 +11529,91 @@ fn the_mixin_application_message_frame_kind_decodes() {
     );
 }
 
-/// The root-class section's bytes for a root that inherits `superclass` --
-/// written as absent for `None`, which the reader refuses -- then `levels` as
-/// (clause position, builtin tag) pairs.
-fn root_section_bytes(superclass: Option<BuiltinClass>, levels: &[(u32, u8)]) -> Vec<u8> {
-    let mut writer = encode::Writer::new();
-    match superclass {
-        Some(kind) => {
-            writer.write_boolean(true);
-            writer.write_u8(encode::builtin_class_tag(kind));
-        }
-        None => writer.write_boolean(false),
-    }
-    writer.write_u32(levels.len() as u32);
-    for (index, tag) in levels {
-        writer.write_u32(*index);
-        writer.write_u8(*tag);
-    }
-    writer.into_bytes()
-}
-
-/// The root's levels are listed in clause order, at most one per clause, and
-/// only for clauses row 0 declares -- which is also what bounds the count
-/// before anything is reserved for it.
+/// The root rule (`docs/design/object-model.md`, "The root rule"), held to
+/// a root class's superclass chain as the encoder and the loader both hold
+/// it (`modules::root_record_defect`): `Object <: Value` passes, and every
+/// chain the rule does not build -- the level skipped, `Value` applied over
+/// `Value`, the level over a class but `Object`, the root itself standing
+/// as a level -- is refused.
 #[test]
-fn a_root_level_naming_a_clause_out_of_place_is_refused() {
+fn the_root_rule_holds_a_root_classs_superclass_chain() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
-    let decoded = mixin_table_of(&snapshot_of(source));
-    let value = encode::builtin_class_tag(BuiltinClass::Value);
-    let read = |levels: &[(u32, u8)]| {
-        decode::decode_root_section(
-            &mut decode::Reader::new(&root_section_bytes(Some(BuiltinClass::Object), levels)),
-            &decoded,
-            0,
-        )
-    };
-    assert_eq!(
-        read(&[(0, value)]).expect("the one clause"),
-        decode::RootSection {
-            superclass: BuiltinClass::Object,
-            levels: vec![(0, BuiltinClass::Value)],
-        }
-    );
-    for (levels, index) in [(vec![(1, value)], 1), (vec![(0, value), (0, value)], 0)] {
+    let (mut interpreter, class) = load(source);
+    interpreter.enter(|mutator| {
+        let root = class_reference(mutator, &class);
+        let root_mixin = mutator
+            .heap()
+            .class_application(root)
+            .expect("a class")
+            .mixin
+            .clone();
+        let level = mutator
+            .heap()
+            .class_superclass(root)
+            .expect("the root's level");
+        let object = mutator.builtin_class(BuiltinClass::Object);
+        let value = mutator.builtin_class(BuiltinClass::Value);
+        let array = mutator.builtin_class(BuiltinClass::Array);
         assert_eq!(
-            read(&levels),
-            Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index })
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            None
         );
-    }
-    let mut huge = encode::Writer::new();
-    huge.write_boolean(true);
-    huge.write_u8(encode::builtin_class_tag(BuiltinClass::Object));
-    huge.write_u32(u32::MAX); // a count no clause list could back
-    assert_eq!(
-        decode::decode_root_section(&mut decode::Reader::new(&huge.into_bytes()), &decoded, 0),
-        Err(decode::DecodeError::UnexpectedEndOfFile)
-    );
-    let mirror = encode::builtin_class_tag(BuiltinClass::VmMirror);
-    assert_eq!(
-        read(&[(0, mirror)]),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a program may name",
-            tag: mirror
-        })
-    );
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, level),
+            Some(image::modules::RootRecordDefect::NotItsRecord),
+            "a level is no root"
+        );
+        mutator.heap_mut().class_set_superclass(level, value);
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            Some(image::modules::RootRecordDefect::RootRule),
+            "Value applied over Value"
+        );
+        mutator.heap_mut().class_set_superclass(level, array);
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            Some(image::modules::RootRecordDefect::RootRule),
+            "Value applied over Array"
+        );
+        mutator.heap_mut().class_set_superclass(level, object);
+        mutator.heap_mut().class_set_superclass(root, object);
+        assert_eq!(
+            image::modules::root_record_defect(mutator, &root_mixin, root),
+            Some(image::modules::RootRecordDefect::RootRule),
+            "a root whose clause added no level"
+        );
+    });
 }
 
-/// The root rule (`docs/design/object-model.md`, "The root rule"), read back:
-/// a root section the encoder could never write is refused, so a crafted
-/// artifact cannot bring back a root the rule forbids.
+/// A root's `<:` level is a record like the root, and loads as the level
+/// its clause added: applying `Kernel Value` over the loading boot's own
+/// `Kernel Object`.
 #[test]
-fn a_root_section_the_root_rule_forbids_is_refused() {
+fn a_root_level_loads_as_a_record_applying_kernel_value() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
-    let decoded = mixin_table_of(&snapshot_of(source));
-    let read = |superclass: Option<BuiltinClass>, levels: &[(u32, u8)]| {
-        decode::decode_root_section(
-            &mut decode::Reader::new(&root_section_bytes(superclass, levels)),
-            &decoded,
-            0,
-        )
-    };
-    let tag = encode::builtin_class_tag;
-    assert_eq!(
-        read(Some(BuiltinClass::Array), &[]),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a module's root may inherit",
-            tag: tag(BuiltinClass::Array),
-        })
-    );
-    assert_eq!(
-        read(Some(BuiltinClass::Object), &[(0, tag(BuiltinClass::Array))]),
-        Err(decode::DecodeError::InvalidTag {
-            what: "builtin class a module's root may apply",
-            tag: tag(BuiltinClass::Array),
-        })
-    );
-    assert_eq!(
-        read(Some(BuiltinClass::Value), &[(0, tag(BuiltinClass::Value))]),
-        Err(decode::DecodeError::BadMixinApplicationClause { row: 0, index: 0 })
-    );
-    assert_eq!(
-        read(None, &[(0, tag(BuiltinClass::Value))]),
-        Err(decode::DecodeError::RootWithoutSuperclass)
-    );
-    assert_eq!(
-        read(None, &[]),
-        Err(decode::DecodeError::RootWithoutSuperclass)
-    );
+    let loaded = image::load(&snapshot_of(source)).unwrap_or_else(|error| panic!("{error}"));
+    let module_class = loaded.modules[0].class.clone();
+    let mut interpreter = loaded.interpreter;
+    interpreter.enter(|mutator| {
+        let heap = mutator.heap();
+        let root = class_reference(mutator, &module_class);
+        let level = heap.class_superclass(root).expect("the loaded level");
+        let applied = heap.class_applied_origin(level).expect("a level");
+        assert_eq!(applied.index, 0);
+        assert_eq!(applied.named_builtin, Some(BuiltinClass::Value));
+        let value = mutator.builtin_class(BuiltinClass::Value);
+        assert!(Rc::ptr_eq(
+            &heap.class_application(level).expect("a class").mixin,
+            &heap.class_application(value).expect("a class").mixin
+        ));
+        assert!(heap
+            .class_superclass(level)
+            .is_some_and(|below| below.same(mutator.builtin_class(BuiltinClass::Object))));
+    });
 }
 
 /// A root the rule forbids can never be instantiated, so no image is written
@@ -11785,10 +11636,8 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
     };
     let mut interpreter = Interpreter::bootstrap();
     let class = interpreter.load_module(&resolved);
-    let platform = interpreter.platform();
     let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let origin = Origin::File(PathBuf::from("t.ns"));
         let modules = [image::ModuleSource {
             class,
@@ -11796,7 +11645,7 @@ fn the_encoder_refuses_a_root_the_rule_forbids() {
             source: None,
         }];
         (
-            snapshot_one(mutator, None, &origin, class, platform, &[]),
+            snapshot_one(mutator, None, &origin, class, &[]),
             // The refusal comes before the graph is looked at, so the
             // application need not exist: no instance of this class can.
             image::package(mutator, &modules, Value::nil()),
@@ -11960,16 +11809,10 @@ fn a_clause_message_code_id_out_of_range_is_a_decode_error_not_a_panic() {
 /// added a level, and the root's own levels.
 #[test]
 fn inspect_prints_the_mixin_applications_an_image_describes() {
-    let (mut interpreter, class, platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
+    let (mut interpreter, class, _platform, host) = instantiated_world(MIXIN_APPLICATION_MODULE);
     let expected = (5, 40, "Applied Stamp Marker Base".to_string());
     assert_eq!(applied_answers(&mut interpreter, &host, 4), expected);
-    let bytes = snapshot_world(
-        &mut interpreter,
-        MIXIN_APPLICATION_MODULE,
-        &class,
-        &platform,
-        &[host],
-    );
+    let bytes = snapshot_world(&mut interpreter, MIXIN_APPLICATION_MODULE, &class, &[host]);
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     for expected in [
         "mixin application 1  withMark: -> code ",
@@ -11987,18 +11830,25 @@ fn inspect_prints_the_mixin_applications_an_image_describes() {
     let source = indoc! {"
         class Root = Object new <: Value () ()
     "};
-    let report =
-        image::inspect::render(&image::inspect::inspect(&snapshot_of(source)).expect("inspect"));
-    assert!(
-        report.contains("superclass Object, applies Value (clause 0)"),
-        "inspect prints the root's levels:\n{report}"
-    );
+    let bytes = snapshot_of(source);
+    let root = module_root_object(&bytes, 0);
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    for expected in [
+        format!("source present, root object {root}"),
+        "class mixin shipped Kernel Value, superclass Kernel Object, applied by clause 0 of row 0"
+            .to_string(),
+    ] {
+        assert!(
+            report.contains(&expected),
+            "inspect prints the root and its level as records, `{expected}`:\n{report}"
+        );
+    }
 }
 
 /// A nested class's `<:` clause can name a builtin too, and its level is then
-/// a class record whose mixin no row describes: the record names it by
-/// builtin tag, and the reloaded level applies the loading bootstrap's own
-/// builtin mixin.
+/// a class record whose mixin no row describes: the record names it by the
+/// builtin's shipped name, and the reloaded level applies the loading
+/// bootstrap's own builtin mixin.
 #[test]
 fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
     let source = indoc! {"
@@ -12008,18 +11858,18 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
             )
         ) : ()
     "};
-    let (mut interpreter, class, platform, host) = instantiated_world(source);
+    let (mut interpreter, class, _platform, host) = instantiated_world(source);
     let point_class = expect_ok(
         interpreter.send(&host, Symbol::intern("Point"), &[]),
         "Point",
     );
     let point = expect_ok(interpreter.instantiate(&point_class, &[]), "Point new");
-    let bytes = snapshot_world(&mut interpreter, source, &class, &platform, &[point]);
+    let bytes = snapshot_world(&mut interpreter, source, &class, &[point]);
 
     let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
     assert!(
-        report.contains("class mixin builtin Value"),
-        "the level's record names Value's mixin by tag:\n{report}"
+        report.contains("class mixin shipped Kernel Value"),
+        "the level's record names Value's mixin by its shipped name:\n{report}"
     );
     let mut loaded = image::load(&bytes).expect("load");
     let point = loaded.roots[0].clone();
@@ -12043,6 +11893,67 @@ fn a_nested_level_applying_a_builtin_mixin_round_trips_as_a_record() {
         "answer",
     );
     assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+}
+
+/// A `<:` clause can name a shipped class that is no builtin, here the
+/// collections facet's `List`: its level is a class record applying `List`'s
+/// mixin (`MIXIN_SHIPPED`), and the reloaded level applies the loading
+/// boot's own `List` mixin, enclosed where `List` is.
+#[test]
+fn a_level_applying_a_shipped_class_that_is_no_builtin_round_trips() {
+    let source = indoc! {"
+        class Host usingPlatform: p = Object new (| public listClass = p collections List. |) (
+            public class Listy = Object new <: listClass new: 4 () (
+                public answer = ( ^7 )
+            )
+        ) : ()
+    "};
+    let (mut interpreter, class, _platform, host) = instantiated_world(source);
+    let listy_class = expect_ok(
+        interpreter.send(&host, Symbol::intern("Listy"), &[]),
+        "Listy",
+    );
+    let listy = expect_ok(interpreter.instantiate(&listy_class, &[]), "Listy new");
+    let three = interpreter.stash(Value::small_integer(3));
+    expect_ok(
+        interpreter.send(&listy, Symbol::intern("add:"), &[three]),
+        "listy add: 3",
+    );
+    let bytes = snapshot_world(&mut interpreter, source, &class, &[listy]);
+
+    let report = image::inspect::render_full(&image::inspect::inspect(&bytes).expect("inspect"));
+    assert!(
+        report.contains("class mixin shipped CollectionsFactory List"),
+        "the level's record names List's mixin by its shipped name:\n{report}"
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let listy = loaded.roots[0].clone();
+    let loaded_platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &loaded_platform, "collections");
+    let list = send_to(&mut loaded, &collections, "List");
+    loaded.interpreter.enter(|mutator| {
+        let listy = mutator.fetch(&listy);
+        let list = object(mutator.fetch(&list));
+        let heap = mutator.heap();
+        let level = heap
+            .class_superclass(class_of(heap, listy))
+            .expect("Listy's level");
+        assert!(Rc::ptr_eq(
+            &application_of(heap, level).mixin,
+            &application_of(heap, list).mixin
+        ));
+        assert!(heap.class_applied_clause(level).is_some());
+        assert!(
+            heap.class_enclosing(level)
+                .zip(heap.class_enclosing(list))
+                .is_some_and(|(first, second)| first.same(second)),
+            "the level is enclosed where List is"
+        );
+    });
+    let answer = send_to(&mut loaded, &listy, "answer");
+    assert_eq!(integer_of(&mut loaded.interpreter, &answer), 7);
+    let size = send_to(&mut loaded, &listy, "size");
+    assert_eq!(integer_of(&mut loaded.interpreter, &size), 1);
 }
 
 /// §3.1.1's enclosing-object condition on a value class is decided when the
@@ -12080,7 +11991,7 @@ fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
             public class Stamped = MutableCounter new () ()
         ) : ()
     "};
-    let (mut interpreter, class, platform, module) = instantiated_world(source);
+    let (mut interpreter, class, _platform, module) = instantiated_world(source);
     let stamped_class = expect_ok(
         interpreter.send(&module, Symbol::intern("Stamped"), &[]),
         "Stamped",
@@ -12099,7 +12010,6 @@ fn a_refused_value_class_stays_refused_after_a_snapshot_round_trip() {
         &mut interpreter,
         source,
         &class,
-        &platform,
         std::slice::from_ref(&stamped_class),
     );
     let mut loaded = image::load(&bytes).expect("load");
@@ -12154,64 +12064,86 @@ fn a_root_defining_identity_stays_refused_after_a_snapshot_round_trip() {
 }
 
 // ---------------------------------------------------------------------------
-// Platform paths: an object the image reaches through the platform is named
-// by the public members that lead to it, and resolved on load against the
-// loading interpreter's own platform (`docs/design/image-format.md`, "The
-// platform path section").
+// Shipped names: an object the loading binary owns is named by its
+// declaration in the image's shipped-name section, and resolved on load
+// against the loading boot's own shipped world by table lookup
+// (`docs/design/image-format.md`, "Shipped names").
 // ---------------------------------------------------------------------------
 
-/// A module whose root keeps two platform members in slots of its own. Its
-/// one method is never run: it is there so that the selectors the crafted
-/// path sections below name are in the image's symbol table.
+/// A module whose root keeps three platform members and the platform itself
+/// in slots of its own.
 const PLATFORM_MEMBERS: &str = indoc! {"
     class Holder usingPlatform: platform = Object new (
         | public transcript = platform transcript.
           public collections = platform collections.
-          public time = platform time. |
+          public time = platform time.
+          public keptPlatform = platform. |
     ) (
-        public unused = (
-            transcript newLine.
-            collections newCollections.
-            ^transcript show: transcript nonexistent printString
-        )
     ) : ()
 "};
 
-/// The id `text` has in the image's symbol table, as `inspect` lists it.
-fn symbol_id(report: &image::inspect::Report, text: &str) -> u32 {
-    let position = report
-        .symbols
-        .iter()
-        .position(|symbol| symbol == text)
-        .unwrap_or_else(|| panic!("the image interns {text}"));
-    u32::try_from(position).expect("a symbol id fits a u32")
-}
-
-/// `bytes` with its platform path section replaced by `section`.
-fn with_platform_path_section(bytes: &[u8], section: &[u8]) -> Vec<u8> {
-    let report = image::inspect::inspect(bytes).expect("inspect");
+/// The span of `bytes` the section `name` occupies, as `inspect` reports it.
+fn section_span(report: &image::inspect::Report, name: &str) -> (usize, usize) {
     let located = report
         .sections
         .iter()
-        .find(|candidate| candidate.name == "platform paths")
-        .expect("a stateful image carries a platform path section");
-    let mut crafted = bytes[..located.start].to_vec();
-    crafted.extend_from_slice(section);
-    crafted.extend_from_slice(&bytes[located.end..]);
+        .find(|candidate| candidate.name == name)
+        .unwrap_or_else(|| panic!("the image carries a {name} section"));
+    (located.start, located.end)
+}
+
+/// `bytes` with its shipped-name section replaced by what `section` writes.
+/// `section` is handed each text's id in the symbol table, which is extended
+/// by any text the table lacks: an id already assigned keeps its meaning,
+/// so the code and mixin tables still read as they did.
+fn with_shipped_name_section(
+    bytes: &[u8],
+    section: impl FnOnce(&mut dyn FnMut(&str) -> u32, &mut encode::Writer),
+) -> Vec<u8> {
+    let report = image::inspect::inspect(bytes).expect("inspect");
+    let (symbols_start, symbols_end) = section_span(&report, "symbols");
+    let (names_start, names_end) = section_span(&report, "shipped names");
+    let mut table = symbols::Builder::new();
+    for symbol in &report.symbols {
+        table.intern(symbol);
+    }
+    let mut written = encode::Writer::new();
+    section(&mut |text| table.intern(text), &mut written);
+    let mut symbol_section = encode::Writer::new();
+    table.write(&mut symbol_section);
+    let mut crafted = bytes[..symbols_start].to_vec();
+    crafted.extend_from_slice(&symbol_section.into_bytes());
+    crafted.extend_from_slice(&bytes[symbols_end..names_start]);
+    crafted.extend_from_slice(&written.into_bytes());
+    crafted.extend_from_slice(&bytes[names_end..]);
     crafted
 }
 
-/// A platform path section naming `paths`, each a list of symbol ids.
-fn platform_path_section(paths: &[Vec<u32>]) -> Vec<u8> {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(u32::try_from(paths.len()).expect("a count fits a u32"));
-    for path in paths {
-        writer.write_u32(u32::try_from(path.len()).expect("a length fits a u32"));
-        for member in path {
-            writer.write_u32(*member);
-        }
+/// One section entry: the module's and the declaration's symbol ids and the
+/// kind byte, then `clause` for a level or a level's metaclass.
+fn write_shipped_entry(
+    writer: &mut encode::Writer,
+    intern: &mut dyn FnMut(&str) -> u32,
+    (module, declaration, kind): (&str, &str, u8),
+    clause: Option<u32>,
+) {
+    writer.write_u32(intern(module));
+    writer.write_u32(intern(declaration));
+    writer.write_u8(kind);
+    if let Some(clause) = clause {
+        writer.write_u32(clause);
     }
-    writer.into_bytes()
+}
+
+/// `bytes` with the section of `FIXTURE_NAMES`, so a graph spliced in after
+/// it may use the fixture's indices (`image_with_graph_section`).
+fn with_fixture_names(bytes: &[u8]) -> Vec<u8> {
+    with_shipped_name_section(bytes, |intern, writer| {
+        writer.write_u32(u32::try_from(FIXTURE_NAMES.len()).expect("a count fits a u32"));
+        for entry in FIXTURE_NAMES {
+            write_shipped_entry(writer, intern, *entry, None);
+        }
+    })
 }
 
 fn same_object(loaded: &mut image::LoadedImage, first: &Root, second: &Root) -> bool {
@@ -12220,40 +12152,77 @@ fn same_object(loaded: &mut image::LoadedImage, first: &Root, second: &Root) -> 
         .enter(|mutator| object(mutator.fetch(first)).same(object(mutator.fetch(second))))
 }
 
+/// Whether `first = second` answers `true` in the loaded world.
+fn equal(loaded: &mut image::LoadedImage, first: &Root, second: &Root) -> bool {
+    let answer = expect_ok(
+        loaded
+            .interpreter
+            .send(first, Symbol::intern("="), std::slice::from_ref(second)),
+        "=",
+    );
+    loaded
+        .interpreter
+        .enter(|mutator| matches!(mutator.fetch(&answer).kind(), ValueKind::Boolean(true)))
+}
+
+/// The platform is a record of `PlatformFactory Platform` like any instance,
+/// its lazy slots as they stood, and its facets are records of their shipped
+/// classes: each decodes to a value equal to the loading platform's own --
+/// a lazy slot is no part of a value's state -- and each answers as before.
 #[test]
-fn a_platform_member_is_named_by_its_path() {
+fn a_platform_member_round_trips_as_a_record() {
     let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
-    assert_eq!(
-        report.platform_paths,
-        vec![
-            "transcript".to_string(),
-            "collections".to_string(),
-            "time".to_string()
-        ],
-        "the paths the graph uses, in the order it first reaches them"
-    );
-    assert!(
-        report.graph_objects.iter().all(|record| {
-            !record.starts_with("class Transcript")
-                && !record.starts_with("class Collections")
-                && !record.starts_with("class Time")
-        }),
-        "no member is written as a record: {:#?}",
-        report.graph_objects
-    );
-
+    for name in [
+        "PlatformFactory Transcript",
+        "CollectionsFactory Collections",
+        "PlatformFactory Time",
+        "PlatformFactory Platform",
+    ] {
+        assert!(
+            report.shipped_names.contains(&name.to_string()),
+            "{name} names a record's class: {:?}",
+            report.shipped_names
+        );
+    }
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
     let platform = loaded.interpreter.platform();
+    let kept = send_to(&mut loaded, &instance, "keptPlatform");
+    assert!(
+        !same_object(&mut loaded, &kept, &platform),
+        "the kept platform is a record of its own"
+    );
+    assert!(
+        equal(&mut loaded, &kept, &platform),
+        "the kept platform equals the loading platform"
+    );
     for member in ["transcript", "collections", "time"] {
         let stored = send_to(&mut loaded, &instance, member);
         let fresh = send_to(&mut loaded, &platform, member);
         assert!(
-            same_object(&mut loaded, &stored, &fresh),
-            "the stored {member} is the loading platform's own"
+            equal(&mut loaded, &stored, &fresh),
+            "the stored {member} equals the loading platform's own"
         );
     }
+    let collections = send_to(&mut loaded, &instance, "collections");
+    let list_class = send_to(&mut loaded, &collections, "List");
+    let list = send_to(&mut loaded, &list_class, "new");
+    let size = send_to(&mut loaded, &list, "size");
+    loaded.interpreter.enter(|mutator| {
+        assert!(mutator.fetch(&size).as_small_integer() == Some(0));
+    });
+    let transcript = send_to(&mut loaded, &kept, "transcript");
+    let text = loaded.interpreter.enter(|mutator| {
+        let text = Value::object(mutator.new_string(String::new()));
+        mutator.stash(text)
+    });
+    expect_ok(
+        loaded
+            .interpreter
+            .send(&transcript, Symbol::intern("show:"), &[text]),
+        "kept platform transcript show: ''",
+    );
 }
 
 #[test]
@@ -12273,18 +12242,18 @@ fn a_stored_platform_and_a_stored_member_agree_after_a_load() {
     let stored = send_to(&mut loaded, &instance, "collections");
     assert!(
         same_object(&mut loaded, &through_the_platform, &stored),
-        "a stored platform and a stored member answer one collections module"
+        "a stored platform and a stored member answer one collections facet"
     );
 }
 
 /// The root instance's class is the module class and its `collections` slot
-/// what a platform path answered: both were young when the load began, and
-/// the load's tenure made them old before the graph pass named them
-/// (`a_stored_platform_and_a_stored_member_agree_after_a_load`, after both
-/// collections).
+/// a record of a shipped class: the module class was young when the load
+/// began, and the load's tenure made it and the shipped world old before
+/// the graph pass named them (`a_stored_platform_and_a_stored_member_agree_
+/// after_a_load`, after both collections).
 #[cfg(debug_assertions)]
 #[test]
-fn a_loaded_graph_naming_a_platform_path_and_a_module_class_survives_both_collections() {
+fn a_loaded_graph_naming_shipped_classes_and_a_module_class_survives_both_collections() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public keptPlatform = platform.
@@ -12303,7 +12272,7 @@ fn a_loaded_graph_naming_a_platform_path_and_a_module_class_survives_both_collec
     let stored = send_to(&mut loaded, &instance, "collections");
     assert!(
         same_object(&mut loaded, &through_the_platform, &stored),
-        "a stored platform and a stored member answer one collections module after both \
+        "a stored platform and a stored member answer one collections facet after both \
          collections"
     );
 }
@@ -12311,11 +12280,11 @@ fn a_loaded_graph_naming_a_platform_path_and_a_module_class_survives_both_collec
 /// The platform hands out its module's classes by class accessors
 /// (`public Transcript = ( ^outer PlatformFactory Transcript )`), and the
 /// collections facet its module's the same way, so a class a program got
-/// from one is named by the accessor's path, and the loading platform
-/// answers its own class for it. `platform time Stopwatch` answers the
-/// class `platform Stopwatch` does, so the one path `Stopwatch` names both.
+/// from one is named by its declaration, and the loading boot answers its
+/// own class for it. `platform time Stopwatch` answers the class `platform
+/// Stopwatch` does, so the one name `PlatformFactory Stopwatch` names both.
 #[test]
-fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
+fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public transcriptClass = platform Transcript.
@@ -12332,17 +12301,19 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
     let bytes = snapshot_module(source, None, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert_eq!(
-        report.platform_paths,
+        report.shipped_names,
         vec![
-            "Transcript".to_string(),
-            "Platform".to_string(),
-            "collections Collections".to_string(),
-            "collections List".to_string(),
-            "KernelNamespace".to_string(),
-            "Time".to_string(),
-            "Stopwatch".to_string()
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
+            "PlatformFactory Transcript".to_string(),
+            "PlatformFactory Platform".to_string(),
+            "CollectionsFactory Collections".to_string(),
+            "CollectionsFactory List".to_string(),
+            "PlatformFactory KernelNamespace".to_string(),
+            "PlatformFactory Time".to_string(),
+            "PlatformFactory Stopwatch".to_string()
         ],
-        "the paths the graph uses, in the order it first reaches them"
+        "the names the graph uses, in the order it first reaches them"
     );
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
@@ -12363,16 +12334,63 @@ fn a_class_the_platform_hands_out_is_named_by_its_accessor() {
         let fresh = send_to(&mut loaded, answerer, accessor);
         assert!(
             same_object(&mut loaded, &stored, &fresh),
-            "the stored {member} is the loading platform's {accessor}"
+            "the stored {member} is the loading boot's {accessor}"
         );
     }
 }
 
-/// A second platform is an ordinary instance of a shipped class: written as
-/// a record of the class the path `Platform` names, with its own lazy
-/// slots, and it writes after a load as it did before.
+/// A name resolves to the very object the loading boot built, never a twin:
+/// a builtin, a builtin's metaclass and a shipped class that is no builtin,
+/// held in slots, decode to the loading boot's own (a level is never a
+/// value; `shipped_names.rs`'s tests check that one).
 #[test]
-fn a_second_platform_is_a_record_of_its_path_named_class() {
+fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
+    let source = indoc! {"
+        class Holder usingPlatform: platform = Object new (
+            | public array = Array.
+              public integerClass = Integer class.
+              public list = platform collections List. |
+        ) (
+        ) : ()
+    "};
+    let bytes = snapshot_module(source, None, None);
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.shipped_names,
+        vec![
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
+            "Kernel Array".to_string(),
+            "Kernel Integer class".to_string(),
+            "CollectionsFactory List".to_string()
+        ]
+    );
+    let mut loaded = image::load(&bytes).expect("load");
+    let instance = loaded.roots.first().cloned().expect("the root instance");
+    let array = send_to(&mut loaded, &instance, "array");
+    let integer_class = send_to(&mut loaded, &instance, "integerClass");
+    let list = send_to(&mut loaded, &instance, "list");
+    loaded.interpreter.enter(|mutator| {
+        let array_class = mutator.builtin_class(BuiltinClass::Array);
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        let integer_metaclass = mutator.metaclass_of(integer).expect("Integer's metaclass");
+        assert!(object(mutator.fetch(&array)).same(array_class));
+        assert!(object(mutator.fetch(&integer_class)).same(integer_metaclass));
+    });
+    let platform = loaded.interpreter.platform();
+    let collections = send_to(&mut loaded, &platform, "collections");
+    let fresh_list = send_to(&mut loaded, &collections, "List");
+    assert!(
+        same_object(&mut loaded, &list, &fresh_list),
+        "the stored List is the loading boot's own"
+    );
+}
+
+/// A second platform is an ordinary instance of a shipped class: written as
+/// a record of `PlatformFactory Platform`, with its own lazy slots, and it
+/// works after a load as it did before.
+#[test]
+fn a_second_platform_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public second = platform class new. |
@@ -12383,9 +12401,11 @@ fn a_second_platform_is_a_record_of_its_path_named_class() {
     let bytes = snapshot_module(source, None, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
-        report.platform_paths.contains(&"Platform".to_string()),
-        "the second platform's class is named by its path: {:?}",
-        report.platform_paths
+        report
+            .shipped_names
+            .contains(&"PlatformFactory Platform".to_string()),
+        "the second platform's class is named by its declaration: {:?}",
+        report.shipped_names
     );
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
@@ -12415,11 +12435,11 @@ fn a_second_platform_is_a_record_of_its_path_named_class() {
 }
 
 /// A `List` is an ordinary instance of a shipped class: written as a record
-/// of the class the path `collections List` names, with its `size_` and its
-/// `data` array, and it answers as before after a load -- the class and its
-/// code are the loading binary's.
+/// of `CollectionsFactory List`, with its `size_` and its `data` array, and
+/// it answers as before after a load -- the class and its code are the
+/// loading binary's.
 #[test]
-fn a_list_is_a_record_of_its_path_named_class() {
+fn a_list_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public list = platform collections List new. |
@@ -12432,10 +12452,10 @@ fn a_list_is_a_record_of_its_path_named_class() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
-            .platform_paths
-            .contains(&"collections List".to_string()),
-        "the list's class is named by its path: {:?}",
-        report.platform_paths
+            .shipped_names
+            .contains(&"CollectionsFactory List".to_string()),
+        "the list's class is named by its declaration: {:?}",
+        report.shipped_names
     );
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
@@ -12465,14 +12485,13 @@ fn a_list_is_a_record_of_its_path_named_class() {
 }
 
 /// A `Stopwatch` is an ordinary instance of a shipped class, as a `List`
-/// is: written as a record of the class the path `Stopwatch` names,
-/// with its started reading, and it reads on after a load -- the class and
-/// its code are the loading binary's. Snapshot and load run in one
-/// process, which shares the clock's origin, so a start that survived the
-/// load reads a strictly positive time; a stopwatch whose start came back
-/// `nil` would read 0.
+/// is: written as a record of `PlatformFactory Stopwatch`, with its started
+/// reading, and it reads on after a load -- the class and its code are the
+/// loading binary's. Snapshot and load run in one process, which shares the
+/// clock's origin, so a start that survived the load reads a strictly
+/// positive time; a stopwatch whose start came back `nil` would read 0.
 #[test]
-fn a_stopwatch_is_a_record_of_its_path_named_class() {
+fn a_stopwatch_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public stopwatch = platform time Stopwatch new start. |
@@ -12482,9 +12501,11 @@ fn a_stopwatch_is_a_record_of_its_path_named_class() {
     let bytes = snapshot_module(source, None, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
-        report.platform_paths.contains(&"Stopwatch".to_string()),
-        "the stopwatch's class is named by its path: {:?}",
-        report.platform_paths
+        report
+            .shipped_names
+            .contains(&"PlatformFactory Stopwatch".to_string()),
+        "the stopwatch's class is named by its declaration: {:?}",
+        report.shipped_names
     );
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
@@ -12511,10 +12532,10 @@ fn a_stopwatch_is_a_record_of_its_path_named_class() {
 }
 
 /// A facet a program makes itself from `platform collections class` is an
-/// ordinary record of the class the path `collections Collections` names,
-/// and after a load it is equal to the loading platform's facet: a value.
+/// ordinary record of `CollectionsFactory Collections`, and after a load it
+/// is equal to the loading platform's facet: a value.
 #[test]
-fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
+fn a_second_collections_facet_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
             | public facet = platform collections class new. |
@@ -12525,10 +12546,10 @@ fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
-            .platform_paths
-            .contains(&"collections Collections".to_string()),
-        "the facet's class is named by its path: {:?}",
-        report.platform_paths
+            .shipped_names
+            .contains(&"CollectionsFactory Collections".to_string()),
+        "the facet's class is named by its declaration: {:?}",
+        report.shipped_names
     );
     let mut loaded = image::load(&bytes).expect("load");
     let instance = loaded.roots.first().cloned().expect("the root instance");
@@ -12541,189 +12562,248 @@ fn a_second_collections_facet_is_a_record_of_its_path_named_class() {
         same_object(&mut loaded, &list, &fresh_list),
         "the loaded facet hands out the loading platform's List"
     );
-    let equal = expect_ok(
-        loaded
-            .interpreter
-            .send(&facet, Symbol::intern("="), &[collections]),
-        "facet = platform collections",
+    assert!(
+        equal(&mut loaded, &facet, &collections),
+        "the loaded facet equals the loading platform's facet"
     );
-    loaded.interpreter.enter(|mutator| {
-        assert!(
-            mutator.fetch(&equal).as_boolean() == Some(true),
-            "the loaded facet equals the loading platform's facet"
-        );
-    });
 }
 
+/// A crafted section entry: a module, a declaration and a kind byte, and a
+/// level's clause index.
+type CraftedEntry = ((&'static str, &'static str, u8), Option<u32>);
+
+/// Every malformed section is refused on load, before the graph: a count
+/// past the maximum or past the bytes left, an unknown module or
+/// declaration, an unknown kind byte, a level past its declaration's
+/// clauses, and a name given twice.
 #[test]
-fn a_platform_path_the_loader_cannot_follow_is_refused() {
-    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
-    let report = image::inspect::inspect(&bytes).expect("inspect");
-    let transcript = symbol_id(&report, "transcript");
-    let nonexistent = symbol_id(&report, "nonexistent");
-    let show = symbol_id(&report, "show:");
-    let print_string = symbol_id(&report, "printString");
-    let new_line = symbol_id(&report, "newLine");
-    let no_symbol = u32::try_from(report.symbols.len()).expect("a count fits a u32") + 1000;
-    let too_long = vec![transcript; image::platform_paths::MAX_PLATFORM_PATH_LENGTH + 1];
-
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![nonexistent]]),
-    ));
-    assert!(message.contains("nonexistent"), "{message}");
-
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![show]]),
-    ));
-    assert!(message.contains("show:"), "{message}");
-
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[too_long]),
-    ));
-    assert_eq!(
-        message,
-        format!(
-            "a platform path in the image has {} members, but a path has between 1 and {} members",
-            image::platform_paths::MAX_PLATFORM_PATH_LENGTH + 1,
-            image::platform_paths::MAX_PLATFORM_PATH_LENGTH
-        )
-    );
-
-    let mut too_many = encode::Writer::new();
-    too_many.write_u32(
-        u32::try_from(image::platform_paths::MAX_PLATFORM_PATHS + 1).expect("fits a u32"),
-    );
-    let message = load_error(&with_platform_path_section(&bytes, &too_many.into_bytes()));
-    assert_eq!(
-        message,
-        format!(
-            "the image lists {} platform paths, more than the {} a loader follows",
-            image::platform_paths::MAX_PLATFORM_PATHS + 1,
-            image::platform_paths::MAX_PLATFORM_PATHS
-        )
-    );
-
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![no_symbol]]),
-    ));
-    assert!(message.contains("symbol id"), "{message}");
-
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![transcript, print_string]]),
-    ));
-    assert!(message.contains("transcript printString"), "{message}");
-
-    // A public method that is no slot's getter, no nested class's accessor
-    // and no class accessor is never sent: `newLine` would print while the
-    // image is read.
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![transcript, new_line]]),
-    ));
-    assert_eq!(
-        message,
-        "the image names platform path `transcript newLine`, whose member `newLine` is no \
-         public slot, nested class or class accessor of what the path has reached"
-    );
-
-    // `newCollections` is the factory's member, not the facet's, so it is
-    // no step: a path can never reach the collections factory.
-    let collections = symbol_id(&report, "collections");
-    let new_collections = symbol_id(&report, "newCollections");
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![collections, new_collections]]),
-    ));
-    assert_eq!(
-        message,
-        "the image names platform path `collections newCollections`, whose member \
-         `newCollections` is no public slot, nested class or class accessor of what the path \
-         has reached"
-    );
-}
-
-#[test]
-fn an_index_past_the_path_section_is_refused() {
-    // The graph names `collections` as path 1; a section listing only
-    // `transcript` leaves that index past its end.
-    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
-    let report = image::inspect::inspect(&bytes).expect("inspect");
-    let transcript = symbol_id(&report, "transcript");
-    let message = load_error(&with_platform_path_section(
-        &bytes,
-        &platform_path_section(&[vec![transcript]]),
-    ));
-    assert_eq!(
-        message,
-        decode::DecodeError::BadPlatformPath(1).to_string(),
-        "{message}"
-    );
-}
-
-/// A one-object graph section: an instance record whose header names
-/// platform path 0, carrying `fields` `nil` fields.
-fn one_instance_of_platform_path_zero(fields: u32) -> Vec<u8> {
-    let mut writer = encode::Writer::new();
-    graph_counts(&mut writer, 1);
-    writer.write_u8(CLASS_PLATFORM_PATH);
-    writer.write_u32(0);
-    writer.write_u32(5); // identity hash
-    writer.write_u8(OBJECT_INSTANCE);
-    writer.write_u32(fields);
-    for _ in 0..fields {
-        writer.write_u8(VALUE_NIL);
+fn a_malformed_shipped_name_section_is_refused() {
+    let bytes = snapshot_of(EMPTY);
+    let class = |name: (&'static str, &'static str)| (name.0, name.1, 1u8);
+    let entries = |listed: Vec<CraftedEntry>| {
+        with_shipped_name_section(&bytes, |intern, writer| {
+            writer.write_u32(u32::try_from(listed.len()).expect("a count fits a u32"));
+            for (entry, clause) in listed {
+                write_shipped_entry(writer, intern, entry, clause);
+            }
+        })
+    };
+    let cases: Vec<(Vec<u8>, decode::DecodeError)> = vec![
+        (
+            with_shipped_name_section(&bytes, |_, writer| {
+                writer.write_u32(
+                    u32::try_from(shipped_names::MAX_SHIPPED_NAMES + 1).expect("fits a u32"),
+                );
+            }),
+            decode::DecodeError::TooManyShippedNames {
+                count: shipped_names::MAX_SHIPPED_NAMES + 1,
+            },
+        ),
+        (
+            with_shipped_name_section(&bytes, |_, writer| writer.write_u32(1000)),
+            decode::DecodeError::UnexpectedEndOfFile,
+        ),
+        (
+            entries(vec![(class(("Nothing", "Array")), None)]),
+            decode::DecodeError::UnknownShippedName("Nothing Array".to_string()),
+        ),
+        (
+            entries(vec![(class(("Kernel", "Nothing")), None)]),
+            decode::DecodeError::UnknownShippedName("Kernel Nothing".to_string()),
+        ),
+        (
+            entries(vec![(("Kernel", "Array", 5), None)]),
+            decode::DecodeError::InvalidTag {
+                what: "shipped name kind",
+                tag: 5,
+            },
+        ),
+        (
+            entries(vec![(("Kernel", "Kernel", 3), Some(1))]),
+            decode::DecodeError::UnknownShippedName("Kernel Kernel level 1".to_string()),
+        ),
+        (
+            entries(vec![
+                (class(("Kernel", "Array")), None),
+                (class(("Kernel", "Array")), None),
+            ]),
+            decode::DecodeError::DuplicateShippedName("Kernel Array".to_string()),
+        ),
+    ];
+    for (crafted, expected) in cases {
+        assert_eq!(load_error(&crafted), expected.to_string());
     }
-    writer.write_u32(0); // no roots
-    writer.into_bytes()
 }
 
+/// A reference past the section is refused before it indexes anything.
 #[test]
-fn an_instance_of_a_path_named_class_carries_exactly_its_layout() {
-    // The layout comes from the loading binary: `Transcript` declares no
-    // slots, so an instance of it carries none.
-    let mut fixture = fixture_naming_the_transcript_class_by_path();
-    fixture.decode(&one_instance_of_platform_path_zero(0), |_, decoded| {
-        assert!(decoded.is_ok(), "an instance that fits the layout decodes");
+fn an_index_past_the_shipped_name_section_is_refused() {
+    let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
+    let crafted = with_shipped_name_section(&bytes, |_, writer| writer.write_u32(0));
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::BadShippedName(1).to_string()
+    );
+}
+
+/// The decoder holds each forbidden position to the rule: `Kernel Top` and
+/// `Kernel Activation` as a value, a module's root as a record's class, the
+/// kernel's instance as a slot's value, and a class standing where only a
+/// module instance may. A module instance in a frame's register decodes.
+#[test]
+fn a_shipped_name_in_a_forbidden_position_is_refused() {
+    let not_allowed =
+        |name: &str, position: &'static str| decode::DecodeError::ShippedNameNotAllowed {
+            name: name.to_string(),
+            position,
+        };
+    let mut fixture = GraphFixture::new();
+    assert_eq!(
+        fixture.decode_error(&shipped_class_value(TOP_NAME)),
+        not_allowed("Kernel Top", "a value")
+    );
+    assert_eq!(
+        fixture.decode_error(&shipped_class_value(ACTIVATION_NAME)),
+        not_allowed("Kernel Activation", "a value")
+    );
+    let under_the_root = class_records(1, |writer| {
+        writer.write_shipped(KERNEL_ROOT_NAME);
+        writer.write_u32(5); // identity hash
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
     });
     assert_eq!(
-        fixture.decode_error(&one_instance_of_platform_path_zero(1)),
-        decode::DecodeError::PlatformInstanceFieldCount {
-            expected: 0,
-            found: 1
+        fixture.decode_error(&under_the_root),
+        not_allowed("Kernel Kernel", "a record's class")
+    );
+    let kernel_in_a_slot = one_array_object(|writer| {
+        writer.write_u8(VALUE_SHIPPED_MODULE);
+        writer.write_u32(KERNEL_INSTANCE_NAME);
+    });
+    assert_eq!(
+        fixture.decode_error(&kernel_in_a_slot),
+        not_allowed("Kernel instance", "a value")
+    );
+    let frame_receiving = |receiver: u32| {
+        let mut writer = encode::Writer::new();
+        graph_counts(&mut writer, 1);
+        frame_header(&mut writer, 0);
+        writer.write_u8(FRAME_TOP_LEVEL);
+        writer.write_u32(0); // program counter
+        writer.write_boolean(false); // continuable
+        writer.write_u8(VALUE_SHIPPED_MODULE); // receiver: a shipped module
+        writer.write_u32(receiver);
+        writer.write_boolean(false); // no sender
+        writer.write_boolean(false); // no home
+        writer.write_boolean(false); // no current class
+        writer.write_u32(0); // no registers
+        writer.write_u32(0); // no roots
+        writer.into_bytes()
+    };
+    assert_eq!(
+        fixture.decode_error(&frame_receiving(ARRAY_NAME)),
+        not_allowed("Kernel Array", "a frame's register")
+    );
+    fixture.decoded(
+        &frame_receiving(KERNEL_INSTANCE_NAME),
+        "a frame of shipped code receiving the kernel",
+        |heap, graph| {
+            let receiver = heap.frame_receiver(graph.frames[0]);
+            let Some(receiver) = receiver.as_object() else {
+                panic!("the frame's receiver is an object");
+            };
+            assert_eq!(
+                heap.class_display_name(heap.object_class(receiver)),
+                "Kernel"
+            );
+        },
+    );
+}
+
+/// No object is an instance of `Top`, so a record of it is refused as `Top`
+/// is refused as a value.
+#[test]
+fn a_record_of_top_is_refused() {
+    let bytes = class_records(1, |writer| {
+        writer.write_shipped(TOP_NAME);
+        writer.write_u32(5); // identity hash
+        writer.write_u8(OBJECT_INSTANCE);
+        writer.write_u32(0); // no fields
+    });
+    assert_eq!(
+        GraphFixture::new().decode_error(&bytes),
+        decode::DecodeError::ShippedNameNotAllowed {
+            name: "Kernel Top".to_string(),
+            position: "a record's class",
         }
     );
 }
 
+/// A shipped class that is no builtin has instance records only: an array,
+/// a string or a frame record under `PlatformFactory Stopwatch` is refused
+/// before anything is allocated.
 #[test]
-fn a_class_reference_to_a_path_that_is_no_class_is_refused() {
+fn a_record_of_a_shipped_class_with_another_body_is_refused() {
+    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME] {
+        let bytes = class_records(1, |writer| {
+            writer.write_shipped(STOPWATCH_NAME);
+            writer.write_u32(5); // identity hash
+            writer.write_u8(body);
+            writer.write_u32(0); // no elements, an empty text or a program counter
+        });
+        let error = GraphFixture::new().decode_error(&bytes);
+        assert_eq!(error, decode::DecodeError::ShippedInstanceBody { body });
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "a record of a shipped class has object body {body}, but an instance of that \
+                 class is an instance record"
+            )
+        );
+    }
+}
+
+/// A record of a shipped class that is no builtin carries exactly the
+/// fields the loading binary lays the class out with: `Stopwatch` declares
+/// two slots.
+#[test]
+fn a_record_of_a_shipped_class_carries_exactly_its_layout() {
+    let stopwatch_with = |fields: u32| {
+        class_records(1, |writer| {
+            writer.write_shipped(STOPWATCH_NAME);
+            writer.write_u32(5); // identity hash
+            writer.write_u8(OBJECT_INSTANCE);
+            writer.write_u32(fields);
+            for _ in 0..fields {
+                writer.write_u8(VALUE_NIL);
+            }
+        })
+    };
     let mut fixture = GraphFixture::new();
-    let platform = fixture.platform.clone();
-    let transcript = expect_ok(
-        fixture
-            .interpreter
-            .send(&platform, Symbol::intern("transcript"), &[]),
-        "transcript",
-    );
-    fixture.platform_paths = vec![transcript];
+    fixture.decoded(&stopwatch_with(2), "a stopwatch record", |_, _| {});
+    let error = fixture.decode_error(&stopwatch_with(3));
     assert_eq!(
-        fixture.decode_error(&one_instance_of_platform_path_zero(0)),
-        decode::DecodeError::PlatformPathNotAClass
+        error,
+        decode::DecodeError::ShippedInstanceFieldCount {
+            expected: 2,
+            found: 3
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "an instance of a shipped class carries 3 field(s), but the loading binary lays that \
+         class out with 2"
     );
 }
 
 /// A module instance holds the core library's state, as the platform holds
-/// the mirror, and a class compiled from shipped source belongs to the
-/// loading binary: the encoder writes neither, and refuses one no platform
-/// path names. The kernel instance and its class are both; the collections
-/// factory is the second such module, reached here only because a host can
-/// walk a class's enclosing object, which no program can.
+/// the mirror, so the encoder names one only where a frame of shipped code
+/// holds it and refuses it anywhere else; a module's root class is no value
+/// either. The kernel instance and its class are both reached here; the
+/// collections factory is the second such module, reached only because a
+/// host can walk a class's enclosing object, which no program can.
 #[test]
-fn a_shipped_object_no_platform_path_names_is_refused() {
+fn a_module_instance_outside_a_frame_is_refused() {
     let (mut interpreter, class) = load(EMPTY);
     let platform = interpreter.platform();
     let collections = expect_ok(
@@ -12736,7 +12816,6 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
     );
     interpreter.enter(|mutator| {
         let root_class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let object = mutator.builtin_class(BuiltinClass::Object);
         let kernel = mutator
             .heap()
@@ -12752,23 +12831,23 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
         for (shipped, expected) in [
             (
                 kernel,
-                "image encoding refuses a module instance of Kernel: it holds the core \
-                 library's state, and no platform path names it",
+                "image encoding refuses the module instance Kernel outside a frame: it holds \
+                 the core library's state",
             ),
             (
                 kernel_class,
-                "image encoding refuses the class object Kernel: it is compiled from shipped \
-                 source, and no platform path names it",
+                "image encoding refuses Kernel Kernel as a value: no program may name it there, \
+                 and the loader refuses an image that does",
             ),
             (
                 collections_factory,
-                "image encoding refuses a module instance of CollectionsFactory: it holds the \
-                 core library's state, and no platform path names it",
+                "image encoding refuses the module instance CollectionsFactory outside a frame: \
+                 it holds the core library's state",
             ),
             (
                 collections_factory_class,
-                "image encoding refuses the class object CollectionsFactory: it is compiled \
-                 from shipped source, and no platform path names it",
+                "image encoding refuses CollectionsFactory CollectionsFactory as a value: no \
+                 program may name it there, and the loader refuses an image that does",
             ),
         ] {
             let refused = snapshot_one(
@@ -12776,7 +12855,6 @@ fn a_shipped_object_no_platform_path_names_is_refused() {
                 None,
                 &Origin::File(PathBuf::from("t.ns")),
                 root_class,
-                platform,
                 &[Value::object(shipped)],
             );
             let Err(message) = refused else {
@@ -12796,131 +12874,41 @@ fn a_graph_of_one_root(root: impl FnOnce(&mut encode::Writer)) -> Vec<u8> {
     writer.into_bytes()
 }
 
-/// A fixture whose platform path 0 answered the platform's `Transcript`
-/// class, `PlatformFactory.ns`'s nested class, as the path `Transcript` --
-/// the platform's class accessor -- does.
-fn fixture_naming_the_transcript_class_by_path() -> GraphFixture {
+/// A shipped class, and a shipped metaclass, as a value decode to the class
+/// the name names.
+#[test]
+fn a_value_naming_a_shipped_class_decodes_to_that_class() {
     let mut fixture = GraphFixture::new();
-    let platform = fixture.platform.clone();
-    let transcript_class = expect_ok(
-        fixture
-            .interpreter
-            .send(&platform, Symbol::intern("Transcript"), &[]),
-        "platform Transcript",
-    );
-    fixture.platform_paths = vec![transcript_class];
-    fixture
-}
-
-#[test]
-fn a_value_naming_a_path_named_class_decodes_to_that_class() {
-    let mut fixture = fixture_naming_the_transcript_class_by_path();
-    let expected = fixture.platform_paths[0].clone();
-    let bytes = a_graph_of_one_root(|writer| {
-        writer.write_u8(VALUE_PLATFORM_PATH);
-        writer.write_u32(0);
-    });
-    let same = fixture.decode(&bytes, |heap, decoded| {
-        let Ok(graph) = decoded else {
-            panic!("the graph decodes");
-        };
-        object(graph.roots[0]).same(object(heap.fetch(&expected)))
-    });
-    assert!(same, "the root is the class the path answered");
-}
-
-#[test]
-fn a_metaclass_reference_through_a_platform_path_decodes() {
-    let mut fixture = fixture_naming_the_transcript_class_by_path();
-    let class = fixture.platform_paths[0].clone();
-    let bytes = a_graph_of_one_root(|writer| {
+    let stopwatch = a_graph_of_one_root(|writer| {
         writer.write_u8(VALUE_CLASS_TAG);
-        writer.write_u8(CLASS_METACLASS);
-        writer.write_u8(CLASS_PLATFORM_PATH);
-        writer.write_u32(0);
+        writer.write_shipped(STOPWATCH_NAME);
     });
-    let same = fixture.decode(&bytes, |heap, decoded| {
-        let Ok(graph) = decoded else {
-            panic!("the graph decodes");
-        };
-        let metaclass = heap
-            .class_metaclass(object(heap.fetch(&class)))
-            .expect("Transcript has a metaclass");
-        object(graph.roots[0]).same(metaclass)
+    fixture.decoded(&stopwatch, "a shipped class as a value", |heap, graph| {
+        let class = object(graph.roots[0]);
+        assert!(heap.is_class(class));
+        assert_eq!(heap.class_display_name(class), "Stopwatch");
     });
-    assert!(
-        same,
-        "the root is the metaclass of the class the path answered"
-    );
+    let integer_class = a_graph_of_one_root(|writer| {
+        writer.write_u8(VALUE_CLASS_TAG);
+        writer.write_shipped(INTEGER_CLASS_NAME);
+    });
+    fixture.decoded(&integer_class, "a shipped metaclass", |heap, graph| {
+        let metaclass = object(graph.roots[0]);
+        let this_class = heap
+            .class_this_class(metaclass)
+            .expect("the root is a metaclass");
+        assert_eq!(heap.class_builtin(this_class), Some(BuiltinClass::Integer));
+    });
 }
 
-/// The closing hash table, decoded against a fresh world whose platform path
-/// 0 answered its transcript; answers the outcome and the transcript's hash.
-fn decode_tag_named_with_the_transcript(bytes: &[u8]) -> (Result<u32, decode::DecodeError>, u32) {
+/// Each object of the shipped world has one entry in the hash table and
+/// one name in the section, however often the graph reaches it: `Array` and
+/// its metaclass, each held as a value and each given a hash.
+#[test]
+fn an_object_reached_twice_is_listed_once() {
     let (mut interpreter, class) = load(EMPTY);
-    let platform = interpreter.platform();
-    let transcript = expect_ok(
-        interpreter.send(&platform, Symbol::intern("transcript"), &[]),
-        "transcript",
-    );
-    interpreter.enter(|mutator| {
+    let (bytes, class_hash, metaclass_hash) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let transcript = mutator.fetch(&transcript);
-        let mut reader = decode::Reader::new(bytes);
-        let result = decode::decode_tag_named_hashes(
-            mutator,
-            &mut reader,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
-            &[transcript],
-        );
-        (
-            result,
-            mutator.heap().object_identity_hash(object(transcript)),
-        )
-    })
-}
-
-#[test]
-fn a_hash_recorded_for_a_platform_path_is_restored() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(HASHED_PLATFORM_PATH);
-    writer.write_u32(0);
-    writer.write_u32(7);
-    let (result, hash) = decode_tag_named_with_the_transcript(&writer.into_bytes());
-    assert_eq!(result, Ok(7));
-    assert_eq!(
-        hash, 7,
-        "the loading platform's transcript carries the hash"
-    );
-}
-
-#[test]
-fn a_hash_recorded_for_a_platform_path_past_the_section_is_refused() {
-    let mut writer = encode::Writer::new();
-    writer.write_u32(1);
-    writer.write_u8(HASHED_PLATFORM_PATH);
-    writer.write_u32(1);
-    writer.write_u32(7);
-    let (result, _) = decode_tag_named_with_the_transcript(&writer.into_bytes());
-    assert_eq!(result, Err(decode::DecodeError::BadPlatformPath(1)));
-}
-
-/// An object the closing hash table reaches twice is listed once, or the
-/// loader would refuse the table as naming one object twice. No platform
-/// path answers a builtin class today; the table must still list one once if
-/// a path ever does, so this hands the encoder `Array` as a path-named
-/// object: the class is reached both as a builtin and by its path -- it
-/// keeps its builtin entry -- and its metaclass both as a builtin's
-/// metaclass and as the metaclass of a path-named class -- it keeps the
-/// builtin one's.
-#[test]
-fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
-    let (mut interpreter, class) = load(EMPTY);
-    let platform = interpreter.platform();
-    interpreter.enter(|mutator| {
-        let class = class_reference(mutator, &class);
-        let platform = mutator.fetch(&platform);
         let array = mutator.builtin_class(BuiltinClass::Array);
         let metaclass = mutator
             .heap()
@@ -12928,25 +12916,48 @@ fn an_object_reached_twice_is_listed_once_in_the_hash_table() {
             .expect("Array has a metaclass");
         let class_hash = mutator.heap_mut().object_ensure_identity_hash(array);
         let metaclass_hash = mutator.heap_mut().object_ensure_identity_hash(metaclass);
-        let mut writer = encode::Writer::new();
-        encode::encode_tag_named_hashes(
+        let held = Value::object(mutator.new_array(vec![
+            Value::object(array),
+            Value::object(metaclass),
+            Value::object(array),
+        ]));
+        let bytes = snapshot_one(
             mutator,
-            &mut writer,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
-            platform,
-            &[array],
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[held],
+        )
+        .expect("snapshot");
+        (bytes, class_hash, metaclass_hash)
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.shipped_names,
+        vec![
+            "Kernel Array".to_string(),
+            "Kernel Array class".to_string(),
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
+        ]
+    );
+    assert_eq!(
+        report.graph_tag_named_hashes,
+        vec![
+            format!("Kernel Array hash {class_hash}"),
+            format!("Kernel Array class hash {metaclass_hash}"),
+        ]
+    );
+    let loaded = image::load(&bytes).expect("load");
+    let mut interpreter = loaded.interpreter;
+    interpreter.enter(|mutator| {
+        let array = mutator.builtin_class(BuiltinClass::Array);
+        let metaclass = mutator.metaclass_of(array).expect("Array has a metaclass");
+        assert_eq!(mutator.heap().object_identity_hash(array), class_hash);
+        assert_eq!(
+            mutator.heap().object_identity_hash(metaclass),
+            metaclass_hash
         );
-        let bytes = writer.into_bytes();
-        let entries = u32::from_le_bytes(bytes[..4].try_into().expect("a count"));
-        let mut reader = decode::Reader::new(&bytes);
-        let decoded = decode::decode_tag_named_hashes(
-            mutator,
-            &mut reader,
-            &image::ModuleClasses::of(mutator.heap(), &[class]),
-            &[Value::object(array)],
-        );
-        assert_eq!(decoded, Ok(class_hash.max(metaclass_hash)));
-        assert_eq!(entries, 2, "one entry for the class, one for its metaclass");
     });
 }
 
@@ -13007,7 +13018,118 @@ fn package_refuses_an_application_that_reaches_the_platform() {
         Ok(_) => panic!("an application holding the platform was packaged"),
         Err(error) => error,
     };
-    assert!(error.contains("platform"), "{error}");
+    assert_eq!(
+        error,
+        "image encoding refuses PlatformFactory Platform in a started application: nothing \
+         before main:args: reaches it"
+    );
+}
+
+/// A started image names only the kernel: an application packaged holding
+/// `Array` loads, and the same image with its one name rewritten to
+/// `PlatformFactory Platform` -- which no encoder writes into a started
+/// image -- is refused before its graph is read.
+#[test]
+fn a_started_image_naming_another_module_is_refused() {
+    let (mut interpreter, class) = load(indoc! {"
+        class App = Object new (| public held = Array. |) (
+            public main: platform args: arguments = ( ^held )
+        ) : ()
+    "});
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
+    let origin = SourceOrigin::File("App.ns".into());
+    let bytes = interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                origin: &origin,
+                source: None,
+            }];
+            image::package(mutator, &modules, mutator.fetch(&application))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert_eq!(
+        report.shipped_names,
+        vec![
+            "Kernel Metaclass".to_string(),
+            "Kernel Object".to_string(),
+            "Kernel Array".to_string(),
+        ]
+    );
+    image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let crafted = with_shipped_name_section(&bytes, |intern, writer| {
+        writer.write_u32(1);
+        write_shipped_entry(writer, intern, ("PlatformFactory", "Platform", 1), None);
+    });
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::ShippedNameInStartedImage("PlatformFactory Platform".to_string())
+            .to_string()
+    );
+}
+
+/// A started image names no module instance, not even the kernel's: a frame
+/// it holds through a block in a slot would hand the instance to the
+/// program, and no program reaches a shipped root's instance. The packaged
+/// image with its section rewritten to name `Kernel instance` -- which no
+/// encoder writes into a started image -- is refused before its graph is
+/// read.
+#[test]
+fn a_started_image_names_no_module_instance() {
+    let bytes = packaged_application();
+    image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let crafted = with_shipped_name_section(&bytes, |intern, writer| {
+        writer.write_u32(1);
+        write_shipped_entry(writer, intern, ("Kernel", "Kernel", 0), None);
+    });
+    assert_eq!(
+        load_error(&crafted),
+        decode::DecodeError::ShippedNameInStartedImage("Kernel instance".to_string()).to_string()
+    );
+}
+
+/// A program that catches the error a non-Boolean loop condition signals
+/// and keeps its class builds and loads: the VM hands it the private
+/// `Kernel NonBooleanReceiver`, so the class is a value an image names, and
+/// the loaded slot holds the loading boot's own class.
+#[test]
+fn a_caught_non_boolean_receivers_class_round_trips_through_a_package() {
+    let (mut interpreter, class) = load(indoc! {"
+        class App = Object new (
+          | public held = [[4] whileFalse: [nil]] on: Error do: [:error | error class]. |
+        ) (
+          public main: platform args: arguments = ( ^held )
+        ) : ()
+    "});
+    let application = expect_ok(interpreter.instantiate(&class, &[]), "App new");
+    let origin = SourceOrigin::File("App.ns".into());
+    let bytes = interpreter
+        .enter(|mutator| {
+            let modules = [image::ModuleSource {
+                class: class_reference(mutator, &class),
+                origin: &origin,
+                source: None,
+            }];
+            image::package(mutator, &modules, mutator.fetch(&application))
+        })
+        .unwrap_or_else(|error| panic!("{error}"));
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    assert!(report
+        .shipped_names
+        .contains(&"Kernel NonBooleanReceiver".to_string()));
+    let mut loaded = image::load(&bytes).unwrap_or_else(|error| panic!("{error}"));
+    let held = expect_ok(
+        loaded
+            .interpreter
+            .send(&loaded.roots[0], Symbol::intern("held"), &[]),
+        "held",
+    );
+    loaded.interpreter.enter(|mutator| {
+        let held = mutator.fetch(&held);
+        let signalled = mutator.builtin_class(BuiltinClass::NonBooleanReceiver);
+        assert!(object(held).same(signalled));
+    });
 }
 
 #[test]
@@ -13039,7 +13161,6 @@ fn a_snapshot_is_not_started() {
 #[test]
 fn a_start_image_with_other_than_one_root_is_refused() {
     let (mut interpreter, class) = load(ENTRY_SOURCE);
-    let platform = interpreter.platform();
     let first = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let second = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
     let origin = Origin::File(PathBuf::from("t.ns"));
@@ -13047,17 +13168,8 @@ fn a_start_image_with_other_than_one_root_is_refused() {
     for root_count in [0, 2] {
         let mut bytes = interpreter.enter(|mutator| {
             let class = class_reference(mutator, &class);
-            let platform = mutator.fetch(&platform);
             let roots = [mutator.fetch(&first), mutator.fetch(&second)];
-            snapshot_one(
-                mutator,
-                None,
-                &origin,
-                class,
-                platform,
-                &roots[..root_count],
-            )
-            .expect("snapshot")
+            snapshot_one(mutator, None, &origin, class, &roots[..root_count]).expect("snapshot")
         });
         bytes[flag_offset] |= encode::FLAG_START;
         let error = match image::load(&bytes) {
