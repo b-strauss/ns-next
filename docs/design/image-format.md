@@ -1129,6 +1129,9 @@ class of `types::ErrorClass`) stand as a value and a superclass, private or
 not. A caught instance is an ordinary instance record whose class the image
 names as its header, and its class object a value the graph may hold
 (`a_caught_non_boolean_receivers_class_round_trips_through_a_package`).
+The clause goes once `class` is protected, when no program reaches the class
+as a value ([core-library.md](core-library.md), "Planned: `class` and the
+class accessors protected").
 
 **Futures in a graph: a resolved future is its value, an unresolved one a
 record of `Kernel FutureImplementation`.** `FutureImplementation` is the

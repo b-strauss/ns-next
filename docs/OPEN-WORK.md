@@ -15,6 +15,16 @@ when they were written.
 
 ## Next
 
+**`class` and `Object`'s class accessors protected**, first (decided with
+the user on 2026-10-13): `Object>>class` and every class accessor `Object`
+declares become `protected`, the three core-library sends that need it are
+rewritten, the image's value clause for `NonBooleanReceiver` goes, and the
+goldens and tests that send `class` to another object check what they
+check through the public protocol or from the host
+([core-library.md](design/core-library.md), "Planned: `class` and the
+class accessors protected"). It has no plan yet, so the next session starts
+by writing one.
+
 **The kernel completed to Primordial Soup's core API**, before road step 5
 (decided with the user on 2026-10-06): `Kernel.ns` and
 `CollectionsFactory.ns` take Primordial Soup's whole public core API --
@@ -32,7 +42,8 @@ numbers, which is built too (`Float`'s mathematics and texts, `Integer`'s
 and `Number`'s protocol, `Fraction`, and the symmetric tower); `ByteArray`
 and `StringBuilder`, with typed arrays over a `ByteArray` as an API of our
 own beside them (decided with the user on 2026-10-11); weak references.
-Each has its own design and plan; the fifth sub-project is next --
+Each has its own design and plan; the fifth sub-project follows the
+protected `class` --
 `ByteArray` and `StringBuilder`, the UTF-8 conversions, and the typed
 arrays and `DataView` over a `ByteArray` -- and is designed (2026-10-12,
 [core-library.md](design/core-library.md), "Planned: sub-project 5,
@@ -204,8 +215,12 @@ and `prior-art/newspeak-benchmarks`.
   edited mixins in the image"). Left to its plan: how removing a slot
   recompiles a mixin whose declaration is absent, as a decoded one's is,
   and the questions "Planned: edited mixins in the image" leaves open.
-  Whether `class` and `Object`'s class accessors become protected waits
-  on it ("Open design questions").
+  The reflective checks that leave the goldens when `class` and `Object`'s
+  class accessors become protected -- the boundary between `Integer` and
+  `LargeInteger`, chains of metaclasses, that `Metaclass` refuses
+  instantiation, the identity of class objects -- return as goldens through
+  its mirrors ([core-library.md](design/core-library.md), "Planned: `class`
+  and the class accessors protected").
   Deferred beyond it: a shape-changing `setClass:`, a superclass change,
   edits of nested classes, `installAtomically:` over several builders,
   editing kernel methods, `ActivationMirror` and edit-and-continue, scoped
@@ -638,33 +653,6 @@ activation.
 
 ## Open design questions
 
-- **Whether `class` and `Object`'s class accessors become protected.**
-  Both are public here, so whoever holds an object holds its class: every
-  public message of its class side, the factory included, mints new
-  instances that run in the same enclosing object, with its capabilities
-  (a module that hands out one `File path:` hands out every file);
-  `class Sub = (x class) ()` subclasses it, reaching its protected members
-  in that environment; and public class-side state is shared with every
-  holder. The specification says nothing on `class`, but §8.2 makes
-  reflection a capability held through mirrors, and the object-capability
-  argument of `newspeak.pdf` and `newspeak-modules.pdf` (a `File` whose
-  constructor takes any name is the standard ambient authority) applies.
-  Both Newspeak kernels make it protected:
-  `prior-art/newspeak/squeak/KernelForSqueak.ns`, line 1193, with an
-  `:openquestion:` weighing the separation of an instance's authority from
-  its class's against patterns such as `species`, and Primordial Soup's
-  `KernelForPrimordialSoup.ns`, "to separate the authority of an instance
-  from the authority of its class", its class accessors on `Object` too.
-  SOMns's root classes declare no `class`. `self class` stays a self send
-  either way, and so does a bare name: an implicit-receiver send reaches a
-  protected member, which is how Primordial Soup's protected accessors
-  still let any method write `Integer`; what would change is `other class`
-  and `other Integer`: two sends in
-  `CollectionsFactory.ns` (`index class == Integer`, which
-  `isKindOfInteger` replaces) and about 166 goldens that print a class to
-  check a result's type, which need a mirror instead. Recommended, to be
-  done with road step 5, when mirrors exist to replace those sends
-  (raised with the user on 2026-10-11).
 - **The resolver as a crate of its own.** It lives in `ns-runtime`
   (`resolver/`). A crate of its own would separate the front end from the VM
   and let a tool that needs only bindings — a lighter language server —

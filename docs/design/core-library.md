@@ -3299,6 +3299,74 @@ names `Array` and `OrderedCollection` every iteration, is 1.5% slower, about
 1.4 ns per accessor send against the constant load it replaces. `vm::run`
 grew from 6,507 to 6,626 instructions and is still one function.
 
+### Planned: `class` and the class accessors protected
+
+Decided with the user on 2026-10-13, to be built before sub-project 5.
+`Object>>class` and every class accessor `Object` declares ("The predefined
+classes are accessors on `Object`" above) become `protected`, so that an
+instance's authority is separated from its class's.
+
+**Why.** Both are public today, so whoever holds an object holds its class:
+every public message of its class side, the factory included, mints new
+instances that run in the same enclosing object with its capabilities (a
+module that hands out one `File path:` would hand out every file); `class
+Sub = (x class) ()` subclasses it and reaches its protected members in that
+environment; and public class-side state is shared with every holder. The
+specification says nothing on `class`, but §8.2 makes reflection a
+capability held through mirrors, and the object-capability argument of
+`newspeak.pdf` and `newspeak-modules.pdf` applies. Both Newspeak kernels
+make it protected: `prior-art/newspeak/squeak/KernelForSqueak.ns`, line
+1193, and Primordial Soup's `KernelForPrimordialSoup.ns`, "to separate the
+authority of an instance from the authority of its class", its class
+accessors on `Object` too. SOMns's root classes declare no `class`.
+
+**What changes for a program.** `self class`, `super class` and a bare name
+such as `Integer` stay what they are: a self send, a super send and an
+implicit-receiver send, all of which reach a protected member, from a
+subclass, a block and the class side alike (on the class side `self class`
+answers the metaclass). `other class` and `other Integer` reach
+`doesNotUnderstand:`. No program can then reach `Behavior`, `Class` or
+`Metaclass`, a shipped class's metaclass, or the identity of another
+object's class, and none can tell an `Integer` from a `LargeInteger`: those
+were observable only through `class`.
+
+**The core library** sends `class` to another object in three places, each
+rewritten without widening anything: `Value`'s `valueEquals:` compares
+`self class` with `vmMirror objectClass: other ifFail: […]`, since the
+kernel holds the mirror, and `CollectionsFactory.ns`'s two index checks ask
+`index isKindOfInteger` instead of `index class == Integer`, Primordial
+Soup's selector, which needs no mirror. `PlatformFactory.ns` sends neither.
+
+**The image.** The value clause for a class whose instances the VM signals
+(`ErrorClass::is_signalled` in `interpreter/shipped_world.rs`, which lets
+the private `NonBooleanReceiver` be a value and a superclass) goes: no
+program reaches that class as a value any more, and a caught instance stays
+an ordinary record of it, since a record's class may be any shipped class
+([image-format.md](image-format.md), "Shipped names"). The metaclasses and
+`Behavior`, `Class` and `Metaclass` stay values: they carry no authority,
+an error's payload (`CannotInstantiate`'s behavior) can still hand one out,
+and a rule narrower than what a program reaches refuses to build a program
+that runs. `accessed_classes` counts public accessors only, and `Object`'s
+answer public kernel classes, which are values anyway, so the rest of the
+rule does not move.
+
+**The tests keep what they check.** About 44 goldens and 38 Rust tests send
+`class` to another object today. What a program can still observe, a
+golden checks through the public protocol: `isKindOfInteger` and its
+siblings for a result's kind, `printString` for a collection's, the class a
+handler catches (`on: kernel ArgumentError do:`) or `description` for an
+error's, and `self class` on the class side for one level of metaclass.
+What only the representation shows -- the boundary between `Integer` and
+`LargeInteger`, chains of metaclasses, that `Metaclass` refuses
+instantiation, the identity of class objects -- leaves the golden and is
+checked by a Rust test that asks the host for the class, which no
+capability rule binds. Each changed golden's new output is the old one with
+exactly the moved lines gone or translated. New goldens pin the rule: an
+outside `class` or class accessor send reaches `doesNotUnderstand:`, and
+the self, super and implicit sends keep working. The reflective checks
+return as goldens with road step 5's mirrors
+([OPEN-WORK.md](../OPEN-WORK.md)).
+
 ### The pull future
 
 `Kernel.ns`'s public `Proxy`, after Primordial Soup's, overrides every
