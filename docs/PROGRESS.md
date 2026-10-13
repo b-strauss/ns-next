@@ -5065,7 +5065,7 @@ positions in a byte order chosen at creation, through two private
 classes, all ordinary kernel classes reached through `platform kernel`,
 with `Object>>ByteArray` the one new class accessor. A view or a builder
 whose slots an image crafted is refused with an `ArgumentError`. The
-`MIRROR` table has 233 rows: 15 for `ByteArray` and UTF-8, 18 for the
+`MIRROR` table has 234 rows: 16 for `ByteArray` and UTF-8, 18 for the
 typed arrays' elements and 36 for `DataView`'s, the last two families one
 leaf, `ElementAccess`, so `Primitive` stays two bytes.
 

@@ -232,6 +232,7 @@ impl Primitive {
             ) => false,
             Primitive::Bytes(
                 BytePrimitive::Allocate
+                | BytePrimitive::Fits
                 | BytePrimitive::Size
                 | BytePrimitive::ElementAt
                 | BytePrimitive::ElementAtPut
@@ -519,6 +520,11 @@ pub enum CollectionPrimitive {
 pub enum BytePrimitive {
     /// `ByteArray new: size`, on `ByteArray`'s class side.
     Allocate,
+    /// Whether `ByteArray new: size` would allocate: what a shipped
+    /// module that sizes a ByteArray for a message of its own asks before
+    /// it allocates, so that it refuses a size too large under the
+    /// selector the program sent.
+    Fits,
     Size,
     ElementAt,
     ElementAtPut,
@@ -1628,6 +1634,13 @@ pub const MIRROR: &[MirrorEntry] = &[
         "byteArrayClass:new:ifFail:",
         "new:",
         Primitive::Bytes(BytePrimitive::Allocate),
+    ),
+    mirror(
+        "byteArrayClass:fits:ifFail:",
+        // It never fails -- it answers a Boolean or declines -- so the
+        // selector names the message whose allocation it answers for.
+        "new:",
+        Primitive::Bytes(BytePrimitive::Fits),
     ),
     mirror(
         "byteArraySize:ifFail:",

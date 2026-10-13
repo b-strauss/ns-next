@@ -10,6 +10,6 @@ over: requires a ByteArray, got 'abc'
 #middleEndian
 'littleEndian'
 'abc'
-new: requires a size of at least 0, got -1
+new:byteOrder: requires a size of at least 0, got -1
 #littleEndian #bigEndian
 '''

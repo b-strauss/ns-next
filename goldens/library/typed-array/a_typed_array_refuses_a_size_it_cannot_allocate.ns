@@ -1,0 +1,53 @@
+/// A typed array's `new:` allocates `size` × `bytesPerElement` bytes, so
+/// each of the ten refuses a size that is no Integer, a negative one and
+/// one whose bytes are too many to allocate, each with an ArgumentError of
+/// its own that names `new:`, counts the bytes in the third, and carries
+/// the size, before it allocates anything.
+class ATypedArrayRefusesASizeItCannotAllocate = Object new (
+  |
+    transcript ::= nil.
+    ArgumentError ::= nil.
+  |
+) (
+  refusal: action = (
+    transcript
+        show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  carried: action = (
+    transcript
+        print: (action on: ArgumentError do: [:error | error argument]);
+        newLine.
+  )
+
+  public main: platform args: arguments = (
+    |
+      typedArrays
+    |
+    transcript:: platform transcript.
+    ArgumentError:: platform kernel ArgumentError.
+    typedArrays:: platform typedArrays.
+    {
+      typedArrays Int8Array.
+      typedArrays Uint8Array.
+      typedArrays Int16Array.
+      typedArrays Uint16Array.
+      typedArrays Int32Array.
+      typedArrays Uint32Array.
+      typedArrays Int64Array.
+      typedArrays Uint64Array.
+      typedArrays Float32Array.
+      typedArrays Float64Array.
+    } do: [:class |
+      refusal: [class new: 'four'].
+      refusal: [class new: -1].
+      refusal: [class new: 1 << 62].
+    ].
+    refusal: [typedArrays Int16Array new: 1 << 64].
+    refusal: [typedArrays Int64Array new: 1 << 50].
+    carried: [typedArrays Int16Array new: 'four'].
+    carried: [typedArrays Int16Array new: -1].
+    carried: [typedArrays Int64Array new: 1 << 62].
+  )
+)

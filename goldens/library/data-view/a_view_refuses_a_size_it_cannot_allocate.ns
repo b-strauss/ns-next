@@ -1,6 +1,7 @@
-/// `new:byteOrder:` allocates the bytes of its view, so a size that is no
-/// Integer, a negative one and one too large to allocate are refused with
-/// the ArgumentErrors that sizing a new collection signals.
+/// `new:byteOrder:` allocates the bytes of its view, so it refuses a size
+/// that is no Integer, a negative one and one too large to allocate, each
+/// with an ArgumentError of its own that names `new:byteOrder:` and
+/// carries the size, before it allocates anything.
 class AViewRefusesASizeItCannotAllocate = Object new (
   |
     transcript ::= nil.
@@ -10,6 +11,12 @@ class AViewRefusesASizeItCannotAllocate = Object new (
   refusal: action = (
     transcript
         show: (action on: ArgumentError do: [:error | error messageText]);
+        newLine.
+  )
+
+  carried: action = (
+    transcript
+        print: (action on: ArgumentError do: [:error | error argument]);
         newLine.
   )
 
@@ -23,5 +30,9 @@ class AViewRefusesASizeItCannotAllocate = Object new (
     refusal: [DataView new: 'four' byteOrder: #littleEndian].
     refusal: [DataView new: -1 byteOrder: #bigEndian].
     refusal: [DataView new: 1 << 62 byteOrder: #littleEndian].
+    refusal: [DataView new: 1 << 64 byteOrder: #bigEndian].
+    refusal: [DataView new: 1 << 50 byteOrder: #bigEndian].
+    carried: [DataView new: 'four' byteOrder: #littleEndian].
+    carried: [DataView new: 1 << 62 byteOrder: #littleEndian].
   )
 )

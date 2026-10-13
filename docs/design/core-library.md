@@ -617,7 +617,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 233 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 234 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in

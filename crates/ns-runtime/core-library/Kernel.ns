@@ -4811,24 +4811,49 @@ class Kernel vmMirror: mirror = Value (
     /// order: the Symbol #littleEndian or #bigEndian.
     ///
     /// Signals the ArgumentError of `on:byteOrder:` for `order`, with the
-    /// selector 'new:byteOrder:', before it allocates anything; and the
-    /// ArgumentErrors of `Array new:` for a `size` that is negative or no
-    /// Integer, and of `ByteArray new:` for one too large to allocate.
+    /// selector 'new:byteOrder:', before anything about `size`; then an
+    /// ArgumentError carrying `size`: 'new:byteOrder: requires an Integer
+    /// size, got …' and its `printString` for a size that is no Integer,
+    /// 'new:byteOrder: requires a size of at least 0, got …' and its
+    /// `printString` for a negative one, and 'new:byteOrder: cannot
+    /// allocate a ByteArray of … bytes' for one too large to allocate.
+    /// Each is signalled before anything is allocated.
     public new: size byteOrder: order = (
       self checkByteOrder: order selector: #new:byteOrder:.
       ^self on: (self bytesOfSize: size) byteOrder: order.
     )
 
-    /// Answers a new ByteArray of `size` bytes, each 0.
+    /// Answers a new ByteArray of `size` bytes, each 0: the bytes of the
+    /// view `new:byteOrder:` makes.
     ///
-    /// size: an Integer, at least 0.
+    /// size: the size given to `new:byteOrder:`.
     ///
-    /// Signals the ArgumentErrors of `Array new:` for a `size` that is
-    /// negative or no Integer, so that the texts are Array's, the
-    /// description of an arbitrary object the leaf's to give; and those of
-    /// `ByteArray new:` for one too large to allocate.
+    /// Signals the ArgumentErrors `new:byteOrder:` describes for `size`.
+    ///
+    /// Whether the bytes can be allocated is asked of the VM before
+    /// allocating, the same decision `ByteArray new:` makes, so that a
+    /// size too large is refused under the message the program sent and
+    /// no other error is caught and replaced.
     private bytesOfSize: size = (
-      (size isKindOfInteger and: [size >= 0]) ifFalse: [^outer Kernel Array new: size].
+      size isKindOfInteger ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: requires an Integer size, got '
+            , size printString.
+      ].
+      size < 0 ifTrue: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: requires a size of at least 0, got '
+            , size printString.
+      ].
+      (vmMirror byteArrayClass: outer Kernel ByteArray fits: size ifFail: [false]) ifFalse: [
+        ^(outer
+            Kernel
+            ArgumentError value: size) signal: 'new:byteOrder: cannot allocate a ByteArray of '
+            , size printString
+            , ' bytes'.
+      ].
       ^outer Kernel ByteArray new: size.
     )
 

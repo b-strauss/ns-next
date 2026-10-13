@@ -1,8 +1,9 @@
 /// A typed array refuses, with an ArgumentError, what it cannot view or
 /// hold: `on:` a ByteArray whose size is no multiple of the width, or
-/// anything that is no ByteArray; `new:` a size `Array new:` refuses; an
-/// index outside 1 to `size`, in Array's words. A refused store leaves the
-/// element as it was, and each error carries what was wrong.
+/// anything that is no ByteArray; `new:` a size that is negative or no
+/// Integer; an index outside 1 to `size`, in Array's words. A refused
+/// store leaves the element as it was, and each error carries what was
+/// wrong.
 class ATypedArrayRefusesWhatIsOutOfRange = Object new (
   |
     transcript ::= nil.

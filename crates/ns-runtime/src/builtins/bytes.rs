@@ -24,6 +24,7 @@ pub(crate) fn execute<'gc>(
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     match primitive {
         BytePrimitive::Allocate => allocate(mutator, receiver, selector, arguments),
+        BytePrimitive::Fits => fits(mutator, receiver, arguments),
         BytePrimitive::Size => size(mutator, receiver),
         BytePrimitive::ElementAt => element_at(mutator, receiver, selector, arguments),
         BytePrimitive::ElementAtPut => element_at_put(mutator, receiver, selector, arguments),
@@ -532,6 +533,33 @@ fn write_code_point<'gc>(
     Some(Ok(Value::small_integer(encoded.len() as i64)))
 }
 
+/// `byteArrayClass: ByteArray fits: size`: whether `ByteArray new: size`
+/// would allocate a `ByteArray` of `size` bytes rather than refuse it as
+/// too large -- the same decision (`Heap::byte_array_fits`), so that a
+/// shipped module that sizes a ByteArray for a message of its own refuses
+/// a size too large under that message, before it allocates anything. A
+/// non-negative LargeInteger never fits. It declines for a subject that is
+/// not `ByteArray` itself and for a size that is no Integer or is
+/// negative, which its callers refuse first.
+fn fits<'gc>(
+    mutator: &mut Mutator<'gc>,
+    receiver: Value<'gc>,
+    arguments: &[Value<'gc>],
+) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
+    let class = receiver.as_object()?;
+    if mutator.heap.class_builtin(class) != Some(BuiltinClass::ByteArray) {
+        return None;
+    }
+    let fits = match integer_argument(&mutator.heap, arguments.first().copied())? {
+        IntegerArgument::Small(size) if size >= 0 => usize::try_from(size)
+            .ok()
+            .is_some_and(|size| mutator.heap.byte_array_fits(size)),
+        IntegerArgument::Large { negative: false } => false,
+        IntegerArgument::Small(_) | IntegerArgument::Large { negative: true } => return None,
+    };
+    Some(Ok(Value::boolean(fits)))
+}
+
 /// `ByteArray new: size`: a `ByteArray` of `size` zero bytes. Its subject
 /// is the class the forwarder runs in, which is only ever `ByteArray`
 /// itself -- §3.2's metaclasses are flat, so no subclass inherits `new:`
@@ -600,4 +628,116 @@ fn allocate<'gc>(
     Some(Ok(Value::object(
         mutator.heap.allocate_zeroed_byte_array(class, size),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        BuiltinClass, HostResult, HostSignal, Interpreter, Root, Symbol, Value, ValueKind,
+    };
+
+    fn expect_ok(result: HostResult, what: &str) -> Root {
+        match result {
+            Ok(root) => root,
+            Err(HostSignal::Return) => panic!("{what}: a non-local return escaped"),
+            Err(HostSignal::Error(error)) => {
+                panic!("{what}: unexpected Newspeak error: {}", error.message)
+            }
+        }
+    }
+
+    /// What the failure block answers in these tests: a value the leaf
+    /// never produces, so a decline is unmistakable.
+    const DECLINED: i64 = -1;
+
+    /// `selector`'s leaf run on `subject` with `arguments`, through a send
+    /// to the mirror, as a shipped module sends it.
+    fn leaf(
+        interpreter: &mut Interpreter,
+        selector: &str,
+        subject: &Root,
+        arguments: &[Root],
+    ) -> HostResult {
+        let mirror = interpreter.enter(|mutator| {
+            let mirror = mutator.vm_mirror();
+            mutator.stash(mirror)
+        });
+        let mut sent = vec![subject.clone()];
+        sent.extend(arguments.iter().cloned());
+        sent.push(interpreter.stash(Value::small_integer(DECLINED)));
+        interpreter.send(&mirror, Symbol::intern(selector), &sent)
+    }
+
+    /// Whether `byteArrayClass:fits:ifFail:` on `subject` answered the
+    /// size fits; `None` when it declined.
+    fn fits(interpreter: &mut Interpreter, subject: &Root, size: &Root) -> Option<bool> {
+        let result = leaf(
+            interpreter,
+            "byteArrayClass:fits:ifFail:",
+            subject,
+            std::slice::from_ref(size),
+        );
+        let root = expect_ok(result, "byteArrayClass:fits:ifFail:");
+        interpreter.enter(|mutator| {
+            let answer = mutator.fetch(&root);
+            match answer.kind() {
+                ValueKind::Boolean(flag) => Some(flag),
+                ValueKind::SmallInteger(DECLINED) => None,
+                _ => panic!("fits: answered {}", mutator.heap().describe(answer)),
+            }
+        })
+    }
+
+    fn class_root(interpreter: &mut Interpreter, kind: BuiltinClass) -> Root {
+        interpreter.enter(|mutator| {
+            let class = mutator.builtin_class(kind);
+            mutator.stash(Value::object(class))
+        })
+    }
+
+    /// The leaf answers what `ByteArray new:` would decide for a
+    /// non-negative Integer -- a size it allocates fits, one past the
+    /// reservation or a LargeInteger does not -- and declines what its
+    /// callers refuse first: a negative size, one that is no Integer, and
+    /// a subject that is not `ByteArray`.
+    #[test]
+    fn fits_answers_whether_byte_array_new_would_allocate() {
+        let mut interpreter = Interpreter::bootstrap();
+        let byte_array = class_root(&mut interpreter, BuiltinClass::ByteArray);
+        let array = class_root(&mut interpreter, BuiltinClass::Array);
+        let zero = interpreter.stash(Value::small_integer(0));
+        let small = interpreter.stash(Value::small_integer(40000));
+        let past_the_reservation = interpreter.stash(Value::small_integer(1 << 50));
+        let negative = interpreter.stash(Value::small_integer(-1));
+        let text = interpreter.enter(|mutator| {
+            let string = mutator.new_string("four".to_string());
+            mutator.stash(Value::object(string))
+        });
+        let factor = interpreter.stash(Value::small_integer(1 << 40));
+        let large = expect_ok(
+            leaf(
+                &mut interpreter,
+                "integer:multiply:ifFail:",
+                &factor,
+                std::slice::from_ref(&factor),
+            ),
+            "integer:multiply:ifFail:",
+        );
+        let negative_large = expect_ok(
+            leaf(&mut interpreter, "largeIntegerNegated:ifFail:", &large, &[]),
+            "largeIntegerNegated:ifFail:",
+        );
+
+        assert_eq!(fits(&mut interpreter, &byte_array, &zero), Some(true));
+        assert_eq!(fits(&mut interpreter, &byte_array, &small), Some(true));
+        assert_eq!(
+            fits(&mut interpreter, &byte_array, &past_the_reservation),
+            Some(false)
+        );
+        assert_eq!(fits(&mut interpreter, &byte_array, &large), Some(false));
+        assert_eq!(fits(&mut interpreter, &byte_array, &negative), None);
+        assert_eq!(fits(&mut interpreter, &byte_array, &negative_large), None);
+        assert_eq!(fits(&mut interpreter, &byte_array, &text), None);
+        assert_eq!(fits(&mut interpreter, &array, &zero), None);
+    }
 }
