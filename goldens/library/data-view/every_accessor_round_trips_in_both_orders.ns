@@ -1,0 +1,123 @@
+/// Every accessor of a DataView writes a value whose bytes are all distinct
+/// through `put:`, reads it back through the same accessor, and leaves the
+/// bytes where the byte order puts them: the most significant first when
+/// big-endian, the least significant first when little-endian. The position
+/// is 2, so that the byte before it and the bytes after the value stay as
+/// they were. A float line prints whether the read value equals the written
+/// one, since the bytes pin the rest.
+class EveryAccessorRoundTripsInBothOrders = Object new (
+  |
+    transcript ::= nil.
+    DataView ::= nil.
+    bytes ::= nil.
+    view ::= nil.
+  |
+) (
+  fresh: order = (
+    bytes:: ByteArray new: 9.
+    view:: DataView on: bytes byteOrder: order.
+  )
+
+  shown = (
+    transcript show: ' :'.
+    1 to: bytes size do: [:index |
+      transcript
+          show: ' ';
+          print: (bytes at: index).
+    ].
+    transcript newLine.
+  )
+
+  public main: platform args: arguments = (
+    transcript:: platform transcript.
+    DataView:: platform kernel DataView.
+    fresh: #littleEndian.
+    transcript
+        print: (view int8At: 2 put: -100);
+        show: ' ';
+        print: (view int8At: 2).
+    shown.
+    fresh: #littleEndian.
+    transcript
+        print: (view uint8At: 2 put: 200);
+        show: ' ';
+        print: (view uint8At: 2).
+    shown.
+    fresh: #littleEndian.
+    view int16At: 2 put: -30000.
+    transcript print: (view int16At: 2).
+    shown.
+    fresh: #littleEndian.
+    view uint16At: 2 put: 48879.
+    transcript print: (view uint16At: 2).
+    shown.
+    fresh: #littleEndian.
+    view int32At: 2 put: -305419896.
+    transcript print: (view int32At: 2).
+    shown.
+    fresh: #littleEndian.
+    view uint32At: 2 put: 3735928559.
+    transcript print: (view uint32At: 2).
+    shown.
+    fresh: #littleEndian.
+    view int64At: 2 put: -72623859790382857.
+    transcript print: (view int64At: 2).
+    shown.
+    fresh: #littleEndian.
+    view uint64At: 2 put: 17357386176853808775.
+    transcript print: (view uint64At: 2).
+    shown.
+    fresh: #littleEndian.
+    view float32At: 2 put: 3.1415927410125732.
+    transcript print: (view float32At: 2) = 3.1415927410125732.
+    shown.
+    fresh: #littleEndian.
+    view float64At: 2 put: 3.141592653589793.
+    transcript print: (view float64At: 2) = 3.141592653589793.
+    shown.
+    fresh: #bigEndian.
+    transcript
+        print: (view int8At: 2 put: -100);
+        show: ' ';
+        print: (view int8At: 2).
+    shown.
+    fresh: #bigEndian.
+    transcript
+        print: (view uint8At: 2 put: 200);
+        show: ' ';
+        print: (view uint8At: 2).
+    shown.
+    fresh: #bigEndian.
+    view int16At: 2 put: -30000.
+    transcript print: (view int16At: 2).
+    shown.
+    fresh: #bigEndian.
+    view uint16At: 2 put: 48879.
+    transcript print: (view uint16At: 2).
+    shown.
+    fresh: #bigEndian.
+    view int32At: 2 put: -305419896.
+    transcript print: (view int32At: 2).
+    shown.
+    fresh: #bigEndian.
+    view uint32At: 2 put: 3735928559.
+    transcript print: (view uint32At: 2).
+    shown.
+    fresh: #bigEndian.
+    view int64At: 2 put: -72623859790382857.
+    transcript print: (view int64At: 2).
+    shown.
+    fresh: #bigEndian.
+    view uint64At: 2 put: 17357386176853808775.
+    transcript print: (view uint64At: 2).
+    shown.
+    fresh: #bigEndian.
+    view float32At: 2 put: 3.1415927410125732.
+    transcript print: (view float32At: 2) = 3.1415927410125732.
+    shown.
+    fresh: #bigEndian.
+    view float64At: 2 put: 3.141592653589793.
+    transcript print: (view float64At: 2) = 3.141592653589793.
+    shown.
+  )
+)

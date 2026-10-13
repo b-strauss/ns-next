@@ -5606,9 +5606,9 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// Signals an ArgumentError carrying `position`: 'int8At: position … out of
     /// range: valid positions are 1..… (size …)' for an Integer outside 1 to
-    /// `size`, a LargeInteger included, and 'int8At: requires an Integer index,
-    /// got …' for a position that is no Integer; and the ArgumentError of
-    /// `noByteArray:` when `bytes` holds no ByteArray.
+    /// `size`, a LargeInteger included, and 'int8At: requires an Integer
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int8At: position = (
       ^vmMirror byteArray: bytes int8At: position ifFail: [^self noByteArray: #int8At:].
     )
@@ -5621,7 +5621,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int8At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size`, a LargeInteger included, and 'int8At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int8At:put: requires an Integer from
     /// -128 to 127, got …', for a value outside that range or no Integer. A
@@ -5639,8 +5639,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint8At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size`, a LargeInteger included, and 'uint8At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint8At: position = (
       ^vmMirror byteArray: bytes uint8At: position ifFail: [^self noByteArray: #uint8At:].
     )
@@ -5653,7 +5653,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint8At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size`, a LargeInteger included, and 'uint8At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint8At:put: requires an Integer from 0
     /// to 255, got …', for a value outside that range or no Integer. A refused
@@ -5768,8 +5768,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int16At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 1, a LargeInteger included, and 'int16At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int16At: position = (
       ^vmMirror byteArray: bytes littleEndianInt16At: position ifFail: [
         ^self noByteArray: #int16At:.
@@ -5785,7 +5785,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int16At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 1, a LargeInteger included, and 'int16At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int16At:put: requires an Integer from
     /// -32768 to 32767, got …', for a value outside that range or no Integer. A
@@ -5796,16 +5796,16 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Answers the Integer from 0 to 65535 at byte position `position`, little-
-    /// endian.
+    /// Answers the Integer from 0 to 65535 at byte position `position`,
+    /// little-endian.
     ///
     /// position: an Integer from 1 to `size` - 1.
     ///
     /// Signals an ArgumentError carrying `position`: 'uint16At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 1, a LargeInteger included, and 'uint16At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint16At: position = (
       ^vmMirror byteArray: bytes littleEndianUint16At: position ifFail: [
         ^self noByteArray: #uint16At:.
@@ -5821,7 +5821,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint16At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 1, a LargeInteger included, and 'uint16At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint16At:put: requires an Integer from
     /// 0 to 65535, got …', for a value outside that range or no Integer. A
@@ -5840,8 +5840,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int32At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 3, a LargeInteger included, and 'int32At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int32At: position = (
       ^vmMirror byteArray: bytes littleEndianInt32At: position ifFail: [
         ^self noByteArray: #int32At:.
@@ -5857,7 +5857,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int32At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 3, a LargeInteger included, and 'int32At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int32At:put: requires an Integer from
     /// -2147483648 to 2147483647, got …', for a value outside that range or no
@@ -5876,8 +5876,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint32At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 3, a LargeInteger included, and 'uint32At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint32At: position = (
       ^vmMirror byteArray: bytes littleEndianUint32At: position ifFail: [
         ^self noByteArray: #uint32At:.
@@ -5893,7 +5893,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint32At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 3, a LargeInteger included, and 'uint32At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint32At:put: requires an Integer from
     /// 0 to 4294967295, got …', for a value outside that range or no Integer. A
@@ -5912,8 +5912,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int64At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 7, a LargeInteger included, and 'int64At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int64At: position = (
       ^vmMirror byteArray: bytes littleEndianInt64At: position ifFail: [
         ^self noByteArray: #int64At:.
@@ -5929,7 +5929,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int64At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 7, a LargeInteger included, and 'int64At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int64At:put: requires an Integer from
     /// -9223372036854775808 to 9223372036854775807, got …', for a value outside
@@ -5948,8 +5948,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint64At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 7, a LargeInteger included, and 'uint64At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint64At: position = (
       ^vmMirror byteArray: bytes littleEndianUint64At: position ifFail: [
         ^self noByteArray: #uint64At:.
@@ -5965,7 +5965,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint64At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 7, a LargeInteger included, and 'uint64At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint64At:put: requires an Integer from
     /// 0 to 18446744073709551615, got …', for a value outside that range or no
@@ -5984,8 +5984,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float32At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 3, a LargeInteger included, and 'float32At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public float32At: position = (
       ^vmMirror byteArray: bytes littleEndianFloat32At: position ifFail: [
         ^self noByteArray: #float32At:.
@@ -6002,7 +6002,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float32At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 3, a LargeInteger included, and 'float32At:put: requires
-    /// an Integer index, got …' for a position that is no Integer; the
+    /// an Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'float32At:put: requires a Number, got
     /// …', for a value that is no Number. A refused store leaves the bytes as
@@ -6026,8 +6026,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float64At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 7, a LargeInteger included, and 'float64At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public float64At: position = (
       ^vmMirror byteArray: bytes littleEndianFloat64At: position ifFail: [
         ^self noByteArray: #float64At:.
@@ -6043,7 +6043,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float64At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 7, a LargeInteger included, and 'float64At:put: requires
-    /// an Integer index, got …' for a position that is no Integer; the
+    /// an Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'float64At:put: requires a Number, got
     /// …', for a value that is no Number. A refused store leaves the bytes as
@@ -6061,7 +6061,7 @@ class Kernel vmMirror: mirror = Value (
     )
   )
 
-  /// A DataView that reads and writes big-endian: the least significant byte of
+  /// A DataView that reads and writes big-endian: the most significant byte of
   /// a value at the lowest position. `DataView` describes the rest of the
   /// protocol.
   ///
@@ -6081,8 +6081,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int16At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 1, a LargeInteger included, and 'int16At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int16At: position = (
       ^vmMirror byteArray: bytes bigEndianInt16At: position ifFail: [^self noByteArray: #int16At:].
     )
@@ -6096,7 +6096,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int16At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 1, a LargeInteger included, and 'int16At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int16At:put: requires an Integer from
     /// -32768 to 32767, got …', for a value outside that range or no Integer. A
@@ -6107,16 +6107,16 @@ class Kernel vmMirror: mirror = Value (
       ].
     )
 
-    /// Answers the Integer from 0 to 65535 at byte position `position`, big-
-    /// endian.
+    /// Answers the Integer from 0 to 65535 at byte position `position`,
+    /// big-endian.
     ///
     /// position: an Integer from 1 to `size` - 1.
     ///
     /// Signals an ArgumentError carrying `position`: 'uint16At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 1, a LargeInteger included, and 'uint16At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint16At: position = (
       ^vmMirror byteArray: bytes bigEndianUint16At: position ifFail: [
         ^self noByteArray: #uint16At:.
@@ -6132,7 +6132,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint16At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 1, a LargeInteger included, and 'uint16At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint16At:put: requires an Integer from
     /// 0 to 65535, got …', for a value outside that range or no Integer. A
@@ -6151,8 +6151,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int32At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 3, a LargeInteger included, and 'int32At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int32At: position = (
       ^vmMirror byteArray: bytes bigEndianInt32At: position ifFail: [^self noByteArray: #int32At:].
     )
@@ -6166,7 +6166,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int32At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 3, a LargeInteger included, and 'int32At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int32At:put: requires an Integer from
     /// -2147483648 to 2147483647, got …', for a value outside that range or no
@@ -6185,8 +6185,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint32At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 3, a LargeInteger included, and 'uint32At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint32At: position = (
       ^vmMirror byteArray: bytes bigEndianUint32At: position ifFail: [
         ^self noByteArray: #uint32At:.
@@ -6202,7 +6202,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint32At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 3, a LargeInteger included, and 'uint32At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint32At:put: requires an Integer from
     /// 0 to 4294967295, got …', for a value outside that range or no Integer. A
@@ -6221,8 +6221,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int64At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 7, a LargeInteger included, and 'int64At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public int64At: position = (
       ^vmMirror byteArray: bytes bigEndianInt64At: position ifFail: [^self noByteArray: #int64At:].
     )
@@ -6236,7 +6236,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'int64At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 7, a LargeInteger included, and 'int64At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'int64At:put: requires an Integer from
     /// -9223372036854775808 to 9223372036854775807, got …', for a value outside
@@ -6255,8 +6255,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint64At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 7, a LargeInteger included, and 'uint64At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public uint64At: position = (
       ^vmMirror byteArray: bytes bigEndianUint64At: position ifFail: [
         ^self noByteArray: #uint64At:.
@@ -6272,7 +6272,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'uint64At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 7, a LargeInteger included, and 'uint64At:put: requires an
-    /// Integer index, got …' for a position that is no Integer; the
+    /// Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'uint64At:put: requires an Integer from
     /// 0 to 18446744073709551615, got …', for a value outside that range or no
@@ -6291,8 +6291,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float32At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 3, a LargeInteger included, and 'float32At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public float32At: position = (
       ^vmMirror byteArray: bytes bigEndianFloat32At: position ifFail: [
         ^self noByteArray: #float32At:.
@@ -6309,7 +6309,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float32At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 3, a LargeInteger included, and 'float32At:put: requires
-    /// an Integer index, got …' for a position that is no Integer; the
+    /// an Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'float32At:put: requires a Number, got
     /// …', for a value that is no Number. A refused store leaves the bytes as
@@ -6333,8 +6333,8 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float64At: position … out
     /// of range: valid positions are 1..… (size …)' for an Integer outside 1 to
     /// `size` - 7, a LargeInteger included, and 'float64At: requires an Integer
-    /// index, got …' for a position that is no Integer; and the ArgumentError
-    /// of `noByteArray:` when `bytes` holds no ByteArray.
+    /// position, got …' for a position that is no Integer; and the
+    /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray.
     public float64At: position = (
       ^vmMirror byteArray: bytes bigEndianFloat64At: position ifFail: [
         ^self noByteArray: #float64At:.
@@ -6350,7 +6350,7 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `position`: 'float64At:put: position …
     /// out of range: valid positions are 1..… (size …)' for an Integer outside
     /// 1 to `size` - 7, a LargeInteger included, and 'float64At:put: requires
-    /// an Integer index, got …' for a position that is no Integer; the
+    /// an Integer position, got …' for a position that is no Integer; the
     /// ArgumentError of `noByteArray:` when `bytes` holds no ByteArray; and an
     /// ArgumentError carrying `value`, 'float64At:put: requires a Number, got
     /// …', for a value that is no Number. A refused store leaves the bytes as

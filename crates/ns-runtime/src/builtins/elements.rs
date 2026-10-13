@@ -127,6 +127,17 @@ fn offset<'gc>(
             }
         }
         Some(IntegerArgument::Large { .. }) => Err(refusal(&heap.describe_argument(argument))),
+        // A byte position is named as one, as the out-of-range text does;
+        // an element index keeps `Array`'s words.
+        None if access.byte_position() => Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            argument.unwrap_or(Value::nil()),
+            format!(
+                "{selector} requires an Integer position, got {}",
+                heap.describe_argument(argument)
+            ),
+        )),
         None => Err(not_an_integer(heap, receiver, selector, argument)),
     }
 }
