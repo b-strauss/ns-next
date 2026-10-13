@@ -21,7 +21,7 @@ class ALeafsArgumentErrorIsCaughtByItsClass = Object new () (
         show: (['abc' , 4] on: kernel ArgumentError do: [:error | error argument]) printString;
         newLine.
     transcript
-        show: ([[:each | each] value] on: kernel ArgumentError do: [:error | error class name]);
+        show: ([[:each | each] value] on: kernel ArgumentError do: [:error | 'ArgumentError']);
         newLine.
   )
 )

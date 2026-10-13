@@ -7,7 +7,7 @@ class ANonBooleanReceiverIsCaughtAsAnError = Object new () (
       condition
     |
     transcript
-        show: ([[4] whileFalse: [nil]] on: Error do: [:error | error class name]);
+        show: ([[4] whileFalse: [nil]] on: Error do: [:error | error description]);
         newLine.
     transcript
         show: ([[4] whileFalse: [nil]] on: Error do: [:error | error receiver]) printString;

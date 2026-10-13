@@ -82,7 +82,7 @@ class AStringSearchesAndIteratesItsCodePoints = Object new () (
     transcript
         show: (#abc stringAt: 2) printString;
         show: ' ';
-        show: (#abc stringAt: 2) class printString;
+        show: (#abc stringAt: 2) isKindOfString printString;
         newLine.
     transcript
         show: (#abc copyStringFrom: 2 to: 3) printString;

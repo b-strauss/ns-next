@@ -11,7 +11,7 @@ class StringNewAnswersAnEmptyString = Object new () (
         print: String new = '';
         newLine.
     transcript
-        show: String new class name;
+        show: String new isKindOfString printString;
         newLine.
   )
 )

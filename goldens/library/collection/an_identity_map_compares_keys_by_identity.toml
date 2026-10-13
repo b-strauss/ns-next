@@ -6,7 +6,7 @@ stdout = '''
 #missing
 false true
 #absent 10
-IdentityMap
+true
 true true false
 2 3
 '''

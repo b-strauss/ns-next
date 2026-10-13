@@ -4,7 +4,7 @@
 class Undefined = Object new () (
   public main: p args: a = (
     p transcript
-        show: (nil class == UndefinedObject) printString;
+        show: nil isNil printString;
         newLine.
     p transcript
         show: (UndefinedObject == self UndefinedObject) printString;

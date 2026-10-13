@@ -20,7 +20,7 @@ class ACannotReturnCarriesTheReturnedValue = Object new (
         show: ([stored value] on: kernel CannotReturn do: [:error | error result]);
         newLine.
     transcript
-        show: ([stored value] on: Error do: [:error | error class name]);
+        show: ([stored value] on: kernel CannotReturn do: [:error | 'CannotReturn']);
         newLine.
   )
 )

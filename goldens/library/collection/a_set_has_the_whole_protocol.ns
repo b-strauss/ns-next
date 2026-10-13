@@ -48,13 +48,13 @@ class ASetHasTheWholeProtocol = Object new () (
     show value: set.
     show value: (set collect: [:each | each \\ 2]).
     transcript
-        show: (set collect: [:each | each]) class printString;
+        show: (set collect: [:each | each]) isKindOfSet printString;
         newLine.
     show value: (set select: [:each | each > 2]).
     show value: (set reject: [:each | each > 2]).
     show value: set asArray.
     transcript
-        show: set asArray class printString;
+        show: set asArray isKindOfArray printString;
         newLine.
     set removeAll: {2. 4}.
     show value: set.

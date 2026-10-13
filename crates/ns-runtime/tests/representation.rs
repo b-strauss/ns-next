@@ -454,3 +454,145 @@ fn an_integer_literal_is_large_exactly_past_the_immediate_range() {
         );
     }
 }
+
+/// Whether `value`'s class is the class object `class` answers.
+fn is_an_instance_of(interpreter: &mut Interpreter, value: &Root, class: &Root) -> bool {
+    interpreter.enter(|mutator| {
+        let Some(class) = mutator.fetch(class).as_object() else {
+            panic!("expected a class object");
+        };
+        mutator.class_of(mutator.fetch(value)).same(class)
+    })
+}
+
+/// Whether `left` and `right` have one class.
+fn share_a_class(interpreter: &mut Interpreter, left: &Root, right: &Root) -> bool {
+    interpreter.enter(|mutator| {
+        let left_class = mutator.class_of(mutator.fetch(left));
+        left_class.same(mutator.class_of(mutator.fetch(right)))
+    })
+}
+
+/// `goldens/library/collection/every_platform_shares_one_collections_module.ns`:
+/// the collections facet is an instance of the class its `Collections`
+/// answers.
+#[test]
+fn every_platform_shares_one_collections_module_whose_facet_is_a_collections() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let collections = answer(&mut interpreter, &platform, "collections");
+    let collections_class = answer(&mut interpreter, &collections, "Collections");
+    assert!(
+        is_an_instance_of(&mut interpreter, &collections, &collections_class),
+        "`platform collections Collections == platform collections class`"
+    );
+}
+
+/// `goldens/library/platform/a_second_platform_writes_like_the_first.ns`:
+/// the platform's `Transcript` and `Platform` answer the classes of its
+/// transcript and of itself, and a second platform's `Platform` the class
+/// of the first.
+#[test]
+fn a_second_platform_hands_out_the_classes_of_the_first() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let transcript = answer(&mut interpreter, &platform, "transcript");
+    let transcript_class = answer(&mut interpreter, &platform, "Transcript");
+    assert!(
+        is_an_instance_of(&mut interpreter, &transcript, &transcript_class),
+        "`platform Transcript == platform transcript class`"
+    );
+    let platform_class = answer(&mut interpreter, &platform, "Platform");
+    assert!(
+        is_an_instance_of(&mut interpreter, &platform, &platform_class),
+        "`platform Platform == platform class`"
+    );
+    let second = answer(&mut interpreter, &platform_class, "new");
+    let second_platform_class = answer(&mut interpreter, &second, "Platform");
+    assert!(
+        is_an_instance_of(&mut interpreter, &platform, &second_platform_class),
+        "`second Platform == platform class`"
+    );
+}
+
+/// `goldens/library/platform/the_platform_and_its_parts_are_values.ns`:
+/// the transcript and the collections facet are each an instance of a
+/// class of its own, not of the platform's.
+#[test]
+fn the_platform_and_its_parts_are_instances_of_classes_of_their_own() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let transcript = answer(&mut interpreter, &platform, "transcript");
+    let collections = answer(&mut interpreter, &platform, "collections");
+    assert!(
+        !share_a_class(&mut interpreter, &transcript, &platform),
+        "`t class == platform class` answers false"
+    );
+    assert!(
+        !share_a_class(&mut interpreter, &collections, &platform),
+        "`c class == platform class` answers false"
+    );
+}
+
+/// `goldens/library/object/a_proxy_forwards_every_message.ns`: a
+/// forwarder answers every message with its target's answer, yet is an
+/// instance of its own class, `Forwarder`, not of its target's, `Integer`.
+#[test]
+fn a_proxy_forwards_every_message_but_keeps_a_class_of_its_own() {
+    let source = indoc! {"
+        class Probe usingPlatform: platform = (
+          |
+            Proxy = platform kernel Proxy.
+          |
+        ) (
+          class Forwarder on: theTarget = Proxy new (
+            |
+              private target = theTarget.
+            |
+          ) (
+            protected doesNotUnderstand: message = (
+              ^message sendTo: target.
+            )
+          )
+
+          public forwarder = (
+            ^Forwarder on: 3.
+          )
+
+          public forwarderClass = (
+            ^Forwarder.
+          )
+        )
+    "};
+    let (mut interpreter, instance) = instantiate(source);
+    let forwarder = answer(&mut interpreter, &instance, "forwarder");
+    let forwarder_class = answer(&mut interpreter, &instance, "forwarderClass");
+    let target = answer(&mut interpreter, &forwarder, "yourself");
+    assert!(
+        is_an_instance_of(&mut interpreter, &forwarder, &forwarder_class),
+        "the forwarder is a `Forwarder`"
+    );
+    interpreter.enter(|mutator| {
+        let integer = mutator.builtin_class(BuiltinClass::Integer);
+        assert!(
+            mutator.class_of(mutator.fetch(&target)).same(integer),
+            "`forwarder yourself` answers the target, an `Integer`"
+        );
+        assert!(
+            !mutator.class_of(mutator.fetch(&forwarder)).same(integer),
+            "the forwarder is no `Integer`"
+        );
+    });
+}
+
+/// `goldens/library/string/a_symbol_is_a_string.ns`: `copyFrom:to:` and
+/// `,` of a Symbol answer a String, not a Symbol.
+#[test]
+fn a_symbol_copied_or_concatenated_answers_a_string() {
+    for body in ["^#abc copyFrom: 1 to: 2.", "^#a , 'b'."] {
+        assert!(
+            answers_an_instance_of(body, BuiltinClass::String),
+            "{body} answers a `String`"
+        );
+    }
+}

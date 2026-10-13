@@ -12,7 +12,7 @@ class AnArrayIndexErrorIsCaught = Object new () (
         show: ([{1. 2} at: 5] on: Error do: [:e | e messageText]);
         newLine.
     transcript
-        show: ([{1. 2} at: 5] on: Error do: [:e | e class name]);
+        show: ([{1. 2} at: 5] on: platform kernel ArgumentError do: [:error | 'ArgumentError']);
         newLine.
     transcript
         show: ([{1. 2} at: 2] on: Error do: [:e | 0]) printString;

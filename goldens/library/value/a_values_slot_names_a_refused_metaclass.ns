@@ -3,7 +3,8 @@
 /// only state (6.1); a metaclass shares its class's enclosing object and so
 /// its verdict (`interpreter/instantiate.rs`'s `class_object_is_a_value`).
 /// `Plain` is nested in a `Wrapper`, an ordinary object, so `Wrapper new
-/// Plain class` -- Plain's metaclass -- is no value either, and `Holder`
+/// Plain metaclass` -- Plain's metaclass, which its class side answers as
+/// `self class` -- is no value either, and `Holder`
 /// refuses it, naming the metaclass as `Heap::describe`'s `class_display_name`
 /// does: "the class Plain class", not "the class class side", which every
 /// metaclass's mixin is literally named (`heap.rs`'s `describe`,
@@ -15,7 +16,11 @@
 /// from `platform` where it is used, never held in a slot.
 class ValueSlotNamesARefusedMetaclass = Object <: Value () (
   public class Wrapper = Object new () (
-    public class Plain = Object new () ()
+    public class Plain = Object new () () : (
+      public metaclass = (
+        ^self class.
+      )
+    )
   )
 
   public class Accepted = Value new () ()
@@ -31,7 +36,7 @@ class ValueSlotNamesARefusedMetaclass = Object <: Value () (
         show: (Holder of: Accepted) held printString;
         newLine.
     platform transcript
-        show: (Holder of: Wrapper new Plain class) printString;
+        show: (Holder of: Wrapper new Plain metaclass) printString;
         newLine.
   )
 )

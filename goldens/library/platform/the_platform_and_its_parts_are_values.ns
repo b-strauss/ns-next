@@ -2,7 +2,9 @@
 /// (§3.1.1): stateless but for what the module they belong to was handed,
 /// so any two of a kind are equal and, a value having no identity,
 /// identical. Each is an instance of its own class, so none answers
-/// another's protocol. The platform's class answers `new`: what holds the
+/// another's protocol (which `crates/ns-runtime/tests/representation.rs`
+/// checks, a program being unable to ask another object for its class).
+/// The platform's class, `platform Platform`, answers `new`: what holds the
 /// VM mirror is the `PlatformFactory` instance enclosing it, which no
 /// program is handed, so a second platform is as harmless as the first.
 class PlatformValues = Object new () (
@@ -17,21 +19,16 @@ class PlatformValues = Object new () (
         show: (t == platform transcript) printString;
         newLine.
     t
-        show: (t = t class new) printString;
+        show: (t = platform Transcript new) printString;
         newLine.
     t
-        show: (platform = platform class new) printString;
+        show: (platform = platform Platform new) printString;
         newLine.
     t
-        show: (platform hash = platform class new hash) printString;
+        show: (platform hash = platform Platform new hash) printString;
         newLine.
     t
-        show: (t class == platform class) printString;
-        show: ' ';
-        show: (c class == platform class) printString;
-        newLine.
-    t
-        show: (c List == platform class new collections List) printString;
+        show: (c List == platform Platform new collections List) printString;
         newLine.
   )
 )

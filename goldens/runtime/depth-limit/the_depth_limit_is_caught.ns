@@ -16,7 +16,7 @@ class TheDepthLimitIsCaught = Object new () (
         show: ([self recurse] on: Error do: [:e | e messageText]);
         newLine.
     transcript
-        show: ([self recurse] on: Error do: [:e | e class name]);
+        show: ([self recurse] on: Error do: [:error | 'Error']);
         newLine.
     transcript
         show: 'done';
