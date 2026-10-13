@@ -139,9 +139,8 @@ fn a_bare_class_name_answers_the_matching_builtin_class() {
 /// modules open with `platform collections List` in their module state
 /// (`corpus/runnable.toml`). It is `CollectionsFactory.ns`'s `List`, a class
 /// compiled from shipped Newspeak source and no builtin, handed out by the
-/// collections facet; the facet names its own class too, and every platform
-/// shares one collections module, so a second platform answers the same
-/// `List`.
+/// collections facet; every platform shares one collections module, so a
+/// second platform, made by the host, answers the same `List`.
 #[test]
 fn platform_collections_answers_the_collections_modules_list() {
     let mut interpreter = Interpreter::bootstrap();
@@ -155,11 +154,6 @@ fn platform_collections_answers_the_collections_modules_list() {
         interpreter.send(&collections, Symbol::intern("List"), &[]),
         "platform collections List",
     );
-    let facet_class = expect_ok(
-        interpreter.send(&collections, Symbol::intern("Collections"), &[]),
-        "platform collections Collections",
-    );
-    let collections_class = class_of(&mut interpreter, &collections);
     let platform_class = class_of(&mut interpreter, &platform);
     let second = expect_ok(
         interpreter.send(&platform_class, Symbol::NEW, &[]),
@@ -182,18 +176,12 @@ fn platform_collections_answers_the_collections_modules_list() {
             ),
         };
         let list = object_of(&list);
-        let facet_class = object_of(&facet_class);
-        let collections_class = object_of(&collections_class);
         let second_list = object_of(&second_list);
         let heap = mutator.heap();
         assert!(heap.is_class(list), "platform collections List is a class");
         assert_eq!(heap.class_builtin(list), None, "List is no builtin");
         assert!(heap.class_is_shipped(list), "List is shipped source");
         assert_eq!(heap.class_display_name(list), "List");
-        assert!(
-            facet_class.same(collections_class),
-            "the facet's Collections is its own class"
-        );
         assert!(
             second_list.same(list),
             "a second platform answers the same List"
@@ -384,43 +372,6 @@ fn a_platform_member_is_built_on_first_use(member: &str) {
     );
 }
 
-/// `Transcript` is a class of the platform module like any other, no
-/// builtin, so a subclass of it inherits a working `show:`: the transcript
-/// leaf reads only its string argument, and the capability is the mirror
-/// the inherited method sends to. §6.1's superclass clause starts with a
-/// name, so the module reaches `platform Transcript` through a method of
-/// its own.
-#[test]
-fn a_subclass_of_the_transcript_class_writes_too() {
-    let source = indoc! {"
-        class Loudness usingPlatform: platform = Object <: Value (
-            | private thePlatform = platform. |
-        ) (
-            private TranscriptClass = ( ^thePlatform Transcript )
-            class Loud = TranscriptClass new () ()
-            public speak = ( ^Loud new show: '' )
-        ) : ()
-    "};
-    let module = ns_syntax::parse(source).expect("parse");
-    let resolved = ns_runtime::resolve(
-        module,
-        source.into(),
-        ns_runtime::SourceOrigin::File("test.ns".into()),
-    )
-    .expect("resolve");
-    let mut interpreter = Interpreter::bootstrap();
-    let class = interpreter.load_module(&resolved);
-    let platform = interpreter.platform();
-    let instance = expect_ok(
-        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
-        "usingPlatform:",
-    );
-    expect_ok(
-        interpreter.send(&instance, Symbol::intern("speak"), &[]),
-        "a Loud shows",
-    );
-}
-
 /// The error message a refused send answers.
 fn refusal(result: HostResult, what: &str) -> String {
     match result {
@@ -480,42 +431,106 @@ fn the_platform_class_is_nested_in_the_platform_factory() {
     });
 }
 
-/// A second platform, and a subclass of the platform's class, are ordinary
-/// instances of shipped classes: their members reach the module's classes
-/// lexically, so their transcripts write like the first platform's.
+/// A second platform, made by the host from the platform's class, is an
+/// ordinary instance of a shipped class: its members reach the module's
+/// classes lexically, so its transcript writes like the first platform's.
+/// No program makes one: the platform hands out none of its module's
+/// classes, and `class` is protected.
 #[test]
-fn a_subclass_of_the_platform_class_writes_too() {
-    let source = indoc! {"
-        class Copier usingPlatform: platform = Object <: Value (
-            | private thePlatform = platform. |
-        ) (
-            private PlatformClass = ( ^thePlatform Platform )
-            class Copied = PlatformClass new () ()
-            public speak = ( ^Copied new transcript show: '' )
-            public speakAgain = ( ^PlatformClass new transcript show: '' )
-        ) : ()
-    "};
-    let module = ns_syntax::parse(source).expect("parse");
-    let resolved = ns_runtime::resolve(
-        module,
-        source.into(),
-        ns_runtime::SourceOrigin::File("test.ns".into()),
-    )
-    .expect("resolve");
+fn a_second_platform_writes_too() {
     let mut interpreter = Interpreter::bootstrap();
-    let class = interpreter.load_module(&resolved);
     let platform = interpreter.platform();
-    let instance = expect_ok(
-        interpreter.send(&class, Symbol::intern("usingPlatform:"), &[platform]),
-        "usingPlatform:",
+    let platform_class = class_of(&mut interpreter, &platform);
+    let second = expect_ok(
+        interpreter.send(&platform_class, Symbol::NEW, &[]),
+        "platform class new",
     );
-    expect_ok(
-        interpreter.send(&instance, Symbol::intern("speak"), &[]),
-        "a Copied platform shows",
+    let transcript = expect_ok(
+        interpreter.send(&second, Symbol::intern("transcript"), &[]),
+        "second transcript",
     );
+    let empty = interpreter.enter(|mutator| {
+        let text = mutator.new_string(String::new());
+        mutator.stash(Value::object(text))
+    });
     expect_ok(
-        interpreter.send(&instance, Symbol::intern("speakAgain"), &[]),
+        interpreter.send(&transcript, Symbol::intern("show:"), &[empty]),
         "a second platform shows",
+    );
+}
+
+/// Whether `left = right` answers true.
+fn equals(interpreter: &mut Interpreter, left: &Root, right: &Root) -> bool {
+    let answer = expect_ok(
+        interpreter.send(left, Symbol::intern("="), std::slice::from_ref(right)),
+        "=",
+    );
+    interpreter.enter(|mutator| mutator.fetch(&answer).as_boolean() == Some(true))
+}
+
+/// Whether `left == right` answers true.
+fn identical(interpreter: &mut Interpreter, left: &Root, right: &Root) -> bool {
+    let answer = expect_ok(
+        interpreter.send(left, Symbol::intern("=="), std::slice::from_ref(right)),
+        "==",
+    );
+    interpreter.enter(|mutator| mutator.fetch(&answer).as_boolean() == Some(true))
+}
+
+/// The platform, its transcript and its collections facet are values
+/// (§3.1.1): a second of each, made by the host from the first one's class
+/// or a second platform's members, is equal to the first, hashes alike and,
+/// a value having no identity, is identical; and every platform's facet
+/// comes from the one collections module, so it hands out the same `List`.
+/// No program makes a second one (`goldens/library/platform/the_platform_and_its_parts_are_values.ns`).
+#[test]
+fn the_platform_and_its_parts_are_values() {
+    let mut interpreter = Interpreter::bootstrap();
+    let platform = interpreter.platform();
+    let platform_class = class_of(&mut interpreter, &platform);
+    let second = expect_ok(
+        interpreter.send(&platform_class, Symbol::NEW, &[]),
+        "platform class new",
+    );
+    let member = |interpreter: &mut Interpreter, receiver: &Root, name: &str| {
+        expect_ok(interpreter.send(receiver, Symbol::intern(name), &[]), name)
+    };
+    let transcript = member(&mut interpreter, &platform, "transcript");
+    let transcript_class = class_of(&mut interpreter, &transcript);
+    let fresh_transcript = expect_ok(
+        interpreter.send(&transcript_class, Symbol::NEW, &[]),
+        "transcript class new",
+    );
+    let second_transcript = member(&mut interpreter, &second, "transcript");
+    let collections = member(&mut interpreter, &platform, "collections");
+    let second_collections = member(&mut interpreter, &second, "collections");
+    assert!(
+        equals(&mut interpreter, &transcript, &fresh_transcript),
+        "a fresh transcript equals the platform's"
+    );
+    assert!(
+        equals(&mut interpreter, &second_transcript, &transcript),
+        "a second platform's transcript equals the first's"
+    );
+    assert!(
+        equals(&mut interpreter, &platform, &second),
+        "a second platform equals the first"
+    );
+    let hash = member(&mut interpreter, &platform, "hash");
+    let second_hash = member(&mut interpreter, &second, "hash");
+    assert!(
+        identical(&mut interpreter, &hash, &second_hash),
+        "a second platform hashes as the first"
+    );
+    assert!(
+        identical(&mut interpreter, &second_collections, &collections),
+        "a second platform's facet is the first's, a value"
+    );
+    let list = member(&mut interpreter, &collections, "List");
+    let second_list = member(&mut interpreter, &second_collections, "List");
+    assert!(
+        identical(&mut interpreter, &second_list, &list),
+        "every platform's facet hands out the one List"
     );
 }
 
@@ -537,12 +552,12 @@ fn the_platform_factory(interpreter: &mut Interpreter) -> Root {
 }
 
 /// `PlatformFactory`'s nested classes are private, and its one public
-/// member is `newPlatform`: a public send of a class's name to the factory
-/// instance finds nothing, even for a host that holds it, while `newPlatform`
+/// member is `build`: a public send of a class's name to the factory
+/// instance finds nothing, even for a host that holds it, while `build`
 /// makes a platform. A second line of defence behind the factory instance
 /// being unreachable.
 #[test]
-fn the_platform_factory_answers_only_new_platform() {
+fn the_platform_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
     let factory = the_platform_factory(&mut interpreter);
     for name in [
@@ -562,12 +577,12 @@ fn the_platform_factory_answers_only_new_platform() {
         );
     }
     let platform = expect_ok(
-        interpreter.send(&factory, Symbol::intern("newPlatform"), &[]),
-        "factory newPlatform",
+        interpreter.send(&factory, Symbol::intern("build"), &[]),
+        "factory build",
     );
     let transcript = expect_ok(
         interpreter.send(&platform, Symbol::intern("transcript"), &[]),
-        "newPlatform transcript",
+        "build transcript",
     );
     let text = interpreter.enter(|mutator| {
         let text = Value::object(mutator.new_string(String::new()));
@@ -575,19 +590,19 @@ fn the_platform_factory_answers_only_new_platform() {
     });
     expect_ok(
         interpreter.send(&transcript, Symbol::intern("show:"), &[text]),
-        "newPlatform transcript show: ''",
+        "build transcript show: ''",
     );
 }
 
 /// `CollectionsFactory` is written in the same factory pattern: its nested
-/// classes are private and its one public member is `newCollections`. A
+/// classes are private and its one public member is `build`. A
 /// host reaches its instance only as the enclosing object of the facet's
 /// class, which no program can walk; even then the classes' names find
-/// nothing, while `newCollections` makes a facet whose `List` answers a
+/// nothing, while `build` makes a facet whose `List` answers a
 /// class. A second line of defence behind the factory instance being
 /// unreachable, as for `PlatformFactory`.
 #[test]
-fn the_collections_factory_answers_only_new_collections() {
+fn the_collections_factory_answers_only_build() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
     let collections = expect_ok(
@@ -619,66 +634,62 @@ fn the_collections_factory_answers_only_new_collections() {
         );
     }
     let facet = expect_ok(
-        interpreter.send(&factory, Symbol::intern("newCollections"), &[]),
-        "collections factory newCollections",
+        interpreter.send(&factory, Symbol::intern("build"), &[]),
+        "collections factory build",
     );
     let list = expect_ok(
         interpreter.send(&facet, Symbol::intern("List"), &[]),
-        "newCollections List",
+        "build List",
     );
     interpreter.enter(|mutator| {
         let value = mutator.fetch(&list);
         let Some(list) = value.as_object() else {
             panic!("expected a class, got {}", mutator.heap().describe(value));
         };
-        assert!(
-            mutator.heap().is_class(list),
-            "newCollections List is a class"
-        );
+        assert!(mutator.heap().is_class(list), "build List is a class");
     });
 }
 
-/// The platform's class accessors reach the module's private classes by a
-/// lexical send (§5.9), so each still answers a class a program can use,
-/// and each such class may stand as a value in an image: a public class
-/// accessor answers it.
+/// The platform hands out none of its module's classes, and the
+/// collections facet not its own: an outside send of the class's name finds
+/// nothing, and none of them may stand as a value in an image, since no
+/// program reaches one.
 #[test]
-fn the_platforms_class_accessors_reach_the_private_classes() {
+fn the_platform_hands_out_none_of_its_modules_classes() {
     let mut interpreter = Interpreter::bootstrap();
     let platform = interpreter.platform();
-    for name in ["Platform", "Transcript", "KernelNamespace"] {
-        let class = expect_ok(
-            interpreter.send(&platform, Symbol::intern(name), &[]),
-            &format!("platform {name}"),
+    let collections = expect_ok(
+        interpreter.send(&platform, Symbol::intern("collections"), &[]),
+        "platform collections",
+    );
+    for (receiver, module, name) in [
+        (&platform, "PlatformFactory", "Platform"),
+        (&platform, "TranscriptFactory", "Transcript"),
+        (&platform, "PlatformFactory", "KernelNamespace"),
+        (&platform, "TimeFactory", "Time"),
+        (&platform, "TimeFactory", "Stopwatch"),
+        (&collections, "CollectionsFactory", "Collections"),
+    ] {
+        let message = refusal(
+            interpreter.send(receiver, Symbol::intern(name), &[]),
+            &format!("{name} sent to a platform member"),
         );
-        expect_ok(
-            interpreter.send(&class, Symbol::NEW, &[]),
-            &format!("platform {name} new"),
-        );
+        assert!(message.contains("does not understand"), "{name}: {message}");
         interpreter.enter(|mutator| {
-            let name = ShippedName {
-                module: Symbol::intern("PlatformFactory"),
+            let shipped = ShippedName {
+                module: Symbol::intern(module),
                 declaration: Symbol::intern(name),
                 kind: ShippedKind::Class,
             };
-            let resolved = match shipped_names::resolve_in(mutator, &[name], false) {
+            let resolved = match shipped_names::resolve_in(mutator, &[shipped], false) {
                 Ok(resolved) => resolved,
-                Err(error) => panic!("{} is a shipped name: {error}", name.describe()),
+                Err(error) => panic!("{} is a shipped name: {error}", shipped.describe()),
             };
-            assert!(
+            assert_eq!(
                 resolved[0].positions.value,
-                "{} may stand as a value",
-                name.describe()
-            );
-            assert!(
-                resolved[0].object.same(
-                    mutator
-                        .fetch(&class)
-                        .as_object()
-                        .expect("the accessor answers a class")
-                ),
-                "{} is the class the accessor answers",
-                name.describe()
+                name == "Stopwatch",
+                "{} as a value",
+                shipped.describe()
             );
         });
     }

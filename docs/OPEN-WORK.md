@@ -888,7 +888,7 @@ activation.
   written; or record the writing process's clock reading in the image and
   offset the loading process's origin by it, which rebases every reading
   at once without a rule for `Stopwatch`. Pinned today only within one
-  process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_path_named_class`).
+  process (`tests/image.rs`, `a_stopwatch_is_a_record_of_its_shipped_class`).
   [core-library.md](design/core-library.md), "The platform".
 - **A valid method whose body is one long chain of messages aborts `ns-next
   run`.** A chain, `1 + 1 + …`, nests a send per message through its
@@ -1171,6 +1171,19 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   would recover it. Noted 2026-10-12.
 
 ## Missing tests
+
+- **No shipped class applies a mixin, so the image's shipped levels have
+  no live example.** Every module root under `crates/ns-runtime/core-library/`
+  is `= Value` (decided with the user on 2026-10-13), so no shipped
+  declaration has a `<:` clause and `ShippedKind::Level` and
+  `LevelMetaclass` name nothing a boot builds. The code stays; the tests
+  in `image/shipped_names.rs` and `interpreter/shipped_world.rs` check
+  only that such a level is unknown. When the core library first applies
+  a mixin -- sub-project 5's sequence protocol shared by `Array`,
+  `ByteArray` and `TypedArray` is planned as one -- a test must again
+  resolve a shipped level to the boot's own object, find it by its class
+  object in `index_by_object`, and round-trip its identity hash.
+  [image-format.md](design/image-format.md), "Shipped names".
 
 - That a parenthesised literal block is still inlined (`true ifTrue:
   ([1])`) is pinned only by the printed answer of its golden, not by a

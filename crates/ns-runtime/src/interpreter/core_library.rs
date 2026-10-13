@@ -14,8 +14,14 @@ use crate::Symbol;
 pub(crate) const PLATFORM_FACTORY_SOURCE: &str =
     include_str!("../../core-library/PlatformFactory.ns");
 
+pub(crate) const TRANSCRIPT_FACTORY_SOURCE: &str =
+    include_str!("../../core-library/platform/TranscriptFactory.ns");
+
+pub(crate) const TIME_FACTORY_SOURCE: &str =
+    include_str!("../../core-library/platform/TimeFactory.ns");
+
 pub(crate) const COLLECTIONS_FACTORY_SOURCE: &str =
-    include_str!("../../core-library/CollectionsFactory.ns");
+    include_str!("../../core-library/platform/CollectionsFactory.ns");
 
 /// Not one of the shipped modules above, and never in their table: the
 /// manifest a project's root receives is compiled into the program like a
@@ -32,11 +38,13 @@ pub(crate) struct ShippedModule {
 }
 
 /// What a shipped module's factory takes: `PlatformFactory` the mirror
-/// and the kernel (`usingVmMirror:kernel:`), `CollectionsFactory` the
-/// kernel alone (`usingKernel:`), since it reaches no leaf and so is
-/// given no mirror.
+/// and the kernel (`usingVmMirror:kernel:`), `TranscriptFactory` and
+/// `TimeFactory` the mirror alone (`usingVmMirror:`), since they need none
+/// of the kernel's classes, and `CollectionsFactory` the kernel alone
+/// (`usingKernel:`), since it reaches no leaf and so is given no mirror.
 pub(crate) enum ShippedFactory {
     MirrorAndKernel,
+    Mirror,
     Kernel,
 }
 
@@ -45,6 +53,16 @@ pub(crate) const SHIPPED_MODULES: &[ShippedModule] = &[
         name: "PlatformFactory",
         source: PLATFORM_FACTORY_SOURCE,
         factory: ShippedFactory::MirrorAndKernel,
+    },
+    ShippedModule {
+        name: "TranscriptFactory",
+        source: TRANSCRIPT_FACTORY_SOURCE,
+        factory: ShippedFactory::Mirror,
+    },
+    ShippedModule {
+        name: "TimeFactory",
+        source: TIME_FACTORY_SOURCE,
+        factory: ShippedFactory::Mirror,
     },
     ShippedModule {
         name: "CollectionsFactory",
@@ -127,7 +145,8 @@ impl crate::interpreter::Interpreter {
     /// the kernel's instance as the first shipped module's, then compiles
     /// every `SHIPPED_MODULES` entry in table order and instantiates its
     /// root through the ordinary `instantiate` -- `PlatformFactory` with
-    /// the VM mirror and the kernel instance, `CollectionsFactory` with the
+    /// the VM mirror and the kernel instance, `TranscriptFactory` and
+    /// `TimeFactory` with the mirror alone, `CollectionsFactory` with the
     /// kernel instance alone -- and records each instance as that module's
     /// one instance (`interpreter::shipped_world`). Every shipped module is
     /// built at every boot, because an image names the shipped world's
@@ -138,7 +157,7 @@ impl crate::interpreter::Interpreter {
     /// every class the roots declare and records every shipped object
     /// under its name.
     ///
-    /// Last, `PlatformFactory`'s instance is sent `newPlatform`, its one
+    /// Last, `PlatformFactory`'s instance is sent `build`, its one
     /// public member, as an ordinary host send -- runs like the kernel's
     /// own, entered from the outside, so the stress modes see them -- and
     /// the answer kept as the platform every program is handed. The
@@ -169,6 +188,10 @@ impl crate::interpreter::Interpreter {
                     self.instantiate(&factory_class, &[mirror.clone(), kernel.clone()]),
                     &format!("{name} usingVmMirror:kernel:"),
                 ),
+                ShippedFactory::Mirror => booted(
+                    self.instantiate(&factory_class, std::slice::from_ref(&mirror)),
+                    &format!("{name} usingVmMirror:"),
+                ),
                 ShippedFactory::Kernel => booted(
                     self.instantiate(&factory_class, std::slice::from_ref(&kernel)),
                     &format!("{name} usingKernel:"),
@@ -176,7 +199,7 @@ impl crate::interpreter::Interpreter {
             };
             self.enter(|mutator| {
                 let instance = mutator.fetch(&instance);
-                if let ShippedFactory::MirrorAndKernel = shipped.factory {
+                if let ShippedFactory::MirrorAndKernel | ShippedFactory::Mirror = shipped.factory {
                     check_factory_holds_the_mirror(mutator, name, instance);
                 }
                 let instance = instance
@@ -196,8 +219,8 @@ impl crate::interpreter::Interpreter {
             mutator.stash(Value::object(factory))
         });
         let platform = booted(
-            self.send(&platform_factory, Symbol::intern("newPlatform"), &[]),
-            "PlatformFactory newPlatform",
+            self.send(&platform_factory, Symbol::intern("build"), &[]),
+            "PlatformFactory build",
         );
         self.enter(|mutator| {
             let platform = mutator.fetch(&platform);

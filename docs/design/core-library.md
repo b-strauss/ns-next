@@ -4,22 +4,26 @@
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
-> `collections` the facet of the shipped module `CollectionsFactory.ns`
-> with Newspeak `List`, `Map`, `IdentityMap` and `Set`; missing is part
+> transcript, its `time` and its `collections` the facets of the shipped
+> modules `TranscriptFactory.ns`, `TimeFactory.ns` and
+> `CollectionsFactory.ns`, the last with Newspeak `List`, `Map`,
+> `IdentityMap` and `Set`; missing is part
 > of Primordial Soup's core API, whose names and loops are aligned, whose
 > foundations -- the error classes, `Proxy` and a public `Future` --, whose
 > collections and strings and whose numbers -- `Fraction` and a symmetric
 > numeric tower among them ("The numeric tower") -- are built, and the
 > rest -- `ByteArray` and `StringBuilder`, weak references -- planned
 > ("Planned: the kernel completed to Primordial Soup's core API").
-> Every member of `Kernel.ns`, `PlatformFactory.ns` and
-> `CollectionsFactory.ns` -- public, protected and private -- is documented
+> Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
+> `TimeFactory.ns` and `CollectionsFactory.ns` -- public, protected and
+> private -- is documented
 > in place to the standard of Javadoc, by a `///` comment directly above it,
 > which `crates/ns-runtime/tests/core_library_documentation.rs` checks.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
-> `crates/ns-runtime/core-library/CollectionsFactory.ns` (the collections
-> module), `crates/ns-runtime/core-library/Manifest.ns` (a project's
+> `crates/ns-runtime/core-library/platform/TranscriptFactory.ns`,
+> `TimeFactory.ns` and `CollectionsFactory.ns` (the transcript, the clock
+> and the collections modules), `crates/ns-runtime/core-library/Manifest.ns` (a project's
 > manifest, which is no shipped module: "The manifest"),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/core_library.rs` (the table of shipped modules and their
@@ -513,10 +517,11 @@ one, the program does not.
 
 **So a value class lives in a value module.** A class declared in a module
 lives inside that module's instance (§3.3), so a value class's module has to
-be a value too: it declares itself one with §6.2's mixin application,
-`class M = Object <: Value (…)`, as SOMns's
+be a value too: it declares itself one, `class M = Value (…)` as every
+shipped module's root here does (decided with the user on 2026-10-13), or
+with §6.2's mixin application, `class M = Object <: Value (…)`, as SOMns's
 `class Kernel vmMirror: vmMirror = Object <: Value (`
-(`prior-art/somns/core-lib/Kernel.ns`) does and as `Kernel.ns` does here. A
+(`prior-art/somns/core-lib/Kernel.ns`) does. A
 value class nested in a module written `= Object new (…)` is refused on
 instantiation, and every golden that declares a value class declares its
 module a value.
@@ -596,42 +601,53 @@ core-library module beside `Kernel.ns` (decided with the user on
 2026-09-27):
 
 ```newspeak
-class PlatformFactory usingVmMirror: theMirror kernel: theKernel = Object <: Value (
-    | private vmMirror = theMirror. private kernelModule = theKernel. |
+class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
+    | private vmMirror = mirror. private Exception = kernel Exception. ...
+      private Collection = kernel Collection. |
 ) (
     lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
-    private class Platform = Value new () (
-        lazy public transcript = Transcript new.
-        lazy public collections = collectionsModule newCollections.
+    lazy private transcriptModule = vmMirror moduleInstanceNamed: #TranscriptFactory ifFail: [nil].
+    lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [nil].
+    private class Platform = Value () (
+        lazy public transcript = transcriptModule build.
+        lazy public collections = collectionsModule build.
         lazy public kernel = KernelNamespace new.
-        lazy public time = Time new.
-        public Platform = ( ^outer PlatformFactory Platform )
-        public Transcript = ( ^outer PlatformFactory Transcript )
-        public KernelNamespace = ( ^outer PlatformFactory KernelNamespace )
-        public Time = ( ^outer PlatformFactory Time )
-        public Stopwatch = ( ^outer PlatformFactory Stopwatch )
+        lazy public time = timeModule build.
     )
-    private class Transcript = Value new () ( show: and newLine, through vmMirror )
-    private class KernelNamespace = Value new () ( Exception, ..., each through kernelModule )
-    private class Time = Value new () ( public Stopwatch = ( ^outer PlatformFactory Stopwatch ) )
-    private class Stopwatch = Object new ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
-        elapsedNanoseconds, start, and the clock reading, through vmMirror )
-    public newPlatform = ( ^Platform new )
+    private class KernelNamespace = Value () ( public Exception = ( ^outer PlatformFactory Exception ) ... )
+    public build = ( ^Platform new )
 ) : ()
 ```
 
-and `platform collections` is the facet of a second shipped module,
-`crates/ns-runtime/core-library/CollectionsFactory.ns`, written the same
-way (2026-09-28, "The collections module (plan 2)" below):
+and the transcript, the clock and the collections are each a shipped module
+of its own under `crates/ns-runtime/core-library/platform/`, written the
+same way -- `TranscriptFactory.ns` and `TimeFactory.ns` given the mirror,
+since their leaves are reached through it (decided with the user on
+2026-10-13), `CollectionsFactory.ns` the kernel's classes (2026-09-28, "The
+collections module (plan 2)" below):
 
 ```newspeak
-class CollectionsFactory usingKernel: theKernel = Object <: Value (
-    | private kernelModule = theKernel. private kernelError = theKernel Error.
-      private kernelCollection = theKernel Collection. |
+class TranscriptFactory usingVmMirror: mirror = Value (
+    | private vmMirror = mirror. |
 ) (
-    private class Collections = Value new () (
-        public Collections = ( ^outer CollectionsFactory Collections )
-        public Collection = ( ^kernelCollection )
+    private class Transcript = Value () ( show: and newLine, through vmMirror )
+    public build = ( ^Transcript new )
+) : ()
+
+class TimeFactory usingVmMirror: mirror = Value (
+    | private vmMirror = mirror. |
+) (
+    private class Time = Value () ( public Stopwatch = ( ^outer TimeFactory Stopwatch ) )
+    private class Stopwatch = Object ( | private cumulativeNanoseconds ::= 0. private startNanoseconds ::= nil. | ) (
+        elapsedNanoseconds, start, and the clock reading, through vmMirror )
+    public build = ( ^Time new )
+) : ()
+
+class CollectionsFactory usingKernel: kernel = Value (
+    | private ArgumentError = kernel ArgumentError. private Collection = kernel Collection. |
+) (
+    private class Collections = Value () (
+        public Collection = ( ^outer CollectionsFactory Collection )
         public ConcurrentModification = ( ^outer CollectionsFactory ConcurrentModification )
         public IdentityMap = ( ^outer CollectionsFactory IdentityMap )
         public List = ( ^outer CollectionsFactory List )
@@ -639,35 +655,47 @@ class CollectionsFactory usingKernel: theKernel = Object <: Value (
         public NotFound = ( ^outer CollectionsFactory NotFound )
         public Set = ( ^outer CollectionsFactory Set )
     )
-    private class List new: capacity = kernelCollection new (
+    private class List new: capacity = Collection (
         | protected size_ ::= 0. private firstIndex ::= 1. private data ::= Array new: capacity.
           private modifications ::= 0. |
     ) ( ... ) : ( public new = ( ^self new: 3 ) )
-    private class Map new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class Map new: capacity = Collection ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
     private class IdentityMap new: capacity = Map new: capacity () ( ... ) : ( ... )
-    private class Set new: capacity = kernelCollection new ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
-    private class NotFound = kernelError new ( | public element ::= nil. | ) ( ... ) : ( ... )
-    private class ConcurrentModification = kernelError new ( | public collection ::= nil. | ) () : ( ... )
-    public newCollections = ( ^Collections new )
+    private class Set new: capacity = Collection ( ... ) ( private lazy hashtable_ ::= rehash. ... ) : ( ... )
+    private class NotFound = Error ( | public element ::= nil. | ) ( ... ) : ( ... )
+    private class ConcurrentModification = Error ( | public collection ::= nil. | ) () : ( ... )
+    public build = ( ^Collections new )
 ) : ()
 ```
 
+A superclass clause that sends only `new` omits it, as §6.1 allows ("If
+omitted, *m* defaults to `new`"), and every module root is `= Value`
+(decided with the user on 2026-10-13).
+
 **The factory pattern.** Every shipped module is written this way: an
-`XFactory` root holds what is privileged -- here the VM mirror and the
-kernel instance, in private slots, since neither a lazy slot nor a method
-may name a factory parameter (§6) -- and is never handed to anyone. What a
+`XFactory` root holds what is privileged -- here the VM mirror, and of the
+kernel instance only the classes its facets hand out or its classes
+inherit, each in a private slot, since neither a lazy slot nor a method may
+name a factory parameter (§6) -- and is never handed to anyone. A root keeps
+what it needs of an object it is handed, not the object, so it holds no
+more authority than it uses (decided with the user on 2026-10-13); the
+mirror is the exception, since every leaf is reached through it. What a
 program receives, and may instantiate, are the root's nested classes, its
 facets. Each reaches the privileged state lexically, as a
 member of the root, never through a slot of its own, so the facets keep
 `new` and hold no privileged state in slots of their own -- `Transcript`,
 `KernelNamespace`, `Time` and the collections module's `Collections`
 declare none, `Stopwatch`'s two slots hold only its own readings, and
-`Platform`'s four lazy slots hold only facets: `platform Transcript new`
-makes a transcript equal to `platform transcript`, and `platform Platform
-new` a platform that writes like the first
-(`goldens/library/platform/a_second_platform_writes_like_the_first`). The platform
-hands out instances of the facets by lazy slots and their classes by class
-accessors, methods whose whole body is `^outer PlatformFactory <Name>`.
+`Platform`'s four lazy slots hold only facets, so a second transcript or
+platform, which only a host can make, is equal to the first and writes like
+it (`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
+`a_second_platform_writes_too`). The platform hands out instances of the
+facets by lazy slots and none of their classes: a program holds only the
+facets it is handed, and since `class` is protected it reaches no class of
+theirs ("`class` and the class accessors are protected" below). `Time`
+hands out `Stopwatch` by a class accessor, a method whose whole body is
+`^outer PlatformFactory Stopwatch`, since a program instantiates its
+stopwatches itself.
 Because the root is unreachable, no program can instantiate it over forged
 arguments, so the pattern needs no runtime refusal beside it: the guarantee
 is made by how the shipped classes are arranged, not by a check in the VM
@@ -675,23 +703,23 @@ is made by how the shipped classes are arranged, not by a check in the VM
 this shape, not from the prior-art one in which the root is the namespace
 handed out.
 
-**The factory's nested classes are private, and its one public member
-makes the facet.** A class accessor and a lazy slot's initializer reach a
+**The factory's nested classes are private, and its one public member,
+`build` in every shipped factory, makes the facet.** A class accessor and a lazy slot's initializer reach a
 private class of the root by a lexical send, which may find a private
-member (§5.9), so a program still gets every class it is meant to have,
-through the facet; but a public send to the root instance finds nothing
-but `newPlatform`, `^Platform new`, which the host sends at boot. That is
+member (§5.9), so a program still gets every facet and class it is meant
+to have; but a public send to the root instance finds nothing
+but `build`, `^Platform new`, which the host sends at boot. That is
 a second line of defence behind the root instance being unreachable ("No
 program reaches a shipped module's root" below): even a holder of the
 root could make only another platform from it, never name a class that
 reaches the mirror (`tests/platform.rs`,
-`the_platform_factory_answers_only_new_platform`,
-`the_platforms_class_accessors_reach_the_private_classes`).
-`CollectionsFactory.ns` follows the same pattern: its root holds the kernel
-instance, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
+`the_platform_factory_answers_only_build`,
+`the_platform_hands_out_none_of_its_modules_classes`).
+`CollectionsFactory.ns` follows the same pattern: its root holds the
+kernel's `ArgumentError` and `Collection`, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
 `Set`, `NotFound` and `ConcurrentModification` -- is private, and its one
-public member, `newCollections`, answers the facet `platform collections`
-is (`the_collections_factory_answers_only_new_collections`).
+public member, `build`, answers the facet `platform collections`
+is (`the_collections_factory_answers_only_build`).
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,
@@ -703,16 +731,16 @@ and the boot" below), and `PlatformFactory`'s root keeps it in its private
 lazy slot `collectionsModule`, which asks the mirror's
 `moduleInstanceNamed:` for it on the first `platform collections` of any
 platform; `Platform`'s `collections` answers that instance's
-`newCollections`. So every platform's facet comes from one factory and
+`build`. So every platform's facet comes from one factory and
 hands out one class of each name, and the facets, values, are all equal
-(`goldens/library/collection/every_platform_shares_one_collections_module`;
-`tests/platform.rs`, `the_collections_module_is_built_once_at_boot`).
-The facet names its own class, `^outer CollectionsFactory Collections`, as
-`Platform>>Platform` does, and each of the module's classes by `^outer
-CollectionsFactory <Name>`: class accessors the compiler recognizes in
-every shipped module but the kernel, which is what lets an image name these
-private classes as values ("Shipped names in the image" below).
-`Collection` it answers from the root's `kernelCollection`, the kernel's
+(`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
+`the_collections_module_is_built_once_at_boot`). The facet hands out each
+of the module's classes by `^outer CollectionsFactory <Name>`, a class
+accessor the compiler recognizes in every shipped module but the kernel,
+which is what lets an image name these private classes as values
+("Shipped names in the image" below), and not its own class, so a program
+makes no second facet.
+`Collection` it answers from the root's slot `Collection`, the kernel's
 own class.
 
 **The boot.** `Interpreter::install_shipped_modules`, run by
@@ -721,22 +749,24 @@ as the first shipped module's, then takes each entry of the table of
 shipped modules in order ("Where the library source lives, and how modules
 are found" below), compiles it and instantiates its root through the
 ordinary `Interpreter::instantiate` -- `PlatformFactory` with
-`usingVmMirror: mirror kernel: kernel`, `CollectionsFactory` with
-`usingKernel: kernel` -- checks that `PlatformFactory`'s `vmMirror` is an
-immutable, eager slot holding the mirror (`interpreter::core_library`'s
+`usingVmMirror: mirror kernel: kernel`, `TranscriptFactory` and
+`TimeFactory` with `usingVmMirror: mirror`, `CollectionsFactory` with
+`usingKernel: kernel` -- checks that every factory given the mirror holds it
+in an immutable, eager slot `vmMirror` (`interpreter::core_library`'s
 `check_factory_holds_the_mirror`, as `interpreter::kernel` checks the
 kernel's), and records each instance as its module's one instance
 (`interpreter/shipped_world.rs`). `complete_shipped_world` then builds every
-class the three roots declare and records every shipped object under its
+class the roots declare and records every shipped object under its
 name, which is what an image names ("Shipped names in the image" below).
-Last, it sends `PlatformFactory`'s instance `newPlatform` as an ordinary
+Last, it sends `PlatformFactory`'s instance `build` as an ordinary
 host send and keeps the answer as the platform
 (`Mutator::platform_singleton`, traced like every root). Each step is a run
 entered from the outside, as the kernel's instantiation is, so the stress
 modes see it. `Mutator::platform_value` only reads the platform, so asking
 for it runs no Newspeak. The boot runs shipped code -- the superclass
-clauses of every shipped class, `CollectionsFactory`'s eager slots
-`theKernel Error` and `theKernel Collection`, and `newPlatform` -- whose
+clauses of every shipped class, the factories' eager slots, which take the
+kernel's classes they need (`kernel Collection` and its siblings), and
+`build` -- whose
 sends take room in the inline caches, so a freshly bootstrapped interpreter
 does not start with an empty cache table (`tests/inline_caches.rs` pins
 what it leaves). It draws no identity hash, so every hash a run draws is
@@ -752,16 +782,15 @@ names exists once the boot is done, and the loader finds it by table lookup.
 
 **The transcript leaf does not check its receiver.** `Transcript`'s `show:`
 and `newLine` are mirror forwarders like the kernel's —
-`PlatformFactory.ns` is resolved with `resolve_kernel`, and `vmMirror` is a
+`TranscriptFactory.ns` is resolved with `resolve_kernel`, and `vmMirror` is a
 member of its root, so their `vmMirror` sends are mirror sends and the two
 methods are primitive methods — and their leaf (`platform.rs`) reads
 nothing off the receiver, only the string argument. The capability is the
 mirror, which only shipped source reaches; `Transcript` is no builtin, so
-the VM could not recognize its class anyway. A user subclass of
-`Transcript`, reached as `platform Transcript`, therefore inherits a
-working `show:` (`tests/platform.rs`,
-`a_subclass_of_the_transcript_class_writes_too`), and so does a subclass of
-the platform's class (`a_subclass_of_the_platform_class_writes_too`).
+the VM could not recognize its class anyway. So a second transcript, of a
+second platform a host makes, writes like the first (`tests/platform.rs`,
+`a_second_platform_writes_too`); no program reaches the class to make one
+or a subclass of it.
 
 **`show:` writes a string; `print:` writes any object** (decided with the
 user on 2026-09-27). The leaf refuses an argument that is no `String` as an
@@ -784,7 +813,7 @@ write, so each costs one activation more than it did as a kernel accessor
 (`interpreter/kernel.rs`,
 `the_platform_modules_members_have_the_fast_path_they_should`). A
 namespace member is asked for once, typically in a slot initializer. The
-platform's class accessors, and the collections facet's, carry no fast
+collections facet's class accessors, and `Time`'s, carry no fast
 path either: the compiler recognizes them
 (`MixinMethod::class_accessor`) for the image's rule of what may be named
 where alone ("Shipped names in the image" below), and
@@ -793,20 +822,19 @@ no send reads the mark
 
 Being values, the platform and its members have no identity: two
 transcripts are equal and so identical, two platforms too, and a
-transcript kept in an image is the loading platform's after the load. None
-has an accessor on `Object`, since a program reaches them through the
-platform it is given, and the platform declares no accessor for a
-predefined class either: `platform Array` reaches `Object`'s (§3.2), which
-it inherits like every object
-(`goldens/library/platform/the_platform_and_its_parts_are_values`).
+transcript kept in an image is the loading platform's after the load
+(`goldens/library/platform/the_platform_and_its_parts_are_values`, and
+`tests/platform.rs`'s test of that name for the second ones a host makes).
+None has an accessor on `Object`, since a program reaches them through the
+platform it is given.
 
 **`platform time` is Primordial Soup's `Time` facet, narrowed to its
 `Stopwatch`.** Both came in for `benchmarks/are-we-fast-yet/AreWeFastYet.ns`,
 which measures with them ("The on-demand rule" below). `Time` is a value
 like the other members, and its one method, `Stopwatch`, is a class
-accessor like the platform's own, which answers the same class; an image
-names that class by its shortest path, `Stopwatch`, never `time Stopwatch`
-(`tests/image.rs`, `a_class_the_platform_hands_out_is_named_by_its_accessor`).
+accessor, so an image names that class by its declaration,
+`PlatformFactory Stopwatch` (`tests/image.rs`,
+`a_class_the_platform_hands_out_is_named_by_its_declaration`).
 `Stopwatch` answers only what the harness sends, `start` and
 `elapsedNanoseconds`, with Primordial Soup's meaning
 (`prior-art/primordialsoup/newspeak/Time.ns`): an
@@ -816,10 +844,10 @@ unstarted stopwatch reads 0, and `start` on a running one changes nothing
 **A `Stopwatch` is an object, not a value.** It keeps its start and its
 accumulated time in mutable slots, which §3.1.1 forbids a value, so its
 class is `Object new`, as the collections module's `List` is, and it is
-the one class of `PlatformFactory.ns` that is not a value. So two
+the one class of the platform's modules that is not a value. So two
 stopwatches are two objects, and an image writes one as an ordinary record
-of the class the path `Stopwatch` names, readings included
-(`a_stopwatch_is_a_record_of_its_path_named_class`). Its slots hold no
+of `PlatformFactory Stopwatch`, readings included
+(`a_stopwatch_is_a_record_of_its_shipped_class`). Its slots hold no
 privileged state: the clock is reached through the root's `vmMirror`,
 lexically, by the private `currentMonotonicNanoseconds`, a mirror forwarder
 over the row `clockMonotonicNanoseconds:ifFail:` whose leaf
@@ -842,8 +870,8 @@ it, read correctly.
 **No program reaches a shipped module's root.** The platform's class is
 `PlatformFactory`'s nested `Platform`, whose factory is `new`; the factory
 that takes the mirror belongs to the root, and nothing a program can name
-answers the root's instance or its class -- the platform's class accessors
-answer nested classes only, and the root instance is only ever the
+answers the root's instance or its class -- the class accessors of its
+facets answer nested classes only, and the root instance is only ever the
 enclosing object of the classes a program is handed. So no program can
 build a second root instance over something that is not the mirror, and no
 runtime refusal is needed: the bootstrap instantiates `Kernel` and
@@ -867,14 +895,15 @@ must never become the answer to anything a program sees, and the one place
 the runtime hands a receiver to a program is a `MessageNotUnderstood`,
 whose `receiver` slot is public. So no code whose receiver is the factory
 instance may ever send it a message it does not understand -- today the
-only sends to it are the host's `newPlatform` at boot, `newPlatform`'s own
-`Platform`, the class accessors' `outer PlatformFactory <Name>`, each
-naming a nested class it declares, the nested classes' superclass
+only sends to it are the host's `build` at boot, `build`'s own
+`Platform`, the sends `outer PlatformFactory <Name>` of `Time`'s class
+accessor and `KernelNamespace`'s members, each naming a nested class or a
+slot it declares, the nested classes' superclass
 clauses, run with it as receiver, and the lazy `collectionsModule`
 initializer's own. `CollectionsFactory`'s instance is held the same way:
 only `PlatformFactory`'s private `collectionsModule` slot keeps it, and the
 facet's classes have it as their enclosing object; the sends to it are
-`newCollections` from `Platform`'s `collections` initializer, the facet's
+`build` from `Platform`'s `collections` initializer, the facet's
 class accessors' `outer CollectionsFactory <Name>`, and its nested classes'
 superclass clauses. Whoever edits either module (or writes another
 `XFactory` root) keeps it that way: a send to the root that
@@ -1906,11 +1935,12 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
 4. **The immediate dispatch-id table is refreshed**, because an immediate's
    ids are read off its class's application, which just changed.
 5. **The kernel class is built and instantiated** from the host, with the
-   mirror as its factory argument: `Kernel vmMirror: theMirror`. Its root is
-   `Object <: Value`, so its `Value` level is built first, over the filled
-   `Object`, with `nested::build_applied_levels`, as a user root's is. Before
-   the instantiation, every class object built so far — each builtin, the
-   `Value` level and the kernel's own class — gets its metaclass over the
+   mirror as its factory argument: `Kernel vmMirror: mirror`. Its root is
+   `= Value`, built by the root rule as a user root's is
+   (`resolver::root_shape`, `nested::build_applied_levels`), so its class
+   sits directly over the filled `Value`; a `<:` clause would add its level
+   the same way. Before the instantiation, every class object built so far
+   — each builtin and the kernel's own class — gets its metaclass over the
    filled `Class` (`Mutator::give_existing_class_objects_metaclasses`): until
    here each carried the builtin `Object` as a provisional class, and from
    here on `new_class_object` builds a metaclass with every class object
@@ -1946,8 +1976,8 @@ its own payload (`instantiate::decide_factory`).
 
 **`Kernel` is a value, and so is the mirror** (decided with the user on
 2026-09-23). `Kernel.ns` declares
-`class Kernel vmMirror: theMirror = Object <: Value (…)`, the header SOMns
-writes, so the kernel instance — the enclosing object of every builtin value
+`class Kernel vmMirror: mirror = Value (…)`, a value as the header SOMns
+writes, `Object <: Value`, makes its own, so the kernel instance — the enclosing object of every builtin value
 class — meets §3.1.1's enclosing-object condition, and every builtin value
 class with it. Its one slot holds the mirror, which a value's slot may hold
 because the mirror is a value by the ordinary rule: its class sits below
@@ -1974,8 +2004,12 @@ application in its manifest ("The manifest" below).
 by `interpreter/kernel.rs`; every other shipped module is an entry of
 `interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
 embedded with `include_str!` from `crates/ns-runtime/core-library/` like
-the kernel. Today it has two entries, `PlatformFactory` and
-`CollectionsFactory`. The table parses and resolves an entry once per
+the kernel. Today it has four entries, `PlatformFactory`,
+`TranscriptFactory`, `TimeFactory` and `CollectionsFactory`, the last three
+under `platform/`: the modules the platform hands out a facet of live
+there. Where a
+module's file lies decides nothing: the table names it, and `moduleInstanceNamed:`
+finds it by that name. The table parses and resolves an entry once per
 thread, on the first request for it, with `resolve_kernel`, because the
 entry is shipped source, and every boot asks for every entry: an image
 names the shipped world's objects and the loader runs nothing the image
@@ -2598,7 +2632,7 @@ the primary factory's formal parameters "are in scope in the instance
 initializer but not in the rest of the class body", and a lazy slot is
 declared in the class body. A class that needs one in a lazy slot copies
 it into an ordinary slot first, as `Kernel.ns` already does with
-`theMirror`. The resolver resolves a lazy initializer in a fresh
+`mirror`. The resolver resolves a lazy initializer in a fresh
 zero-local scope over the class chain, as a unary method's body, so a
 parameter's name there is an implicit-receiver send.
 
@@ -2642,8 +2676,9 @@ boot built. The design as decided:
 - **One module table, on the mirror** (the decision of 2026-09-21 in "Where
   the library source lives, and how modules are found"). The host fills a
   table of name to source at bootstrap; the shipped modules —
-  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit beside `Kernel.ns` in
-  `crates/ns-runtime/core-library/` and are embedded the same way. **Loading
+  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit in
+  `crates/ns-runtime/core-library/` with `Kernel.ns`, the collections module
+  in its subdirectory `platform/`, and are embedded the same way. **Loading
   is unified; trust and visibility are not:** every entry carries whether it
   is shipped core-library source, set by the host and never by the module, and
   only such an entry is resolved with `resolve_kernel`. The mirror leaf
@@ -2669,11 +2704,12 @@ boot built. The design as decided:
 - **The boot.** After `install_kernel` the host records the kernel
   instance, takes each entry from the table in order and instantiates it --
   `PlatformFactory` with `usingVmMirror: mirror kernel: kernel`,
+  `TranscriptFactory` and `TimeFactory` with `usingVmMirror: mirror`,
   `CollectionsFactory` with `usingKernel: kernel`, since it reaches no leaf
   and so is given no mirror -- each an ordinary run, as the kernel's
   instantiation is, so the stress modes see it; builds every class the roots
   declare (`complete_shipped_world`); and sends `PlatformFactory`'s instance
-  `newPlatform`, keeping the answer as a root ("The platform" above).
+  `build`, keeping the answer as a root ("The platform" above).
   `Mutator::platform_value` reads that root instead of building the platform
   in Rust. The second parameter is
   Primordial Soup's (`Platform internalKernel: ik`), chosen over a mirror
@@ -2703,8 +2739,7 @@ boot built. The design as decided:
   The factory's parameters are copied into private slots, since neither a
   lazy slot nor a method may name them (§6), and the three nested classes
   reach the mirror and the kernel through those slots, so they keep `new`
-  and declare no slots: `platform Transcript new` still makes a transcript
-  equal to `platform transcript`. In plan 1 `Collections>>List` answers the kernel's
+  and declare no slots. In plan 1 `Collections>>List` answers the kernel's
   `OrderedCollection` through `Object`'s accessor.
 - **The transcript leaf takes no receiver.** It checked
   `BuiltinClass::Transcript` so that a user subclass of a builtin declines;
@@ -2721,8 +2756,9 @@ boot built. The design as decided:
   which `Platform`'s
   `usingVmMirror:kernel:` factory no longer answered; that line was
   replaced, and the other checks kept their recorded output. The factory
-  pattern gave the platform's class `new` back, and the golden its
-  original checks.
+  pattern gave the platform's class `new` back; since the platform hands
+  out none of its module's classes, those checks are the host's
+  (`tests/platform.rs`, `the_platform_and_its_parts_are_values`).
 - **The host takes every entry from the table itself**; `PlatformFactory.ns`
   reaches `CollectionsFactory`'s instance through `moduleInstanceNamed:`.
 
@@ -2736,8 +2772,7 @@ metaclasses and the levels their `<:` clauses add -- by its module, its
 declaration and its kind, resolved by table lookup against the shipped world
 the boot built, before the graph is decoded and without a send. The
 platform, its facets, a `List`, a `Stopwatch` are ordinary records of their
-shipped classes; a second platform made with `platform Platform new` is
-one like the first. It replaced plan 1's platform paths, which named a shipped
+shipped classes; a second platform a host makes is one like the first. It replaced plan 1's platform paths, which named a shipped
 object by the public members sent from the platform to reach it: the loader
 had to send them before it decoded the graph, and a path reached only what
 the platform hands out, so a plain kernel class, a private one or the level
@@ -2817,9 +2852,9 @@ a handle on, not a class the image needs a name for.
   catchable. A `List` over a fixed array needs a sized array; this is what
   it grows into.
 - **`CollectionsFactory.ns`, built**, in the factory pattern ("The
-  platform" above): `class CollectionsFactory usingKernel: theKernel =
-  Object <: Value`, a root that holds the kernel in a private slot and is
-  never handed out, with the private nested classes a program reaches
+  platform" above): `class CollectionsFactory usingKernel: kernel =
+  Value`, a root that keeps the kernel's `ArgumentError` and
+  `Collection` in private slots and is never handed out, with the private nested classes a program reaches
   through the platform -- the `Collections` facet, `List`, `Map`,
   `IdentityMap`, `Set`, `NotFound` and `ConcurrentModification` -- as
   SOMns's and Primordial Soup's collections modules are values; it
@@ -2829,15 +2864,13 @@ a handle on, not a class the image needs a name for.
   moduleInstanceNamed: #CollectionsFactory ifFail: [nil]`) in its lazy
   `collectionsModule`, so every platform shares one module instance and one
   class of each; the platform's lazy
-  `collections` slot answers that instance's `newCollections`, its one
+  `collections` slot answers that instance's `build`, its one
   public member, and plan 1's `Collections` class has left
-  `PlatformFactory.ns`. **How the facet's class is named, settled with the
-  user on 2026-09-28:** the facet names its own class with `public
-  Collections = ( ^outer CollectionsFactory Collections )`, as
-  `Platform>>Platform` does, which is what lets an image name it
-  (`CollectionsFactory Collections`, "Shipped names in the image" above);
-  the class-accessor recognition (`MixinMethod::class_accessor`) is not
-  widened, and `Platform>>Collections` is gone. `List` is a private class of
+  `PlatformFactory.ns`. The facet hands out none of its own class, as the
+  platform none of its module's: an image names the facet by its
+  declaration, `CollectionsFactory Collections`, as a record's class ("Shipped
+  names in the image" above), and no program makes a second one (decided
+  with the user on 2026-10-13). `List` is a private class of
   the factory, handed out by the facet's class accessor `public List = (
   ^outer CollectionsFactory List )`; a program may still subclass it
   (`goldens/library/collection/a_user_subclass_of_list_inherits_its_protocol`).
@@ -3751,8 +3784,10 @@ code lives on the mixin and is shared by every application
 ([compiler.md](compiler.md)), and `List` could apply it later. **If the
 bootstrap cannot yet take a builtin whose superclass is a mixin
 application, the bootstrap is fixed**; there is no fallback to an abstract
-class. `Kernel` itself is `Object <: Value`, but it is no builtin, so the
-builtin case is the plan's first step to check.
+class. No shipped class applies a mixin today -- `Kernel` itself is
+`= Value` -- so a builtin over a mixin application is the plan's first step
+to check, and it brings back a live shipped level for the image's tests
+([OPEN-WORK.md](../OPEN-WORK.md)).
 
 #### `ByteArray`'s protocol
 
@@ -4044,7 +4079,7 @@ stands; the shipped-class naming the first item needs is built.
   stays under `Value` with its own protocol. `Collection` is a kernel
   builtin under `Object`, because `Array` is a kernel builtin and needs it
   as its superclass; `List`, `Map` and `Set` reach it through
-  `CollectionsFactory`'s `kernelCollection`. `IdentityMap` is a subclass of
+  `CollectionsFactory`'s slot `Collection`. `IdentityMap` is a subclass of
   `Map` in the collections module, not a separate kernel class: it compares
   keys with `==` and hashes them with `identityHash` and inherits
   everything else, insertion order and removal among it; its `at:put:`
@@ -4176,8 +4211,9 @@ stands; the shipped-class naming the first item needs is built.
   after. It is independent of what the slow path looks like — the compiler
   emits the operation under a type guard and falls back to the ordinary send —
   so it was measured on its own and then cushioned the move.
-- **`Kernel` is `= Object <: Value`, and the mirror's class sits below
-  `Value`** (decided with the user on 2026-09-23), as in SOMns: §3.1.1's
+- **`Kernel` is a value, and the mirror's class sits below `Value`**
+  (decided with the user on 2026-09-23; written `= Value`, as every shipped
+  module's root, since 2026-10-13), as in SOMns: §3.1.1's
   enclosing-object condition, enforced strictly, needs the kernel instance to
   be a value for any builtin value class to have value instances, and the
   kernel's one slot holds the mirror ("The bootstrap: placeholders first,

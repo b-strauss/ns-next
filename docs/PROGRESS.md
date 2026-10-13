@@ -37,6 +37,7 @@ first.
 | Editing in the JetBrains plugin: Reformat Code reaching the server, one-line methods, the formatter's indentation and width, Enter, a message bundle | Complete | 2026-10-12 | — |
 | Shipped names in the image: every object the binary owns named by its declaration, under a rule of what may be named where, and the shipped world's fingerprint in the header | Complete | 2026-10-13 | [shipped-names-in-the-image](superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md) |
 | `class` and `Object`'s class accessors protected | Complete | 2026-10-13 | [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md) |
+| The platform's modules: no class of theirs handed out, the transcript and the clock modules of their own under `core-library/platform/`, the factories keeping only the kernel classes they use, `build` in every factory, every root `= Value` | Complete | 2026-10-13 | — |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
 | Road step 7 — an execution model for compiled code | Not started | — | — |
@@ -3216,7 +3217,7 @@ lazy slots. The table of shipped modules (`interpreter/core_library.rs`'s
 Its root holds the mirror and the kernel and is never handed out; the host
 instantiates it through the ordinary `Interpreter::instantiate`, checks its
 `vmMirror`, and hands every program what the factory's one public member,
-`newPlatform`, answers: an instance of the private nested `Platform`, whose
+`build`, answers: an instance of the private nested `Platform`, whose
 factory is `new` and whose class accessors (`public Transcript = ( ^outer
 PlatformFactory Transcript )`, lexical sends that reach the root's private
 classes) hand out the module's classes -- the factory pattern, plain
@@ -3231,16 +3232,15 @@ accessor, recognized by the compiler in shipped source
 (`MixinMethod::class_accessor`, read only by the image code, no fast path),
 resolved before the rest of a graph decodes; a second platform is an
 ordinary record of the class the path `Platform` names. The boot runs
-`newPlatform` and `Platform`'s superclass clause, so a freshly bootstrapped
+`build` and `Platform`'s superclass clause, so a freshly bootstrapped
 interpreter's caches are not empty (four sites, three global entries, pinned
 by a test).
 
 New goldens pin the lazy-slot rules (`goldens/language/slot/accessor/spec_6_3_3_*`,
-`goldens/library/value/a_values_lazy_slot_*`) and
-`goldens/library/platform/a_second_platform_writes_like_the_first`;
-`goldens/library/platform/the_platform_and_its_parts_are_values` checks
-that a second platform made from the first's class, `platform Platform
-new`, equals it, and
+`goldens/library/value/a_values_lazy_slot_*`) and the platform as a value
+(`goldens/library/platform/the_platform_and_its_parts_are_values`; a second
+platform, which only a host makes, equal to the first in `tests/platform.rs`'s
+test of that name), and
 `spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` runs, unskipped.
 
 **Measured** ([execution.md](design/execution.md), "What the platform module
@@ -3376,10 +3376,9 @@ Plan: [ns-next-collections-module](superpowers/plans/2026-09-28-0102-ns-next-col
 In the factory pattern, decided with the user: a shipped
 `CollectionsFactory.ns`, whose root holds the kernel and is never handed
 out, and whose private nested `Collections` is the facet `platform
-collections` answers. The facet names its own class (`public Collections = (
-^outer CollectionsFactory Collections )`) as `Platform` does, so its image
-path is `collections Collections` without widening the compiler's
-class-accessor recognition. `List` is a private class of the factory,
+collections` answers. The facet hands out the module's classes but not
+its own, as the platform hands out none of its module's. `List` is a
+private class of the factory,
 Newspeak over arrays it replaces when full, handed out by the facet's class
 accessor. The mirror's `moduleNamed:` leaf builds a shipped module's root
 class on every request and keeps nothing in Rust; `PlatformFactory`'s lazy
@@ -4960,7 +4959,7 @@ record of that class. A project module may now be named like one of
 **Goldens.** About 44 goldens and 33 Rust tests sent `class` to another
 object; each now checks what it checked through the public protocol
 (`isKindOf…`, the class a handler catches, a class-side `metaclass`
-answering `self class`, the platform's own class accessors), every
+answering `self class`, a second platform the host makes), every
 recorded line kept byte for byte or translated by one rule -- a class
 name printed for a kind became `true`, and
 `a_non_boolean_receiver_is_caught_as_an_error` prints the error's
@@ -4994,3 +4993,40 @@ modules; only its fingerprint bytes changed.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): the
 reflective checks return as goldens with road step 5's mirrors.
+
+## The platform's modules (2026-10-13)
+
+`Platform`'s class accessors -- `Platform`, `Transcript`,
+`KernelNamespace`, `Time` and `Stopwatch` -- and the collections facet's
+`Collections` existed so that an image could name those classes by a path
+from the platform. Shipped names name them by declaration, and with
+`class` protected no program reaches them otherwise, so they are gone
+([core-library.md](design/core-library.md), "The platform"): a program
+holds the facets it is handed and makes no second platform, transcript or
+facet. `Time`'s `Stopwatch` stays, for the Are We Fast Yet harness.
+`goldens/library/platform/a_second_platform_writes_like_the_first` and
+`goldens/library/collection/every_platform_shares_one_collections_module`
+are gone, and `the_platform_and_its_parts_are_values` keeps its identity
+line; what they checked of second ones, which only a host makes, is
+`tests/platform.rs`'s `the_platform_and_its_parts_are_values` and
+`a_second_platform_writes_too`.
+
+The two factories keep of the kernel only the classes they use, one
+private slot each (`private Collection = kernel Collection`), not the
+kernel instance (decided with the user; the mirror stays whole), and
+`CollectionsFactory`'s two Errors name `Error` bare. The boot runs
+`PlatformFactory`'s twelve new slot initializers, which raise the inline
+cache sites it leaves from 18 to 31 (`tests/inline_caches.rs`).
+
+The transcript and the clock are shipped modules of their own,
+`core-library/platform/TranscriptFactory.ns` and `TimeFactory.ns` beside
+`CollectionsFactory.ns`, each given the mirror alone
+(`ShippedFactory::Mirror`), and `PlatformFactory`'s root reaches them as it
+reaches the collections module; every shipped factory's one public member
+is `build`. Every module root is `= Value` and every superclass clause that
+sends only `new` omits it (§6.1); the kernel's root is built by the root
+rule like any module's, so no shipped class applies a mixin and the image's
+shipped levels have no live example until one does
+([OPEN-WORK.md](OPEN-WORK.md)). The factories' mirror parameter is
+`mirror`. The boot leaves 31 inline-cache sites and 22 global entries, where
+it left 18 and 10 before this branch.

@@ -3,7 +3,7 @@
 /// the Booleans, nil's class, the classes of class objects and the
 /// exceptions. The host instantiates it once, at boot.
 ///
-/// theMirror: the VM mirror, which the host alone holds; every native
+/// mirror: the VM mirror, which the host alone holds; every native
 /// operation of these classes is a send to it.
 ///
 /// The core library (`docs/design/core-library.md`, "The core library as
@@ -25,11 +25,11 @@
 ///
 /// The kernel declares itself a value so that every builtin value class,
 /// nested here, meets §3.1.1's enclosing-object condition.
-class Kernel vmMirror: theMirror = Object <: Value (
+class Kernel vmMirror: mirror = Value (
   |
     /// The VM mirror the factory was given: the one object through which
     /// a method here reaches a native operation. Never handed out.
-    private vmMirror = theMirror.
+    private vmMirror = mirror.
   |
 ) (
   /// The empty class, `Object`'s superclass: it declares nothing, and no
@@ -47,7 +47,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// answers -- its identity, equality, hash and printed form, the nil
   /// protocol, `halt` and `doesNotUnderstand:` -- and, to itself alone, its
   /// class and the class accessors.
-  public class Object = Top new () (
+  public class Object = Top () (
     /// Answers the receiver's class: the class object it was
     /// instantiated from, a value class's per enclosing object.
     ///
@@ -335,7 +335,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// class has on `Class` so that a metaclass does not inherit it. A class
   /// object's state lives in the runtime (heap record); these three carry
   /// behaviour only. `Object` declares no accessor for any of them.
-  public class Behavior = Object new () (
+  public class Behavior = Object () (
     /// Answers whether `other` is the receiver or, for a class object
     /// whose enclosing object is a value, a class object of the same
     /// declaration whose enclosing object and superclass are equal to
@@ -416,7 +416,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// What a class object answers, as an instance of its metaclass: its
   /// name, its printed form and `handles:`.
-  public class Class = Behavior new () (
+  public class Class = Behavior () (
     /// Answers the class's name as its declaration writes it, a new
     /// String on every send.
     public name = (
@@ -450,7 +450,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// The class of every metaclass: a metaclass's name, printed form and
   /// equality.
-  public class Metaclass = Behavior new () (
+  public class Metaclass = Behavior () (
     /// Answers a new String: its class's name followed by ' class'.
     public name = (
       ^thisClass name , ' class'.
@@ -516,7 +516,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// on, for good: the VM reads both to tell a search that overran the
   /// depth limit's reserve from a handler that did
   /// (`Mutator::overrun_of_the_reserve`).
-  public class Exception = Object new (
+  public class Exception = Object (
     |
       /// The activation of the `signal` that raised the exception, which
       /// `resume:` returns from; nil before `signal` and once a handler
@@ -874,7 +874,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   )
 
   /// An exception that is not resumable; the VM's own errors are Errors.
-  public class Error = Exception new () (
+  public class Error = Exception () (
     /// Answers false: a handler cannot `resume:` an Error.
     public isResumable = (
       ^false.
@@ -900,7 +900,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// debugger can create the missing method and carry on:
   /// `Object>>doesNotUnderstand:` then sends the message again. A host
   /// receives the selector and receiver of the send nothing understood.
-  public class MessageNotUnderstood = Error new (
+  public class MessageNotUnderstood = Error (
     |
       /// The `Message` nothing understood, nil for one a program
       /// signals itself; `message:` sets it and answers the
@@ -945,7 +945,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// What `Object>>halt` signals: a resumable exception which, unhandled,
   /// ends the run.
-  public class Halt = Exception new () () : (
+  public class Halt = Exception () () : (
     /// As `Exception class>>signal`: signals a new Halt.
     public signal = (
       ^self new signal.
@@ -960,7 +960,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// An argument a method cannot take: an index out of range, a size, an
   /// object of the wrong kind, a divisor of zero, a block given the wrong
   /// number of arguments. Carries the argument.
-  public class ArgumentError = Error new (
+  public class ArgumentError = Error (
     |
       /// The argument that was refused, any object; `argument:` sets it
       /// and answers the receiver.
@@ -1001,7 +1001,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// A return to an activation that has already returned: a `^` from a
   /// block whose home has returned, or a `return:`, `retry` or `resume:`
   /// aimed at one. Carries the value that was being returned.
-  public class CannotReturn = Error new (
+  public class CannotReturn = Error (
     |
       /// The value that could not be returned, any object; `result:`
       /// sets it and answers the receiver.
@@ -1039,7 +1039,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   ///
   /// Private, so a program catches it as an `Error`: no program needs to
   /// name the one mistake it reports.
-  private class NonBooleanReceiver = Error new (
+  private class NonBooleanReceiver = Error (
     |
       /// The condition's answer, any object; `receiver:` sets it and
       /// answers the exception.
@@ -1080,7 +1080,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// A class that refused to make an instance through the factory it was
   /// sent: one made only by a literal, by its declaration, or by another
   /// factory. Carries the class, or nil when it may not be named.
-  public class CannotInstantiate = Error new (
+  public class CannotInstantiate = Error (
     |
       /// The class that refused, or nil; `behavior:` sets it and
       /// answers the receiver.
@@ -1128,7 +1128,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// What a `doesNotUnderstand:` handler receives. `sendTo:` sends it as
   /// an ordinary public send (§5.5): a program can build a message, so a
   /// send through one must reach no protected or private method.
-  public class Message = Object new (
+  public class Message = Object (
     |
       /// The selector, a Symbol; `selector:` sets it and answers the
       /// receiver.
@@ -1168,7 +1168,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// A running activation as an object: the frame it wraps, and nothing a
   /// program can reach -- it reads other frames and unwinds stacks, a
   /// capability Newspeak hands out only through mirrors.
-  private class Activation = Object new () ()
+  private class Activation = Object () ()
 
   /// An object that answers none of `Object`'s public messages itself:
   /// each is overridden as protected, so a message from outside reaches
@@ -1184,7 +1184,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// `class` and the class accessors need none: `Object` already
   /// declares them protected, and a bare `Integer` or `self class` inside
   /// a proxy keeps the accessor's direct answer.
-  public class Proxy = Object new () (
+  public class Proxy = Object () (
     /// As `Object>>==`, for a send from inside the proxy only.
     protected == other = (
       ^super == other.
@@ -1276,7 +1276,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// future handed to it is not forced until this one is. The
   /// initializer tells the runtime a future exists, which is what turns
   /// on its seeing through futures.
-  private class FutureImplementation computing: theComputation = Proxy new (
+  private class FutureImplementation computing: theComputation = Proxy (
     |
       /// The computation until the future is resolved, then its value;
       /// read and written only by the runtime after the factory.
@@ -1310,7 +1310,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// keeps the rules of docs/design/object-model.md, "Simultaneous
   /// slots". Its initializer refuses, so a subclass's instances are
   /// refused too; a subclass does not inherit `computing:` (§3.2).
-  public class Future = Object new (
+  public class Future = Object (
     (outer Kernel CannotInstantiate behavior: self
         class) signal: 'a Future is made by Future computing:'.
   ) () : (
@@ -1339,7 +1339,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// like its original, so none of them may inherit `Object`'s identity
   /// hash. `Integer`'s, `True`'s and `False`'s are no forwarders to a
   /// leaf: the value they answer is already at hand.
-  public class Value = Object new () (
+  public class Value = Object () (
     /// Answers whether `other` is of a class equal to the receiver's and
     /// its slots, in declaration order, are equal to the receiver's,
     /// each compared with `=`.
@@ -1456,7 +1456,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// and §5.1.1's numeric literals are its instances. Iteration is here
   /// so that an `Integer`, a `LargeInteger` and a `Float` receiver share
   /// one body. The compiler does not inline them; they are sent.
-  public class Number = Value new () (
+  public class Number = Value () (
     /// Answers true: the receiver is a Number.
     public isKindOfNumber = (
       ^true.
@@ -1830,7 +1830,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   )
 
   /// The superclass of `True` and `False`.
-  public class Boolean = Value new () (
+  public class Boolean = Value () (
     /// Answers true: the receiver is a Boolean.
     public isKindOfBoolean = (
       ^true.
@@ -1849,7 +1849,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// (`docs/design/core-library.md`, "`True` and `False` are quick
   /// methods"). An argument that is no block is sent `value` like any
   /// other object; `printString` and `hash` alone are ordinary methods.
-  public class True = Boolean new () (
+  public class True = Boolean () (
     /// Answers the value of `trueBlock`; `falseBlock` is not
     /// evaluated.
     ///
@@ -1916,7 +1916,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   )
 
   /// The class of `false`.
-  public class False = Boolean new () (
+  public class False = Boolean () (
     /// Answers the value of `falseBlock`; `trueBlock` is not
     /// evaluated.
     ///
@@ -1984,7 +1984,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// The integers, of any size: a literal such as `3` is one, and an
   /// integer outside -2^60 to 2^60 - 1 is a `LargeInteger`.
-  public class Integer = Number new () (
+  public class Integer = Number () (
     /// Answers true: the receiver is an Integer.
     public isKindOfInteger = (
       ^true.
@@ -2411,7 +2411,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// does not fit a `SmallInteger`; every leaf answers an `Integer` when
   /// the result fits again, so each integer has one representation.
   /// `3 class` stays `Integer` -- the section asks only for its protocol.
-  public class LargeInteger = Integer new () (
+  public class LargeInteger = Integer () (
     /// As `Integer>>+`: the sum, an integer for an integer `other`,
     /// exact for a Fraction one and a Float for a Float one, with the
     /// same ArgumentError.
@@ -2531,7 +2531,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// The 64-bit IEEE 754 floating-point numbers: a literal such as `1.5`
   /// is one.
-  public class Float = Number new () (
+  public class Float = Number () (
     /// Answers true: the receiver is a Float.
     public isKindOfFloat = (
       ^true.
@@ -2859,7 +2859,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// Made only by the runtime, so a fraction is always in normal form
   /// and `=` and `hash` can compare its parts. Its parts are two hidden
   /// fields, not slots: no program writes them.
-  public class Fraction = Number new () (
+  public class Fraction = Number () (
     /// Answers true: the receiver is a Fraction.
     public isKindOfFraction = (
       ^true.
@@ -2966,7 +2966,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// An immutable sequence of Unicode code points: a literal such as
   /// `'abc'` is one.
-  public class String = Value new () (
+  public class String = Value () (
     /// Answers true: the receiver is a String.
     public isKindOfString = (
       ^true.
@@ -3237,7 +3237,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// literal such as `#at:put:` or by `asSymbol`, never by `new`. It
   /// understands what a String does; `,` and `copyFrom:to:` answer a
   /// String.
-  public class Symbol = String new () (
+  public class Symbol = String () (
     /// Answers a new String of the Symbol's text.
     public asString = (
       ^vmMirror symbolAsString: self ifFail: [^super asString].
@@ -3267,7 +3267,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// member here, each written over `do:`; to `collect:`, `select:` or
   /// `reject:` it also defines `newForCollectUsingAdd:`. A subclass
   /// overrides any member it can answer faster.
-  public class Collection = Object new () (
+  public class Collection = Object () (
     /// Answers true: the receiver is a Collection.
     public isKindOfCollection = (
       ^true.
@@ -3500,7 +3500,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// A fixed-size sequence of objects, indexed from 1, and a Collection:
   /// `Array new: 3`, or a literal such as `{1. 2}`.
-  public class Array = Collection new () (
+  public class Array = Collection () (
     /// Answers true: the receiver is an Array.
     public isKindOfArray = (
       ^true.
@@ -3877,7 +3877,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
   /// answers `isNil` with true. It answers the rest of the nil protocol
   /// `Object` declares the other way round, each a quick method, and
   /// prints as `nil`.
-  public class UndefinedObject = Value new () (
+  public class UndefinedObject = Value () (
     /// Answers true: the receiver is nil.
     public isNil = (
       ^true.
@@ -3920,7 +3920,7 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
   /// A closure, `[:argument | …]`: code that runs when it is sent
   /// `value`, in the scope it was written in (§5.1.8).
-  public class Closure = Object new () (
+  public class Closure = Object () (
     /// Answers true: the receiver is a Closure.
     public isKindOfClosure = (
       ^true.

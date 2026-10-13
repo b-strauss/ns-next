@@ -3004,7 +3004,7 @@ const FIXTURE_NAMES: &[(&str, &str, u8)] = &[
     ("Kernel", "Integer", 2),              // INTEGER_CLASS_NAME = 11
     ("Kernel", "Kernel", 0),               // KERNEL_INSTANCE_NAME = 12
     ("Kernel", "Kernel", 1),               // KERNEL_ROOT_NAME = 13
-    ("PlatformFactory", "Stopwatch", 1),   // STOPWATCH_NAME = 14
+    ("TimeFactory", "Stopwatch", 1),       // STOPWATCH_NAME = 14
     ("Kernel", "Behavior", 1),             // BEHAVIOR_NAME = 15
     ("Kernel", "Closure", 1),              // CLOSURE_NAME = 16
     ("Kernel", "Class", 1),                // CLASS_NAME = 17
@@ -8859,6 +8859,52 @@ fn snapshot_module(module_source: &str, source: Option<&str>, extra_send: Option
     })
 }
 
+/// As `snapshot_module`, after the host has stored what `make` answers --
+/// given the interpreter and the platform -- through the instance's setter
+/// `setter`: for an object no program can make, such as a second platform.
+fn snapshot_module_holding(
+    module_source: &str,
+    setter: &str,
+    make: impl FnOnce(&mut Interpreter, &Root) -> Root,
+) -> Vec<u8> {
+    let (mut interpreter, class) = load(module_source);
+    let platform = interpreter.platform();
+    let instance = expect_ok(
+        interpreter.instantiate(&class, std::slice::from_ref(&platform)),
+        "instantiate",
+    );
+    let held = make(&mut interpreter, &platform);
+    expect_ok(
+        interpreter.send(&instance, Symbol::intern(setter), &[held]),
+        setter,
+    );
+    interpreter.enter(|mutator| {
+        let class = class_reference(mutator, &class);
+        let instance = mutator.fetch(&instance);
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance],
+        )
+        .expect("snapshot")
+    })
+}
+
+/// A second platform, made by the host from the platform's class: no
+/// program can make one.
+fn a_second_platform(interpreter: &mut Interpreter, platform: &Root) -> Root {
+    let platform_class = interpreter.enter(|mutator| {
+        let class = mutator.class_of(mutator.fetch(platform));
+        mutator.stash(Value::object(class))
+    });
+    expect_ok(
+        interpreter.send(&platform_class, Symbol::NEW, &[]),
+        "platform class new",
+    )
+}
+
 #[test]
 fn a_source_free_image_still_runs() {
     let bytes = snapshot_module(SOURCE_FREE_MODULE, None, None);
@@ -12206,9 +12252,9 @@ fn a_platform_member_round_trips_as_a_record() {
     let bytes = snapshot_module(PLATFORM_MEMBERS, None, None);
     let report = image::inspect::inspect(&bytes).expect("inspect");
     for name in [
-        "PlatformFactory Transcript",
+        "TranscriptFactory Transcript",
         "CollectionsFactory Collections",
-        "PlatformFactory Time",
+        "TimeFactory Time",
         "PlatformFactory Platform",
     ] {
         assert!(
@@ -12309,23 +12355,16 @@ fn a_loaded_graph_naming_shipped_classes_and_a_module_class_survives_both_collec
     );
 }
 
-/// The platform hands out its module's classes by class accessors
-/// (`public Transcript = ( ^outer PlatformFactory Transcript )`), and the
-/// collections facet its module's the same way, so a class a program got
-/// from one is named by its declaration, and the loading boot answers its
-/// own class for it. `platform time Stopwatch` answers the class `platform
-/// Stopwatch` does, so the one name `PlatformFactory Stopwatch` names both.
+/// The collections facet hands out its module's classes by class accessors
+/// (`public List = ( ^outer CollectionsFactory List )`), and `Time` its
+/// `Stopwatch` the same way, so a class a program got from one is named by
+/// its declaration, and the loading boot answers its own class for it. The
+/// platform hands out none of its module's classes.
 #[test]
 fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
-            | public transcriptClass = platform Transcript.
-              public platformClass = platform Platform.
-              public collectionsClass = platform collections Collections.
-              public listClass = platform collections List.
-              public kernelNamespaceClass = platform KernelNamespace.
-              public timeClass = platform Time.
-              public stopwatchClass = platform Stopwatch.
+            | public listClass = platform collections List.
               public timeStopwatchClass = platform time Stopwatch. |
         ) (
         ) : ()
@@ -12337,13 +12376,8 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
         vec![
             "Kernel Metaclass".to_string(),
             "Kernel Object".to_string(),
-            "PlatformFactory Transcript".to_string(),
-            "PlatformFactory Platform".to_string(),
-            "CollectionsFactory Collections".to_string(),
             "CollectionsFactory List".to_string(),
-            "PlatformFactory KernelNamespace".to_string(),
-            "PlatformFactory Time".to_string(),
-            "PlatformFactory Stopwatch".to_string()
+            "TimeFactory Stopwatch".to_string()
         ],
         "the names the graph uses, in the order it first reaches them"
     );
@@ -12353,13 +12387,7 @@ fn a_class_the_platform_hands_out_is_named_by_its_declaration() {
     let collections = send_to(&mut loaded, &platform, "collections");
     let time = send_to(&mut loaded, &platform, "time");
     for (member, answerer, accessor) in [
-        ("transcriptClass", &platform, "Transcript"),
-        ("platformClass", &platform, "Platform"),
-        ("collectionsClass", &collections, "Collections"),
         ("listClass", &collections, "List"),
-        ("kernelNamespaceClass", &platform, "KernelNamespace"),
-        ("timeClass", &platform, "Time"),
-        ("stopwatchClass", &platform, "Stopwatch"),
         ("timeStopwatchClass", &time, "Stopwatch"),
     ] {
         let stored = send_to(&mut loaded, &instance, member);
@@ -12451,17 +12479,24 @@ fn a_shipped_name_resolves_to_the_loading_boots_own_object() {
 
 /// A second platform is an ordinary instance of a shipped class: written as
 /// a record of `PlatformFactory Platform`, with its own lazy slots, and it
-/// works after a load as it did before.
+/// works after a load as it did before. No program makes one, so the host
+/// stores it.
 #[test]
 fn a_second_platform_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
-            | public second = platform Platform new. |
-            second transcript.
+            | public second ::= nil. |
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module_holding(source, "second:", |interpreter, platform| {
+        let second = a_second_platform(interpreter, platform);
+        expect_ok(
+            interpreter.send(&second, Symbol::intern("transcript"), &[]),
+            "second transcript",
+        );
+        second
+    });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
@@ -12548,7 +12583,7 @@ fn a_list_is_a_record_of_its_shipped_class() {
 }
 
 /// A `Stopwatch` is an ordinary instance of a shipped class, as a `List`
-/// is: written as a record of `PlatformFactory Stopwatch`, with its started
+/// is: written as a record of `TimeFactory Stopwatch`, with its started
 /// reading, and it reads on after a load -- the class and its code are the
 /// loading binary's. Snapshot and load run in one process, which shares the
 /// clock's origin, so a start that survived the load reads a strictly
@@ -12566,7 +12601,7 @@ fn a_stopwatch_is_a_record_of_its_shipped_class() {
     assert!(
         report
             .shipped_names
-            .contains(&"PlatformFactory Stopwatch".to_string()),
+            .contains(&"TimeFactory Stopwatch".to_string()),
         "the stopwatch's class is named by its declaration: {:?}",
         report.shipped_names
     );
@@ -12594,18 +12629,25 @@ fn a_stopwatch_is_a_record_of_its_shipped_class() {
     );
 }
 
-/// A facet a program makes itself from `platform collections Collections` is an
-/// ordinary record of `CollectionsFactory Collections`, and after a load it
-/// is equal to the loading platform's facet: a value.
+/// A second collections facet is an ordinary record of
+/// `CollectionsFactory Collections`, and after a load it is equal to the
+/// loading platform's facet: a value. No program makes one, so the host
+/// stores a second platform's.
 #[test]
 fn a_second_collections_facet_is_a_record_of_its_shipped_class() {
     let source = indoc! {"
         class Holder usingPlatform: platform = Object new (
-            | public facet = platform collections Collections new. |
+            | public facet ::= nil. |
         ) (
         ) : ()
     "};
-    let bytes = snapshot_module(source, None, None);
+    let bytes = snapshot_module_holding(source, "facet:", |interpreter, platform| {
+        let second = a_second_platform(interpreter, platform);
+        expect_ok(
+            interpreter.send(&second, Symbol::intern("collections"), &[]),
+            "second collections",
+        )
+    });
     let report = image::inspect::inspect(&bytes).expect("inspect");
     assert!(
         report
@@ -12803,7 +12845,7 @@ fn a_record_of_top_is_refused() {
 }
 
 /// A shipped class that is no builtin has instance records only: an array,
-/// a string or a frame record under `PlatformFactory Stopwatch` is refused
+/// a string or a frame record under `TimeFactory Stopwatch` is refused
 /// before anything is allocated.
 #[test]
 fn a_record_of_a_shipped_class_with_another_body_is_refused() {

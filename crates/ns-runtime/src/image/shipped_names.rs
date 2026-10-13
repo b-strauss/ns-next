@@ -304,7 +304,7 @@ mod tests {
     fn three_names_round_trip() {
         let names = [
             name("Kernel", "Array", ShippedKind::Metaclass),
-            name("Kernel", "Kernel", ShippedKind::Level(0)),
+            name("Kernel", "Integer", ShippedKind::Class),
             name(
                 "CollectionsFactory",
                 "CollectionsFactory",
@@ -316,22 +316,6 @@ mod tests {
         let decoded = decode_section(&mut reader, &table).expect("the section decodes");
         assert_eq!(decoded, names);
         assert_eq!(reader.remaining(), 0);
-    }
-
-    /// A name answers the very object the boot recorded under it: a level,
-    /// which no value can hold, checked here rather than through a graph.
-    #[test]
-    fn a_level_resolves_to_the_boots_own_level() {
-        let mut interpreter = crate::Interpreter::bootstrap();
-        interpreter.enter(|mutator| {
-            let world = &mutator.shipped_world;
-            let level = name("Kernel", "Kernel", ShippedKind::Level(0));
-            let index = world.index_of_name(&level).expect("Kernel Kernel level 0");
-            let resolved = resolve(&[level], world, true).expect("a kernel name resolves");
-            assert!(resolved[0].object.same(world.entries()[index].object));
-            assert_eq!(resolved[0].positions, world.entries()[index].positions);
-            assert_eq!(resolved[0].name, level);
-        });
     }
 
     #[test]
@@ -417,13 +401,22 @@ mod tests {
         );
     }
 
-    /// `Kernel Kernel` has one `<:` clause, so its level 1 names nothing.
+    /// A level past a declaration's `<:` clauses names nothing. No shipped
+    /// declaration applies a mixin today -- every module root is `= Value`
+    /// -- so no level of a shipped class is named at all, the kernel root's
+    /// first included; the first shipped mixin brings a level back to
+    /// resolve (`docs/OPEN-WORK.md`).
     #[test]
     fn a_level_past_the_clauses_is_refused() {
-        assert_eq!(
-            resolve_error(&[name("Kernel", "Kernel", ShippedKind::Level(1))], false),
-            DecodeError::UnknownShippedName("Kernel Kernel level 1".to_string())
-        );
+        for clause in [0, 1] {
+            assert_eq!(
+                resolve_error(
+                    &[name("Kernel", "Kernel", ShippedKind::Level(clause))],
+                    false
+                ),
+                DecodeError::UnknownShippedName(format!("Kernel Kernel level {clause}"))
+            );
+        }
     }
 
     #[test]

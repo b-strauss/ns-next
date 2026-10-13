@@ -391,8 +391,8 @@ mutable slot anywhere in the class chain, a slot initialized with anything but
 a value, a class that defines `==` below `Value`, and an enclosing object, at
 any level of the class chain, that is not a value
 ([object-model.md](object-model.md), "A value object's four conditions"). So
-a value class lives in a module that declares itself a value with §6.2's
-mixin application, `= Object <: Value`, as `Kernel.ns` does.
+a value class lives in a module that declares itself a value, `= Value` as
+`Kernel.ns` does, or with §6.2's mixin application, `= Object <: Value`.
 
 A class object is a value exactly when its enclosing object is, so a module
 definition, which has none, is one (§6.4), and so is a class nested in a
