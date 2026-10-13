@@ -3780,8 +3780,11 @@ class Kernel vmMirror: mirror = Value (
   /// applying it passes through to `Collection` and `Object`. Its own
   /// superclass, `Collection`, records that its members build on
   /// `Collection`'s protocol; applying it takes only its own members.
-  /// Private: a program meets it only through the classes that apply it.
-  private class IndexedCollection = Collection () (
+  /// Public so that a shipped module can apply it (`TypedArraysFactory`
+  /// applies it over `Collection` to make the typed arrays); no facet
+  /// hands it to a program, which meets it only through the classes that
+  /// apply it.
+  public class IndexedCollection = Collection () (
     /// Answers a new instance of the receiver's kind holding `size`
     /// elements, each the empty element of that kind.
     ///
@@ -5913,11 +5916,11 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// Signals the ArgumentError of `on:byteOrder:` for `order`, with the
     /// selector 'new:byteOrder:', before it allocates anything; and the
-    /// ArgumentErrors of `TypedArray bytesFor:width:` for a `size` that is
-    /// negative, no Integer or too large to allocate.
+    /// ArgumentErrors of `ByteArray new:` for a `size` that is negative,
+    /// no Integer or too large to allocate.
     public new: size byteOrder: order = (
       self checkByteOrder: order selector: #new:byteOrder:.
-      ^self on: (outer Kernel TypedArray bytesFor: size width: 1) byteOrder: order.
+      ^self on: (outer Kernel ByteArray new: size) byteOrder: order.
     )
 
     /// Answers the receiver when `order` is #littleEndian or #bigEndian and

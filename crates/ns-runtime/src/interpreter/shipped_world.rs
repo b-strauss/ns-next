@@ -497,8 +497,10 @@ mod tests {
                 );
             }
             // The byte storage, its builder and its views are public
-            // classes a program names, subclasses and keeps instances of.
+            // classes a program names, subclasses and keeps instances of;
+            // so is `IndexedCollection`, which a shipped module applies.
             for public in [
+                "IndexedCollection",
                 "ByteArray",
                 "StringBuilder",
                 "TypedArray",
@@ -512,13 +514,9 @@ mod tests {
                 );
             }
             // `DataView on:byteOrder:` answers instances of the two byte
-            // orders and `IndexedCollection` is only mixed in: no public
-            // accessor answers the classes, so a record's class only.
-            for private in [
-                "LittleEndianDataView",
-                "BigEndianDataView",
-                "IndexedCollection",
-            ] {
+            // orders: no public accessor answers the classes, so a
+            // record's class only.
+            for private in ["LittleEndianDataView", "BigEndianDataView"] {
                 let positions = positions_of(world, name("Kernel", private, ShippedKind::Class));
                 assert!(
                     !positions.value && !positions.superclass && positions.header,

@@ -2284,14 +2284,12 @@ mod tests {
     /// reach at all, `NonBooleanReceiver`, which a program catches as an
     /// `Error` (`docs/design/core-library.md`, "Exceptions";
     /// `docs/design/object-model.md`, "Simultaneous slots"), and
-    /// `IndexedCollection`, a mixin a program meets only through the
-    /// classes that apply it.
+    /// the two byte-order classes of the data view.
     const PRIVATE_KERNEL_CLASSES: &[&str] = &[
         "Top",
         "Activation",
         "FutureImplementation",
         "NonBooleanReceiver",
-        "IndexedCollection",
         "LittleEndianDataView",
         "BigEndianDataView",
     ];
