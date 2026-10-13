@@ -3377,10 +3377,14 @@ class Kernel vmMirror: mirror = Value (
     /// Signals an ArgumentError carrying `aString`, 'add: requires a
     /// String, got …' and its `printString`, for any other argument, a
     /// ByteArray included; the builder is unchanged.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
     public add: aString = (
       |
         byteTotal
       |
+      self checkState: #add:.
       aString isKindOfString ifFalse: [
         ^(outer Kernel ArgumentError value: aString) signal: 'add: requires a String, got '
             , aString printString.
@@ -3401,9 +3405,13 @@ class Kernel vmMirror: mirror = Value (
     /// requires a Unicode scalar value, got …' and its `printString`, for
     /// any other argument; nothing is appended.
     ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
+    ///
     /// The value is checked here, before the write, so that the error
     /// names `addCodePoint:` rather than the ByteArray store behind it.
     public addCodePoint: codePoint = (
+      self checkState: #addCodePoint:.
       (codePoint isKindOfInteger and: [
         codePoint >= 0 and: [
           codePoint <= 1114111 and: [(codePoint >= 55296 and: [codePoint <= 57343]) not].
@@ -3425,7 +3433,7 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// aString: a String or a Symbol.
     ///
-    /// Signals the ArgumentError of `add:`; the builder is unchanged.
+    /// Signals the ArgumentErrors of `add:`; the builder is unchanged.
     public writeln: aString = (
       self add: aString.
       self addCodePoint: 10.
@@ -3433,25 +3441,70 @@ class Kernel vmMirror: mirror = Value (
     )
 
     /// Answers how many code points have been appended.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
     public size = (
+      self checkState: #size.
       ^codePointCount.
     )
 
     /// Answers whether nothing has been appended.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
     public isEmpty = (
+      self checkState: #isEmpty.
       ^codePointCount = 0.
     )
 
     /// Answers a new String of everything appended, in order; a new one
     /// on every send, so the receiver's later appends do not reach it.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
     public asString = (
+      self checkState: #asString.
       ^outer Kernel String fromUtf8: data from: 1 to: byteCount.
     )
 
     /// Answers a new ByteArray of the UTF-8 bytes of everything appended,
     /// a copy: changing it leaves the receiver unchanged.
+    ///
+    /// Signals the ArgumentError of `checkState:` when the receiver's state
+    /// is not one its own members leave.
     public asUtf8 = (
+      self checkState: #asUtf8.
       ^data copyFrom: 1 to: byteCount.
+    )
+
+    /// Answers the receiver when its slots hold what its own members leave
+    /// in them: `data` a ByteArray, `byteCount` an Integer from 0 to
+    /// `data size`, and `codePointCount` an Integer from 0 to `byteCount`.
+    ///
+    /// selector: the Symbol of the message the program sent.
+    ///
+    /// Signals an ArgumentError carrying the receiver, '<selector> found a
+    /// StringBuilder whose state is not its own', for any other state,
+    /// which only a crafted image can make; nothing is changed.
+    ///
+    /// Every member that reads the slots sends it first, so that a crafted
+    /// builder is refused under the selector the program sent, rather than
+    /// by whatever send first meets the wrong object, or by none when the
+    /// counts are wrong but still Integers.
+    private checkState: selector = (
+      (data isKindOfByteArray and: [
+        byteCount isKindOfInteger and: [
+          codePointCount isKindOfInteger and: [
+            byteCount >= 0 and: [
+              byteCount <= data size and: [codePointCount >= 0 and: [codePointCount <= byteCount]].
+            ].
+          ].
+        ].
+      ]) ifFalse: [
+        ^(outer Kernel ArgumentError value: self) signal: selector asString
+            , ' found a StringBuilder whose state is not its own'.
+      ].
     )
 
     /// Makes `data` hold at least `byteTotal` bytes, replacing it with a

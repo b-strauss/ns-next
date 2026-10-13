@@ -3861,7 +3861,15 @@ const REFUSALS_PROBE: &str = indoc! {"
       )
 
       public builder: builder = (
-        ^{refused: [builder asString]. refused: [builder add: 'x']}
+        ^{
+          refused: [builder asString].
+          refused: [builder add: 'x'].
+          refused: [builder size].
+          refused: [builder isEmpty].
+          refused: [builder asUtf8 size].
+          refused: [builder addCodePoint: 233].
+          refused: [(builder writeln: 'y') size].
+        }
       )
     ) : ()
 "};
@@ -3978,51 +3986,111 @@ fn a_view_over_what_is_no_byte_array_loads_and_refuses_every_access() {
     );
 }
 
-/// A builder's count is an ordinary slot too: one past its data, or no
-/// Integer at all, loads, and reading or appending refuses rather than
-/// reading past the bytes the builder has.
-#[test]
-fn a_builder_whose_count_its_data_does_not_hold_loads_and_refuses() {
-    let past_its_data = probe_image(2, |writer| {
+/// A field of a crafted StringBuilder record: a small integer, or the
+/// record at an object id.
+enum BuilderField {
+    Integer(i64),
+    Record(u32),
+}
+
+/// A probe image whose root is a StringBuilder of `fields` -- `data`,
+/// `byteCount`, `codePointCount` -- followed by a ByteArray of two bytes
+/// (record 1) and a String (record 2) for the fields to name.
+fn crafted_builder(fields: [BuilderField; 3]) -> Vec<u8> {
+    probe_image(3, |writer| {
         shipped_instance(writer, STRING_BUILDER_NAME, 3, 3, |writer| {
-            writer.write_u8(VALUE_OBJECT_ID); // data
-            writer.write_u32(1);
-            writer.write_u8(VALUE_SMALL_INTEGER); // byteCount
-            writer.write_i64(5);
-            writer.write_u8(VALUE_SMALL_INTEGER); // codePointCount
-            writer.write_i64(5);
+            for field in fields {
+                match field {
+                    BuilderField::Integer(integer) => {
+                        writer.write_u8(VALUE_SMALL_INTEGER);
+                        writer.write_i64(integer);
+                    }
+                    BuilderField::Record(id) => {
+                        writer.write_u8(VALUE_OBJECT_ID);
+                        writer.write_u32(id);
+                    }
+                }
+            }
         });
         byte_array_record(writer, 4, b"ab");
-    });
-    assert_eq!(
-        refusals(&past_its_data, "builder:"),
-        [
-            "from: 1 to: 5 out of range: valid ranges lie within 1..2, an empty range ends just \
-             before it starts (size 2)",
-            "startingAt: 1 out of range: the source holds 2 elements, the range needs 5 from 1",
-        ]
-    );
-    let a_string = probe_image(3, |writer| {
-        shipped_instance(writer, STRING_BUILDER_NAME, 3, 3, |writer| {
-            writer.write_u8(VALUE_OBJECT_ID); // data
-            writer.write_u32(1);
-            writer.write_u8(VALUE_OBJECT_ID); // byteCount
-            writer.write_u32(2);
-            writer.write_u8(VALUE_SMALL_INTEGER); // codePointCount
-            writer.write_i64(0);
-        });
-        byte_array_record(writer, 4, b"abcd");
         string_record(writer, 5, "two");
-    });
-    // `add:` adds to the count before it touches the data, and a String
-    // understands no `+`: the builder checks none of its private slots, so
-    // what refuses is the first send the wrong object cannot answer.
+    })
+}
+
+/// A builder's slots are ordinary slots too, which an image can fill with
+/// a state no builder's own members leave: a count past its data or below
+/// 0, more code points than bytes, or something that is no Integer or no
+/// ByteArray. Each loads, and every member refuses with an `ArgumentError`
+/// naming the selector sent, before it reads past the bytes the builder
+/// has or sends anything to the wrong object; `writeln:` refuses through
+/// `add:`.
+#[test]
+fn a_builder_whose_state_is_not_its_own_loads_and_refuses() {
+    use BuilderField::{Integer, Record};
+    let data = || Record(1);
+    let a_string = || Record(2);
+    for (fields, described) in [
+        (
+            [data(), Integer(5), Integer(5)],
+            "a byte count past its data",
+        ),
+        ([data(), Integer(-1), Integer(0)], "a negative byte count"),
+        (
+            [data(), Integer(2), Integer(3)],
+            "more code points than bytes",
+        ),
+        (
+            [data(), Integer(0), Integer(-1)],
+            "a negative code point count",
+        ),
+        (
+            [data(), a_string(), Integer(0)],
+            "a byte count that is a String",
+        ),
+        (
+            [data(), Integer(0), a_string()],
+            "a code point count that is a String",
+        ),
+        (
+            [a_string(), Integer(0), Integer(0)],
+            "data that is a String",
+        ),
+        (
+            [Integer(7), Integer(0), Integer(0)],
+            "data that is an Integer",
+        ),
+    ] {
+        assert_eq!(
+            refusals(&crafted_builder(fields), "builder:"),
+            [
+                "asString",
+                "add:",
+                "size",
+                "isEmpty",
+                "asUtf8",
+                "addCodePoint:",
+                "add:",
+            ]
+            .map(|selector| format!("{selector} found a StringBuilder whose state is not its own")),
+            "{described}"
+        );
+    }
+    // The same records, the state a builder's own members leave: two bytes
+    // of one code point each.
     assert_eq!(
-        refusals(&a_string, "builder:"),
+        refusals(
+            &crafted_builder([data(), Integer(2), Integer(2)]),
+            "builder:"
+        ),
         [
-            "fromUtf8:from:to: requires an Integer index, got the String \"two\"",
-            "not an ArgumentError: an object does not understand #+",
-        ]
+            "answered 'ab'",
+            "answered 'x'",
+            "answered 3",
+            "answered false",
+            "answered 3",
+            "answered 233",
+            "answered 6",
+        ],
     );
 }
 

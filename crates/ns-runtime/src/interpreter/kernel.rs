@@ -1190,6 +1190,7 @@ mod tests {
         ("StringBuilder", "asString"),
         ("StringBuilder", "asUtf8"),
         ("StringBuilder", "ensureRoom:"),
+        ("StringBuilder", "checkState:"),
         ("StringBuilder", "new"),
         // `TypedArray` is Newspeak over its subclasses' accessors: its
         // abstract members send `subclassResponsibility`, `size` and `do:`
