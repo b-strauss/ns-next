@@ -8,7 +8,8 @@
 > wire"). The decoder reads the graph section in two passes, sizing every
 > record's object from its own bytes before it allocates any ("Two
 > passes"), and a reified frame is an object record like every other
-> ("Frames are object records"). An image names every object the binary
+> ("Frames are object records"), as a `ByteArray` is, its bytes without
+> the alignment reserve ("A `ByteArray` is a record of its own"). An image names every object the binary
 > owns -- a shipped module's instance, a class its root declares, their
 > metaclasses and levels -- by its declaration, resolved by table lookup
 > against the shipped world the bootstrap builds whole, and carries the
@@ -588,10 +589,12 @@ named by its own shipped name, of kind metaclass or level metaclass, under
 record whose class object has no metaclass rather than write a header the
 decoder could not pair. A metaclass
 record is a record like any other, sized and allocated as one placeholder, and
-the smallest record there is: 9 bytes for a class object of 80, about 8.9x,
-which with the decoder's own tables sets the bound a rejected load reaches
-in a release build, about 10.7x of the graph section's bytes; in a debug
-one the root list sets it, at 16x ([memory.md](memory.md), "The
+the smallest record there is: counted with a two-byte class tag, 9 bytes
+for a class object of 80, about 8.9x, which with the decoder's own tables
+sets the bound a rejected load reaches in a release build, about 10.7x of
+the graph section's bytes; in a debug one the root list sets it, at 16x.
+Every live class tag is five bytes, so a metaclass record is at least 15
+and the release figure an upper bound ([memory.md](memory.md), "The
 amplification bound of a rejected load"); a shipped metaclass is no
 record at all and allocates nothing.
 
@@ -667,8 +670,8 @@ the kernel's classes and levels, never a module instance; an image
 world, the module instances only in a frame.
 
 **Object table.** Every heap object reachable from the roots — instances,
-strings, symbols, arrays, closures, class and metaclass records, reified
-frames — after a `u32` count, each record a header (its class tag and its
+strings, symbols, arrays, byte arrays, closures, class and metaclass
+records, reified frames — after a `u32` count, each record a header (its class tag and its
 `u32` identity hash) and a body under a body tag, so cycles and shared
 references round-trip with identity preserved. A closure encodes its compiled
 body as a code id, its captured frame as the object id of its frame record,
@@ -709,8 +712,22 @@ block written in such a message captures that frame, so a snapshot can hold
 one. The kernel's `Activation` object for a frame is the frame object itself,
 so an activation object in a graph is this one record. There is no frame
 table: tag 9, the activation record whose body was one frame-table id, is
-retired with it (`RETIRED_OBJECT_BODIES` is 4, 5 and 9; "Next free number:
-11" in `opcodes.rs`).
+retired with it (`RETIRED_OBJECT_BODIES` is 4, 5 and 9).
+
+**A `ByteArray` is a record of its own**, `OBJECT_BYTE_ARRAY` (body tag
+11; "Next free number: 12" in `opcodes.rs`): a `u32` length, then that
+many bytes, in order, under a header that names `Kernel ByteArray` by its
+shipped name. Only the bytes travel: the three reserve words ahead of the
+data are not written, since the decoder places the data at its own
+placeholder's alignment ([memory.md](memory.md), "Every mover realigns a
+`ByteArray`'s data"). A length past the bytes left is refused before
+anything is allocated, a byte-array body under any other header and a
+`ByteArray` header over any other body are `ByteArrayRecordMismatch`
+("Verification" below), and `inspect` prints the record as its size and
+its first 16 bytes in hex, "byte array of 3 bytes [01 02 03]". A typed array, a `DataView` or a `StringBuilder` is
+an ordinary instance record of its shipped class, its slot holding the
+`ByteArray`'s record ([core-library.md](core-library.md), "`ByteArray`,
+`StringBuilder` and the views").
 
 **Two passes.** Records reference each other freely and forward, so every
 record's object must exist before any is filled. `decode_graph_section`
@@ -721,10 +738,12 @@ indices, code ids, mixin rows, clause indices and symbol ids resolved, each
 shipped name held to the position it stands in, a symbol
 record naming a symbol-table entry already named refused (`DuplicateSymbol`),
 a `FutureImplementation` record of a field count other than two refused
-(`FutureRecord`), and a record of a shipped class that is no builtin
-refused unless it is an instance record (`ShippedInstanceBody`); each record yields its object's size, read from its own
-bytes — the kind comes first in a frame record and the register count is on
-the wire, so no size depends on another record. If the objects would take
+(`FutureRecord`), a record of a shipped class that is no builtin
+refused unless it is an instance record (`ShippedInstanceBody`), and a
+byte-array body and a `ByteArray` header refused unless they come together
+(`ByteArrayRecordMismatch`); each record yields its object's size, read from its own
+bytes — the kind comes first in a frame record, the register count and a
+byte array's length are on the wire, so no size depends on another record. If the objects would take
 more than eight words a byte of the input left, the load is refused
 (`UnexpectedEndOfFile`) before anything is allocated; a symbol's text is not
 counted against that, since it is bounded once per entry by the symbol
@@ -732,7 +751,9 @@ section. Then every record's placeholder is allocated at exactly its size —
 an instance of the builtin `Object` with nil fields, or for a frame record a
 frame object of its register count — and the second pass fills each in place:
 a header and class word rewritten, each value stored as it is read, a string
-packed straight from the buffer, a class record's eight fields copied in
+packed straight from the buffer, a byte array's bytes copied to the data
+words at its placeholder's 32-byte alignment, the header's format becoming
+`AlignedBytes`, a class record's eight fields copied in
 (`Heap::shape_placeholder` and the `fill_placeholder_*` and `fill_frame_*`
 accessors), so no record is ever built beside its placeholder. A frame
 record's body is filled last, from its remembered position, once the
@@ -783,9 +804,11 @@ reflective `superclass` — and the one thing that names a level in a graph
 besides its class's superclass is a frame's `current_class`, when a method
 of the shipped class the clause named, a kernel method, runs on an instance
 of the module's root class (`a_module_levels_own_hash_survives_an_image`,
-`crates/ns-runtime/tests/image.rs`). A shipped declaration's own levels, the
-level `Value` the `Kernel` root's clause adds among them, are shipped names
-and have hash entries like every shipped object.
+`crates/ns-runtime/tests/image.rs`). A shipped declaration's own levels --
+the levels the kernel mixin `IndexedCollection` adds under `Array`,
+`ByteArray` and `TypedArray`, named `Kernel Array level 0` and the like --
+are shipped names and have hash entries like every shipped object
+(`the_hash_of_a_shipped_level_survives_a_snapshot`).
 
 That is what Cog and Primordial Soup get without trying: their images carry
 every object, classes included — a Spur class's identity hash is even its index
@@ -1230,7 +1253,16 @@ image, so a record whose header names one must be an instance record
 is allocated, `a_record_of_a_shipped_class_with_another_body_is_refused`)
 carrying exactly the class's slot count of fields
 (`ShippedInstanceFieldCount`, `a_record_of_a_shipped_class_carries_exactly_its_layout`).
-A builtin's record is held to its own format instead, as above.
+A builtin's record is held to its own format instead, as above; for a
+`ByteArray` both ways, since its format is the one no other class may
+have: a byte-array body under any header but `Kernel ByteArray`, and a
+`Kernel ByteArray` header over any other body, are
+`ByteArrayRecordMismatch`, refused by the first pass and the second alike.
+A view's or a `StringBuilder`'s record is an ordinary instance record of
+its shipped class; what its slots hold is the program's to check, and the
+kernel refuses a crafted one with an `ArgumentError`
+([core-library.md](core-library.md), "The bootstrap and the image take
+them").
 
 **Trailing bytes are refused, not ignored.** `load` checks that the byte stream
 is exhausted once the last section has been read and returns
@@ -1727,10 +1759,12 @@ level's metaclass (`ShippedKind`) -- with the positions it may stand in
 comparison by identity in Rust changes. The bootstrap draws no identity
 hash while it builds them, so every hash a run draws is the same under
 `run` and `load` (`goldens/library/object/identity_hash.ns`). Building the
-whole world costs every process start about 3.7 ms on the measuring
-workstation, almost all of it compiling `CollectionsFactory.ns`
-([execution.md](execution.md), "What the collections module cost"); the
-two ways back, neither touching the format, are open
+whole world costs every process start several milliseconds on the
+measuring workstation, almost all of it compiling the shipped source:
+about 3.7 ms for `CollectionsFactory.ns` ([execution.md](execution.md),
+"What the collections module cost"), and about 4.6 ms more for the
+kernel's `ByteArray`, `StringBuilder` and views, measured at `1906a81d`;
+the two ways back, neither touching the format, are open
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
 **The section.** A `u32` count, then per entry the module's symbol, the
@@ -1819,6 +1853,12 @@ them, as `ShippedNameNotAllowed` ("Verification" above). A class accessor
 counts wherever it is declared in the module, by the class name it answers
 (`shipped_world.rs`, `accessed_classes`), which is right while every shipped
 class is declared directly in its root ([OPEN-WORK.md](../OPEN-WORK.md)).
+So `ByteArray`, `StringBuilder`, `TypedArray`, the ten typed arrays and
+`DataView` stand as values, superclasses and records' classes; the private
+`LittleEndianDataView`, `BigEndianDataView` and `IndexedCollection` as a
+record's class or a frame's only; and the levels `IndexedCollection` adds
+as a frame's class only (`a_view_and_a_builder_round_trip_through_a_package`,
+`crates/ns-runtime/tests/image.rs`).
 
 **A started image names only the kernel, and no module instance.** Before
 `main:args:` a program can reach nothing of `PlatformFactory` or
@@ -2129,6 +2169,15 @@ shipped world.
   (`StringOfSymbolClass`, 2026-10-03): with `Symbol` a subclass of `String`
   and a symbol told from a string by its class alone, such a record would be
   a second, non-canonical `Symbol`, which §5.1.6 forbids.
+- **A `ByteArray` is a record of its own, and only `ByteArray` has one**
+  (decided with the user on 2026-10-12, built on 2026-10-13; "A
+  `ByteArray` is a record of its own"): the next free body tag,
+  `OBJECT_BYTE_ARRAY` (11), its length and its bytes, the alignment
+  reserve not on the wire since the decoder aligns to its own placeholder;
+  the views and `StringBuilder` are ordinary instance records of their
+  shipped classes, so none of them is a builtin. The body and the
+  `ByteArray` header are held to each other both ways, since a record
+  carries exactly its class's layout (`ByteArrayRecordMismatch`).
 
 ## Open questions
 

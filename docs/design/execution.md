@@ -5144,6 +5144,16 @@ resolving and compiling its 1,710 lines of source, against the 0.28 ms plan
 2 measured for its first use when it had 99: a hello program's median
 start went from about 12.3 ms to about 16.0 ms. The per-process overhead of
 this machine is high (above), so the figures compare with each other only.
+
+**The kernel's fifth sub-project added about 4.6 ms more** (measured
+2026-10-13, at `1906a81d` against `b9149044`, release builds, the same
+hello program): `ByteArray`, `StringBuilder`, the typed arrays and
+`DataView` grew `Kernel.ns` from 4,089 lines to 6,586, all of it compiled
+at every boot, and the median start went from about 15.4 ms to about
+20.1 ms ([core-library.md](core-library.md), "`ByteArray`,
+`StringBuilder` and the views"). `cc2aaebe`, after it, added 53 lines
+of `StringBuilder` state checks, unmeasured.
+
 The two ways back -- building a shipped module on first demand, or an
 embedded base image of the shipped world -- are open
 ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world

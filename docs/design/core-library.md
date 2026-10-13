@@ -10,10 +10,12 @@
 > `IdentityMap` and `Set`; missing is part
 > of Primordial Soup's core API, whose names and loops are aligned, whose
 > foundations -- the error classes, `Proxy` and a public `Future` --, whose
-> collections and strings and whose numbers -- `Fraction` and a symmetric
-> numeric tower among them ("The numeric tower") -- are built, and the
-> rest -- `ByteArray` and `StringBuilder`, weak references -- planned
-> ("Planned: the kernel completed to Primordial Soup's core API").
+> collections and strings, whose numbers -- `Fraction` and a symmetric
+> numeric tower among them ("The numeric tower") -- and whose `ByteArray`
+> and `StringBuilder`, with the typed arrays and `DataView` beside them
+> ("`ByteArray`, `StringBuilder` and the views"), are built, and the
+> rest, weak references, planned ("Planned: the kernel completed to
+> Primordial Soup's core API").
 > Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
 > `TimeFactory.ns` and `CollectionsFactory.ns` -- public, protected and
 > private -- is documented
@@ -33,7 +35,9 @@
 > leaves; `builtins/primitive.rs`'s `MIRROR` is the mirror's table;
 > `builtins/activation.rs` and `builtins/message.rs` the exceptions',
 > `builtins/module.rs` `moduleInstanceNamed:`, `builtins/future.rs` the pull
-> future's forcing),
+> future's forcing, `builtins/bytes.rs` `ByteArray`'s and the UTF-8
+> conversions', `builtins/elements.rs` the typed arrays' and `DataView`'s
+> element access),
 > `interpreter/unwind.rs` (the one unwinder, and a VM error signalled),
 > `compiler/primitive_method.rs`, `compiler/unwind_marker.rs`, `platform.rs`.
 
@@ -60,7 +64,11 @@ rather than the member stays a separate paragraph of the same `///` block,
 a bare `///` line between the two. This document gives the reasons behind
 them.
 
-`Kernel.ns` declares one nested class per builtin class but the mirror's:
+`Kernel.ns` declares one nested class per builtin class but the mirror's,
+and beside them the ordinary classes `StringBuilder`, `TypedArray` and its
+ten typed arrays, `DataView` and its two byte orders, and the mixin
+`IndexedCollection`, marked † below ("`ByteArray`, `StringBuilder` and the
+views"):
 
 ```
 Top                     (private; no superclass, declares nothing)
@@ -79,7 +87,18 @@ Top                     (private; no superclass, declares nothing)
     │   └── UndefinedObject
     ├── Collection      do: (abstract), and the read protocol over it: size,
     │   │               includes:, inject:into:, detect:, reduce:, collect:, ...
-    │   └── Array
+    │   ├── (IndexedCollection)  † the level the mixin adds under each of the
+    │   │   │                    three below: the sequence protocol
+    │   │   └── Array
+    │   ├── (IndexedCollection)
+    │   │   └── ByteArray        bytes, data at a 32-byte address
+    │   └── (IndexedCollection)
+    │       └── TypedArray       † (abstract) a view of a ByteArray by element
+    │           └── Int8Array ... Float64Array  † ten classes, one width each
+    ├── StringBuilder   † a String built from pieces, over a ByteArray of UTF-8
+    ├── DataView        † a view of a ByteArray at byte positions
+    │   ├── LittleEndianDataView  † (private)
+    │   └── BigEndianDataView     † (private)
     ├── Closure         ..., on:do:, ensure:, ifCurtailed: (marked methods)
     ├── Exception       signal, signal:, pass, return:, retry, resume:, ...
     │   ├── Error       isResumable false
@@ -104,22 +123,28 @@ The mirror's class is the one builtin `Kernel.ns` does not declare; the
 bootstrap builds it below `Value`, so the mirror is a value ("The bootstrap:
 placeholders first, kernel second" below).
 
-`Collection` is the abstract superclass of `Array` and of the collections
-module's `List`, `Map` and `Set`. It reaches no leaf: a subclass defines
+`Collection` is the abstract superclass of `Array`, `ByteArray`,
+`TypedArray` and the collections module's `List`, `Map` and `Set`. It
+reaches no leaf: a subclass defines
 `do:`, and every other member is Newspeak written over it, which a subclass
 overrides where it can answer faster; `collect:`, `select:` and `reject:`
 also need the protected hook `newForCollectUsingAdd:`, since the kernel
 cannot name the collections module's `List` and a collection says itself
-what they answer. It is a builtin -- `BuiltinClass::Collection`, builtin
-class tag 38 -- only because `Array`'s superclass clause names it.
+what they answer. It is a builtin -- `BuiltinClass::Collection` -- only
+because `Array`'s and `ByteArray`'s superclass clauses name it.
 `Object` declares no accessor for it; a program reaches it through
 `platform kernel Collection`.
 
-`Array` adds a sequence's protocol over its leaves: `,`, `asArray`,
-`collect:`, `select:` and `reject:` answering Arrays, `copyFrom:to:`,
+`Array` takes a sequence's protocol from the kernel mixin
+`IndexedCollection`, which its clause applies, `Collection <:
+IndexedCollection` ("The sequence protocol is a mixin" below): `,`,
+`asArray`, `collect:`, `select:` and `reject:`, `copyFrom:to:`,
 `copyWith:`, `copyWithSize:`, `first`, `last`, `indexOf:`, `isEmpty`,
-`keysAndValuesDo:`, `replaceFrom:to:with:startingAt:`, `sort:`,
-`sortFrom:to:by:` and, on its class side, `withAll:`. Its two range leaves
+`keysAndValuesDo:`, `replaceFrom:to:with:startingAt:`, `sort:` and
+`sortFrom:to:by:`, written over `at:`, `at:put:`, `size` and the protected
+`newOfSize:`; `Array` declares its leaves, overrides `copyFrom:to:`,
+`replaceFrom:to:with:startingAt:` and `asArray` with faster ones, and has
+on its class side `new:` and `withAll:`. Its two range leaves
 share one range check, and one error text, with `String>>copyFrom:to:`; the
 replacing leaf reads every source element before it stores any, through the
 write barrier, so overlapping ranges of one array copy as if through a
@@ -156,7 +181,8 @@ either the empty class `Top` or the application of a mixin to another class",
 and "only the class `Object` may have `Top` as its superclass", so `Top`
 exists, declares nothing, and is private, as are only the classes no
 program may name (`Activation`, `NonBooleanReceiver`,
-`FutureImplementation`) — every other class says `public`, because §6.3.1 makes an undeclared member
+`FutureImplementation`, the mixin `IndexedCollection` and `DataView`'s two
+byte orders) — every other class says `public`, because §6.3.1 makes an undeclared member
 protected and a protected class is unreachable from any other module, which
 is where a program's `Integer` or `String` has to come from. §3.1.1 says a
 value object's "class inherits from class `Value`", so every class whose
@@ -182,8 +208,8 @@ may.
 
 Almost every method is a one-line forwarder to the mirror ("The
 shape of a kernel method" below): `Object`'s `class`, `==`, `=`, `hash`,
-and `printString`, beside its thirteen
-accessors for the predefined classes, `Object` to `Closure` (§5.1.8), each
+and `printString`, beside its seventeen
+accessors for the predefined classes, `Object` to `Error` (§5.1.8), each
 `^outer Kernel <Name>` ("The predefined classes are accessors on `Object`"
 below); `Number`'s `+ - * / // \\ quo: rem: < > <= >= =`, `hash` and
 `asFloat`, the tower's rows, which `Fraction` inherits ("The numeric tower"
@@ -207,7 +233,12 @@ and `asString`, and on its class side `parse:` ("A Float's text" below);
 `lastIndexOf:startingAt:`, and on its class side `with:` and `withAll:`;
 `Symbol`'s
 `asString`, `=`, `hash` and `printString`; `Array`'s `do:`, `at:put:`, `size`,
-`at:`, `copyFrom:to:` and `replaceFrom:to:with:startingAt:`; `Closure`'s
+`at:`, `copyFrom:to:` and `replaceFrom:to:with:startingAt:`; `ByteArray`'s
+`size`, `at:`, `at:put:`, `copyFrom:to:`, `replaceFrom:to:with:startingAt:`,
+`,`, `indexOf:startingAt:`, `lastIndexOf:startingAt:`, `startsWith:`,
+`endsWith:` and `at:putCodePoint:`, and on its class side `new:`;
+`String`'s `asUtf8` and `utf8Size` and its class side's
+`fromUtf8:from:to:`; `Closure`'s
 `value` to `value:value:value:`, `numArgs`, `whileTrue:` and `whileFalse:`. `PlatformFactory.ns`'s `Transcript` forwards `show:` and
 `newLine` the same way, and its `Stopwatch` its clock reading ("The platform"
 below). `Number`'s `to:do:` and `to:by:do:` are
@@ -351,10 +382,11 @@ is how a program gets text back out of a position. Three more leaves:
   gathers any other collection into an Array (`Array withAll:`) and asks
   again.
 
-The UTF-8 conversions, `asUtf8` and `String fromUtf8:`, wait for
-sub-project 5, which brings `ByteArray`; a `String`'s methods take no
-`ByteArray` ("Planned: sub-project 5, `ByteArray`, `StringBuilder` and the
-views"). Primordial Soup's `out`, which
+The UTF-8 conversions are `asUtf8`, which answers a new `ByteArray`, and
+`String fromUtf8:` and `fromUtf8:from:to:`, which decode one strictly;
+`utf8Size` counts the bytes `asUtf8` would answer. Every other method of a
+`String` takes no `ByteArray` ("`ByteArray`, `StringBuilder` and the
+views", "UTF-8"). Primordial Soup's `out`, which
 writes a string to the standard output, is not adopted: a program writes
 through the platform's `Transcript`.
 `goldens/library/string/a_string_searches_and_iterates_its_code_points` and
@@ -585,7 +617,7 @@ boundary that gives all of this its purpose does not exist
 ([liveness-and-reflection.md](liveness-and-reflection.md), "Value objects
 exist; the boundary they cross does not").
 
-The leaves are the 164 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
+The leaves are the 233 rows of `builtins/primitive.rs`'s `MIRROR` table. A row
 names the **mirror selector** (`collection:at:put:ifFail:`), the **reported
 selector** — the kernel selector every error text of that leaf names,
 `at:put:` — and the `Primitive` it runs. Every mirror selector ends in
@@ -1521,6 +1553,477 @@ Json's 1.005, within the noise (three pinned builds a side, pooled, by the
 protocol of [execution.md](execution.md), "What removing the re-entries
 moved"); Mandelbrot and NBody run about 4% faster.
 
+## `ByteArray`, `StringBuilder` and the views
+
+The kernel completion's fifth sub-project ("Planned: the kernel completed
+to Primordial Soup's core API" below), designed with the user on
+2026-10-12 and built on 2026-10-13
+([its plan](../superpowers/plans/2026-10-13-1614-byte-array-and-views.md)).
+The kernel has `ByteArray`, a builtin of bytes whose data lie aligned to 32
+bytes; the UTF-8 conversions on `String`; `StringBuilder`; and two kinds of
+view over a `ByteArray` -- `TypedArray`'s ten classes, indexed by element at
+one width, and `DataView`, read and written at byte positions in a byte
+order chosen when it is made. Where Primordial Soup's API does not fit
+strings of code points or a 1-based language, the API is changed here
+rather than adopted (decided with the user on 2026-10-12); everything else
+is Primordial Soup's. The leaves are `builtins/bytes.rs` (`ByteArray`'s and
+the UTF-8 conversions', `BytePrimitive`) and `builtins/elements.rs` (the
+views' element access, `ElementAccess`).
+
+**The classes, in one table:**
+
+| Class | Kind | Reached through | Superclass |
+|---|---|---|---|
+| `ByteArray` | builtin, format `AlignedBytes` | `Object>>ByteArray` (§3.2), as `Array` is | `Collection <: IndexedCollection` |
+| `StringBuilder` | Newspeak, over a `ByteArray` of UTF-8 | `platform kernel` | `Object` |
+| `TypedArray` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Collection <: IndexedCollection` |
+| `Int8Array`, `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Int64Array`, `Uint64Array`, `Float32Array`, `Float64Array` | Newspeak | `platform kernel` | `TypedArray` |
+| `DataView` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Object` |
+| `LittleEndianDataView`, `BigEndianDataView` | Newspeak, private to the kernel | `DataView`'s factories only | `DataView` |
+| `IndexedCollection` | a mixin, private to the kernel | applied with `<:` | `Collection`, which its own members build on |
+
+The views and `StringBuilder` are ordinary Newspeak classes whose state is a
+`ByteArray` slot; only `ByteArray` is a builtin. A view's access is one
+mirror leaf on its `ByteArray`, the width, the signedness and the byte
+order in the selector, so no access branches on them, and nothing outside
+`ByteArray` needs a heap format or a mover's attention (decided with the
+user on 2026-10-12, against typed arrays as builtin heap objects, which
+would forbid a view over an existing `ByteArray`, and against leaves that
+take the view itself, which would give Rust the layout of a Newspeak
+class). They are no builtins either: an image names them, their private
+classes and the levels `IndexedCollection` adds by where they are
+declared, through the shipped names ("The bootstrap and the image take
+them" below).
+
+### `ByteArray` in the heap, the movers and the image
+
+**Its own format, `AlignedBytes`,** codes 24 to 31
+(`heap/header.rs`), the low three bits counting the unused bytes of the
+last word as `Bytes`'s do. A `ByteArray` on `Bytes` would be a `String`
+everywhere -- `PackedString::new`, `Heap::is_string`, `object_shape`,
+`describe` and the encoder decide a string by the format alone -- so the
+format is new rather than the class checked. `pointer_ranges` answers only
+the class word, as for every raw format.
+
+**Its data lie at a 32-byte address** (decided with the user on 2026-10-12:
+AVX2's width, so no 32-byte load crosses a cache line; 16 would let one in
+four do so, 64 costs seven words an object), for every `ByteArray`, since
+`TypedArray on:` takes any. The layout is the header, the class word,
+**three reserve words** and the data words; the data begin at the first
+32-byte address at or after the first field word, 0, 8, 16 or 24 bytes
+in, **computed from the object's address, never stored**, so no header bit
+records it and the object's size never changes when it moves -- the
+compaction's forwarding counts words. An offset into the object space is an
+address modulo 32, since `ns-memory`'s reservation is page-aligned. `size`
+is (field words − 1 − 3) × 8 − the unused bytes. A new `ByteArray` is
+zero-filled; `ByteArray new` answers an empty one, as `Array new` does;
+one of 32 KiB or more is allocated old, as every object is. A size the
+program chose is asked first whether it can be allocated
+(`Heap::byte_array_fits`): the block, its reserve and overflow word
+included, must fit the old space of the reservation, and the operating
+system must grant its words, probed with `try_reserve_exact` as `Array
+new:` probes it, since a failed allocation aborts the process where an
+`ArgumentError` can be caught -- "new: cannot allocate a ByteArray of …
+bytes", as for `,`, `withAll:`, `asUtf8` and a typed array's `new:`.
+
+**Every mover realigns the data.** Whoever copies an `AlignedBytes` object
+to another address moves its data within the new block to the new block's
+aligned position (`heap/object.rs`'s `realign`, a `copy_within`; the ranges
+may overlap): the scavenger's `copy` (`heap/scavenge.rs`), the
+compaction's slide (`heap.rs`), and the move stress mode, which shifts
+whole regions and so walks each afterwards, realigning every `AlignedBytes`
+object from its old header index, the new one less the shift. An
+allocation's fields are a range of word indices into the space, whose base
+is page-aligned, so the data begin at the first field index rounded up to
+a multiple of four. It is the first format that needs a per-object fix-up
+in the movers; slack inside the object touches the fewest invariants,
+where an aligned bump with `Free` fillers would break the compaction's
+dense forwarding. The heap's readers `debug_assert!` the alignment, and the
+move stress mode's shifting offsets reach all four positions. The rule is
+one of `CLAUDE.md`'s invariants: a mover that skips it leaves the data at
+the old offset within the block, wrong bytes at exit status 0
+([memory.md](memory.md), "Every mover realigns a `ByteArray`'s data").
+
+**`heap.rs`'s accessors copy out**, as the seam's do: allocating, `size`,
+a byte, a range copied, a range replaced (`memmove`), and a value read or
+written at a width and byte order. Bytes are no handles, so no write
+barrier is involved. `describe` answers "a ByteArray of 3", as an `Array`
+describes itself.
+
+**The image** carries a `ByteArray` as the record `OBJECT_BYTE_ARRAY`,
+object body tag 11: a u32 length, then the bytes, its class named as every
+shipped class is. The decoder's first pass sizes the record from its own
+bytes -- a length that more bytes than are left would follow is refused
+before anything is allocated -- and the second fills the placeholder; the reserve is not written, and the
+decoder places the data at its own address's alignment. The body is held to
+its header both ways: a byte-array body under any class but `ByteArray`,
+and a `ByteArray` header over any other body, are
+`ByteArrayRecordMismatch`, so no `AlignedBytes` object of another class and
+no `ByteArray` of another format is ever decoded. `inspect` reads the
+record, a truncated or overlong one is a `DecodeError`, and
+`tests/opcode_tags.rs` pins the tag ([image-format.md](image-format.md),
+"Object table"). A view or a `StringBuilder` is an ordinary instance whose
+slot holds the record, its class named as every shipped class is ("The
+bootstrap and the image take them" below).
+
+**As a builtin class** `BuiltinClass::ByteArray` is appended to `ALL` and
+reaches the list `types.rs` keeps: `kernel_class_name`, the hierarchy
+test, `OBJECT_CLASS_ACCESSORS` with `Object>>ByteArray` beside
+`Object>>Array`, a `decide_factory` branch for `new` and `new:`, and
+`isKindOfByteArray` as a quick method. The leaves decline an instance of a
+subclass, as `Array`'s and `String`'s do.
+
+### The sequence protocol is a mixin
+
+`first`, `last`, `keysAndValuesDo:`, `indexOf:`, `copyFrom:to:`,
+`replaceFrom:to:with:startingAt:`, `copyWith:`, `copyWithSize:`, `,`,
+`collect:`, `select:`, `reject:`, `sort:`, `sortFrom:to:by:` and
+`asArray` -- `Array`'s protocol beyond `Collection`'s -- are written once, over `at:`,
+`at:put:`, `size` and a new instance of the receiver's kind, in a kernel
+mixin, `IndexedCollection` (named with the user on 2026-10-12), that `Array`,
+`ByteArray` and `TypedArray` apply over `Collection`: `class Array =
+Collection <: IndexedCollection`. A class overrides what a leaf does faster,
+as `Array`'s and `ByteArray`'s `copyFrom:to:` and
+`replaceFrom:to:with:startingAt:` do.
+Programs see the same selectors and no new level: the kernel has no
+public `superclass`, so only road step 5's mirrors will show the level
+between `Array` and `Collection`, a class whose name is its mixin's,
+`IndexedCollection` -- `Class>>name` answers the name of a class's
+application's mixin (`builtins/behavior.rs`), and an applied level's
+application is the named class's mixin over the level below
+(`interpreter/nested.rs`, `build_applied_levels`), §6.2's "class *I* with
+mixin *M*". `IndexedCollection` declares `Collection` its own
+superclass, which records that its members build on `Collection`'s
+protocol; applying it with `<:` takes only its own members (§6.2). A mixin rather than an abstract
+class (decided with the user on 2026-10-12): the shipped library uses the
+construct the language has for a protocol shared across classes, compiled
+code lives on the mixin and is shared by every application
+([compiler.md](compiler.md)), and `List` could apply it later. The
+bootstrap builds a builtin over a mixin application rather than falling
+back to an abstract class ("The bootstrap and the image take them" below).
+The levels `IndexedCollection` adds under `Array`, `ByteArray` and
+`TypedArray` are the shipped world's levels: an image names them as
+`Kernel Array level 0` and the like, a frame's class and nothing else
+([image-format.md](image-format.md), "Shipped names").
+
+The mixin's range helpers check a non-Integer bound through `Array`'s
+range leaf, on an empty `Array` made for the check, so that the texts are
+`Array`'s; that error's receiver is that `Array`, not the collection the
+program sent to ([OPEN-WORK.md](../OPEN-WORK.md)). A user subclass of
+`Array` reaches the mixin's methods through `super` like any other
+(`goldens/library/builtin-subclass/a_subclass_of_array_takes_the_sequence_protocol`).
+
+### `ByteArray`'s protocol
+
+Decided with the user on 2026-10-12. Primordial Soup's byte methods, the
+sequence protocol, and `Collection`'s:
+
+- **Class side.** `new` (empty), `new: size` (zero-filled; a negative, a
+  non-integer or an unallocatable size is an `ArgumentError` in `Array
+  new:`'s texts), and `withAll: collection`, from a `ByteArray`, an
+  `Array`, any collection of integers 0 to 255, or a `String`, which counts
+  as its UTF-8 bytes; an element outside 0 to 255 is an `ArgumentError`
+  carrying it.
+- **Elements.** `at:` answers an integer 0 to 255; `at:put:` answers the
+  value, and a value outside 0 to 255 or no integer is an `ArgumentError`
+  carrying the value -- Primordial Soup's carries the index -- with the
+  byte unchanged. Index errors are `Array`'s texts.
+- **The sequence protocol** from the mixin; `collect:` answers an `Array`,
+  since the block may answer anything, and `select:` and `reject:` a
+  `ByteArray`. `asArray` answers an `Array` of integers, `asByteArray`
+  the receiver.
+- **Primordial Soup's searches.** `indexOf:`, `indexOf:startingAt:`,
+  `lastIndexOf:`, `lastIndexOf:startingAt:`, `startsWith:` and `endsWith:`
+  decide by the argument: an integer is an element, a `ByteArray` or a
+  `String` a subsequence -- one byte means the same either way. The bounds
+  of a start are Primordial Soup's: 1 to `size + 1`, an empty subsequence
+  found at the start. Anything else is looked for as an element by
+  `indexOf:` and `lastIndexOf:`, each byte sent `=` with it, and is refused
+  by `startsWith:` and `endsWith:` with an `ArgumentError`, "startsWith:
+  requires an Integer, a ByteArray or a String, got …", as the canonical
+  implementation refuses it where the design was silent. A `String` needle
+  is encoded again at every candidate position
+  ([OPEN-WORK.md](../OPEN-WORK.md)).
+- **`replaceFrom:to:with:startingAt:`** takes a `ByteArray` or a `String`
+  as its source in its leaf and is right when source and receiver overlap
+  (`memmove`); `,` takes either and answers a `ByteArray`. Any other
+  source falls to `IndexedCollection`'s method, which stores element by
+  element, so an element `at:put:` refuses leaves the bytes before it
+  stored, as its comment says: the mixin cannot check every element
+  without a copy.
+- `=` and `hash` are identity, as Primordial Soup's are and §3.1.1 lists no
+  `ByteArray` among the values; a content hash on a mutable object would
+  move under a `Map`'s key. `printString` is `Object`'s, "an Object", as
+  `Array`'s is, so a refusal text built in Newspeak renders a `ByteArray`
+  argument that way ([OPEN-WORK.md](../OPEN-WORK.md)).
+  `isKindOfByteArray` and `isKindOfCollection` answer `true`.
+- **Not adopted:** `asString` and `copyStringFrom:to:` (`String fromUtf8:`
+  instead), `copyByteArrayFrom:to:` (`copyFrom:to:` already answers a
+  `ByteArray`), and the width accessors `int8At:` to `float64At:put:`
+  (`DataView` instead).
+
+**A `String` argument is its UTF-8 bytes; a `ByteArray` argument to a
+`String` is refused** (decided with the user on 2026-10-12): the receiver
+decides the unit, and an argument of the other kind is taken only where the
+conversion cannot fail. Encoding a string is total, so `bytes startsWith:
+'GIF89a'` works as in Primordial Soup -- Newspeak has no byte literal, and a
+string stands in for one -- and a leaf encodes while it compares or copies,
+allocating nothing, an ASCII string's code points being its bytes. Decoding
+can fail, so `String`'s methods take only strings, as they already do, and
+a predicate never fails on an encoding; the conversion is written out.
+
+### UTF-8
+
+Decided with the user on 2026-10-12:
+
+- **`String>>asUtf8`** answers a new `ByteArray` of the UTF-8 bytes and
+  never fails.
+- **`String fromUtf8: bytes`** and **`String fromUtf8: bytes from: start
+  to: stop`** decode strictly, as Rust's `str::from_utf8`: a truncated
+  sequence, a stray continuation byte, an overlong encoding, a surrogate
+  and anything past U+10FFFF are an `ArgumentError` naming the byte
+  position, "fromUtf8: invalid UTF-8 at byte 5"; a range that ends inside
+  a character is invalid; the range's bounds are `copyFrom:to:`'s, their
+  errors under the keyword `from:` ("fromUtf8:from:to: …"); an argument
+  that is no `ByteArray` is an `ArgumentError`, "fromUtf8: requires a
+  ByteArray, got …". The byte position is the byte's index in the whole
+  `ByteArray`, not in the range. A byte-order mark
+  stays U+FEFF. Strict, not U+FFFD per bad sequence: nothing is lost
+  silently, and a program that wants replacement characters writes them.
+- **`String withAll: bytes`** is element-wise, as for any collection:
+  every byte a code point, Latin-1, never failing.
+- Primordial Soup's `asByteArray`, `copyByteArrayFrom:to:` and `asString`
+  are renamed so that the encoding is in the name.
+
+### `StringBuilder`
+
+Primordial Soup's protocol in code points (decided with the user on
+2026-10-12), in Newspeak over three private slots: `data`, a `ByteArray` of
+UTF-8; `byteCount`; and `codePointCount`.
+
+- `new` (16 bytes) and `new: capacity` (`capacity` bytes, a hint; a
+  negative or a non-integer is an `ArgumentError`). Growing replaces `data`
+  with a `ByteArray` of 1.5 times its size, or more if needed, so an
+  append costs amortised O(1).
+- **`add: aString`** first refuses what is no `String` -- a `Symbol` is one
+  -- with an `ArgumentError`, the builder unchanged; a `ByteArray` is
+  refused too, `add: (String fromUtf8: bytes)` being the written-out form.
+  It answers the argument.
+- **`addCodePoint: anInteger`**, Primordial Soup's `addByte:` renamed,
+  appends one code point; anything that is no Unicode scalar value is an
+  `ArgumentError` and nothing is appended (Primordial Soup's leaves a
+  stray zero byte). It checks the value itself before it writes, "addCodePoint:
+  requires a Unicode scalar value, got …", so the error names
+  `addCodePoint:` and not the `ByteArray` store behind it, whose leaf
+  reports `at:putCodePoint:`, its own selector, as every row reports the
+  method that forwards to it. It answers the argument.
+- `writeln: aString` is `add:` and then code point 10, answering the
+  receiver. `size` counts code points, `isEmpty`, `isKindOfStringBuilder`.
+- `asString` answers `String fromUtf8: data from: 1 to: byteCount`, a new
+  string; `asUtf8`, Primordial Soup's `asByteArray` renamed, answers a copy
+  of the bytes. `data` is never handed out, so it holds valid UTF-8.
+- `=` and `hash` are identity. Two leaves serve it, each a public method
+  too: `String>>utf8Size`, a string's UTF-8 length in bytes, its size when
+  it is ASCII, and `ByteArray>>at:putCodePoint:`, which writes one code
+  point as UTF-8 at a position of a `ByteArray` and answers the bytes
+  written, so `addCodePoint:` makes no intermediate string. A program
+  names the class as `platform kernel StringBuilder`.
+- **A state its factory did not make is refused.** The three slots are
+  ordinary slots, so an image can give a builder a count past its data or
+  one that is no `Integer`; every member that reads them first sends the
+  private `checkState:`, which signals an `ArgumentError` carrying the
+  builder, "add: found a StringBuilder whose state is not its own", naming
+  the selector sent, so a crafted builder never ends in a
+  `MessageNotUnderstood` or wrong text. A builder its own factory made
+  always passes.
+
+### The typed arrays
+
+Decided with the user on 2026-10-12:
+
+- **Ten classes under `TypedArray`**, JavaScript's names: `Int8Array`,
+  `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`,
+  `Int64Array`, `Uint64Array`, `Float32Array` and `Float64Array`.
+  `Uint8Array` is all but empty, a view of width one whose elements are a
+  `ByteArray`'s, kept so that the family is whole. Not built:
+  `Uint8ClampedArray` (JavaScript's canvas case) and `Float16Array` (Rust
+  has no stable `f16`; with the GPU API, [OPEN-WORK.md](../OPEN-WORK.md)).
+- **A view over a whole `ByteArray`.** `new: size` allocates a zero-filled,
+  aligned `ByteArray` of `size` × the width, a negative, a non-integer or
+  an unallocatable size being an `ArgumentError` in `Array new:`'s texts;
+  `new` an empty one; `on:
+  bytes` views an existing `ByteArray`, whose size must be a multiple of
+  the width, else an `ArgumentError`; `withAll: collection` is `new:` and
+  `at:put:`. `bytes` answers the `ByteArray` itself, not a copy: writes
+  through any view reach every other. No window with an offset, which
+  would also break the alignment the views exist for. `bytesPerElement`
+  answers the width on either side.
+- **Little-endian, always** -- every target's order, x86-64's and
+  aarch64's, so it costs nothing and an image reads the same everywhere. A
+  byte order chosen per array would put a branch or a swap on every access
+  and hand later bulk leaves non-native data; a big-endian block is read
+  through `DataView`, or converted once by a later bulk `byteSwap`.
+- **`at:put:` checks the range**: an integer outside the class's range, or
+  no integer, is an `ArgumentError` carrying the value, the element
+  unchanged -- as Primordial Soup's, Squeak's and Strongtalk's do, where
+  JavaScript wraps modulo 2^n. **A float element takes any number,
+  converted as `asFloat` converts it**, since `0 = 0.0` in the tower;
+  `Float32Array` then rounds to binary32 to nearest, ties to even, a
+  finite value past its range becoming an infinity, a NaN staying a NaN.
+  It answers the value given, not the rounded one. A float32 is read
+  widened exactly; an `Int64Array`'s or `Uint64Array`'s element may read as
+  a `LargeInteger`.
+- **The sequence protocol** from the mixin, copies being of the
+  receiver's class over a new `ByteArray`; `collect:` answers an `Array`,
+  `select:` and `reject:` the receiver's class; `indexOf:` compares with
+  `=`, so `3` finds `3.0`. `size` is the bytes' size over the width.
+  `=` and `hash` are identity; `isKindOfTypedArray` and
+  `isKindOfCollection` answer `true`.
+- **One leaf per width for `at:` and one for `at:put:`**, on the
+  `ByteArray` with the element index; `Uint8Array` uses `ByteArray`'s.
+  A view's accessor sends to the mirror with its `bytes` slot as the
+  subject, so it is an ordinary method and no primitive method; a slot
+  that holds no `ByteArray` makes the leaf decline, and the failure block
+  sends the protected `noByteArray:` with the selector sent, which signals
+  an `ArgumentError` carrying the slot's object, "at:put: found no
+  ByteArray under the view, got …" -- `size`, `do:` and every accessor
+  alike. A float view converts a Number with `asFloat` before the leaf,
+  and hands anything else to the leaf as it is, so the index is checked
+  first, as for every other element. `bytes` is a public immutable slot;
+  `TypedArray`'s class side has the public `bytesFor:width:`, the
+  zero-filled `ByteArray` a `new:` views, and `fill:from:`, what
+  `withAll:` fills, since a class side is not inherited and each typed
+  array's sends them. A program names the classes as `platform kernel
+  Int16Array`.
+
+### `DataView`
+
+Decided with the user on 2026-10-12, in place of Primordial Soup's width
+accessors on `ByteArray`:
+
+- **One public class, the byte order given once.** `DataView on: bytes
+  byteOrder: #bigEndian` and `DataView new: size byteOrder: #littleEndian`
+  answer an instance of the private `BigEndianDataView` or
+  `LittleEndianDataView`; any other order, or an argument that is no
+  `ByteArray`, is an `ArgumentError`. `byteOrder` answers the symbol.
+  Fixing the order in the class keeps every access free of a branch, and
+  naming it once at creation keeps it visible where the view is made, where
+  Primordial Soup's accessors are little-endian without saying so.
+- **The accessors**: `int8At:` and `uint8At:` in `DataView`, a single byte
+  having no order; `int16At:`, `uint16At:`, `int32At:`, `uint32At:`,
+  `int64At:`, `uint64At:`, `float32At:` and `float64At:` in each concrete
+  class, each with its `put:` form.
+- **A 1-based byte position**, as `at:` and `indexOf:` count (decided with
+  the user on 2026-10-12; Primordial Soup's count from 0), not necessarily
+  aligned: `uint32At: 3` is allowed. A position below 1, or one whose last
+  byte lies past `bytes size`, is an `ArgumentError` carrying the position,
+  "uint32At: position 0 out of range: valid positions are 1..… (size …)";
+  a position that is no `Integer` is one too, "uint32At: requires an
+  Integer position, got …". The values follow the typed arrays' rules:
+  integers checked against their range, floats taking any number, `put:`
+  answering the value.
+- `bytes`, a public immutable slot, answers the `ByteArray`, `size` its
+  size; `=` and `hash` are identity; `isKindOfDataView` answers `true`.
+  The byte order is decided by identity with `#littleEndian` and
+  `#bigEndian`, so a `String` of the same letters is refused. `over:`, the
+  class's own factory, checks only the `ByteArray`; a view it makes has no
+  byte order, so its wider accessors do not exist, and a program makes one
+  with the two class-side messages above. A slot that holds no `ByteArray`
+  is refused as a typed array's is, through `DataView`'s own protected
+  `noByteArray:`, "int8At: found no ByteArray under the view, got …". A
+  program names the class as `platform kernel DataView`; the two
+  subclasses are private.
+- **The leaves**: 36 selectors on the `ByteArray`, eight widths in two
+  orders, read and write, and four for one byte, all one generic Rust
+  function over width, kind and order, which the typed arrays share with an
+  element index in place of a byte position.
+
+### Errors and tests
+
+Every error is an `ArgumentError` carrying what was wrong -- the index, the
+position, the value, the argument, or the byte position of invalid UTF-8 --
+in the texts of `Array`'s and `String`'s existing errors, and none leaves a
+half-changed state: `at:put:`, `add:` and `addCodePoint:` check before they
+write. **A refusal written in Newspeak renders the argument with its
+`printString`, a leaf's with `Heap::describe`**: the kernel cannot reach
+`describe`, and `String`'s own `startsWith:` already did the same, so
+`ByteArray withAll: {'x'}` says "withAll: requires an Integer from 0 to
+255, got 'x'", where a leaf's text says `got the String "x"`; unifying the two forms is open with the `printString` of a
+`ByteArray` ([OPEN-WORK.md](../OPEN-WORK.md)).
+
+The goldens are under `goldens/library/` -- `byte-array/`, `string/`
+(`a_string_converts_to_and_from_utf8`,
+`invalid_utf8_is_refused_at_its_byte`), `string-builder/`, `typed-array/`
+(each class at its bounds, float32 rounding, the infinities, NaN, shared
+storage) and `data-view/` (both orders, unaligned positions, bounds, and
+`every_accessor_round_trips_in_both_orders` over all 36 rows) -- and
+`builtin-subclass/`'s two for a subclass of `Array` and of `ByteArray`,
+under both lowerings. `tests/byte_array_leaves.rs` and
+`tests/element_access.rs` call the leaves from the host; heap tests in
+`heap.rs` hold the alignment and the bytes through a scavenge, a
+compaction and the move stress mode in all four positions; and
+`tests/image.rs` round-trips a `ByteArray`, the views and a builder,
+refuses a truncated, overlong or mismatched record without a panic, and
+refuses a view or a builder whose slots an image crafted with an
+`ArgumentError`.
+
+### The bootstrap and the image take them
+
+- **The kernel declares ordinary classes beside its builtins.**
+  `check_kernel_shape` (`interpreter/kernel.rs`) holds every builtin to
+  one nested class of its name, no slots and a bare superclass clause, and
+  leaves every other nested class unchecked: `IndexedCollection`,
+  `StringBuilder`, `TypedArray` and its ten classes, `DataView` and its two
+  are ordinary classes, built by their nested-class accessors as any class
+  is. A builtin's clause may carry `<:` clauses, each a bare name of a
+  kernel class that is no builtin, whose own clause is a bare builtin name
+  and applies nothing (`check_applied_kernel_class`): the bootstrap reads
+  them and never runs them. `fill_builtin_classes` builds that class once
+  (`applied_kernel_class`), its mixin over the builtin its clause names,
+  then each level as `nested::build_applied_levels` builds one -- the
+  mixin's application over the level below, a class object made with
+  `new_applied_level` -- applies the builtin's own mixin over the topmost
+  level, links the superclass to it, and passes the levels to
+  `give_existing_class_objects_metaclasses`; `wire_kernel_in` caches the
+  applied class in the kernel instance, so `Array`, `ByteArray` and the
+  accessor share one `IndexedCollection`, and gives each level and its
+  metaclass the kernel's lexical context, as it does for the kernel's own
+  `Value` level. `TypedArray`, which is no builtin, applies the mixin
+  through its clause like any class. The hierarchy test walks through the
+  level.
+- **An image names them by where they are declared** ([image-format.md](image-format.md),
+  "Shipped names"; "Shipped names in the image" above): the bootstrap
+  builds every shipped class whole, metaclasses and levels included, and
+  `complete_shipped_world` names each, a builtin's levels read off its
+  superclass chain. A program holding a `Float32Array`, a `DataView` or a
+  `StringBuilder` is written to an image without these classes being
+  builtins; `LittleEndianDataView`, `BigEndianDataView` and
+  `IndexedCollection` stand as a record's class or a frame's but never as
+  a value, since they are private and no public class accessor answers
+  them, and the levels `IndexedCollection` adds as a frame's class only.
+  Making the sixteen classes builtins was rejected: a builtin is a class
+  Rust needs a handle on, not a class the image needs a name for. Building
+  them at every boot costs every start time ([OPEN-WORK.md](../OPEN-WORK.md),
+  "The cost of building the shipped world at boot").
+- **`Primitive` stays two bytes** (`resolve.rs`'s
+  `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
+  generic element access of the typed arrays and `DataView`,
+  `ElementAccess`, is one family whose payload packs the element kind, the
+  byte order, the indexing (element or byte position) and read or write
+  into one `u8`, its 54 rows one leaf, not an enum of four fields.
+- **An image's slots are untrusted.** A crafted record can give a view a
+  `bytes` slot that holds no `ByteArray`, or a `StringBuilder` counts that
+  disagree with its data or are no `Integer`s: a leaf that meets the first
+  declines and the failure block signals `noByteArray:`'s
+  `ArgumentError`, and a builder's `checkState:` refuses the second before
+  any member reads its slots -- never a panic, never a
+  `MessageNotUnderstood`.
+- **Overrides keep the failure paths.** `Array`'s and `ByteArray`'s leaf
+  methods fall back to `super`, which reaches `IndexedCollection` before
+  `Collection`, so the mixin declares none of `at:`, `at:put:`, `size`,
+  `do:`, `=`, `hash` and `printString`, and
+  `goldens/library/builtin-subclass/` keeps its output.
+
 ## The core library as Newspeak source over a VM mirror
 
 The shape of a real collections library and of
@@ -1896,8 +2399,9 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    because the runtime must be able to answer what class an integer literal
    has at any moment. `BuiltinClass::ALL` and `Mutator::builtin_class` are
    that table, and `trace.rs` reaches it. A new builtin is appended to
-   `BuiltinClass::ALL`, never inserted, because its order is also the wire tag
-   order (`image::encode::builtin_class_tag`). `VmMirror`'s class, whose mixin
+   `BuiltinClass::ALL`, never inserted, as `types.rs` asks; no image
+   carries its position, since an image names a builtin by its declaration
+   ([image-format.md](image-format.md), "Shipped names"). `VmMirror`'s class, whose mixin
    already holds the `MIRROR` rows, and its one instance are built here too.
 2. **`Kernel.ns` is compiled but not instantiated.** Its root mixin and its
    nested mixins are built with `Mutator::build_mixin`, compiled under the
@@ -1908,21 +2412,30 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    `kernel_class_name` says, each with no slots but the exception classes
    and `Message` ("Exceptions" below) and with the default factory; the
    one immutable `vmMirror` slot on the root; a superclass clause on every
-   class but `Top` that is a bare sibling name, read and never run, naming a
-   kernel class, from which the chain reaches `Top` without repeating; that
-   only `Object` names `Top`, as §3.2 allows; and the literal-block rule
-   above. A kernel that breaks it is a defect in the binary, and panics.
+   builtin's class but `Top` that is a bare sibling name, read and never
+   run, naming a kernel class, from which the chain reaches `Top` without
+   repeating; that only `Object` names `Top`, as §3.2 allows; `<:` clauses
+   on a builtin only as bare names of kernel classes that are no builtins
+   and apply nothing themselves; and the literal-block rule above. Every
+   other nested class -- `StringBuilder`, the views, `IndexedCollection` --
+   is an ordinary class, unchecked, which its accessor builds as any
+   class's builds it. A kernel that breaks it is a defect in the binary,
+   and panics.
 3. **Each placeholder gets its kernel application**, in `fill_order`, which
    sorts the kinds by how many superclass links separate them from `Top`, so a
    superclass is always filled before its subclasses. `BuiltinClass::ALL` is
-   no longer that order and cannot become it again: a class added later is
-   appended, because its position is a wire tag, so `Value` and `Number` sit
+   no longer that order: a class added later is appended, so `Value` and
+   `Number` sit
    at the end of `ALL` and in the middle of the hierarchy. Each class gets the
    nested mixin named like it, applied to the application of the class its
    clause names — `Top`'s to none, `Object`'s to `Top`'s, and so on down —
    installed with `Heap::class_set_application`, which restamps the dispatch
    id of the few objects that exist this early, and the class object's
-   superclass link set to match. `Value`'s *mixin* is recorded just before
+   superclass link set to match. A builtin whose clause applies a kernel
+   mixin, `Array = Collection <: IndexedCollection`, is applied over the
+   level §6.2 adds for it, built here from the mixin's class, which is
+   built once and shared by every builtin applying it ("The bootstrap and
+   the image take them" above). `Value`'s *mixin* is recorded just before
    `Value` is filled, and `Behavior`'s just before `Behavior` is, rather than
    its application after the loop: `apply_mixin` asks whether the mixin it is
    applying is that one, so that `Value`'s own application also carries
@@ -1951,9 +2464,12 @@ with it). `Interpreter::bootstrap_with` runs it in six steps
    method's lexical send of `vmMirror` reaches the slot; each hidden
    nested-class slot of the kernel instance is filled with its builtin class,
    so the nested-class accessor `Array` inside kernel code answers the builtin
-   `Array` rather than building a second class object of the same mixin;
-   the kernel's own `Value` level, built before the instance existed, is
-   given the kernel instance and class as its lexical context too; and
+   `Array` rather than building a second class object of the same mixin,
+   and so is the slot of each kernel class a builtin's `<:` clause applies,
+   `IndexedCollection`;
+   the kernel's own `Value` level and each builtin's `IndexedCollection`
+   level, built before the instance existed, are given the kernel instance
+   and class as their lexical context too; and
    the instance is kept as `Mutator::kernel`, a root beside the mirror
    ([memory.md](memory.md), "What the collector traces"). Each of those
    classes' metaclasses is given the same lexical context, since a metaclass
@@ -2189,7 +2705,8 @@ and as Primordial Soup's `Kernel wrapping:` facet provides them: the
 platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`,
-`CannotInstantiate`, `Closure`, `Future`, `Proxy` and `Collection` from the
+`CannotInstantiate`, `Closure`, `Future`, `Proxy`, `Collection`,
+`StringBuilder`, `TypedArray`, the ten typed arrays and `DataView` from the
 kernel instance the platform was handed. `NotFound` is answered by
 `platform collections`, as Primordial Soup keeps it in its collections
 module, and `NonBooleanReceiver` by nothing.
@@ -3129,7 +3646,10 @@ module and every class its root declares, so every start pays for
 `CollectionsFactory.ns`, which has grown to 1,710 lines: about 3.7 ms, a
 hello program's median start going from about 12.3 ms to about 16.0 ms on
 the measuring workstation. Building the declared classes and naming the
-world adds nothing measurable beside it. How to take it back is open
+world adds nothing measurable beside it. The kernel's `ByteArray`,
+`StringBuilder` and views added about 4.6 ms more, measured at
+`1906a81d`: `Kernel.ns` grew from 4,089 lines to 6,586, and the median
+start from about 15.4 ms to about 20.1 ms. How to take it back is open
 ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the shipped world
 at boot").
 
@@ -3223,9 +3743,13 @@ methods `Array` and `ByteArray`. A bare builtin name is therefore a send.
 Each decision below was taken with the user.
 
 **The accessors are the names a program could reach before, `Fraction`,
-`Exception` and `Error`**: `Object`, `Value`, `Boolean`, `True`, `False`,
-`Number`, `Integer`, `Float`, `Fraction`, `String`, `Symbol`,
-`UndefinedObject`, `Array`, `Closure`, `Exception` and `Error`. `Fraction`
+`Exception`, `Error` and `ByteArray`**: `Object`, `Value`, `Boolean`,
+`True`, `False`, `Number`, `Integer`, `Float`, `Fraction`, `String`,
+`Symbol`, `UndefinedObject`, `Array`, `ByteArray`, `Closure`, `Exception`
+and `Error`. `ByteArray` joined them with sub-project 5, as §3.2 names it
+beside `Array` ("`ByteArray`, `StringBuilder` and the views" above);
+`StringBuilder`, the typed arrays and `DataView` did not, and a program
+names them through `platform kernel`. `Fraction`
 joined them with the numeric tower (decided with the user on 2026-10-11):
 it is one of the numbers, and a program that names `Float` bare names
 `Fraction` the same way. `Exception` and `Error` joined them the same day,
@@ -3556,8 +4080,8 @@ on its own (decided with the user on 2026-10-06):
   meaning -- `size`, `at:`, `do:`, `indexOf:`, `withAll:` count and take
   code points -- and bytes appear only where a conversion says so:
   `asUtf8` answers the UTF-8 bytes, `String fromUtf8:` decodes them
-  strictly, and `StringBuilder` takes strings and code points ("Planned:
-  sub-project 5, `ByteArray`, `StringBuilder` and the views" below).
+  strictly, and `StringBuilder` takes strings and code points
+  ("`ByteArray`, `StringBuilder` and the views" above).
   §5.1.5 leaves the encoding to an API that "encapsulates this decision".
 - **Primordial Soup's error classes, under `Error`.** `ArgumentError`,
   `CannotReturn`, `NonBooleanReceiver` and `CannotInstantiate` exist as
@@ -3576,7 +4100,8 @@ on its own (decided with the user on 2026-10-06):
   `isKindOfBoolean`, `isKindOfClosure`, `isKindOfCollection`,
   `isKindOfFloat`, `isKindOfFraction` (`Integer`'s too, an integer being
   a fraction whose denominator is 1), `isKindOfInteger`,
-  `isKindOfNumber`, `isKindOfString`,
+  `isKindOfNumber`, `isKindOfString`, `isKindOfByteArray`,
+  `isKindOfStringBuilder`, `isKindOfTypedArray`, `isKindOfDataView`,
   `isKindOfList`, `isKindOfMap`, `isKindOfIdentityMap` and
   `isKindOfSet`; a class a later sub-project adds brings
   its own answer, and its accessor on `platform kernel` or
@@ -3634,7 +4159,10 @@ a non-integral literal is a binary float" above), and there is no
    arithmetic without a `Float`, `//`, `\\`, `quo:` and `rem:` over every
    pair ("The numeric tower" above; "The kernel's numbers" under
    "Decisions" below).
-5. **`ByteArray` and `StringBuilder`**, and the UTF-8 conversions, with
+5. **`ByteArray` and `StringBuilder`** -- built (2026-10-13, [its
+   plan](../superpowers/plans/2026-10-13-1614-byte-array-and-views.md);
+   "`ByteArray`, `StringBuilder` and the views" above): `ByteArray` and
+   the UTF-8 conversions, with
    `Object>>ByteArray` beside `Object>>Array`, the accessor §3.2 names
    ("the methods `Array` and `ByteArray` provide predefined factory
    objects for arrays"); and,
@@ -3651,410 +4179,11 @@ a non-integral literal is a binary float" above), and there is no
    among the platform's capabilities that uploads from these arrays, are
    possible later APIs and not part of the sub-project (noted with the
    user on 2026-10-11). Designed with the user on 2026-10-12, with
-   `DataView` beside the typed arrays ("Planned: sub-project 5,
-   `ByteArray`, `StringBuilder` and the views" below); no plan yet.
+   `DataView` beside the typed arrays.
 6. **Weak references**: `WeakArray`, `WeakMap` and `Ephemeron`, in the
-   scavenger and the compaction, the image and the stress modes.
-
-### Planned: sub-project 5, `ByteArray`, `StringBuilder` and the views
-
-Would change: the kernel gains `ByteArray`, a builtin of bytes whose data
-lie aligned to 32 bytes; the UTF-8 conversions on `String`; `StringBuilder`;
-and two kinds of view over a `ByteArray` -- `TypedArray`'s ten classes,
-indexed by element at one width, and `DataView`, read and written at byte
-positions in a byte order chosen when it is made (designed with the user
-on 2026-10-12). Where Primordial Soup's API does not fit strings of code
-points or a 1-based language, the API is changed here rather than adopted
-(decided with the user the same day); everything else is Primordial Soup's.
-This section is the design the sub-project's plan builds; once built, its
-content moves into "What exists" and the documents named below.
-
-**What the sub-project builds, in one table:**
-
-| Class | Kind | Reached through | Superclass |
-|---|---|---|---|
-| `ByteArray` | builtin, format `AlignedBytes` | `Object>>ByteArray` (§3.2), as `Array` is | `Collection <: IndexedCollection` |
-| `StringBuilder` | Newspeak, over a `ByteArray` of UTF-8 | `platform kernel` | `Object` |
-| `TypedArray` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Collection <: IndexedCollection` |
-| `Int8Array`, `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Int64Array`, `Uint64Array`, `Float32Array`, `Float64Array` | Newspeak | `platform kernel` | `TypedArray` |
-| `DataView` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Object` |
-| `LittleEndianDataView`, `BigEndianDataView` | Newspeak, private to the kernel | `DataView`'s factories only | `DataView` |
-| `IndexedCollection` | a mixin, private to the kernel | applied with `<:` | `Collection`, which its own members build on |
-
-The views and `StringBuilder` are ordinary Newspeak classes whose state is a
-`ByteArray` slot; only `ByteArray` is a builtin. A view's access is one
-mirror leaf on its `ByteArray`, the width, the signedness and the byte
-order in the selector, so no access branches on them, and nothing outside
-`ByteArray` needs a heap format or a mover's attention (decided with the
-user on 2026-10-12, against typed arrays as builtin heap objects, which
-would forbid a view over an existing `ByteArray`, and against leaves that
-take the view itself, which would give Rust the layout of a Newspeak
-class). They are no builtins either: an image names them, their private
-classes and the levels `IndexedCollection` adds by where they are
-declared, through the shipped-class naming, which is built ("What the
-plan must handle" below).
-
-#### `ByteArray` in the heap, the movers and the image
-
-**Its own format, `AlignedBytes`,** codes 24 to 31, unused until now
-(`heap/header.rs`), the low three bits counting the unused bytes of the
-last word as `Bytes`'s do. A `ByteArray` on `Bytes` would be a `String`
-everywhere -- `PackedString::new`, `Heap::is_string`, `object_shape`,
-`describe` and the encoder decide a string by the format alone -- so the
-format is new rather than the class checked. `pointer_ranges` answers only
-the class word, as for every raw format.
-
-**Its data lie at a 32-byte address** (decided with the user on 2026-10-12:
-AVX2's width, so no 32-byte load crosses a cache line; 16 would let one in
-four do so, 64 costs seven words an object), for every `ByteArray`, since
-`TypedArray on:` takes any. The layout is the header, the class word,
-**three reserve words** and the data words; the data begin at the first
-32-byte address at or after the first field word, 0, 8, 16 or 24 bytes
-in, **computed from the object's address, never stored**, so no header bit
-records it and the object's size never changes when it moves -- the
-compaction's forwarding counts words. An offset into the object space is an
-address modulo 32, since `ns-memory`'s reservation is page-aligned. `size`
-is (field words − 1 − 3) × 8 − the unused bytes. A new `ByteArray` is
-zero-filled; `ByteArray new` answers an empty one, as `Array new` does;
-one of 32 KiB or more is allocated old, as every object is.
-
-**Every mover realigns the data.** Whoever copies an `AlignedBytes` object
-to another address moves its data within the new block to the new block's
-aligned position (`copy_within`; the ranges may overlap): the scavenger's
-`copy` (`heap/scavenge.rs`), the compaction's slide (`heap.rs`), and the
-move stress mode, which shifts whole regions and so walks them afterwards.
-It is the first format that needs a per-object fix-up in the movers; slack
-inside the object touches the fewest invariants, where an aligned bump
-with `Free` fillers would break the compaction's dense forwarding. The
-heap's readers `debug_assert!` the alignment, and the move stress mode's
-shifting offsets reach all four positions. The rule joins `CLAUDE.md`'s
-invariants when it is built: a mover that skips it leaves the data at the
-old offset within the block, wrong bytes at exit status 0.
-
-**`heap.rs`'s accessors copy out**, as the seam's do: allocating, `size`,
-a byte, a range copied, a range replaced (`memmove`), and a value read or
-written at a width and byte order. Bytes are no handles, so no write
-barrier is involved. `describe` answers "a ByteArray of 3", as an `Array`
-describes itself.
-
-**The image** carries a `ByteArray` as the record `OBJECT_BYTE_ARRAY`, the
-next free object tag (11): a u32 length, then the bytes, its class named
-as every shipped class is. The decoder's first pass sizes the record from its
-own bytes -- the length bounded by `bounded_count` and by the bytes left
--- and the second fills the placeholder; the reserve is not written, and
-the decoder places the data at its own address's alignment. `inspect`
-reads the record, a truncated or overlong one is a `DecodeError`, and
-`tests/opcode_tags.rs` pins the tag (`image-format.md`). A view or a
-`StringBuilder` is an ordinary instance whose slot holds the record, its
-class named as every shipped class is ("What the plan must handle"
-below).
-
-**As a builtin class** `BuiltinClass::ByteArray` is appended to `ALL` and
-reaches the list `types.rs` keeps: `kernel_class_name`, the hierarchy
-test, `OBJECT_CLASS_ACCESSORS` with `Object>>ByteArray` beside
-`Object>>Array`, a `decide_factory` branch for `new` and `new:`, and
-`isKindOfByteArray` as a quick method. The leaves decline an instance of a
-subclass, as `Array`'s and `String`'s do.
-
-#### The sequence protocol is a mixin
-
-`first`, `last`, `keysAndValuesDo:`, `indexOf:`, `copyFrom:to:`,
-`replaceFrom:to:with:startingAt:`, `copyWith:`, `copyWithSize:`, `,`,
-`collect:`, `select:`, `reject:`, `sort:`, `sortFrom:to:by:` and
-`asArray` -- `Array`'s protocol beyond `Collection`'s -- are written once, over `at:`,
-`at:put:`, `size` and a new instance of the receiver's kind, in a kernel
-mixin, `IndexedCollection` (named with the user on 2026-10-12), that `Array`,
-`ByteArray` and `TypedArray` apply over `Collection`: `class Array =
-Collection <: IndexedCollection`. A class overrides what a leaf does faster,
-as `Array`'s and `ByteArray`'s `copyFrom:to:` and
-`replaceFrom:to:with:startingAt:` do.
-Programs see the same selectors and no new level: the kernel has no
-public `superclass`, so only road step 5's mirrors will show the level
-between `Array` and `Collection`, a class whose name is its mixin's,
-`IndexedCollection` -- `Class>>name` answers the name of a class's
-application's mixin (`builtins/behavior.rs`), and an applied level's
-application is the named class's mixin over the level below
-(`interpreter/nested.rs`, `build_applied_levels`), §6.2's "class *I* with
-mixin *M*". `IndexedCollection` declares `Collection` its own
-superclass, which records that its members build on `Collection`'s
-protocol; applying it with `<:` takes only its own members (§6.2). A mixin rather than an abstract
-class (decided with the user on 2026-10-12): the shipped library uses the
-construct the language has for a protocol shared across classes, compiled
-code lives on the mixin and is shared by every application
-([compiler.md](compiler.md)), and `List` could apply it later. **If the
-bootstrap cannot yet take a builtin whose superclass is a mixin
-application, the bootstrap is fixed**; there is no fallback to an abstract
-class. No shipped class applies a mixin today -- `Kernel` itself is
-`= Value` -- so a builtin over a mixin application is the plan's first step
-to check, and it brings back a live shipped level for the image's tests
-([OPEN-WORK.md](../OPEN-WORK.md)).
-
-#### `ByteArray`'s protocol
-
-Decided with the user on 2026-10-12. Primordial Soup's byte methods, the
-sequence protocol, and `Collection`'s:
-
-- **Class side.** `new` (empty), `new: size` (zero-filled; a negative, a
-  non-integer or an unallocatable size is an `ArgumentError` in `Array
-  new:`'s texts), and `withAll: collection`, from a `ByteArray`, an
-  `Array`, any collection of integers 0 to 255, or a `String`, which counts
-  as its UTF-8 bytes; an element outside 0 to 255 is an `ArgumentError`
-  carrying it.
-- **Elements.** `at:` answers an integer 0 to 255; `at:put:` answers the
-  value, and a value outside 0 to 255 or no integer is an `ArgumentError`
-  carrying the value -- Primordial Soup's carries the index -- with the
-  byte unchanged. Index errors are `Array`'s texts.
-- **The sequence protocol** from the mixin; `collect:` answers an `Array`,
-  since the block may answer anything, and `select:` and `reject:` a
-  `ByteArray`. `asArray` answers an `Array` of integers, `asByteArray`
-  the receiver.
-- **Primordial Soup's searches.** `indexOf:`, `indexOf:startingAt:`,
-  `lastIndexOf:`, `lastIndexOf:startingAt:`, `startsWith:` and `endsWith:`
-  decide by the argument: an integer is an element, a `ByteArray` or a
-  `String` a subsequence -- one byte means the same either way. The bounds
-  of a start are Primordial Soup's: 1 to `size + 1`, an empty subsequence
-  found at the start.
-- **`replaceFrom:to:with:startingAt:`** takes a `ByteArray` or a `String`
-  as its source and is right when source and receiver overlap
-  (`memmove`); `,` takes either and answers a `ByteArray`.
-- `=` and `hash` are identity, as Primordial Soup's are and §3.1.1 lists no
-  `ByteArray` among the values; a content hash on a mutable object would
-  move under a `Map`'s key. `printString` takes `Array`'s form.
-  `isKindOfByteArray` and `isKindOfCollection` answer `true`.
-- **Not adopted:** `asString` and `copyStringFrom:to:` (`String fromUtf8:`
-  instead), `copyByteArrayFrom:to:` (`copyFrom:to:` already answers a
-  `ByteArray`), and the width accessors `int8At:` to `float64At:put:`
-  (`DataView` instead).
-
-**A `String` argument is its UTF-8 bytes; a `ByteArray` argument to a
-`String` is refused** (decided with the user on 2026-10-12): the receiver
-decides the unit, and an argument of the other kind is taken only where the
-conversion cannot fail. Encoding a string is total, so `bytes startsWith:
-'GIF89a'` works as in Primordial Soup -- Newspeak has no byte literal, and a
-string stands in for one -- and a leaf encodes while it compares or copies,
-allocating nothing, an ASCII string's code points being its bytes. Decoding
-can fail, so `String`'s methods take only strings, as they already do, and
-a predicate never fails on an encoding; the conversion is written out.
-
-#### UTF-8
-
-Decided with the user on 2026-10-12:
-
-- **`String>>asUtf8`** answers a new `ByteArray` of the UTF-8 bytes and
-  never fails.
-- **`String fromUtf8: bytes`** and **`String fromUtf8: bytes from: start
-  to: stop`** decode strictly, as Rust's `str::from_utf8`: a truncated
-  sequence, a stray continuation byte, an overlong encoding, a surrogate
-  and anything past U+10FFFF are an `ArgumentError` naming the byte
-  position, "fromUtf8: invalid UTF-8 at byte 5"; a range that ends inside
-  a character is invalid; the range's bounds are `copyFrom:to:`'s; an
-  argument that is no `ByteArray` is an `ArgumentError`. A byte-order mark
-  stays U+FEFF. Strict, not U+FFFD per bad sequence: nothing is lost
-  silently, and a program that wants replacement characters writes them.
-- **`String withAll: bytes`** is element-wise, as for any collection:
-  every byte a code point, Latin-1, never failing.
-- Primordial Soup's `asByteArray`, `copyByteArrayFrom:to:` and `asString`
-  are renamed so that the encoding is in the name.
-
-#### `StringBuilder`
-
-Primordial Soup's protocol in code points (decided with the user on
-2026-10-12), in Newspeak over three private slots: `data`, a `ByteArray` of
-UTF-8; `byteCount`; and `codePointCount`.
-
-- `new` (16 bytes) and `new: capacity` (`capacity` bytes, a hint; a
-  negative or a non-integer is an `ArgumentError`). Growing replaces `data`
-  with a `ByteArray` of 1.5 times its size, or more if needed, so an
-  append costs amortised O(1).
-- **`add: aString`** first refuses what is no `String` -- a `Symbol` is one
-  -- with an `ArgumentError`, the builder unchanged; a `ByteArray` is
-  refused too, `add: (String fromUtf8: bytes)` being the written-out form.
-  It answers the argument.
-- **`addCodePoint: anInteger`**, Primordial Soup's `addByte:` renamed,
-  appends one code point; anything that is no Unicode scalar value is an
-  `ArgumentError` and nothing is appended (Primordial Soup's leaves a
-  stray zero byte). It checks the value itself before it writes, so the
-  error names `addCodePoint:` and not the ByteArray store behind it. It
-  answers the argument.
-- `writeln: aString` is `add:` and then code point 10, answering the
-  receiver. `size` counts code points, `isEmpty`, `isKindOfStringBuilder`.
-- `asString` answers `String fromUtf8: data from: 1 to: byteCount`, a new
-  string; `asUtf8`, Primordial Soup's `asByteArray` renamed, answers a copy
-  of the bytes. `data` is never handed out, so it holds valid UTF-8.
-- `=` and `hash` are identity. Two kernel-only leaves serve it: a string's
-  UTF-8 length in bytes, its size when it is ASCII, and writing one code
-  point as UTF-8 at a position of a `ByteArray`, answering the bytes
-  written, so `addCodePoint:` makes no intermediate string. A program
-  names the class as `platform kernel StringBuilder`.
-
-#### The typed arrays
-
-Decided with the user on 2026-10-12:
-
-- **Ten classes under `TypedArray`**, JavaScript's names: `Int8Array`,
-  `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`,
-  `Int64Array`, `Uint64Array`, `Float32Array` and `Float64Array`.
-  `Uint8Array` is all but empty, a view of width one whose elements are a
-  `ByteArray`'s, kept so that the family is whole. Not built:
-  `Uint8ClampedArray` (JavaScript's canvas case) and `Float16Array` (Rust
-  has no stable `f16`; with the GPU API, [OPEN-WORK.md](../OPEN-WORK.md)).
-- **A view over a whole `ByteArray`.** `new: size` allocates a zero-filled,
-  aligned `ByteArray` of `size` × the width, a negative, a non-integer or
-  an unallocatable size being an `ArgumentError` in `Array new:`'s texts;
-  `new` an empty one; `on:
-  bytes` views an existing `ByteArray`, whose size must be a multiple of
-  the width, else an `ArgumentError`; `withAll: collection` is `new:` and
-  `at:put:`. `bytes` answers the `ByteArray` itself, not a copy: writes
-  through any view reach every other. No window with an offset, which
-  would also break the alignment the views exist for. `bytesPerElement`
-  answers the width on either side.
-- **Little-endian, always** -- every target's order, x86-64's and
-  aarch64's, so it costs nothing and an image reads the same everywhere. A
-  byte order chosen per array would put a branch or a swap on every access
-  and hand later bulk leaves non-native data; a big-endian block is read
-  through `DataView`, or converted once by a later bulk `byteSwap`.
-- **`at:put:` checks the range**: an integer outside the class's range, or
-  no integer, is an `ArgumentError` carrying the value, the element
-  unchanged -- as Primordial Soup's, Squeak's and Strongtalk's do, where
-  JavaScript wraps modulo 2^n. **A float element takes any number,
-  converted as `asFloat` converts it**, since `0 = 0.0` in the tower;
-  `Float32Array` then rounds to binary32 to nearest, ties to even, a
-  finite value past its range becoming an infinity, a NaN staying a NaN.
-  It answers the value given, not the rounded one. A float32 is read
-  widened exactly; an `Int64Array`'s or `Uint64Array`'s element may read as
-  a `LargeInteger`.
-- **The sequence protocol** from the mixin, copies being of the
-  receiver's class over a new `ByteArray`; `collect:` answers an `Array`,
-  `select:` and `reject:` the receiver's class; `indexOf:` compares with
-  `=`, so `3` finds `3.0`. `size` is the bytes' size over the width.
-  `=` and `hash` are identity; `isKindOfTypedArray` and
-  `isKindOfCollection` answer `true`.
-- **One leaf per width for `at:` and one for `at:put:`**, on the
-  `ByteArray` with the element index; `Uint8Array` uses `ByteArray`'s.
-  A view's accessor sends to the mirror with its `bytes` slot as the
-  subject, so it is an ordinary method and no primitive method; a slot
-  that holds no `ByteArray` makes the leaf decline, and the failure block
-  signals "at: found no ByteArray under the view". A float view converts
-  a Number with `asFloat` before the leaf, and hands anything else to the
-  leaf as it is, so the index is checked first, as for every other
-  element. A program names the classes as `platform kernel Int16Array`.
-
-#### `DataView`
-
-Decided with the user on 2026-10-12, in place of Primordial Soup's width
-accessors on `ByteArray`:
-
-- **One public class, the byte order given once.** `DataView on: bytes
-  byteOrder: #bigEndian` and `DataView new: size byteOrder: #littleEndian`
-  answer an instance of the private `BigEndianDataView` or
-  `LittleEndianDataView`; any other order, or an argument that is no
-  `ByteArray`, is an `ArgumentError`. `byteOrder` answers the symbol.
-  Fixing the order in the class keeps every access free of a branch, and
-  naming it once at creation keeps it visible where the view is made, where
-  Primordial Soup's accessors are little-endian without saying so.
-- **The accessors**: `int8At:` and `uint8At:` in `DataView`, a single byte
-  having no order; `int16At:`, `uint16At:`, `int32At:`, `uint32At:`,
-  `int64At:`, `uint64At:`, `float32At:` and `float64At:` in each concrete
-  class, each with its `put:` form.
-- **A 1-based byte position**, as `at:` and `indexOf:` count (decided with
-  the user on 2026-10-12; Primordial Soup's count from 0), not necessarily
-  aligned: `uint32At: 3` is allowed. A position below 1, or one whose last
-  byte lies past `bytes size`, is an `ArgumentError` carrying the position.
-  The values follow the typed arrays' rules: integers checked against
-  their range, floats taking any number, `put:` answering the value.
-- `bytes` answers the `ByteArray`, `size` its size; `=` and `hash` are
-  identity; `isKindOfDataView` answers `true`.
-  The byte order is decided by identity with `#littleEndian` and
-  `#bigEndian`, so a `String` of the same letters is refused. `over:`, the
-  class's own factory, checks only the `ByteArray`; it has no byte order, so
-  its wider accessors do not exist. A program names the class as `platform
-  kernel DataView`; the two subclasses are private.
-- **The leaves**: 36 selectors on the `ByteArray`, eight widths in two
-  orders, read and write, and four for one byte, all one generic Rust
-  function over width, kind and order, which the typed arrays share with an
-  element index in place of a byte position.
-
-#### Errors and tests
-
-Every error is an `ArgumentError` carrying what was wrong -- the index, the
-position, the value, the argument, or the byte position of invalid UTF-8 --
-in the texts of `Array`'s and `String`'s existing errors, and none leaves a
-half-changed state: `at:put:`, `add:` and `addCodePoint:` check before they
-write. The goldens go under `goldens/library/` -- `byte-array/`, `string/`
-(UTF-8 both ways and every kind of invalid input), `string-builder/`,
-`typed-array/` (each class at its bounds, float32 rounding, the infinities,
-NaN, shared storage) and `data-view/` (both orders, unaligned positions,
-bounds) -- under both lowerings; heap tests hold the alignment and the
-bytes through a scavenge, a compaction and the move stress mode in all four
-positions; `tests/image.rs` round-trips a `ByteArray` and refuses a
-truncated or overlong record without a panic. The documentation, the
-formatting and the accessor tests cover the new members as they stand.
-
-#### What the plan must handle
-
-Found on 2026-10-12 while the plan was being prepared, in the code as it
-stands; the shipped-class naming the first item needs is built.
-
-- **An image names every shipped object by where it is declared**
-  (decided with the user on 2026-10-12, built 2026-10-13;
-  [image-format.md](image-format.md), "Shipped names";
-  "Shipped names in the image" above): the bootstrap builds every shipped
-  module instance and class whole, metaclasses and levels included, and an
-  image names one by module, declaration and kind, resolved by lookup
-  before the graph is decoded, so the decoder runs no code. So a program
-  holding a `Float32Array`, a `DataView` or a `StringBuilder` can be
-  written to an image without these classes being builtins: they are named
-  like any shipped class, `LittleEndianDataView`, `BigEndianDataView` and
-  `IndexedCollection` as a record's class or a frame's but never as a
-  value, since they are private and no public class accessor answers them.
-  Making the sixteen classes builtins was rejected: a builtin is a class
-  Rust needs a handle on, not a class the image needs a name for. What the
-  plan must still do here: the boot builds the kernel's new classes and the
-  level `IndexedCollection` adds under `Array` and `ByteArray` (the next
-  item), and `complete_shipped_world` names them, the level among the
-  builtins' own levels (`shipped_world.rs`'s `push_class` reads a class's
-  levels off its superclass chain); and the boot cost a larger kernel adds
-  is measured ([OPEN-WORK.md](../OPEN-WORK.md), "The cost of building the
-  shipped world at boot").
-- **The bootstrap takes only builtins today.** `check_kernel_shape`
-  (`interpreter/kernel.rs`) asserts one nested class per builtin and a
-  superclass clause that is a bare kernel name; the plan lets `Kernel.ns`
-  declare ordinary classes beside them (`IndexedCollection`,
-  `StringBuilder`, `TypedArray` and its ten classes, `DataView` and its
-  two), built lazily by their nested-class accessors as any class is, and
-  lets a builtin's clause carry `<:` clauses naming a kernel mixin.
-  `fill_builtin_classes` then builds each such level as
-  `nested::build_applied_levels` builds one -- the mixin's application
-  over the level below, a class object made with `new_applied_level` --
-  applies the builtin's own mixin over the topmost level, links the
-  superclass to it, passes the levels to
-  `give_existing_class_objects_metaclasses`, and `wire_kernel_in` gives
-  each level and its metaclass the kernel's lexical context, as it does
-  for the kernel's own `Value` level. The hierarchy test walks through the
-  level.
-- **`Primitive` stays two bytes** (`resolve.rs`'s
-  `a_resolution_stays_the_size_the_hot_path_was_measured_at`), so the
-  generic element access of the typed arrays and `DataView` is one
-  family whose payload packs the element kind, the byte order, the
-  indexing (element or byte position) and read or write into one `u8`,
-  not an enum of four fields.
-- **The movers realign by word index.** An allocation's fields are a range
-  of word indices into the space, whose base is page-aligned, so the data
-  begin at the first field index rounded up to a multiple of four; the
-  scavenger's `copy` and the compaction's slide know the old and the new
-  header index of each object, and the move stress mode shifts a whole
-  region by one distance, so after its bulk copy it walks the region and
-  realigns each `AlignedBytes` object from its old index, the new one less
-  the shift.
-- **An image's slots are untrusted.** A crafted record can give a view a
-  `bytes` slot that holds no `ByteArray`, or a `StringBuilder` counts that
-  disagree with its data: a leaf that meets one declines, and the failure
-  block signals an `ArgumentError`, never a panic.
-- **Overrides keep the failure paths.** `Array`'s and `ByteArray`'s leaf
-  methods fall back to `super`, which now reaches `IndexedCollection`
-  before `Collection`, so the mixin declares none of `at:`, `at:put:`,
-  `size`, `do:`, `=`, `hash` and `printString`, and
-  `goldens/library/builtin-subclass/` keeps its output.
+   scavenger and the compaction, the image and the stress modes. Next; it
+   has no design yet. The one weak structure today is the canonical
+   symbol table ([memory.md](memory.md), "Weak references").
 
 ## Decisions
 
@@ -4175,8 +4304,10 @@ stands; the shipped-class naming the first item needs is built.
   licence is not taken on.
 
 - **`ByteArray`, `StringBuilder` and the views** (decided with the user on
-  2026-10-12, not yet built; "Planned: sub-project 5, `ByteArray`,
-  `StringBuilder` and the views" above): Primordial Soup's API is changed
+  2026-10-12, built on 2026-10-13; "`ByteArray`, `StringBuilder` and the
+  views" above;
+  [plan](../superpowers/plans/2026-10-13-1614-byte-array-and-views.md)):
+  Primordial Soup's API is changed
   where it does not fit code-point strings or a 1-based language; UTF-8 is
   decoded strictly, by `String fromUtf8:`, and encoded by `asUtf8`; a
   `ByteArray`'s methods take a `String` as its UTF-8 bytes, a `String`'s
@@ -4188,7 +4319,20 @@ stands; the shipped-class naming the first item needs is built.
   for a float element; `DataView` reads and writes at 1-based byte
   positions in the byte order its factory is given, through two private
   classes; and every `ByteArray`'s data lie at a 32-byte address, a reserve
-  of three words that every mover realigns.
+  of three words that every mover realigns. Settled while building it, where
+  the design was silent: `ByteArray>>startsWith:` and `endsWith:` refuse an
+  argument that is no `Integer`, `ByteArray` or `String`, as the canonical
+  implementation does, while `indexOf:` and `lastIndexOf:` look for it as
+  an element; the leaf behind `addCodePoint:` reports its own selector,
+  `at:putCodePoint:`, and `StringBuilder>>addCodePoint:` checks the code
+  point itself, rather than the mirror machinery learning a row reported
+  under another method's selector; a refusal written in Newspeak renders
+  its argument with `printString`, a leaf's with `describe`; a view whose
+  slot holds no `ByteArray` names the selector sent, and a builder whose
+  slots an image crafted is refused by `checkState:`, an `ArgumentError`
+  in both cases, since every error of the sub-project is one; and the
+  decoder holds a byte-array body and the `ByteArray` header to each
+  other both ways, since a record carries exactly its class's layout.
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:
@@ -4251,7 +4395,7 @@ stands; the shipped-class naming the first item needs is built.
   on 2026-10-13, built the same day; "`class` and the class accessors are
   protected" above;
   [plan](../superpowers/plans/2026-10-13-1158-protected-class.md)):
-  `Object>>class` and `Object`'s sixteen class accessors are `protected`,
+  `Object>>class` and every class accessor of `Object` is `protected`,
   as in both Newspeak kernels, so that holding an instance does not hand
   out its class's authority -- its factory, its class side's state, a
   subclass in its environment; `self class`, `super class` and a bare name

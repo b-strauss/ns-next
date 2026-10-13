@@ -149,7 +149,9 @@ transient peak of a rejected load is about 10.7x of the graph bytes plus ≤4x
 of the symbol section in a release build, and about 16x of the graph bytes
 plus ≤4x of the symbol section in a debug one (`memory.md`, "The
 amplification bound of a rejected load", has the breakdown and what is not
-counted; `decode_value`'s doc comment the derivation). The guarantee
+counted; `decode_value`'s doc comment the derivation; both count a class
+tag at two bytes where every live one is five, so the figures are upper
+bounds). The guarantee
 covers decoding only: `ns-next load` runs the packaged application's code,
 recursion bounded by the 100,000-activation depth limit plus its 1,000 reserve
 (`execution.md`, "The depth limit"), and an image that names the shipped
@@ -169,6 +171,16 @@ empties the nursery, write words without it.
 `NS_NEXT_STRESS_SCAVENGE`'s verification of the remembered set, and a
 debug build's poison over the nursery a scavenge vacated, are what find a
 breach (`memory.md`, "Generations").
+
+**Every mover realigns an `AlignedBytes` object's data.** A `ByteArray`'s
+data begin at the first 32-byte address in its block, an offset computed
+from the block's address and never stored, so whoever copies such an
+object to another address -- the scavenger's `copy`, the compaction's
+slide, the move stress mode's shift -- moves its data to the new block's
+alignment (`heap/object.rs`'s `realign`). A mover that skips it leaves the
+data at the old offset within the block: wrong bytes at exit status 0. A
+new mover, or a new format with data aligned the same way, takes the same
+fix-up (`memory.md`, "Every mover realigns a `ByteArray`'s data").
 
 **A wire tag is assigned once and never renumbered or reused.** Every tag lives in
 `crates/ns-runtime/src/image/opcodes.rs`, pinned by `tests/opcode_tags.rs`; a new
