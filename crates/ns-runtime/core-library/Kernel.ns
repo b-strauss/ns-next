@@ -4184,7 +4184,8 @@ class Kernel vmMirror: mirror = Value (
     ///
     /// The leaf takes a ByteArray or a String source; any other source
     /// falls to `IndexedCollection`'s, which copies it into an Array
-    /// first.
+    /// first and then stores its elements one by one, so an element
+    /// `at:put:` refuses leaves the bytes before it already stored.
     public replaceFrom: start to: stop with: source startingAt: sourceStart = (
       ^vmMirror byteArray: self
           replaceFrom: start
@@ -4263,25 +4264,29 @@ class Kernel vmMirror: mirror = Value (
     /// Answers whether the receiver begins with `prefix`; true for an
     /// empty ByteArray or String.
     ///
-    /// prefix: an Integer, compared with the first byte; a ByteArray, or
-    ///     a String, which counts as its UTF-8 bytes, compared with the
-    ///     first bytes; or any other object, sent `=` by the first byte.
+    /// prefix: an Integer, compared with the first byte; or a ByteArray,
+    ///     or a String, which counts as its UTF-8 bytes, compared with the
+    ///     first bytes.
+    ///
+    /// Signals an ArgumentError carrying `prefix`, 'startsWith: requires
+    /// an Integer, a ByteArray or a String, got …', for any other
+    /// `prefix`.
     public startsWith: prefix = (
-      ^vmMirror byteArray: self startsWith: prefix ifFail: [
-        self size > 0 and: [(self at: 1) = prefix].
-      ].
+      ^vmMirror byteArray: self startsWith: prefix ifFail: [^super startsWith: prefix].
     )
 
     /// Answers whether the receiver ends with `suffix`; true for an
     /// empty ByteArray or String.
     ///
-    /// suffix: an Integer, compared with the last byte; a ByteArray, or
-    ///     a String, which counts as its UTF-8 bytes, compared with the
-    ///     last bytes; or any other object, sent `=` by the last byte.
+    /// suffix: an Integer, compared with the last byte; or a ByteArray,
+    ///     or a String, which counts as its UTF-8 bytes, compared with the
+    ///     last bytes.
+    ///
+    /// Signals an ArgumentError carrying `suffix`, 'endsWith: requires
+    /// an Integer, a ByteArray or a String, got …', for any other
+    /// `suffix`.
     public endsWith: suffix = (
-      ^vmMirror byteArray: self endsWith: suffix ifFail: [
-        self size > 0 and: [(self at: self size) = suffix].
-      ].
+      ^vmMirror byteArray: self endsWith: suffix ifFail: [^super endsWith: suffix].
     )
   ) : (
     /// Answers a new ByteArray of `size` bytes, each 0.

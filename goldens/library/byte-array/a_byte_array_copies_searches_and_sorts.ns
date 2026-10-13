@@ -5,7 +5,8 @@
 /// Arrays. A search takes an Integer as an element and a ByteArray as a
 /// subsequence -- one byte means the same either way -- from a start of 1
 /// to `size + 1`; an empty subsequence is found at the start, and an
-/// argument of any other kind is compared element by element with `=`.
+/// argument of any other kind is compared element by element with `=` by
+/// a search, and refused by `startsWith:` and `endsWith:`.
 class AByteArrayCopiesSearchesAndSorts = Object new () (
   public main: platform args: arguments = (
     |
@@ -107,8 +108,6 @@ class AByteArrayCopiesSearchesAndSorts = Object new () (
       bytes indexOf: empty startingAt: 6.
       bytes indexOf: nil.
       bytes lastIndexOf: nil.
-      bytes startsWith: nil.
-      bytes endsWith: nil.
     }.
     show value: ((ByteArray new: 4) replaceFrom: 2 to: 3 with: bytes startingAt: 3).
     show value: ((ByteArray new: 3) replaceFrom: 1 to: 2 with: {7. 9} startingAt: 1).

@@ -2,7 +2,8 @@
 /// bound out of range, in an Array's words; a source too short for
 /// `replaceFrom:to:with:startingAt:` refuses its start and leaves the
 /// receiver as it was; a search's start outside 1 to `size + 1` is
-/// refused as a String's is; and `withAll:` refuses an element that is no
+/// refused as a String's is; `startsWith:` and `endsWith:` refuse what is
+/// no Integer, ByteArray or String; and `withAll:` refuses an element that is no
 /// byte, carrying it.
 class AByteArrayRangeErrorIsAnArgumentError = Object new () (
   public main: platform args: arguments = (
@@ -40,6 +41,8 @@ class AByteArrayRangeErrorIsAnArgumentError = Object new () (
         show: ' ';
         show: (bytes at: 3) printString;
         newLine.
+    refusal value: [bytes startsWith: nil].
+    refusal value: [bytes endsWith: 1.5].
     refusal value: [ByteArray withAll: {1. 300}].
     refusal value: [ByteArray withAll: {-1}].
     refusal value: [ByteArray withAll: {1. 'x'}].

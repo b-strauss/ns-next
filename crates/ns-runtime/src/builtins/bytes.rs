@@ -32,8 +32,8 @@ pub(crate) fn execute<'gc>(
         BytePrimitive::Concatenate => concatenate(mutator, receiver, selector, arguments),
         BytePrimitive::IndexOf => search(mutator, receiver, selector, arguments, false),
         BytePrimitive::LastIndexOf => search(mutator, receiver, selector, arguments, true),
-        BytePrimitive::StartsWith => affix(mutator, receiver, arguments, false),
-        BytePrimitive::EndsWith => affix(mutator, receiver, arguments, true),
+        BytePrimitive::StartsWith => affix(mutator, receiver, selector, arguments, false),
+        BytePrimitive::EndsWith => affix(mutator, receiver, selector, arguments, true),
     }
 }
 
@@ -149,8 +149,9 @@ enum Needle<'gc> {
 
 impl<'gc> Needle<'gc> {
     /// The argument as a needle; `None` for anything that is no Integer,
-    /// ByteArray or String, which the failure block compares element by
-    /// element with `=`.
+    /// ByteArray or String, which a search's failure block compares
+    /// element by element with `=` and `startsWith:` and `endsWith:`
+    /// refuse.
     fn of(heap: &Heap<'gc>, argument: Option<Value<'gc>>) -> Option<Needle<'gc>> {
         let argument = argument?;
         match integer_argument(heap, Some(argument)) {
@@ -347,18 +348,30 @@ fn search<'gc>(
 }
 
 /// `startsWith:` and `endsWith:`: whether the needle occurs at the start,
-/// or at the end; an empty one always does. `None` -- the failure block
-/// compares the first or the last element with `=` -- for a needle that
-/// is no Integer, ByteArray or String.
+/// or at the end; an empty one always does. A needle that is no Integer,
+/// ByteArray or String is an `ArgumentError` carrying it: unlike a search,
+/// which `IndexedCollection`'s protocol defines for any element, these two
+/// compare bytes only.
 fn affix<'gc>(
     mutator: &Mutator<'gc>,
     receiver: Value<'gc>,
+    selector: Symbol,
     arguments: &[Value<'gc>],
     at_end: bool,
 ) -> Option<Result<Value<'gc>, NewspeakError<'gc>>> {
     let heap = &mutator.heap;
     let (object, size) = byte_array(mutator, receiver)?;
-    let needle = Needle::of(heap, arguments.first().copied())?;
+    let Some(needle) = Needle::of(heap, arguments.first().copied()) else {
+        return Some(Err(NewspeakError::argument_error(
+            selector,
+            receiver,
+            first_argument(arguments),
+            format!(
+                "{selector} requires an Integer, a ByteArray or a String, got {}",
+                heap.describe_argument(arguments.first().copied())
+            ),
+        )));
+    };
     let occurs = size
         .checked_sub(needle.size())
         .is_some_and(|last_position| {

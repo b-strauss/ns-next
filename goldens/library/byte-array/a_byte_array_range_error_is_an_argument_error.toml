@@ -13,6 +13,8 @@ stdout = '''
 3 / startingAt: 3 out of range: the source holds 3 elements, the range needs 2 from 3
 3 / startingAt: 3 out of range: the source holds 3 elements, the range needs 2 from 3
 5 3 8
+nil / startsWith: requires an Integer, a ByteArray or a String, got nil
+1.5 / endsWith: requires an Integer, a ByteArray or a String, got 1.5
 300 / withAll: requires an Integer from 0 to 255, got 300
 -1 / withAll: requires an Integer from 0 to 255, got -1
 'x' / withAll: requires an Integer from 0 to 255, got 'x'
