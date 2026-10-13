@@ -3515,8 +3515,7 @@ class Kernel vmMirror: mirror = Value (
   /// applying it passes through to `Collection` and `Object`. Its own
   /// superclass, `Collection`, records that its members build on
   /// `Collection`'s protocol; applying it takes only its own members.
-  /// Private, as only the kernel classes no program may name are: a
-  /// program meets it only through the classes that apply it.
+  /// Private: a program meets it only through the classes that apply it.
   private class IndexedCollection = Collection () (
     /// Answers a new instance of the receiver's kind holding `size`
     /// elements, each the empty element of that kind.
@@ -3575,12 +3574,18 @@ class Kernel vmMirror: mirror = Value (
     /// start, stop: Integers with 1 <= start <= stop + 1 and
     ///     stop <= size.
     ///
-    /// Signals what `newOfSize:` signals for a negative length, and what
-    /// `at:` signals for the first index outside the receiver.
+    /// Signals an Array's ArgumentErrors for the range: carrying the
+    /// bound out of range, 'copyFrom: … to: … out of range: valid ranges
+    /// lie within 1..size, an empty range ends just before it starts
+    /// (size …)', or 'copyFrom:to: requires an Integer index, got …' for
+    /// a bound that is no Integer.
     public copyFrom: start to: stop = (
       |
         result
       |
+      self checkRangeFrom: start to: stop keyword: 'copyFrom:' ifNoInteger: [
+        (outer Kernel Array new: 0) copyFrom: start to: stop.
+      ].
       result:: self newOfSize: stop - start + 1.
       1 to: result size do: [:index | result at: index put: (self at: start + index - 1)].
       ^result.
@@ -3597,28 +3602,104 @@ class Kernel vmMirror: mirror = Value (
     /// sourceStart: an Integer with 1 <= sourceStart and
     ///     sourceStart + (stop - start) <= source size.
     ///
-    /// Signals, before it stores anything, the ArgumentErrors an Array's
-    /// `replaceFrom:to:with:startingAt:` signals: for a range the
-    /// receiver does not hold, its text beginning 'replaceFrom: … to: …',
-    /// and for a source too short, one carrying `sourceStart`,
+    /// Signals, before it reads or stores any element, an Array's
+    /// ArgumentErrors: for a range the receiver does not hold, the one
+    /// `copyFrom:to:` signals, its text beginning 'replaceFrom: … to: …';
+    /// for a bound or a `sourceStart` that is no Integer,
+    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got
+    /// …'; and for a source too short, one carrying `sourceStart`,
     /// 'startingAt: … out of range: the source holds … elements, the
     /// range needs … from …'. Then signals what `at:put:` signals for an
     /// element the receiver cannot hold.
     ///
-    /// The source is copied into an Array first, which is what makes an
-    /// overlapping range correct, and the range is checked by an Array of
-    /// the receiver's size taking that copy, so that the checks and their
-    /// texts are the Array leaf's rather than a second set of them.
+    /// The elements the range needs are copied into an Array first, which
+    /// is what makes an overlapping range correct.
     public replaceFrom: start to: stop with: source startingAt: sourceStart = (
       |
+        count
         elements
-        checked
       |
-      elements:: outer Kernel Array new: source size.
-      1 to: source size do: [:index | elements at: index put: (source at: index)].
-      checked:: outer Kernel Array new: self size.
-      checked replaceFrom: start to: stop with: elements startingAt: sourceStart.
-      start to: stop do: [:index | self at: index put: (checked at: index)].
+      self checkRangeFrom: start to: stop keyword: 'replaceFrom:' ifNoInteger: [
+        (outer Kernel Array new: 0) replaceFrom: start
+            to: stop
+            with: (outer Kernel Array new: 0)
+            startingAt: 1.
+      ].
+      count:: stop - start + 1.
+      self checkSourceStart: sourceStart count: count sourceSize: source size.
+      elements:: outer Kernel Array new: count.
+      1 to: count do: [:index | elements at: index put: (source at: sourceStart + index - 1)].
+      1 to: count do: [:index | self at: start + index - 1 put: (elements at: index)].
+    )
+
+    /// Answers the receiver when `start` to `stop` is a range it holds --
+    /// 1 <= start <= stop + 1 and stop <= size, the empty range included
+    /// -- and otherwise signals the ArgumentError an Array's leaf signals
+    /// for it: carrying the start unless it is a position the receiver
+    /// has, one past the end included, and then the stop, with the text
+    /// '<keyword> … to: … out of range: valid ranges lie within 1..size,
+    /// an empty range ends just before it starts (size …)'.
+    ///
+    /// keyword: the String naming the selector's first keyword,
+    ///     'copyFrom:' or 'replaceFrom:'.
+    /// refuse: a block, evaluated when a bound is no Integer, that
+    ///     signals the selector's own 'requires an Integer index' error.
+    ///
+    /// The texts are an Array leaf's, so that a receiver of any kind fails
+    /// as an Array does. A bound that is no Integer is refused by that
+    /// leaf on an empty Array, since the description of an arbitrary
+    /// object is the leaf's to give; checking the range itself allocates
+    /// nothing, whatever the receiver's size.
+    private checkRangeFrom: start to: stop keyword: keyword ifNoInteger: refuse = (
+      |
+        receiverSize
+        refused
+      |
+      (start isKindOfInteger and: [stop isKindOfInteger]) ifFalse: [^refuse value].
+      receiverSize:: self size.
+      (start >= 1 and: [stop >= (start - 1) and: [stop <= receiverSize]]) ifTrue: [^self].
+      refused:: (start >= 1 and: [start - 1 <= receiverSize]) ifTrue: [stop] ifFalse: [start].
+      ^(outer Kernel ArgumentError value: refused) signal: keyword
+          , ' '
+          , start printString
+          , ' to: '
+          , stop printString
+          , ' out of range: valid ranges lie within 1..'
+          , receiverSize printString
+          , ', an empty range ends just before it starts (size '
+          , receiverSize printString
+          , ')'.
+    )
+
+    /// Answers the receiver when a source of `sourceSize` elements holds
+    /// `count` of them from `sourceStart` on, and otherwise signals the
+    /// ArgumentError an Array's `replaceFrom:to:with:startingAt:` leaf
+    /// signals for it, carrying `sourceStart`: 'startingAt: … out of
+    /// range: the source holds … elements, the range needs … from …', or
+    /// 'replaceFrom:to:with:startingAt: requires an Integer index, got …'
+    /// for a `sourceStart` that is no Integer.
+    ///
+    /// count, sourceSize: Integers of at least 0.
+    ///
+    /// The texts are the leaf's, as `checkRangeFrom:to:keyword:ifNoInteger:`'s
+    /// are, and so is the refusal of a start that is no Integer.
+    private checkSourceStart: sourceStart count: count sourceSize: sourceSize = (
+      sourceStart isKindOfInteger ifFalse: [
+        ^(outer Kernel Array new: 0) replaceFrom: 1
+            to: 0
+            with: (outer Kernel Array new: 0)
+            startingAt: sourceStart.
+      ].
+      (sourceStart >= 1 and: [sourceStart - 1 + count <= sourceSize]) ifTrue: [^self].
+      ^(outer Kernel ArgumentError value: sourceStart) signal: 'startingAt: '
+          , sourceStart printString
+          , ' out of range: the source holds '
+          , sourceSize printString
+          , (sourceSize = 1 ifTrue: [' element'] ifFalse: [' elements'])
+          , ', the range needs '
+          , count printString
+          , ' from '
+          , sourceStart printString.
     )
 
     /// Answers a new collection of the receiver's kind holding the
@@ -3739,8 +3820,8 @@ class Kernel vmMirror: mirror = Value (
     /// lessOrEqual: a two-argument block answering whether its first
     ///     argument may precede its second.
     ///
-    /// Signals what `copyFrom:to:` signals for a range the receiver does
-    /// not hold: for an Array, its ArgumentError.
+    /// Signals the ArgumentError of `copyFrom:to:` for a range the
+    /// receiver does not hold.
     ///
     /// A bottom-up merge sort over a copy of the range and a buffer of
     /// the same size, trading the two each pass: no recursion, so its

@@ -1142,6 +1142,11 @@ mod tests {
         ("IndexedCollection", "sort:"),
         ("IndexedCollection", "sortFrom:to:by:"),
         ("IndexedCollection", "merge:into:from:width:count:by:"),
+        (
+            "IndexedCollection",
+            "checkRangeFrom:to:keyword:ifNoInteger:",
+        ),
+        ("IndexedCollection", "checkSourceStart:count:sourceSize:"),
         ("IndexedCollection", "asArray"),
         // `Array`'s new instance of its own kind, and its class side's
         // `withAll:`: sends, no leaf.
@@ -2128,8 +2133,10 @@ mod tests {
     /// §6.3.1 defaults an undeclared member to protected, and a protected
     /// nested class is unreachable from outside the module that declares it,
     /// so every kernel class has to say `public` for a program to name it --
-    /// every one but `PRIVATE_KERNEL_CLASSES`. Every builtin but the
-    /// mirror's has its class among them, and every one of them is checked.
+    /// every one but `PRIVATE_KERNEL_CLASSES`. The count is of the classes
+    /// named after a builtin -- one per builtin but the mirror's; the
+    /// kernel's ordinary classes are no builtin's, and the access check
+    /// below, which reads every nested class, covers them.
     #[test]
     fn only_the_kernels_private_classes_are_private() {
         let mut interpreter = Interpreter::bootstrap();
