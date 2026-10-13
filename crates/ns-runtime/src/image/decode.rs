@@ -894,6 +894,15 @@ impl<'a> Reader<'a> {
         let length = self.read_u32()? as usize;
         std::str::from_utf8(self.read_raw(length)?).map_err(|_| DecodeError::InvalidUtf8)
     }
+
+    /// A `ByteArray` record's bytes, lent out of the buffer: nothing is
+    /// allocated for them, and a length past the bytes left is refused
+    /// before anything is, so the decoder copies them straight into the
+    /// placeholder the first pass sized (`Heap::fill_placeholder_byte_array`).
+    pub(crate) fn read_byte_slice(&mut self) -> Result<&'a [u8], DecodeError> {
+        let length = self.read_u32()? as usize;
+        self.read_raw(length)
+    }
 }
 
 /// What the header says about the rest of the image.
@@ -2404,8 +2413,9 @@ fn read_shipped_module<'gc>(
 /// `LargeInteger` and a `Fraction` -- and that is the one thing the second
 /// pass allocates beyond the placeholders the first pass sized: every
 /// record is filled into its placeholder in place, each value stored as it
-/// is read, a string packed straight from the buffer (`Heap::shape_placeholder`,
-/// `fill_placeholder_string`, `fill_placeholder_closure`,
+/// is read, a string packed and a byte array's bytes copied straight from
+/// the buffer (`Heap::shape_placeholder`, `fill_placeholder_string`,
+/// `fill_placeholder_byte_array`, `fill_placeholder_closure`,
 /// `fill_frame_fields`), so no record is ever built beside its placeholder.
 ///
 /// The transient peak of a rejected load, against the bytes of the graph
@@ -2428,7 +2438,10 @@ fn read_shipped_module<'gc>(
 ///   kind, the program counter's 4, four one-byte flags and fields and the
 ///   register count's 4) for 12 words, 96 bytes, 4.6x; an instance, array,
 ///   string or symbol record at least 11 for 2 words, 16 bytes, 1.5x; a
-///   closure record at least 17 for 5 words, 40 bytes, 2.4x.
+///   closure record at least 17 for 5 words, 40 bytes, 2.4x; a byte-array
+///   record of `n` bytes is `14 + n` (a five-byte header, the hash, the
+///   body tag, the length's 4) for `5 + ⌈n/8⌉` words -- its alignment
+///   reserve is not on the wire -- at most 40 bytes for 14, 2.9x.
 /// - The decoder's own tables, per record: the placeholder table (a handle,
 ///   8 or 16 bytes), the first pass's sizes (8 bytes, freed once the
 ///   placeholders exist) and, in the second pass, a metaclass record's
@@ -3472,6 +3485,10 @@ impl Sizing<'_, '_, '_> {
                 let text = reader.read_text()?;
                 (record_size::string_fields(text), false)
             }
+            OBJECT_BYTE_ARRAY => (
+                record_size::byte_array_fields(reader.read_byte_slice()?.len()),
+                false,
+            ),
             OBJECT_SYMBOL => {
                 let id = reader.read_u32()?;
                 let symbol = self.symbols.get(id)?;
@@ -3763,6 +3780,20 @@ pub fn decode_graph_section<'gc>(
                     class,
                     identity_hash,
                     text,
+                ) {
+                    return Err(DecodeError::UnexpectedEndOfFile);
+                }
+                None
+            }
+            OBJECT_BYTE_ARRAY => {
+                let bytes = reader.read_byte_slice()?;
+                // The first pass sized the placeholder from these bytes; a
+                // placeholder of another size is refused, as a string's is.
+                if !context.mutator.heap.fill_placeholder_byte_array(
+                    *object,
+                    class,
+                    identity_hash,
+                    bytes,
                 ) {
                     return Err(DecodeError::UnexpectedEndOfFile);
                 }

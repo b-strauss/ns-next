@@ -1006,7 +1006,8 @@ impl<'gc> GraphTable<'gc> {
                 ObjectShape::String
                 | ObjectShape::Symbol
                 | ObjectShape::LargeInteger
-                | ObjectShape::Float => {}
+                | ObjectShape::Float
+                | ObjectShape::ByteArray => {}
             }
         }
         stack[before..].reverse();
@@ -1527,6 +1528,16 @@ fn encode_object<'gc>(
             // symbol table writes its text with a `u32` length.
             u32_length("symbol", symbol.as_str().len())?;
             writer.write_u32(symbols.intern(symbol.as_str()));
+        }
+        ObjectShape::ByteArray => {
+            writer.write_u8(OBJECT_BYTE_ARRAY);
+            let Some(bytes) = heap.byte_array_bytes(object) else {
+                unreachable!("internal: an `ObjectShape::ByteArray` has bytes")
+            };
+            // Only the bytes: the reserve ahead of them is the heap's
+            // alignment, chosen afresh where the record is decoded.
+            u32_length("byte array", bytes.len())?;
+            writer.write_bytes(&bytes);
         }
         ObjectShape::Array => {
             writer.write_u8(OBJECT_ARRAY);

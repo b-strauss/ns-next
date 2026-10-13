@@ -1170,8 +1170,11 @@ The other record kinds stay below the metaclass record: a class record is at
 least 19 bytes for the same 80 (4.2x; 5.5x and 5.9x with the decoder's
 tables), a frame record at least 21 for 96 (4.6x; 5.7x and 6.5x), an
 instance, array, string or symbol record at least 11 for 16 (1.5x), a
-closure record at least 17 for 40 (2.4x). A placeholder is filled in place,
-so no record's fields are laid out beside it.
+closure record at least 17 for 40 (2.4x), a byte-array record of `n` bytes
+`14 + n` for `8 × (5 + ⌈n/8⌉)`, its alignment reserve not on the wire, at
+most 40 for 14 (2.9x; 4.0x and 4.6x with the decoder's tables). A
+placeholder is filled in place, so no record's fields are laid out beside
+it.
 
 **So the transient peak of a rejected load is about 10.7x of the graph
 section's bytes in a release build (a graph of metaclass records) and about

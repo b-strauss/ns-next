@@ -2692,6 +2692,111 @@ fn instances_and_arrays_round_trip_with_shared_identity_preserved() {
     });
 }
 
+/// The bytes of a `ByteArray` of `size` for the image tests: every value a
+/// byte takes, so that a byte read from the wrong place or the wrong word
+/// shows.
+fn byte_array_contents(size: usize) -> Vec<u8> {
+    (0..size).map(|index| (index * 7 + 3) as u8).collect()
+}
+
+#[test]
+fn a_byte_array_round_trips_with_its_bytes_and_identity_hash() {
+    let sizes = [0, 5, 4_000];
+    let (mut interpreter, _class, original, decoded, _max) =
+        round_trip_graph(EMPTY, |interpreter, _| {
+            interpreter.enter(|mutator| {
+                let class = mutator.builtin_class(BuiltinClass::Object);
+                let arrays: Vec<Value> = sizes
+                    .iter()
+                    .map(|size| {
+                        let bytes = byte_array_contents(*size);
+                        let array = mutator.heap_mut().allocate_byte_array(class, &bytes);
+                        mutator.heap_mut().object_ensure_identity_hash(array);
+                        Value::object(array)
+                    })
+                    .collect();
+                // The five-byte one twice, so that its identity is kept.
+                let holder = mutator.new_array(vec![arrays[0], arrays[1], arrays[2], arrays[1]]);
+                vec![mutator.stash(Value::object(holder))]
+            })
+        });
+    interpreter.enter(|mutator| {
+        let original = mutator.fetch(&original[0]);
+        let decoded = mutator.fetch(&decoded[0]);
+        let heap = mutator.heap();
+        let originals = heap
+            .array_elements(object(original))
+            .expect("expected an array");
+        let elements = heap
+            .array_elements(object(decoded))
+            .expect("expected an array");
+        assert!(
+            object(elements[1]).same(object(elements[3])),
+            "shared identity preserved"
+        );
+        for (index, size) in sizes.iter().enumerate() {
+            let decoded = object(elements[index]);
+            let original = object(originals[index]);
+            assert!(!decoded.same(original), "the decoded one is a new object");
+            assert!(heap.is_byte_array(decoded));
+            assert_eq!(heap.byte_array_size(decoded), Some(*size));
+            assert_eq!(
+                heap.byte_array_bytes(decoded),
+                Some(byte_array_contents(*size))
+            );
+            assert_eq!(
+                heap.object_identity_hash(decoded),
+                heap.object_identity_hash(original)
+            );
+            assert!(heap.object_class(decoded).same(heap.object_class(original)));
+        }
+    });
+}
+
+/// `inspect` reads a `ByteArray` record as the loader does and shows its
+/// size and its first 16 bytes, never a large one whole.
+#[test]
+fn inspect_shows_a_byte_array_by_its_size_and_first_bytes() {
+    let (mut interpreter, class) = load(EMPTY);
+    let instance = expect_ok(interpreter.instantiate(&class, &[]), "instantiate");
+    let bytes = interpreter.enter(|mutator| {
+        let instance = mutator.fetch(&instance);
+        let class = class_reference(mutator, &class);
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let small = mutator
+            .heap_mut()
+            .allocate_byte_array(object_class, &[0x00, 0x7f, 0xff]);
+        let large = mutator
+            .heap_mut()
+            .allocate_byte_array(object_class, &byte_array_contents(20));
+        snapshot_one(
+            mutator,
+            None,
+            &Origin::File(PathBuf::from("t.ns")),
+            class,
+            &[instance, Value::object(small), Value::object(large)],
+        )
+        .expect("snapshot")
+    });
+    let report = image::inspect::inspect(&bytes).expect("inspect");
+    let shown = |expected: &str| {
+        report
+            .graph_objects
+            .iter()
+            .any(|object| object.ends_with(expected))
+    };
+    assert!(
+        shown("byte array of 3 bytes [00 7f ff]"),
+        "{:?}",
+        report.graph_objects
+    );
+    assert!(
+        shown("byte array of 20 bytes [03 0a 11 18 1f 26 2d 34 3b 42 49 50 57 5e 65 6c ...]"),
+        "{:?}",
+        report.graph_objects
+    );
+}
+
 #[test]
 fn identity_hashes_are_preserved_and_the_maximum_is_reported() {
     // Two objects, the higher hash first: the object table is walked in
@@ -3359,6 +3464,63 @@ fn the_first_pass_refuses_a_record_count_the_bytes_cannot_hold() {
     );
 }
 
+/// A one-record graph section: a `ByteArray` record whose length field
+/// says `length` and after which only `written` bytes follow.
+fn one_byte_array_record(length: u32, written: usize) -> Vec<u8> {
+    class_records(1, |writer| {
+        writer.write_shipped(OBJECT_NAME);
+        writer.write_u32(1); // identity hash
+        writer.write_u8(OBJECT_BYTE_ARRAY); // object body: ByteArray
+        writer.write_u32(length);
+        for byte in 0..written {
+            writer.write_u8(byte as u8);
+        }
+    })
+}
+
+#[test]
+fn a_truncated_byte_array_record_is_refused_before_allocating() {
+    let bytes = one_byte_array_record(1_000_000, 8); // a million bytes, eight written
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
+#[test]
+fn an_overlong_byte_array_length_is_refused() {
+    let bytes = one_byte_array_record(u32::MAX, 16);
+    let mut fixture = GraphFixture::new();
+    let before = fixture.interpreter.heap_statistics().live_objects;
+    assert_eq!(
+        fixture.decode_error(&bytes),
+        decode::DecodeError::UnexpectedEndOfFile
+    );
+    assert_eq!(
+        fixture.interpreter.heap_statistics().live_objects,
+        before,
+        "nothing was allocated"
+    );
+}
+
+#[test]
+fn a_crafted_byte_array_record_decodes_to_its_bytes() {
+    let bytes = one_byte_array_record(11, 11);
+    GraphFixture::new().decoded(&bytes, "a ByteArray record", |heap, graph| {
+        let decoded = graph.objects[0];
+        assert!(heap.is_byte_array(decoded));
+        assert_eq!(heap.byte_array_bytes(decoded), Some((0..11).collect()));
+        assert_eq!(heap.object_identity_hash(decoded), 1);
+    });
+}
+
 #[test]
 fn an_invalid_value_tag_in_the_graph_is_a_decode_error_not_a_panic() {
     // 200 is no value tag at all; 7 and 8 are retired, the platform and an
@@ -3826,7 +3988,11 @@ fn a_truncated_graph_section_is_a_decode_error_not_a_panic() {
     // nothing.
     interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
-        let roots = vec![mutator.fetch(&instance)];
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let byte_array = mutator
+            .heap_mut()
+            .allocate_byte_array(object_class, &byte_array_contents(13));
+        let roots = vec![mutator.fetch(&instance), Value::object(byte_array)];
         let mut symbols = symbols::Builder::new();
         let mut writer = encode::Writer::new();
         let ids = encode::encode_code_table(
@@ -4777,13 +4943,18 @@ fn every_truncation_of_an_image_is_reported_rather_than_panicking() {
     let (snapshot, packaged) = interpreter.enter(|mutator| {
         let class = class_reference(mutator, &class);
         let instance = mutator.fetch(&instance);
+        let object_class = mutator.builtin_class(BuiltinClass::Object);
+        let byte_array = mutator
+            .heap_mut()
+            .allocate_byte_array(object_class, &byte_array_contents(13));
         let modules = [image::ModuleSource {
             class,
             origin: &origin,
             source: Some(source),
         }];
         (
-            image::snapshot(mutator, &modules, &[instance]).expect("snapshot"),
+            image::snapshot(mutator, &modules, &[instance, Value::object(byte_array)])
+                .expect("snapshot"),
             image::package(mutator, &modules, instance).expect("package"),
         )
     });
@@ -12849,12 +13020,13 @@ fn a_record_of_top_is_refused() {
 /// before anything is allocated.
 #[test]
 fn a_record_of_a_shipped_class_with_another_body_is_refused() {
-    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME] {
+    for body in [OBJECT_ARRAY, OBJECT_STRING, OBJECT_FRAME, OBJECT_BYTE_ARRAY] {
         let bytes = class_records(1, |writer| {
             writer.write_shipped(STOPWATCH_NAME);
             writer.write_u32(5); // identity hash
             writer.write_u8(body);
-            writer.write_u32(0); // no elements, an empty text or a program counter
+            // No elements, an empty text, a program counter or no bytes.
+            writer.write_u32(0);
         });
         let error = GraphFixture::new().decode_error(&bytes);
         assert_eq!(error, decode::DecodeError::ShippedInstanceBody { body });

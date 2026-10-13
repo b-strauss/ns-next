@@ -77,6 +77,12 @@ pub(crate) mod record_size {
         super::object::string_field_count(text)
     }
 
+    /// The fields of a `ByteArray` of `length` bytes: its alignment
+    /// reserve and its data words.
+    pub(crate) fn byte_array_fields(length: usize) -> usize {
+        super::object::byte_array_field_count(length)
+    }
+
     /// Its overflow word included, when it needs one.
     pub(crate) fn block_words(field_count: usize) -> usize {
         super::space::allocation_words(field_count.saturating_add(super::FIELDS - 1))
@@ -1387,6 +1393,35 @@ impl<'gc> Heap<'gc> {
         true
     }
 
+    /// Fills a placeholder in place as a `ByteArray` of `class` with
+    /// `identity_hash` holding `bytes`, in order: its header becomes the one
+    /// `allocate_byte_array` writes, its data begin at the 32-byte address
+    /// the placeholder's own place gives them, and every other field word,
+    /// the reserve among them, is zero. `false`, and nothing written, when
+    /// the placeholder is not the size the first pass read for that many
+    /// bytes (`record_size::byte_array_fields`) -- which is also what keeps
+    /// an `AlignedBytes` block shorter than its reserve out of the heap.
+    pub(crate) fn fill_placeholder_byte_array(
+        &mut self,
+        object: ObjectReference<'gc>,
+        class: ClassReference<'gc>,
+        identity_hash: u32,
+        bytes: &[u8],
+    ) -> bool {
+        self.check_object_origin(object);
+        let fields = self.fields_mut(object);
+        if fields.len() != object::byte_array_field_count(bytes.len()) {
+            return false;
+        }
+        fields.fill(0);
+        // Below 8.
+        let unused = ((8 - bytes.len() % 8) % 8) as u8;
+        self.rewrite_placeholder_header(object, class, identity_hash, Format::AlignedBytes, unused);
+        let written = self.with_byte_array_mut(object, |mut data| data.write(0, bytes));
+        debug_assert_eq!(written, Some(true));
+        true
+    }
+
     /// Begins filling a placeholder in place as a closure of `class` with
     /// `identity_hash`, running `code` and capturing `captured_frame`: its
     /// header, class word and the fixed fields `allocate_closure` writes,
@@ -2053,6 +2088,7 @@ impl<'gc> Heap<'gc> {
             Format::Frame => ObjectShape::Activation,
             Format::Closure => ObjectShape::Closure,
             Format::Class => ObjectShape::Class,
+            Format::AlignedBytes => ObjectShape::ByteArray,
             Format::Bytes | Format::ThirtyTwoBit if self.symbol_value(object).is_some() => {
                 ObjectShape::Symbol
             }
@@ -6143,6 +6179,61 @@ mod tests {
             assert_eq!(heap.block(placeholder), heap.block(built), "{text:?}");
             let wrong_size = heap.allocate_placeholder(class, record_size::string_fields(text) + 1);
             assert!(!heap.fill_placeholder_string(wrong_size, class, 9, text));
+        }
+    }
+
+    /// A ByteArray filled in place: the header its allocation writes, its
+    /// data at the placeholder's own 32-byte alignment wherever the
+    /// placeholder lies, every other field word zero; a placeholder of any
+    /// other size is refused untouched.
+    #[test]
+    fn a_byte_array_filled_in_place_is_aligned_where_its_placeholder_lies() {
+        let mut heap = frame_heap();
+        let class = named_class(&mut heap, "Object");
+        for size in [0, 1, 8, 13, 40] {
+            let bytes: Vec<u8> = (0..size).map(|index| index as u8 ^ 0x5A).collect();
+            for residue in 0..object::ALIGNMENT_WORDS {
+                // A filler that puts the placeholder's header at `residue`
+                // within a 32-byte line: the filler's header is two words
+                // after the probe's, and the placeholder's two words and
+                // the filler's fields after that.
+                let probe = heap.allocate_instance(class, 0);
+                let next = header_index(probe.offset) + 2;
+                let line = object::ALIGNMENT_WORDS;
+                let fields = (residue + 2 * line - (next + 2) % line) % line;
+                heap.allocate_instance(class, fields);
+                let placeholder =
+                    heap.allocate_placeholder(class, record_size::byte_array_fields(size));
+                assert!(heap.fill_placeholder_byte_array(placeholder, class, 9, &bytes));
+                assert!(heap.is_byte_array(placeholder));
+                assert_eq!(heap.byte_array_bytes(placeholder), Some(bytes.clone()));
+                assert_eq!(heap.object_identity_hash(placeholder), 9);
+                let built = heap.allocate_byte_array(class, &bytes);
+                heap.object_set_identity_hash(built, 9);
+                assert_eq!(heap.header(placeholder).0, heap.header(built).0);
+                let index = header_index(placeholder.offset);
+                let start = object::aligned_data_start(index);
+                assert_eq!(start % object::ALIGNMENT_WORDS, 0);
+                assert_eq!(index % object::ALIGNMENT_WORDS, residue);
+                let block = block_range(heap.space.words(), index);
+                let data = start..start + size.div_ceil(8);
+                for position in block.start + FIELDS..block.end {
+                    if !data.contains(&position) {
+                        assert_eq!(heap.space.words()[position], 0, "the reserve is zero");
+                    }
+                }
+                let wrong_size =
+                    heap.allocate_placeholder(class, record_size::byte_array_fields(size) + 1);
+                assert!(!heap.fill_placeholder_byte_array(wrong_size, class, 9, &bytes));
+                assert!(!heap.is_byte_array(wrong_size), "nothing was written");
+            }
+        }
+        // Shorter than the reserve, the one block `byte_array_size` could
+        // not read: never built, whatever bytes it is asked to hold.
+        for fields in 0..object::ALIGNMENT_RESERVE {
+            let short = heap.allocate_placeholder(class, fields);
+            assert!(!heap.fill_placeholder_byte_array(short, class, 9, &[]));
+            assert!(!heap.is_byte_array(short));
         }
     }
 

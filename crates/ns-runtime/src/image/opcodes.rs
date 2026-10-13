@@ -229,7 +229,7 @@ pub const VALUE_SHIPPED_MODULE: u8 = 11;
 pub const RETIRED_VALUE_TAGS: [u8; 2] = [7, 8];
 
 /// An object record's body, following its class tag and identity hash.
-/// Next free number: 11.
+/// Next free number: 12.
 pub const OBJECT_INSTANCE: u8 = 0;
 pub const OBJECT_STRING: u8 = 1;
 pub const OBJECT_SYMBOL: u8 = 2;
@@ -258,6 +258,13 @@ pub const OBJECT_METACLASS: u8 = 8;
 /// first and the register count is on the wire, so the decoder's first pass
 /// sizes the record from its own bytes (`decode::decode_graph_section`).
 pub const OBJECT_FRAME: u8 = 10;
+/// A `ByteArray`: a `u32` length, then that many bytes, in order. The
+/// first pass sizes the record from its own bytes -- the length is refused
+/// when fewer bytes follow it, before anything is allocated -- and the
+/// second fills the placeholder. Only the bytes travel: the alignment
+/// reserve ahead of them is not written, since the decoder places the data
+/// at its own placeholder's alignment.
+pub const OBJECT_BYTE_ARRAY: u8 = 11;
 
 /// Object-body tags that no longer name anything and are never reused: 4 was
 /// the closure record while it carried its parameter names and its home

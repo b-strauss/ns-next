@@ -26,6 +26,7 @@ pub enum ObjectShape {
     Activation,
     LargeInteger,
     Float,
+    ByteArray,
 }
 
 /// A class object to build (`Heap::allocate_class`,
