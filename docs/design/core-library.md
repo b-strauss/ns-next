@@ -3354,7 +3354,9 @@ kernel holds the mirror, and `CollectionsFactory.ns`'s two index checks ask
 Soup's selector, which needs no mirror. `PlatformFactory.ns` sends neither.
 `Proxy` overrides none of them: an outside send already reaches its
 `doesNotUnderstand:`, and a bare `Integer` or `self class` inside a proxy
-keeps the accessor's direct answer ("The pull future" below).
+keeps the accessor's direct answer (`Kernel.ns`, `Proxy`'s comment;
+`goldens/library/object/a_proxy_forwards_an_outside_class_send_to_its_target.ns`
+pins the outside send).
 
 **A project's module may be named like a class accessor.** The manifest
 answers no protected member to a send from outside, so a module named

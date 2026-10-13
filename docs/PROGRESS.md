@@ -35,6 +35,7 @@ first.
 | `///` line comments | Complete | 2026-10-11 | [line-comments](superpowers/plans/2026-10-11-1750-ns-next-line-comments.md) |
 | The lossless AST and the formatter: `ns-next-analyzer fmt`, Reformat Code, the repository formatted | Complete | 2026-10-12 | [ns-next-formatter](superpowers/plans/2026-10-12-0112-ns-next-formatter.md) |
 | Editing in the JetBrains plugin: Reformat Code reaching the server, one-line methods, the formatter's indentation and width, Enter, a message bundle | Complete | 2026-10-12 | — |
+| Shipped names in the image: every object the binary owns named by its declaration, under a rule of what may be named where, and the shipped world's fingerprint in the header | Complete | 2026-10-13 | [shipped-names-in-the-image](superpowers/plans/2026-10-12-2224-shipped-names-in-the-image.md) |
 | `class` and `Object`'s class accessors protected | Complete | 2026-10-13 | [protected-class](superpowers/plans/2026-10-13-1158-protected-class.md) |
 | Road step 5 — mirrors and atomic installation, on `become:` as an eager bulk forward | Not started | — | — |
 | Road step 6 — inline allocation in the interpreter | Not started | — | — |
@@ -3238,7 +3239,8 @@ New goldens pin the lazy-slot rules (`goldens/language/slot/accessor/spec_6_3_3_
 `goldens/library/value/a_values_lazy_slot_*`) and
 `goldens/library/platform/a_second_platform_writes_like_the_first`;
 `goldens/library/platform/the_platform_and_its_parts_are_values` checks
-`platform = platform class new`, and
+that a second platform made from the first's class, `platform Platform
+new`, equals it, and
 `spec_6_3_3_a_lazy_slot_is_initialized_on_first_use` runs, unskipped.
 
 **Measured** ([execution.md](design/execution.md), "What the platform module
@@ -3514,7 +3516,7 @@ high-performance VM"): §5.1.1's integers "are not limited in size". An
 integer that fits `i64` is a `SmallInteger` (61 bits since the eight-byte
 value, below), any other a `LargeInteger`, a
 kernel subclass of `Integer`, and `Mutator::new_integer` decides which, so
-each integer has one representation; `3 class` stays `Integer`. The
+each integer has one representation; an immediate's class stays `Integer`. The
 arithmetic in `crates/ns-runtime/src/arbitrary_integer/` is adapted under MIT
 from `num-bigint` and `num-integer`, now submodules under `prior-art/` beside
 `num-rational`, with the licence texts in `THIRD-PARTY-NOTICES.md` and a
@@ -4566,8 +4568,10 @@ kernel` answers `ArgumentError`,
 
 Recorded outcomes changed in three ways, each established as right
 first: the two loop-condition goldens report a `NonBooleanReceiver` where
-a missing `#mustBeBoolean` was; the three index-error goldens that print
-the class of the caught error print `ArgumentError`; and the
+a missing `#mustBeBoolean` was (the one that catches it, since `class` is
+protected, by its description); the three index-error goldens that print
+the class of the caught error print `ArgumentError` (since `class` is
+protected, by catching that class and answering its name); and the
 divergent-future text names a future rather than a simultaneous slot,
 since a program's own future can diverge too. The kernel-namespace golden
 gained the six classes `platform kernel` now answers.
@@ -4980,8 +4984,9 @@ modules; only its fingerprint bytes changed.
 - `3ab5fc7c` -- the core library sends `class` to no other object.
 - `9ec2f8a0`, `09d3581a` -- the language and number goldens, and
   `representation.rs`.
-- `21225052`, `8c405858` -- the library goldens.
-- `2b87cdeb`, `588d7985` -- the Rust tests read classes on the host side.
+- `21225052` -- the library goldens.
+- `8c405858`, `2b87cdeb`, `588d7985` -- the Rust tests read classes on the
+  host side, the depth limit's error class among them.
 - `33af3ef5` -- `class` and the class accessors protected, the value
   clause for `NonBooleanReceiver` gone, and the new goldens.
 - `6f736b08` -- `Proxy`'s overrides of the protected members dropped.
