@@ -534,7 +534,11 @@ Steps 7 to 9: [execution.md](design/execution.md), "Planned: JIT tiers".
   start in a release build was about 20.1 ms on the measuring workstation
   (Windows 11) at `1906a81d`, against about 15.4 ms at `b9149044`, before
   `ByteArray`, `StringBuilder`, the typed arrays and `DataView` grew
-  `Kernel.ns` from 4,089 lines to 6,586: +4.6 ms. The head's `Kernel.ns`
+  `Kernel.ns` from 4,089 lines to 6,586: +4.6 ms. The typed arrays have
+  since moved out of `Kernel.ns` into the module `TypedArraysFactory.ns`,
+  still built at every boot; being a module of their own, they are what
+  building a module on first demand would spare a program that does not use
+  them, unmeasured. The head's `Kernel.ns`
   has 53 lines more (`cc2aaebe`, `StringBuilder`'s state checks), not
   measured on their own. Compiling `CollectionsFactory.ns`'s 1,710
   lines had added about 3.7 ms before that (2026-10-12); building the
@@ -1241,9 +1245,8 @@ that only answers `isKindOfArray` or `isKindOfString`, and the error of a
   system will not commit has no test, since no portable one can provoke
   it; no golden appends `''` to a builder whose data are full;
   `a_typed_array_has_the_sequence_protocol` cannot
-  tell an `Int16Array`'s copy from a `Uint16Array`'s; a typed array's
-  `new:` too large to allocate and a `LargeInteger` index are not pinned
-  by a golden; and the crafted-slot tests cover a `BigEndianDataView` and
+  tell an `Int16Array`'s copy from a `Uint16Array`'s; a `LargeInteger`
+  index is not pinned by a golden; and the crafted-slot tests cover a `BigEndianDataView` and
   one typed array, not `LittleEndianDataView` or the other kinds.
   [core-library.md](design/core-library.md), "Errors and tests".
 - That a parenthesised literal block is still inlined (`true ifTrue:

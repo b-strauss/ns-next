@@ -490,8 +490,9 @@ kernel's.
   value ("A value object's four conditions" below). The clause, `<:`
   clauses included, is read by name at bootstrap, never run, and the class
   object's `superclass` link is set to match its application's. The
-  kernel's other classes -- `StringBuilder`, the typed arrays, `DataView`
-  -- are no builtins but ordinary classes of `Kernel.ns`
+  kernel's other classes -- `StringBuilder` and `DataView` -- are no
+  builtins but ordinary classes of `Kernel.ns`, and the typed arrays are
+  ordinary classes of the shipped module `TypedArraysFactory.ns`
   ([core-library.md](core-library.md), "`ByteArray`, `StringBuilder` and
   the views").
 - **A program reaches a builtin class through `Object`'s accessors** (§3.2):

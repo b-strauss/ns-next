@@ -5062,8 +5062,15 @@ and a strict `String fromUtf8:`; `StringBuilder` builds a `String` over a
 `ByteArray` of UTF-8, counting code points; ten typed arrays view a whole
 `ByteArray` by element, little-endian, and `DataView` at 1-based byte
 positions in a byte order chosen at creation, through two private
-classes, all ordinary kernel classes reached through `platform kernel`,
-with `Object>>ByteArray` the one new class accessor. A view or a builder
+classes, all ordinary classes, with `Object>>ByteArray` the one new class
+accessor. `StringBuilder` and `DataView` are classes of `Kernel.ns`, reached
+through `platform kernel`; the typed arrays are the shipped module
+`TypedArraysFactory.ns`, booted with the mirror and the kernel, whose
+private classes the facet `platform typedArrays` hands out, and
+`IndexedCollection` is public so that the module applies it. A view's and a
+typed array's size refusals are their own `ArgumentError`s under their own
+selector, an allocation decided beforehand by the mirror leaf
+`byteArrayClass:fits:ifFail:`. A view or a builder
 whose slots an image crafted is refused with an `ArgumentError`. The
 `MIRROR` table has 234 rows: 16 for `ByteArray` and UTF-8, 18 for the
 typed arrays' elements and 36 for `DataView`'s, the last two families one
@@ -5105,6 +5112,10 @@ a hello program's median start went from about 15.4 ms to about 20.1 ms at
   by a round trip.
 - `1906a81d`, `cc2aaebe` -- views and builders through an image, crafted
   ones refused.
+- `69db2f7a`, `fb5bff7d` -- `IndexedCollection` public, and the typed
+  arrays moved into the shipped module `TypedArraysFactory`.
+- `4aac38d7`, `67f36add`, `1896acd2` -- a view's and a typed array's size
+  refusals with their own texts, and the leaf `byteArrayClass:fits:ifFail:`.
 - This commit -- the documents.
 
 What the branch leaves open is in [OPEN-WORK.md](OPEN-WORK.md): weak

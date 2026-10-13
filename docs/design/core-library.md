@@ -4,28 +4,31 @@
 > `Kernel.ns`, over one VM mirror, §3.2's `Behavior`, `Class` and
 > `Metaclass` and §8.6's exceptions included, and the platform is a facet
 > of the shipped module `PlatformFactory.ns` with lazy members, its
-> transcript, its `time` and its `collections` the facets of the shipped
-> modules `TranscriptFactory.ns`, `TimeFactory.ns` and
-> `CollectionsFactory.ns`, the last with Newspeak `List`, `Map`,
-> `IdentityMap` and `Set`; missing is part
+> transcript, its `time`, its `collections` and its `typedArrays` the facets
+> of the shipped modules `TranscriptFactory.ns`, `TimeFactory.ns`,
+> `CollectionsFactory.ns` and `TypedArraysFactory.ns`, the third with
+> Newspeak `List`, `Map`, `IdentityMap` and `Set`, the fourth with
+> `TypedArray` and its ten classes; missing is part
 > of Primordial Soup's core API, whose names and loops are aligned, whose
 > foundations -- the error classes, `Proxy` and a public `Future` --, whose
 > collections and strings, whose numbers -- `Fraction` and a symmetric
 > numeric tower among them ("The numeric tower") -- and whose `ByteArray`
-> and `StringBuilder`, with the typed arrays and `DataView` beside them
-> ("`ByteArray`, `StringBuilder` and the views"), are built, and the
+> and `StringBuilder`, with the typed arrays (a module of their own) and
+> `DataView` beside them ("`ByteArray`, `StringBuilder` and the views"),
+> are built, and the
 > rest, weak references, planned ("Planned: the kernel completed to
 > Primordial Soup's core API").
 > Every member of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
-> `TimeFactory.ns` and `CollectionsFactory.ns` -- public, protected and
-> private -- is documented
+> `TimeFactory.ns`, `CollectionsFactory.ns` and `TypedArraysFactory.ns` --
+> public, protected and private -- is documented
 > in place to the standard of Javadoc, by a `///` comment directly above it,
 > which `crates/ns-runtime/tests/core_library_documentation.rs` checks.
 > **Code:** `crates/ns-runtime/core-library/Kernel.ns` (the library),
 > `crates/ns-runtime/core-library/PlatformFactory.ns` (the platform),
 > `crates/ns-runtime/core-library/platform/TranscriptFactory.ns`,
-> `TimeFactory.ns` and `CollectionsFactory.ns` (the transcript, the clock
-> and the collections modules), `crates/ns-runtime/core-library/Manifest.ns` (a project's
+> `TimeFactory.ns`, `CollectionsFactory.ns` and `TypedArraysFactory.ns`
+> (the transcript, the clock, the collections and the typed arrays modules),
+> `crates/ns-runtime/core-library/Manifest.ns` (a project's
 > manifest, which is no shipped module: "The manifest"),
 > `interpreter/kernel.rs` (the bootstrap's kernel phase),
 > `interpreter/core_library.rs` (the table of shipped modules and their
@@ -55,7 +58,8 @@ comparison in [image-format.md](image-format.md).
 ## What exists
 
 The shipped modules document their members in place: every method, slot
-and class of `Kernel.ns`, `PlatformFactory.ns` and `CollectionsFactory.ns`
+and class of `Kernel.ns`, `PlatformFactory.ns`, `TranscriptFactory.ns`,
+`TimeFactory.ns`, `CollectionsFactory.ns` and `TypedArraysFactory.ns`
 -- public, protected and private -- has a `///` comment directly above it saying
 what it does and answers, what each argument must be, which `Error` it
 signals and when, and what it guarantees about order, identity, copying and
@@ -65,10 +69,11 @@ a bare `///` line between the two. This document gives the reasons behind
 them.
 
 `Kernel.ns` declares one nested class per builtin class but the mirror's,
-and beside them the ordinary classes `StringBuilder`, `TypedArray` and its
-ten typed arrays, `DataView` and its two byte orders, and the mixin
-`IndexedCollection`, marked † below ("`ByteArray`, `StringBuilder` and the
-views"):
+and beside them the ordinary classes `StringBuilder`, `DataView` and its two
+byte orders, and the mixin `IndexedCollection`, marked † below
+("`ByteArray`, `StringBuilder` and the views"); `TypedArray` and its ten
+typed arrays are no part of the kernel but of the module
+`TypedArraysFactory.ns`:
 
 ```
 Top                     (private; no superclass, declares nothing)
@@ -88,13 +93,10 @@ Top                     (private; no superclass, declares nothing)
     ├── Collection      do: (abstract), and the read protocol over it: size,
     │   │               includes:, inject:into:, detect:, reduce:, collect:, ...
     │   ├── (IndexedCollection)  † the level the mixin adds under each of the
-    │   │   │                    three below: the sequence protocol
+    │   │   │                    two below: the sequence protocol
     │   │   └── Array
-    │   ├── (IndexedCollection)
-    │   │   └── ByteArray        bytes, data at a 32-byte address
     │   └── (IndexedCollection)
-    │       └── TypedArray       † (abstract) a view of a ByteArray by element
-    │           └── Int8Array ... Float64Array  † ten classes, one width each
+    │       └── ByteArray        bytes, data at a 32-byte address
     ├── StringBuilder   † a String built from pieces, over a ByteArray of UTF-8
     ├── DataView        † a view of a ByteArray at byte positions
     │   ├── LittleEndianDataView  † (private)
@@ -123,8 +125,9 @@ The mirror's class is the one builtin `Kernel.ns` does not declare; the
 bootstrap builds it below `Value`, so the mirror is a value ("The bootstrap:
 placeholders first, kernel second" below).
 
-`Collection` is the abstract superclass of `Array`, `ByteArray`,
-`TypedArray` and the collections module's `List`, `Map` and `Set`. It
+`Collection` is the abstract superclass of `Array`, `ByteArray`, the typed
+arrays module's `TypedArray` and the collections module's `List`, `Map` and
+`Set`. It
 reaches no leaf: a subclass defines
 `do:`, and every other member is Newspeak written over it, which a subclass
 overrides where it can answer faster; `collect:`, `select:` and `reject:`
@@ -181,8 +184,8 @@ either the empty class `Top` or the application of a mixin to another class",
 and "only the class `Object` may have `Top` as its superclass", so `Top`
 exists, declares nothing, and is private, as are only the classes no
 program may name (`Activation`, `NonBooleanReceiver`,
-`FutureImplementation`, the mixin `IndexedCollection` and `DataView`'s two
-byte orders) — every other class says `public`, because §6.3.1 makes an undeclared member
+`FutureImplementation` and `DataView`'s two byte orders) — every other
+class says `public`, because §6.3.1 makes an undeclared member
 protected and a protected class is unreachable from any other module, which
 is where a program's `Integer` or `String` has to come from. §3.1.1 says a
 value object's "class inherits from class `Value`", so every class whose
@@ -640,23 +643,28 @@ class PlatformFactory usingVmMirror: mirror kernel: kernel = Value (
     lazy private collectionsModule = vmMirror moduleInstanceNamed: #CollectionsFactory ifFail: [nil].
     lazy private transcriptModule = vmMirror moduleInstanceNamed: #TranscriptFactory ifFail: [nil].
     lazy private timeModule = vmMirror moduleInstanceNamed: #TimeFactory ifFail: [nil].
+    lazy private typedArraysModule = vmMirror moduleInstanceNamed: #TypedArraysFactory ifFail: [nil].
     private class Platform = Value () (
         lazy public transcript = transcriptModule build.
         lazy public collections = collectionsModule build.
         lazy public kernel = KernelNamespace new.
         lazy public time = timeModule build.
+        lazy public typedArrays = typedArraysModule build.
     )
     private class KernelNamespace = Value () ( public Exception = ( ^outer PlatformFactory Exception ) ... )
     public build = ( ^Platform new )
 ) : ()
 ```
 
-and the transcript, the clock and the collections are each a shipped module
-of its own under `crates/ns-runtime/core-library/platform/`, written the
-same way -- `TranscriptFactory.ns` and `TimeFactory.ns` given the mirror,
-since their leaves are reached through it (decided with the user on
-2026-10-13), `CollectionsFactory.ns` the kernel's classes (2026-09-28, "The
-collections module (plan 2)" below):
+and the transcript, the clock, the collections and the typed arrays are each
+a shipped module of its own under
+`crates/ns-runtime/core-library/platform/`, written the same way --
+`TranscriptFactory.ns` and `TimeFactory.ns` given the mirror, since their
+leaves are reached through it (decided with the user on 2026-10-13),
+`CollectionsFactory.ns` the kernel's classes (2026-09-28, "The collections
+module (plan 2)" below), `TypedArraysFactory.ns` both, since the typed
+arrays are Newspeak over the mirror's element leaves and over the kernel's
+`Collection`, `IndexedCollection` and `ArgumentError` (2026-10-13):
 
 ```newspeak
 class TranscriptFactory usingVmMirror: mirror = Value (
@@ -697,6 +705,21 @@ class CollectionsFactory usingKernel: kernel = Value (
     private class NotFound = Error ( | public element ::= nil. | ) ( ... ) : ( ... )
     private class ConcurrentModification = Error ( | public collection ::= nil. | ) () : ( ... )
     public build = ( ^Collections new )
+) : ()
+
+class TypedArraysFactory usingVmMirror: mirror kernel: kernel = Value (
+    | private vmMirror = mirror. private ArgumentError = kernel ArgumentError.
+      private Collection = kernel Collection.
+      private IndexedCollection = kernel IndexedCollection. |
+) (
+    private class TypedArrays = Value () (
+        public TypedArray = ( ^outer TypedArraysFactory TypedArray )
+        public Int8Array = ( ^outer TypedArraysFactory Int8Array ) ... Float64Array
+    )
+    private class TypedArray on: aByteArray = Collection <: IndexedCollection ( ... ) ( ... ) : ( ... )
+    private class Int8Array on: aByteArray = TypedArray on: aByteArray () ( ... ) : ( ... )
+    ... Uint8Array to Float64Array, nine more
+    public build = ( ^TypedArrays new )
 ) : ()
 ```
 
@@ -751,7 +774,16 @@ reaches the mirror (`tests/platform.rs`,
 kernel's `ArgumentError` and `Collection`, every nested class -- `Collections`, `List`, `Map`, `IdentityMap`,
 `Set`, `NotFound` and `ConcurrentModification` -- is private, and its one
 public member, `build`, answers the facet `platform collections`
-is (`the_collections_factory_answers_only_build`).
+is (`the_collections_factory_answers_only_build`). So does
+`TypedArraysFactory.ns`: its root holds the VM mirror and the kernel's
+`ArgumentError`, `Collection` and `IndexedCollection`, its eleven classes --
+the facet `TypedArrays`, `TypedArray` and the ten typed arrays -- are
+private, and `build` answers the facet `platform typedArrays`. A program
+reaches `TypedArray` and the ten only through that facet (a class accessor
+each, `^outer TypedArraysFactory <Name>`), and subclasses them through it;
+`platform kernel` hands out none of them, and `IndexedCollection`, which is
+public in `Kernel.ns` because a shipped module applies it, is handed out by
+no facet.
 
 **The members are lazy slots** (§6.3.3, "Lazy slots first" below): each is
 built on its first use, so a program pays only for the members it asks for,
@@ -763,7 +795,8 @@ and the boot" below), and `PlatformFactory`'s root keeps it in its private
 lazy slot `collectionsModule`, which asks the mirror's
 `moduleInstanceNamed:` for it on the first `platform collections` of any
 platform; `Platform`'s `collections` answers that instance's
-`build`. So every platform's facet comes from one factory and
+`build`. The typed arrays module is reached the same way, through the
+private lazy slot `typedArraysModule` and `Platform`'s `typedArrays`. So every platform's facet comes from one factory and
 hands out one class of each name, and the facets, values, are all equal
 (`tests/platform.rs`, `the_platform_and_its_parts_are_values`,
 `the_collections_module_is_built_once_at_boot`). The facet hands out each
@@ -780,10 +813,10 @@ own class.
 as the first shipped module's, then takes each entry of the table of
 shipped modules in order ("Where the library source lives, and how modules
 are found" below), compiles it and instantiates its root through the
-ordinary `Interpreter::instantiate` -- `PlatformFactory` with
-`usingVmMirror: mirror kernel: kernel`, `TranscriptFactory` and
-`TimeFactory` with `usingVmMirror: mirror`, `CollectionsFactory` with
-`usingKernel: kernel` -- checks that every factory given the mirror holds it
+ordinary `Interpreter::instantiate` -- `PlatformFactory` and
+`TypedArraysFactory` with `usingVmMirror: mirror kernel: kernel`,
+`TranscriptFactory` and `TimeFactory` with `usingVmMirror: mirror`,
+`CollectionsFactory` with `usingKernel: kernel` -- checks that every factory given the mirror holds it
 in an immutable, eager slot `vmMirror` (`interpreter::core_library`'s
 `check_factory_holds_the_mirror`, as `interpreter::kernel` checks the
 kernel's), and records each instance as its module's one instance
@@ -995,7 +1028,10 @@ program that demanded it is named in a comment beside it: the comments of
 The kernel facet, `platform kernel`, is outside the rule (decided with the
 user on 2026-10-11): it only hands out classes of `Kernel.ns`, which the
 kernel completion governs, and reaches no host, so `KernelNamespace>>Collection`
-names no program.
+names no program. So is the typed arrays facet, `platform typedArrays`
+(decided with the user on 2026-10-13): it only hands out the classes of
+`TypedArraysFactory.ns`, which the kernel completion governs likewise, and
+reaches no host.
 
 This is not minimalism for its own sake. A platform member reaches the host
 -- a file, a clock, the network -- and one nothing on that list or under
@@ -1563,7 +1599,10 @@ The kernel has `ByteArray`, a builtin of bytes whose data lie aligned to 32
 bytes; the UTF-8 conversions on `String`; `StringBuilder`; and two kinds of
 view over a `ByteArray` -- `TypedArray`'s ten classes, indexed by element at
 one width, and `DataView`, read and written at byte positions in a byte
-order chosen when it is made. Where Primordial Soup's API does not fit
+order chosen when it is made. The typed arrays are no part of `Kernel.ns`:
+they are the shipped module `TypedArraysFactory.ns`, reached as
+`platform typedArrays` (decided with the user on 2026-10-13), where
+`StringBuilder` and `DataView` stay in the kernel. Where Primordial Soup's API does not fit
 strings of code points or a 1-based language, the API is changed here
 rather than adopted (decided with the user on 2026-10-12); everything else
 is Primordial Soup's. The leaves are `builtins/bytes.rs` (`ByteArray`'s and
@@ -1576,11 +1615,11 @@ views' element access, `ElementAccess`).
 |---|---|---|---|
 | `ByteArray` | builtin, format `AlignedBytes` | `Object>>ByteArray` (§3.2), as `Array` is | `Collection <: IndexedCollection` |
 | `StringBuilder` | Newspeak, over a `ByteArray` of UTF-8 | `platform kernel` | `Object` |
-| `TypedArray` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Collection <: IndexedCollection` |
-| `Int8Array`, `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Int64Array`, `Uint64Array`, `Float32Array`, `Float64Array` | Newspeak | `platform kernel` | `TypedArray` |
+| `TypedArray` (abstract) | Newspeak, over a `ByteArray`, in `TypedArraysFactory.ns` | `platform typedArrays` | `Collection <: IndexedCollection` |
+| `Int8Array`, `Uint8Array`, `Int16Array`, `Uint16Array`, `Int32Array`, `Uint32Array`, `Int64Array`, `Uint64Array`, `Float32Array`, `Float64Array` | Newspeak, in `TypedArraysFactory.ns` | `platform typedArrays` | `TypedArray` |
 | `DataView` (abstract) | Newspeak, over a `ByteArray` | `platform kernel` | `Object` |
 | `LittleEndianDataView`, `BigEndianDataView` | Newspeak, private to the kernel | `DataView`'s factories only | `DataView` |
-| `IndexedCollection` | a mixin, private to the kernel | applied with `<:` | `Collection`, which its own members build on |
+| `IndexedCollection` | a mixin, public so that a shipped module applies it, handed out by no facet | applied with `<:` | `Collection`, which its own members build on |
 
 The views and `StringBuilder` are ordinary Newspeak classes whose state is a
 `ByteArray` slot; only `ByteArray` is a builtin. A view's access is one
@@ -1681,7 +1720,9 @@ subclass, as `Array`'s and `String`'s do.
 `asArray` -- `Array`'s protocol beyond `Collection`'s -- are written once, over `at:`,
 `at:put:`, `size` and a new instance of the receiver's kind, in a kernel
 mixin, `IndexedCollection` (named with the user on 2026-10-12), that `Array`,
-`ByteArray` and `TypedArray` apply over `Collection`: `class Array =
+`ByteArray` and `TypedArray` apply over `Collection` -- the last from its
+own module, which is why the mixin is public in `Kernel.ns`, though no facet
+hands it out: `class Array =
 Collection <: IndexedCollection`. A class overrides what a leaf does faster,
 as `Array`'s and `ByteArray`'s `copyFrom:to:` and
 `replaceFrom:to:with:startingAt:` do.
@@ -1849,8 +1890,12 @@ Decided with the user on 2026-10-12:
   `Uint8ClampedArray` (JavaScript's canvas case) and `Float16Array` (Rust
   has no stable `f16`; with the GPU API, [OPEN-WORK.md](../OPEN-WORK.md)).
 - **A view over a whole `ByteArray`.** `new: size` allocates a zero-filled,
-  aligned `ByteArray` of `size` × the width, a negative, a non-integer or
-  an unallocatable size being an `ArgumentError` in `Array new:`'s texts;
+  aligned `ByteArray` of `size` × the width, a size that is no `Integer`,
+  is negative or cannot be allocated being an `ArgumentError` carrying the
+  size, in the texts of `new:` itself ("new: requires an Integer size, got
+  …", "new: requires a size of at least 0, got …", "new: cannot allocate a
+  ByteArray of … bytes", the last counting bytes, not elements; decided with
+  the user on 2026-10-13, "Size refusals are the view's own" below);
   `new` an empty one; `on:
   bytes` views an existing `ByteArray`, whose size must be a multiple of
   the width, else an `ArgumentError`; `withAll: collection` is `new:` and
@@ -1877,8 +1922,8 @@ Decided with the user on 2026-10-12:
   receiver's kernel class over a new `ByteArray`; `collect:` answers an
   `Array`, `select:` and `reject:` the receiver's kernel class; `indexOf:`
   compares with `=`, so `3` finds `3.0`. Each typed array's protected
-  `newOfSize:` names its own class, `outer Kernel Int16Array new: size`,
-  as `Array`'s and `ByteArray`'s do, and `TypedArray`'s is abstract: a
+  `newOfSize:` names its own class, `outer TypedArraysFactory Int16Array
+  new: size`, as `Array`'s and `ByteArray`'s do, and `TypedArray`'s is abstract: a
   class side is flat (§3.2), so a program's subclass of `Int16Array` has
   only the `on:` of its own factory, and asking the receiver's class for
   `new:` would leave every copy of it a `doesNotUnderstand:`. A
@@ -1900,8 +1945,10 @@ Decided with the user on 2026-10-12:
   `TypedArray`'s class side has the public `bytesFor:width:`, the
   zero-filled `ByteArray` a `new:` views, and `fill:from:`, what
   `withAll:` fills, since a class side is not inherited and each typed
-  array's sends them. A program names the classes as `platform kernel
-  Int16Array`.
+  array's sends them. A program names the classes as `platform typedArrays
+  Int16Array`; they are the module's private classes, which the facet
+  `TypedArrays` hands out by a class accessor each, and it hands out nothing
+  else.
 
 ### `DataView`
 
@@ -1942,7 +1989,32 @@ accessors on `ByteArray`:
   is refused as a typed array's is, through `DataView`'s own protected
   `noByteArray:`, "int8At: found no ByteArray under the view, got …". A
   program names the class as `platform kernel DataView`; the two
-  subclasses are private.
+  subclasses are private. `DataView` depends on no typed array: it is
+  built over `ByteArray` and the mirror's element leaves, so it stays in
+  the kernel.
+- **Size refusals are the view's own** (decided with the user on
+  2026-10-13). `DataView new:byteOrder:` and a typed array's `new:` check
+  the size themselves, in Newspeak (`DataView class>>bytesOfSize:` and
+  `TypedArray class>>bytesFor:width:`), and signal an `ArgumentError`
+  carrying the size under their own selector: "new:byteOrder: requires an
+  Integer size, got …", "new:byteOrder: requires a size of at least 0, got
+  …" and "new:byteOrder: cannot allocate a ByteArray of … bytes", and a
+  typed array's the same under `new:`, the last counting `size` × the
+  width. They no longer borrow `Array new:`'s refusal, whose texts would
+  name `new:` of another class. A size that only pretends to be an `Integer`
+  -- an object answering `true` to `isKindOfInteger` -- passes the first two
+  checks and falls to `ByteArray new:`'s own refusal.
+
+  Whether a size can be allocated is decided before allocating, by the mirror
+  leaf `byteArrayClass:fits:ifFail:`, which answers a Boolean through
+  `Heap::byte_array_fits` and raises nothing. An allocating leaf could not
+  do it: a row's reported selector is fixed, and every error text of a leaf
+  names it, so a leaf that allocated would refuse under `new:` where
+  `new:byteOrder:` was sent; a `ByteArray new:` caught and re-signalled
+  was ruled out. The leaf declines a subject that is not `ByteArray`
+  itself, a size that is negative and a size that is no `Integer`, which
+  its callers have refused first, and answers `false` for a non-negative
+  `LargeInteger`. It is the 234th row of the mirror's table.
 - **The leaves**: 36 selectors on the `ByteArray`, eight widths in two
   orders, read and write, and four for one byte, all one generic Rust
   function over width, kind and order, which the typed arrays share with an
@@ -1983,9 +2055,8 @@ refuses a view or a builder whose slots an image crafted with an
   `check_kernel_shape` (`interpreter/kernel.rs`) holds every builtin to
   one nested class of its name, no slots and a bare superclass clause, and
   leaves every other nested class unchecked: `IndexedCollection`,
-  `StringBuilder`, `TypedArray` and its ten classes, `DataView` and its two
-  are ordinary classes, built by their nested-class accessors as any class
-  is. A builtin's clause may carry `<:` clauses, each a bare name of a
+  `StringBuilder`, `DataView` and its two are ordinary classes, built by
+  their nested-class accessors as any class is. A builtin's clause may carry `<:` clauses, each a bare name of a
   kernel class that is no builtin, whose own clause is a bare builtin name
   and applies nothing (`check_applied_kernel_class`): the bootstrap reads
   them and never runs them. `fill_builtin_classes` builds that class once
@@ -1998,19 +2069,24 @@ refuses a view or a builder whose slots an image crafted with an
   applied class in the kernel instance, so `Array`, `ByteArray` and the
   accessor share one `IndexedCollection`, and gives each level and its
   metaclass the kernel's lexical context, as it does for the kernel's own
-  `Value` level. `TypedArray`, which is no builtin, applies the mixin
-  through its clause like any class. The hierarchy test walks through the
-  level.
+  `Value` level. `TypedArray`, which is no builtin and lives in
+  `TypedArraysFactory.ns`, applies the mixin through its clause like any
+  class, `kernel IndexedCollection` having been handed to its root. The
+  hierarchy test walks through the level.
 - **An image names them by where they are declared** ([image-format.md](image-format.md),
   "Shipped names"; "Shipped names in the image" above): the bootstrap
   builds every shipped class whole, metaclasses and levels included, and
   `complete_shipped_world` names each, a builtin's levels read off its
   superclass chain. A program holding a `Float32Array`, a `DataView` or a
   `StringBuilder` is written to an image without these classes being
-  builtins; `LittleEndianDataView`, `BigEndianDataView` and
-  `IndexedCollection` stand as a record's class or a frame's but never as
-  a value, since they are private and no public class accessor answers
-  them, and the levels `IndexedCollection` adds as a frame's class only.
+  builtins; the typed arrays are named by their module and declaration,
+  `TypedArraysFactory Float32Array`, the others by the kernel's.
+  `LittleEndianDataView` and `BigEndianDataView` stand as a record's class
+  or a frame's but never as a value, since they are private and no public
+  class accessor answers them. `IndexedCollection`, public but handed out
+  by no facet, is likewise named only as a record's class or a frame's,
+  and the levels it adds as a frame's class only. A started image may name
+  no shipped module but the kernel (`image-format.md`, "Shipped names").
   Making the sixteen classes builtins was rejected: a builtin is a class
   Rust needs a handle on, not a class the image needs a name for. Building
   them at every boot costs every start time ([OPEN-WORK.md](../OPEN-WORK.md),
@@ -2277,7 +2353,9 @@ Two things about the shape are enforced rather than conventional:
 
 - **A literal block may appear in a mirror send only as its final `ifFail:`
   argument.** `interpreter::kernel`'s `check_kernel_shape` refuses anything
-  else at bootstrap (`check_mirror_send_arguments`). The reference lowering
+  else at bootstrap (`check_mirror_send_arguments`), and so does the
+  resolving of every other shipped module (`interpreter/core_library.rs`),
+  since `TypedArraysFactory.ns` holds mirror sends of its own. The reference lowering
   marks a mirror send whose failure block the optimized lowering inlines as a
   `SendInlinable`, and that mark covers the whole send, so it would exempt
   from the depth count a literal block the leaf itself activates — as
@@ -2528,10 +2606,11 @@ application in its manifest ("The manifest" below).
 
 **The table of shipped modules.** `Kernel.ns` is compiled into the binary
 by `interpreter/kernel.rs`; every other shipped module is an entry of
-`interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name and its source,
-embedded with `include_str!` from `crates/ns-runtime/core-library/` like
-the kernel. Today it has four entries, `PlatformFactory`,
-`TranscriptFactory`, `TimeFactory` and `CollectionsFactory`, the last three
+`interpreter/core_library.rs`'s `SHIPPED_MODULES`, a name, its source and
+the arguments its factory is given (`ShippedFactory`), embedded with
+`include_str!` from `crates/ns-runtime/core-library/` like the kernel.
+Today it has five entries, `PlatformFactory`, `TranscriptFactory`,
+`TimeFactory`, `CollectionsFactory` and `TypedArraysFactory`, the last four
 under `platform/`: the modules the platform hands out a facet of live
 there. Where a
 module's file lies decides nothing: the table names it, and `moduleInstanceNamed:`
@@ -2541,8 +2620,10 @@ entry is shipped source, and every boot asks for every entry: an image
 names the shipped world's objects and the loader runs nothing the image
 chooses, so every shipped module is compiled and instantiated at every boot
 ("The module table and the boot" below). It panics for an entry that does
-not parse or resolve, as the kernel's does: that is a defect in the binary,
-not in a program, and the unit test `every_shipped_module_resolves` checks
+not parse or resolve, or whose mirror sends pass a literal block anywhere
+but as the final `ifFail:` (the rule of "The shape of a kernel method" above,
+which `Kernel.ns` is held to likewise), as the kernel's does: that is a
+defect in the binary, not in a program, and the unit test `every_shipped_module_resolves` checks
 every entry. Every interpreter compiles each module itself, since compiled
 code is numbered against one heap's inline caches. Every entry is
 shipped source; a user module would join the table, marked as such by the
@@ -2716,8 +2797,8 @@ platform's lazy `kernel` slot holds a value of `PlatformFactory.ns`'s
 `KernelNamespace`, whose methods answer `Exception`, `Error`,
 `MessageNotUnderstood`, `Halt`, `Message`, `ArgumentError`, `CannotReturn`,
 `CannotInstantiate`, `Closure`, `Future`, `Proxy`, `Collection`,
-`StringBuilder`, `TypedArray`, the ten typed arrays and `DataView` from the
-kernel instance the platform was handed. `NotFound` is answered by
+`StringBuilder` and `DataView` from the kernel instance the platform was
+handed; the typed arrays are `platform typedArrays`'. `NotFound` is answered by
 `platform collections`, as Primordial Soup keeps it in its collections
 module, and `NonBooleanReceiver` by nothing.
 `Exception` and `Error`, the two roots, are `Object`'s accessors as well
@@ -3194,8 +3275,9 @@ modules are found" above describe, with one part of the design below not
 built: the table is `interpreter/core_library.rs`'s `SHIPPED_MODULES`,
 read by the host, not yet a table on the mirror, and its entries carry no
 shipped flag yet, since every entry is shipped source; the flag comes with
-the first user module the table holds. The table has two entries,
-`PlatformFactory` and `CollectionsFactory`; the kernel is booted before
+the first user module the table holds. The table has five entries,
+`PlatformFactory`, `TranscriptFactory`, `TimeFactory`,
+`CollectionsFactory` and `TypedArraysFactory`; the kernel is booted before
 them by `interpreter/kernel.rs`. **Every shipped module is built at every
 boot**, and the mirror's `moduleInstanceNamed:` answers the instance the
 boot built. The design as decided:
@@ -3203,9 +3285,9 @@ boot built. The design as decided:
 - **One module table, on the mirror** (the decision of 2026-09-21 in "Where
   the library source lives, and how modules are found"). The host fills a
   table of name to source at bootstrap; the shipped modules —
-  `PlatformFactory.ns` and `CollectionsFactory.ns` — sit in
-  `crates/ns-runtime/core-library/` with `Kernel.ns`, the collections module
-  in its subdirectory `platform/`, and are embedded the same way. **Loading
+  `PlatformFactory.ns` and the four under `platform/` — sit in
+  `crates/ns-runtime/core-library/` with `Kernel.ns`, and are embedded the
+  same way. **Loading
   is unified; trust and visibility are not:** every entry carries whether it
   is shipped core-library source, set by the host and never by the module, and
   only such an entry is resolved with `resolve_kernel`. The mirror leaf
@@ -3230,10 +3312,10 @@ boot built. The design as decided:
   compiled for a trusted context.
 - **The boot.** After `install_kernel` the host records the kernel
   instance, takes each entry from the table in order and instantiates it --
-  `PlatformFactory` with `usingVmMirror: mirror kernel: kernel`,
-  `TranscriptFactory` and `TimeFactory` with `usingVmMirror: mirror`,
-  `CollectionsFactory` with `usingKernel: kernel`, since it reaches no leaf
-  and so is given no mirror -- each an ordinary run, as the kernel's
+  `PlatformFactory` and `TypedArraysFactory` with `usingVmMirror: mirror
+  kernel: kernel`, `TranscriptFactory` and `TimeFactory` with
+  `usingVmMirror: mirror`, `CollectionsFactory` with `usingKernel: kernel`,
+  since it reaches no leaf and so is given no mirror -- each an ordinary run, as the kernel's
   instantiation is, so the stress modes see it; builds every class the roots
   declare (`complete_shipped_world`); and sends `PlatformFactory`'s instance
   `build`, keeping the answer as a root ("The platform" above).
@@ -3609,6 +3691,13 @@ program gets is the facet `platform collections` answers. It declares no
 `vmMirror` and needs none. The on-demand rule is not its: it carries
 Primordial Soup's collections API ("The on-demand rule" above).
 
+Done with the typed arrays module (2026-10-13): `TypedArraysFactory.ns`
+joins them likewise, kept by `PlatformFactory`'s private lazy
+`typedArraysModule`, with the difference that it holds the mirror, and so
+the bootstrap's check of the mirror slot covers it as it covers
+`PlatformFactory`, `TranscriptFactory` and `TimeFactory`. The on-demand rule
+is not its either.
+
 #### What is measured
 
 The first `platform collections` now resolves and compiles one more
@@ -3758,8 +3847,9 @@ Each decision below was taken with the user.
 `Symbol`, `UndefinedObject`, `Array`, `ByteArray`, `Closure`, `Exception`
 and `Error`. `ByteArray` joined them with sub-project 5, as §3.2 names it
 beside `Array` ("`ByteArray`, `StringBuilder` and the views" above);
-`StringBuilder`, the typed arrays and `DataView` did not, and a program
-names them through `platform kernel`. `Fraction`
+`StringBuilder` and `DataView` did not, and a program names them through
+`platform kernel`; the typed arrays did not either, and a program names
+them through `platform typedArrays`. `Fraction`
 joined them with the numeric tower (decided with the user on 2026-10-11):
 it is one of the numbers, and a program that names `Float` bare names
 `Fraction` the same way. `Exception` and `Error` joined them the same day,
@@ -4114,8 +4204,8 @@ on its own (decided with the user on 2026-10-06):
   `isKindOfStringBuilder`, `isKindOfTypedArray`, `isKindOfDataView`,
   `isKindOfList`, `isKindOfMap`, `isKindOfIdentityMap` and
   `isKindOfSet`; a class a later sub-project adds brings
-  its own answer, and its accessor on `platform kernel` or
-  `platform collections`, when it is built. A program can introduce a
+  its own answer, and its accessor on `platform kernel`,
+  `platform collections` or `platform typedArrays`, when it is built. A program can introduce a
   question of its own
   without touching `Object`, which no Newspeak program can. `Number`
   declares `isKindOfFloat`, `isKindOfInteger` and `isKindOfFraction` as
@@ -4156,7 +4246,7 @@ a non-integral literal is a binary float" above), and there is no
    `Map` and `Set`, their removals signalling `NotFound` and a change
    during an iteration `ConcurrentModification`; `IdentityMap` under
    `Map`; `List`, `Map` and `Set` written here; `String`'s protocol in
-   code points, with `stringAt:`; and every member of the three shipped
+   code points, with `stringAt:`; and every member of the shipped
    modules documented ("Collections and strings" under "Decisions"
    below).
 4. **Numbers** -- built (2026-10-11, [its
@@ -4324,8 +4414,9 @@ a non-integral literal is a binary float" above), and there is no
   refuse a `ByteArray`; `ByteArray` gains the sequence protocol, from a
   kernel mixin it shares with `Array` and `TypedArray`, and its `indexOf:`
   decides by the argument; `StringBuilder` counts code points and appends
-  them with `addCodePoint:`; ten typed arrays view a whole `ByteArray` by
-  element, little-endian, checking integer ranges and converting any number
+  them with `addCodePoint:`; ten typed arrays, in the module
+  `TypedArraysFactory.ns` behind `platform typedArrays`, view a whole
+  `ByteArray` by element, little-endian, checking integer ranges and converting any number
   for a float element; `DataView` reads and writes at 1-based byte
   positions in the byte order its factory is given, through two private
   classes; and every `ByteArray`'s data lie at a 32-byte address, a reserve
@@ -4343,6 +4434,14 @@ a non-integral literal is a binary float" above), and there is no
   in both cases, since every error of the sub-project is one; and the
   decoder holds a byte-array body and the `ByteArray` header to each
   other both ways, since a record carries exactly its class's layout.
+  Afterwards (2026-10-13) the typed arrays moved out of the kernel into the
+  shipped module `TypedArraysFactory.ns`, behind `platform typedArrays`, and
+  a view's and a typed array's size refusals became their own
+  `ArgumentError`s under their own selector, decided before allocating by
+  the mirror leaf `byteArrayClass:fits:ifFail:`, a Boolean through
+  `Heap::byte_array_fits`: a row's reported selector is fixed, so a leaf
+  that allocated could not have reported under `new:byteOrder:` ("Size
+  refusals are the view's own" above).
 
 - **`True` and `False` are Newspeak, over quick methods** (decided with the
   user on 2026-09-24, built the same day): the Boolean half of "Planned:

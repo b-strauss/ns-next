@@ -153,7 +153,8 @@ This is the part that decides how big an artifact is and how large its trusted
 surface is.
 
 - **The shipped world** -- every object the binary owns: each shipped
-  module's instance (`Kernel`, `PlatformFactory`, `CollectionsFactory`),
+  module's instance (`Kernel`, `PlatformFactory`, `TranscriptFactory`,
+  `TimeFactory`, `CollectionsFactory`, `TypedArraysFactory`),
   each class its root declares, the builtins among them, their metaclasses
   and the levels their `<:` clauses add -- is named by its **shipped
   name**, never structurally encoded: the module, the declaration and the
@@ -162,8 +163,8 @@ surface is.
   decoded ("Shipped names" below). The bootstrap builds that world whole
   and is the fixed root/special-objects table. So is the core library: a
   shipped class's methods are the loading process's own `Kernel.ns`,
-  `PlatformFactory.ns` and `CollectionsFactory.ns`, compiled at its
-  bootstrap ([core-library.md](core-library.md)), and no image carries their
+  `PlatformFactory.ns` and the four modules under `platform/`, compiled at
+  its bootstrap ([core-library.md](core-library.md)), and no image carries their
   code or the VM mirror — which is also why `Instruction::SendMirror`,
   emitted only into shipped core-library source, has no wire tag
   ([compiler.md](compiler.md), "Mirror sends").
@@ -1742,9 +1743,10 @@ would no longer reach a deployed artifact ([core-library.md](core-library.md),
 whole and in a fixed order, running only the binary's own code
 (`Interpreter::install_shipped_modules`, `interpreter/core_library.rs`):
 after the kernel's phase it records the kernel instance, instantiates
-`PlatformFactory` (`usingVmMirror:kernel:`), `TranscriptFactory` and
-`TimeFactory` (`usingVmMirror:`) and `CollectionsFactory` (`usingKernel:`,
-since it needs no mirror and so is given none), and then
+`PlatformFactory` and `TypedArraysFactory` (`usingVmMirror:kernel:`),
+`TranscriptFactory` and `TimeFactory` (`usingVmMirror:`) and
+`CollectionsFactory` (`usingKernel:`, since it needs no mirror and so is
+given none), and then
 `complete_shipped_world` (`interpreter/shipped_world.rs`) builds every class
 the roots declare, in declaration order, metaclasses and levels
 included, before the platform is made. The world keeps two tables, traced
@@ -1763,7 +1765,9 @@ whole world costs every process start several milliseconds on the
 measuring workstation, almost all of it compiling the shipped source:
 about 3.7 ms for `CollectionsFactory.ns` ([execution.md](execution.md),
 "What the collections module cost"), and about 4.6 ms more for the
-kernel's `ByteArray`, `StringBuilder` and views, measured at `1906a81d`;
+kernel's `ByteArray`, `StringBuilder` and views and the typed arrays (all of
+them then in `Kernel.ns`; the typed arrays are now a module of their own),
+measured at `1906a81d`;
 the two ways back, neither touching the format, are open
 ([OPEN-WORK.md](../OPEN-WORK.md)).
 
@@ -1853,16 +1857,18 @@ them, as `ShippedNameNotAllowed` ("Verification" above). A class accessor
 counts wherever it is declared in the module, by the class name it answers
 (`shipped_world.rs`, `accessed_classes`), which is right while every shipped
 class is declared directly in its root ([OPEN-WORK.md](../OPEN-WORK.md)).
-So `ByteArray`, `StringBuilder`, `TypedArray`, the ten typed arrays and
-`DataView` stand as values, superclasses and records' classes; the private
-`LittleEndianDataView`, `BigEndianDataView` and `IndexedCollection` as a
-record's class or a frame's only; and the levels `IndexedCollection` adds
-as a frame's class only (`a_view_and_a_builder_round_trip_through_a_package`,
+So `ByteArray`, `StringBuilder` and `DataView`, and `TypedArray` and the ten
+typed arrays, named by their module, `TypedArraysFactory TypedArray`,
+`TypedArraysFactory Int16Array` and so on, stand as values, superclasses and
+records' classes; the private `LittleEndianDataView` and
+`BigEndianDataView`, and `IndexedCollection`, public but handed out by no
+facet, as a record's class or a frame's only; and the levels
+`IndexedCollection` adds as a frame's class only (`a_view_and_a_builder_round_trip_through_a_package`,
 `crates/ns-runtime/tests/image.rs`).
 
 **A started image names only the kernel, and no module instance.** Before
-`main:args:` a program can reach nothing of `PlatformFactory` or
-`CollectionsFactory`, so the decoder refuses an image with `FLAG_START`
+`main:args:` a program can reach nothing of `PlatformFactory` or the
+modules under `platform/`, so the decoder refuses an image with `FLAG_START`
 whose shipped-name section names another module
 (`ShippedNameInStartedImage`,
 `a_started_image_naming_another_module_is_refused`). No program reaches a
