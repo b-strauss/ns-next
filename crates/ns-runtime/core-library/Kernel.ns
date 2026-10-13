@@ -1450,13 +1450,15 @@ class Kernel vmMirror: theMirror = Object <: Value (
 
     /// The equality `=` leaves to Newspeak: whether `other`'s class is
     /// `==` the receiver's and each of its slots is `=` the receiver's
-    /// slot at the same position, from the first.
+    /// slot at the same position, from the first. It reads `other`'s class
+    /// through the mirror, since `class` is answered only to its
+    /// receiver's own sends.
     private valueEquals: other = (
       |
         index
         count
       |
-      (self class == other class) ifFalse: [^false].
+      (self class == (vmMirror objectClass: other ifFail: [^false])) ifFalse: [^false].
       count:: self valueSlotCountOf: self.
       (count = (self valueSlotCountOf: other)) ifFalse: [^false].
       index:: 1.
