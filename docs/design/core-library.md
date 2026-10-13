@@ -3335,7 +3335,13 @@ as `Integer` are what they were: a self send, a super send and an
 implicit-receiver send, all of which reach a protected member, from a
 subclass, a block, a nested class and the class side alike (on the class
 side `self class` answers the metaclass). `other class` and `other
-Integer` reach `doesNotUnderstand:`. No program reaches `Behavior`,
+Integer` reach `doesNotUnderstand:`, whose text is the one for any
+selector nothing declares, "an object does not understand #class"
+(decided with the user on 2026-10-13): §5.5's lookupPublic finds no
+member there, so from outside there is none, and a text naming the
+member protected would tell every sender, through `messageText`, which
+protected members an object has -- the structure protected keeps from it.
+No program reaches `Behavior`,
 `Class` or `Metaclass`, a shipped class's metaclass, or the identity of
 another object's class, and none can tell an `Integer` from a
 `LargeInteger`: those were observable only through `class`. A program asks
@@ -3376,9 +3382,10 @@ refused as a value like any private class without a public accessor
 `a_caught_non_boolean_receiver_round_trips_through_a_package` and
 `non_boolean_receiver_as_a_value_is_refused`). The metaclasses and
 `Behavior`, `Class` and `Metaclass` stay values: they carry no authority,
-and a host can hand a program any of them -- it reaches every one, as
-`crates/ns-runtime/tests/representation.rs` sends `Metaclass new` from
-the host -- which a narrower rule would refuse to build.
+and a host can hand a program any of them -- through
+`Mutator::builtin_class` or `Mutator::class_of`, as
+`crates/ns-runtime/tests/representation.rs` reaches `Metaclass` -- which
+a narrower rule would refuse to build.
 `accessed_classes` counts public accessors only, and `Object`'s answer
 public kernel classes, which are values anyway, so the rest of the rule
 did not move.
@@ -4197,7 +4204,9 @@ stands; the shipped-class naming the first item needs is built.
   as in both Newspeak kernels, so that holding an instance does not hand
   out its class's authority -- its factory, its class side's state, a
   subclass in its environment; `self class`, `super class` and a bare name
-  keep working. The core library reads another object's class through the
+  keep working, and an outside send meets the ordinary
+  "does not understand" text, which names no protected member. The core
+  library reads another object's class through the
   mirror (`valueEquals:`) or asks `isKindOfInteger`, widening nothing; the
   image's value clause for the classes the VM signals goes, since no
   program holds `NonBooleanReceiver` as a value; and what only the

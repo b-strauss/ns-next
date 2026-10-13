@@ -5,7 +5,7 @@
 #![cfg(debug_assertions)]
 
 use indoc::indoc;
-use ns_runtime::{Interpreter, Root, Symbol, Value, ValueKind};
+use ns_runtime::{BuiltinClass, Interpreter, Root, Symbol, Value, ValueKind};
 
 /// Loads `source` and answers the interpreter and its module's root class,
 /// the way `crates/ns-runtime/tests/heap.rs`, `roots.rs` and `stress.rs`
@@ -491,10 +491,11 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
               box float = (1.0e300 * box integer) ifFalse: [^'a float changed'].
               box empty isNil ifFalse: [^'a nil field changed']].
             last:: boxes at: boxes size.
-            ^sum printString, ' ', (last float isKindOfFloat ifTrue: ['Float'] ifFalse: ['no Float']), ' ', (last float = 1.0e303) printString,
+            ^sum printString, ' ', (last float = 1.0e303) printString,
               ' ', last large printString,
               ' ', last empty printString, ' ', last next integer printString
           )
+          public lastFloat: boxes = ( ^(boxes at: boxes size) float )
         ) : ()
     "};
     let (mut interpreter, class) = load(source);
@@ -504,7 +505,11 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
     let instance = expect_ok(interpreter.instantiate(&class, &[]));
     let count = interpreter.stash(Value::small_integer(1000));
     let boxes = expect_ok(interpreter.send(&instance, Symbol::intern("build:"), &[count]));
-    let answer = expect_ok(interpreter.send(&instance, Symbol::intern("check:"), &[boxes]));
+    let answer = expect_ok(interpreter.send(
+        &instance,
+        Symbol::intern("check:"),
+        std::slice::from_ref(&boxes),
+    ));
     let text = interpreter.enter(|mutator| {
         let Some(string) = mutator.fetch(&answer).as_object() else {
             panic!("check: answers a String")
@@ -515,9 +520,20 @@ fn every_kind_of_stored_word_survives_moves_and_collections() {
     // Each box adds its index twice and its predecessor's once:
     // 2 * 500500 + 499500.
     assert_eq!(
-        text, "1500500 Float true 18446744073709552616 nil 999",
+        text, "1500500 true 18446744073709552616 nil 999",
         "every stored word reads back as the value stored"
     );
+    // The boxed float is still a Float, read on the host side since a
+    // program cannot ask another object for its class.
+    let float = expect_ok(interpreter.send(&instance, Symbol::intern("lastFloat:"), &[boxes]));
+    interpreter.enter(|mutator| {
+        let value = mutator.fetch(&float);
+        let float_class = mutator.builtin_class(BuiltinClass::Float);
+        assert!(
+            mutator.class_of(value).same(float_class),
+            "the last box's float is a Float"
+        );
+    });
     assert!(interpreter.moves() > 0, "the stress modes never moved");
     assert!(
         interpreter.stress_collections() > 0,

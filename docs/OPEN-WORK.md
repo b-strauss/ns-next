@@ -915,12 +915,11 @@ activation.
 
 None of these changes a correct program's output; each is wrong but safe, or
 reachable only from a crafted artifact, except the first three, which a
-program can reach and which end the process, and six a program meets as a
+program can reach and which end the process, and five a program meets as a
 gap: `ns-next run`'s panic on a closed pipe, `Object>>printString`'s one
 text, `to:by:do:`'s zero step, `String withAll:`'s nil for an argument
-that only answers `isKindOfArray` or `isKindOfString`, the error of a
-`hash` that is no Integer, and the text of a send that stops at a
-protected member.
+that only answers `isKindOfArray` or `isKindOfString`, and the error of a
+`hash` that is no Integer.
 
 - **`<<` and `Array new:` reserve a program-chosen size with
   `try_reserve_exact`, which refuses an impossible size on Windows but on a
@@ -1067,17 +1066,6 @@ protected member.
   cost of a check on every probe. Found by the collections and strings
   sub-project's review, 2026-10-10. [core-library.md](design/core-library.md),
   "The collections module (plan 2)".
-- **A public send that stops at a protected or private member reads as
-  any message not understood.** When the lookup of an outside send finds
-  the selector's member but not public, the send falls to
-  `doesNotUnderstand:`, and uncaught it ends the run with "an object does
-  not understand #class", as for a selector nothing declares. A program
-  written for the time `x class` was public meets exactly this; a text
-  that says the member is protected (or private), and that `self class`
-  still reaches it, would tell it what changed. Found by the protected
-  class branch's review, 2026-10-13.
-  [core-library.md](design/core-library.md), "`class` and the class
-  accessors are protected".
 - **Two corners of the tower's `Float` rounding divisions.** A `Float`'s
   floored `\\` corrects C's `fmod` by adding the divisor, and that sum can
   round to the divisor itself: `-1.0e-20 \\ 1.0` answers `1.0`, outside
